@@ -6,7 +6,8 @@ Ollama and llama.cpp models), so the agent only issues commands and reads small 
 files. No video is sent to an API, and local Qwen models are the default for the model features.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
-repository root. This page is for the person setting it up.
+repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install
+(`uv tool install cutpoint`) can read it too. This page is for the person setting it up.
 
 ## What exists today
 
@@ -30,6 +31,13 @@ file (`CLAUDE.md`, `AGENTS.md` or your tool's equivalent):
 ```markdown
 Video editing: use the Cutpoint CLI (`uv run cutpoint ...` in D:\tools\cutpoint).
 Read D:\tools\cutpoint\AGENTS.md first. Never edit source videos.
+```
+
+With a tool install (`uv tool install cutpoint`) there is no repository path:
+
+```markdown
+Video editing: use the Cutpoint CLI (`cutpoint ...`). Run `cutpoint guide` and follow it first.
+Never edit source videos.
 ```
 
 Cutpoint is driven through the CLI. When the planned agent skill ships, this page will describe

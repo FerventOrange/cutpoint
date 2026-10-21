@@ -67,6 +67,15 @@ ffmpeg skip themselves when it is not on `PATH`.
 - Never commit the Insta360 SDK or paste its output or documentation into issues, pull requests
   or docs. See [docs/insta360-sdk.md](docs/insta360-sdk.md).
 
+## Releasing
+
+1. Bump `version` in `pyproject.toml` and add a `CHANGELOG.md` entry for it.
+2. Merge the pull request.
+3. Create a GitHub release with tag `X.Y.Z` (no `v` prefix) and the CHANGELOG notes.
+
+Publishing the release runs `.github/workflows/release.yml`, which builds the package, checks
+that its version equals the tag, and publishes it to PyPI with Trusted Publishing.
+
 ## Layout
 
 See [docs/architecture.md](docs/architecture.md).

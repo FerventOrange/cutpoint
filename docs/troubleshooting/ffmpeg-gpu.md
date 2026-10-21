@@ -54,6 +54,17 @@ torch has CUDA. With CPU-only torch they still work, but the visual layer takes 
 times longer. Check with `uv run python -c "import torch; print(torch.cuda.is_available())"`.
 `uv sync --extra events` installs the CUDA 12.6 builds on Windows and Linux.
 
+A tool install (`uv tool install cutpoint`) gets CPU-only torch on Windows, because the CUDA
+index in `pyproject.toml` only applies to a clone. Reinstall with the PyTorch index:
+
+```powershell
+uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match --reinstall
+```
+
+Then check the tool's own Python:
+`& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
+(on Linux: `"$(uv tool dir)/cutpoint/bin/python" -c ...`).
+
 ## Slow or odd video decoding
 
 - Hardware decoding (`-hwaccel cuda`) is used for HUD OCR. If it fails on your GPU, pass

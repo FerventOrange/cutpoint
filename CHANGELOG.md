@@ -14,6 +14,7 @@ First public release.
 - Agent-driven command-line interface (`cutpoint`) with `AGENTS.md` instructions, so a coding
   agent can run the edit and read the result files (`highlights.json`, `manifest.json`,
   `events.json`, `transcript.txt`).
+- `cutpoint guide` prints the agent guide (AGENTS.md); it ships in the package for PyPI installs.
 - Core pipeline: `analyze` (transcription and scene scoring), `clips` (trimmed, numbered clips,
   optional vertical 9:16 crop) and `assemble` (`final.mp4`, DaVinci Resolve timelines).
 - Game-stream events with HUD OCR (`cutpoint events`).

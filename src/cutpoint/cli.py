@@ -1,5 +1,5 @@
 """Command-line interface: ``cutpoint analyze | events | crashes | profile | refmatch | fit | clips |
-extend | assemble | stage | 360 | setup | paths``.
+extend | assemble | stage | 360 | setup | paths | guide``.
 
 Installed as the ``cutpoint`` console script.
 """
@@ -15,6 +15,7 @@ import subprocess
 import sys
 import urllib.error
 from dataclasses import replace
+from importlib.resources import files
 from pathlib import Path
 
 from cutpoint import paths, stage
@@ -311,6 +312,19 @@ def _cmd_paths(a: argparse.Namespace) -> None:
     for key, path in rows:
         state = "" if path.exists() else "  (missing)"
         print(f"{key:<{width}}  {path}{state}")
+
+
+def _cmd_guide(a: argparse.Namespace) -> None:
+    # The wheel ships AGENTS.md inside the package; editable installs read the repo-root file.
+    packaged = files("cutpoint") / "AGENTS.md"
+    if packaged.is_file():
+        data = packaged.read_bytes()
+    else:
+        data = (Path(__file__).resolve().parents[2] / "AGENTS.md").read_bytes()
+    # Bytes as-is, so a non-UTF-8 console encoding cannot fail on non-ASCII text.
+    sys.stdout.flush()
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
 
 
 def _add_speech_arguments(p: argparse.ArgumentParser, default_on: str) -> None:
@@ -845,6 +859,9 @@ def build_parser() -> argparse.ArgumentParser:
         "config, cache, models, tools, stage, styles, projects)",
     )
     pa.set_defaults(func=_cmd_paths)
+
+    gd = sub.add_parser("guide", help="print the guide for AI agents driving Cutpoint")
+    gd.set_defaults(func=_cmd_guide)
     return p
 
 

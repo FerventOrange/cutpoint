@@ -21,7 +21,7 @@ prints tracebacks of errors.
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
 | [`crashes`](#crashes), [`mix`](#mix), [`refmatch`](#refmatch), [`fit`](#fit) | Action-cam module |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
-| [`setup`](#setup), [`paths`](#paths) | Setup and data |
+| [`setup`](#setup), [`paths`](#paths), [`guide`](#guide) | Setup, data and the agent guide |
 
 ## analyze
 
@@ -312,3 +312,12 @@ cutpoint paths
 
 Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools, stage, styles,
 activity profiles and projects.
+
+## guide
+
+```text
+cutpoint guide
+```
+
+Prints the guide for AI agents driving Cutpoint ([AGENTS.md](../AGENTS.md)) to stdout. Use it
+when Cutpoint is installed from PyPI and there is no repository to read.

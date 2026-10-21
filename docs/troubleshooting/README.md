@@ -23,7 +23,7 @@ nvidia-smi                      # driver and GPU are visible (NVIDIA)
 | Message or symptom | Fix |
 |---|---|
 | `No module named ...` followed by an install command | An optional extra is missing. Run the printed `uv sync --extra ...` command and list every extra you use, because `uv sync` removes the packages of extras you leave out |
-| A command works in `uv run` but not as plain `cutpoint` | The tool is not on `PATH`. Use `uv run cutpoint`, install with `uv tool install .`, or use the wrappers `.\cutpoint.cmd` / `.\cutpoint.ps1` |
+| A command works in `uv run` but not as plain `cutpoint` | The tool is not on `PATH`. Use `uv run cutpoint`, install with `uv tool install cutpoint` (or `uv tool install .` from a clone), or use the wrappers `.\cutpoint.cmd` / `.\cutpoint.ps1` |
 | PowerShell refuses to run `cutpoint.ps1` | Use `.\cutpoint.cmd`, or `uv run cutpoint` |
 | `clips` refuses to write | The output folder is not empty. Use another `--out`, or `--force` to replace it |
 | `assemble` joined the wrong clips or order | It uses the `.mp4` files in the folder now, in natural filename order. Rename or delete files and run it again |
