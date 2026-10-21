@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo-256.png" alt="Cutpoint logo: a clapperboard with three characters peeking out" width="200">
+  <img src="https://raw.githubusercontent.com/FerventOrange/cutpoint/main/docs/assets/logo-256.png" alt="Cutpoint logo: a clapperboard with three characters peeking out" width="200">
 </p>
 
 # Cutpoint
@@ -9,7 +9,9 @@ it finds the best moments, cuts them into clips and assembles the result. All an
 your own computer, so your agent does not spend API credits on video, and your original files
 are never changed.
 
-[Are you an AI agent? Start here](AGENTS.md)
+[Are you an AI agent? Start here](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md)
+
+(Installed from PyPI? Run `cutpoint guide`.)
 
 ## What you get
 
@@ -37,7 +39,7 @@ The agent runs Cutpoint, shows you the clips and writes the result into a projec
 Delete or rename clips to change the cut, then ask the agent to assemble again.
 
 One-command editing (`cutpoint edit`), a first-run setup wizard and an agent skill are
-planned. Today the agent runs the steps itself using [AGENTS.md](AGENTS.md).
+planned. Today the agent runs the steps itself using [AGENTS.md](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md).
 
 ## Requirements
 
@@ -59,22 +61,25 @@ uv sync
 uv run cutpoint paths
 ```
 
+To get a global `cutpoint` command instead, run `uv tool install cutpoint` (from PyPI) after
+installing ffmpeg and uv.
+
 On Linux, install ffmpeg and uv with your package manager or their installers, then run the
 last four commands. The optional extras and model downloads are explained in
-[Getting started](docs/getting-started.md).
+[Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md): install, first run, where data is stored, models
-- [Using Cutpoint from an agent](docs/agents.md): set up Claude Code, Codex, Grok or another agent
-- [Workflows](docs/workflows/README.md): montages, game streams, action-cam, 360 video, vertical output
-- [Command reference](docs/commands.md)
-- [Configuration](docs/configuration.md)
-- [Troubleshooting](docs/troubleshooting/README.md)
-- [FAQ](docs/faq.md)
-- [Architecture](docs/architecture.md), [Contributing](CONTRIBUTING.md), [Security](SECURITY.md)
-- [Insta360 SDK](docs/insta360-sdk.md): optional, for high-quality 360 stitching
+- [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md): install, first run, where data is stored, models
+- [Using Cutpoint from an agent](https://github.com/FerventOrange/cutpoint/blob/main/docs/agents.md): set up Claude Code, Codex, Grok or another agent
+- [Workflows](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/README.md): montages, game streams, action-cam, 360 video, vertical output
+- [Command reference](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md)
+- [Configuration](https://github.com/FerventOrange/cutpoint/blob/main/docs/configuration.md)
+- [Troubleshooting](https://github.com/FerventOrange/cutpoint/blob/main/docs/troubleshooting/README.md)
+- [FAQ](https://github.com/FerventOrange/cutpoint/blob/main/docs/faq.md)
+- [Architecture](https://github.com/FerventOrange/cutpoint/blob/main/docs/architecture.md), [Contributing](https://github.com/FerventOrange/cutpoint/blob/main/CONTRIBUTING.md), [Security](https://github.com/FerventOrange/cutpoint/blob/main/SECURITY.md)
+- [Insta360 SDK](https://github.com/FerventOrange/cutpoint/blob/main/docs/insta360-sdk.md): optional, for high-quality 360 stitching
 
 ## License
 
-Cutpoint is released under the [MIT License](LICENSE).
+Cutpoint is released under the [MIT License](https://github.com/FerventOrange/cutpoint/blob/main/LICENSE).

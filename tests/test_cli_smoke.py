@@ -41,3 +41,8 @@ def test_clips_bad_size_is_a_usage_error(capsys):
     err = capsys.readouterr().err
     assert "--size" in err and "expected WxH" in err
     assert "Traceback" not in err
+
+
+def test_guide_prints_agents_md(capsys):
+    assert cli.main(["guide"]) == 0
+    assert capsys.readouterr().out.startswith("# Cutpoint for AI agents")

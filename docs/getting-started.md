@@ -55,14 +55,32 @@ uv sync --extra ski --extra events
 
 ### Install as a tool (optional)
 
-To get a global `cutpoint` command instead of `uv run cutpoint`:
+To get a global `cutpoint` command instead of `uv run cutpoint`, install it from PyPI:
+
+```powershell
+uv tool install cutpoint
+```
+
+Or install from a clone of the repository:
 
 ```powershell
 uv tool install .
 ```
 
-Add extras with `uv tool install ".[ski,events]"`. This path is not exercised by the project's
-tests; if it fails, use `uv sync` and `uv run`.
+Add extras with `uv tool install "cutpoint[ski,events]"` (or `".[ski,events]"` from a
+clone). This path is not exercised by the project's tests; if it fails, use `uv sync` and
+`uv run`.
+
+A tool install gets torch from PyPI, which is CPU-only on Windows: the CUDA 12.6 index in
+`pyproject.toml` only applies to a clone. With an NVIDIA GPU and the `events` extra, add the
+PyTorch index:
+
+```powershell
+uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
+```
+
+Check it with `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
+(`True` means the GPU is used). See [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md#events-is-very-slow).
 
 The repository also has wrappers that use `.venv` without activating it: `.\cutpoint <command>`
 (PowerShell) and `cutpoint <command>` from cmd. If PowerShell blocks scripts, use
