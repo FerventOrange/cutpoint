@@ -1,0 +1,190 @@
+"""Variety selection (quotas, variety rules, run coverage, crash rule), arc order, content QA."""
+
+from __future__ import annotations
+
+import itertools
+
+import numpy as np
+import pytest
+
+from cutpoint.clips import REACTION_LABEL, order_moments
+from cutpoint.mix import (
+    Cand,
+    MixRules,
+    content_qa,
+    crash_candidates,
+    effective_quotas,
+    normalise,
+    parse_quotas,
+    part_candidates,
+    select_mix,
+)
+
+
+def _c(cat: str, t: float, score: float, src: str = "a", dur: float = 6.0, **kw) -> Cand:
+    return Cand(cat, src, t - dur / 2, t + dur / 2, t, score, cat, cat, **kw)
+
+
+def test_parse_quotas_overrides_and_normalises() -> None:
+    q = parse_quotas("run=.7")
+    assert sum(q.values()) == pytest.approx(1.0)
+    assert q["run"] > q["social"] > q["jump"]
+    with pytest.raises(ValueError, match="CATEGORY=SHARE"):
+        parse_quotas("bogus=1")
+
+
+def test_unused_quota_goes_to_run_and_scenery() -> None:
+    q = effective_quotas(parse_quotas(None), {"run", "scenery", "social"})
+    assert set(q) == {"run", "scenery", "social", "flex"}
+    assert sum(q.values()) == pytest.approx(1.0)
+    assert q["run"] / q["scenery"] == pytest.approx(3.5)  # split in proportion
+    assert q["social"] == pytest.approx(0.2)
+
+
+def test_selection_respects_spacing_source_cap_and_budget() -> None:
+    cands = [_c("run", t, t) for t in (100, 150, 300, 500, 700)]  # one source
+    cands += [_c("run", t, 1.0, src=f"s{i}") for i, t in enumerate((10, 20, 30, 40, 50, 60))]
+    normalise(cands)
+    chosen = select_mix(cands, target_s=40, quotas={"run": 1.0})
+    a = sorted(c.peak_t for c in chosen if c.source == "a")
+    assert len(a) <= 2 and all(y - x >= 90 for x, y in itertools.pairwise(a))
+    assert sum(c.seconds for c in chosen) <= 0.9 * 40
+
+
+def test_redistributed_quota_never_exceeds_max_share() -> None:
+    cands = [
+        _c(cat, 100 + 120 * k, k + s, src=f"s{s}", dur=8.0)
+        for s in range(20)
+        for k in range(5)
+        for cat in ("run", "scenery", "social")
+    ]
+    normalise(cands)
+    rules = MixRules()
+    chosen = select_mix(cands, target_s=240, rules=rules)
+    for cat in ("run", "scenery", "social"):
+        assert sum(c.seconds for c in chosen if c.category == cat) <= rules.max_share * 0.9 * 240
+
+
+def test_near_duplicates_are_vetoed_in_a_category_or_close_in_time() -> None:
+    e = np.ones(4)
+    cands = [
+        _c("lift", 10, 1.0, src="a", emb=e),
+        _c("lift", 10, 0.9, src="b", emb=e * 2),  # same look, other source
+        _c("scenery", 50, 0.8, src="b", emb=e),  # other category, far apart: kept
+        _c("scenery", 30, 0.9, src="a", emb=e),  # other category, 20 s from the lift
+    ]
+    normalise(cands)
+    chosen = select_mix(cands, target_s=100, quotas={"lift": 0.5, "scenery": 0.5})
+    assert sorted((c.category, c.source) for c in chosen) == [("lift", "a"), ("scenery", "b")]
+
+
+def test_run_coverage_swaps_in_an_uncovered_run() -> None:
+    cands = [_c("run", t, 1.0, src="a", run=0) for t in (100, 300)]
+    cands += [_c("run", 50, 0.1, src="b", run=1), _c("crash", 500, 0.1, src="a", run=0)]
+    normalise(cands)
+    rules = MixRules(run_cover=1.0, max_share=1.0)
+    quotas = {"run": 0.67, "crash": 0.33}
+    chosen = select_mix(cands, target_s=20, quotas=quotas, rules=rules, n_runs=2)
+    assert {c.run for c in chosen} == {0, 1}
+    assert any(c.category == "crash" for c in chosen)  # a lone crash never gives way
+
+
+def test_crash_rule_keeps_weak_but_corroborated_crashes() -> None:
+    def crash(conf: float, scores: dict[str, float], t: float) -> dict:
+        clip = {"start": t - 5, "end": t + 20, "reaction": {"start": t + 60, "end": t + 80}}
+        return {"source": "a", "t0": t, "confidence": conf, "scores": scores, "clip": clip}
+
+    out = crash_candidates(
+        [
+            crash(0.29, {"words": 0.99, "telemetry": 0.1}, 100),  # weak telemetry, words agree
+            crash(0.28, {"visual": 0.9}, 300),  # nothing corroborates
+            crash(0.1, {"audio": 1.0}, 500),  # below max(0.2, 0.6 x best)
+        ]
+    )
+    assert [c.peak_t for c in out] == [100]
+    assert out[0].seconds == pytest.approx(12 + 8)  # crash and reaction, both capped
+
+
+def test_part_candidates_in_source_time_and_one_lift_per_ride() -> None:
+    n = 2000  # 200 s part starting at 100 s in the source
+    f = {k: np.zeros(n) for k in ("carve", "people", "stopped", "airtime", "laughter", "voice")}
+    f["beauty"] = np.full(n, 0.3)
+    f["carve"][500:700] = 1.0
+    mask = np.zeros(n)
+    mask[1200:1450] = 1.0  # 25 s telemetry lift ride
+    d = {
+        "features": f,
+        "mask": mask,
+        "source": "a.mp4",
+        "offset": 100.0,
+        "duration": 200.0,
+        "events": [],
+    }
+    out = part_candidates(d)
+    runs = [c for c in out if c.category == "run"]
+    lifts = [c for c in out if c.category == "lift"]
+    assert runs and all(c.start >= 100 and 6 <= c.end - c.start <= 9 for c in runs)
+    assert len(lifts) == 1 and 220 <= lifts[0].start < lifts[0].end <= 245
+
+
+def _seg(i: int, cat: str, score: float, chapter: int, **kw) -> dict:
+    return {
+        "id": f"m{i:03d}",
+        "source": f"s{chapter}",
+        "start": 10.0 * i,
+        "end": 10.0 * i + 6,
+        "score": score,
+        "category": cat,
+        "label": cat,
+        "chapter": chapter,
+        **kw,
+    }
+
+
+def test_arc_order_opener_body_and_finale() -> None:
+    day = [
+        _seg(1, "run", 0.9, 1),
+        _seg(2, "scenery", 0.5, 1),
+        _seg(3, "lift", 0.8, 1),  # best view of the first third: opener
+        _seg(4, "social", 0.7, 2),
+        _seg(5, "run", 0.6, 2),
+        _seg(6, "crash", 0.4, 2),
+        _seg(7, "run", 0.5, 2),
+        _seg(8, "crash", 0.4, 2, label=REACTION_LABEL),
+        _seg(9, "run", 0.7, 2),
+        _seg(10, "run", 0.8, 2),
+        _seg(11, "crash", 0.9, 3),  # best crash: finale
+        _seg(12, "crash", 0.9, 3, label=REACTION_LABEL),
+        _seg(13, "social", 0.3, 3),
+        _seg(14, "scenery", 0.6, 3),  # late view: outro
+    ]
+    arc = order_moments(day, "arc")
+    ids = [m["id"] for m in arc]
+    cats = [m["category"] for m in arc]
+    assert sorted(ids) == sorted(m["id"] for m in day)
+    assert ids[0] == "m003" and arc[0]["end"] - arc[0]["start"] == 5.0  # trimmed opener
+    assert ids[-3:] == ["m011", "m012", "m014"]
+    assert ids[ids.index("m006") + 1] == "m008"  # crash, then its reaction
+    assert all(len(set(cats[i : i + 3])) > 1 for i in range(len(cats) - 2))
+    assert ids.index("m002") < ids.index("m004")  # chronological by stretch
+    plain = [{k: v for k, v in m.items() if k != "category"} for m in day]
+    assert order_moments(plain, "arc") == order_moments(plain, "story")
+    runs = [*(_seg(i, "run", 0.5, 1) for i in range(1, 5)), _seg(5, "social", 0.5, 2)]
+    cats = [m["category"] for m in order_moments([*runs, _seg(6, "run", 0.9, 2)], "arc")]
+    assert "run,run,run,run" not in ",".join(cats)  # the finale fix never joins two streaks
+
+
+def test_content_qa_flags_each_failed_check() -> None:
+    good = [
+        _seg(1, cat, 1, 1, start=a, end=b)
+        for cat, a, b in (
+            ("lift", 0, 40),
+            ("run", 40, 100),
+            ("social", 100, 160),
+            ("crash", 160, 240),
+        )
+    ]
+    assert content_qa(good, runs_covered=7, runs=10)["pass"]
+    bad = content_qa(good[1:3], near_dups=1, runs_covered=6, runs=10)
+    failed = {k for k, v in bad["checks"].items() if not v["ok"]}
+    assert failed == {"categories", "max_share", "near_dups", "runs_covered", "opener", "length_s"}

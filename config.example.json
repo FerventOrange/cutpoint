@@ -1,0 +1,46 @@
+{
+  "_doc": {
+    "about": "Example Cutpoint settings. Copy to <CUTPOINT_HOME>\\config.json (run `cutpoint paths` to see where that is) and keep only the keys you need; every key is optional. Keys starting with '_' are ignored.",
+    "projects_dir": "Folder for project folders. A bare project name (my-trip) or projects\\<name> argument is placed here. Env CUTPOINT_PROJECTS_DIR overrides it. Default: <CUTPOINT_HOME>\\projects.",
+    "source_remap": "{old prefix: new prefix}. Point old paths at a new location when footage moves (another drive, a backup copy): a source under an old prefix is read from the new prefix when the file exists there. Projects and cache keys keep the original path, so nothing has to be re-analysed.",
+    "source_remap_exclude": "File-name or full-path globs that are never remapped (e.g. a copy that is not verified yet).",
+    "stage_dir": "Local folder for `cutpoint stage` copies of sources on slow or network storage (NAS, USB, cloud-synced folder). Env CUTPOINT_STAGE_DIR overrides it. Default: <CUTPOINT_HOME>\\stage.",
+    "player_tags": "Your in-game name(s) for the optional game-HUD OCR in `cutpoint events` (who killed whom). Fuzzy match, ignores _ . - and spaces. `cutpoint events --player NAME` overrides it per run. Default: none.",
+    "ollama_url": "Ollama base URL for `analyze --vision` and the VLM layers of `cutpoint events`. Env OLLAMA_HOST overrides it. Default: http://localhost:11434.",
+    "pano": "Optional 360-camera (Insta360) module: sdk_exe = MediaSDKTest.exe of the Insta360 Media SDK, which you apply for yourself (see docs/insta360-sdk.md; env CUTPOINT_INSTA360_SDK overrides; default: auto-detected under <CUTPOINT_HOME>\\sdk\\insta360\\); stitch_timeout_s = kill one clip's stitch after this many seconds (default: no limit); stitched_dir = where `cutpoint 360 stitch` writes equirects (default <CUTPOINT_HOME>\\360-stitched; about 54 GB per hour of footage); studio_dirs = folders with Insta360 Studio equirect exports (default <CUTPOINT_HOME>\\360-studio); stitch_args = MediaSDKTest arguments; cmd_every = update the virtual camera every N frames (default 1; 2 halves the commands but leaves shake on every other frame); level_strength = horizon lock when stabilising, 1 = always level, 0 = follow the camera's own tilt (default 0.7); tilt_follow_s = smoothing (s) of the followed tilt (default 0.5); imu_offset_s = IMU-to-video time offset in seconds (default 0); equirect_yaw_offset = yaw correction in degrees for Studio exports (default 0); default_style = --style of `cutpoint 360 analyze` when none is given (default ski).",
+    "environment": "Not set here: CUTPOINT_HOME (data root), CUTPOINT_CONFIG (this file), CUTPOINT_CACHE_DIR, CUTPOINT_MODELS_DIR, CUTPOINT_TOOLS_DIR, CUTPOINT_STYLES_DIR, CUTPOINT_FFMPEG / CUTPOINT_FFPROBE, CUTPOINT_LLAMA_SERVER (llama-server.exe), CUTPOINT_VISION_MODEL (Ollama model for `analyze --vision`, default qwen3-vl:8b) and OLLAMA_HOST (overrides ollama_url)."
+  },
+  "projects_dir": "D:\\Footage\\cutpoint-projects",
+  "source_remap": {
+    "D:\\Footage": "E:\\Footage-copy"
+  },
+  "source_remap_exclude": [
+    "*unverified*"
+  ],
+  "stage_dir": "C:\\Cutpoint\\stage",
+  "player_tags": [
+    "YourGameName"
+  ],
+  "pano": {
+    "sdk_exe": "<CUTPOINT_HOME>\\sdk\\insta360\\MediaSDK-<version>-win64\\bin\\MediaSDKTest.exe",
+    "stitched_dir": "D:\\Footage\\360-stitched",
+    "stitch_timeout_s": 7200,
+    "studio_dirs": [
+      "D:\\Footage\\360-studio"
+    ],
+    "stitch_args": [
+      "-stitch_type", "optflow",
+      "-output_size", "5760x2880",
+      "-enable_h265_encoder",
+      "-bitrate", "100000000",
+      "-enable_flowstate",
+      "-enable_stitchfusion"
+    ],
+    "cmd_every": 1,
+    "level_strength": 0.7,
+    "tilt_follow_s": 0.5,
+    "imu_offset_s": 0.0,
+    "equirect_yaw_offset": 0.0,
+    "default_style": "ski"
+  }
+}

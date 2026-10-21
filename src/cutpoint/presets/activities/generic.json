@@ -1,0 +1,21 @@
+{
+  "name": "generic",
+  "description": "Any footage: the shared floor plus generic normal-activity negatives.",
+  "detect": [
+    "a screenshot of a video game",
+    "a person talking to the camera indoors",
+    "a view of a city street"
+  ],
+  "incident": {
+    "pos": [],
+    "neg": [
+      "a first-person view of moving forward smoothly",
+      "a scenic landscape",
+      "people standing and talking",
+      "a steady view of the path ahead"
+    ],
+    "words": {}
+  },
+  "highlight": {"pos": [], "neg": []},
+  "low_info": []
+}

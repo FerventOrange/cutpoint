@@ -1,0 +1,43 @@
+{
+  "name": "mtb",
+  "description": "First-person mountain biking on dirt trails, roots, rocks and jumps.",
+  "detect": [
+    "a first-person view of mountain biking on a dirt trail",
+    "a mountain bike handlebar on a forest singletrack",
+    "a mountain biker riding down a rocky trail"
+  ],
+  "incident": {
+    "pos": [
+      "a mountain bike lying on its side on the trail",
+      "a rider thrown over the handlebars",
+      "a mountain biker lying in the dirt after a crash",
+      "a blurry view of dirt, rocks and sky spinning"
+    ],
+    "neg": [
+      "a first-person view riding a mountain bike down a forest trail",
+      "a mountain biker following a friend on singletrack",
+      "riding a bike over roots and rocks",
+      "a rider standing next to a bike at a trailhead",
+      "a scenic view from a mountain trail"
+    ],
+    "words": {
+      "endo": 1.0,
+      "otb": 1.0,
+      "over the bars": 1.0,
+      "over the handlebars": 1.0,
+      "washed out": 0.9,
+      "lowside*": 0.8,
+      "case*": 0.5,
+      "bail*": 0.8
+    }
+  },
+  "highlight": {
+    "pos": [
+      "a mountain biker in mid-air off a jump",
+      "riding a steep rock drop",
+      "a fast berm turn on a dirt trail"
+    ],
+    "neg": ["pushing a bike uphill", "a parking lot at a trailhead"]
+  },
+  "low_info": ["a close-up of a dirt trail", "a blurry close-up of tree leaves"]
+}

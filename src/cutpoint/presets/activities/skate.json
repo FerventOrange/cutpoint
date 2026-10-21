@@ -1,0 +1,35 @@
+{
+  "name": "skate",
+  "description": "Skateboarding in streets, parks and bowls.",
+  "detect": [
+    "a skateboarder at a skatepark",
+    "a first-person view of skateboarding on a street",
+    "a skateboard deck and shoes on concrete"
+  ],
+  "incident": {
+    "pos": [
+      "a skateboarder falling on concrete",
+      "a skateboard rolling away without a rider",
+      "a skater lying on the ground at a skatepark",
+      "a blurry view of concrete and sky spinning"
+    ],
+    "neg": [
+      "a skateboarder rolling down a street",
+      "a skater riding a bowl at a skatepark",
+      "skaters sitting at the edge of a ramp",
+      "a skateboarder landing a trick"
+    ],
+    "words": {
+      "slam*": 1.0,
+      "bail*": 0.9,
+      "slipped out": 0.9,
+      "rolled my ankle": 1.0,
+      "primo": 0.7
+    }
+  },
+  "highlight": {
+    "pos": ["a skateboarder in mid-air doing a trick", "a skateboarder grinding a rail"],
+    "neg": ["skaters sitting on a bench"]
+  },
+  "low_info": ["a close-up of concrete ground", "a close-up of a skateboard deck"]
+}

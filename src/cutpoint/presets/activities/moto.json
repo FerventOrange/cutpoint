@@ -1,0 +1,40 @@
+{
+  "name": "moto",
+  "description": "Motocross, enduro and dirt-bike riding (helmet or chest cam).",
+  "detect": [
+    "a first-person view of riding a dirt bike on a motocross track",
+    "motorcycle handlebars on an off-road trail",
+    "a motocross rider on a dirt track"
+  ],
+  "incident": {
+    "pos": [
+      "a dirt bike lying on its side",
+      "a motocross rider lying in the dirt after a crash",
+      "a rider thrown off a motorcycle",
+      "a blurry view of dirt and sky spinning"
+    ],
+    "neg": [
+      "a first-person view riding a dirt bike on a track",
+      "a dirt bike rider following another rider",
+      "riding a motorcycle through a forest trail",
+      "a rider standing next to a parked motorcycle",
+      "a motocross starting gate"
+    ],
+    "words": {
+      "lowside*": 1.0,
+      "highside*": 1.0,
+      "low side": 1.0,
+      "high side": 1.0,
+      "washed out": 0.9,
+      "looped out": 1.0,
+      "case*": 0.5,
+      "dropped it": 0.9,
+      "bail*": 0.8
+    }
+  },
+  "highlight": {
+    "pos": ["a dirt bike in mid-air off a jump", "a motorcycle roosting dirt in a turn"],
+    "neg": ["a motorcycle parked in a pit area"]
+  },
+  "low_info": ["a close-up of mud on the camera", "a close-up of a motorcycle gas tank"]
+}

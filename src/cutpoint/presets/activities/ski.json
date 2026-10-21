@@ -1,0 +1,57 @@
+{
+  "name": "ski",
+  "description": "First-person (helmet, chest or 360) skiing on snowy slopes, lifts and trees.",
+  "detect": [
+    "a first-person view of skiing down a snowy slope",
+    "a skier on a ski run at a ski resort",
+    "skis and ski poles on the snow",
+    "a view from a chairlift over a ski slope"
+  ],
+  "exclude_base": [
+    "dirt, mud, water or debris covering the camera lens",
+    "a blurry tumbling view",
+    "an upside down view of the ground",
+    "a person lying on the ground after a fall"
+  ],
+  "incident": {
+    "pos": [
+      "a blurry tumbling view of sky and snow",
+      "an upside down view of a snowy slope",
+      "a camera buried in snow",
+      "a close-up of snow covering the camera lens",
+      "a tilted sideways view of a ski slope",
+      "a skier lying in the snow after a fall",
+      "a first-person view lying on the snow looking at the sky",
+      "a friend helping a fallen skier get up",
+      "skis and poles scattered on the snow after a crash",
+      "a motion blurred image of snow spraying everywhere"
+    ],
+    "neg": [
+      "a first-person view skiing down a groomed slope",
+      "a first-person view of skiing through powder",
+      "a skier following a friend down the slope",
+      "a view from a chairlift",
+      "a group of skiers standing at the top of a run",
+      "a scenic view of snowy mountains",
+      "skiing through trees in the forest",
+      "a first-person view of ski tips on the snow",
+      "people waiting in a lift line"
+    ],
+    "words": {
+      "yard sale": 1.0,
+      "yardsale": 1.0,
+      "lost my ski": 1.0,
+      "lost a ski": 1.0
+    }
+  },
+  "highlight": {
+    "pos": [
+      "a skier in mid-air off a jump",
+      "skiing through deep powder snow spraying",
+      "a breathtaking mountain vista",
+      "skiing fast through tight trees"
+    ],
+    "neg": ["the safety bar of a chairlift", "people waiting in a lift line"]
+  },
+  "low_info": ["a flat white foggy image", "an empty white snow surface", "a blurry image of snow"]
+}

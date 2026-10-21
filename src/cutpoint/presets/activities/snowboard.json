@@ -1,0 +1,37 @@
+{
+  "name": "snowboard",
+  "description": "First-person snowboarding on slopes, parks and powder.",
+  "detect": [
+    "a first-person view of snowboarding down a snowy slope",
+    "a snowboarder riding at a ski resort",
+    "a snowboard and boots on the snow"
+  ],
+  "incident": {
+    "pos": [
+      "a blurry tumbling view of sky and snow",
+      "a close-up of snow covering the camera lens",
+      "a snowboarder sitting in the snow after a fall",
+      "a snowboarder catching an edge and falling",
+      "a first-person view lying on the snow looking at the sky"
+    ],
+    "neg": [
+      "a first-person view snowboarding down a groomed slope",
+      "a snowboarder carving through powder",
+      "a view from a chairlift",
+      "a snowboarder strapping in at the top of a run",
+      "a scenic view of snowy mountains"
+    ],
+    "words": {
+      "caught an edge": 1.0,
+      "catch an edge": 0.8,
+      "slam*": 0.9,
+      "yard sale": 1.0,
+      "lost my board": 1.0
+    }
+  },
+  "highlight": {
+    "pos": ["a snowboarder in mid-air off a jump", "a snowboarder spraying powder on a turn"],
+    "neg": ["the safety bar of a chairlift"]
+  },
+  "low_info": ["a flat white foggy image", "an empty white snow surface"]
+}

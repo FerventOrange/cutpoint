@@ -1,0 +1,37 @@
+{
+  "name": "surf",
+  "description": "Surfing, bodyboarding and other wave sports (board, mouth or head mount).",
+  "detect": [
+    "a surfer riding a wave",
+    "a first-person view from a surfboard in the ocean",
+    "people paddling on surfboards in the sea"
+  ],
+  "incident": {
+    "pos": [
+      "a surfer wiping out under a breaking wave",
+      "an underwater view of white water and bubbles",
+      "a surfboard flying in the air without a rider",
+      "water drops covering the camera lens"
+    ],
+    "neg": [
+      "a surfer riding along a wave face",
+      "paddling a surfboard out to sea",
+      "surfers sitting on their boards waiting for waves",
+      "a view of the beach from the water"
+    ],
+    "words": {
+      "got worked": 1.0,
+      "got pitched": 1.0,
+      "over the falls": 1.0,
+      "nosedive*": 0.9,
+      "pearl*": 0.9,
+      "held down": 0.9,
+      "washing machine": 0.8
+    }
+  },
+  "highlight": {
+    "pos": ["a surfer inside a barrel wave", "a surfer doing a big turn spraying water"],
+    "neg": ["surfers waiting for waves on a flat sea"]
+  },
+  "low_info": ["a blurry underwater image", "a flat grey sea"]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "hike",
+  "description": "Hiking, trail running and scrambling on foot.",
+  "detect": [
+    "a first-person view of hiking on a mountain trail",
+    "hikers walking on a forest path",
+    "hiking boots on a rocky trail"
+  ],
+  "incident": {
+    "pos": [
+      "a hiker slipping on a rocky trail",
+      "a hiker sitting on the ground after a fall",
+      "a blurry view of rocks and sky while falling"
+    ],
+    "neg": [
+      "a first-person view walking on a hiking trail",
+      "hikers walking in a line on a path",
+      "a scenic view from a mountain summit",
+      "a hiker resting on a rock"
+    ],
+    "words": {
+      "slipped": 0.9,
+      "twisted my ankle": 1.0,
+      "rolled my ankle": 1.0,
+      "tripped": 0.8,
+      "watch your step": 0.5
+    }
+  },
+  "highlight": {
+    "pos": ["a breathtaking view from a mountain summit", "a narrow exposed ridge trail"],
+    "neg": ["a parking lot at a trailhead"]
+  },
+  "low_info": ["a close-up of a dirt path", "a close-up of a backpack strap"]
+}

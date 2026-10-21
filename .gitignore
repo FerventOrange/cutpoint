@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data (lives in CUTPOINT_HOME, default %LOCALAPPDATA%\cutpoint)
+cache/
+models/
+tools/llama.cpp/
+stage/
+projects/
+
+# Local, personal config and learned styles (old repo-root layout; now in CUTPOINT_HOME,
+# keys documented in config.example.json)
+config.json
+styles_learned/
+EDIT_NOTES.md
+
+# Media
+*.mp4
+*.mov
+*.mkv
+*.insv
+*.lrv
+*.wav
+*.npy
+*.npz
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Insta360 SDK (under NDA): never commit SDK files; keep them outside the repo,
+# e.g. in <CUTPOINT_HOME>/sdk/insta360/
+sdk/
+**/insta360/
+MediaSDK*
+RealTimeStitcherSDKTest*
+*CameraSDK*
+*InsMetaDataSDK*
+*.deb
+ins_stitcher.h
+ins_common.h
+ins_realtime_stitcher.h
