@@ -399,13 +399,26 @@ def write_atomic(path: Path, fill: Callable[[Path], object]) -> None:
 
 def free_backup_name(f: Path, base: str, ext: str) -> Path:
     """The first free backup name for ``f`` in its folder: ``<base><ext>``, then
-    ``<base>.1<ext>``, ``<base>.2<ext>``, ..."""
+    ``<base>.1<ext>``, ``<base>.2<ext>``, ...
+
+    Raises:
+        OSError: If a name cannot be checked (permission denied, stale mount, name
+            too long); a name that cannot be checked is never used.
+    """
     bak = f.with_name(base + ext)
     n = 0
-    while bak.exists():
+    while True:
+        try:
+            if not bak.exists():
+                return bak
+        except OSError as err:
+            raise OSError(
+                err.errno,
+                f"Cannot check backup name, not writing a backup ({err.strerror})",
+                str(bak),
+            ) from err
         n += 1
         bak = f.with_name(f"{base}.{n}{ext}")
-    return bak
 
 
 # --------------------------------------------------------------------- cutpoint clips / extend

@@ -113,6 +113,23 @@ def test_canonical_source_posix_is_case_sensitive(home, plat, monkeypatch):
     assert config.canonical_source("/mnt/copy2/x.mp4") == "/mnt/copy2/x.mp4"  # not a prefix
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 000 does not block this user",
+)
+def test_remap_source_uses_the_original_when_the_target_cannot_be_checked(
+    home, tmp_path, monkeypatch
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _remap(home, monkeypatch, "/data/Footage", str(vault / "copy"))
+    vault.chmod(0)
+    try:
+        assert config.remap_source("/data/Footage/x.mp4") == Path("/data/Footage/x.mp4")
+    finally:
+        vault.chmod(0o755)
+
+
 # -- crash: network mounts -----------------------------------------------------------------
 
 MOUNTS = r"""sysfs /sys sysfs rw 0 0

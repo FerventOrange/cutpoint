@@ -256,7 +256,8 @@ def remap_source(path: str | Path) -> Path:
     """Where to read a source from: its ``source_remap`` target if that exists.
 
     Falls back to the original path when no prefix matches, the file is in
-    ``source_remap_exclude``, or the remapped file does not exist.
+    ``source_remap_exclude``, or the remapped file does not exist or cannot be
+    checked (permission denied, stale mount, I/O error, name too long).
     """
     original = str(path)
     if _remap_excluded(original):
@@ -266,7 +267,12 @@ def remap_source(path: str | Path) -> Path:
         if rest is None:
             continue
         target = Path(new) / rest if rest else Path(new)
-        if target.exists():
+        try:
+            found = target.exists()
+        except OSError as err:  # exists() only swallows ENOENT/ENOTDIR/EBADF/ELOOP
+            logger.debug("remap target not reachable (%s), using original: %s", err, target)
+            break
+        if found:
             logger.debug("remap %s -> %s", original, target)
             return target
         logger.debug("remap target missing, using original: %s", target)
