@@ -260,3 +260,34 @@ def test_install_panns_falls_back_to_next_mirror(tmp_path, monkeypatch, caplog, 
     assert good_url not in warnings[0]
     if first == "slow":  # the last mirror is exempt, so it still completes
         assert "too slow" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("bad", "shown"),
+    [("http://[foo", "[foo"), ("https://user:TOKEN@[foo/x?t=SECRET", "[foo")],
+    ids=["plain", "credentials"],
+)
+def test_install_panns_malformed_env_url_is_a_failed_mirror(
+    tmp_path, monkeypatch, caplog, bad, shown
+):
+    good = b"good-checkpoint" * 20
+    srv = tmp_path / "srv"
+    good_url = write_bytes(srv / "good.pth", good)
+    ckpt = tmp_path / "models" / "panns" / "ckpt.pth"
+    monkeypatch.setattr(setup, "PANNS_CKPT_MIRRORS", (good_url,))
+    monkeypatch.setattr(setup, "PANNS_CKPT_SIZE", len(good))
+    monkeypatch.setattr(setup, "PANNS_CKPT_SHA256", hashlib.sha256(good).hexdigest())
+    monkeypatch.setattr(setup, "PANNS_LABELS_URL", write_bytes(srv / "labels.csv", b"a,b\n"))
+    monkeypatch.setattr(ev_paths, "panns_ckpt", lambda: ckpt)
+    monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
+    monkeypatch.setenv("CUTPOINT_PANNS_URL", bad)
+
+    with caplog.at_level("INFO"):
+        setup.install_panns()
+
+    assert ckpt.read_bytes() == good  # the next mirror served it
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert shown in warnings[0]
+    assert "TOKEN" not in caplog.text
+    assert "SECRET" not in caplog.text
