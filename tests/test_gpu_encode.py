@@ -57,25 +57,60 @@ def test_forced_gpu_encoder_that_cannot_encode_is_an_error_not_a_fallback(monkey
         ffmpeg_utils.video_encoder()
 
 
-FFMPEG7_STDERR = (
-    "[AVHWDeviceContext @ 0x1] Failed to initialise VAAPI connection: -1 (unknown libva error).\n"
-    "[vost#0:0/h264_vaapi @ 0x2] Error while opening encoder - maybe incorrect parameters\n"
-    "[vost#0:0/h264_vaapi @ 0x2] Task finished with error code: -22 (Invalid argument)\n"
-    "[vost#0:0/h264_vaapi @ 0x2] Terminating thread with return code -22 (Invalid argument)\n"
+# What ffmpeg 7 appends after the real failure; none of it says why the encoder failed.
+FFMPEG_TRAILERS = (
+    "\n[vost#0:0/enc @ 0x2] Task finished with error code: -22 (Invalid argument)\n"
+    "[vost#0:0/enc @ 0x2] Terminating thread with return code -22 (Invalid argument)\n"
     "[out#0/null @ 0x3] Nothing was written into output file, because at least one of its streams "
     "received no packets.\n"
     "Conversion failed!"
 )
+FFMPEG7_STDERR = (
+    "[AVHWDeviceContext @ 0x1] Failed to initialise VAAPI connection: -1 (unknown libva error).\n"
+    "[vost#0:0/h264_vaapi @ 0x2] Error while opening encoder - maybe incorrect parameters"
+    + FFMPEG_TRAILERS
+)
 
 
-def test_probe_failure_reports_the_root_cause_line_not_ffmpegs_trailers(monkeypatch):
-    fake_ffmpeg(monkeypatch, works=set(), devices=(D128,), stderr={"h264_vaapi": FFMPEG7_STDERR})
-    enc, errors = ffmpeg_utils.find_encoder("vaapi")
+@pytest.mark.parametrize(
+    ("kind", "codec", "platform", "stderr", "expected"),
+    [
+        pytest.param(
+            "vaapi",
+            "h264_vaapi",
+            "linux",
+            FFMPEG7_STDERR,
+            f"{D128}: [AVHWDeviceContext @ 0x1] Failed to initialise VAAPI connection: -1 "
+            "(unknown libva error).",
+            id="vaapi",
+        ),
+        pytest.param(
+            "amf",
+            "h264_amf",
+            "win32",
+            "[AMF @ 0x1] DLL amfrt64.dll failed to open" + FFMPEG_TRAILERS,
+            "h264_amf: [AMF @ 0x1] DLL amfrt64.dll failed to open",
+            id="amf",
+        ),
+        pytest.param(
+            "nvenc",
+            "h264_nvenc",
+            "linux",
+            "[h264_nvenc @ 0x1] Cannot load libcuda.so.1" + FFMPEG_TRAILERS,
+            "h264_nvenc: [h264_nvenc @ 0x1] Cannot load libcuda.so.1",
+            id="nvenc",
+        ),
+    ],
+)
+def test_probe_failure_reports_the_root_cause_line_not_ffmpegs_trailers(
+    monkeypatch, kind, codec, platform, stderr, expected
+):
+    fake_ffmpeg(
+        monkeypatch, works=set(), devices=(D128,), platform=platform, stderr={codec: stderr}
+    )
+    enc, errors = ffmpeg_utils.find_encoder(kind)
     assert enc is None
-    assert errors == [
-        f"{D128}: [AVHWDeviceContext @ 0x1] Failed to initialise VAAPI connection: -1 "
-        "(unknown libva error)."
-    ]
+    assert errors == [expected]
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
