@@ -219,3 +219,41 @@ def test_install_llama_up_to_date_removes_leftover_old_without_downloading(relea
     assert not (ev_paths.tools_dir() / "_downloads").exists()
     assert sorted(p.name for p in llama.iterdir()) == ["VERSION.txt", "keep.dll"]
     assert (llama / "keep.dll").read_text() == "old"
+
+
+# -- #30: PANNs checkpoint mirrors ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("first", ["missing", "wrong_sha", "slow"])
+def test_install_panns_falls_back_to_next_mirror(tmp_path, monkeypatch, caplog, first):
+    good = b"good-checkpoint" * 20
+    srv = tmp_path / "srv"
+    bad_url = (
+        (srv / "gone.pth").as_uri()
+        if first == "missing"
+        else write_bytes(srv / "bad.pth", b"X" * len(good))  # right size, wrong content
+    )
+    if first == "slow":  # both mirrors serve the good file; the first is judged too slow
+        bad_url = write_bytes(srv / "slow.pth", good)
+        monkeypatch.setattr(setup, "SLOW_START_WINDOW", 0.0)
+        monkeypatch.setattr(setup, "PANNS_MIN_RATE", float("inf"))
+    good_url = write_bytes(srv / "good.pth", good)
+    ckpt = tmp_path / "models" / "panns" / "ckpt.pth"
+    monkeypatch.setattr(setup, "PANNS_CKPT_MIRRORS", (bad_url, good_url))
+    monkeypatch.setattr(setup, "PANNS_CKPT_SIZE", len(good))
+    monkeypatch.setattr(setup, "PANNS_CKPT_SHA256", hashlib.sha256(good).hexdigest())
+    monkeypatch.setattr(setup, "PANNS_LABELS_URL", write_bytes(srv / "labels.csv", b"a,b\n"))
+    monkeypatch.setattr(ev_paths, "panns_ckpt", lambda: ckpt)
+    monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
+    monkeypatch.delenv("CUTPOINT_PANNS_URL", raising=False)
+
+    with caplog.at_level("WARNING"):
+        setup.install_panns()
+
+    assert ckpt.read_bytes() == good
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert bad_url in warnings[0]
+    assert good_url not in warnings[0]
+    if first == "slow":  # the last mirror is exempt, so it still completes
+        assert "too slow" in warnings[0]

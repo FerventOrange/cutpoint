@@ -15,7 +15,9 @@ index on Windows and Linux.
 Components (models and tools go to CUTPOINT_HOME, see ``cutpoint paths``):
     pip      check that the ``events`` extra is installed; print the install
              command when it is not (installs nothing)
-    panns    Cnn14_DecisionLevelMax checkpoint + AudioSet label CSV -> models/panns
+    panns    Cnn14_DecisionLevelMax checkpoint + AudioSet label CSV -> models/panns.
+             The checkpoint comes from the first mirror that works (see
+             PANNS_CKPT_MIRRORS); set CUTPOINT_PANNS_URL to try your own URL first.
     llama    latest llama.cpp build -> tools/llama.cpp. Windows: CUDA 12.4
              build + matching cudart DLLs. Linux: CUDA build + cudart libraries
              when an NVIDIA driver is present, else the Vulkan build (NVIDIA,
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import json
 import logging
@@ -48,6 +51,7 @@ import shutil
 import sys
 import tarfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -57,9 +61,20 @@ from cutpoint.extras import install_hint
 
 logger = logging.getLogger(__name__)
 
-PANNS_CKPT_URL = (
-    "https://zenodo.org/record/3987831/files/Cnn14_DecisionLevelMax_mAP%3D0.385.pth?download=1"
+# PANNs checkpoint mirrors, tried in order (CUTPOINT_PANNS_URL, if set, comes first).
+# Zenodo is often very slow (~0.1 MB/s).
+PANNS_CKPT_MIRRORS: tuple[str, ...] = (
+    # Hugging Face copy of the Zenodo record (CC BY 4.0); Zenodo is the original.
+    "https://huggingface.co/FerventOrange/cutpoint-models/resolve/main/panns/"
+    "Cnn14_DecisionLevelMax_mAP%3D0.385.pth",
+    "https://zenodo.org/record/3987831/files/Cnn14_DecisionLevelMax_mAP%3D0.385.pth?download=1",
 )
+PANNS_CKPT_SIZE = 327428481
+PANNS_CKPT_SHA256 = "dd3b4043a87d4ec13df8082c0fcfee3fb5084151808e47e060987a95eabdd142"
+# A mirror with another one after it is dropped if it delivers less than this (bytes/s)
+# over its first SLOW_START_WINDOW seconds. The last mirror is never dropped for slowness.
+PANNS_MIN_RATE = 500_000
+SLOW_START_WINDOW = 20.0
 PANNS_LABELS_URL = (
     "http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv"
 )
@@ -90,6 +105,10 @@ COMPONENTS = ("pip", "panns", "llama", "omni", "visual", "voice")
 Asset = tuple[str, int, str | None]
 
 
+class SlowDownloadError(Exception):
+    """A download started slower than the ``min_rate`` passed to :func:`download`."""
+
+
 def _sha256(path: Path) -> str:
     """Hex sha256 of ``path``, read in chunks."""
     with path.open("rb") as fh:
@@ -97,7 +116,11 @@ def _sha256(path: Path) -> str:
 
 
 def download(
-    url: str, dst: Path, expected_size: int | None = None, sha256: str | None = None
+    url: str,
+    dst: Path,
+    expected_size: int | None = None,
+    sha256: str | None = None,
+    min_rate: float | None = None,
 ) -> Path:
     """Stream ``url`` to ``dst`` with resume support.
 
@@ -107,12 +130,16 @@ def download(
         expected_size: Skip the download if ``dst`` already has this size.
         sha256: Expected hex digest; an existing ``dst`` that does not match is
             downloaded again, a fresh download that does not match is deleted.
+        min_rate: Minimum speed in bytes/s, checked once after
+            ``SLOW_START_WINDOW`` seconds; None never checks. The ``.part`` file
+            is kept, so another URL serving the same file can resume it.
 
     Returns:
         ``dst``.
 
     Raises:
         RuntimeError: The downloaded file does not match ``sha256``.
+        SlowDownloadError: The download is slower than ``min_rate``.
     """
     sha256 = sha256.lower() if sha256 else None
     part = dst.with_name(dst.name + ".part")
@@ -127,16 +154,27 @@ def download(
     req = urllib.request.Request(url, headers={"User-Agent": "cutpoint-setup"})
     if have:
         req.add_header("Range", f"bytes={have}-")
+    started = time.monotonic()
     with urllib.request.urlopen(req, timeout=60) as resp:
         if have and resp.status != 206:  # server ignored Range: restart
             have = 0
         total = int(resp.headers.get("Content-Length") or 0) + have
         mode = "ab" if have else "wb"
         done, next_log = have, 0.0
+        first = done
         with part.open(mode) as fh:
-            while chunk := resp.read(1 << 20):
+            while chunk := resp.read1(1 << 20):  # returns what has arrived
                 fh.write(chunk)
                 done += len(chunk)
+                if min_rate is not None and (
+                    (elapsed := time.monotonic() - started) >= SLOW_START_WINDOW
+                ):
+                    if (rate := (done - first) / max(elapsed, 1e-9)) < min_rate:
+                        raise SlowDownloadError(
+                            f"{rate / 1e6:.2f} MB/s after {elapsed:.0f} s "
+                            f"(minimum {min_rate / 1e6:.2f} MB/s)"
+                        )
+                    min_rate = None  # checked once
                 if total and done / total >= next_log:
                     logger.info("%s %5.1f%% of %.2f GB", dst.name, 100 * done / total, total / 1e9)
                     next_log += 0.1
@@ -162,9 +200,59 @@ def check_python_packages() -> None:
 
 
 def install_panns() -> None:
-    """Download the PANNs checkpoint and the AudioSet label CSV."""
+    """Download the PANNs checkpoint and the AudioSet label CSV.
+
+    The checkpoint comes from the first of ``PANNS_CKPT_MIRRORS`` that works,
+    preceded by ``CUTPOINT_PANNS_URL`` when that environment variable is set.
+    """
     download(PANNS_LABELS_URL, paths.panns_labels())
-    download(PANNS_CKPT_URL, paths.panns_ckpt())
+    urls = list(PANNS_CKPT_MIRRORS)
+    if env_url := os.environ.get("CUTPOINT_PANNS_URL", "").strip():
+        urls = [env_url, *(u for u in urls if u != env_url)]
+    _download_mirrors(urls, paths.panns_ckpt(), PANNS_CKPT_SIZE, PANNS_CKPT_SHA256)
+
+
+def _download_mirrors(urls: list[str], dst: Path, size: int, sha256: str) -> Path:
+    """Download ``dst`` from the first of ``urls`` that works.
+
+    A mirror that fails (network error, sha256 mismatch) or, unless it is the
+    last one, starts slower than ``PANNS_MIN_RATE`` is skipped with a warning.
+    A partial download stays as ``.part`` for the next mirror to resume; the
+    sha256 check at the end rejects a mixed-up file (and deletes it). A mirror
+    that resumed an existing ``.part`` and fails that check is retried once from
+    scratch, so bytes from an earlier mirror are not blamed on it.
+
+    Raises:
+        RuntimeError: Every mirror failed; lists each one with its reason.
+    """
+    failures = []
+    for i, url in enumerate(urls):
+        host = urllib.parse.urlsplit(url).netloc or url
+        min_rate = PANNS_MIN_RATE if i < len(urls) - 1 else None
+        part = dst.with_name(dst.name + ".part")
+        try:
+            try:
+                had_part = part.exists()
+                return download(url, dst, size, sha256, min_rate=min_rate)
+            except RuntimeError:
+                if not had_part:
+                    raise
+                # The .part (from an earlier mirror) may have been the bad bytes;
+                # download() deleted it, so retry this mirror once from scratch.
+                logger.warning("%s: sha256 mismatch after resuming; retrying %s", dst.name, host)
+                return download(url, dst, size, sha256, min_rate=min_rate)
+        except (
+            OSError,  # includes URLError and timeouts
+            http.client.HTTPException,
+            ValueError,  # malformed URL
+            RuntimeError,  # sha256 mismatch
+            SlowDownloadError,
+        ) as e:
+            reason = f"too slow: {e}" if isinstance(e, SlowDownloadError) else str(e)
+            nxt = "; trying the next one" if i < len(urls) - 1 else ""
+            logger.warning("%s: mirror %s failed (%s)%s", dst.name, host, reason, nxt)
+            failures.append(f"{host}: {reason}")
+    raise RuntimeError(f"Could not download {dst.name} from any mirror: " + "; ".join(failures))
 
 
 def _llama_platform() -> str:
