@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import logging
 import math
-import shutil
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -44,6 +43,7 @@ from cutpoint.clips import BOUND_KEYS, index_sources, order_moments
 from cutpoint.config import path_key, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.pano.qa import runs_of
+from cutpoint.pano.render import free_backup_name
 
 logger = logging.getLogger(__name__)
 
@@ -345,9 +345,9 @@ def repair(
     previews or of the rendered clips).
 
     Writes the repaired list to ``out`` (default: over ``segments_file``, the old one
-    kept as ``<name>.bak.json``); when clips are cut or dropped also ``mix_report.json``,
-    ``mix_sheet.jpg`` and the merged ``mix_exclude.json`` next to it. Nothing is written
-    when nothing needs repair.
+    kept as the first free ``<name>.bak.json``, ``<name>.1.bak.json``, ...); when clips
+    are cut or dropped also ``mix_report.json``, ``mix_sheet.jpg`` and the merged
+    ``mix_exclude.json`` next to it. Nothing is written when nothing needs repair.
 
     Returns:
         ``{"segments", "written", "findings", "skipped", "trimmed", "dropped", "added",
@@ -369,6 +369,7 @@ def repair(
     new_excl, findings, skipped, bounds = plan(old, qa, src_dir, qa_file.stat().st_mtime, impacts)
     manifest = cache.load_json(src_dir / "manifest.json")
     out = out or segments_file
+    same = out.resolve() == segments_file.resolve()
     report = cache.load_json(segments_file.with_name("mix_report.json")) or {}
     rep: dict[str, Any] = {
         "segments": str(out),
@@ -390,7 +391,7 @@ def repair(
         excl = _merge(mix.load_exclusions(have), new_excl)
         # Back up only once run_mix has written over the original: a failed selection
         # ("Nothing selected") leaves no .bak.json and an earlier one untouched.
-        original = segments_file.read_bytes() if out == segments_file else None
+        original = segments_file.read_bytes() if same else None
         try:
             report = mix.run_mix(
                 project,
@@ -433,18 +434,18 @@ def repair(
     _changes(rep, old, new)
     if not new_excl and new == old:
         return rep
-    if not new_excl and out == segments_file:
-        shutil.copyfile(segments_file, segments_file.with_suffix(".bak.json"))
+    if not new_excl and same:
+        _backup(segments_file, segments_file.read_bytes())
     cache.save_json(out, new)
     rep["written"] = True
     return rep
 
 
 def _backup(segments_file: Path, original: bytes) -> None:
-    """Write ``original`` to ``<name>.bak.json``; if that fails, put it back into
-    ``segments_file`` (overwritten by then) and re-raise."""
+    """Write ``original`` to the first free ``<name>.bak.json``, ``<name>.1.bak.json``,
+    ...; if that fails, put it back into ``segments_file`` and re-raise."""
     try:
-        segments_file.with_suffix(".bak.json").write_bytes(original)
+        free_backup_name(segments_file, segments_file.stem, ".bak.json").write_bytes(original)
     except OSError:
         segments_file.write_bytes(original)
         raise
