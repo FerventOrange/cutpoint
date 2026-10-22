@@ -603,7 +603,7 @@ def cmd_qa(a: argparse.Namespace) -> None:
 
 
 def cmd_repair(a: argparse.Namespace) -> None:
-    """Trim or replace mix clips with blocking direction-QA problems."""
+    """Trim, drop or replace clips with blocking direction-QA problems."""
     from cutpoint.pano.repair import log_repair, repair  # noqa: PLC0415
 
     project = _project(a.project)
@@ -775,7 +775,12 @@ def add_parser(sub: Any) -> None:
         "mix_exclude.json)",
     )
     rp.add_argument("project")
-    rp.add_argument("--segments", default="mix_segments.json", help="the mix segments file")
+    rp.add_argument(
+        "--segments",
+        default="mix_segments.json",
+        help="the mix segments file, or one not written by cutpoint mix "
+        "([{source, start, end, label}]: clips are only trimmed or dropped, nothing is refilled)",
+    )
     rp.add_argument(
         "--qa",
         required=True,
