@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `cutpoint 360 repair --segments` works on a hand-written segments file (the
+  `[{source, start, end, label}]` format of `clips --segments`) instead of crashing with
+  `KeyError: 'id'`. For a file not written by `cutpoint mix`, affected segments are trimmed to
+  their longest clean part or dropped; nothing is refilled, your segments (and ids, if any) are
+  kept, and only `mix_exclude.json` is updated. A segment missing `source`, `start` or `end`
+  gives an `ERROR` line instead of a traceback (#110).
+
 ## [0.2.0] - 2026-10-22
 
 ### Added

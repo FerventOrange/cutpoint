@@ -295,3 +295,96 @@ def test_backup_failing_midway_leaves_no_partial_file_and_the_segments_intact(
         repair(project, segs, qa, sheet=False)
     assert segs.read_bytes() == before
     assert not [p for p in project.iterdir() if "bak" in p.name or p.name.endswith(".tmp")]
+
+
+def _handwritten(project: Path, previews: bool, ids: bool = False) -> Path:
+    """A category-less ``final_segments.json`` (user ids ``hNNN`` if ``ids``; intro clean, jump
+    occluded for 3 s at the start then low-info for 2 s, short 3 s with its middle too close) plus the QA of its previews or rendered clips."""
+    segs = [
+        {"source": "/v/a.insv", "start": 10.0, "end": 20.0, "label": "intro"},
+        {"source": "/v/a.insv", "start": 100.0, "end": 108.0, "label": "jump"},
+        {"source": "/v/b.insv", "start": 50.0, "end": 53.0, "label": "short"},
+    ]
+    if ids:
+        for i, s in enumerate(segs, 1):
+            s["id"] = f"h{i:03d}"
+    cache.save_json(project / "final_segments.json", segs)
+    src = project / ("pano_paths/final" if previews else "clips_final")
+    src.mkdir(parents=True)
+    clips, entries = [], []
+    lead = 0.0 if previews else 1.0  # rendered clips run a second either side of the pick
+    for i, s in enumerate(segs, 1):
+        stem = f"{i:03d}_{s['label']}"
+        (src / f"{stem}.mp4").write_bytes(b"")
+        dur = s["end"] - s["start"] + 2 * lead
+        if previews:
+            cache.save_json(src / f"{stem}.json", {"segment": {"start": s["start"]}})
+        else:
+            entries.append(
+                {
+                    "file": f"{stem}.mp4",
+                    "id": segs[i - 1].get("id", f"s{i:03d}"),
+                    "source": s["source"],
+                    "duration": dur,
+                }
+                | {"start": s["start"] - lead, "end": s["end"] + lead}
+                | {"pick": {"start": s["start"]}, "original_end": s["end"]}
+            )
+
+        def flags(k: int, i: int = i) -> list[str]:
+            t = k / 2 - lead  # seconds into the segment
+            if i == 2 and 0 <= t < 3:
+                return ["occluded"]
+            if i == 2 and 3 <= t < 5:
+                return ["low_info"]
+            return ["too_close"] if i == 3 and 1 <= t < 2.5 else []
+
+        frames = [
+            {"t": k / 2, "flags": flags(k), "subj": [0.4, 0.2, 0.6, 0.8]}
+            for k in range(int(dur * 2))
+        ]
+        clips.append({"file": f"{stem}.mp4", "duration": dur, "frames": frames})
+    if not previews:
+        cache.save_json(src / "manifest.json", {"clips": entries})
+    qa = project / f"{src.name}_qa" / "qa.json"
+    qa.parent.mkdir()
+    cache.save_json(qa, {"source_dir": str(src), "clips": clips})
+    return qa
+
+
+@pytest.mark.parametrize("ids", [False, True], ids=["no-ids", "user-ids"])
+@pytest.mark.parametrize("previews", [True, False], ids=["director-previews", "rendered-clips"])
+def test_handwritten_segments_are_trimmed_or_dropped(
+    tmp_path: Path, previews: bool, ids: bool
+) -> None:
+    """Issue #110: ``repair`` on a ``[{source,start,end,label}]`` file used to die on KeyError
+    'id'. Now the occluded clip is cut, the too-short one dropped, nothing refilled; user ids
+    (not a ``cutpoint mix`` file without categories) are kept. Low-info frames of a clip
+    without category are no problem."""
+    qa = _handwritten(tmp_path, previews, ids)
+    segs = tmp_path / "final_segments.json"
+    rep = repair(tmp_path, segs, qa, sheet=False)
+    assert rep["written"] is True
+    out = cache.load_json(segs)
+    assert [s["label"] for s in out] == ["intro", "jump"]
+    assert out[0]["start"] == 10.0 and out[0]["end"] == 20.0
+    assert 102.5 <= out[1]["start"] < out[1]["end"] == 108.0
+    assert [s.get("id") for s in out] == (["h001", "h002"] if ids else [None, None])
+    assert out[1]["start"] < 103.0 + 1.0
+    excl = cache.load_json(tmp_path / mix.EXCLUDE_FILE)
+    assert excl
+    assert all(e["end"] <= 103.1 or e["source"] == "/v/b.insv" for e in excl)
+    assert (tmp_path / "final_segments.bak.json").is_file()
+
+
+def test_cli_repair_reports_a_malformed_segment_as_an_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    qa = _handwritten(tmp_path, True)
+    bad = tmp_path / "bad.json"
+    cache.save_json(bad, [{"source": "/v/a.insv", "end": 3.0}])
+    from cutpoint.cli import main  # noqa: PLC0415
+
+    code = main(["360", "repair", str(tmp_path), "--segments", str(bad), "--qa", str(qa)])
+    assert code == 1
+    assert f"{bad}: segment 1 needs source, start and end" in caplog.text
