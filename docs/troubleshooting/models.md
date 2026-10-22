@@ -50,6 +50,12 @@ The `events` model layer does not use Ollama for its main model. It starts its o
   `cutpoint setup --only llama` again. The previous install is kept.
 - `sha256 mismatch`: the llama.cpp download was corrupt and was deleted. Run
   `cutpoint setup --only llama` again; the existing install is kept.
+- `panns` downloads the checkpoint from a Hugging Face copy of the Zenodo record (CC BY 4.0)
+  first, then from Zenodo, and checks size and sha256. A source that fails or starts too slowly is
+  skipped. To use your own copy, set `CUTPOINT_PANNS_URL`; it is tried first.
+- `Could not download Cnn14_DecisionLevelMax_mAP=0.385.pth from any mirror`: every source failed;
+  the message lists the reason for each. Check the network, run `cutpoint setup --only panns`
+  again (partial downloads resume), or set `CUTPOINT_PANNS_URL`.
 - Disk space: about 8 GB for everything. Move the data folder with `CUTPOINT_HOME` or
   `CUTPOINT_MODELS_DIR` if the system drive is small.
 

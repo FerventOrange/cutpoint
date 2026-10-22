@@ -41,6 +41,7 @@ All optional.
 | `CUTPOINT_STYLES_DIR` | Learned styles |
 | `CUTPOINT_FFMPEG`, `CUTPOINT_FFPROBE` | Full paths to ffmpeg and ffprobe |
 | `CUTPOINT_LLAMA_SERVER` | Full path to `llama-server` |
+| `CUTPOINT_PANNS_URL` | URL for the PANNs checkpoint, tried before the built-in mirrors (see [models troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete)) |
 | `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision` and for building activity profiles (default `qwen3-vl:8b`) |
 | `CUTPOINT_INSTA360_SDK` | Full path to the SDK's `MediaSDKTest` executable (overrides `pano.sdk_exe`) |
 | `OLLAMA_HOST` | Ollama URL; overrides `ollama_url` (a bare `host:port` gets `http://`) |

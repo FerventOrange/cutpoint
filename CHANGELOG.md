@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint setup` downloads the PANNs checkpoint from a Hugging Face mirror first (much faster than
+  Zenodo) and falls back to Zenodo. It verifies size and sha256, and moves to the next source when
+  one fails or starts too slowly. `CUTPOINT_PANNS_URL` is tried first when set (#30).
 - **Upgrade note:** the CUDA libraries for GPU Whisper moved to the `gpu` extra; the base install
   is CPU-only and about 3.6 GB smaller. NVIDIA users: add `gpu` (`uv sync --extra gpu ...`,
   `uv tool install "cutpoint[gpu]" --reinstall`); `all` includes it. Without it, Whisper uses the
