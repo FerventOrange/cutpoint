@@ -116,8 +116,17 @@ def _sha256(path: Path) -> str:
 
 
 def _host(url: str) -> str:
-    """Host name of ``url`` for log lines (no credentials or port)."""
-    return urllib.parse.urlsplit(url).hostname or url
+    """Host name of ``url`` for log lines (no credentials or port).
+
+    A malformed ``url`` (``urlsplit`` raises ValueError) is reduced to its
+    authority without credentials (no scheme, path, query, fragment or text up
+    to the last ``@``), so a log line names the bad value instead of crashing.
+    """
+    try:
+        return urllib.parse.urlsplit(url).hostname or url
+    except ValueError:
+        authority = re.split(r"[/?#]", url.split("://", 1)[-1], maxsplit=1)[0]
+        return authority.rpartition("@")[2]
 
 
 def download(
