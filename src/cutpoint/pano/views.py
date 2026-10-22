@@ -162,6 +162,7 @@ def compute_views(
     """
     import torch  # noqa: PLC0415
 
+    from cutpoint.config import remap_source  # noqa: PLC0415
     from cutpoint.events.visual import COCO_PERSON, DET_LABELS, iter_frames  # noqa: PLC0415
 
     src = Path(clip.lrv)
@@ -277,7 +278,8 @@ def compute_views(
 
     t0 = time.perf_counter()
     last = -1e9
-    for t, frame in iter_frames(src, 1024, 512, True, True):
+    # Decode the copy source_remap points at; caches and meta keep the original path.
+    for t, frame in iter_frames(remap_source(src), 1024, 512, True, True):
         if t - last < p.min_gap_s:
             continue
         last = t
