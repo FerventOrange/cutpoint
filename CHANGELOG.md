@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `360 analyze` skipped every moved clip with "no _00_.insv for the IMU". `360 status` finds the
   Studio export next to both the original and the moved camera folder. The project keeps recording
   the original paths (#92).
+- From an editable clone install on Windows with a CPU-only torch, the install command for a
+  missing `events` or `all` extra now notes that the `uv pip install ... -e` form needs
+  `--reinstall-package torch --reinstall-package torchvision` with an NVIDIA GPU, as uv keeps the
+  installed CPU torch otherwise. `uv sync` already installs the locked CUDA build (#96).
 - `analyze` records its inputs in `highlights.json` `settings.inputs` as absolute paths, keeping
   your spelling (no symlink or mapped-drive resolution). Relative inputs were stored as given, so
   `crashes --reanalyze` or ski `events` run from another directory wrongly reported the footage as
@@ -68,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them. They still warn and leave `highlights.json` unchanged only when re-analysis would fail,
   drop a source or re-key one, for example a file moved out of a folder input that still exists,
   or a 0.1.0 project that recorded the copy path (rerun `analyze` for those) (#80).
+- `extend` reads each clip's source through `source_remap` like `clips` does, instead of the
+  remapped copy recorded in the manifest's `read_from`. Once the copy is removed and the footage
+  is back at its original path, `extend` finds it instead of failing on the deleted copy;
+  `read_from` is used only when the source cannot be found and the copy still exists. The new
+  manifest records where each clip was read from, and `--reuse` still copies unchanged clips when
+  only the read location changed (#91).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
