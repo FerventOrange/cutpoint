@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from types import SimpleNamespace
 
@@ -227,3 +228,47 @@ def test_install_hint_uv_tool_source(monkeypatch, tmp_path, source, expected_tar
     _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
     hint = extras.install_hint("events")
     assert hint.startswith(f"uv tool install {expected_target} --reinstall")
+
+
+# --- install_hint: non-editable installs and tool receipts (#34) ---------------------------
+
+
+@pytest.mark.parametrize("kind", ["file", "git"])
+def test_install_hint_non_editable_reinstalls_from_origin(monkeypatch, tmp_path, kind):
+    if kind == "file":
+        src = tmp_path / "src"
+        direct_url = {"url": src.as_uri(), "dir_info": {}}
+        expected = f'"{src.as_posix()}[ski]"'
+    else:
+        direct_url = {
+            "url": "https://github.com/x/cutpoint",
+            "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+        }
+        expected = '"cutpoint[ski] @ git+https://github.com/x/cutpoint@abc123"'
+    _set_install(monkeypatch, tmp_path, direct_url=json.dumps(direct_url), uv=True)
+    assert extras.install_hint("ski").endswith(f" {expected}")
+
+
+@pytest.mark.parametrize(
+    ("uv", "flags"),
+    [
+        (True, f"--index {extras.TORCH_INDEX} --index-strategy unsafe-best-match"),
+        (False, f"--extra-index-url {extras.TORCH_INDEX}"),
+    ],
+)
+def test_install_hint_non_editable_events_on_windows_notes_cuda(monkeypatch, tmp_path, uv, flags):
+    monkeypatch.setattr(extras.sys, "platform", "win32")
+    _set_install(monkeypatch, tmp_path, direct_url='{"dir_info": {}}', uv=uv)
+    assert flags in extras.install_hint("events")
+
+
+def test_install_hint_tool_receipt_keeps_default_index_and_python(monkeypatch, tmp_path):
+    receipt = (
+        '[tool]\nrequirements = [{ name = "cutpoint" }]\npython = "C:/Py/python.exe"\n'
+        '[tool.options]\nindex = [{ url = "https://example.com/simple", default = true }]\n'
+    )
+    _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
+    hint = extras.install_hint("ski")
+    assert '--python "C:/Py/python.exe"' in hint
+    assert "--default-index https://example.com/simple" in hint
+    assert "--index https://example.com/simple" not in hint

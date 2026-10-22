@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they need.
 - GPU Whisper on Linux: the pip-installed CUDA libraries are preloaded.
 - Remote-mount detection works on Linux.
+- A failed `cutpoint analyze` no longer leaves an empty project folder behind: it removes only a
+  folder that run created and that is still empty (#26).
+- The Hugging Face "unauthenticated requests" warning is printed once, in Cutpoint's log format,
+  instead of twice (#25).
+- The missing-extra hint keeps the install's source: a local folder or git commit instead of the
+  PyPI release. For `uv tool install` it keeps the package index flags (`--default-index` when that
+  was used) and the pinned `--python`, and pip installs on Windows get the CUDA PyTorch index note
+  for `events` (#34).
 - Projects created on Windows (sources like `D:\Videos\x.mp4`) show correct source file names
   on Linux. Reading the files still needs a `source_remap` entry.
 - Clearer ffmpeg-not-found hint on Linux.
