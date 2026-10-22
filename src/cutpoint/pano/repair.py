@@ -402,11 +402,11 @@ def repair(
                 previous=old,
             )
         except BaseException:
-            if original is not None and segments_file.read_bytes() != original:
-                try:  # failed after writing (the sheet): keep the old
+            try:  # failed after writing (the sheet): keep the old
+                if original is not None and segments_file.read_bytes() != original:
                     _backup(segments_file, original)
-                except OSError:
-                    logger.warning("%s: could not write the backup", segments_file)
+            except OSError:
+                logger.warning("%s: could not write the backup", segments_file)
             raise
         if original is not None:
             _backup(segments_file, original)
