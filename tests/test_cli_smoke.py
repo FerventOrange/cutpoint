@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import cutpoint
 from cutpoint import cli
 
 
@@ -46,3 +47,10 @@ def test_clips_bad_size_is_a_usage_error(capsys):
 def test_guide_prints_agents_md(capsys):
     assert cli.main(["guide"]) == 0
     assert capsys.readouterr().out.startswith("# Cutpoint for AI agents")
+
+
+def test_version_flag_prints_version_without_subcommand(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"cutpoint {cutpoint.__version__}"

@@ -10,6 +10,7 @@ described -> server stopped.
 from __future__ import annotations
 
 import fnmatch
+import importlib.util
 import logging
 import time
 from dataclasses import asdict
@@ -37,6 +38,7 @@ from cutpoint.events.killfeed import (
 )
 from cutpoint.events.regions import game_key_for_path, load_preset
 from cutpoint.events.report import normalize, write_outputs
+from cutpoint.events.setup import EVENTS_MODULES
 from cutpoint.events.vlm_windows import (
     VlmParams,
     add_incremental,
@@ -52,6 +54,18 @@ LAYERS = ("audio", "voice", "visual", "crash", "ocr", "vlm")
 # Layers run by default; voice/visual/crash feed ski features (other styles opt in).
 DEFAULT_LAYERS = ("audio", "ocr", "vlm")
 SKI_LAYERS = ("audio", "voice", "visual", "crash", "vlm")
+
+
+def _require_events_extra(layers: tuple[str, ...]) -> None:
+    """Fail before any side effect (unloading Ollama) when the events extra is missing.
+
+    Every layer but VLM (llama-server) loads a model from the extra.
+    """
+    if not set(layers) - {"vlm"}:
+        return
+    for module in EVENTS_MODULES:
+        if importlib.util.find_spec(module) is None:
+            raise ModuleNotFoundError(f"No module named {module!r}", name=module)
 
 
 def run_events(
@@ -102,6 +116,7 @@ def run_events(
     if layers is None:
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
     vlm.ski = ski
+    _require_events_extra(layers)
     sources = []
     seen: set[str] = set()
     for s in hl["sources"]:  # virtual parts (--recover) share one path

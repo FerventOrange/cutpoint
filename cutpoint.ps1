@@ -1,5 +1,5 @@
 # Run Cutpoint with the project venv: .\cutpoint <analyze|clips|assemble|...> ...
-# (needs the editable install: uv pip install --python .venv\Scripts\python.exe -e .)
+# (needs the .venv created by uv sync; run it once in the repo)
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & "$here\.venv\Scripts\python.exe" -m cutpoint @args
 exit $LASTEXITCODE
