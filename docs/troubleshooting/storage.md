@@ -39,6 +39,8 @@ Notes:
   caches of part A carry over.
 - Moved footage? Use `source_remap` in `config.json` to read from the new location without
   re-analysing ([Configuration](../configuration.md#source_remap-and-source_remap_exclude)).
+- `crashes` and `events` skip sources that are offline or moved (warning `footage not reachable`)
+  and fail with `No footage of <project> is reachable` if none is. Reconnect the footage and rerun.
 - Action-cam telemetry reads whole files; stage first. Crash detection reads only the telemetry
   track and needs no staging.
 

@@ -1149,3 +1149,30 @@ def reanalyze(project: Path) -> Path:
         recursive=bool(st.get("recursive")),
         recover=bool(st.get("recover")),
     )
+
+
+def reanalyze_if_reachable(project: Path) -> Path | None:
+    """:func:`reanalyze`, unless a source of the project is offline.
+
+    ``analyze`` refuses a missing input, and without it the source would drop out
+    of highlights.json; ``crashes`` and ``events`` already skipped it, so they
+    leave highlights.json unchanged instead of failing.
+
+    Returns:
+        Path of highlights.json, or None if skipped.
+    """
+    hl = cache.load_json(project / "highlights.json") or {}
+    offline = 0
+    for path in dict.fromkeys(s["path"] for s in hl.get("sources", [])):
+        try:
+            cache.source_dir(Path(path))
+        except OSError:
+            offline += 1
+    if offline:
+        logger.warning(
+            "%d source(s) not reachable; highlights.json left unchanged, "
+            "rerun once the footage is back",
+            offline,
+        )
+        return None
+    return reanalyze(project)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -33,3 +34,21 @@ def test_profanity_counts_only_next_to_another_cue():
     laugh = [(11.0, 1.0, "laugh")]
     kept = analyze.gate_profanity(kw, laugh, np.zeros(1000))
     assert [t for t, _, _ in kept] == [10.0, 50.0, 51.0]
+
+
+def test_reanalyze_if_reachable_leaves_highlights_when_a_source_is_offline(
+    tmp_path, monkeypatch, caplog
+):
+    here = tmp_path / "here.mp4"
+    here.write_bytes(b"x")
+    hl = tmp_path / "highlights.json"
+    hl.write_text(
+        json.dumps({"sources": [{"path": str(here)}, {"path": str(tmp_path / "gone.mp4")}]}),
+        encoding="utf-8",
+    )
+    before = hl.read_bytes()
+    monkeypatch.setattr(analyze, "reanalyze", lambda project: pytest.fail("must not reanalyze"))
+    with caplog.at_level("WARNING"):
+        assert analyze.reanalyze_if_reachable(tmp_path) is None
+    assert "1 source(s) not reachable" in caplog.text
+    assert hl.read_bytes() == before

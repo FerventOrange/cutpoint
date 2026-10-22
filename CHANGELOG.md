@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `crashes` and `events` skip footage that is not reachable (offline drive, moved file) with a
+  warning and continue, and fail before writing anything when none is reachable. With a source
+  skipped, `crashes` and ski `events` leave `highlights.json` unchanged instead of re-running the
+  analysis; other `events` styles re-rank with the events found (#57).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
