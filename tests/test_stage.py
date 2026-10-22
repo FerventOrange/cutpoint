@@ -106,5 +106,5 @@ def test_clear_stage_falls_back_to_the_index_for_inputs_that_cannot_be_listed(
     assert count == removed
     for name, copy in copies.items():
         assert Path(copy).exists() == (name in kept)
-    assert "not found and no staged copy recorded under it" in caplog.text
+    assert "no staged copy recorded under it" in caplog.text
     assert "missing" in caplog.text

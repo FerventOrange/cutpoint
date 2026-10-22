@@ -354,7 +354,7 @@ def clear_stage(
                         len(recorded),
                     )
                 else:
-                    logger.warning("%s: not found and no staged copy recorded under it", target)
+                    logger.warning("%s; no staged copy recorded under it", err)
                 wanted |= recorded
                 continue
             wanted |= {stage_key(p) for p in files}
