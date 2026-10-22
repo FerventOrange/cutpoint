@@ -122,6 +122,9 @@ Read the `ERROR` line, then
 The usual causes: ffmpeg not on `PATH`, a missing optional extra, Ollama not reachable (only
 affects `--vision`), a non-empty output folder.
 
+Whisper runs on the CPU unless the `gpu` extra is installed; if the user has an NVIDIA GPU and
+`transcribe` logs an INFO line about missing CUDA libraries, add `gpu` the same way as below.
+
 A missing extra `X` (for example `events`) is added differently per install. Tell the user the
 command for theirs:
 

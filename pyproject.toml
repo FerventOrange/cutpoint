@@ -20,22 +20,22 @@ dependencies = [
     "numpy>=2.5.4,<3",
     "OpenTimelineIO>=0.18.1",
     "requests>=2.34.2",
-    # CUDA 12 runtime libs so faster-whisper / ctranslate2 transcribe on the GPU by
-    # default (cuBLAS + cuDNN 9). Linux gets looser floors because the cu126 torch
-    # wheels (events extra) pin their own cuDNN/cuBLAS there.
-    "nvidia-cublas-cu12>=12.9.2.10; sys_platform == 'win32'",
-    "nvidia-cudnn-cu12>=9.27.0.42; sys_platform == 'win32'",
-    "nvidia-cublas-cu12>=12.4; sys_platform == 'linux'",
-    "nvidia-cudnn-cu12>=9.1; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
 # Optional: action-cam telemetry (GoPro GPMF GPS/IMU) for --style ski and the
 # optional 360-camera (Insta360) module.
 ski = ["telemetry-parser>=0.3.0"]
-# Kept as an empty alias so old `--extra gpu` commands still work: the CUDA
-# libraries for whisper are base dependencies now.
-gpu = []
+# CUDA 12 runtime libs so faster-whisper / ctranslate2 transcribe on an NVIDIA GPU
+# (cuBLAS + cuDNN 9, about 3.6 GB). Without them whisper runs on the CPU. Linux gets
+# looser floors because the cu126 torch wheels (events extra) pin their own
+# cuDNN/cuBLAS there.
+gpu = [
+    "nvidia-cublas-cu12>=12.9.2.10; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9.27.0.42; sys_platform == 'win32'",
+    "nvidia-cublas-cu12>=12.4; sys_platform == 'linux'",
+    "nvidia-cudnn-cu12>=9.1; sys_platform == 'linux'",
+]
 # `cutpoint events` layers (PANNs audio, HUD OCR, CLIP visual, Silero voice).
 # Also needed by: `cutpoint fit` / `refmatch --taste` (scikit-learn taste head) and
 # ski crash detection (`cutpoint crashes`, torch + open_clip for the visual check).
@@ -53,7 +53,7 @@ events = [
     "scikit-learn>=1.9.1",
 ]
 dev = ["pytest>=8", "ruff==0.17.1", "pre-commit>=3.7"]
-all = ["cutpoint[ski,events]"]
+all = ["cutpoint[ski,events,gpu]"]
 
 [project.scripts]
 cutpoint = "cutpoint.cli:main"

@@ -7,12 +7,13 @@
 | Python 3.12 | `pyproject.toml` pins `>=3.12,<3.13`. uv installs it for you. |
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
 | ffmpeg and ffprobe | Decoding, loudness, encoding. NVENC is used when available, libx264 otherwise. |
-| NVIDIA GPU (recommended) | Whisper transcription uses CUDA when it can and falls back to the CPU. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
+| NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
 | Ollama (optional) | Only for `analyze --vision` and `events` VLM features that use it. |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are about 8 GB. Clips and finals are re-encoded, so budget for them in the project folder. |
 
-Windows and Linux are tested (CI runs the tests on both). The CUDA
-libraries for GPU Whisper (cuBLAS, cuDNN) come with the base install on Windows and Linux.
+Windows and Linux are tested (CI runs the tests on both). The base
+install transcribes on the CPU. For GPU Whisper on an NVIDIA GPU, add the `gpu` extra (the CUDA
+libraries cuBLAS and cuDNN, about 3.6 GB).
 
 ## Install
 
@@ -47,16 +48,18 @@ The core install is enough for `analyze`, `clips`, `extend`, `assemble` and `sta
 |---|---|
 | `ski` | Action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU). Also used by the 360 module. |
 | `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
+| `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
 | `dev` | pytest, ruff, pre-commit. |
-| `all` | `ski` and `events`. |
-| `gpu` | Empty alias kept for old commands. |
+| `all` | `ski`, `events` and `gpu`. |
 
 `uv sync` makes the environment match exactly the extras you name, so it removes the
 packages of any extra you leave out. List every extra you use each time:
 
 ```powershell
-uv sync --extra ski --extra events
+uv sync --extra ski --extra events --extra gpu
 ```
+
+With an NVIDIA GPU, `uv sync --extra gpu` is the minimum for GPU Whisper.
 
 ### Install as a tool (optional)
 
@@ -72,8 +75,8 @@ Or install from a clone of the repository:
 uv tool install .
 ```
 
-Add extras with `uv tool install "cutpoint[ski,events]"` (or `".[ski,events]"` from a
-clone). This path is not exercised by the project's tests; if it fails, use `uv sync` and
+Add extras with `uv tool install "cutpoint[ski,events,gpu]"` (or `".[ski,events,gpu]"` from a
+clone); with pip, `pip install "cutpoint[gpu]"`. This path is not exercised by the project's tests; if it fails, use `uv sync` and
 `uv run`.
 
 A tool install gets torch from PyPI, which is CPU-only on Windows: the CUDA 12.6 index in

@@ -39,10 +39,16 @@ is the same format either way; the CPU path is slower. Common causes:
 ## Whisper runs on the CPU, or CUDA / cuDNN / cuBLAS errors
 
 Transcription uses CUDA when it can and falls back to CPU (`small` model by default instead of
-`medium`). The CUDA runtime libraries (cuBLAS, cuDNN) are installed with Cutpoint on Windows
-and Linux, so you only need a current NVIDIA driver.
+`medium`). The CUDA runtime libraries (cuBLAS, cuDNN) are in the `gpu` extra, not the base
+install. With an NVIDIA GPU but no `gpu` extra, Cutpoint logs one line and uses the CPU:
 
-- Run `uv sync` again (with all the extras you use) if the libraries went missing.
+```
+INFO NVIDIA GPU found, but the CUDA libraries for whisper are not installed (...); transcribing on the CPU. For GPU transcription add the 'gpu' extra: <command>
+```
+
+- Add the extra with the command in that line: `uv sync --extra gpu` (plus every other extra you
+  use) from a clone, `uv tool install "cutpoint[gpu]" --reinstall` for a tool install (plus your
+  other extras), or `pip install "cutpoint[gpu]"`.
 - Update the NVIDIA driver. On Linux the pip-installed CUDA libraries are preloaded
   automatically; if Whisper still falls back to the CPU, check the driver with `nvidia-smi`.
 - To force a smaller model, pass `analyze --model small`.

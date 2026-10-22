@@ -12,7 +12,8 @@ Any agent that can run shell commands (Claude Code, Codex, Grok CLI, others). Se
 [AGENTS.md](../AGENTS.md) and [Using Cutpoint from an agent](agents.md).
 
 **Do I need a GPU?**
-No, but transcription and the optional model layers are much faster on an NVIDIA GPU. Clip
+No, but transcription and the optional model layers are much faster on an NVIDIA GPU
+(add the `gpu` extra for GPU Whisper). Clip
 export uses NVENC when available and libx264 otherwise.
 
 **Which platforms are supported?**

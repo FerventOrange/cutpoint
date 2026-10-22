@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Upgrade note:** the CUDA libraries for GPU Whisper moved to the `gpu` extra; the base install
+  is CPU-only and about 3.6 GB smaller. NVIDIA users: add `gpu` (`uv sync --extra gpu ...`,
+  `uv tool install "cutpoint[gpu]" --reinstall`); `all` includes it. Without it, Whisper uses the
+  CPU and logs one INFO line with the install command (#27).
 - Project paths can be written `projects/<name>/...` on every OS; docs use forward slashes.
 - Path matching (`source_remap`, `stage` keys) is case-sensitive on Linux and stays
   case-insensitive on Windows.
