@@ -145,7 +145,7 @@ def cmd_scan(a: argparse.Namespace) -> None:
 
 def cmd_analyze(a: argparse.Namespace) -> None:
     """Proxy views, then the normal ski analysis + events on the .lrv files."""
-    from cutpoint.analyze import analyze, reanalyze  # noqa: PLC0415
+    from cutpoint.analyze import analyze, reanalyze_if_reachable  # noqa: PLC0415
     from cutpoint.pano import views  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
@@ -181,9 +181,17 @@ def cmd_analyze(a: argparse.Namespace) -> None:
 
     t2 = time.perf_counter()
     run_events(project, layers=EVENT_LAYERS)
-    reanalyze(project)
+    rescored = reanalyze_if_reachable(project)
     _timing(project, "events_s", round(time.perf_counter() - t2, 1))
     _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
+    if rescored is None:  # footage went offline: highlights.json lacks the events
+        logger.info(
+            "360 analysis done in %.0fs without the events in highlights.json; "
+            "rerun cutpoint 360 analyze %s once the footage is back",
+            time.perf_counter() - t0,
+            a.project,
+        )
+        return
     logger.info(
         "360 analysis done in %.0fs; next: cutpoint clips %s", time.perf_counter() - t0, a.project
     )
