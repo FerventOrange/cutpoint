@@ -373,7 +373,10 @@ def test_imu_source_finds_the_00_sibling_case_insensitively(tmp_path, ext, prefi
     lens10 = tmp_path / "VID_20240101_120000_10_001.insv"
     got = x3.imu_source(lens10)
     assert got is not None
-    assert got.name == real.name
+    assert got.samefile(real)
+    if sys.platform.startswith("linux"):
+        # Case-sensitive FS: the on-disk spelling is returned. Elsewhere the built name already exists.
+        assert got.name == real.name
 
 
 def test_imu_source_matches_a_unique_00_by_number_only(tmp_path):
