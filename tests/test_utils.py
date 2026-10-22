@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+import os
+import sys
+
 import pytest
 
 from cutpoint.events import regions
 from cutpoint.events.common import parse_clock
-from cutpoint.utils import clock, matches_glob, slugify
+from cutpoint.utils import clock, find_videos, matches_glob, slugify
 
 
 @pytest.mark.parametrize(
@@ -64,3 +68,56 @@ def test_slugify():
 )
 def test_game_slug_keeps_legacy_keys(name, key):
     assert regions._game_slug(name) == key
+
+
+# -- find_videos: unreadable inputs ------------------------------------------------------
+
+needs_chmod = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 000 does not block this user",
+)
+
+
+@pytest.fixture
+def locked():
+    """Make a folder mode 000 for the test; restore it so tmp_path cleanup works."""
+    paths = []
+
+    def lock(folder):
+        folder.chmod(0)
+        paths.append(folder)
+        return folder
+
+    yield lock
+    for folder in paths:
+        folder.chmod(0o755)
+
+
+@needs_chmod
+@pytest.mark.parametrize("case", ["folder", "file_under_locked_parent"])
+def test_find_videos_unreadable_input_is_a_clear_error(tmp_path, locked, case):
+    (tmp_path / "vault").mkdir()
+    (tmp_path / "vault" / "a.mp4").write_bytes(b"x")
+    locked(tmp_path / "vault")
+    target = tmp_path / "vault" if case == "folder" else tmp_path / "vault" / "a.mp4"
+    with pytest.raises(FileNotFoundError, match="not readable"):
+        find_videos(target)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX name limits")
+def test_find_videos_name_too_long_is_a_clear_error(tmp_path):
+    with pytest.raises(FileNotFoundError, match="not readable"):
+        find_videos(tmp_path / ("x" * 300) / "a.mp4")
+
+
+@needs_chmod
+def test_find_videos_walk_skips_an_unreadable_subfolder_with_a_warning(tmp_path, locked, caplog):
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok" / "good.mp4").write_bytes(b"x")
+    (tmp_path / "vault").mkdir()
+    (tmp_path / "vault" / "hidden.mp4").write_bytes(b"x")
+    locked(tmp_path / "vault")
+    with caplog.at_level(logging.WARNING):
+        got = find_videos(tmp_path, recursive=True)
+    assert got == [(tmp_path / "ok" / "good.mp4").resolve()]
+    assert any(r.levelno == logging.WARNING and "vault" in r.getMessage() for r in caplog.records)
