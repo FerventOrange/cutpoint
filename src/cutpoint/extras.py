@@ -13,6 +13,7 @@ import os
 import sys
 import tomllib
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -57,16 +58,54 @@ def _tool_receipt() -> dict[str, Any] | None:
         return {}
 
 
-def _editable() -> bool:
-    """True when cutpoint is installed from a clone in editable mode (or not installed)."""
+def _direct_url() -> dict[str, Any] | None:
+    """cutpoint's PEP 610 ``direct_url.json``.
+
+    None when cutpoint is not installed (running from a source tree); empty for a registry
+    (PyPI) install or an unreadable file.
+    """
     try:
         raw = importlib.metadata.distribution("cutpoint").read_text("direct_url.json")
     except importlib.metadata.PackageNotFoundError:
+        return None
+    try:
+        info = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+def _editable(info: dict[str, Any] | None) -> bool:
+    """True when cutpoint is installed from a clone in editable mode (or not installed)."""
+    if info is None:
         return True  # running from a source tree
     try:
-        return bool(raw and json.loads(raw).get("dir_info", {}).get("editable"))
-    except (ValueError, AttributeError):
+        return bool(info.get("dir_info", {}).get("editable"))
+    except AttributeError:
         return False
+
+
+def _pip_source(info: dict[str, Any], extras: str) -> str:
+    """The ``pip install`` target that reinstalls a non-editable cutpoint from where it came
+    from: a local path, a VCS URL at the installed commit, an archive URL, or PyPI."""
+    url = info.get("url")
+    if not isinstance(url, str) or not url:
+        return f'"cutpoint[{extras}]"'
+    vcs = info.get("vcs_info")
+    if isinstance(vcs, dict):
+        ref = f"{vcs.get('vcs') or 'git'}+{url}"
+        if vcs.get("commit_id"):
+            ref += f"@{vcs['commit_id']}"
+        if info.get("subdirectory"):
+            ref += f"#subdirectory={info['subdirectory']}"
+        return f'"cutpoint[{extras}] @ {ref}"'
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "file":
+        # Keep the host of a UNC URL (file://server/share/...).
+        raw = parts.path if parts.netloc in ("", "localhost") else f"//{parts.netloc}{parts.path}"
+        path = Path(urllib.request.url2pathname(raw)).as_posix()
+        return f'"{path}[{extras}]"'
+    return f'"cutpoint[{extras}] @ {url}"'
 
 
 def _git_url(git: str, req: dict[str, Any]) -> str:
@@ -125,12 +164,19 @@ def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
                 extras.update(str(e) for e in req.get("extras", []))
                 source = {k: req[k] for k in req if k not in ("name", "extras")}
         options = tool.get("options", {})
-        indexes = [str(i["url"]) for i in options.get("index", []) if i.get("url")]
+        indexes = [
+            ("--default-index" if i.get("default") else "--index", str(i["url"]))
+            for i in options.get("index", [])
+            if i.get("url")
+        ]
         strategy = options.get("index-strategy")
+        python = tool.get("python")
     except (AttributeError, TypeError, KeyError):
-        extras, source, indexes, strategy = {extra}, {}, [], None
+        extras, source, indexes, strategy, python = {extra}, {}, [], None, None
     cmd = f"uv tool install {_tool_source(source, ','.join(sorted(extras)))} --reinstall"
-    cmd += "".join(f" --index {url}" for url in indexes)
+    if python:
+        cmd += f' --python "{python}"'
+    cmd += "".join(f" {flag} {url}" for flag, url in indexes)
     if strategy:
         cmd += f" --index-strategy {strategy}"
     if not indexes and extra in TORCH_EXTRAS:
@@ -167,11 +213,23 @@ def install_hint(extra: str) -> str:
     receipt = _tool_receipt()
     if receipt is not None:
         return _tool_hint(receipt, extra)
-    if not _editable():
-        if uv_managed():
-            return f'uv pip install --python "{sys.executable}" "cutpoint[{extra}]"'
+    info = _direct_url()
+    if not _editable(info):
+        source = _pip_source(info or {}, extra)
+        uv = uv_managed()
+        # PyPI torch is CPU-only on Windows (as in _tool_hint).
+        gpu = ""
+        if extra in TORCH_EXTRAS and sys.platform == "win32":
+            flags = (
+                f"--index {TORCH_INDEX} --index-strategy unsafe-best-match"
+                if uv
+                else f"--extra-index-url {TORCH_INDEX}"
+            )
+            gpu = f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
+        if uv:
+            return f'uv pip install --python "{sys.executable}" {source}{gpu}'
         exe, note = _python()
-        return f'{exe} -m pip install "cutpoint[{extra}]"{note}'
+        return f"{exe} -m pip install {source}{gpu}{note}"
     if uv_managed():
         return (
             f"uv sync --extra {extra} (list every other extra you use too: uv sync "
