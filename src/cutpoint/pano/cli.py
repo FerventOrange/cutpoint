@@ -304,21 +304,29 @@ def _without_vl(path: Any) -> Any:
     return {k: v for k, v in path.items() if k != "vl"} if isinstance(path, dict) else path
 
 
-def _save_path(out_dir: Path, stem: str, path: dict[str, Any], rendering: bool) -> None:
+def _save_path(
+    out_dir: Path, stem: str, path: dict[str, Any], rendering: bool, carried: set[str]
+) -> Path | None:
     """Write ``<stem>.json``; a preview of another path under that name goes unless re-rendered.
     Another path already in that file (it may be hand-edited) is first copied to the first free
-    backup name (``<file>.bak``, then ``<file>.1.bak``, ...); the same path (``vl`` answers
-    aside) is not backed up."""
+    backup name (``<file>.bak``, then ``<file>.1.bak``, ...) and that name returned (None when
+    there is none); the same path (``vl`` answers aside) is not backed up. Only a stem not in
+    ``carried`` (its path is reused under a new stem this run) logs the backup: the caller
+    drops a carried one once the run has saved every path."""
     from cutpoint.pano.render import backup_path_file  # noqa: PLC0415
 
     f = out_dir / f"{stem}.json"
     old, new = cache.load_json(f), json.loads(json.dumps(path))
     changed = old != new
+    bak = None
     if changed and f.is_file() and _without_vl(old) != _without_vl(new):
-        logger.warning("%s  re-planned; the previous path is kept as %s", stem, backup_path_file(f))
+        bak = backup_path_file(f)
+        if stem not in carried:
+            logger.warning("%s  re-planned; the previous path is kept as %s", stem, bak)
     if not rendering and changed:
         (out_dir / f"{stem}.mp4").unlink(missing_ok=True)
     cache.save_json(f, path, indent=1)
+    return bak
 
 
 def _drop_stale(out_dir: Path, stems: set[str], carried: set[str]) -> None:
@@ -326,22 +334,33 @@ def _drop_stale(out_dir: Path, stems: set[str], carried: set[str]) -> None:
     ``stems``, then record ``stems`` (``director_stems.json``; no record, nothing removed).
     A path JSON (it may be hand-edited) is first copied to the first free backup name
     (``<file>.bak``, ...) unless its stem is in ``carried`` (reused under a new stem); the
-    preview and its ``.cmd`` are rebuilt from it, so they just go."""
+    preview and its ``.cmd`` are rebuilt from it, so they just go. A stem whose backup or
+    removal fails stays recorded, so the next run retries it."""
     from cutpoint.pano.render import backup_path_file  # noqa: PLC0415
 
     record = out_dir / "director_stems.json"
+    left: set[str] = set()  # stems with a file still there
     for stem in sorted(set(cache.load_json(record) or []) - stems):
         for f in (out_dir / f"{stem}{ext}" for ext in (".json", ".cmd", ".mp4")):
+            if not f.is_file():
+                continue
+            if f.suffix == ".json" and stem not in carried:
+                try:
+                    bak = backup_path_file(f)
+                except OSError as err:
+                    logger.warning("could not back up %s; keeping it: %s", f.name, err)
+                    left.add(stem)
+                    continue
+                logger.warning("%s  no longer selected; the path is kept as %s", stem, bak)
             try:
-                if f.is_file():
-                    if f.suffix == ".json" and stem not in carried:
-                        bak = backup_path_file(f)
-                        logger.warning("%s  no longer selected; the path is kept as %s", stem, bak)
-                    f.unlink()
-                    logger.info("removed stale %s", f.name)
+                f.unlink()
+                logger.info("removed stale %s", f.name)
             except OSError as err:
-                logger.warning("could not remove stale %s: %s", f.name, err)
-    cache.save_json(record, sorted(stems))
+                logger.warning(
+                    "could not remove %s (in use?); will retry next run: %s", f.name, err
+                )
+                left.add(stem)
+    cache.save_json(record, sorted(stems | left))
 
 
 def cmd_director(a: argparse.Namespace) -> None:
@@ -376,22 +395,24 @@ def cmd_director(a: argparse.Namespace) -> None:
             checker = None
     vl_report: list[dict[str, Any]] = []
     reuse = {} if checker is not None or getattr(a, "force", True) else _reusable(out_dir)
-    stems: set[str] = set()
-    carried: set[str] = set()  # old stems whose path is reused under a new stem
+    segs = []
     for i, m in enumerate(_selected_segments(project, a), 1):
         clip = clip_for(clips, m["source"])
         if clip is None:
             logger.info("%s: not a 360 clip; skipped", m.get("id"))
             continue
-        stem = f"{i:03d}_{slugify(m.get('label', ''), 40)}"
-        stems.add(stem)
         p = D.params_for(m.get("kind"))
         p = asdict(D.with_params(p, overrides) if overrides else p)
         key = _plan_key(clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p)
+        segs.append((f"{i:03d}_{slugify(m.get('label', ''), 40)}", m, clip, key))
+    stems = {stem for stem, *_ in segs}
+    # old stems whose path is reused under a new stem (known up front: an earlier segment may
+    # take over such a name; its backup is redundant once the run saved the path anew)
+    carried = {reuse[k][0] for stem, _, _, k in segs if k in reuse and reuse[k][0] != stem}
+    redundant: list[Path] = []  # backups of carried paths, dropped after the loop
+    for stem, m, clip, key in segs:
         preview = out_dir / f"{stem}.mp4"
         old_stem, path = reuse.get(key, (None, None))
-        if old_stem not in (None, stem):
-            carried.add(old_stem)
         fresh = (
             old_stem == stem
             and preview.is_file()
@@ -399,7 +420,9 @@ def cmd_director(a: argparse.Namespace) -> None:
         )
         if path is not None and (not a.preview or fresh):
             if old_stem != stem:
-                _save_path(out_dir, stem, path, rendering=False)
+                bak = _save_path(out_dir, stem, path, rendering=False, carried=carried)
+                if bak is not None and stem in carried:
+                    redundant.append(bak)
             logger.info("%s  unchanged; reused %s", stem, old_stem)
             continue
         if path is None:  # a reused path under another name only needs its preview
@@ -458,7 +481,9 @@ def cmd_director(a: argparse.Namespace) -> None:
             if checker.dead:
                 logger.warning("--vl-check: the vision model stopped answering; skipping the rest")
                 checker = None
-        _save_path(out_dir, stem, path, rendering=a.preview)
+        bak = _save_path(out_dir, stem, path, rendering=a.preview, carried=carried)
+        if bak is not None and stem in carried:
+            redundant.append(bak)
         logger.info(
             "%s  clip %s %.1f-%.1f: %s", stem, clip.clip_id, m["start"], m["end"], D.describe(path)
         )
@@ -479,6 +504,8 @@ def cmd_director(a: argparse.Namespace) -> None:
             )
         if a.preview and not checked:  # after the path JSON: a failed render keeps it
             render()
+    for bak in redundant:  # every carried path is saved under its new stem by now
+        bak.unlink(missing_ok=True)
     if a.out_name:  # previews of earlier selections would mislead `360 qa`
         _drop_stale(out_dir, stems, carried)
     if vl_report:
