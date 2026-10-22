@@ -42,6 +42,11 @@ documents every key.
     overrides it. Default ``http://127.0.0.1:11434``
     (see :func:`cutpoint.backends.ollama_url`).
 
+``video_encoder``
+    ``auto`` (default), ``nvenc``, ``amf``, ``vaapi`` or ``cpu``. ``CUTPOINT_VIDEO_ENCODER``
+    overrides it. Auto picks the first GPU encoder that really encodes, else libx264; a named
+    GPU encoder that does not work is an error (see :func:`cutpoint.ffmpeg_utils.video_encoder`).
+
 ``pano``
     Insta360 settings, read by :func:`cutpoint.pano.project.pano_config`.
 
@@ -68,6 +73,8 @@ from cutpoint.utils import matches_glob
 
 logger = logging.getLogger(__name__)
 
+VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
+
 
 @dataclass(frozen=True)
 class Config:
@@ -79,6 +86,7 @@ class Config:
     stage_dir: Path = field(default_factory=paths.default_stage_dir)
     player_tags: tuple[str, ...] = ()
     ollama_url: str = ""
+    video_encoder: str = "auto"
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -123,6 +131,13 @@ def get_config() -> Config:
         tags = (tags,)
     if not isinstance(tags, (list, tuple)):
         raise ValueError(f"{path}: player_tags must be a list of names")
+    encoder = str(paths.env("VIDEO_ENCODER") or data.get("video_encoder") or "auto")
+    encoder = encoder.strip().lower()
+    if encoder not in VIDEO_ENCODERS:
+        raise ValueError(
+            f"video_encoder / CUTPOINT_VIDEO_ENCODER is {encoder!r}; "
+            f"expected one of {', '.join(VIDEO_ENCODERS)}"
+        )
     return Config(
         Path(projects),
         pairs,
@@ -130,6 +145,7 @@ def get_config() -> Config:
         stage,
         tuple(str(t) for t in tags if str(t).strip()),
         str(data.get("ollama_url") or ""),
+        encoder,
     )
 
 

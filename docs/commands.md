@@ -13,6 +13,8 @@ prints tracebacks of errors.
 
 | Command | Purpose |
 |---|---|
+| [`ui`](#ui) | Open a local browser editing workspace for standard video |
+| [`capabilities`](#capabilities) | Report GPU vendors, working encoders and transcription support |
 | [`analyze`](#analyze) | Find and rank highlight candidates |
 | [`events`](#events) | Detect sounds, HUD events and describe windows with a model |
 | [`clips`](#clips) | Export moments as numbered clips |
@@ -22,6 +24,50 @@ prints tracebacks of errors.
 | [`crashes`](#crashes), [`mix`](#mix), [`refmatch`](#refmatch), [`fit`](#fit) | Action-cam module |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide) | Setup, data and the agent guide |
+
+## ui
+
+```text
+cutpoint ui [--port 8765]
+```
+
+Requires the `ui` extra: from a clone, `uv run --extra ui cutpoint ui`; for a tool install,
+`uv tool install "cutpoint[ui]" --reinstall`, then `cutpoint ui`. Include any other extras
+you already use when installing or running.
+
+Open the complete printed loopback URL, including `#t=…`; keep it private because it grants access
+to local footage. The workspace can create/open projects, analyze standard video,
+preview and trim candidates, save and reorder a sequence, export clips, and assemble a final
+video with optional fades, loudness normalization and captions. Source selection browses the
+server machine's files; nothing is uploaded. It does not expose action-cam or 360 commands.
+
+Jobs run one at a time with logs and cancellation. Results remain the usual Cutpoint files;
+review choices live under `<project>/ui/`. Exports use fresh `clips_ui_*` folders and finals use
+fresh `final_ui_*` names, so earlier exports are not overwritten. Assembly uses the latest
+successful UI export, not any subsequent unexported sequence changes. Failed/cancelled exports
+may leave partial output folders, which are not offered for assembly.
+
+For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
+under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matching clip export.
+Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
+remote access is not supported.
+
+## capabilities
+
+```text
+cutpoint capabilities [--json]
+```
+
+Reports GPU vendors present separately from usable video encoders, the selected encoder,
+faster-whisper's transcription device, and the backend order `setup` would use for llama.cpp.
+Encoder checks actually encode a short clip; an encoder listed by ffmpeg is not necessarily
+usable. This command downloads nothing. `--json` writes the report to stdout for other tools.
+
+Use `video_encoder` in `config.json` or `CUTPOINT_VIDEO_ENCODER` to select `auto`, `nvenc`,
+`amf`, `vaapi` or `cpu`. Auto falls back to software when no hardware probe succeeds; an
+explicit unavailable GPU encoder fails rather than silently selecting another backend.
+AMD transcription remains CPU-only with the current faster-whisper runtime.
+See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device permissions.
 
 ## analyze
 
@@ -109,9 +155,10 @@ cutpoint clips <project> [--top N | --ids h001 h004 ... | --segments FILE | --mi
 ```
 
 Exports moments as `001_<label>.mp4`, `002_<label>.mp4`, ... in playback order, plus
-`manifest.json`. Cuts are re-encoded for frame accuracy with h264_nvenc, or libx264 if NVENC is
-unavailable. Every clip gets the same resolution, frame rate, pixel format and audio, so clips
-join losslessly. The command refuses to write into a non-empty folder without `--force`.
+`manifest.json`. Cuts are re-encoded for frame accuracy with a working NVIDIA/AMD hardware
+encoder, or libx264 when no hardware encoder passes its probe. Every clip gets the same
+resolution, frame rate, pixel format and audio, so clips join losslessly. The command refuses
+to write into a non-empty folder without `--force`.
 
 | Option | Meaning |
 |---|---|
@@ -315,7 +362,13 @@ Fits one learned style on several projects that already have `refmatch.json` (ru
 cutpoint setup [--only pip panns llama omni visual voice] [--force]
 ```
 
-Downloads the models and tools for `events`. On Linux it downloads the official Linux build: the oldest CUDA build (with the cudart libraries) in the newest llama.cpp release (12.8 today; needs a recent NVIDIA driver) when an NVIDIA driver is detected, otherwise Vulkan, otherwise CPU. With an older NVIDIA driver, set `CUTPOINT_LLAMA_SERVER` or put a Vulkan or self-built `llama-server` on `PATH`. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled build, then `PATH`. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
+Downloads the models and tools for `events`. On Windows and Linux, auto selection prefers CUDA
+when a usable NVIDIA driver is detected, otherwise Vulkan, then CPU, depending on available
+release assets. Windows CUDA uses the CUDA 12.4 distribution; Linux uses the oldest CUDA
+distribution with cudart in the newest matching release. Set `CUTPOINT_LLAMA_BACKEND` to
+`auto`, `cuda`, `vulkan` or `cpu` to control selection; an explicit backend does not silently
+fall back. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled build, then
+`PATH`. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
 
 ## paths
 

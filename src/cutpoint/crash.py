@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 DT = 0.1
 G = 9.80665
-CRASH_VERSION = 1
+CRASH_VERSION = 2  # 2: CLIP built with QuickGELU (dense scores and crash keys changed)
 IMU_VERSION = 1
 CRASHES_FILE = "crashes.json"
 CHECK_DIR = "crash_check"

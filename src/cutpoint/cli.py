@@ -1,5 +1,5 @@
 """Command-line interface: ``cutpoint analyze | events | crashes | profile | refmatch | fit | clips |
-extend | assemble | stage | 360 | setup | paths | guide``.
+extend | assemble | stage | 360 | setup | paths | capabilities | guide | ui``.
 
 Installed as the ``cutpoint`` console script.
 """
@@ -337,6 +337,13 @@ def _cmd_paths(a: argparse.Namespace) -> None:
         print(f"{key:<{width}}  {path}{state}")
 
 
+def _cmd_capabilities(a: argparse.Namespace) -> None:
+    from cutpoint import capabilities  # noqa: PLC0415 - probes ffmpeg, only when asked
+
+    data = capabilities.report()
+    print(json.dumps(data, indent=2) if a.json else capabilities.format_report(data))
+
+
 def _cmd_guide(a: argparse.Namespace) -> None:
     # The wheel ships AGENTS.md inside the package; editable installs read the repo-root file.
     packaged = files("cutpoint") / "AGENTS.md"
@@ -348,6 +355,23 @@ def _cmd_guide(a: argparse.Namespace) -> None:
     sys.stdout.flush()
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
+
+
+def _port(text: str) -> int:
+    """argparse type: a TCP port, 1-65535."""
+    try:
+        port = int(text)
+    except ValueError:
+        port = 0
+    if not 0 < port < 65536:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a port number, 1-65535")
+    return port
+
+
+def _cmd_ui(a: argparse.Namespace) -> None:
+    from cutpoint.ui import run  # noqa: PLC0415
+
+    run(a.port)
 
 
 def _add_speech_arguments(p: argparse.ArgumentParser, default_on: str) -> None:
@@ -900,8 +924,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pa.set_defaults(func=_cmd_paths)
 
+    cp = sub.add_parser(
+        "capabilities",
+        help="report GPU vendors present, video encoders that really work and what "
+        "transcription and llama.cpp setup would use",
+    )
+    cp.add_argument("--json", action="store_true", help="print the report as JSON")
+    cp.set_defaults(func=_cmd_capabilities)
+
     gd = sub.add_parser("guide", help="print the guide for AI agents driving Cutpoint")
     gd.set_defaults(func=_cmd_guide)
+
+    ui = sub.add_parser(
+        "ui",
+        help="serve the local browser workspace for standard video highlights "
+        "(127.0.0.1 only; needs the 'ui' extra)",
+    )
+    ui.add_argument("--port", type=_port, default=8765, help="port on 127.0.0.1 (default 8765)")
+    ui.set_defaults(func=_cmd_ui)
     return p
 
 

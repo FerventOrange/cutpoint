@@ -41,6 +41,23 @@ Delete or rename clips to change the cut, then ask the agent to assemble again.
 One-command editing (`cutpoint edit`), a first-run setup wizard and an agent skill are
 planned. Today the agent runs the steps itself using [AGENTS.md](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md).
 
+### Local browser workspace
+
+For standard video, you can review and edit highlights without an agent:
+
+```bash
+uv run --extra ui cutpoint ui
+```
+
+Open the complete URL printed in the terminal (including its session token). Pick a source
+file or folder, analyze it, trim and reorder moments, export clips, then assemble and preview
+the final video. Footage stays on your
+computer; each export gets a new folder so previous exports are retained. The UI does not
+expose the specialized action-cam or 360 workflows.
+
+For a tool install, use `uv tool install "cutpoint[ui]" --reinstall`, then `cutpoint ui`.
+See the [command reference](docs/commands.md#ui) for details.
+
 ## Requirements
 
 - Windows or Linux
@@ -70,6 +87,7 @@ On Linux:
 ```bash
 sudo apt install ffmpeg        # or dnf, pacman, zypper, ...
 curl -LsSf https://astral.sh/uv/install.sh | sh
+. "$HOME/.local/bin/env"
 git clone https://github.com/FerventOrange/cutpoint.git
 cd cutpoint
 uv sync
@@ -79,6 +97,11 @@ uv run cutpoint paths
 With an NVIDIA GPU, run `uv sync --extra gpu` (or `uv tool install "cutpoint[gpu]"`) for GPU
 Whisper; the base install transcribes on the CPU. The optional extras and model downloads are explained in
 [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
+
+AMD video encoding uses VAAPI on Linux or AMF on supported FFmpeg/driver installations.
+AMD transcription remains on CPU. Run `uv run cutpoint capabilities` to distinguish detected
+GPU vendors from working encoders and see the selected backend. Use `video_encoder` in
+`config.json` or `CUTPOINT_VIDEO_ENCODER` (`auto`, `nvenc`, `amf`, `vaapi`, `cpu`) to override it.
 
 ## Documentation
 

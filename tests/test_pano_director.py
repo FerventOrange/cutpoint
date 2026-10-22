@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from cutpoint.events import visual as V
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
@@ -518,3 +519,16 @@ def test_path_for_backup_failing_midway_leaves_no_partial_file(
         ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)
     assert old.read_bytes() == before
     assert [p.name for p in old.parent.iterdir()] == ["001_a.json"]  # no .bak, no .tmp
+
+
+def test_views_cache_follows_clip_identity(tmp_path, monkeypatch):
+    """A cache written for one CLIP arch/weights is a miss for another; the current one loads."""
+    src = tmp_path / "g.lrv"
+    src.write_bytes(b"x")
+    pv = make_views({}, str(src))
+    VW.save_views(src, pv, VW.ViewParams())
+    assert VW.load_views(src) is not None
+    for attr in ("CLIP_ARCH", "CLIP_PRETRAINED"):
+        with monkeypatch.context() as changed:
+            changed.setattr(V, attr, f"{getattr(V, attr)}-other")
+            assert VW.load_views(src) is None

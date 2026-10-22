@@ -64,7 +64,7 @@ from cutpoint.ffmpeg_utils import (
     FFmpegError,
     probe,
     run,
-    video_encoder_args,
+    video_encoder,
 )
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
@@ -297,10 +297,12 @@ def render_segment(
         f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
         f"v_fov={init['v_fov']:.3f}:w={fmt.width}:h={fmt.height}:interp=line"
     )
-    vf = (
-        f"{stack}{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
-        f"setsar=1,fps={fmt.fps}:round=down,format=yuv420p[v]"
+    enc = video_encoder()  # resolved before the NVDEC retry loop, which would swallow its error
+    body = (
+        f"{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
+        f"setsar=1,fps={fmt.fps}:round=down,format=yuv420p"
     )
+    vf = f"{stack}{enc.chain(body)}[v]"
     af = f"[{audio_idx}:a:0]{a_fmt}[a]"
     t0 = time.perf_counter()
     text = ""
@@ -317,9 +319,7 @@ def render_segment(
             "[v]",
             "-map",
             "[a]",
-            *video_encoder_args(19),
-            "-pix_fmt",
-            "yuv420p",
+            *enc.args(19),
             "-color_range",
             "tv",
             "-fps_mode",

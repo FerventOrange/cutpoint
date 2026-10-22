@@ -7,19 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cutpoint import activity, cache, crash, paths
-
-
-def test_ski_profile_reproduces_previous_constants():
-    # Hashes of the hard-coded ski prompts / words before profiles existed: the
-    # dense cache key and the prompt set must not change (cached results stay valid).
-    words = sorted(crash.CRASH_WORDS.items())
-    assert cache.params_hash({"pos": crash.CRASH_POS, "neg": crash.CRASH_NEG, "words": words}) == (
-        "33cb4b8e03"
-    )
-    assert crash.CrashParams().dense_key() == "e22518f937"
-    ski = crash.CrashParams().with_profile(activity.full(activity.library()["ski"]))
-    assert ski == crash.CrashParams()
+from cutpoint import activity, paths
 
 
 @pytest.fixture

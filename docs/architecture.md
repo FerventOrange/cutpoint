@@ -25,6 +25,7 @@ or replaced by hand-edited input (`clips --segments`). Per-source results are ca
 | Module | Role |
 |---|---|
 | `cli.py` | argparse entry point and error handling (exit codes 0, 1, 130) |
+| `ui.py`, `web/` | Optional loopback browser workspace; static ES modules, project/review API, scoped media/proxies, and isolated CLI subprocess jobs |
 | `paths.py`, `config.py` | `CUTPOINT_HOME` and every data location; `config.json`, projects folder, source remap |
 | `analyze.py`, `sources.py` | Signals, peak picking, merging, snapping, `highlights.json`; cached audio and transcripts per source |
 | `transcribe.py`, `vision.py`, `backends.py` | faster-whisper wrapper; Ollama client; Ollama URL handling |
@@ -47,4 +48,7 @@ See [360 director](workflows/360-director.md) for the 360 design.
 - Optional heavy dependencies (torch, open_clip, RapidOCR) are imported lazily inside functions.
 - Source videos are read-only. Outputs go to the project folder.
 - Long GPU work runs in layers so only one model is loaded at a time.
+- The browser workspace shares the pipeline's result files. It stores review choices and export
+  history under `<project>/ui/`, and runs one heavy CLI job at a time rather than keeping models
+  inside the HTTP server. Each UI export gets a fresh destination.
 - Tests are CPU-only and do not need models or footage. See [CONTRIBUTING.md](../CONTRIBUTING.md).
