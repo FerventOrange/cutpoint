@@ -80,9 +80,12 @@ clone); with pip, `pip install "cutpoint[gpu]"`. This path is not exercised by t
 `uv run`.
 
 A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on Windows. The CUDA
-12.6 index in `pyproject.toml` applies to a clone and to tool installs from a clone directory
-(including `--editable`) or a git URL, which need no extra flags. For a PyPI or wheel install
-with an NVIDIA GPU and the `events` extra, add the PyTorch index:
+12.6 index in `pyproject.toml` applies to a clone, to tool installs from a clone directory
+(including `--editable`) or a git URL, and to `uv pip install` from a clone directory or git URL
+(`uv pip` keeps an already-installed CPU-only torch unless you add `--reinstall-package torch
+--reinstall-package torchvision`); these need no index flags. `pip` and PyPI or wheel installs do
+not apply it. For a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add the PyTorch
+index:
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match

@@ -131,7 +131,7 @@ command for theirs:
 - From a clone: `uv sync --extra X`, listing every other extra in use too (the error prints this
   form).
 - Tool install: `uv tool install "cutpoint[X]" --reinstall`, listing every extra in use. For a
-  PyPI or wheel install (not one from a clone directory or git URL) with an NVIDIA GPU and the
+  PyPI or wheel install (not one from a clone directory or git URL, with `uv tool` or `uv pip`) with an NVIDIA GPU and the
   `events` extra, add
   `--index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match` so torch
   uses CUDA ([getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#install-as-a-tool-optional)).

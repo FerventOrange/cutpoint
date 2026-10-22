@@ -243,7 +243,21 @@ def install_hint(extra: str) -> str:
         uv = uv_managed()
         # PyPI torch is CPU-only on Windows (as in _tool_hint).
         gpu = ""
-        if extra in TORCH_EXTRAS and sys.platform == "win32":
+        # uv installs of a directory or git source apply cutpoint's own [tool.uv.sources],
+        # which pin torch to the cu126 index (as in _tool_hint); an archive or pip does not.
+        project_sources = (
+            uv
+            and isinstance(info, dict)
+            and ("dir_info" in info or isinstance(info.get("vcs_info"), dict))
+        )
+        if extra in TORCH_EXTRAS and sys.platform == "win32" and project_sources:
+            if _cpu_torch():
+                # uv keeps an installed CPU torch that satisfies torch==x.y.z.
+                gpu = (
+                    " (with an NVIDIA GPU add --reinstall-package torch "
+                    "--reinstall-package torchvision so torch uses CUDA)"
+                )
+        elif extra in TORCH_EXTRAS and sys.platform == "win32":
             flags = (
                 f"--index {TORCH_INDEX} --index-strategy unsafe-best-match"
                 if uv
