@@ -15,11 +15,22 @@ from typing import Any
 
 import numpy as np
 
+from cutpoint.extras import install_hint
+
 logger = logging.getLogger(__name__)
 
 Segment = dict[str, Any]  # {"start", "end", "text", "words": [{"start","end","word"}], ...}
 
 _dll_dirs_added = False
+_cpu_notice_logged = False
+
+# Libraries ctranslate2 needs for CUDA inference (the 'gpu' extra's wheels or a CUDA
+# 12 / cuDNN 9 install). cuDNN's front library alone is not enough: it loads the
+# ops/cnn parts lazily, so probe those.
+_CUDA_LIBS = {
+    "win32": ("cublas64_12.dll", "cublasLt64_12.dll", "cudnn_ops64_9.dll", "cudnn_cnn64_9.dll"),
+    "linux": ("libcublas.so.12", "libcublasLt.so.12", "libcudnn_ops.so.9", "libcudnn_cnn.so.9"),
+}
 
 
 def _add_cuda_dll_dirs() -> None:
@@ -67,15 +78,44 @@ def _preload_cuda_libs() -> None:
         libs = failed
 
 
+def _missing_cuda_libs() -> list[str]:
+    """CUDA libraries for whisper that cannot be loaded (searched like ctranslate2 does)."""
+    missing = []
+    for name in _CUDA_LIBS.get("linux" if sys.platform.startswith("linux") else sys.platform, ()):
+        try:
+            if sys.platform == "win32":
+                # winmode=0: plain LoadLibrary search (incl. PATH), as ctranslate2 uses.
+                ctypes.WinDLL(name, winmode=0)
+            else:
+                ctypes.CDLL(name)
+        except OSError:
+            missing.append(name)
+    return missing
+
+
 def cuda_available() -> bool:
-    """True if ctranslate2 sees a CUDA device."""
+    """True if ctranslate2 sees a CUDA device and the CUDA libraries for it load."""
+    global _cpu_notice_logged
     _add_cuda_dll_dirs()
     try:
         import ctranslate2  # noqa: PLC0415 - after the DLL dirs are added
 
-        return ctranslate2.get_cuda_device_count() > 0
+        if ctranslate2.get_cuda_device_count() == 0:
+            return False
     except Exception:  # noqa: BLE001 - any import/driver issue means "no CUDA"
         return False
+    missing = _missing_cuda_libs()
+    if missing:
+        if not _cpu_notice_logged:
+            _cpu_notice_logged = True
+            logger.info(
+                "NVIDIA GPU found, but the CUDA libraries for whisper are not installed "
+                "(%s); transcribing on the CPU. %s",
+                ", ".join(missing),
+                _cuda_libs_hint(),
+            )
+        return False
+    return True
 
 
 def load_wav(path: Path) -> Any:
@@ -88,20 +128,8 @@ def load_wav(path: Path) -> Any:
 
 
 def _cuda_libs_hint() -> str:
-    """How to restore the CUDA 12 cuBLAS / cuDNN 9 libraries on this platform."""
-    if sys.platform == "win32":
-        return (
-            "They come with cutpoint's base install on Windows (nvidia-cublas-cu12, "
-            "nvidia-cudnn-cu12): reinstall the package to restore GPU transcription."
-        )
-    if sys.platform.startswith("linux"):
-        return (
-            "Cutpoint's base install includes nvidia-cublas-cu12 and nvidia-cudnn-cu12; "
-            "check they are installed in this environment (uv pip show nvidia-cublas-cu12 "
-            "nvidia-cudnn-cu12) and that the NVIDIA driver supports CUDA 12, or put "
-            "their site-packages/nvidia/*/lib folders on LD_LIBRARY_PATH."
-        )
-    return "GPU transcription needs CUDA 12 cuBLAS and cuDNN 9."
+    """How to add the CUDA 12 cuBLAS / cuDNN 9 libraries (the 'gpu' extra)."""
+    return f"For GPU transcription add the 'gpu' extra: {install_hint('gpu')}"
 
 
 class Transcriber:
@@ -126,10 +154,11 @@ class Transcriber:
         text = str(err).lower()
         if any(k in text for k in ("cublas", "cudnn", "cudart", ".dll", ".so")):
             logger.warning(
-                "CUDA libraries for whisper are missing (%s); falling back to "
-                "CPU int8 (much slower). %s",
+                "CUDA libraries for whisper failed to load (%s); falling back to "
+                "CPU int8 (much slower). Make sure the 'gpu' extra is installed (%s) "
+                "and the NVIDIA driver supports CUDA 12",
                 err,
-                _cuda_libs_hint(),
+                install_hint("gpu"),
             )
         else:
             logger.warning("CUDA transcription failed (%s); falling back to CPU int8", err)

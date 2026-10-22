@@ -35,10 +35,6 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.12"
-      # The tests are CPU-only; the multi-GB CUDA runtime wheels are only used at
-      # transcribe time, so skip them (and the events/torch extra) here.
-      - run: >-
-          uv sync --locked --extra dev
-          --no-install-package nvidia-cublas-cu12
-          --no-install-package nvidia-cudnn-cu12
+      # The tests are CPU-only; only the dev extra is synced (no gpu/events extras).
+      - run: uv sync --locked --extra dev
       - run: uv run --no-sync pytest -q

@@ -46,7 +46,8 @@ planned. Today the agent runs the steps itself using [AGENTS.md](https://github.
 - Windows or Linux
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
 - ffmpeg
-- An NVIDIA GPU is recommended. Without one, everything still runs but slower.
+- An NVIDIA GPU is recommended (add the `gpu` extra for GPU Whisper). Without one, everything
+  still runs but slower.
 - Optional: Ollama for AI frame rating, extra downloads (about 8 GB) for sound, on-screen text
   and scene-description features
 
@@ -75,7 +76,8 @@ uv sync
 uv run cutpoint paths
 ```
 
-The optional extras and model downloads are explained in
+With an NVIDIA GPU, run `uv sync --extra gpu` (or `uv tool install "cutpoint[gpu]"`) for GPU
+Whisper; the base install transcribes on the CPU. The optional extras and model downloads are explained in
 [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
 
 ## Documentation
