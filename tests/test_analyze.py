@@ -58,6 +58,13 @@ def test_reanalyze_if_reachable_leaves_highlights_when_a_source_is_offline(
     assert hl.read_bytes() == before
 
 
+def _remap(home, monkeypatch, old, new, exclude=()):
+    data = {"source_remap": {str(old): str(new)}, "source_remap_exclude": list(exclude)}
+    write(home / "config.json", json.dumps(data))
+    config.get_config.cache_clear()
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+
+
 def _remapped_project(home, tmp_path, monkeypatch, recorded):
     """Footage moved from ``old`` to ``new``; ``source_remap`` makes the copy reachable."""
     old, new = tmp_path / "old", tmp_path / "new"
@@ -68,16 +75,28 @@ def _remapped_project(home, tmp_path, monkeypatch, recorded):
         data = {"settings": {"inputs": [str(old)]}, "sources": [{"path": path}]}
     elif recorded == "inputs":  # an older project that recorded the copy it read
         data = {"settings": {"inputs": [path]}, "sources": [{"path": str(new / "a.mp4")}]}
-    else:
-        data = {"sources": [{"path": path}]}
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    elif recorded == "moved-folder":  # the original folder is gone, its copy is remapped
+        data = {"settings": {"inputs": [str(old)]}, "sources": [{"path": path}]}
+    else:  # moved-file
+        data = {"settings": {"inputs": [path]}, "sources": [{"path": path}]}
+    _remap(home, monkeypatch, old, new)
     return write(tmp_path / "highlights.json", json.dumps(data))
 
 
-@pytest.mark.parametrize("recorded", ["inputs", "sources", "folder"])
-def test_reanalyze_if_reachable_leaves_highlights_when_a_path_is_only_remapped(
+@pytest.mark.parametrize("recorded", ["moved-file", "moved-folder"])
+def test_reanalyze_if_reachable_reanalyzes_an_input_reachable_through_source_remap(
+    home, tmp_path, monkeypatch, caplog, recorded
+):
+    _remapped_project(home, tmp_path, monkeypatch, recorded)
+    sentinel = tmp_path / "result.json"
+    monkeypatch.setattr(analyze, "reanalyze", lambda project: sentinel)
+    with caplog.at_level("WARNING"):
+        assert analyze.reanalyze_if_reachable(tmp_path) is sentinel
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("recorded", ["inputs", "folder"])
+def test_reanalyze_if_reachable_leaves_highlights_when_reanalysis_would_rekey_or_drop_a_source(
     home, tmp_path, monkeypatch, caplog, recorded
 ):
     hl = _remapped_project(home, tmp_path, monkeypatch, recorded)
@@ -85,7 +104,7 @@ def test_reanalyze_if_reachable_leaves_highlights_when_a_path_is_only_remapped(
     monkeypatch.setattr(analyze, "reanalyze", lambda project: pytest.fail("must not reanalyze"))
     with caplog.at_level("WARNING"):
         assert analyze.reanalyze_if_reachable(tmp_path) is None
-    assert "path(s) not found where analyze recorded them" in caplog.text
+    assert "not found where analyze recorded them, even through source_remap" in caplog.text
     assert hl.read_bytes() == before
 
 
@@ -133,9 +152,7 @@ def test_analyze_records_original_path_when_source_is_remapped(home, tmp_path, m
     old, new = tmp_path / "old", tmp_path / "new"
     write(old / "a.mp4")
     write(new / "a.mp4")
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    _remap(home, monkeypatch, old, new)
     probed = _stub_probe_and_transcriber(monkeypatch)
     proj = tmp_path / "proj"
     target = [old / "a.mp4", new / "a.mp4"] if both else old / "a.mp4"
@@ -155,3 +172,31 @@ def test_analyze_records_relative_input_as_absolute(home, tmp_path, monkeypatch)
     analyze.analyze(Path("a.mp4"), get_style("funny"), proj, vision=False, use_scenes=False)
     hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["settings"]["inputs"] == [expected]
+
+
+@pytest.mark.parametrize("folder", [False, True], ids=["file", "folder"])
+def test_analyze_reads_a_missing_input_through_source_remap_and_records_the_original(
+    home, tmp_path, monkeypatch, folder
+):
+    old, new = tmp_path / "old", tmp_path / "new"  # old is gone entirely
+    write(new / "a.mp4")
+    write(new / "skip" / "b.mp4")
+    write(new / "c_unverified.mp4")  # source_remap_exclude: would be read at old, missing
+    _remap(home, monkeypatch, old, new, exclude=["*unverified*"])
+    probed = _stub_probe_and_transcriber(monkeypatch)
+    proj = tmp_path / "proj"
+    target = old if folder else old / "a.mp4"
+    # The exclude is written against the original path, which only ``old`` spells.
+    analyze.analyze(
+        target,
+        get_style("funny"),
+        proj,
+        vision=False,
+        use_scenes=False,
+        recursive=True,
+        exclude=["*/old/skip/*"],
+    )
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    assert [s["path"] for s in hl["sources"]] == [str(old / "a.mp4")]
+    assert hl["settings"]["inputs"] == [str(target)]
+    assert [p.resolve() for p in probed] == [(new / "a.mp4").resolve()]

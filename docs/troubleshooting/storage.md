@@ -41,11 +41,13 @@ Notes:
   re-analysing ([Configuration](../configuration.md#source_remap-and-source_remap_exclude)).
 - `crashes` and `events` skip sources that are offline or moved (warning `footage not reachable`)
   and fail with `No footage of <project> is reachable` if none is. Reconnect the footage and rerun.
-- If an input or source is not where `analyze` recorded it (moved, or only reachable through
-  `source_remap`), `crashes` (default `--reanalyze`) and ski `events` warn `path(s) not found where
-  analyze recorded them ...; highlights.json left unchanged` and exit 0. Re-analysis needs the
-  footage at its original path; otherwise rerun `analyze` on the new location, then rerun
-  `crashes`/`events` (they match sources by path). Projects analyzed before inputs were stored as
+- If the original path is gone but `source_remap` maps it to an existing location, `analyze`,
+  `crashes` (default `--reanalyze`) and ski `events` read from the new location and re-analyze.
+  They warn `path(s) not found where analyze recorded them, even through source_remap ...;
+  highlights.json left unchanged` and exit 0 only when re-analysis would fail, drop a source or
+  re-key one: for example a file moved out of a folder input that still exists, or a 0.1.0 project
+  that recorded the copy path. Rerun `analyze` on the new location, then `crashes`/`events` (they
+  match sources by path). Projects analyzed before inputs were stored as
   absolute paths keep relative ones until `analyze` runs again.
 - Action-cam telemetry reads whole files; stage first. Crash detection reads only the telemetry
   track and needs no staging.
