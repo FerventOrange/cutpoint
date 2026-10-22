@@ -6,7 +6,7 @@
 |---|---|
 | Python 3.12 | `pyproject.toml` pins `>=3.12,<3.13`. uv installs it for you. |
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
-| ffmpeg and ffprobe | Decoding, loudness, encoding. NVENC is used when available, libx264 otherwise. |
+| ffmpeg and ffprobe | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
 | Ollama (optional) | Only for `analyze --vision` and `events` VLM features that use it. |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are about 8 GB. Clips and finals are re-encoded, so budget for them in the project folder. |
@@ -29,6 +29,7 @@ On Linux:
 ```bash
 sudo apt install ffmpeg        # or dnf, pacman, zypper, ...
 curl -LsSf https://astral.sh/uv/install.sh | sh
+. "$HOME/.local/bin/env"
 ```
 
 Get the code and install the core package:
@@ -42,10 +43,34 @@ uv run cutpoint --help
 
 The core install is enough for `analyze`, `clips`, `extend`, `assemble` and `stage`.
 
+### Browser workspace
+
+```bash
+uv run --extra ui cutpoint ui
+```
+
+Open the complete URL printed in the terminal, including `#t=…`. Create a project from a local
+video or folder and choose a highlight style. Run analysis, preview candidates, adjust their
+start/end times, and add them
+to the sequence. Reorder and save the sequence, export clips, then assemble a final video.
+The final preview includes download links for the MP4, FCPXML and OTIO files.
+
+The workspace is local-only and supports standard video. Source files are never modified.
+Analysis can download a Whisper model when speech transcription first needs it, just as the
+CLI does; the UI does not run `cutpoint setup`. Selecting a browser-incompatible source prepares
+a cached preview conversion, which may take time and extra disk space.
+
+Use `--port 8766` if the default port is occupied. Stop the server with Ctrl+C; this also stops
+its running jobs. Keep every other extra you use in the `uv run`/`uv sync` command.
+
+The startup URL grants access to local footage: keep it private. The token is stored only in the
+current browser tab's session storage. After restarting the server, open its newly printed URL.
+
 ### Optional extras
 
 | Extra | Adds |
 |---|---|
+| `ui` | Local browser editing workspace (`cutpoint ui`); no Node installation required. |
 | `ski` | Action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU). Also used by the 360 module. |
 | `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
@@ -100,6 +125,40 @@ The repository also has wrappers that use `.venv` without activating it: `.\cutp
 `.\cutpoint.cmd`. On Linux, `./cutpoint <command>` is a POSIX sh wrapper that runs
 `.venv/bin/python -m cutpoint`.
 
+### Docker (Linux, CPU only)
+
+The repository `Dockerfile` builds an Ubuntu 24.04 image with ffmpeg and the browser workspace.
+No model weights are downloaded at build or start-up. No GPU is forwarded, so inference and video
+encoding run on the CPU. Create your footage folder first, then:
+
+```bash
+docker build -t cutpoint .
+docker run --rm --network host \
+  --mount source=cutpoint-data,target=/data \
+  --mount type=bind,source="$HOME/Videos",target=/footage,readonly \
+  cutpoint
+```
+
+Open the **complete** `http://127.0.0.1:8765/#t=…` URL printed in the log; the token is
+required. The UI binds to loopback only, so Docker's bridge port publishing (`-p`) cannot reach it.
+On Linux, `--network host` is required ([host networking](https://docs.docker.com/engine/network/drivers/host/)).
+
+Inside the UI, choose sources under `/footage`; the bind mount is read-only, so your videos are never
+modified. The `cutpoint-data` volume is `CUTPOINT_HOME=/data` and keeps projects, models and the
+Hugging Face cache (`HF_HOME=/data/huggingface`) between runs. The only automatic download is the
+Whisper model on first transcription.
+
+For `cutpoint events`, build with `--build-arg INSTALL_EVENTS=true` (tag it `cutpoint:events`) and
+download the models explicitly into the same volume:
+
+```bash
+docker build --build-arg INSTALL_EVENTS=true -t cutpoint:events .
+docker run --rm --mount source=cutpoint-data,target=/data cutpoint:events setup
+```
+
+This is about 8 GB of models, and the Python dependencies are large (they include CUDA libraries
+even though the container runs on the CPU). Then run the UI as above with `cutpoint:events`.
+
 ## First run
 
 ```powershell
@@ -144,7 +203,7 @@ uv run cutpoint setup
 ```
 
 This downloads about 8 GB into `CUTPOINT_HOME`: the PANNs sound-event checkpoint, a
-llama.cpp CUDA build, Qwen2.5-Omni-7B (Q4_K_M plus its mmproj), CLIP ViT-L/14, a Faster R-CNN
+llama.cpp build selected for the platform, Qwen2.5-Omni-7B (Q4_K_M plus its mmproj), CLIP ViT-L/14, a Faster R-CNN
 person detector, an aesthetic head and Silero VAD. Downloads resume if interrupted. Choose
 parts with `--only`:
 
@@ -154,8 +213,12 @@ uv run cutpoint setup --only panns voice
 
 Valid components: `pip`, `panns`, `llama`, `omni`, `visual`, `voice`. `setup` installs no Python
 packages; the `pip` step only checks them and prints the install command. The llama.cpp build it
-downloads on Windows is a CUDA 12.4 build. On Linux it downloads the official Linux build: the oldest CUDA build (with the cudart libraries) in the newest llama.cpp release (12.8 today; needs a recent NVIDIA driver) when an NVIDIA driver is detected, otherwise Vulkan, otherwise CPU. With an older NVIDIA driver, set `CUTPOINT_LLAMA_SERVER` or put a Vulkan or self-built `llama-server` on `PATH`.
-`llama-server` is found through `CUTPOINT_LLAMA_SERVER`, then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` works.
+downloads is selected on Windows and Linux: CUDA with a usable NVIDIA driver, otherwise Vulkan,
+then CPU, depending on release assets. Windows CUDA uses the CUDA 12.4 distribution; Linux uses
+the oldest CUDA distribution with cudart in the newest matching release.
+Set `CUTPOINT_LLAMA_BACKEND=auto`, `cuda`, `vulkan` or `cpu` to override selection. An explicit
+backend does not silently fall back. `llama-server` is found through `CUTPOINT_LLAMA_SERVER`,
+then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` works.
 
 ### Optional: Ollama vision
 

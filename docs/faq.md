@@ -12,15 +12,19 @@ Any agent that can run shell commands (Claude Code, Codex, Grok CLI, others). Se
 [AGENTS.md](../AGENTS.md) and [Using Cutpoint from an agent](agents.md).
 
 **Do I need a GPU?**
-No, but transcription and the optional model layers are much faster on an NVIDIA GPU
-(add the `gpu` extra for GPU Whisper). Clip
-export uses NVENC when available and libx264 otherwise.
+No, but transcription and the optional model layers are faster on an NVIDIA GPU (add the `gpu`
+extra for GPU Whisper; AMD transcription remains on faster-whisper CPU). For video encoding,
+Cutpoint probes usable hardware encoders (NVENC then AMF on Windows; NVENC then VAAPI then AMF
+on Linux) and falls back to `libx264`. You can override this with the `video_encoder` config or
+`CUTPOINT_VIDEO_ENCODER` (`auto`, `nvenc`, `amf`, `vaapi`, `cpu`). See
+[Configuration](configuration.md#video_encoder) and [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md).
 
 **Which platforms are supported?**
-Windows and Linux; the test suite runs on both in CI. `cutpoint setup` downloads a llama.cpp
-build for each (on Linux: the oldest CUDA build when an NVIDIA driver is detected, otherwise Vulkan,
-otherwise CPU). A self-built `llama-server` on `PATH` or in `CUTPOINT_LLAMA_SERVER` also works.
-
+Windows and Linux; the test suite runs on both in CI. `cutpoint setup` automatically prefers CUDA
+when a usable NVIDIA driver is detected, otherwise Vulkan, otherwise CPU when distribution
+assets are available. You can override the backend with `CUTPOINT_LLAMA_BACKEND` (`auto`, `cuda`,
+`vulkan`, `cpu`). A self-built `llama-server` on `PATH` or in `CUTPOINT_LLAMA_SERVER` also works.
+See [Models and Ollama troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete).
 **What kinds of video work?**
 Gameplay, action-cam, sport, funny moments and commentary or talk. Pick the matching `--style`
 ([Configuration](configuration.md#styles)). Scoring is heuristic and works best when there is

@@ -9,12 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional `ui` extra and `cutpoint ui`: a loopback-only browser workspace for standard-video
+  analysis, moment preview/trim/reordering, clip export and final assembly. Includes saved
+  review sequences, seekable media/proxies, isolated cancellable jobs, and non-overwriting
+  exports with MP4/FCPXML/OTIO downloads.
+- Runtime-probed AMD video encoding (VAAPI/AMF) alongside NVENC, with software fallback,
+  `video_encoder` / `CUTPOINT_VIDEO_ENCODER` overrides, and `cutpoint capabilities [--json]`
+  reporting hardware presence separately from usable encoding and transcription support.
+- Windows llama.cpp Vulkan/CPU asset selection alongside CUDA, and `CUTPOINT_LLAMA_BACKEND`
+  overrides on Windows and Linux. AMD faster-whisper transcription remains CPU-only.
 - `cutpoint --version`.
 - Linux: `cutpoint setup` downloads the official llama.cpp Linux build (the oldest CUDA build
   with cudart in the newest llama.cpp release, 12.8 today, when an NVIDIA driver is detected;
   otherwise Vulkan, otherwise CPU). `llama-server`
   is found via `CUTPOINT_LLAMA_SERVER`, the bundled build, then `PATH`.
 - `./cutpoint` POSIX shell wrapper that runs the repo `.venv`, like `cutpoint.cmd`.
+- Linux Docker recipe (`Dockerfile`, `.dockerignore` build-context exclusions) for the CPU browser
+  workspace, with an optional `INSTALL_EVENTS` build argument; see the getting-started guide.
 
 ### Changed
 
@@ -48,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--recursive` and `--exclude`; with none recorded it logs a warning. Previously such a copy could
   only be removed by a bare `--clear`, and one missing input stopped the other inputs' copies from
   being cleared. `stage --help` now describes `--exclude` and `--recursive`.
+- `cutpoint ui`: pasting a newly printed startup URL into an already-open tab now reloads the page
+  so the fresh session token is used, instead of leaving a stale "token rejected" screen.
+- `cutpoint ui`: re-analysis keeps saved trims attached to their source intervals instead of
+  associating them with a different moment that reuses the same rank number.
+- The CLIP model for `events` and `crashes` uses `ViT-L-14-quickgelu` to match the OpenAI
+  weights instead of building them with GELU. The checkpoint is unchanged; cached visual
+  features (including 360 views), text embeddings and dense crash scores are recomputed on
+  the next run.
+- Install instructions load `$HOME/.local/bin/env` after the uv installer so `uv` works in a fresh
+  shell.
 - `stage --exclude` matches the original path of footage read through `source_remap`, as
   `analyze --exclude` does, instead of the remapped location. Files are still copied from where
   `analyze` reads them (#93).

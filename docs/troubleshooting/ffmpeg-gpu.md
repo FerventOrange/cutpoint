@@ -26,15 +26,48 @@ export CUTPOINT_FFMPEG=/opt/ffmpeg/bin/ffmpeg
 export CUTPOINT_FFPROBE=/opt/ffmpeg/bin/ffprobe
 ```
 
-## NVENC unavailable
+## Which video encoder is used, and why not the GPU
 
-Clip export uses `h264_nvenc` when it can actually encode on your machine and falls back to
-`libx264` otherwise. The log says `h264_nvenc unavailable; falling back to libx264`. Output
-is the same format either way; the CPU path is slower. Common causes:
+Clip export, `assemble` (also with `--captions`) and 360 renders encode H.264 with the first
+encoder that works, found by really encoding a short test clip with each candidate: NVENC, then
+AMF on Windows, or VAAPI and AMF on Linux. If none works the log says
+`No GPU video encoder works; encoding with libx264`. Otherwise it says which one it picked, for
+example `Video encoder: h264_vaapi on /dev/dri/renderD128`. The output format is the same either
+way; the CPU path is slower. Quality is set per encoder from the same number (CRF for libx264,
+CQ for NVENC, QP for AMF and VAAPI), not by a fixed bitrate.
 
-- No NVIDIA GPU, or a very old driver. Update the driver and check `nvidia-smi`.
-- An ffmpeg build without NVENC. Use a full build (the winget `Gyan.FFmpeg` package has it).
-- Too many simultaneous NVENC sessions on consumer GPUs. Close other encoders and retry.
+Check what works on this machine:
+
+```bash
+cutpoint capabilities
+cutpoint capabilities --json
+```
+
+The report keeps three things apart: which GPU vendors are present (hardware only), which
+encoders are listed by your ffmpeg and which of them really encode, and what transcription uses.
+An AMD or NVIDIA GPU being present does not make an encoder usable; a listed encoder can still
+fail (for example `h264_nvenc` or `h264_amf` listed on a machine without that driver).
+
+To choose one yourself, set `video_encoder` in `config.json` or `CUTPOINT_VIDEO_ENCODER` to `auto`,
+`nvenc`, `amf`, `vaapi` or `cpu` (see [configuration](../configuration.md#video_encoder)). A named
+GPU encoder that does not work stops the command with
+`video_encoder 'X' cannot encode on this machine (...)` and the ffmpeg error; it never falls back
+silently. Use `cpu` to force libx264 and `auto` to go back to detection.
+
+Common causes when the GPU encoder is not used:
+
+- **NVENC:** no NVIDIA GPU, a very old driver (check `nvidia-smi`), an ffmpeg build without
+  NVENC, or too many simultaneous NVENC sessions on consumer GPUs.
+- **VAAPI (Linux, AMD or Intel):** no `/dev/dri/renderD*` device, no permission on it (your user
+  needs the `render` or `video` group), a missing Mesa/VAAPI driver, or an ffmpeg build without
+  VAAPI. Every render node is tried in name order and the first one that encodes is used, so a
+  machine with two GPUs (for example an iGPU and a dGPU) picks whichever node works first.
+- **AMF:** needs an ffmpeg build with AMF and AMD's driver. It was not exercised on a real
+  Windows machine while this was written, so run `cutpoint capabilities` there and use
+  `CUTPOINT_VIDEO_ENCODER=cpu` if it fails.
+
+Limits: only encoding runs on the AMD GPU. Video decoding for analysis, HUD OCR and 360 renders
+still uses CUDA when it can and the CPU otherwise.
 
 ## Whisper runs on the CPU, or CUDA / cuDNN / cuBLAS errors
 
@@ -51,6 +84,9 @@ INFO NVIDIA GPU found, but the CUDA libraries for whisper are not installed (...
   other extras), or `pip install "cutpoint[gpu]"`.
 - Update the NVIDIA driver. On Linux the pip-installed CUDA libraries are preloaded
   automatically; if Whisper still falls back to the CPU, check the driver with `nvidia-smi`.
+- AMD GPUs are not used for transcription: faster-whisper has no AMD GPU backend in Cutpoint, so
+  on an AMD machine it always runs on the CPU (`cutpoint capabilities` shows `cpu`). That is
+  normal, not an error.
 - To force a smaller model, pass `analyze --model small`.
 
 ## Captions fail on Linux

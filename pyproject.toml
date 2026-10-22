@@ -52,7 +52,9 @@ events = [
     "scipy>=1.18.1",
     "scikit-learn>=1.9.1",
 ]
-dev = ["pytest>=8", "ruff==0.17.1", "pre-commit>=3.7"]
+# `cutpoint ui`: local browser workspace for the standard-video highlight workflow.
+ui = ["fastapi>=0.116", "uvicorn>=0.30"]
+dev = ["pytest>=8", "ruff==0.17.1", "pre-commit>=3.7", "cutpoint[ui]", "httpx>=0.27"]
 all = ["cutpoint[ski,events,gpu]"]
 
 [project.scripts]

@@ -34,10 +34,11 @@ The `events` model layer does not use Ollama for its main model. It starts its o
 - Components: `pip` (only checks Python packages), `panns`, `llama`, `omni`, `visual`, `voice`.
 - Behind a proxy or offline, download manually and place files under `CUTPOINT_HOME` using the
   folder layout in [Configuration](../configuration.md#data-folder-cutpoint_home).
-- `llama` downloads the newest llama.cpp build: Windows CUDA 12.4, or on Linux the oldest CUDA
-  build with cudart in the newest release (12.8 today; needs a recent NVIDIA driver) when an
-  NVIDIA driver is detected, otherwise Vulkan, otherwise CPU. With an older driver, or to use your
-  own build, put `llama-server` on `PATH` or set `CUTPOINT_LLAMA_SERVER` to its full path.
+- `llama` downloads llama.cpp assets: on both Windows and Linux, `auto` prefers CUDA when a
+  usable NVIDIA driver is detected, otherwise Vulkan, then CPU when distribution assets are
+  available (see [Configuration](../configuration.md#environment-variables)). You can override this
+  with `CUTPOINT_LLAMA_BACKEND` (`auto`, `cuda`, `vulkan`, `cpu`). With an unsupported driver, or to
+  use your own build, put `llama-server` on `PATH` or set `CUTPOINT_LLAMA_SERVER` to its full path.
 - `<dir> was not installed by cutpoint setup (no VERSION.txt)`: a self-built or unpacked llama.cpp
   is in `tools/llama.cpp` (or `tools/llama.cpp.old`), and setup will not replace it. Move it
   elsewhere (or point `CUTPOINT_LLAMA_SERVER` at it) and run `cutpoint setup --only llama` again.

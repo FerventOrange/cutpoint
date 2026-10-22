@@ -51,6 +51,7 @@ def _windows_release(tmp_path: Path, cuda_digest: str | None = None) -> list[dic
         (f"llama-{tag}-bin-win-cuda-12.4-x64.zip", {"llama-server.exe": "exe"}),
         ("cudart-llama-bin-win-cuda-12.4-x64.zip", {"cudart64_12.dll": "dll"}),
         (f"llama-{tag}-bin-win-cpu-x64.zip", {"llama-server.exe": "cpu"}),
+        (f"llama-{tag}-bin-win-vulkan-x64.zip", {"llama-server.exe": "vulkan"}),
     ):
         url, size, digest = _zip(tmp_path / "srv" / name, files)
         assets.append(
@@ -66,9 +67,13 @@ def _windows_release(tmp_path: Path, cuda_digest: str | None = None) -> list[dic
 
 @pytest.fixture
 def release(tmp_path, monkeypatch):
-    """Serve a Windows release; ``release(cuda_digest=...)`` can publish a wrong digest."""
+    """Serve a Windows release; ``release(cuda_digest=...)`` can publish a wrong digest.
 
-    def serve(cuda_digest: str | None = None) -> None:
+    ``nvidia=False`` makes setup see no usable NVIDIA driver.
+    """
+
+    def serve(cuda_digest: str | None = None, nvidia: bool = True) -> None:
+        monkeypatch.setattr(setup, "nvidia_usable", lambda: nvidia)
         releases = _windows_release(tmp_path, cuda_digest)
         real = urllib.request.urlopen
 
@@ -141,6 +146,46 @@ def test_install_llama_windows_picks_cuda_12_4_and_replaces_old_build(release):
     assert (llama / "VERSION.txt").read_text() == "b9100 cuda-12.4\n"
     assert not staging.exists()
     assert not old.exists()
+
+
+@pytest.mark.parametrize(
+    ("nvidia", "override", "server", "stamp"),
+    [
+        (False, None, "vulkan", "b9100 win-vulkan\n"),  # AMD / Intel / no usable NVIDIA
+        (True, "vulkan", "vulkan", "b9100 win-vulkan\n"),  # explicit override beats vendor
+        (False, "cpu", "cpu", "b9100 win-cpu\n"),
+    ],
+)
+def test_install_llama_windows_without_usable_nvidia_or_forced_uses_vulkan_or_cpu(
+    release, monkeypatch, nvidia, override, server, stamp
+):
+    release(nvidia=nvidia)
+    if override:
+        monkeypatch.setenv("CUTPOINT_LLAMA_BACKEND", override)
+    llama, _, _ = _dirs()
+    setup.install_llama(force=True)
+    assert (llama / "llama-server.exe").read_text() == server
+    assert not (llama / "cudart64_12.dll").exists()
+    assert (llama / "VERSION.txt").read_text() == stamp
+
+
+def test_install_llama_forced_backend_replaces_a_different_installed_build(release, monkeypatch):
+    release()
+    llama = _old_install()  # stamp: b1 cuda-12.4
+    monkeypatch.setenv("CUTPOINT_LLAMA_BACKEND", "vulkan")
+    setup.install_llama()  # not force=True: the backend differs, so it is replaced anyway
+    assert (llama / "VERSION.txt").read_text() == "b9100 win-vulkan\n"
+
+
+def test_install_llama_auto_replaces_a_legacy_cuda_install_when_no_nvidia_is_usable(release):
+    release(nvidia=False)
+    llama = _old_install()  # stamp b1 cuda-12.4: what every Windows install was before Vulkan
+    _, staging, old = _dirs()
+    setup.install_llama()  # no force: the installed backend is not the one auto would pick now
+    assert (llama / "VERSION.txt").read_text() == "b9100 win-vulkan\n"
+    assert (llama / "llama-server.exe").read_text() == "vulkan"
+    assert not (llama / "keep.dll").exists()
+    assert not staging.exists() and not old.exists()
 
 
 @pytest.mark.parametrize("locked", ["llama", "staging"])

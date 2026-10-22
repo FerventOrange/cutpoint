@@ -38,6 +38,7 @@ from typing import Any, Literal
 import numpy as np
 
 from cutpoint import paths, state
+from cutpoint.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -466,10 +467,66 @@ def momentary_loudness(wav: Path) -> tuple[list[float], list[float]]:
     return times, values
 
 
+class EncoderUnavailableError(FFmpegError):
+    """A video encoder the user asked for cannot encode on this machine."""
+
+
+VIDEO_CODECS = {"nvenc": "h264_nvenc", "amf": "h264_amf", "vaapi": "h264_vaapi", "cpu": "libx264"}
+
+
+@dataclass(frozen=True)
+class VideoEncoder:
+    """One way to encode H.264: ``kind`` is nvenc, amf, vaapi or cpu (libx264).
+
+    ``device`` is the VAAPI render node. Callers add :attr:`upload` to their last video
+    filter (:meth:`chain`) and put :meth:`args` where they used to put the encoder options;
+    those include the pixel format, so callers must not add their own ``-pix_fmt``.
+    """
+
+    kind: str
+    device: str | None = None
+
+    @property
+    def codec(self) -> str:
+        return VIDEO_CODECS[self.kind]
+
+    @property
+    def upload(self) -> str:
+        """Filters that move frames into GPU memory (VAAPI only; "" for the others)."""
+        return "format=nv12,hwupload" if self.kind == "vaapi" else ""
+
+    def chain(self, filters: str) -> str:
+        """``filters`` followed by :attr:`upload`, so a ``-vf`` / filter_complex ends GPU-ready."""
+        return f"{filters},{self.upload}" if self.upload else filters
+
+    def args(self, quality: int = 20) -> list[str]:
+        """Encoder options; ``quality`` is CRF (libx264), CQ (NVENC) or QP (AMF, VAAPI)."""
+        q = str(quality)
+        codec = ["-c:v", self.codec]
+        yuv = ["-profile:v", "high", "-pix_fmt", "yuv420p"]
+        if self.kind == "nvenc":
+            return [*codec, "-preset", "p5", "-rc", "vbr", "-cq", q, "-b:v", "0", *yuv]
+        if self.kind == "amf":
+            qp = ["-qp_i", q, "-qp_p", q, "-qp_b", q]
+            return [*codec, "-quality", "quality", "-rc", "cqp", *qp, *yuv]
+        if self.kind == "vaapi":  # frames are VAAPI surfaces: a -pix_fmt would break the graph
+            # A named device for hwupload, so a CUDA device opened for decoding is never used.
+            bind = ["-init_hw_device", f"vaapi=cp:{self.device}", "-filter_hw_device", "cp"]
+            return [*bind, *codec, "-profile:v", "high", "-qp", q]
+        return [*codec, "-preset", "medium", "-crf", q, "-pix_fmt", "yuv420p"]
+
+
+def vaapi_devices() -> list[str]:
+    """VAAPI render nodes (Linux), in a stable order; each is probed, none is assumed."""
+    if not sys.platform.startswith("linux"):
+        return []
+    return sorted(str(p) for p in Path("/dev/dri").glob("renderD*"))
+
+
 @state.register_cache
 @cache
-def nvenc_available() -> bool:
-    """Check whether h264_nvenc can actually encode on this machine."""
+def encoder_error(enc: VideoEncoder) -> str | None:
+    """None if ffmpeg really encodes with ``enc`` here, else the last line of its error."""
     try:
         run(
             [
@@ -479,38 +536,66 @@ def nvenc_available() -> bool:
                 "-f",
                 "lavfi",
                 "-i",
-                "color=black:s=256x256:d=0.2",
-                "-c:v",
-                "h264_nvenc",
+                "color=black:s=640x360:d=0.2",
+                "-vf",
+                enc.chain("format=yuv420p"),
+                *enc.args(),
                 "-f",
                 "null",
                 "-",
-            ]
+            ],
+            timeout=60,
         )
-        return True
-    except FFmpegError:
-        logger.info("h264_nvenc unavailable; falling back to libx264")
-        return False
+    except FFmpegError as err:
+        return str(err).splitlines()[-1]
+    return None
 
 
-def video_encoder_args(quality: int = 20) -> list[str]:
-    """Encoder arguments: NVENC when available, else libx264."""
-    if nvenc_available():
-        return [
-            "-c:v",
-            "h264_nvenc",
-            "-preset",
-            "p5",
-            "-rc",
-            "vbr",
-            "-cq",
-            str(quality),
-            "-b:v",
-            "0",
-            "-profile:v",
-            "high",
-        ]
-    return ["-c:v", "libx264", "-preset", "medium", "-crf", str(quality)]
+def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
+    """The first working encoder of ``kind`` (VAAPI: first working render node) and the errors."""
+    if kind == "vaapi":
+        cands = [VideoEncoder("vaapi", d) for d in vaapi_devices()]
+        errors = [] if cands else ["no /dev/dri/renderD* render device"]
+    else:
+        cands, errors = [VideoEncoder(kind)], []
+    for enc in cands:
+        error = encoder_error(enc)
+        if error is None:
+            return enc, []
+        errors.append(f"{enc.device or enc.codec}: {error}")
+    return None, errors
+
+
+@state.register_cache
+@cache
+def video_encoder() -> VideoEncoder:
+    """The encoder to use: the configured one (``video_encoder``), else the first that works.
+
+    Auto tries NVENC, then AMF (Windows) or VAAPI and AMF (Linux), by actually encoding a short
+    clip, and falls back to libx264. A named encoder that does not work is an error.
+
+    Raises:
+        EncoderUnavailableError: A GPU encoder was named but cannot encode here.
+    """
+    choice = get_config().video_encoder
+    if choice == "cpu":
+        return VideoEncoder("cpu")
+    if choice != "auto":
+        enc, errors = find_encoder(choice)
+        if enc is None:
+            raise EncoderUnavailableError(
+                f"video_encoder {choice!r} cannot encode on this machine ({'; '.join(errors)}). "
+                "Set CUTPOINT_VIDEO_ENCODER / video_encoder in config.json to 'auto' or 'cpu', "
+                "or run `cutpoint capabilities`."
+            )
+        return enc
+    for kind in ("nvenc", "amf") if sys.platform == "win32" else ("nvenc", "vaapi", "amf"):
+        enc, _ = find_encoder(kind)
+        if enc is not None:
+            logger.info("Video encoder: %s%s", enc.codec, f" on {enc.device}" if enc.device else "")
+            return enc
+    logger.info("No GPU video encoder works; encoding with libx264")
+    return VideoEncoder("cpu")
 
 
 def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:

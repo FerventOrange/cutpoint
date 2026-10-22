@@ -1,0 +1,895 @@
+"""``cutpoint ui``: local browser workspace for the standard-video highlight workflow.
+
+A loopback-only FastAPI app (optional ``ui`` extra) that serves ``cutpoint/web`` and a small JSON
+API over the projects folder. Heavy work (analyze, clips, assemble) runs as ordinary
+``python -m cutpoint ...`` child processes, one at a time, so the browser and the CLI share one
+implementation. Source videos are only ever read.
+
+Trust boundaries:
+
+* Every request needs a loopback ``Host`` (and ``Origin``, when sent) on the bound port.
+* Every ``/api`` call needs the per-run token (``X-Cutpoint-Token``), which only the URL printed at
+  startup carries (``#t=<token>``; there is no way to fetch it from the server). Media/output URLs
+  carry it as ``?t=`` because ``<video>`` cannot send headers.
+* A project id is a direct child folder of the projects folder. A project's media are its
+  recorded source files, and only those under the source the user picked for it (or, for projects
+  made on the command line, the inputs of its analysis); ``highlights.json`` alone never
+  grants access to a file.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import logging
+import math
+import mimetypes
+import os
+import re
+import secrets
+import signal
+import subprocess
+import sys
+import threading
+from collections import deque
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote, urlsplit
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from cutpoint import cache
+from cutpoint.config import projects_dir, remap_source
+from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, probe
+from cutpoint.styles import get_style, style_names
+from cutpoint.utils import VIDEO_EXTS, find_videos, slugify
+
+logger = logging.getLogger(__name__)
+
+WEB_DIR = Path(__file__).parent / "web"
+UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+MAX_SEGMENTS = 500
+MAX_LOG_LINES = 300
+MAX_JOBS = 50
+MIN_CLIP_S = 0.1  # export_clips rejects shorter clips
+MAX_EXTEND_S = 30.0
+BROWSER_CONTAINERS = {".mp4", ".m4v", ".mov", ".webm"}
+BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
+BROWSER_AUDIO = {None, "aac", "mp3", "opus", "vorbis"}
+SAFE_NAME = re.compile(r"[\w.-]+")
+
+
+def bad(detail: str, status: int = 400) -> HTTPException:
+    return HTTPException(status, detail)
+
+
+# --------------------------------------------------------------------------- processes
+def spawn(args: list[str]) -> subprocess.Popen[str]:
+    """Start ``args`` (no shell) in its own process group, stdout+stderr merged."""
+    group = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
+    return subprocess.Popen(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
+        **group,
+    )
+
+
+def kill_tree(proc: subprocess.Popen[str]) -> None:
+    """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, then KILL."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
+        )
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(5)
+    with contextlib.suppress(ProcessLookupError):  # sweeps members that outlived the leader
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
+def cutpoint_cmd(*args: str) -> list[str]:
+    return [sys.executable, "-m", "cutpoint", *args]
+
+
+# --------------------------------------------------------------------------- jobs
+class Job:
+    """One child process and what it said."""
+
+    def __init__(self, project_id: str, action: str) -> None:
+        self.id = secrets.token_hex(6)
+        self.project_id = project_id
+        self.action = action
+        self.status = "running"
+        self.logs: deque[str] = deque(maxlen=MAX_LOG_LINES)
+        self.error: str | None = None
+        self.started = datetime.now().isoformat(timespec="seconds")
+        self.proc: subprocess.Popen[str] | None = None
+        self.cancelled = False
+        self.done = threading.Event()
+
+    def view(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "id": self.id,
+            "project_id": self.project_id,
+            "action": self.action,
+            "status": self.status,
+            "logs": list(self.logs),
+            "started": self.started,
+        }
+        if self.error:
+            out["error"] = self.error
+        return out
+
+
+class Jobs:
+    """At most one running job serverwide."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.jobs: dict[str, Job] = {}
+
+    def start(
+        self,
+        project_id: str,
+        action: str,
+        args: list[str],
+        on_success: Callable[[], None] | None = None,
+    ) -> Job:
+        with self.lock:
+            if any(j.status == "running" for j in self.jobs.values()):
+                raise bad("another job is already running", 409)
+            job = Job(project_id, action)
+            try:
+                job.proc = spawn(args)
+            except OSError as err:
+                raise bad(f"could not start job: {err}", 500) from err
+            for old in [k for k, j in self.jobs.items() if j.status != "running"][
+                : max(0, len(self.jobs) + 1 - MAX_JOBS)
+            ]:
+                del self.jobs[old]
+            self.jobs[job.id] = job
+        threading.Thread(target=self._watch, args=(job, on_success), daemon=True).start()
+        return job
+
+    @staticmethod
+    def _watch(job: Job, on_success: Callable[[], None] | None) -> None:
+        proc = job.proc
+        assert proc is not None and proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                if line.strip():
+                    job.logs.append(line.rstrip())
+            code = proc.wait()
+            if job.cancelled:
+                job.status = "cancelled"
+            elif code != 0:
+                last = next(
+                    (
+                        m.group(1)
+                        for ln in reversed(job.logs)
+                        if (m := re.search(r"ERROR\s+(.*)", ln))
+                    ),
+                    None,
+                )
+                job.error, job.status = last or f"exit code {code}", "failed"
+            else:
+                try:
+                    if on_success:
+                        on_success()
+                    job.status = "completed"
+                except Exception as err:  # surfaced to the user as the job error
+                    logger.exception("job %s post-processing failed", job.id)
+                    job.error, job.status = str(err), "failed"
+        finally:
+            job.done.set()
+
+    def get(self, job_id: str) -> Job:
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise bad("unknown job", 404)
+        return job
+
+    def cancel(self, job_id: str) -> Job:
+        job = self.get(job_id)
+        if job.status == "running" and job.proc is not None:
+            job.cancelled = True
+            kill_tree(job.proc)
+            job.done.wait(5)
+        return job
+
+    def shutdown(self) -> None:
+        for job in list(self.jobs.values()):
+            if job.status == "running" and job.proc is not None:
+                job.cancelled = True
+                kill_tree(job.proc)
+
+
+def proxy_args(real: Path, out: Path, audio_streams: int) -> list[str]:
+    """ffmpeg command for a 720p H.264/AAC preview; several audio tracks are mixed as in exports."""
+    mix = audio_mix_filter(audio_streams)
+    audio = ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else ["-map", "0:a:0?"]
+    return [
+        "ffmpeg", "-y", "-nostdin", "-v", "error", "-i", str(real), "-map", "0:v:0", *audio,
+        "-vf", "scale=-2:min(720\\,ih)",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out),
+    ]  # fmt: skip
+
+
+# --------------------------------------------------------------------------- playable media
+class Media:
+    """Probe cache and on-demand H.264/AAC proxies for sources a browser cannot play."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.probed: dict[str, tuple[bool, float, int] | None] = {}
+        self.proxies: dict[str, str] = {}  # key -> "preparing" | "failed"
+        self.procs: set[subprocess.Popen[str]] = set()
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cutpoint-proxy")
+        self.closing = False
+
+    @staticmethod
+    def key(real: Path) -> str | None:
+        try:
+            st = real.stat()
+        except OSError:
+            return None
+        return hashlib.sha1(f"{real}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:16]
+
+    def info(self, real: Path, key: str) -> tuple[bool, float, int] | None:
+        """``(browser plays it as is, duration, audio tracks)``, or None if unreadable."""
+        if key not in self.probed:
+            try:
+                i = probe(real)
+                ok = (
+                    real.suffix.lower() in BROWSER_CONTAINERS
+                    and i.vcodec in BROWSER_VIDEO
+                    and (i.vcodec != "h264" or i.pix_fmt in {"yuv420p", "yuvj420p"})
+                    and i.acodec in BROWSER_AUDIO
+                    and i.audio_streams <= 1  # a browser plays one track; exports mix them all
+                )
+                self.probed[key] = (ok, i.duration, i.audio_streams)
+            except (FFmpegError, OSError, ValueError, KeyError):
+                self.probed[key] = None
+        return self.probed[key]
+
+    def duration(self, real: Path) -> float | None:
+        key = self.key(real)
+        res = self.info(real, key) if key else None
+        return res[1] if res else None
+
+    def status(self, project: Path, path: str) -> tuple[str, Path | None]:
+        """``(status, file to serve)``: ready | needs-proxy | preparing | failed. No side effects."""
+        real = remap_source(path)
+        key = self.key(real)
+        res = self.info(real, key) if key else None
+        if res is None or key is None:
+            return "failed", None
+        if res[0]:
+            return "ready", real
+        proxy = project / UI_DIR / "proxy" / f"{key}.mp4"
+        if proxy.is_file():
+            return "ready", proxy
+        return {"preparing": "preparing", "failed": "failed"}.get(
+            self.proxies.get(key, ""), "needs-proxy"
+        ), None
+
+    def prepare(self, project: Path, path: str) -> str:
+        """Queue the proxy build of one source (also retries a failed build); returns its status."""
+        real = remap_source(path)
+        key = self.key(real)
+        res = self.info(real, key) if key else None
+        if res is not None and key is not None and not res[0] and not self.closing:
+            proxy = project / UI_DIR / "proxy" / f"{key}.mp4"
+            with self.lock:
+                if not proxy.is_file() and self.proxies.get(key) != "preparing":
+                    self.proxies[key] = "preparing"
+                    self.pool.submit(self._build, real, proxy, key, res[2])
+        return self.status(project, path)[0]
+
+    def _build(self, real: Path, proxy: Path, key: str, audio_streams: int) -> None:
+        tmp = proxy.with_name(f"{key}.part.mp4")
+        state = "failed"
+        try:
+            proxy.parent.mkdir(parents=True, exist_ok=True)
+            proc = spawn(proxy_args(real, tmp, audio_streams))
+            self.procs.add(proc)
+            try:
+                tail = (proc.communicate()[0] or "").strip()[-500:]
+            finally:
+                self.procs.discard(proc)
+            if proc.returncode == 0 and not self.closing:
+                tmp.replace(proxy)
+                state = ""
+            else:
+                logger.warning("proxy of %s failed: %s", real.name, tail)
+        except OSError:
+            logger.exception("proxy of %s failed", real.name)
+        finally:
+            tmp.unlink(missing_ok=True)
+            with self.lock:
+                if state:
+                    self.proxies[key] = state
+                else:
+                    self.proxies.pop(key, None)
+
+    def shutdown(self) -> None:
+        self.closing = True
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        for proc in list(self.procs):
+            kill_tree(proc)
+
+
+# --------------------------------------------------------------------------- projects
+def _loopback_url(value: str, port: int, *, origin: bool) -> bool:
+    try:
+        parts = urlsplit(value if origin else f"//{value}")
+        return (
+            (not origin or parts.scheme == "http")
+            and parts.hostname in LOOPBACK
+            and parts.port == port
+        )
+    except ValueError:
+        return False
+
+
+def project_dir(pid: str) -> Path:
+    """The project folder ``pid`` (a direct child of the projects folder), else 404."""
+    root = projects_dir()
+    if not pid or pid.startswith(".") or any(c in pid for c in "/\\\0") or pid != pid.strip():
+        raise bad("unknown project", 404)
+    p = root / pid
+    try:
+        ok = p.is_dir() and p.resolve().parent == root.resolve()
+    except OSError:
+        ok = False
+    if not ok or not ((p / UI_DIR / "meta.json").is_file() or (p / "highlights.json").is_file()):
+        raise bad("unknown project", 404)
+    return p
+
+
+def read_meta(p: Path) -> dict[str, Any]:
+    meta = cache.load_json(p / UI_DIR / "meta.json")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _under(path: str, roots: list[str]) -> bool:
+    """``path`` is one of ``roots`` or inside one (checked on both spelled and real paths)."""
+
+    def forms(x: str) -> set[str]:
+        return {os.path.normcase(os.path.abspath(x)), os.path.normcase(os.path.realpath(x))}  # noqa: PTH100
+
+    for root in roots:
+        for r in forms(root):
+            if any(c == r or c.startswith(r.rstrip(os.sep) + os.sep) for c in forms(path)):
+                return True
+    return False
+
+
+def source_entries(p: Path, hl: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The project's playable-in-principle sources: ``[{path, id, name, duration}]``."""
+    meta = read_meta(p)
+    if meta.get("source"):
+        roots = [str(meta["source"])]
+    else:  # command-line project: the inputs its analysis recorded
+        roots = [str(x) for x in ((hl or {}).get("settings") or {}).get("inputs") or []]
+    paths: dict[str, float | None] = {}
+    for s in (hl or {}).get("sources") or []:
+        if isinstance(s, dict) and isinstance(s.get("path"), str):
+            dur = s.get("duration")
+            paths.setdefault(s["path"], dur if isinstance(dur, (int, float)) else None)
+    if not paths and meta.get("source"):
+        with contextlib.suppress(FileNotFoundError):
+            paths = dict.fromkeys(map(str, find_videos([Path(meta["source"])])))
+    return [
+        {
+            "path": path,
+            "id": hashlib.sha1(path.encode()).hexdigest()[:12],
+            "name": Path(path).name,
+            "duration": dur,
+        }
+        for path, dur in paths.items()
+        if Path(path).is_absolute()
+        and Path(path).suffix.lower() in VIDEO_EXTS
+        and _under(path, roots)
+    ]
+
+
+def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Keep saved trims attached to source intervals, not mutable CLI ranks."""
+    if hl is None:
+        return None
+    return {
+        **hl,
+        "candidates": [
+            {
+                **c,
+                "id": hashlib.sha1(
+                    f"{os.path.realpath(c['source'])}|{float(c['start'])}|{float(c['end'])}".encode()
+                ).hexdigest()[:12],
+            }
+            for c in hl.get("candidates") or []
+        ],
+    }
+
+
+def _num(item: dict[str, Any], key: str, i: int) -> float:
+    v = item.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        raise bad(f"segment {i}: {key} must be a number")
+    return float(v)
+
+
+def validate_segments(
+    raw: Any, sources: list[dict[str, Any]], media: Media
+) -> list[dict[str, Any]]:
+    """Check a review against the project's sources; return the cleaned segments."""
+    if not isinstance(raw, list):
+        raise bad("segments must be a list")
+    if len(raw) > MAX_SEGMENTS:
+        raise bad(f"at most {MAX_SEGMENTS} segments")
+    by_path = {s["path"]: s for s in sources}
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            raise bad(f"segment {i}: object expected")
+        sid, label = item.get("id"), item.get("label", "segment")
+        if not isinstance(sid, str) or not 0 < len(sid) <= 64 or sid in seen:
+            raise bad(f"segment {i}: id must be a unique string of 1-64 characters")
+        seen.add(sid)
+        src = by_path.get(item.get("source")) if isinstance(item.get("source"), str) else None
+        if src is None:
+            raise bad(f"segment {i}: source is not part of this project")
+        start, end = _num(item, "start", i), _num(item, "end", i)
+        if start < 0 or end - start < MIN_CLIP_S:
+            raise bad(f"segment {i}: needs 0 <= start and end at least {MIN_CLIP_S}s after start")
+        duration = src["duration"] or media.duration(remap_source(src["path"]))
+        if duration is None:
+            raise bad(f"segment {i}: source cannot be read")
+        if end > duration + 0.01:
+            raise bad(f"segment {i}: end {end:g}s is past the source's {duration:g}s")
+        if not isinstance(label, str) or len(label) > 200:
+            raise bad(f"segment {i}: label must be text of at most 200 characters")
+        out.append(
+            {
+                "id": sid,
+                "source": src["path"],
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "label": "".join(c for c in label if c.isprintable()).strip() or "segment",
+            }
+        )
+    return out
+
+
+def load_exports(p: Path) -> list[dict[str, Any]]:
+    data = cache.load_json(p / UI_DIR / "exports.json")
+    items = data.get("exports") if isinstance(data, dict) else None
+    return [
+        e
+        for e in items or []
+        if isinstance(e, dict) and isinstance(e.get("dir"), str) and SAFE_NAME.fullmatch(e["dir"])
+    ]
+
+
+def current_export(p: Path) -> dict[str, Any] | None:
+    """The latest export whose clips are still on disk."""
+    return next(
+        (e for e in reversed(load_exports(p)) if (p / e["dir"] / "manifest.json").is_file()), None
+    )
+
+
+def output_names(p: Path) -> list[str]:
+    """Files of the current final (video first, then timelines) that exist."""
+    exp = current_export(p)
+    final = (exp or {}).get("final")
+    if not isinstance(final, str) or not SAFE_NAME.fullmatch(final) or not (p / final).is_file():
+        return []
+    stem = Path(final).stem
+    return [final, *(f"{stem}{e}" for e in (".fcpxml", ".otio") if (p / f"{stem}{e}").is_file())]
+
+
+def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
+    """``stem`` or ``stem-N``: the first name no file ``name + ext`` already uses."""
+    n, name = 1, stem
+    while any((parent / f"{name}{e}").exists() for e in exts):
+        n += 1
+        name = f"{stem}-{n}"
+    return name
+
+
+def new_project(name: str, source: str, style: str) -> dict[str, str]:
+    root = projects_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    base, n = slugify(name, 60, "project"), 1
+    while True:
+        pid = base if n == 1 else f"{base}-{n}"
+        try:
+            (root / pid).mkdir()
+            break
+        except FileExistsError:
+            n += 1
+    (root / pid / UI_DIR).mkdir()
+    cache.save_json(
+        root / pid / UI_DIR / "meta.json",
+        {"name": name, "source": source, "style": style, "created": datetime.now().isoformat()},
+    )
+    return {"id": pid, "name": name}
+
+
+def ui_styles() -> list[str]:
+    """Styles for standard video (telemetry-driven action-cam styles are command-line only)."""
+    return [n for n in style_names() if get_style(n).kind != "ski"]
+
+
+# --------------------------------------------------------------------------- app
+def _flag(body: dict[str, Any], key: str) -> bool:
+    v = body.get(key, False)
+    if not isinstance(v, bool):
+        raise bad(f"{key} must be true or false")
+    return v
+
+
+def create_app(port: int) -> FastAPI:
+    token = secrets.token_urlsafe(32)
+    jobs, media = Jobs(), Media()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        yield
+        jobs.shutdown()
+        media.shutdown()
+
+    app = FastAPI(
+        title="Cutpoint", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+    )
+
+    app.state.token, app.state.jobs, app.state.media = token, jobs, media
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if not _loopback_url(request.headers.get("host", ""), port, origin=False) or (
+            origin is not None and not _loopback_url(origin, port, origin=True)
+        ):
+            return JSONResponse({"detail": "forbidden host or origin"}, status_code=403)
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+    def supplied(request: Request, *, query: bool = False) -> bool:
+        got = request.headers.get("x-cutpoint-token") or (
+            request.query_params.get("t") if query else ""
+        )
+        return secrets.compare_digest((got or "").encode(), token.encode())
+
+    def auth(request: Request) -> None:
+        if not supplied(request):
+            raise bad("missing or wrong session token", 403)
+
+    def auth_media(request: Request) -> None:
+        if not supplied(request, query=True):
+            raise bad("missing or wrong session token", 403)
+
+    api = APIRouter(prefix="/api")
+    secure = APIRouter(dependencies=[Depends(auth)])
+    served = APIRouter(dependencies=[Depends(auth_media)])
+
+    def url(pid: str, kind: str, name: str) -> str:
+        return f"/api/projects/{quote(pid, safe='')}/{kind}/{quote(name, safe='')}?t={token}"
+
+    @secure.get("/session")
+    def session():
+        return {"styles": ui_styles()}
+
+    @secure.get("/projects")
+    def list_projects():
+        root = projects_dir()
+        found = []
+        for d in sorted(root.iterdir()) if root.is_dir() else []:
+            if d.name.startswith(".") or not d.is_dir() or (d / "pano.json").exists():
+                continue
+            if (d / UI_DIR / "meta.json").is_file() or (d / "highlights.json").is_file():
+                found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
+        return {"projects": found}
+
+    @secure.post("/projects")
+    def create_project(body: dict[str, Any]):
+        name, source, style = body.get("name"), body.get("source"), body.get("style", "gaming")
+        if not isinstance(name, str) or not name.strip() or len(name) > 100:
+            raise bad("name must be 1-100 characters")
+        if not isinstance(source, str) or not Path(source).is_absolute():
+            raise bad("source must be an absolute path")
+        if style not in ui_styles():
+            raise bad(f"unknown style {style!r}")
+        src = Path(source)
+        try:
+            if src.is_file():
+                if src.suffix.lower() not in VIDEO_EXTS:
+                    raise bad("source is not a video file")
+            elif not src.is_dir() or not find_videos([src]):
+                raise bad("source must be a video file or a folder containing videos")
+        except (OSError, FileNotFoundError) as err:
+            raise bad(f"source is not readable: {err}") from err
+        return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
+
+    @secure.get("/projects/{pid}")
+    def get_project(pid: str):
+        p = project_dir(pid)
+        meta = read_meta(p)
+        hl = cache.load_json(p / "highlights.json")
+        hl = hl if isinstance(hl, dict) else None
+        review = cache.load_json(p / UI_DIR / "review.json")
+        exp = current_export(p)
+        manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
+        sources = []
+        for s in source_entries(p, hl):
+            status, _ = media.status(p, s["path"])
+            sources.append(
+                {
+                    "id": s["id"],
+                    "name": s["name"],
+                    "path": s["path"],
+                    "url": url(pid, "sources", s["id"]),
+                    "duration": s["duration"],
+                    "status": status,
+                }
+            )
+        return {
+            "id": pid,
+            "name": meta.get("name") or pid,
+            "style": meta.get("style") or (hl or {}).get("style") or "",
+            "source": meta.get("source"),
+            "highlights": moments_view(hl),
+            "review": review if isinstance(review, dict) else None,
+            "clips": {**manifest, "dir": exp["dir"]}
+            if isinstance(manifest, dict) and exp
+            else None,
+            "outputs": [{"name": n, "url": url(pid, "outputs", n)} for n in output_names(p)],
+            "sources": sources,
+        }
+
+    @secure.put("/projects/{pid}/review")
+    def put_review(pid: str, body: dict[str, Any]):
+        p = project_dir(pid)
+        hl = cache.load_json(p / "highlights.json")
+        segments = validate_segments(
+            body.get("segments"), source_entries(p, hl if isinstance(hl, dict) else None), media
+        )
+        review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
+        cache.save_json(p / UI_DIR / "review.json", review)
+        return review
+
+    @secure.post("/projects/{pid}/jobs")
+    def start_job(pid: str, body: dict[str, Any]):
+        p = project_dir(pid)
+        action = body.get("action")
+        meta = read_meta(p)
+        hl = cache.load_json(p / "highlights.json")
+        hl = hl if isinstance(hl, dict) else None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        on_success: Callable[[], None] | None = None
+        if action == "analyze":
+            inputs = (
+                [meta["source"]]
+                if meta.get("source")
+                else (hl or {}).get("settings", {}).get("inputs")
+            )
+            style = meta.get("style") or (hl or {}).get("style")
+            if not inputs or not style:
+                raise bad("project has no recorded source to analyze")
+            args = cutpoint_cmd(
+                "analyze", *map(str, inputs), "--style", str(style), "--out", str(p)
+            )
+            # Keep what the earlier analysis recorded, or the source set would change.
+            st = (hl or {}).get("settings") or {}
+            if isinstance(st.get("exclude"), list):
+                args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
+            if st.get("recursive") is True:
+                args.append("--recursive")
+        elif action == "clips":
+            raw = cache.load_json(p / UI_DIR / "review.json")
+            segments = validate_segments(
+                (raw.get("segments") or []) if isinstance(raw, dict) else [],
+                source_entries(p, hl),
+                media,
+            )
+            if not segments:
+                raise bad("choose at least one moment before exporting clips")
+            extend = body.get("extend", 0)
+            if (
+                isinstance(extend, bool)
+                or not isinstance(extend, (int, float))
+                or not 0 <= extend <= MAX_EXTEND_S
+            ):
+                raise bad(f"extend must be 0-{MAX_EXTEND_S:g} seconds")
+            vertical = _flag(body, "vertical")
+            out_name = fresh_name(p, f"clips_ui_{stamp}")
+            seg_file = p / UI_DIR / f"segments-{out_name[len('clips_ui_') :]}.json"
+            # Exactly the trims the user made, in their order: no smart tails or speech snapping.
+            cache.save_json(
+                seg_file, [{**s, "smart_tail": False, "speech_aware": False} for s in segments]
+            )
+            args = cutpoint_cmd(
+                "clips", str(p), "--segments", str(seg_file), "--out", str(p / out_name)
+            )
+            if vertical:
+                args.append("--vertical")
+            if extend:
+                args += ["--extend", f"{float(extend):g}"]
+
+            def on_success() -> None:
+                if not (p / out_name / "manifest.json").is_file():
+                    raise RuntimeError("clips finished without a manifest")
+                items = load_exports(p)
+                items.append(
+                    {"dir": out_name, "created": stamp, "vertical": vertical, "final": None}
+                )
+                cache.save_json(p / UI_DIR / "exports.json", {"exports": items})
+
+        elif action == "assemble":
+            exp = current_export(p)
+            if exp is None or not any((p / exp["dir"]).glob("*.mp4")):
+                raise bad("export clips before assembling")
+            transition = body.get("transition", "cut")
+            if transition not in ("cut", "fade"):
+                raise bad("transition must be 'cut' or 'fade'")
+            exp_dir = exp["dir"]
+            stem = fresh_name(
+                p,
+                "final" + exp_dir[5:] if exp_dir.startswith("clips") else f"final_{exp_dir}",
+                (".mp4", ".fcpxml", ".otio", ".ass"),
+            )
+            args = cutpoint_cmd(
+                "assemble",
+                str(p / exp_dir),
+                "--out",
+                str(p / f"{stem}.mp4"),
+                "--transition",
+                transition,
+            )
+            if _flag(body, "loudnorm"):
+                args.append("--loudnorm")
+            if _flag(body, "captions"):
+                args.append("--captions")
+
+            def on_success() -> None:
+                if not (p / f"{stem}.mp4").is_file():
+                    raise RuntimeError("assemble finished without a final video")
+                items = load_exports(p)
+                for e in items:
+                    if e["dir"] == exp_dir:
+                        e["final"] = f"{stem}.mp4"
+                cache.save_json(p / UI_DIR / "exports.json", {"exports": items})
+
+        else:
+            raise bad("action must be 'analyze', 'clips' or 'assemble'")
+        return jobs.start(pid, action, args, on_success).view()
+
+    @secure.get("/jobs")
+    def list_jobs():
+        return {"jobs": [j.view() for j in list(jobs.jobs.values())]}
+
+    @secure.post("/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str):
+        return jobs.cancel(job_id).view()
+
+    @secure.get("/browse")
+    def browse(path: str = ""):
+        target = Path(path) if path else Path.home()
+        if not target.is_absolute():
+            raise bad("path must be absolute")
+        try:
+            target = target.resolve()
+            entries = []
+            for e in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+                if e.name.startswith("."):
+                    continue
+                directory = e.is_dir()
+                if directory or e.suffix.lower() in VIDEO_EXTS:
+                    entries.append({"name": e.name, "path": str(e), "directory": directory})
+        except (OSError, ValueError) as err:  # ValueError: NUL byte in the path
+            raise bad(f"cannot read {target}: {getattr(err, 'strerror', None) or err}") from err
+        parent = target.parent
+        return {
+            "path": str(target),
+            "parent": str(parent) if parent != target else None,
+            "entries": entries[:5000],
+        }
+
+    def send(file: Path, request: Request, name: str | None = None) -> FileResponse:
+        """Range-capable file response; ``?download=1`` makes the browser save it."""
+        download = request.query_params.get("download") == "1"
+        return FileResponse(
+            file,
+            media_type=mimetypes.guess_type(file.name)[0] or "application/octet-stream",
+            filename=name or file.name if download else None,
+            content_disposition_type="attachment" if download else "inline",
+        )
+
+    def find_source(pid: str, sid: str) -> tuple[Path, dict[str, Any]]:
+        p = project_dir(pid)
+        hl = cache.load_json(p / "highlights.json")
+        entry = next(
+            (s for s in source_entries(p, hl if isinstance(hl, dict) else None) if s["id"] == sid),
+            None,
+        )
+        if entry is None:
+            raise bad("unknown source", 404)
+        return p, entry
+
+    @served.api_route("/projects/{pid}/sources/{sid}", methods=["GET", "HEAD"])
+    def source_media(pid: str, sid: str, request: Request):
+        p, entry = find_source(pid, sid)
+        status, file = media.status(p, entry["path"])
+        if file is None:
+            raise bad(f"source is {status}", 404 if status == "failed" else 409)
+        return send(file, request, entry["name"])
+
+    @secure.post("/projects/{pid}/sources/{sid}/prepare")
+    def prepare_source(pid: str, sid: str):
+        p, entry = find_source(pid, sid)
+        return {"status": media.prepare(p, entry["path"])}
+
+    @served.api_route("/projects/{pid}/outputs/{name}", methods=["GET", "HEAD"])
+    def output_file(pid: str, name: str, request: Request):
+        p = project_dir(pid)
+        if name not in output_names(p):
+            raise bad("unknown output", 404)
+        return send(p / name, request)
+
+    api.include_router(secure)
+    api.include_router(served)
+    app.include_router(api)
+    if WEB_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+    return app
+
+
+def _hangup(*_: object) -> None:
+    raise SystemExit(1)  # unwinds through run()'s finally, which stops the children
+
+
+def run(port: int = 8765) -> None:
+    """Serve the workspace on 127.0.0.1:``port`` until interrupted."""
+    import uvicorn  # noqa: PLC0415
+
+    app = create_app(port)
+    # The fragment never reaches the network; the page keeps the token in sessionStorage.
+    print(f"Cutpoint UI: http://127.0.0.1:{port}/#t={app.state.token} (Ctrl+C to stop)", flush=True)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _hangup)
+    try:
+        uvicorn.run(
+            app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5
+        )
+    finally:  # jobs and ffmpeg run in their own sessions: nothing else would stop them
+        app.state.jobs.shutdown()
+        app.state.media.shutdown()

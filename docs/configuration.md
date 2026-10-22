@@ -41,10 +41,16 @@ All optional.
 | `CUTPOINT_STYLES_DIR` | Learned styles |
 | `CUTPOINT_FFMPEG`, `CUTPOINT_FFPROBE` | Full paths to ffmpeg and ffprobe |
 | `CUTPOINT_LLAMA_SERVER` | Full path to `llama-server` |
+| `CUTPOINT_LLAMA_BACKEND` | Backend `cutpoint setup` downloads for llama.cpp: `auto` (default), `cuda`, `vulkan` or `cpu`. Auto takes CUDA only when a usable NVIDIA driver is found, else Vulkan, else CPU; a named backend is never replaced by another one |
+| `CUTPOINT_VIDEO_ENCODER` | Video encoder for exported clips, assembled videos and rendered 360 clips: `auto` (default), `nvenc`, `amf`, `vaapi` or `cpu`. Overrides `video_encoder` |
 | `CUTPOINT_PANNS_URL` | URL for the PANNs checkpoint, tried before the built-in mirrors (see [models troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete)) |
 | `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision` and for building activity profiles (default `qwen3-vl:8b`) |
 | `CUTPOINT_INSTA360_SDK` | Full path to the SDK's `MediaSDKTest` executable (overrides `pano.sdk_exe`) |
 | `OLLAMA_HOST` | Ollama URL; overrides `ollama_url` (a bare `host:port` gets `http://`) |
+
+When `setup` finds an existing managed llama.cpp build for a different backend than the one
+selected now, it replaces it through the normal staged installation, including in `auto` mode.
+For example, an old CUDA build on an AMD-only machine is replaced with a Vulkan build.
 
 ## config.json
 
@@ -61,7 +67,8 @@ with `_` are ignored.
   "source_remap_exclude": ["*unverified*"],
   "stage_dir": "C:\\Cutpoint\\stage",
   "player_tags": ["YourGameName"],
-  "ollama_url": "http://127.0.0.1:11434"
+  "ollama_url": "http://127.0.0.1:11434",
+  "video_encoder": "auto"
 }
 ```
 
@@ -113,6 +120,10 @@ overrides it per run. Default: none.
 Ollama base URL for `analyze --vision` and the model layers of `events`. `OLLAMA_HOST` overrides
 it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines; see
 [troubleshooting](troubleshooting/models.md)).
+
+### video_encoder
+
+`auto` (default), `nvenc`, `amf`, `vaapi` or `cpu` (libx264). `CUTPOINT_VIDEO_ENCODER` overrides it. `auto` really encodes a short test clip with each candidate (NVENC, then AMF on Windows or VAAPI and AMF on Linux; on Linux every `/dev/dri/renderD*` node is tried) and uses the first one that works, else libx264. A named GPU encoder that does not work is an error, not a silent fallback. `cutpoint capabilities` shows what works on this machine.
 
 ### pano
 

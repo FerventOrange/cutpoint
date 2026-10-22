@@ -29,6 +29,8 @@ MODULE_EXTRA: dict[str, str] = {
     "onnxruntime": "events",
     "scipy": "events",
     "sklearn": "events",
+    "fastapi": "ui",
+    "uvicorn": "ui",
 }
 # Extras that pull in torch (the CUDA build needs the PyTorch index).
 TORCH_EXTRAS = ("events", "all")

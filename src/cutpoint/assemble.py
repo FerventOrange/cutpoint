@@ -28,7 +28,7 @@ from cutpoint.ffmpeg_utils import (
     measure_loudness,
     probe,
     run,
-    video_encoder_args,
+    video_encoder,
 )
 from cutpoint.timeline import write_timelines
 from cutpoint.transcribe import Segment, Transcriber, flat_words
@@ -88,6 +88,9 @@ def _normalize_inputs(
 
 
 def _encode(files: list[Path], graph: str, out: Path) -> None:
+    enc = video_encoder()
+    if enc.upload:  # the graphs end in [v]: hand the frames to the GPU encoder
+        graph += f";[v]{enc.upload}[vgpu]"
     args = ["ffmpeg", "-y", "-v", "error"]
     for f in files:
         args += ["-i", str(f)]
@@ -95,12 +98,10 @@ def _encode(files: list[Path], graph: str, out: Path) -> None:
         "-filter_complex",
         graph,
         "-map",
-        "[v]",
+        "[vgpu]" if enc.upload else "[v]",
         "-map",
         "[a]",
-        *video_encoder_args(),
-        "-pix_fmt",
-        "yuv420p",
+        *enc.args(),
         "-color_range",
         "tv",
         *AUDIO_OUT,
@@ -376,7 +377,8 @@ def post_process(
                 "Captions: %d chunks (whisper %s on %s)", len(chunks), tr.model_name, tr.device
             )
         cwd = ass.parent  # relative path avoids Windows drive-colon escaping in filters
-        args += ["-vf", f"ass={ass.name}", *video_encoder_args(), "-pix_fmt", "yuv420p"]
+        enc = video_encoder()
+        args += ["-vf", enc.chain(f"ass={ass.name}"), *enc.args()]
     else:
         args += ["-c:v", "copy"]
     if loudnorm:

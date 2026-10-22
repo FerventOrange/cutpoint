@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cutpoint</title>
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#stage">Skip to preview</a>
+  <header class="top">
+    <h1 class="brand">cutpoint</h1>
+    <label class="proj-pick">
+      <span class="vh">Project</span>
+      <select id="projectSelect"></select>
+    </label>
+    <button type="button" id="newBtn" class="btn">New project</button>
+    <span class="spacer"></span>
+    <span id="saveState" class="save" role="status"></span>
+    <button type="button" id="saveBtn" class="btn primary" disabled>Save sequence</button>
+  </header>
+
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <main id="workspace">
+    <section class="col moments" aria-labelledby="momentsTitle">
+      <div class="col-head">
+        <h2 id="momentsTitle">Moments</h2>
+        <span id="momentsCount" class="muted"></span>
+        <span class="spacer"></span>
+        <button type="button" id="analyzeBtn" class="btn" hidden>Analyze footage</button>
+      </div>
+      <label class="filter" id="filterWrap" hidden>
+        <span class="vh">Filter moments by label or transcript</span>
+        <input id="filter" type="search" placeholder="Filter by label or words spoken" autocomplete="off">
+      </label>
+      <div id="momentsEmpty" class="empty"></div>
+      <ol id="candList" class="cand-list"></ol>
+    </section>
+
+    <section class="col stage" id="stage" tabindex="-1" aria-labelledby="stageTitle">
+      <div class="col-head">
+        <h2 id="stageTitle">Preview</h2>
+        <span id="stageMeta" class="muted"></span>
+        <span class="spacer"></span>
+        <button type="button" id="toggleBtn" class="btn" hidden></button>
+      </div>
+      <div id="stageEmpty" class="empty"></div>
+      <div id="stageBody" hidden>
+        <div class="screen">
+          <video id="video" playsinline preload="metadata"></video>
+          <p id="screenMsg" class="screen-msg" role="status"></p>
+        </div>
+        <div class="transport">
+          <button type="button" id="playBtn" class="btn primary" aria-keyshortcuts="Space">Play</button>
+          <button type="button" id="retryBtn" class="btn" hidden>Retry preview</button>
+          <output id="clock" class="tc"></output>
+          <span class="muted keys">Space plays, [ sets start, ] sets end</span>
+        </div>
+        <div class="rail" id="rail">
+          <div class="rail-orig" id="railOrig"></div>
+          <div class="rail-sel" id="railSel"></div>
+          <input id="seek" type="range" min="0" max="1" step="0.05" value="0" aria-label="Seek within this moment">
+        </div>
+        <div class="rail-ends tc"><span id="winLo"></span><span id="winHi"></span></div>
+        <div class="trim" role="group" aria-label="Trim">
+          <div class="trim-field" id="startField"></div>
+          <div class="trim-field" id="endField"></div>
+        </div>
+        <p id="trimMsg" class="trim-msg" role="status"></p>
+        <section class="transcript" aria-labelledby="trTitle">
+          <h3 id="trTitle">Transcript</h3>
+          <p id="transcript"></p>
+          <p id="signals" class="muted tc"></p>
+        </section>
+      </div>
+    </section>
+
+    <section class="col side" aria-labelledby="seqTitle">
+      <div class="col-head">
+        <h2 id="seqTitle">Sequence</h2>
+        <span id="seqTotal" class="tc muted"></span>
+      </div>
+      <div id="seqEmpty" class="empty"></div>
+      <ol id="seqList" class="seq-list"></ol>
+      <p id="seqLive" class="vh" role="status"></p>
+
+      <fieldset class="panel" id="exportPanel">
+        <legend>Export clips</legend>
+        <label class="check"><input type="checkbox" id="optVertical"> Vertical 9:16</label>
+        <label class="field">Padding per side (seconds)
+          <input type="number" id="optExtend" min="0" max="30" step="0.5" value="0" inputmode="decimal">
+        </label>
+        <p id="exportState" class="muted"></p>
+        <button type="button" id="clipsBtn" class="btn primary">Export clips</button>
+      </fieldset>
+
+      <fieldset class="panel" id="assemblePanel">
+        <legend>Assemble final video</legend>
+        <label class="field">Transition
+          <select id="optTransition"><option value="cut">Cut</option><option value="fade">Fade</option></select>
+        </label>
+        <label class="check"><input type="checkbox" id="optLoudnorm"> Normalize loudness</label>
+        <label class="check"><input type="checkbox" id="optCaptions"> Burn in captions</label>
+        <button type="button" id="assembleBtn" class="btn primary">Assemble</button>
+      </fieldset>
+
+      <section class="panel" id="outputs" aria-labelledby="outTitle" hidden>
+        <h3 id="outTitle">Final video</h3>
+        <video id="finalVideo" controls playsinline preload="metadata"></video>
+        <ul id="outList" class="out-list"></ul>
+      </section>
+    </section>
+  </main>
+
+  <section class="jobs" id="jobs" aria-labelledby="jobsTitle">
+    <div class="jobs-head">
+      <h2 id="jobsTitle">Jobs</h2>
+      <span id="jobStatus" class="job-status" role="status">No job has run yet</span>
+      <span class="spacer"></span>
+      <button type="button" id="cancelBtn" class="btn" hidden>Cancel job</button>
+      <button type="button" id="logToggle" class="btn" aria-expanded="false" aria-controls="log">Show log</button>
+    </div>
+    <div class="indeterminate" id="running" hidden></div>
+    <pre id="log" class="log" tabindex="0" aria-label="Job log" hidden></pre>
+  </section>
+
+  <dialog id="newDialog" aria-labelledby="newTitle">
+    <form method="dialog" id="newForm" novalidate>
+      <h2 id="newTitle">New project</h2>
+      <label class="field">Source video or folder
+        <span class="row">
+          <input id="newSource" required autocomplete="off" spellcheck="false"
+                 placeholder="/path/to/video.mp4 or /path/to/footage">
+          <button type="button" class="btn" id="browseBtn" aria-expanded="false" aria-controls="browser">Browse</button>
+        </span>
+      </label>
+      <div id="browser" class="browser" hidden>
+        <div class="browser-head">
+          <button type="button" class="btn" id="browseUp">Up</button>
+          <code id="browsePath"></code>
+          <button type="button" class="btn" id="browseUse">Use this folder</button>
+        </div>
+        <ul id="browseList" class="browse-list"></ul>
+        <p id="browseMsg" class="muted" role="status"></p>
+      </div>
+      <label class="field">Project name
+        <input id="newName" required autocomplete="off" placeholder="Taken from the source name">
+      </label>
+      <label class="field">Highlight style
+        <select id="newStyle"></select>
+      </label>
+      <p id="newError" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="newCancel">Cancel</button>
+        <button type="submit" class="btn primary" id="newCreate">Create project</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

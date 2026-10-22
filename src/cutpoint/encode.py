@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint.crop import Crop
-from cutpoint.ffmpeg_utils import READ_ERROR_RE, MediaInfo, probe, run, video_encoder_args
+from cutpoint.ffmpeg_utils import READ_ERROR_RE, MediaInfo, probe, run, video_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,8 @@ def export_clip(
         "-i",
         str(src),
     ]
-    vf = f"[0:v:0]{fmt.video_filter(vertical, crop)}[v]"
+    enc = video_encoder()
+    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop))}[v]"
     a_fmt = (
         "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:"
         "channel_layouts=stereo" + audio_fade_filter(dur, audio_fade)
@@ -132,9 +133,7 @@ def export_clip(
         "[v]",
         "-map",
         "[a]",
-        *video_encoder_args(),
-        "-pix_fmt",
-        "yuv420p",
+        *enc.args(),
         "-color_range",
         "tv",
         "-fps_mode",

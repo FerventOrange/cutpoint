@@ -41,12 +41,12 @@ def _fill_find_tool(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     ffmpeg_utils.find_tool("ffmpeg")
 
 
-def _fill_nvenc(tmp: Path, mp: pytest.MonkeyPatch) -> None:
+def _fill_encoder(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     def fail(*a, **k):
-        raise FFmpegError("no nvenc")
+        raise FFmpegError("no GPU encoder")
 
     mp.setattr(ffmpeg_utils, "run", fail)
-    ffmpeg_utils.nvenc_available()
+    ffmpeg_utils.video_encoder()  # fills encoder_error (the probes) and video_encoder
 
 
 def _fill_aesthetic(tmp: Path, mp: pytest.MonkeyPatch) -> None:
@@ -74,7 +74,8 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.stage._stage_index": lambda t, m: stage._stage_index(),
     "cutpoint.stage.staged_path": lambda t, m: stage.staged_path("-"),
     "cutpoint.ffmpeg_utils.find_tool": _fill_find_tool,
-    "cutpoint.ffmpeg_utils.nvenc_available": _fill_nvenc,
+    "cutpoint.ffmpeg_utils.encoder_error": _fill_encoder,
+    "cutpoint.ffmpeg_utils.video_encoder": _fill_encoder,
     "cutpoint.events.visual._aesthetic_layers": _fill_aesthetic,
     "cutpoint.events.paths._TORCH_HOME_SET": _fill_torch_home,
 }

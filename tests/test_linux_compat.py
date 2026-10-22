@@ -474,8 +474,12 @@ FULL = _release(
 )
 
 
+AUTO_NVIDIA = ("cuda", "vulkan", "cpu")
+AUTO_OTHER = ("vulkan", "cpu")
+
+
 def test_pick_linux_assets_nvidia_takes_the_oldest_cuda_with_cudart():
-    flavor, picked = setup._pick_linux_assets(TAG, FULL, "x64", nvidia=True)
+    flavor, picked = setup._pick_linux_assets(TAG, FULL, "x64", AUTO_NVIDIA)
     assert flavor == "linux-cuda-12.8"
     assert picked["bin"][0].endswith(f"{PRE}cuda-12.8-x64.tar.gz")
     assert picked["rt"][0].endswith(f"cudart-llama-{TAG}-bin-ubuntu-cuda-12.8-x64.tar.gz")
@@ -483,28 +487,32 @@ def test_pick_linux_assets_nvidia_takes_the_oldest_cuda_with_cudart():
 
 def test_pick_linux_assets_skips_a_cuda_build_without_cudart():
     assets = {k: v for k, v in FULL.items() if "cudart" not in k or "13.0" in k}
-    flavor, picked = setup._pick_linux_assets(TAG, assets, "x64", nvidia=True)
+    flavor, picked = setup._pick_linux_assets(TAG, assets, "x64", AUTO_NVIDIA)
     assert flavor == "linux-cuda-13.0"
     assert set(picked) == {"bin", "rt"}
 
 
 def test_pick_linux_assets_without_nvidia_prefers_vulkan_then_cpu():
-    flavor, picked = setup._pick_linux_assets(TAG, FULL, "x64", nvidia=False)
+    flavor, picked = setup._pick_linux_assets(TAG, FULL, "x64", AUTO_OTHER)
     assert (flavor, set(picked)) == ("linux-vulkan", {"bin"})
     no_vulkan = {k: v for k, v in FULL.items() if "vulkan" not in k}
-    flavor, picked = setup._pick_linux_assets(TAG, no_vulkan, "x64", nvidia=False)
+    flavor, picked = setup._pick_linux_assets(TAG, no_vulkan, "x64", AUTO_OTHER)
     assert (flavor, set(picked)) == ("linux-cpu", {"bin"})
 
 
 def test_pick_linux_assets_arch_and_zip_fallback_and_none():
-    flavor, _ = setup._pick_linux_assets(TAG, FULL, "arm64", nvidia=True)
+    flavor, _ = setup._pick_linux_assets(TAG, FULL, "arm64", AUTO_NVIDIA)
     assert flavor == "linux-cpu"  # no CUDA / Vulkan build for arm64 in this release
     zips = _release(f"{PRE}vulkan-x64.zip")
-    assert setup._pick_linux_assets(TAG, zips, "x64", nvidia=False)[0] == "linux-vulkan"
-    assert (
-        setup._pick_linux_assets(TAG, _release("llama-b9000-bin-win-cpu-x64.zip"), "x64", True)
-        is None
-    )
+    assert setup._pick_linux_assets(TAG, zips, "x64", AUTO_OTHER)[0] == "linux-vulkan"
+    win_cpu = _release("llama-b9000-bin-win-cpu-x64.zip")
+    assert setup._pick_linux_assets(TAG, win_cpu, "x64", AUTO_NVIDIA) is None
+
+
+def test_forced_llama_backend_never_falls_back():
+    no_cuda = {k: v for k, v in FULL.items() if "cuda" not in k}
+    assert setup._pick_linux_assets(TAG, no_cuda, "x64", ("cuda",)) is None
+    assert setup._pick_linux_assets(TAG, FULL, "x64", ("cpu",))[0] == "linux-cpu"
 
 
 @pytest.mark.parametrize(

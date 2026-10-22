@@ -18,11 +18,13 @@ Components (models and tools go to CUTPOINT_HOME, see ``cutpoint paths``):
     panns    Cnn14_DecisionLevelMax checkpoint + AudioSet label CSV -> models/panns.
              The checkpoint comes from the first mirror that works (see
              PANNS_CKPT_MIRRORS); set CUTPOINT_PANNS_URL to try your own URL first.
-    llama    latest llama.cpp build -> tools/llama.cpp. Windows: CUDA 12.4
-             build + matching cudart DLLs. Linux: CUDA build + cudart libraries
-             when an NVIDIA driver is present, else the Vulkan build (NVIDIA,
-             AMD, Intel), else the CPU build. Other platforms: put your own
-             llama-server on PATH or set CUTPOINT_LLAMA_SERVER.
+    llama    latest llama.cpp build -> tools/llama.cpp. Backend: CUDA when a usable
+             NVIDIA driver is found, else Vulkan (NVIDIA, AMD, Intel), else CPU;
+             CUTPOINT_LLAMA_BACKEND=auto|cuda|vulkan|cpu forces one (no fallback).
+             Windows: CUDA 12.4 build + matching cudart DLLs, or the Vulkan / CPU
+             build. Linux: CUDA build + cudart libraries, or the Vulkan / CPU build.
+             Other platforms: put your own llama-server on PATH or set
+             CUTPOINT_LLAMA_SERVER.
     omni     Qwen2.5-Omni-7B Q4_K_M + mmproj Q8_0 -> models/llm   (~6.2 GB)
     visual   CLIP ViT-L/14 (OpenAI weights, ~1.7 GB) -> models/clip, Faster R-CNN
              ResNet50-FPN v2 COCO (167 MB) -> models/torch, LAION aesthetic
@@ -48,6 +50,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import time
@@ -82,6 +85,7 @@ PANNS_LABELS_URL = (
 HF_URL = "https://huggingface.co/{repo}/resolve/main/{name}"
 GH_RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"
 CUDA_FLAVOR = "cuda-12.4"  # matches the cudart-llama-bin-win-cuda-12.4 runtime zip
+LLAMA_BACKENDS = ("auto", "cuda", "vulkan", "cpu")
 LINUX_ARCH = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
 _OLD_KEPT = (
     "Could not remove %s (a running llama-server holds files in it); it is removed on the "
@@ -310,9 +314,37 @@ def _llama_platform() -> str:
     )
 
 
-def _has_nvidia() -> bool:
-    """True if an NVIDIA driver is loaded (Linux)."""
-    return Path("/proc/driver/nvidia/version").exists() or shutil.which("nvidia-smi") is not None
+def nvidia_usable() -> bool:
+    """True if an NVIDIA driver answers: Linux kernel driver loaded, or ``nvidia-smi -L`` works."""
+    if Path("/proc/driver/nvidia/version").exists():
+        return True
+    exe = shutil.which("nvidia-smi")
+    if exe is None:
+        return False
+    try:
+        proc = subprocess.run([exe, "-L"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and "GPU" in proc.stdout
+
+
+def llama_backend_choice() -> str:
+    """``CUTPOINT_LLAMA_BACKEND`` (auto, cuda, vulkan or cpu; default auto)."""
+    choice = (os.environ.get("CUTPOINT_LLAMA_BACKEND") or "auto").strip().lower()
+    if choice not in LLAMA_BACKENDS:
+        raise ValueError(
+            f"CUTPOINT_LLAMA_BACKEND is {choice!r}; expected one of {', '.join(LLAMA_BACKENDS)}"
+        )
+    return choice
+
+
+def llama_backends() -> tuple[str, ...]:
+    """Backends to try, best first: the one named by CUTPOINT_LLAMA_BACKEND alone, else
+    CUDA (usable NVIDIA only) > Vulkan > CPU."""
+    choice = llama_backend_choice()
+    if choice != "auto":
+        return (choice,)
+    return ("cuda", "vulkan", "cpu") if nvidia_usable() else ("vulkan", "cpu")
 
 
 def _asset(assets: dict[str, Asset], stem: str) -> Asset | None:
@@ -321,25 +353,42 @@ def _asset(assets: dict[str, Asset], stem: str) -> Asset | None:
 
 
 def _pick_linux_assets(
-    tag: str, assets: dict[str, Asset], arch: str, nvidia: bool
+    tag: str, assets: dict[str, Asset], arch: str, backends: tuple[str, ...]
 ) -> tuple[str, dict[str, Asset]] | None:
-    """Best Linux build in one release as ``(flavor, {"bin": ..., ["rt": ...]})``.
+    """First build of ``backends`` in one release as ``(flavor, {"bin": ..., ["rt": ...]})``.
 
-    CUDA + its cudart libraries (NVIDIA only; the oldest CUDA version, which
-    needs the oldest driver) > Vulkan > CPU. None if the release has none.
+    CUDA takes the oldest CUDA version that has a cudart archive (it needs the oldest
+    driver). None if the release has none of them.
     """
     pre = f"llama-{tag}-bin-ubuntu-"
-    if nvidia:
-        pattern = re.compile(rf"{re.escape(pre)}cuda-(\d+(?:\.\d+)*)-{arch}\.(?:tar\.gz|zip)")
-        versions = {m[1] for name in assets if (m := pattern.fullmatch(name))}
-        for ver in sorted(versions, key=lambda v: tuple(int(x) for x in v.split("."))):
-            bin_ = _asset(assets, f"{pre}cuda-{ver}-{arch}")
-            rt = _asset(assets, f"cudart-llama-{tag}-bin-ubuntu-cuda-{ver}-{arch}")
+    for backend in backends:
+        if backend == "cuda":
+            pattern = re.compile(rf"{re.escape(pre)}cuda-(\d+(?:\.\d+)*)-{arch}\.(?:tar\.gz|zip)")
+            versions = {m[1] for name in assets if (m := pattern.fullmatch(name))}
+            for ver in sorted(versions, key=lambda v: tuple(int(x) for x in v.split("."))):
+                bin_ = _asset(assets, f"{pre}cuda-{ver}-{arch}")
+                rt = _asset(assets, f"cudart-llama-{tag}-bin-ubuntu-cuda-{ver}-{arch}")
+                if bin_ and rt:
+                    return f"linux-cuda-{ver}", {"bin": bin_, "rt": rt}
+        else:
+            stem = f"{pre}vulkan-{arch}" if backend == "vulkan" else f"{pre}{arch}"
+            if bin_ := _asset(assets, stem):
+                return f"linux-{backend}", {"bin": bin_}
+    return None
+
+
+def _pick_windows_assets(
+    tag: str, assets: dict[str, Asset], backends: tuple[str, ...]
+) -> tuple[str, dict[str, Asset]] | None:
+    """First x64 Windows build of ``backends`` in one release (see :func:`_pick_linux_assets`)."""
+    for backend in backends:
+        if backend == "cuda":
+            bin_ = assets.get(f"llama-{tag}-bin-win-{CUDA_FLAVOR}-x64.zip")
+            rt = assets.get(f"cudart-llama-bin-win-{CUDA_FLAVOR}-x64.zip")
             if bin_ and rt:
-                return f"linux-cuda-{ver}", {"bin": bin_, "rt": rt}
-    for flavor, stem in (("linux-vulkan", f"{pre}vulkan-{arch}"), ("linux-cpu", f"{pre}{arch}")):
-        if bin_ := _asset(assets, stem):
-            return flavor, {"bin": bin_}
+                return CUDA_FLAVOR, {"bin": bin_, "rt": rt}
+        elif bin_ := assets.get(f"llama-{tag}-bin-win-{backend}-x64.zip"):
+            return f"win-{backend}", {"bin": bin_}
     return None
 
 
@@ -353,37 +402,49 @@ def _latest_llama_assets(plat: str) -> tuple[str, str, dict[str, Asset]]:
     """``(tag, flavor, assets)`` of the newest release with a build for ``plat``."""
     with urllib.request.urlopen(GH_RELEASES, timeout=60) as resp:
         releases = json.load(resp)
+    backends = llama_backends()
     if plat == "linux":
         arch = LINUX_ARCH.get(platform.machine().lower())
         if arch is None:
             raise RuntimeError(f"No llama.cpp Linux build for {platform.machine()}")
-        nvidia = _has_nvidia()
     for rel in releases:
         tag = rel["tag_name"]
         assets = {
             a["name"]: (a["browser_download_url"], a["size"], _sha256_of(a)) for a in rel["assets"]
         }
         if plat == "linux":
-            if picked := _pick_linux_assets(tag, assets, arch, nvidia):
-                return tag, picked[0], picked[1]
-            continue
-        bin_zip = f"llama-{tag}-bin-win-{CUDA_FLAVOR}-x64.zip"
-        rt_zip = f"cudart-llama-bin-win-{CUDA_FLAVOR}-x64.zip"
-        if bin_zip in assets and rt_zip in assets:
-            return tag, CUDA_FLAVOR, {"bin": assets[bin_zip], "rt": assets[rt_zip]}
-    if plat == "linux":
-        raise RuntimeError("No recent llama.cpp release with Linux assets")
-    raise RuntimeError("No recent llama.cpp release with Windows CUDA 12.4 assets")
+            picked = _pick_linux_assets(tag, assets, arch, backends)
+        else:
+            picked = _pick_windows_assets(tag, assets, backends)
+        if picked:
+            return tag, picked[0], picked[1]
+    raise RuntimeError(
+        f"No recent llama.cpp release with a {plat} build for backend {'/'.join(backends)}"
+    )
 
 
 def _stamp_fits(stamp_text: str, plat: str) -> bool:
     """True if VERSION.txt (``"<tag> <flavor>"``) is an install for ``plat``.
 
-    Linux flavors start with ``linux-``; Windows stamps are ``<tag> cuda-12.4``.
+    Linux flavors start with ``linux-``; Windows stamps are ``<tag> cuda-12.4``,
+    ``<tag> win-vulkan`` or ``<tag> win-cpu``.
     """
     parts = stamp_text.split()
     linux = len(parts) > 1 and parts[1].startswith("linux-")
     return linux == (plat == "linux")
+
+
+def _backend_of(flavor: str) -> str | None:
+    """``cuda``, ``vulkan`` or ``cpu`` from a build flavor such as ``linux-cuda-12.8``."""
+    return next((b for b in LLAMA_BACKENDS[1:] if b in flavor), None)
+
+
+def _backend_fits(stamp_text: str, flavor: str) -> bool:
+    """True if the installed build (VERSION.txt) has the backend of ``flavor``, the one this run
+    would install. A missing or malformed stamp never fits."""
+    parts = stamp_text.split()
+    installed = _backend_of(parts[1]) if len(parts) > 1 else None
+    return installed is not None and installed == _backend_of(flavor)
 
 
 def _extract(archive: Path, dest: Path) -> None:
@@ -430,7 +491,7 @@ def install_llama(force: bool = False) -> None:
     if old.exists() and not llama.exists() and _ours(old):  # interrupted between the renames
         old.rename(llama)
     have = stamp.read_text().strip() if stamp.exists() and not force else None
-    if have is not None and _stamp_fits(have, plat):
+    if have is not None and _stamp_fits(have, plat) and _backend_fits(have, flavor):
         _clean_leftovers(llama, staging, old, strict=False)
         logger.info(
             "llama.cpp already installed (%s); latest is %s. Use --force to replace.",
@@ -439,7 +500,7 @@ def install_llama(force: bool = False) -> None:
         )
         return
     if have is not None:
-        logger.info("llama.cpp in %s is for another platform (%s); replacing", llama, have)
+        logger.info("llama.cpp in %s is for another platform/backend (%s); replacing", llama, have)
     _clean_leftovers(llama, staging, old, strict=True)
     staging.mkdir(parents=True)
     dl_root = paths.tools_dir() / "_downloads"

@@ -45,7 +45,8 @@ from cutpoint.ffmpeg_utils import FFmpegError, decode_raw, ffprobe_json, find_to
 logger = logging.getLogger(__name__)
 
 VISUAL_VERSION = 2
-CLIP_ARCH, CLIP_PRETRAINED = "ViT-L-14", "openai"
+# OpenAI weights were trained with QuickGELU; plain "ViT-L-14" would load them with GELU.
+CLIP_ARCH, CLIP_PRETRAINED = "ViT-L-14-quickgelu", "openai"
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 COCO_PERSON, COCO_SKIS, COCO_SNOWBOARD = 1, 35, 36

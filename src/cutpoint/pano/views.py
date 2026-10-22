@@ -84,9 +84,17 @@ class ViewParams:
 
     def key(self) -> dict[str, Any]:
         """Cache-key dict (``batch`` does not change results)."""
+        from cutpoint.events import visual as V  # noqa: PLC0415
+
         d = asdict(self)
         d.pop("batch")
-        return {"layer": "pano-views", "v": VIEWS_VERSION, "orient": G.LEVEL_VERSION, **d}
+        return {
+            "layer": "pano-views",
+            "v": VIEWS_VERSION,
+            "orient": G.LEVEL_VERSION,
+            "clip": [V.CLIP_ARCH, V.CLIP_PRETRAINED],
+            **d,
+        }
 
 
 @dataclass
