@@ -470,3 +470,20 @@ def test_cmd_director_rejects_path_out_names(
 ) -> None:
     with pytest.raises(ValueError, match="plain folder name"):
         _run_director(tmp_path, monkeypatch, out_name=name)
+
+
+def test_cmd_director_rerun_keeps_bak_of_hand_edited_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    proj, _ = _run_director(tmp_path, monkeypatch, force=True)
+    f = proj / "pano_paths" / "director" / "001_laugh.json"
+    edited = {"keys": ["hand-edited"]}
+    f.write_text(json.dumps(edited))
+    caplog.clear()
+    _run_director(tmp_path, monkeypatch, force=True)
+    bak = f.with_name(f.name + ".bak")
+    assert json.loads(bak.read_text()) == edited
+    assert "kept as" in caplog.text and bak.name in caplog.text
+    assert json.loads(f.read_text()) != edited

@@ -299,10 +299,24 @@ def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
     return found
 
 
+def _without_vl(path: Any) -> Any:
+    """``path`` without its ``vl`` answers (they and their timing differ on every run)."""
+    return {k: v for k, v in path.items() if k != "vl"} if isinstance(path, dict) else path
+
+
 def _save_path(out_dir: Path, stem: str, path: dict[str, Any], rendering: bool) -> None:
-    """Write ``<stem>.json``; a preview of another path under that name goes unless re-rendered."""
+    """Write ``<stem>.json``; a preview of another path under that name goes unless re-rendered.
+    Another path already in that file (it may be hand-edited) is first copied to the first free
+    backup name (``<file>.bak``, then ``<file>.1.bak``, ...); the same path (``vl`` answers
+    aside) is not backed up."""
+    from cutpoint.pano.render import backup_path_file  # noqa: PLC0415
+
     f = out_dir / f"{stem}.json"
-    if not rendering and cache.load_json(f) != json.loads(json.dumps(path)):
+    old, new = cache.load_json(f), json.loads(json.dumps(path))
+    changed = old != new
+    if changed and f.is_file() and _without_vl(old) != _without_vl(new):
+        logger.warning("%s  re-planned; the previous path is kept as %s", stem, backup_path_file(f))
+    if not rendering and changed:
         (out_dir / f"{stem}.mp4").unlink(missing_ok=True)
     cache.save_json(f, path, indent=1)
 
