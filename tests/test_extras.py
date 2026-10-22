@@ -316,6 +316,22 @@ def test_install_hint_tool_cuda_note_kept_without_cuda_index(
 
 
 @pytest.mark.parametrize(
+    ("source", "note"),
+    [
+        ('directory = "C:/src/cutpoint"', False),
+        ('editable = "C:/src/cutpoint"', False),
+        ('git = "https://github.com/FerventOrange/cutpoint"', False),
+        ('path = "C:/dl/cutpoint-1.0-py3-none-any.whl"', True),
+    ],
+)
+def test_install_hint_gpu_note_skipped_for_project_sources(monkeypatch, tmp_path, source, note):
+    # a directory/editable/git install resolves with cutpoint's own [tool.uv.sources] (#61)
+    monkeypatch.setattr(extras.sys, "platform", "win32")
+    _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
+    assert ("(with an NVIDIA GPU" in extras.install_hint("events")) is note
+
+
+@pytest.mark.parametrize(
     ("uv", "extra_flags"),
     [
         (True, " --reinstall-package torch --reinstall-package torchvision"),

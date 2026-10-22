@@ -75,8 +75,9 @@ torch has CUDA. With CPU-only torch they still work, but the visual layer takes 
 times longer. Check with `uv run python -c "import torch; print(torch.cuda.is_available())"`.
 `uv sync --extra events` installs the CUDA 12.6 builds on Windows and Linux.
 
-A tool install (`uv tool install cutpoint`) gets CPU-only torch on Windows, because the CUDA
-index in `pyproject.toml` only applies to a clone. Reinstall with the PyTorch index:
+A PyPI or wheel tool install (`uv tool install cutpoint`) gets CPU-only torch on Windows. The CUDA
+index in `pyproject.toml` also applies to tool installs from a clone directory or git URL, so
+those need no extra flags. For a PyPI or wheel install, reinstall with the PyTorch index:
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match --reinstall
