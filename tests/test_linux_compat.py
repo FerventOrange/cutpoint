@@ -303,6 +303,18 @@ def test_no_readable_telemetry_is_logged_once_at_info(tmp_path, monkeypatch, cap
     assert not [r for r in caplog.records if "no readable GoPro" in r.message]
 
 
+def test_forced_crash_run_logs_missing_telemetry_at_info(home, tmp_path, monkeypatch, caplog):
+    class Parser:
+        def __init__(self, _path):
+            raise RuntimeError("no GoPro MET track")
+
+    monkeypatch.setitem(sys.modules, "telemetry_parser", SimpleNamespace(Parser=Parser))
+    video = write(tmp_path / "plain.mp4")
+    with caplog.at_level(logging.INFO):
+        assert crash.imu_grids(video, 10.0, force=True) is None
+    assert [r for r in caplog.records if "no readable GoPro telemetry" in r.message]
+
+
 # -- ffmpeg_utils ---------------------------------------------------------------------------
 
 
@@ -373,10 +385,8 @@ def test_imu_source_finds_the_00_sibling_case_insensitively(tmp_path, ext, prefi
     lens10 = tmp_path / "VID_20240101_120000_10_001.insv"
     got = x3.imu_source(lens10)
     assert got is not None
-    assert got.samefile(real)
-    if sys.platform.startswith("linux"):
-        # Case-sensitive FS: the on-disk spelling is returned. Elsewhere the built name already exists.
-        assert got.name == real.name
+    # exact on-disk spelling (WindowsPath == ignores case), parent as passed
+    assert str(got) == str(real)
 
 
 def test_imu_source_matches_a_unique_00_by_number_only(tmp_path):

@@ -69,14 +69,19 @@ def imu_source(path: str | Path) -> Path | None:
     if f is None:
         return None
     cand = Path(path).with_name(f"VID_{f['date']}_{f['time']}_00_{f['num']}.insv")
-    if cand.exists():
+    # On a case-sensitive file system an existing ``cand`` is the real name (unless its
+    # case-swapped twin also exists). Otherwise list the folder: a case-insensitive one
+    # (Windows, macOS) finds ``cand`` under any case, and the on-disk name is wanted.
+    if cand.exists() and not cand.with_name(cand.name.swapcase()).exists():
         return cand
     # Match names case-insensitively, so .INSV / vid_ also work on case-sensitive file systems.
+    # The parent stays as passed (no resolve()); only the file name comes from the listing.
     try:
         siblings = list(Path(path).parent.iterdir())
     except OSError:
         return None
     exact = [p for p in siblings if p.name.casefold() == cand.name.casefold()]
+    exact.sort(key=lambda p: p.name != cand.name)  # the built spelling first, if on disk
     if exact:
         return exact[0]
     loose = re.compile(rf"VID_.*_00_{f['num']}\.insv", re.IGNORECASE)
