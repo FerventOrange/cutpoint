@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed GPU encoder probe (`cutpoint capabilities`, or a video encoder forced with
+  `CUTPOINT_VIDEO_ENCODER`) now reports ffmpeg's first real error, for example "Cannot load
+  libcuda.so.1", instead of the trailing "Nothing was written into output file" or "Conversion
+  failed!" lines. Forcing `vaapi` on Windows or macOS now says "VAAPI is Linux-only" (#113).
+
 ## [0.2.0] - 2026-10-22
 
 ### Added

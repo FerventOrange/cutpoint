@@ -516,6 +516,21 @@ class VideoEncoder:
         return [*codec, "-preset", "medium", "-crf", q, "-pix_fmt", "yuv420p"]
 
 
+# ffmpeg's closing lines after the real error: they name no cause, so a probe skips them.
+_TRAILER_RE = re.compile(
+    r"Nothing was written into output file|Terminating thread|Task finished|Conversion failed!"
+)
+
+
+def _first_error_line(err: FFmpegError) -> str:
+    """The first line of ``err``'s ffmpeg output that is not a trailer, else its last line."""
+    lines = str(err).splitlines()
+    for line in lines[1:]:  # lines[0] is run()'s "ffmpeg failed (exit N):" header
+        if line.strip() and not _TRAILER_RE.search(line):
+            return line.strip()
+    return lines[-1]
+
+
 def vaapi_devices() -> list[str]:
     """VAAPI render nodes (Linux), in a stable order; each is probed, none is assumed."""
     if not sys.platform.startswith("linux"):
@@ -526,7 +541,7 @@ def vaapi_devices() -> list[str]:
 @state.register_cache
 @cache
 def encoder_error(enc: VideoEncoder) -> str | None:
-    """None if ffmpeg really encodes with ``enc`` here, else the last line of its error."""
+    """None if ffmpeg really encodes with ``enc`` here, else the first real line of its error."""
     try:
         run(
             [
@@ -547,12 +562,14 @@ def encoder_error(enc: VideoEncoder) -> str | None:
             timeout=60,
         )
     except FFmpegError as err:
-        return str(err).splitlines()[-1]
+        return _first_error_line(err)
     return None
 
 
 def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
     """The first working encoder of ``kind`` (VAAPI: first working render node) and the errors."""
+    if kind == "vaapi" and not sys.platform.startswith("linux"):
+        return None, ["VAAPI is Linux-only"]
     if kind == "vaapi":
         cands = [VideoEncoder("vaapi", d) for d in vaapi_devices()]
         errors = [] if cands else ["no /dev/dri/renderD* render device"]

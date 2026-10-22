@@ -25,9 +25,15 @@ def _device(args: list[str]) -> str | None:
     return args[args.index("-init_hw_device") + 1].split(":", 1)[1]
 
 
-def fake_ffmpeg(monkeypatch, works: set[str], devices=(D128, D129)) -> list[list[str]]:
-    """Make ``ffmpeg_utils.run`` succeed only for these codecs / ``codec@device`` (on Linux)."""
-    monkeypatch.setattr(sys, "platform", "linux")  # the auto order differs on Windows
+def fake_ffmpeg(
+    monkeypatch, works: set[str], devices=(D128, D129), platform="linux", stderr=None
+) -> list[list[str]]:
+    """Make ``ffmpeg_utils.run`` succeed only for these codecs / ``codec@device``.
+
+    ``platform`` is what ``sys.platform`` reports; ``stderr`` maps a codec to the ffmpeg output
+    its failed probe carries (default: ``"<codec> cannot be opened"``).
+    """
+    monkeypatch.setattr(sys, "platform", platform)  # the auto order differs on Windows
     calls: list[list[str]] = []
 
     def run(args, **_kw):
@@ -35,7 +41,8 @@ def fake_ffmpeg(monkeypatch, works: set[str], devices=(D128, D129)) -> list[list
         codec = args[args.index("-c:v") + 1]
         if codec in works or f"{codec}@{_device(args)}" in works:
             return ""
-        raise FFmpegError(f"ffmpeg failed (exit 1):\n{codec} cannot be opened")
+        text = (stderr or {}).get(codec, f"{codec} cannot be opened")
+        raise FFmpegError(f"ffmpeg failed (exit 1):\n{text}")
 
     monkeypatch.setattr(ffmpeg_utils, "run", run)
     monkeypatch.setattr(ffmpeg_utils, "vaapi_devices", lambda: list(devices))
@@ -48,6 +55,51 @@ def test_forced_gpu_encoder_that_cannot_encode_is_an_error_not_a_fallback(monkey
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", kind)
     with pytest.raises(EncoderUnavailableError, match="cannot be opened"):
         ffmpeg_utils.video_encoder()
+
+
+FFMPEG7_STDERR = (
+    "[AVHWDeviceContext @ 0x1] Failed to initialise VAAPI connection: -1 (unknown libva error).\n"
+    "[vost#0:0/h264_vaapi @ 0x2] Error while opening encoder - maybe incorrect parameters\n"
+    "[vost#0:0/h264_vaapi @ 0x2] Task finished with error code: -22 (Invalid argument)\n"
+    "[vost#0:0/h264_vaapi @ 0x2] Terminating thread with return code -22 (Invalid argument)\n"
+    "[out#0/null @ 0x3] Nothing was written into output file, because at least one of its streams "
+    "received no packets.\n"
+    "Conversion failed!"
+)
+
+
+def test_probe_failure_reports_the_root_cause_line_not_ffmpegs_trailers(monkeypatch):
+    fake_ffmpeg(monkeypatch, works=set(), devices=(D128,), stderr={"h264_vaapi": FFMPEG7_STDERR})
+    enc, errors = ffmpeg_utils.find_encoder("vaapi")
+    assert enc is None
+    assert errors == [
+        f"{D128}: [AVHWDeviceContext @ 0x1] Failed to initialise VAAPI connection: -1 "
+        "(unknown libva error)."
+    ]
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_forced_vaapi_off_linux_says_linux_only_and_never_runs_ffmpeg(monkeypatch, platform):
+    calls = fake_ffmpeg(monkeypatch, works={"h264_vaapi"}, platform=platform)
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "vaapi")
+    with pytest.raises(EncoderUnavailableError, match="VAAPI is Linux-only"):
+        ffmpeg_utils.video_encoder()
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("platform", "order"),
+    [
+        ("win32", ["h264_nvenc", "h264_amf"]),
+        ("linux", ["h264_nvenc", "h264_vaapi", "h264_vaapi", "h264_amf"]),  # 2 render nodes
+    ],
+)
+def test_auto_probes_encoders_in_the_platform_order_then_falls_back_to_cpu(
+    monkeypatch, platform, order
+):
+    calls = fake_ffmpeg(monkeypatch, works=set(), platform=platform)
+    assert ffmpeg_utils.video_encoder() == VideoEncoder("cpu")
+    assert [c[c.index("-c:v") + 1] for c in calls] == order
 
 
 def test_forced_vaapi_without_a_render_device_says_so(monkeypatch):
@@ -65,11 +117,6 @@ def test_config_json_selects_the_encoder_and_the_environment_overrides_it(home, 
     reset_state()
     with pytest.raises(ValueError, match="auto, nvenc, amf, vaapi, cpu"):
         config.get_config()
-
-
-def test_auto_falls_back_to_software_when_no_gpu_encoder_works(monkeypatch):
-    fake_ffmpeg(monkeypatch, works=set())
-    assert ffmpeg_utils.video_encoder() == VideoEncoder("cpu")
 
 
 def test_auto_keeps_nvenc_first_when_it_works(monkeypatch):
