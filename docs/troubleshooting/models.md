@@ -14,6 +14,8 @@ available it skips the step quietly. With `--vision` you get an error instead.
    setx OLLAMA_HOST http://127.0.0.1:11434
    ```
 
+   On Linux: `export OLLAMA_HOST=http://127.0.0.1:11434` (add it to your shell profile).
+
    or set `"ollama_url": "http://127.0.0.1:11434"` in `config.json`, or pass
    `analyze --ollama-url http://127.0.0.1:11434`.
 4. A bare `host:port` in `OLLAMA_HOST` gets `http://` added. A wildcard bind address such as
@@ -31,8 +33,10 @@ The `events` model layer does not use Ollama for its main model. It starts its o
 - Components: `pip` (only checks Python packages), `panns`, `llama`, `omni`, `visual`, `voice`.
 - Behind a proxy or offline, download manually and place files under `CUTPOINT_HOME` using the
   folder layout in [Configuration](../configuration.md#data-folder-cutpoint_home).
-- `llama` downloads the newest llama.cpp Windows CUDA build. On other platforms, install a
-  `llama-server` build yourself and set `CUTPOINT_LLAMA_SERVER` to its full path.
+- `llama` downloads the newest llama.cpp build: Windows CUDA 12.4, or on Linux the oldest CUDA
+  build with cudart in the newest release (12.8 today; needs a recent NVIDIA driver) when an
+  NVIDIA driver is detected, otherwise Vulkan, otherwise CPU. With an older driver, or to use your
+  own build, put `llama-server` on `PATH` or set `CUTPOINT_LLAMA_SERVER` to its full path.
 - Disk space: about 8 GB for everything. Move the data folder with `CUTPOINT_HOME` or
   `CUTPOINT_MODELS_DIR` if the system drive is small.
 

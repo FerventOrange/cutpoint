@@ -69,8 +69,8 @@ JSON needs doubled backslashes in Windows paths, or use forward slashes.
 ### projects_dir
 
 Where project folders live. Default `<CUTPOINT_HOME>\projects`. A project argument that is a bare
-name (`my-edit`) or starts with `projects\` is placed here. That applies to `analyze --out`,
-`clips <project>`, `events <project>`, and, with a `projects\` prefix, to `clips --out`,
+name (`my-edit`) or starts with `projects/` is placed here. That applies to `analyze --out`,
+`clips <project>`, `events <project>`, and, with a `projects/` prefix, to `clips --out`,
 `clips --segments`, `assemble <clips_dir>` and `assemble --out`. Absolute paths, and relative
 paths that exist in the current folder, are used as given.
 
@@ -83,6 +83,9 @@ only reads are redirected. The analysis cache key uses the canonical (original) 
 modification time, so a copy that preserves the modification time keeps its cache.
 `source_remap_exclude` lists file-name or path globs that are never remapped (for example a
 copy you have not verified).
+
+Prefix and key matching is case-sensitive on Linux (`source_remap` prefixes, `stage` keys) and
+stays case-insensitive on Windows.
 
 ### stage_dir
 

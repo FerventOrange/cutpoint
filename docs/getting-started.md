@@ -11,7 +11,7 @@
 | Ollama (optional) | Only for `analyze --vision` and `events` VLM features that use it. |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are about 8 GB. Clips and finals are re-encoded, so budget for them in the project folder. |
 
-Windows is the main tested platform (CI runs the tests on Windows and Linux). The CUDA
+Windows and Linux are tested (CI runs the tests on both). The CUDA
 libraries for GPU Whisper (cuBLAS, cuDNN) come with the base install on Windows and Linux.
 
 ## Install
@@ -23,7 +23,12 @@ winget install --id Gyan.FFmpeg -e
 winget install --id astral-sh.uv -e
 ```
 
-On Linux, install ffmpeg with your package manager and uv from the uv documentation.
+On Linux:
+
+```bash
+sudo apt install ffmpeg        # or dnf, pacman, zypper, ...
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
 Get the code and install the core package:
 
@@ -41,7 +46,7 @@ The core install is enough for `analyze`, `clips`, `extend`, `assemble` and `sta
 | Extra | Adds |
 |---|---|
 | `ski` | Action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU). Also used by the 360 module. |
-| `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. |
+| `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `dev` | pytest, ruff, pre-commit. |
 | `all` | `ski` and `events`. |
 | `gpu` | Empty alias kept for old commands. |
@@ -80,11 +85,13 @@ uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 -
 ```
 
 Check it with `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
-(`True` means the GPU is used). See [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md#events-is-very-slow).
+(`True` means the GPU is used). On Linux:
+`"$(uv tool dir)/cutpoint/bin/python" -c "import torch; print(torch.cuda.is_available())"`. See [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md#events-is-very-slow).
 
 The repository also has wrappers that use `.venv` without activating it: `.\cutpoint <command>`
 (PowerShell) and `cutpoint <command>` from cmd. If PowerShell blocks scripts, use
-`.\cutpoint.cmd`.
+`.\cutpoint.cmd`. On Linux, `./cutpoint <command>` is a POSIX sh wrapper that runs
+`.venv/bin/python -m cutpoint`.
 
 ## First run
 
@@ -140,7 +147,8 @@ uv run cutpoint setup --only panns voice
 
 Valid components: `pip`, `panns`, `llama`, `omni`, `visual`, `voice`. `setup` installs no Python
 packages; the `pip` step only checks them and prints the install command. The llama.cpp build it
-downloads is a Windows CUDA build.
+downloads on Windows is a CUDA 12.4 build. On Linux it downloads the official Linux build: the oldest CUDA build (with the cudart libraries) in the newest llama.cpp release (12.8 today; needs a recent NVIDIA driver) when an NVIDIA driver is detected, otherwise Vulkan, otherwise CPU. With an older NVIDIA driver, set `CUTPOINT_LLAMA_SERVER` or put a Vulkan or self-built `llama-server` on `PATH`.
+`llama-server` is found through `CUTPOINT_LLAMA_SERVER`, then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` works.
 
 ### Optional: Ollama vision
 
@@ -152,13 +160,20 @@ winget install --id Ollama.Ollama -e
 ollama pull qwen3-vl:8b        # about 6 GB
 ```
 
+On Linux:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen3-vl:8b        # about 6 GB
+```
+
 Override the model with `CUTPOINT_VISION_MODEL` or `analyze --ollama-model`, and the server
 with `OLLAMA_HOST`, `ollama_url` or `analyze --ollama-url`.
 
 ### ffmpeg lookup
 
 Cutpoint finds ffmpeg through `CUTPOINT_FFMPEG` / `CUTPOINT_FFPROBE` (full paths), then
-`PATH`, then the WinGet package folder. A fresh winget install therefore works before your
+`PATH`, then (Windows) the WinGet package folder. A fresh winget install therefore works before your
 shell's `PATH` refreshes.
 
 ## Your first edit
@@ -168,7 +183,7 @@ Use any video. Here one file becomes a highlights cut:
 ```powershell
 uv run cutpoint analyze D:\Videos\clip.mp4 --style gaming --out my-edit
 uv run cutpoint clips my-edit --top 8
-uv run cutpoint assemble projects\my-edit\clips --transition fade --loudnorm
+uv run cutpoint assemble projects/my-edit/clips --transition fade --loudnorm
 ```
 
 On Linux: `uv run cutpoint analyze ~/Videos/ride.mp4 --style action --out my-edit`.

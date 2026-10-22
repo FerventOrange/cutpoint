@@ -16,9 +16,9 @@ No, but transcription and the optional model layers are much faster on an NVIDIA
 export uses NVENC when available and libx264 otherwise.
 
 **Which platforms are supported?**
-Windows is the main tested platform. The test suite also runs on Linux in CI. The llama.cpp
-download done by `cutpoint setup` is a Windows CUDA build; on other platforms install
-`llama-server` yourself and set `CUTPOINT_LLAMA_SERVER`.
+Windows and Linux; the test suite runs on both in CI. `cutpoint setup` downloads a llama.cpp
+build for each (on Linux: the oldest CUDA build when an NVIDIA driver is detected, otherwise Vulkan,
+otherwise CPU). A self-built `llama-server` on `PATH` or in `CUTPOINT_LLAMA_SERVER` also works.
 
 **What kinds of video work?**
 Gameplay, action-cam, sport, funny moments and commentary or talk. Pick the matching `--style`

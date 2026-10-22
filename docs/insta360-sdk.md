@@ -96,6 +96,6 @@ The SDK is under NDA. The repository `.gitignore` blocks the common SDK paths (`
 | Very slow stitching | The SDK may be encoding in software. Update the NVIDIA driver, keep `-enable_h265_encoder` for outputs above 4096 px, and look at the encoder line the run logs (`encoder ... (...)`). `-enable_soft_encode` or `-disable_cuda` in `pano.stitch_args` forces the slow path |
 | `Invalid -output_size ...` (not 2:1) | Rejected before running: fix `-output_size` in `pano.stitch_args` (width = 2 x height) |
 | `No 360 clips selected` | Pass `--clips NNN ...` or `--from-clips DIR`, or run in a project that has `highlights.json` |
-| `clips folder not found: <path>` | `--from-clips` takes an absolute path, `projects\<project>\<folder>`, or a folder name inside the project (e.g. `clips_review`) |
+| `clips folder not found: <path>` | `--from-clips` takes an absolute path, `projects/<project>/<folder>`, or a folder name inside the project (e.g. `clips_review`) |
 | `<folder>: N GB free, clip NNN needs ~M GB` (error before the run) | Set `pano.stitched_dir` to a drive with room |
 | `... stitched with FlowState` or `no sidecar ..., assuming FlowState` warning when rendering | The equirect predates the current defaults or was stitched with `-enable_flowstate`; its framing drifts with the camera's heading. Restitch: `cutpoint 360 stitch <project> --clips NNN --force` (the warning prints the exact command) |

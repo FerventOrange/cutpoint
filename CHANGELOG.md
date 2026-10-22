@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `cutpoint --version`.
+- Linux: `cutpoint setup` downloads the official llama.cpp Linux build (the oldest CUDA build
+  with cudart in the newest llama.cpp release, 12.8 today, when an NVIDIA driver is detected;
+  otherwise Vulkan, otherwise CPU). `llama-server`
+  is found via `CUTPOINT_LLAMA_SERVER`, the bundled build, then `PATH`.
+- `./cutpoint` POSIX shell wrapper that runs the repo `.venv`, like `cutpoint.cmd`.
+
+### Changed
+
+- Project paths can be written `projects/<name>/...` on every OS; docs use forward slashes.
+- Path matching (`source_remap`, `stage` keys) is case-sensitive on Linux and stays
+  case-insensitive on Windows.
+- Linux: stage index keys changed; run `cutpoint stage --clear` (without inputs) and stage again.
+  Ski features are recomputed once.
 
 ### Fixed
 
@@ -21,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
 - `cutpoint.cmd` and `cutpoint.ps1` header comments now say the `.venv` from `uv sync` is all
   they need.
+- GPU Whisper on Linux: the pip-installed CUDA libraries are preloaded.
+- Remote-mount detection works on Linux.
+- Clearer ffmpeg-not-found hint on Linux.
+- Caption font is chosen with `fc-match sans-serif` on Linux.
+- Insta360 X3 file lookup is case-insensitive on Linux.
+- Insta360 SDK runs get the needed `LD_LIBRARY_PATH` on Linux.
+- `llama-server` is cleaned up when the parent process dies on Linux.
+- Project and JSON files respect the umask instead of fixed permissions.
 
 ## [0.1.0] - 2026-10-21
 

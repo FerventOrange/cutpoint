@@ -29,7 +29,7 @@ below.
 - Exit codes: `0` success, `1` error, `130` interrupted, `2` bad arguments.
 - Logs and errors go to stderr as `HH:MM:SS LEVEL message`; errors are `ERROR` lines. Use
   `cutpoint -v <command>` (flag before the command) for debug output and tracebacks.
-- Paths inside a project must start with `projects\<name>\...` or be absolute; a bare name means
+- Paths inside a project must start with `projects/<name>/...` (forward slashes work on every OS; do not use backslashes in bash) or be absolute; a bare name means
   the project itself.
 - Results are files, not stdout. Read the JSON files below instead of parsing logs.
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
@@ -54,6 +54,8 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    ```powershell
    uv run cutpoint analyze D:\Videos\clip.mp4 --style funny --out clip-edit
    ```
+
+   On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style funny --out clip-edit`.
 
    Writes `highlights.json` and `transcript.txt` into the project folder (`<projects>\clip-edit`, see
    `cutpoint paths`).
@@ -82,7 +84,7 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
 6. **Assemble.**
 
    ```powershell
-   uv run cutpoint assemble projects\clip-edit\clips --transition fade --loudnorm
+   uv run cutpoint assemble projects/clip-edit/clips --transition fade --loudnorm
    ```
 
    Writes `final.mp4`, `final.fcpxml` and `final.otio` in the project folder.
@@ -92,7 +94,7 @@ Variants:
 
 | Request | Do |
 |---|---|
-| Short clip or reel for social media | `clips <project> --vertical --max-total 60`, then `assemble projects\<project>\clips_vertical --captions` |
+| Short clip or reel for social media | `clips <project> --vertical --max-total 60`, then `assemble projects/<project>/clips_vertical --captions` |
 | Highlights of a specific length | `clips <project> --max-total <seconds>` |
 | "Extra" instruction such as "only funny moments" or "keep the speech intact" | Choose `--style`, filter candidates by `transcript`/`label`, use `--segments`. The CLI does not parse these instructions |
 | The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json`. Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |

@@ -13,7 +13,7 @@ All examples use `cutpoint` for `uv run cutpoint`. Paths are examples; use your 
 ## Montage or highlights from one or more videos
 
 ```powershell
-# 1. Find and rank moments. Writes projects\my-edit\highlights.json and transcript.txt
+# 1. Find and rank moments. Writes projects/my-edit/highlights.json and transcript.txt
 cutpoint analyze D:\Videos\clip.mp4 --style gaming --out my-edit
 
 # Several files and folders at once, skipping some by glob:
@@ -26,13 +26,13 @@ cutpoint events my-edit
 # 3. Export the best moments as 001_<label>.mp4, 002_<label>.mp4, ...
 cutpoint clips my-edit --top 8
 
-# 4. Review projects\my-edit\clips. Delete clips you do not want; rename to reorder.
+# 4. Review projects/my-edit/clips. Delete clips you do not want; rename to reorder.
 
 # 5. Build the video from whatever is in the folder, in filename order.
-cutpoint assemble projects\my-edit\clips --transition fade --loudnorm
+cutpoint assemble projects/my-edit/clips --transition fade --loudnorm
 ```
 
-Output: `projects\my-edit\final.mp4`, `final.fcpxml` and `final.otio`.
+Output: `projects/my-edit/final.mp4`, `final.fcpxml` and `final.otio`.
 
 Choose the style by content: `funny` for banter and laughter, `gaming` or `action` for fast
 footage, `sport` for crowd-driven events, `commentary` for long talk (clips of 20-120 s, in
@@ -62,14 +62,14 @@ If you will trim in an editor, export handles:
 
 ```powershell
 cutpoint clips my-edit --top 8 --extend 1.5         # padding at export
-cutpoint extend projects\my-edit\clips --seconds 2            # or re-export an existing folder
+cutpoint extend projects/my-edit/clips --seconds 2            # or re-export an existing folder
 ```
 
 ## Vertical (9:16) output
 
 ```powershell
-cutpoint clips my-edit --vertical --max-total 60      # projects\my-edit\clips_vertical, 1080x1920
-cutpoint assemble projects\my-edit\clips_vertical --captions   # projects\my-edit\final_vertical.mp4
+cutpoint clips my-edit --vertical --max-total 60      # projects/my-edit/clips_vertical, 1080x1920
+cutpoint assemble projects/my-edit/clips_vertical --captions   # projects/my-edit/final_vertical.mp4
 ```
 
 `--vertical` is a fixed centre crop with no subject tracking. For 360 footage the renderer
