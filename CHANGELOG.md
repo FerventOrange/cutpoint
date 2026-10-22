@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drivers too old for CUDA 13), `pip install "cutpoint[...]"` for PyPI installs, and the
   `uv sync --extra` form only in a clone. The pip commands can be pasted into PowerShell.
 - `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
+- `cutpoint setup` verifies llama.cpp downloads against the sha256 digest GitHub publishes: a
+  corrupt cached archive is downloaded again, and a mismatch aborts and keeps the existing
+  install (#35).
+- `cutpoint setup` installs llama.cpp into a staging folder and swaps it in, so switching
+  builds or using `--force` no longer leaves stale files in `tools/llama.cpp`. A failed or
+  interrupted install keeps the previous one, and setup refuses to replace a `tools/llama.cpp` it
+  did not install (no `VERSION.txt`) (#36).
 - `cutpoint.cmd` and `cutpoint.ps1` header comments now say the `.venv` from `uv sync` is all
   they need.
 - GPU Whisper on Linux: the pip-installed CUDA libraries are preloaded.
