@@ -60,3 +60,16 @@ def test_clear_stage_selects_the_files_stage_copies(
     for name in ("a.mp4", "sub/b.mp4"):
         copy = staged_path(str(remap_source(old / name)))
         assert (copy != str(new / name)) == (name in kept)
+
+
+def test_clear_stage_finds_a_file_only_the_original_folder_has(home, tmp_path, monkeypatch):
+    old, new = tmp_path / "old", tmp_path / "new"  # both exist; c.mp4 is only in old
+    write(old / "a.mp4", "aa")
+    write(old / "c.mp4", "cc")
+    write(new / "a.mp4", "aa")
+    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
+    config.get_config.cache_clear()
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    assert stage_sources([old], min_free_gb=0)["files"] == 2
+
+    assert clear_stage([old]) == 2
