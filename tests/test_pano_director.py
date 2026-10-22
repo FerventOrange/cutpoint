@@ -473,3 +473,22 @@ def test_path_for_warns_on_a_stale_reused_path(
     monkeypatch.setattr(D, "compute_path", lambda *a, **kw: {"keys": ["new"]})
     got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, "laughter", reuse=old)
     assert got["keys"] == ["new"] and "version 3 director path" in caplog.text
+
+
+def test_path_for_keeps_bak_of_replanned_reused_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cutpoint.pano import render as R  # noqa: PLC0415
+
+    monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "compute_path", lambda *a, **kw: {"keys": ["new"]})
+    ex = R.PanoExporter(tmp_path, tmp_path / "clips")
+    old = ex.paths_dir / "001_a.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps({"version": 1, "keys": ["hand-edited"]}), encoding="utf-8")
+    got, out = ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)
+    assert got["keys"] == ["new"] and out == old
+    assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["hand-edited"]
+    ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)  # again
+    assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["hand-edited"]
+    assert old.with_name("001_a.json.1.bak").is_file()

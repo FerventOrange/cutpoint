@@ -61,15 +61,19 @@ def _segments_file(project: Path, arg: str) -> Path:
     return path if path.is_file() or not (project / arg).is_file() else project / arg
 
 
+def _no_pano(project: Path) -> FileNotFoundError:
+    return FileNotFoundError(
+        f"{project / 'pano.json'} not found or empty; run "
+        "`cutpoint 360 scan <camera folder> --out <project>` first"
+    )
+
+
 def _clips(project: Path) -> list[Any]:
     from cutpoint.pano.project import load  # noqa: PLC0415
 
     clips = list(load(project).values())
     if not clips:
-        raise FileNotFoundError(
-            f"{project / 'pano.json'} not found or empty; run "
-            "`cutpoint 360 scan <camera folder> --out <project>` first"
-        )
+        raise _no_pano(project)
     return sorted(clips, key=lambda c: (c.start_local, c.clip_id))
 
 
@@ -321,12 +325,19 @@ def _drop_stale(out_dir: Path, stems: set[str]) -> None:
 def cmd_director(a: argparse.Namespace) -> None:
     """Plan (and optionally preview) director paths without the full render."""
     from cutpoint.pano import director as D  # noqa: PLC0415
-    from cutpoint.pano.project import RenderSource, clip_for, load  # noqa: PLC0415
+    from cutpoint.pano.project import (  # noqa: PLC0415
+        RenderSource,
+        clip_for,
+        load,
+        resolve_source,
+    )
     from cutpoint.pano.render import Format360, render_segment  # noqa: PLC0415
     from cutpoint.utils import slugify  # noqa: PLC0415
 
     project = _project(a.project)
     clips = load(project)
+    if not clips:  # before any folder is created
+        raise _no_pano(project)
     overrides = director_params(a.param)
     name = a.out_name or ("director_vertical" if a.vertical else "director")
     if not name or Path(name).name != name or name in (".", ".."):
@@ -380,8 +391,12 @@ def cmd_director(a: argparse.Namespace) -> None:
         def render(
             path: Any = path, clip: Any = clip, m: dict[str, Any] = m, preview: Path = preview
         ) -> None:
-            """Fast low-res render from the .lrv proxy."""
-            src = RenderSource("proxy", (clip.lrv,), "dfisheye", False, True, "lrv proxy")
+            """Fast low-res render from the .lrv proxy (the .insv files when there is none)."""
+            src = (
+                RenderSource("proxy", (clip.lrv,), "dfisheye", False, True, "lrv proxy")
+                if clip.lrv
+                else resolve_source(clip, "dfisheye")
+            )
             fmt = Format360(360, 640) if a.vertical else Format360(640, 360)
             try:
                 rec = render_segment(
