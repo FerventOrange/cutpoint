@@ -45,7 +45,8 @@ Notes:
   `source_remap`), `crashes` (default `--reanalyze`) and ski `events` warn `path(s) not found where
   analyze recorded them ...; highlights.json left unchanged` and exit 0. Re-analysis needs the
   footage at its original path; otherwise rerun `analyze` on the new location, then rerun
-  `crashes`/`events` (they match sources by path).
+  `crashes`/`events` (they match sources by path). Projects analyzed before inputs were stored as
+  absolute paths keep relative ones until `analyze` runs again.
 - Action-cam telemetry reads whole files; stage first. Crash detection reads only the telemetry
   track and needs no staging.
 
