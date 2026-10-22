@@ -18,7 +18,7 @@ from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
 
-from cutpoint import paths, stage
+from cutpoint import __version__, paths, stage
 from cutpoint.activity import resolve as resolve_activity
 from cutpoint.assemble import assemble
 from cutpoint.boundaries import SpeechSettings
@@ -390,6 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="debug logging (also prints tracebacks of errors)",
     )
+    p.add_argument("--version", action="version", version=f"cutpoint {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
