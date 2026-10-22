@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -122,9 +123,26 @@ def test_plan_ignores_a_crash_tumble_and_stale_previews(tmp_path: Path) -> None:
         {"t": i / 2, "flags": ["occluded"] if i == 9 else [], "subj": None} for i in range(24)
     ]
     qa = {"clips": [{"file": "001_crash.mp4", "duration": 12.0, "frames": frames}]}
-    assert plan([seg], qa, tmp_path, impacts=[("A.MP4", 14.0)])[1] == []
+    assert plan([seg], qa, tmp_path, impacts=[("a.mp4", 14.0)])[1] == []
     assert len(plan([seg], qa, tmp_path)[1]) == 1
     assert plan([seg], qa, tmp_path, qa_time=0.0)[1:3] == ([], 1)
+
+
+def test_plan_matches_impact_sources_case_insensitively_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache.save_json(tmp_path / "001_crash.json", {"segment": {"start": 10.0}})
+    (tmp_path / "001_crash.mp4").write_bytes(b"")
+    seg = {"id": "m001", "source": "a.mp4", "start": 10, "end": 22, "category": "crash"}
+    frames = [
+        {"t": i / 2, "flags": ["occluded"] if i == 9 else [], "subj": None} for i in range(24)
+    ]
+    qa = {"clips": [{"file": "001_crash.mp4", "duration": 12.0, "frames": frames}]}
+    impacts = [("A.MP4", 14.0)]
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert plan([seg], qa, tmp_path, impacts=impacts)[1] == []
+    monkeypatch.setattr(sys, "platform", "linux")  # case-sensitive: a different file
+    assert len(plan([seg], qa, tmp_path, impacts=impacts)[1]) == 1
 
 
 def test_crash_keeps_its_approach_before_the_impact(tmp_path: Path) -> None:
