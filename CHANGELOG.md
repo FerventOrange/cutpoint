@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `crashes`: camera knocks while boarding a lift no longer count as a crash. On-lift damping now
+  also uses the CLIP lift rides that `mix` uses for 360 footage without GPS (Insta360 X3), and it
+  reaches 5 s past the event, so contact in the lift line just before the ride is damped too (#15).
 - `stage --clear <inputs>` selects exactly the files `stage <inputs>` would copy: it lists the
   original folder as `stage` does (read through `source_remap`) and honours `--recursive` and
   `--exclude`. Previously it listed only the remapped folder and ignored sub-folders, so some

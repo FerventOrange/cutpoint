@@ -69,6 +69,10 @@ CRASH_VERSION = 1
 IMU_VERSION = 1
 CRASHES_FILE = "crashes.json"
 CHECK_DIR = "crash_check"
+# On-lift damping reaches this far past the event: the lift line and boarding
+# jostle the camera just before the ride, and the GPS lift mask starts up to
+# ~1 s after the chair departs.
+LIFT_LEAD_S = 5.0
 
 # Zero-shot prompts (CLIP ViT-L/14, the visual layer's model) and transcript
 # cues (phrase -> weight, prefix match with a trailing ``*``) of the built-in
@@ -501,6 +505,7 @@ class SourceInputs:
     hits: list[tuple[float, float, str]] = field(default_factory=list)
     flip: np.ndarray | None = None
     kf_crash: np.ndarray | None = None
+    lift: np.ndarray | None = None  # telemetry lift mask | 360 CLIP lift rides
 
     @property
     def name(self) -> str:
@@ -515,6 +520,7 @@ def load_inputs(
     from cutpoint.analyze import keyword_hits  # noqa: PLC0415
     from cutpoint.events import visual as V  # noqa: PLC0415
     from cutpoint.events import voice as VO  # noqa: PLC0415
+    from cutpoint.mix import lift_rides  # noqa: PLC0415
     from cutpoint.sources import source_words  # noqa: PLC0415
     from cutpoint.telemetry import extract  # noqa: PLC0415
 
@@ -530,6 +536,11 @@ def load_inputs(
         inp.flip = _flip_deg(inp)
     if inp.visual is not None and len(inp.visual.t):
         inp.kf_crash = crash_prompt_scores(inp.visual.emb, params)
+    tel_lift = _grid(inp, "lift_mask")
+    n = len(tel_lift) if tel_lift is not None else max(1, int(duration / DT) + 1)
+    rides = lift_rides(src, n)
+    if rides is not None:
+        inp.lift = rides if tel_lift is None else np.maximum(tel_lift, rides)
     return inp
 
 
@@ -610,7 +621,8 @@ def telemetry_features(inp: SourceInputs, t0: float, t1: float, p: CrashParams) 
     off1 = np.convolve(g["offaxis_deg"], np.ones(10), mode="same") if "offaxis_deg" in g else None
     acc = g.get("acc_g")
     speed, vib = _grid(inp, "speed_kmh"), _grid(inp, "vibration")
-    still, lift = _grid(inp, "still_mask"), _grid(inp, "lift_mask")
+    still = _grid(inp, "still_mask")
+    lift = inp.lift if inp.lift is not None else _grid(inp, "lift_mask")
     hard = int((_seg(acc, t0, t1) >= p.hard_g).sum())
     sat = int(_seg(g.get("sat"), t0, t1).sum())
     v_before = _smed(speed, t0 - 4.0, t0 - 0.5)
@@ -631,7 +643,7 @@ def telemetry_features(inp: SourceInputs, t0: float, t1: float, p: CrashParams) 
         "speed_before_kmh": None if v_before is None else round(v_before, 1),
         "speed_min_after_kmh": None if v_min_after is None else round(v_min_after, 1),
         "still_after": round(still_after, 2),
-        "on_lift": bool(_smax(lift, t0, t1) > 0),
+        "on_lift": bool(_smax(lift, t0, t1 + LIFT_LEAD_S) > 0),
     }
     # Moving before the event: GPS, else riding vibration (camera handling while
     # standing spins and flips the camera too).

@@ -334,14 +334,23 @@ def _paint(n: int, spans: list[tuple[float, float]]) -> np.ndarray:
     return x
 
 
+def lift_rides(src: Path, n: int, offset: float = 0.0) -> np.ndarray | None:
+    """360: 1 on CLIP lift rides (score > LIFT_ON for LIFT_MIN_S or more) on the 0.1 s grid.
+
+    Cached view layer only; None without one (GoPro, or ``360 analyze`` not run).
+    """
+    zs = views.lift_grid(Path(src), n, offset, DT)
+    return None if zs is None else _paint(n, _spans(zs > LIFT_ON, LIFT_MIN_S))
+
+
 def part_candidates(d: dict[str, Any], max_picks: int = 30) -> list[Cand]:
     """Run / jump / lift / scenery / social candidates of one saved feature part."""
     f, n = d["features"], len(d["mask"])
     src, off, dur = d["source"], float(d["offset"]), float(d["duration"])
     zero = np.zeros(n)
     tel_lift = (d["mask"] > 0) & (f["stopped"][:n] == 0)
-    zs = views.lift_grid(Path(src), n, off, DT)  # 360: CLIP lift rides of >= LIFT_MIN_S
-    rides = zero if zs is None else _paint(n, _spans(zs > LIFT_ON, LIFT_MIN_S))
+    rides = lift_rides(Path(src), n, off)
+    rides = zero if rides is None else rides
     lift = np.maximum(tel_lift.astype(float), rides)
     hard = np.maximum(d["mask"], lift)
     out: list[Cand] = []
