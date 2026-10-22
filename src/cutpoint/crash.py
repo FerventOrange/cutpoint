@@ -59,6 +59,7 @@ import numpy as np
 
 from cutpoint import activity, cache
 from cutpoint.dsp import conv_same
+from cutpoint.stage import is_remote as _is_remote
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,8 @@ def _parse_imu(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[Any
         groups = parser.telemetry()
         imu = parser.normalized_imu()
     except Exception as err:  # noqa: BLE001 - the Rust parser raises plain Exceptions
-        logger.info("%s: no readable GoPro telemetry (%s)", path.name, err)
+        # Debug only: telemetry.extract, run on the same source first, logs it at INFO.
+        logger.debug("%s: no readable GoPro telemetry (%s)", path.name, err)
         return None
     imu = [s for s in imu or [] if s.get("accl") is not None and s.get("gyro") is not None]
     if len(imu) < 10:
@@ -347,7 +349,7 @@ def imu_grids(
     read_path = x3_imu or Path(staged_path(str(io)))
     t0 = time.perf_counter()
     grids = None
-    if x3_imu is None and read_path == io and io.drive.upper() not in ("C:", "D:", "E:"):
+    if x3_imu is None and read_path == io and _is_remote(io):
         with tempfile.TemporaryDirectory(dir=tmp_dir) as tmp:
             small = _gpmf_copy(io, Path(tmp))
             if small is not None:

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, sources
-from cutpoint.config import remap_source
+from cutpoint.config import remap_source, source_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
@@ -773,7 +773,7 @@ def export_clips(
     io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
     for s, p in io_paths.items():
         if str(p) != s:
-            logger.info("Reading %s from %s (source_remap)", Path(s).name, p)
+            logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
     infos = {s: probe(p) for s, p in io_paths.items()}
     fmt = choose_format(
         [i for s, i in infos.items() if pano is None or not pano.handles(s)]

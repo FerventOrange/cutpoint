@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
+from cutpoint.config import source_path
 from cutpoint.utils import clock
 
 
@@ -159,7 +160,7 @@ def write_outputs(
         "",
     ]
     for src in sources:
-        name = Path(src).name
+        name = source_path(src).name
         rows: list[tuple[float, int, str]] = []
         for ln in transcript:
             if ln["name"] == name:

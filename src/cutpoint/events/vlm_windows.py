@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
+from cutpoint.config import source_path
 from cutpoint.events.common import (
     Source,
     audio_slice,
@@ -328,7 +329,7 @@ def select_windows(
             )
     for pattern, fa, fb in params.forced:
         for src in dur:
-            if fnmatch.fnmatch(Path(src).name.lower(), pattern.lower()):
+            if fnmatch.fnmatch(source_path(src).name.lower(), pattern.lower()):
                 raw.append(Window(src, fa, fb, 99.0, [f"forced {pattern}@{fa:g}-{fb:g}"]))
     for w in raw:
         d = dur.get(w.source, w.end)

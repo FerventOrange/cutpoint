@@ -21,7 +21,9 @@ import functools
 import hashlib
 import logging
 import os
+import re
 import shutil
+import sys
 import time
 from collections.abc import Sequence
 from functools import lru_cache
@@ -36,14 +38,78 @@ logger = logging.getLogger(__name__)
 
 CHUNK = 16 * 1024 * 1024
 STAGE_INDEX = "index.json"
+_NETWORK_FS = (
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "sshfs",
+    "fuse.sshfs",
+    "fuse.gvfsd-fuse",
+    "fuse.rclone",
+    "davfs",
+    "9p",
+    "ceph",
+    "fuse.glusterfs",
+)
+
+
+def _mount(path: Path) -> tuple[str, str]:
+    """``(mount point, file-system type)`` holding ``path`` (from ``/proc/mounts``;
+    ``("", "")`` if unknown)."""
+    try:
+        target = str(path.resolve())
+        lines = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return "", ""
+    best, fstype = "", ""
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        # /proc/mounts escapes spaces and the like as octal (\040).
+        mnt = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[1])
+        inside = target == mnt or target.startswith(mnt.rstrip("/") + "/")
+        if inside and len(mnt) >= len(best):  # deepest mount; the later one of equals
+            best, fstype = mnt, fields[2]
+    return best, fstype
+
+
+def mount_fstype(path: Path) -> str:
+    """File-system type of the mount holding ``path`` (from ``/proc/mounts``; "" if unknown)."""
+    return _mount(path)[1]
+
+
+def is_remote(path: Path) -> bool:
+    """Whether ``path`` is likely on slow or network storage.
+
+    Windows: any drive but ``C:``, ``D:`` and ``E:``. Elsewhere: a network file
+    system mount (NFS, SMB/CIFS, SSHFS, GVfs, rclone, WebDAV, 9p, Ceph,
+    GlusterFS); anything else counts as local.
+    """
+    if sys.platform == "win32":
+        return path.drive.upper() not in ("C:", "D:", "E:")
+    return mount_fstype(path) in _NETWORK_FS
+
+
+def storage_label(path: Path) -> str:
+    """Where ``path`` is stored, for log messages: its drive on Windows, otherwise
+    its mount point and file system (``/mnt/nas (nfs4)``), or its folder if unknown."""
+    if sys.platform == "win32":
+        return path.drive
+    mnt, fstype = _mount(path)
+    return f"{mnt} ({fstype})" if mnt else str(path.parent)
 
 
 def stage_key(path: str | Path) -> str:
-    """Index key of a source: its canonical (pre-remap) path, normalised.
+    """Index key of a source: its canonical (pre-remap) path, normalised
+    (:func:`cutpoint.config.norm_path`: case-folded on Windows only).
 
-    The path is resolved first, so a mapped network drive
-    (``N:\\Footage\\x.mp4``) and its UNC form (``\\\\server\\share\\Footage\\x.mp4``,
-    what ``find_videos`` returns) give the same key.
+    The path is resolved first, so a symlinked folder or, on Windows, a mapped
+    network drive (``N:\\Footage\\x.mp4``) and its UNC form
+    (``\\\\server\\share\\Footage\\x.mp4``, what ``find_videos`` returns) give
+    the same key.
     """
     text = os.path.abspath(str(path))  # noqa: PTH100 - normalises '..', keeps drive letters
     with contextlib.suppress(OSError):

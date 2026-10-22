@@ -1,11 +1,12 @@
 """``<project>/pano.json``, the ``pano`` section of ``config.json`` and render sources.
 
-``config.json`` (all keys optional)::
+``config.json`` (all keys optional; on Windows write paths such as
+``"C:\\\\Tools\\\\MediaSDK\\\\bin\\\\MediaSDKTest.exe"``)::
 
     "pano": {
-      "sdk_exe": "C:\\\\Tools\\\\MediaSDK\\\\bin\\\\MediaSDKTest.exe",
-      "stitched_dir": "D:\\\\Footage\\\\360-stitched",
-      "studio_dirs": ["D:\\\\Footage\\\\360-studio"],
+      "sdk_exe": "/opt/MediaSDK-<version>-linux/bin/MediaSDKTest",
+      "stitched_dir": "/data/footage/360-stitched",
+      "studio_dirs": ["/data/footage/360-studio"],
       "stitch_args": ["-stitch_type", "optflow", ...],
       "stitch_timeout_s": 7200,
       "cmd_every": 1,
@@ -20,7 +21,7 @@
 and ``<CUTPOINT_HOME>/360-studio``; ``default_style`` is the ``--style`` of
 ``cutpoint 360 analyze`` when none is given (default ``ski``).
 
-``CUTPOINT_INSTA360_SDK`` (path of ``MediaSDKTest.exe``) overrides ``sdk_exe``.
+``CUTPOINT_INSTA360_SDK`` (path of ``MediaSDKTest``, ``.exe`` on Windows) overrides ``sdk_exe``.
 When neither is set, the SDK is auto-detected under
 ``<CUTPOINT_HOME>/sdk/insta360/`` (any depth; on Linux also
 ``/opt/MediaSDK-<version>-linux/bin/``), newest version first.
@@ -56,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, paths, state
+from cutpoint.config import path_key, source_path
 from cutpoint.pano.x3 import X3Clip, parse_name
 
 logger = logging.getLogger(__name__)
@@ -279,8 +281,8 @@ def camera_dirs(project: Path) -> list[Path]:
 
 
 def norm(path: str | Path) -> str:
-    """Case-folded, forward-slash path for lookups."""
-    return str(path).replace("\\", "/").lower()
+    """Forward-slash path for lookups (case-folded on Windows, see :func:`path_key`)."""
+    return path_key(str(path).replace("\\", "/"))
 
 
 def clip_for(clips: dict[str, X3Clip], source: str | Path) -> X3Clip | None:
@@ -288,9 +290,9 @@ def clip_for(clips: dict[str, X3Clip], source: str | Path) -> X3Clip | None:
     hit = clips.get(norm(source))
     if hit is not None:
         return hit
-    name = Path(source).name.lower()
+    name = path_key(source_path(source).name)
     for c in clips.values():
-        if Path(c.source).name.lower() == name:
+        if path_key(source_path(c.source).name) == name:
             return c
     return None
 

@@ -44,6 +44,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, paths, state
+from cutpoint.config import path_key, source_path
 from cutpoint.ffmpeg_utils import FFmpegError, decode_pcm, decode_raw, probe, run
 
 logger = logging.getLogger(__name__)
@@ -405,7 +406,7 @@ def check_frames(result: dict[str, Any], out_dir: Path, n: int = 6) -> list[Path
         ts = s["src_start"] + (tr - s["ref_start"]) / (s.get("speed") or 1)
         out = (
             out_dir / f"shot{s['shot']:03d}{chr(97 + s.get('part', 0))}_"
-            f"{Path(s['source']).stem}_{ts:.1f}s.jpg"
+            f"{source_path(s['source']).stem}_{ts:.1f}s.jpg"
         )
         cmd = [
             "ffmpeg",
@@ -473,7 +474,7 @@ def load_fit_data(project: Path, result: dict[str, Any] | None = None) -> FitDat
 def _positives(result: dict[str, Any]) -> dict[str, list[tuple[float, float]]]:
     pos: dict[str, list[tuple[float, float]]] = {}
     for sp in result["positives"]:
-        pos.setdefault(str(Path(sp["source"])).lower(), []).append((sp["start"], sp["end"]))
+        pos.setdefault(path_key(str(Path(sp["source"]))), []).append((sp["start"], sp["end"]))
     return pos
 
 
@@ -498,7 +499,7 @@ def _bins(
         if nb == 0:
             continue
         lab = np.zeros(n)
-        for a, b in pos_of[k[0]].get(str(Path(d["source"])).lower(), []):
+        for a, b in pos_of[k[0]].get(path_key(str(Path(d["source"]))), []):
             lab[max(0, int((a - d["offset"]) * 10)) : max(0, int((b - d["offset"]) * 10))] = 1
         em = ski.effective_mask(d["mask"], d["friends"], friends_strong)
         friends_b.append(d["friends"][: nb * per].reshape(nb, per).max(1))
@@ -598,7 +599,7 @@ def evaluate(
 
     picks = []
     for d in feats if feats is not None else ski.load_project_features(project):
-        if only_sources is not None and d["source"].lower() not in only_sources:
+        if only_sources is not None and path_key(d["source"]) not in only_sources:
             continue
         evs = d["events"]
         for pk in ski.pick(
@@ -617,9 +618,9 @@ def evaluate(
             )
     picks.sort(key=lambda p: -p[0])
     pos = [
-        (sp["source"].lower(), sp["start"], sp["end"])
+        (path_key(sp["source"]), sp["start"], sp["end"])
         for sp in result["positives"]
-        if only_sources is None or sp["source"].lower() in only_sources
+        if only_sources is None or path_key(sp["source"]) in only_sources
     ]
     pos_total = sum(b - a for _, a, b in pos)
     if budget is None:
@@ -635,17 +636,17 @@ def evaluate(
     def overlap(src: str, a: float, b: float) -> float:
         return sum(max(0.0, min(b, pb) - max(a, pa)) for s, pa, pb in pos if s == src)
 
-    ov = sum(overlap(s.lower(), a, b) for _, s, a, b, _ in chosen)
+    ov = sum(overlap(path_key(s), a, b) for _, s, a, b, _ in chosen)
     shots = [
         s
         for s in result["shots"]
-        if s["matched"] and (only_sources is None or s["source"].lower() in only_sources)
+        if s["matched"] and (only_sources is None or path_key(s["source"]) in only_sources)
     ]
     hit_ids: set[int] = set()
     for s in shots:  # a shot counts once, whichever of its pieces is hit
         a, b = sorted((s["src_start"], s["src_end"]))
         if any(
-            cs.lower() == s["source"].lower() and min(b, cb) > max(a, ca)
+            path_key(cs) == path_key(s["source"]) and min(b, cb) > max(a, ca)
             for _, cs, ca, cb, _ in chosen
         ):
             hit_ids.add(s["shot"])
@@ -703,7 +704,7 @@ def _taste_frames(datasets: list[FitData], keys: list[Key]) -> dict[Key, dict[st
         t = vd.t.astype(float) - d["offset"]
         ok = (t >= 0) & (t <= d["duration"])
         y = np.zeros(int(ok.sum()), bool)
-        for a, b in pos_of[k[0]].get(str(Path(d["source"])).lower(), []):
+        for a, b in pos_of[k[0]].get(path_key(str(Path(d["source"]))), []):
             y |= (t[ok] + d["offset"] >= a) & (t[ok] + d["offset"] < b)
         out[k] = {"emb": vd.mean_emb[ok], "t": t[ok], "y": y}
     return out
@@ -821,7 +822,7 @@ def _evaluate_keys(
         ks = [k for k in keys if k[0] == di]
         if not ks:
             continue
-        srcs = {fmap[k]["source"].lower() for k in ks}
+        srcs = {path_key(fmap[k]["source"]) for k in ks}
         evs.append(
             evaluate(
                 ds.project, ds.result, weights, srcs, friends_strong=th, feats=[fmap[k] for k in ks]
@@ -923,7 +924,7 @@ def fit_weights(
             if vlm_friends_only and "friends_vlm" in d["features"]:
                 d = {**d, "friends": d["features"]["friends_vlm"]}
             fmap[(di, fi)] = d
-            groups[(di, fi)] = gid.setdefault((di, d["source"].lower()), len(gid))
+            groups[(di, fi)] = gid.setdefault((di, path_key(d["source"])), len(gid))
     all_keys = list(fmap)
     frames = _taste_frames(datasets, all_keys) if taste else {}
     ctx = _Ctx(datasets, fmap, groups, frames, keys_w, taste, taste_c)

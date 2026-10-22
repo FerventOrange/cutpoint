@@ -1,7 +1,8 @@
-"""faster-whisper transcription with CUDA DLL setup and CPU fallback."""
+"""faster-whisper transcription with CUDA library setup and CPU fallback."""
 
 from __future__ import annotations
 
+import ctypes
 import gc
 import logging
 import os
@@ -22,11 +23,15 @@ _dll_dirs_added = False
 
 
 def _add_cuda_dll_dirs() -> None:
-    """Expose pip-installed cuBLAS/cuDNN DLLs (nvidia-*-cu12 wheels) to ctranslate2."""
+    """Expose pip-installed cuBLAS/cuDNN libraries (nvidia-*-cu12 wheels) to ctranslate2."""
     global _dll_dirs_added
-    if _dll_dirs_added or sys.platform != "win32":
+    if _dll_dirs_added:
         return
     _dll_dirs_added = True
+    if sys.platform.startswith("linux"):
+        _preload_cuda_libs()
+    if sys.platform != "win32":
+        return
     for base in map(Path, sys.path):
         nvidia = base / "nvidia"
         if not nvidia.is_dir():
@@ -35,6 +40,31 @@ def _add_cuda_dll_dirs() -> None:
             os.add_dll_directory(str(bin_dir))
             # ctranslate2 loads some DLLs lazily via LoadLibrary, which uses PATH.
             os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+def _preload_cuda_libs() -> None:
+    """Linux: load the wheels' cuBLAS/cuDNN globally (best effort, silent).
+
+    ctranslate2 opens them by soname, and ``site-packages/nvidia/*/lib`` is not
+    on the loader path; once loaded with ``RTLD_GLOBAL`` they resolve by soname.
+    """
+    libs = [
+        lib
+        for base in map(Path, sys.path)
+        for pattern in ("*/lib/libcublas*.so.12", "*/lib/libcudnn*.so.9")
+        for lib in sorted((base / "nvidia").glob(pattern))
+    ]
+    # Some depend on others (cuBLAS on cuBLASLt): retry until a pass loads nothing new.
+    while libs:
+        failed = []
+        for lib in libs:
+            try:
+                ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                failed.append(lib)
+        if len(failed) == len(libs):
+            break
+        libs = failed
 
 
 def cuda_available() -> bool:
@@ -55,6 +85,23 @@ def load_wav(path: Path) -> Any:
             raise ValueError(f"{path} must be 16 kHz mono 16-bit PCM")
         pcm = wf.readframes(wf.getnframes())
     return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def _cuda_libs_hint() -> str:
+    """How to restore the CUDA 12 cuBLAS / cuDNN 9 libraries on this platform."""
+    if sys.platform == "win32":
+        return (
+            "They come with cutpoint's base install on Windows (nvidia-cublas-cu12, "
+            "nvidia-cudnn-cu12): reinstall the package to restore GPU transcription."
+        )
+    if sys.platform.startswith("linux"):
+        return (
+            "Cutpoint's base install includes nvidia-cublas-cu12 and nvidia-cudnn-cu12; "
+            "check they are installed in this environment (uv pip show nvidia-cublas-cu12 "
+            "nvidia-cudnn-cu12) and that the NVIDIA driver supports CUDA 12, or put "
+            "their site-packages/nvidia/*/lib folders on LD_LIBRARY_PATH."
+        )
+    return "GPU transcription needs CUDA 12 cuBLAS and cuDNN 9."
 
 
 class Transcriber:
@@ -80,10 +127,9 @@ class Transcriber:
         if any(k in text for k in ("cublas", "cudnn", "cudart", ".dll", ".so")):
             logger.warning(
                 "CUDA libraries for whisper are missing (%s); falling back to "
-                "CPU int8 (much slower). They come with cutpoint's base install "
-                "on Windows/Linux (nvidia-cublas-cu12, nvidia-cudnn-cu12): "
-                "reinstall the package to restore GPU transcription.",
+                "CPU int8 (much slower). %s",
                 err,
+                _cuda_libs_hint(),
             )
         else:
             logger.warning("CUDA transcription failed (%s); falling back to CPU int8", err)

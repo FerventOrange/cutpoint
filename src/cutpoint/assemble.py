@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import subprocess
+import sys
 from fractions import Fraction
 from pathlib import Path
 
@@ -219,8 +222,50 @@ def caption_chunks(
     return held
 
 
+FALLBACK_CAPTION_FONT = "DejaVu Sans"
+
+
+def caption_font() -> str:
+    """Font family for burned-in captions: Arial on Windows, else fontconfig's sans-serif.
+
+    Without ``fc-match`` (fontconfig) this logs a warning and returns
+    :data:`FALLBACK_CAPTION_FONT`; ffmpeg's subtitle renderer needs fontconfig
+    and an installed font to draw captions at all.
+    """
+    if sys.platform == "win32":
+        return "Arial"
+    exe = shutil.which("fc-match")
+    if exe is None:
+        logger.warning(
+            "fc-match (fontconfig) not found: burned-in captions need fontconfig and a "
+            "font, e.g. sudo apt install fontconfig fonts-dejavu-core; trying %r",
+            FALLBACK_CAPTION_FONT,
+        )
+        return FALLBACK_CAPTION_FONT
+    try:
+        family = subprocess.run(
+            [exe, "-f", "%{family}", "sans-serif"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        family = ""
+    # "DejaVu Sans,DejaVu Sans Book": the first name; ',' would split the ASS style line.
+    family = family.split(",")[0].strip()
+    if not family:
+        logger.warning(
+            "fc-match found no sans-serif font: burned-in captions need one, e.g. "
+            "sudo apt install fonts-dejavu-core; trying %r",
+            FALLBACK_CAPTION_FONT,
+        )
+    return family or FALLBACK_CAPTION_FONT
+
+
 def write_ass(chunks: list[tuple[float, float, str]], width: int, height: int, path: Path) -> None:
-    """Bold, centred lower-third ASS subtitles."""
+    """Bold, centred lower-third ASS subtitles (font: :func:`caption_font`)."""
     size = round(min(width, height) * 0.07)  # same visual size for 16:9 and 9:16
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
@@ -229,7 +274,7 @@ def write_ass(chunks: list[tuple[float, float, str]], width: int, height: int, p
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, "
         "Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, "
         "MarginV, Encoding\n"
-        f"Style: Default,Arial,{size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+        f"Style: Default,{caption_font()},{size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
         f"-1,0,0,0,100,100,0,0,1,{max(2, size // 12)},1,2,40,40,{round(height * 0.2)},1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n"
