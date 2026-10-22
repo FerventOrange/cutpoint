@@ -374,12 +374,19 @@ def backup_path_file(f: Path) -> Path:
     """Copy a director path file (it may be hand-edited) to the first free backup name
     (``<file>.bak``, then ``<file>.1.bak``, ``<file>.2.bak``, ...) and return it; earlier
     backups are never overwritten."""
-    bak = f.with_name(f.name + ".bak")
+    bak = free_backup_name(f, f.name, ".bak")
+    shutil.copy2(f, bak)
+    return bak
+
+
+def free_backup_name(f: Path, base: str, ext: str) -> Path:
+    """The first free backup name for ``f`` in its folder: ``<base><ext>``, then
+    ``<base>.1<ext>``, ``<base>.2<ext>``, ..."""
+    bak = f.with_name(base + ext)
     n = 0
     while bak.exists():
         n += 1
-        bak = f.with_name(f"{f.name}.{n}.bak")
-    shutil.copy2(f, bak)
+        bak = f.with_name(f"{base}.{n}{ext}")
     return bak
 
 
