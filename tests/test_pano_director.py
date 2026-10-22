@@ -492,3 +492,29 @@ def test_path_for_keeps_bak_of_replanned_reused_path(
     ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)  # again
     assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["hand-edited"]
     assert old.with_name("001_a.json.1.bak").is_file()
+
+
+def test_path_for_backup_failing_midway_leaves_no_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+
+    from cutpoint.pano import render as R  # noqa: PLC0415
+
+    def disk_fills(src: Path, dst: Path) -> None:
+        Path(dst).write_bytes(Path(src).read_bytes()[:5])
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "compute_path", lambda *a, **kw: {"keys": ["new"]})
+    monkeypatch.setattr(shutil, "copy2", disk_fills)
+    ex = R.PanoExporter(tmp_path, tmp_path / "clips")
+    old = ex.paths_dir / "001_a.json"
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps({"version": 1, "keys": ["hand-edited"]}), encoding="utf-8")
+    before = old.read_bytes()
+    with pytest.raises(OSError, match="No space"):
+        ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)
+    assert old.read_bytes() == before
+    assert [p.name for p in old.parent.iterdir()] == ["001_a.json"]  # no .bak, no .tmp

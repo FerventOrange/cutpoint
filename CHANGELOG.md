@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `highlights.json` is left unchanged and exit 0; re-analysis needs the footage at its original
   path, or rerun `analyze` on the new location and then `crashes`/`events` (they match sources by
   path) (#67).
+- `analyze` with `source_remap` active records the original path, not the remapped copy, in
+  `highlights.json`, the `transcript.txt` headers, read errors, `telemetry.json` and ski feature
+  metadata, while still reading the files through the remap. Once the copy is removed and the
+  footage is back at its original path, `crashes`, `events` and `clips` find it instead of skipping
+  it as "footage not reachable". Caches are reused. Projects analyzed with a remap before this fix
+  keep the copy paths until `analyze` runs again; rerun `crashes` and `events` afterwards so
+  their results match the new paths (#77).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
@@ -74,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `extend` keeps a backup of a director path file before re-planning over it and never overwrites an earlier one: repeated re-plans keep `<file>.bak`, `<file>.1.bak`, and so on (#15).
 - `360 director` keeps a hand-edited path file as `<file>.bak` (then `<file>.1.bak`, and so on) before re-planning over it, like `extend` does, and never overwrites an earlier backup (#48).
 - An input folder or file that cannot be read (no permission, stale network mount, name too long) gives a clear `Input not readable` error instead of a traceback. Unreadable subfolders are skipped with a warning during a folder scan, a `source_remap` target that cannot be checked falls back to the original path, and a backup is not written when its name cannot be checked (#79).
+- Backups of 360 path files and of `mix_segments.json` are written atomically (temp file, then rename), so a full disk or a failed write never leaves a truncated backup or a truncated `mix_segments.json` (#81).
 - `cutpoint 360 director --out-name` keeps the path file of a segment that is no longer selected as `<file>.bak` instead of deleting it (#58).
 - `cutpoint 360 director --out-name` retries removing a deselected segment's files on the next run if they could not be removed (for example, a preview open in a player on Windows), says so accurately in the log, and no longer makes a needless "re-planned" backup when a renumbered segment's old name is reused (#69).
 - The missing-extra hint for `uv pip install` from a clone directory or git URL no longer asks for the PyTorch index flags on Windows, because uv applies Cutpoint's own CUDA index; it only adds `--reinstall-package torch --reinstall-package torchvision` when CPU-only torch is installed. Wheel and sdist installs and `pip` still get the flags (#71).

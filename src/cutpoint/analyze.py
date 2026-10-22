@@ -512,6 +512,7 @@ class SourceResult:
     """Output of :func:`analyze_source` for one source or recovered part.
 
     Attributes:
+        source: Source as given (original path; ``info`` probes its ``source_remap`` copy).
         info: Probe result of the file.
         offset: Absolute start of this part (0 for the file itself).
         duration: Seconds of this part that were actually analysed.
@@ -520,6 +521,7 @@ class SourceResult:
         read_error: The ``read_errors.json`` record if reading was cut short.
     """
 
+    source: Path
     info: MediaInfo
     offset: float
     duration: float
@@ -665,13 +667,15 @@ def analyze_source(
     Internally everything runs in part-relative time; candidates and the
     transcript are returned in absolute source time. With ``ski_ctx`` (a
     :class:`cutpoint.ski.SkiContext`), candidates come from the ski
-    feature grid instead of the generic signals.
+    feature grid instead of the generic signals. ``src`` is the original path
+    (recorded everywhere); files are read through ``source_remap``.
     """
 
     def tick(name: str, t0: float) -> None:
         timings[name] = round(timings.get(name, 0.0) + time.perf_counter() - t0, 2)
 
-    info = probe(src)
+    io = remap_source(src)  # read the copy, record the original
+    info = probe(io)
     cdir = cache.source_dir(src, offset)
     span = info.duration - offset
     read_error: dict[str, Any] | None = None
@@ -682,7 +686,7 @@ def analyze_source(
         wav = cdir / "audio16k.wav"
         res = None
         if not wav.exists():
-            res = extract_audio(src, wav, info, start=offset)
+            res = extract_audio(io, wav, info, start=offset)
         tick("audio_extract_s", t0)
         read_error = check_read(src, info, offset, wav, cdir, res)
         if read_error:
@@ -728,7 +732,7 @@ def analyze_source(
     cuts: list[float] = []
     if use_scenes:
         t0 = time.perf_counter()
-        cuts = scene_cuts(src, cdir, span, offset, limit=span if read_error else None)
+        cuts = scene_cuts(io, cdir, span, offset, limit=span if read_error else None)
         sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
         tick("scenes_s", t0)
 
@@ -774,6 +778,7 @@ def analyze_source(
         len(cands),
     )
     return SourceResult(
+        source=src,
         info=info,
         offset=offset,
         duration=span,
@@ -899,8 +904,13 @@ def analyze(
     """
     t_start = time.perf_counter()
     found = find_videos(target, exclude=exclude, recursive=recursive)
-    sources = list(dict.fromkeys(remap_source(s) for s in found))  # config source_remap
-    for orig in found:
+    # Projects record the original paths; files are read through config source_remap.
+    # De-duplicate by the file actually read; the first spelling given is recorded.
+    by_read: dict[Path, Path] = {}
+    for s in found:
+        by_read.setdefault(remap_source(s), s)
+    sources = list(by_read.values())
+    for orig in sources:
         if (src := remap_source(orig)) != orig:
             logger.info("source_remap: %s -> %s", orig, src)
     if not sources:
@@ -925,7 +935,7 @@ def analyze(
         taste = (style.learned or {}).get("taste")
         ski_ctx = ski.prepare(
             sources,
-            {str(s): probe(s).duration for s in sources},
+            {str(s): probe(remap_source(s)).duration for s in sources},
             out_dir,
             taste=Path(taste) if taste else None,
         )
@@ -969,7 +979,7 @@ def analyze(
                 break
             cdir = cache.source_dir(src, offset)
             resume = rec.get("resumed_at") or find_resume_point(
-                src, rec["failure_time"], res.info.duration
+                remap_source(src), rec["failure_time"], res.info.duration
             )
             if resume is None or resume <= offset:
                 logger.warning(
@@ -1020,7 +1030,7 @@ def analyze(
             )
             n_failed = 0
             for c in cands[:vision_top]:
-                res = rater.rate(c.source, c.start, c.end, style.base)
+                res = rater.rate(remap_source(c.source), c.start, c.end, style.base)
                 if res is None:
                     n_failed += 1
                     continue
@@ -1075,7 +1085,7 @@ def analyze(
         "suggested_top": suggested,
         "sources": [
             {
-                "path": str(r.info.path),
+                "path": str(r.source),
                 "duration": round(r.info.duration, 3),
                 "width": r.info.width,
                 "height": r.info.height,
@@ -1179,7 +1189,7 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
         )
         return None
     # ``analyze`` reads its inputs at their recorded paths; one reachable only through
-    # ``source_remap`` would fail it, and re-analysing the copy would re-key the sources.
+    # ``source_remap`` would fail it.
     # A source missing under a folder input that still exists would silently drop out.
     srcs = [s["path"] for s in hl.get("sources", [])]
     inputs = hl.get("settings", {}).get("inputs") or srcs

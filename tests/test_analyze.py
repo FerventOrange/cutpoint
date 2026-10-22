@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,8 @@ import pytest
 
 from conftest import write
 from cutpoint import analyze, config
+from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.styles import get_style
 
 
 @pytest.mark.parametrize(
@@ -63,7 +66,7 @@ def _remapped_project(home, tmp_path, monkeypatch, recorded):
     if recorded == "folder":
         write(old / "b.mp4")  # the folder input exists; only a.mp4 moved out of it
         data = {"settings": {"inputs": [str(old)]}, "sources": [{"path": path}]}
-    elif recorded == "inputs":  # analyze records the copy it read; only the input is missing
+    elif recorded == "inputs":  # an older project that recorded the copy it read
         data = {"settings": {"inputs": [path]}, "sources": [{"path": str(new / "a.mp4")}]}
     else:
         data = {"sources": [{"path": path}]}
@@ -99,3 +102,39 @@ def test_reanalyze_if_reachable_reanalyzes_when_every_recorded_path_exists(
     with caplog.at_level("WARNING"):
         assert analyze.reanalyze_if_reachable(tmp_path) is sentinel
     assert caplog.text == ""
+
+
+@pytest.mark.parametrize("both", [False, True], ids=["original-only", "original-and-copy"])
+def test_analyze_records_original_path_when_source_is_remapped(home, tmp_path, monkeypatch, both):
+    old, new = tmp_path / "old", tmp_path / "new"
+    write(old / "a.mp4")
+    write(new / "a.mp4")
+    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
+    config.get_config.cache_clear()
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    probed: list[Path] = []
+
+    def fake_probe(path):
+        probed.append(path)
+        return MediaInfo(
+            path, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+
+    class StubTranscriber:
+        model_name, device = "stub", "cpu"
+
+        def __init__(self, **_):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(analyze, "probe", fake_probe)
+    monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
+    proj = tmp_path / "proj"
+    target = [old / "a.mp4", new / "a.mp4"] if both else old / "a.mp4"
+    analyze.analyze(target, get_style("funny"), proj, vision=False, use_scenes=False)
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    assert [s["path"] for s in hl["sources"]] == [str(old / "a.mp4")]
+    assert (proj / "transcript.txt").read_text(encoding="utf-8").startswith(f"# {old / 'a.mp4'}")
+    assert [p.resolve() for p in probed] == [(new / "a.mp4").resolve()]

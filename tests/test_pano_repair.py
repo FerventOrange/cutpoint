@@ -272,3 +272,26 @@ def test_out_spelled_differently_from_segments_still_gets_a_backup(
     repair(project, segs, qa, out=Path("scratch/../mix_segments.json"), sheet=False)
     assert cache.load_json(segs) != before
     assert cache.load_json(project / "mix_segments.bak.json") == before
+
+
+def test_backup_failing_midway_leaves_no_partial_file_and_the_segments_intact(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno  # noqa: PLC0415
+
+    real = Path.write_bytes
+
+    def disk_fills(self: Path, data: bytes) -> int:
+        if "bak" in self.name or self.name.endswith(".tmp"):  # the restore's temp write too
+            real(self, data[:5])
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(self, data)
+
+    segs = project / "mix_segments.json"
+    before = segs.read_bytes()
+    qa = _qa(project, [["occluded"]] * 9 + [[]] * 9)
+    monkeypatch.setattr(Path, "write_bytes", disk_fills)
+    with pytest.raises(OSError, match="No space"):
+        repair(project, segs, qa, sheet=False)
+    assert segs.read_bytes() == before
+    assert not [p for p in project.iterdir() if "bak" in p.name or p.name.endswith(".tmp")]
