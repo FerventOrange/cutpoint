@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they need.
 - GPU Whisper on Linux: the pip-installed CUDA libraries are preloaded.
 - Remote-mount detection works on Linux.
+- Projects created on Windows (sources like `D:\Videos\x.mp4`) show correct source file names
+  on Linux. Reading the files still needs a `source_remap` entry.
 - Clearer ffmpeg-not-found hint on Linux.
 - Caption font is chosen with `fc-match sans-serif` on Linux.
 - Insta360 X3 file lookup is case-insensitive on Linux.
