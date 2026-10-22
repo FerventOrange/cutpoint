@@ -180,7 +180,7 @@ def test_install_hint_regular_install(monkeypatch, tmp_path, direct_url):
             "nt",
             (
                 '& "C:/Program Files/Python/python.exe"',
-                " (PowerShell; in cmd drop the leading &)",
+                "PowerShell: in cmd drop the leading &",
             ),
         ),
         ("/opt/my python/bin/python", "posix", ('"/opt/my python/bin/python"', "")),
@@ -194,15 +194,15 @@ def test_python_prefix(monkeypatch, exe, os_name, expected):
 
 def test_pip_hints_use_python_prefix(monkeypatch, tmp_path):
     exe = "C:/Program Files/Python/python.exe"
-    note = " (PowerShell; in cmd drop the leading &)"
+    note = "PowerShell: in cmd drop the leading &"
     monkeypatch.setattr(extras.sys, "executable", exe)
     monkeypatch.setattr(extras, "os", SimpleNamespace(name="nt"))
     _set_install(monkeypatch, tmp_path, direct_url='{"dir_info": {"editable": true}}', uv=False)
     hint = extras.install_hint("ski")
-    assert hint.startswith(f'& "{exe}" -m pip install -e') and hint.endswith(note)
+    assert hint.startswith(f'& "{exe}" -m pip install -e') and hint.endswith(f"; {note})")
     _set_install(monkeypatch, tmp_path, direct_url=None, uv=False)
     hint = extras.install_hint("ski")
-    assert hint == f'& "{exe}" -m pip install "cutpoint[ski]"{note}'
+    assert hint == f'& "{exe}" -m pip install "cutpoint[ski]" ({note})'
 
 
 # --- uv tool receipts: reinstall from the original source ---------------------------------
@@ -407,13 +407,13 @@ def test_install_hint_editable_no_reinstall_note(monkeypatch, tmp_path, platform
             "win32",
             "events",
             False,
-            f" (with an NVIDIA GPU add --extra-index-url {extras.TORCH_INDEX}",
+            f"; with an NVIDIA GPU add --extra-index-url {extras.TORCH_INDEX}",
         ),
         (
             "win32",
             "events",
             True,
-            f" (with an NVIDIA GPU add --extra-index-url {extras.TORCH_INDEX} --force-reinstall",
+            f"; with an NVIDIA GPU add --extra-index-url {extras.TORCH_INDEX} --force-reinstall",
         ),
         ("win32", "ski", True, ""),
         ("linux", "events", True, ""),
@@ -428,7 +428,7 @@ def test_install_hint_pip_editable_points_at_cuda_torch_index(
     monkeypatch.setattr(extras.sys, "platform", platform)
     monkeypatch.setattr(extras, "_cpu_torch", lambda: cpu_torch)
     _set_install(monkeypatch, tmp_path, direct_url=_editable_url(tmp_path / "clone"), uv=False)
-    end = " so torch uses CUDA)" if note else ""
+    end = " so torch uses CUDA" if note else ""
     assert extras.install_hint(extra) == (
-        f'C:/py/python.exe -m pip install -e ".[{extra}]" (from the repository){note}{end}'
+        f'C:/py/python.exe -m pip install -e ".[{extra}]" (from the repository{note}{end})'
     )

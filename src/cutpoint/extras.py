@@ -35,6 +35,12 @@ TORCH_EXTRAS = ("events", "all")
 TORCH_INDEX = "https://download.pytorch.org/whl/cu126"
 
 
+def _notes(*notes: str) -> str:
+    """The non-empty ``notes`` as one parenthetical to append to a hint: `` (a; b)`` or ``""``."""
+    kept = [n for n in notes if n]
+    return f" ({'; '.join(kept)})" if kept else ""
+
+
 def uv_managed() -> bool:
     """True when this environment should be changed with uv rather than pip.
 
@@ -193,10 +199,11 @@ def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
     cmd += "".join(f" {flag} {url}" for flag, url in indexes)
     if strategy:
         cmd += f" --index-strategy {strategy}"
+    notes = []
     if explicit:
-        cmd += (
-            f" (explicit index {', '.join(explicit)} left out: it applies through your uv "
-            "config, so keep that config in place)"
+        notes.append(
+            f"explicit index {', '.join(explicit)} left out: it applies through your uv "
+            "config, so keep that config in place"
         )
     # A PyTorch CUDA index (download.pytorch.org/whl/cu126, .../nightly/cu128) already
     # serves the CUDA wheels; a mirror or the CPU index does not.
@@ -213,10 +220,10 @@ def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
         elif strategy != "unsafe-best-match":
             flags += " and change --index-strategy to unsafe-best-match"
         if sys.platform == "win32":
-            cmd += f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
+            notes.append(f"with an NVIDIA GPU add {flags} so torch uses CUDA")
         elif sys.platform == "linux":
-            cmd += f" (with an NVIDIA driver too old for CUDA 13, add {flags})"
-    return cmd
+            notes.append(f"with an NVIDIA driver too old for CUDA 13, add {flags}")
+    return cmd + _notes(*notes)
 
 
 def _cpu_torch() -> bool:
@@ -229,11 +236,11 @@ def _cpu_torch() -> bool:
 
 # uv keeps an installed CPU torch that satisfies torch==x.y.z unless told to reinstall it.
 _REINSTALL_TORCH = "--reinstall-package torch --reinstall-package torchvision"
-_REINSTALL_TORCH_NOTE = f" (with an NVIDIA GPU add {_REINSTALL_TORCH} so torch uses CUDA)"
+_REINSTALL_TORCH_NOTE = f"with an NVIDIA GPU add {_REINSTALL_TORCH} so torch uses CUDA"
 
 
 def _python() -> tuple[str, str]:
-    """``sys.executable`` as a shell command prefix, and a note to append to the hint.
+    """``sys.executable`` as a shell command prefix, and a note for the hint (or ``""``).
 
     A path without whitespace works bare in cmd, PowerShell and sh. A quoted path needs
     PowerShell's call operator, which cmd does not understand.
@@ -242,12 +249,12 @@ def _python() -> tuple[str, str]:
     if not any(c.isspace() for c in exe):
         return exe, ""
     if os.name == "nt":
-        return f'& "{exe}"', " (PowerShell; in cmd drop the leading &)"
+        return f'& "{exe}"', "PowerShell: in cmd drop the leading &"
     return f'"{exe}"', ""
 
 
 def _torch_index_note(uv: bool) -> str:
-    """Note that points ``uv pip`` (``uv``) or pip at the CUDA torch index."""
+    """Note text that points ``uv pip`` (``uv``) or pip at the CUDA torch index."""
     flags = (
         f"--index {TORCH_INDEX} --index-strategy unsafe-best-match"
         if uv
@@ -257,7 +264,7 @@ def _torch_index_note(uv: bool) -> str:
         # The installed CPU torch satisfies torch==x.y.z, so it would stay without
         # a reinstall (torchvision is likewise a CPU build then).
         flags += f" {_REINSTALL_TORCH}" if uv else " --force-reinstall"
-    return f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
+    return f"with an NVIDIA GPU add {flags} so torch uses CUDA"
 
 
 def install_hint(extra: str) -> str:
@@ -284,9 +291,9 @@ def install_hint(extra: str) -> str:
         elif extra in TORCH_EXTRAS and sys.platform == "win32":
             gpu = _torch_index_note(uv)
         if uv:
-            return f'uv pip install --python "{sys.executable}" {source}{gpu}'
+            return f'uv pip install --python "{sys.executable}" {source}{_notes(gpu)}'
         exe, note = _python()
-        return f"{exe} -m pip install {source}{gpu}{note}"
+        return f"{exe} -m pip install {source}{_notes(gpu, note)}"
     if uv_managed():
         # uv pip applies the clone's [tool.uv.sources] (cu126 torch) but keeps an installed
         # CPU torch. uv sync installs the locked +cu126 build, replacing a +cpu one.
@@ -299,17 +306,18 @@ def install_hint(extra: str) -> str:
         if clone is not None and Path(sys.prefix).resolve() != (clone / ".venv").resolve():
             # uv sync would change the clone's .venv, not the environment that is running.
             return (
-                f'uv pip install --python "{sys.executable}" -e "{clone.as_posix()}[{extra}]"{gpu}'
+                f'uv pip install --python "{sys.executable}" '
+                f'-e "{clone.as_posix()}[{extra}]"{_notes(gpu)}'
             )
         return (
             f"uv sync --extra {extra} (list every other extra you use too: uv sync "
             f"removes packages of extras you leave out), or: uv pip install --python "
-            f'"{sys.executable}" -e ".[{extra}]"{gpu}'
+            f'"{sys.executable}" -e ".[{extra}]"{_notes(gpu)}'
         )
     # pip ignores [tool.uv.sources], so it installs PyPI torch (CPU-only on Windows).
     gpu = _torch_index_note(False) if extra in TORCH_EXTRAS and sys.platform == "win32" else ""
     exe, note = _python()
-    return f'{exe} -m pip install -e ".[{extra}]" (from the repository){gpu}{note}'
+    return f'{exe} -m pip install -e ".[{extra}]"{_notes("from the repository", gpu, note)}'
 
 
 def missing_module_message(module: str) -> str | None:
