@@ -27,7 +27,7 @@ def test_stage_sources_matches_exclude_against_the_original_spelling(
     config.get_config.cache_clear()
     monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
 
-    result = stage_sources([old], exclude=[pattern])
+    result = stage_sources([old], exclude=[pattern], min_free_gb=0)
 
     assert result["files"] == len(staged)
     for name in ("keep.mp4", "skip.mp4"):
