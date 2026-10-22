@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 import cutpoint
@@ -54,3 +56,22 @@ def test_version_flag_prints_version_without_subcommand(capsys):
         cli.main(["--version"])
     assert exc.value.code == 0
     assert capsys.readouterr().out.strip() == f"cutpoint {cutpoint.__version__}"
+
+
+@pytest.mark.parametrize("preexisting", [None, "empty", "with_file"])
+def test_analyze_failure_removes_only_folder_it_created(home, tmp_path, preexisting):
+    video = tmp_path / "bad.mp4"
+    video.write_bytes(b"not a video")
+    project = home / "projects" / "proj"
+    if preexisting:
+        project.mkdir(parents=True)
+    if preexisting == "with_file":
+        (project / "keep.txt").write_text("x", encoding="utf-8")
+    assert cli.main(["analyze", str(video), "--out", "proj"]) == 1
+    assert project.exists() == bool(preexisting)
+
+
+def test_huggingface_warning_is_printed_once():
+    pytest.importorskip("huggingface_hub.utils.logging")
+    assert cli.main(["paths"]) == 0
+    assert logging.getLogger("huggingface_hub").handlers == []
