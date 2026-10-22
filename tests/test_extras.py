@@ -373,3 +373,28 @@ def test_install_hint_reinstalls_installed_cpu_torch(monkeypatch, tmp_path, uv, 
     assert extra_flags in extras.install_hint("events")
     monkeypatch.setattr(extras, "_cpu_torch", lambda: False)
     assert extra_flags not in extras.install_hint("events")
+
+
+@pytest.mark.parametrize("in_clone_venv", [True, False])
+def test_install_hint_editable_cpu_torch_adds_reinstall_note(monkeypatch, tmp_path, in_clone_venv):
+    # uv pip keeps an installed CPU torch, so the -e forms say how to get CUDA (#96)
+    clone = tmp_path / "clone"
+    _set_install(monkeypatch, tmp_path, direct_url=_editable_url(clone), uv=True)
+    monkeypatch.setattr(extras.sys, "platform", "win32")
+    monkeypatch.setattr(extras, "_cpu_torch", lambda: True)
+    monkeypatch.setattr(extras.sys, "prefix", str(clone / ".venv" if in_clone_venv else tmp_path))
+    note = " (with an NVIDIA GPU add --reinstall-package torch --reinstall-package torchvision"
+    hint = extras.install_hint("events")
+    assert hint.count(note) == 1 and hint.endswith("so torch uses CUDA)")
+    assert hint.startswith("uv sync --extra events") == in_clone_venv
+
+
+@pytest.mark.parametrize(
+    ("platform", "cpu_torch", "extra"),
+    [("win32", False, "events"), ("win32", True, "ski"), ("linux", True, "events")],
+)
+def test_install_hint_editable_no_reinstall_note(monkeypatch, tmp_path, platform, cpu_torch, extra):
+    _set_install(monkeypatch, tmp_path, direct_url=_editable_url(tmp_path / "clone"), uv=True)
+    monkeypatch.setattr(extras.sys, "platform", platform)
+    monkeypatch.setattr(extras, "_cpu_torch", lambda: cpu_torch)
+    assert "NVIDIA" not in extras.install_hint(extra)
