@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+
 ### Added
 
 - Optional `ui` extra and `cutpoint ui`: a loopback-only browser workspace for standard-video
@@ -44,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitive on Windows.
 - Linux: stage index keys changed; run `cutpoint stage --clear` (without inputs) and stage again.
   Ski features are recomputed once.
+- **Upgrade note:** CLIP-derived caches (visual features including 360 views, text embeddings and
+  dense crash scores) are recomputed once on the first `events`, `crashes` or `refmatch` run after
+  upgrading. Taste heads trained with `refmatch --taste` before 0.2.0 were fit on the old
+  (GELU) CLIP embeddings; re-train them.
+- **Upgrade note:** on Windows with an AMD GPU, `video_encoder` `auto` now selects AMF when it
+  probes as usable; set `"video_encoder": "cpu"` in `config.json` or
+  `CUTPOINT_VIDEO_ENCODER=cpu` to keep software encoding.
 
 ### Fixed
 
