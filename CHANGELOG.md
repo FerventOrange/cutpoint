@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `cutpoint --version`.
+
+### Fixed
+
+- Missing-extra messages now give the install command that matches the install type:
+  `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
+  package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
+  drivers too old for CUDA 13), `pip install "cutpoint[...]"` for PyPI installs, and the
+  `uv sync --extra` form only in a clone. The pip commands can be pasted into PowerShell.
+- `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
+- `cutpoint.cmd` and `cutpoint.ps1` header comments now say the `.venv` from `uv sync` is all
+  they need.
+
 ## [0.1.0] - 2026-10-21
 
 First public release.
