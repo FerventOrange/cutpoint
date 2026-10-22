@@ -303,6 +303,18 @@ def test_no_readable_telemetry_is_logged_once_at_info(tmp_path, monkeypatch, cap
     assert not [r for r in caplog.records if "no readable GoPro" in r.message]
 
 
+def test_forced_crash_run_logs_missing_telemetry_at_info(home, tmp_path, monkeypatch, caplog):
+    class Parser:
+        def __init__(self, _path):
+            raise RuntimeError("no GoPro MET track")
+
+    monkeypatch.setitem(sys.modules, "telemetry_parser", SimpleNamespace(Parser=Parser))
+    video = write(tmp_path / "plain.mp4")
+    with caplog.at_level(logging.INFO):
+        assert crash.imu_grids(video, 10.0, force=True) is None
+    assert [r for r in caplog.records if "no readable GoPro telemetry" in r.message]
+
+
 # -- ffmpeg_utils ---------------------------------------------------------------------------
 
 

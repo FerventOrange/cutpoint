@@ -191,8 +191,14 @@ def _gpmf_copy(src: Path, tmp: Path) -> Path | None:
     return dst if dst.exists() and dst.stat().st_size > 0 else None
 
 
-def _parse_imu(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[Any]] | None:
-    """``(t_s, accel m/s^2 (N, 3), gyro deg/s (N, 3), telemetry groups)`` or None."""
+def _parse_imu(
+    path: Path, force: bool = False
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[Any]] | None:
+    """``(t_s, accel m/s^2 (N, 3), gyro deg/s (N, 3), telemetry groups)`` or None.
+
+    ``force`` (``crashes --force``) logs a parse failure at INFO: the grids are
+    then recomputed before ``telemetry.extract`` runs, which may hit its cache.
+    """
     import telemetry_parser as tp_mod  # noqa: PLC0415
 
     try:
@@ -200,8 +206,10 @@ def _parse_imu(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[Any
         groups = parser.telemetry()
         imu = parser.normalized_imu()
     except Exception as err:  # noqa: BLE001 - the Rust parser raises plain Exceptions
-        # Debug only: telemetry.extract, run on the same source first, logs it at INFO.
-        logger.debug("%s: no readable GoPro telemetry (%s)", path.name, err)
+        # Unforced: DEBUG, as telemetry.extract (run first on the same source) logged it
+        # at INFO when it parsed the file.
+        level = logging.INFO if force else logging.DEBUG
+        logger.log(level, "%s: no readable GoPro telemetry (%s)", path.name, err)
         return None
     imu = [s for s in imu or [] if s.get("accl") is not None and s.get("gyro") is not None]
     if len(imu) < 10:
@@ -260,8 +268,10 @@ def _lowpass(x: np.ndarray, k: int) -> np.ndarray:
     return np.stack([conv_same(x[:, i], np.ones(k) / k) for i in range(x.shape[1])], 1)
 
 
-def _compute_imu(read_path: Path, duration: float) -> dict[str, np.ndarray] | None:
-    parsed = _parse_imu(read_path)
+def _compute_imu(
+    read_path: Path, duration: float, force: bool = False
+) -> dict[str, np.ndarray] | None:
+    parsed = _parse_imu(read_path, force)
     if parsed is None:
         return None
     t, acc, gyr, groups = parsed
@@ -353,9 +363,9 @@ def imu_grids(
         with tempfile.TemporaryDirectory(dir=tmp_dir) as tmp:
             small = _gpmf_copy(io, Path(tmp))
             if small is not None:
-                grids = _compute_imu(small, duration)
+                grids = _compute_imu(small, duration, force)
     if grids is None:
-        grids = _compute_imu(read_path, duration)
+        grids = _compute_imu(read_path, duration, force)
     if grids is None:
         np.savez_compressed(path, none=np.zeros(1))
         return None
