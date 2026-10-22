@@ -370,6 +370,19 @@ def render_segment(
     }
 
 
+def backup_path_file(f: Path) -> Path:
+    """Copy a director path file (it may be hand-edited) to the first free backup name
+    (``<file>.bak``, then ``<file>.1.bak``, ``<file>.2.bak``, ...) and return it; earlier
+    backups are never overwritten."""
+    bak = f.with_name(f.name + ".bak")
+    n = 0
+    while bak.exists():
+        n += 1
+        bak = f.with_name(f"{f.name}.{n}.bak")
+    shutil.copy2(f, bak)
+    return bak
+
+
 # --------------------------------------------------------------------- cutpoint clips / extend
 class PanoExporter:
     """Renders the X3 moments of a ``cutpoint clips`` / ``cutpoint extend`` run.
@@ -449,12 +462,7 @@ class PanoExporter:
             clip, start, end, vertical=self.vertical, kind=kind, overrides=self.overrides
         )
         if reuse is not None and reuse.is_file() and reuse.resolve() == out.resolve():
-            bak = out.with_name(out.name + ".bak")  # it may be hand-edited
-            n = 0
-            while bak.exists():  # never overwrite an earlier backup
-                n += 1
-                bak = out.with_name(f"{out.name}.{n}.bak")
-            shutil.copy2(out, bak)
+            bak = backup_path_file(out)
             logger.warning("  %s: re-planned; the previous path is kept as %s", name, bak)
         cache.save_json(out, path, indent=1)
         return path, out
