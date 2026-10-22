@@ -224,15 +224,19 @@ def unload_ollama(url: str | None = None) -> list[str]:
         loaded = requests.get(f"{url}/api/ps", timeout=3).json().get("models", [])
     except (requests.RequestException, ValueError):
         return []
-    names = [m.get("name") or m.get("model") for m in loaded]
-    for name in names:
+    names = []
+    for m in loaded:
+        name = m.get("name") or m.get("model")
         try:
             requests.post(f"{url}/api/generate", json={"model": name, "keep_alive": 0}, timeout=30)
             logger.info("Unloaded Ollama model %s", name)
+            names.append(name)
         except requests.RequestException as err:
             logger.warning("Could not unload Ollama model %s: %s", name, err)
+    if not names:  # nothing was loaded (or nothing could be unloaded): no wait
+        return names
     deadline = time.time() + 15
-    while names and time.time() < deadline:
+    while time.time() < deadline:
         try:
             if not requests.get(f"{url}/api/ps", timeout=3).json().get("models"):
                 break

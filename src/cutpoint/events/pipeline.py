@@ -39,7 +39,7 @@ from cutpoint.events.killfeed import (
 )
 from cutpoint.events.regions import game_key_for_path, load_preset
 from cutpoint.events.report import normalize, write_outputs
-from cutpoint.events.setup import EVENTS_MODULES
+from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.events.vlm_windows import (
     VlmParams,
     add_incremental,
@@ -67,6 +67,30 @@ def _require_events_extra(layers: tuple[str, ...]) -> None:
     for module in EVENTS_MODULES:
         if importlib.util.find_spec(module) is None:
             raise ModuleNotFoundError(f"No module named {module!r}", name=module)
+
+
+def _require_model_files(layers: tuple[str, ...]) -> None:
+    """Fail before any side effect when a model file or tool of ``layers`` is missing.
+
+    One error lists every missing file and the ``cutpoint setup`` command for all of them.
+    """
+    missing = paths.missing_files(layers)
+    if not missing:
+        return
+    components = sorted({comp for comp, _ in missing}, key=COMPONENTS.index)
+    raise FileNotFoundError(
+        f"Missing model files / tools for layers {', '.join(layers)}: "
+        f"{'; '.join(str(p) for _, p in missing)}. "
+        f"Run: cutpoint setup --only {' '.join(components)}"
+    )
+
+
+def preflight(layers: tuple[str, ...]) -> None:
+    """Cheap checks for ``layers`` (events extra, model files) that :func:`run_events`
+    makes before it unloads Ollama or imports torch; callers that run a long step
+    first (``cutpoint 360 analyze``) call it up front."""
+    _require_events_extra(layers)
+    _require_model_files(layers)
 
 
 def run_events(
@@ -117,7 +141,7 @@ def run_events(
     if layers is None:
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
     vlm.ski = ski
-    _require_events_extra(layers)
+    preflight(layers)
     sources = []
     seen: set[str] = set()
     for s in hl["sources"]:  # virtual parts (--recover) share one path

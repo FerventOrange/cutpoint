@@ -25,6 +25,8 @@ from typing import Any
 from cutpoint import cache
 
 logger = logging.getLogger("cutpoint")
+# Event layers ``cutpoint 360 analyze`` runs after the analysis.
+EVENT_LAYERS = ("audio", "voice", "visual", "crash")
 
 
 def _project(arg: str) -> Path:
@@ -147,6 +149,10 @@ def cmd_analyze(a: argparse.Namespace) -> None:
     clips = [c for c in _clips(project) if c.lrv]
     if a.only:
         clips = [c for c in clips if c.clip_id in a.only]
+    if not (a.no_events or a.views_only):  # fail on a missing extra / model before the long steps
+        from cutpoint.events.pipeline import preflight  # noqa: PLC0415
+
+        preflight(EVENT_LAYERS)
     t0 = time.perf_counter()
     st = views.run_layer(clips, force=a.force_views)
     _timing(project, "views", {**st, "total_s": round(time.perf_counter() - t0, 1)})
@@ -170,7 +176,7 @@ def cmd_analyze(a: argparse.Namespace) -> None:
     from cutpoint.events.pipeline import run_events  # noqa: PLC0415
 
     t2 = time.perf_counter()
-    run_events(project, layers=("audio", "voice", "visual", "crash"))
+    run_events(project, layers=EVENT_LAYERS)
     reanalyze(project)
     _timing(project, "events_s", round(time.perf_counter() - t2, 1))
     _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
