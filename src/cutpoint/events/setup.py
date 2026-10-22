@@ -29,11 +29,15 @@ Components (models and tools go to CUTPOINT_HOME, see ``cutpoint paths``):
 
 Every archive is downloaded into its own fresh folder under
 ``tools/_downloads`` before being extracted. Downloads resume if interrupted.
+llama.cpp archives are checked against the sha256 digest GitHub publishes
+(when the release has one), extracted into ``tools/llama.cpp.new`` and then
+swapped in for ``tools/llama.cpp``, so files of an older build never linger.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import logging
@@ -43,6 +47,7 @@ import re
 import shutil
 import sys
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -77,23 +82,43 @@ EVENTS_MODULES = (
 )
 COMPONENTS = ("pip", "panns", "llama", "omni", "visual", "voice")
 
+# Release asset: (download URL, size in bytes, sha256 hex digest or None).
+Asset = tuple[str, int, str | None]
 
-def download(url: str, dst: Path, expected_size: int | None = None) -> Path:
+
+def _sha256(path: Path) -> str:
+    """Hex sha256 of ``path``, read in chunks."""
+    with path.open("rb") as fh:
+        return hashlib.file_digest(fh, "sha256").hexdigest()
+
+
+def download(
+    url: str, dst: Path, expected_size: int | None = None, sha256: str | None = None
+) -> Path:
     """Stream ``url`` to ``dst`` with resume support.
 
     Args:
         url: Source URL (redirects are followed).
         dst: Destination file; a ``.part`` file is used while downloading.
         expected_size: Skip the download if ``dst`` already has this size.
+        sha256: Expected hex digest; an existing ``dst`` that does not match is
+            downloaded again, a fresh download that does not match is deleted.
 
     Returns:
         ``dst``.
+
+    Raises:
+        RuntimeError: The downloaded file does not match ``sha256``.
     """
-    if dst.exists() and (expected_size is None or dst.stat().st_size == expected_size):
-        logger.info("have %s", dst.name)
-        return dst
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    sha256 = sha256.lower() if sha256 else None
     part = dst.with_name(dst.name + ".part")
+    if dst.exists() and (expected_size is None or dst.stat().st_size == expected_size):
+        if sha256 is None or _sha256(dst) == sha256:
+            logger.info("have %s", dst.name)
+            return dst
+        logger.warning("%s does not match its sha256; downloading it again", dst.name)
+        dst.unlink()
+    dst.parent.mkdir(parents=True, exist_ok=True)
     have = part.stat().st_size if part.exists() else 0
     req = urllib.request.Request(url, headers={"User-Agent": "cutpoint-setup"})
     if have:
@@ -112,6 +137,10 @@ def download(url: str, dst: Path, expected_size: int | None = None) -> Path:
                     logger.info("%s %5.1f%% of %.2f GB", dst.name, 100 * done / total, total / 1e9)
                     next_log += 0.1
     part.replace(dst)
+    if sha256 is not None and (actual := _sha256(dst)) != sha256:
+        dst.unlink(missing_ok=True)
+        part.unlink(missing_ok=True)
+        raise RuntimeError(f"{dst.name}: sha256 mismatch (expected {sha256}, got {actual})")
     return dst
 
 
@@ -151,14 +180,14 @@ def _has_nvidia() -> bool:
     return Path("/proc/driver/nvidia/version").exists() or shutil.which("nvidia-smi") is not None
 
 
-def _asset(assets: dict[str, tuple[str, int]], stem: str) -> tuple[str, int] | None:
+def _asset(assets: dict[str, Asset], stem: str) -> Asset | None:
     """``stem`` + ``.tar.gz`` (current Linux releases) or ``.zip`` (older ones)."""
     return assets.get(f"{stem}.tar.gz") or assets.get(f"{stem}.zip")
 
 
 def _pick_linux_assets(
-    tag: str, assets: dict[str, tuple[str, int]], arch: str, nvidia: bool
-) -> tuple[str, dict[str, tuple[str, int]]] | None:
+    tag: str, assets: dict[str, Asset], arch: str, nvidia: bool
+) -> tuple[str, dict[str, Asset]] | None:
     """Best Linux build in one release as ``(flavor, {"bin": ..., ["rt": ...]})``.
 
     CUDA + its cudart libraries (NVIDIA only; the oldest CUDA version, which
@@ -179,7 +208,13 @@ def _pick_linux_assets(
     return None
 
 
-def _latest_llama_assets(plat: str) -> tuple[str, str, dict[str, tuple[str, int]]]:
+def _sha256_of(asset: dict) -> str | None:
+    """Hex digest from a release asset's ``"digest": "sha256:<hex>"`` (None if absent)."""
+    digest = asset.get("digest") or ""
+    return digest.removeprefix("sha256:") if digest.startswith("sha256:") else None
+
+
+def _latest_llama_assets(plat: str) -> tuple[str, str, dict[str, Asset]]:
     """``(tag, flavor, assets)`` of the newest release with a build for ``plat``."""
     with urllib.request.urlopen(GH_RELEASES, timeout=60) as resp:
         releases = json.load(resp)
@@ -190,7 +225,9 @@ def _latest_llama_assets(plat: str) -> tuple[str, str, dict[str, tuple[str, int]
         nvidia = _has_nvidia()
     for rel in releases:
         tag = rel["tag_name"]
-        assets = {a["name"]: (a["browser_download_url"], a["size"]) for a in rel["assets"]}
+        assets = {
+            a["name"]: (a["browser_download_url"], a["size"], _sha256_of(a)) for a in rel["assets"]
+        }
         if plat == "linux":
             if picked := _pick_linux_assets(tag, assets, arch, nvidia):
                 return tag, picked[0], picked[1]
@@ -261,18 +298,120 @@ def install_llama(force: bool = False) -> None:
             )
             return
         logger.info("llama.cpp in %s is for another platform (%s); replacing", stamp.parent, have)
+    llama = paths.llama_dir()
+    # Siblings of llama_dir, so llama_server_exe() never finds a binary in them.
+    staging = llama.with_name(llama.name + ".new")
+    old = llama.with_name(llama.name + ".old")
+    for d in (old, llama):  # never delete a llama.cpp folder someone else put there
+        if d.exists() and not _ours(d):
+            raise RuntimeError(
+                f"{d} was not installed by cutpoint setup (no VERSION.txt); move it "
+                "elsewhere and run cutpoint setup --only llama again"
+            )
+    if old.exists() and not llama.exists():  # interrupted between the two renames below
+        old.rename(llama)
+    if staging.exists():
+        logger.info("removing %s left by an earlier run", staging)
+        shutil.rmtree(staging)
+    if old.exists():
+        logger.info("removing %s left by an earlier run", old)
+        _rmtree_ours(old)
+        if old.exists():
+            raise RuntimeError(
+                f"Could not remove {old}. Close whatever holds files in it (e.g. "
+                "llama-server) and run cutpoint setup --only llama again."
+            )
+    staging.mkdir(parents=True)
     dl_root = paths.tools_dir() / "_downloads"
-    for key, (url, size) in assets.items():
-        folder = dl_root / f"llama-{tag}-{key}"  # one fresh folder per archive
-        archive = download(url, folder / url.rsplit("/", 1)[-1], size)
-        _extract(archive, paths.llama_dir())
-    if plat == "linux":  # only our own build, never a CUTPOINT_LLAMA_SERVER or PATH binary
-        for exe in paths.llama_dir().glob("**/llama-server"):
-            if exe.is_file():
-                exe.chmod(exe.stat().st_mode | 0o111)
-    stamp.write_text(f"{tag} {flavor}\n")
+    try:
+        for key, (url, size, sha256) in assets.items():
+            name = url.rsplit("/", 1)[-1]
+            if sha256 is None:
+                logger.debug("no sha256 published for %s; not verified", name)
+            folder = dl_root / f"llama-{tag}-{key}"  # one fresh folder per archive
+            archive = download(url, folder / name, size, sha256)
+            _extract(archive, staging)
+        if plat == "linux":  # only our own build, never a CUTPOINT_LLAMA_SERVER or PATH binary
+            for exe in staging.glob("**/llama-server"):
+                if exe.is_file():
+                    exe.chmod(exe.stat().st_mode | 0o111)
+        (staging / stamp.name).write_text(f"{tag} {flavor}\n")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    _swap_in(staging, llama, old)
     shutil.rmtree(dl_root, ignore_errors=True)
-    logger.info("llama.cpp %s (%s) installed in %s", tag, flavor, paths.llama_dir())
+    logger.info("llama.cpp %s (%s) installed in %s", tag, flavor, llama)
+
+
+def _ours(d: Path) -> bool:
+    """True if ``d`` is missing, has our VERSION.txt or holds only llama-server.log."""
+    if not d.exists():
+        return True
+    return (d / "VERSION.txt").exists() or all(p.name == "llama-server.log" for p in d.iterdir())
+
+
+def _rmtree_ours(d: Path) -> None:
+    """Best-effort delete of ``d``, removing its VERSION.txt last.
+
+    If a file stays locked (e.g. Windows AV), the stamp stays too, so ``_ours(d)``
+    still holds on the next run.
+    """
+    if not d.exists():
+        return
+    stamp = d / "VERSION.txt"
+    for p in d.iterdir():
+        if p == stamp:
+            continue
+        try:
+            if p.is_dir() and not p.is_symlink():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink()
+        except OSError:
+            pass
+    try:
+        if all(p == stamp for p in d.iterdir()):
+            stamp.unlink(missing_ok=True)
+            d.rmdir()
+    except OSError:
+        pass
+
+
+def _rename_retry(src: Path, dst: Path, tries: int = 5) -> None:
+    """``src.rename(dst)``, retried while Windows AV/indexers briefly lock new files."""
+    for i in range(tries):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.5 * (i + 1))
+
+
+def _swap_in(staging: Path, llama: Path, old: Path) -> None:
+    """Replace ``llama`` by ``staging``; the previous install goes via ``old`` and is deleted.
+
+    Raises:
+        RuntimeError: A rename failed (e.g. llama-server.exe still running on
+            Windows); the previous install is restored and ``staging`` removed.
+    """
+    moved = False
+    try:
+        if llama.exists():
+            _rename_retry(llama, old)
+            moved = True
+        _rename_retry(staging, llama)
+    except OSError as e:
+        if moved and not llama.exists():
+            old.rename(llama)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError(
+            f"Could not replace {llama} ({e}). Stop cutpoint and any llama-server "
+            "that is running, then run cutpoint setup --only llama again."
+        ) from e
+    _rmtree_ours(old)
 
 
 def install_omni() -> None:
