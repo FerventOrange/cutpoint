@@ -48,6 +48,21 @@ def test_quiet_window_has_no_candidates():
     assert crash.candidate_events(_inputs(spike=False), crash.CrashParams()) == []
 
 
+@pytest.mark.parametrize(("ride_start_s", "damped"), [(32, True), (45, False)])
+def test_impact_just_before_a_lift_ride_is_damped_without_gps(ride_start_s, damped):
+    """Boarding knocks (360, no GPS lift mask): CLIP lift rides damp events up to 5 s before."""
+    p = crash.CrashParams()
+    inp = _inputs(spike=True)
+    (cand,) = crash.candidate_events(inp, p)
+    base = crash.telemetry_features(inp, cand["t0"], cand["t1"], p)
+    assert not base["on_lift"]
+    inp.lift = np.zeros(N)
+    inp.lift[ride_start_s * 10 :] = 1.0
+    tel = crash.telemetry_features(inp, cand["t0"], cand["t1"], p)
+    assert tel["on_lift"] is damped
+    assert tel["score"] == pytest.approx(base["score"] * (0.2 if damped else 1.0), abs=2e-3)
+
+
 def _project(tmp_path: Path, *sources: Path) -> Path:
     project = tmp_path / "proj"
     project.mkdir()
