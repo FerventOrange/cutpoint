@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+
 ### Added
 
 - Optional `ui` extra and `cutpoint ui`: a loopback-only browser workspace for standard-video
@@ -44,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitive on Windows.
 - Linux: stage index keys changed; run `cutpoint stage --clear` (without inputs) and stage again.
   Ski features are recomputed once.
+- **Upgrade note:** CLIP-derived caches change. On existing projects, run `cutpoint events` again
+  (and `cutpoint 360 analyze` for 360 footage) before `crashes`, `profile`, `mix` or
+  `refmatch --taste`; until then those commands find no visual data. `crashes` then recomputes its
+  dense scores, and text embeddings are recomputed on first use. Taste heads trained with
+  `refmatch --taste` before 0.2.0 were fit on the old (GELU) CLIP embeddings; re-train them.
+- **Upgrade note:** `video_encoder` `auto` now selects AMF (Windows, AMD GPUs) or VAAPI (Linux,
+  AMD and Intel GPUs) when it probes as usable, where 0.1.0 used libx264; set
+  `"video_encoder": "cpu"` in `config.json` or `CUTPOINT_VIDEO_ENCODER=cpu` to keep software
+  encoding.
 
 ### Fixed
 
@@ -59,14 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--recursive` and `--exclude`; with none recorded it logs a warning. Previously such a copy could
   only be removed by a bare `--clear`, and one missing input stopped the other inputs' copies from
   being cleared. `stage --help` now describes `--exclude` and `--recursive`.
-- `cutpoint ui`: pasting a newly printed startup URL into an already-open tab now reloads the page
-  so the fresh session token is used, instead of leaving a stale "token rejected" screen.
-- `cutpoint ui`: re-analysis keeps saved trims attached to their source intervals instead of
-  associating them with a different moment that reuses the same rank number.
 - The CLIP model for `events` and `crashes` uses `ViT-L-14-quickgelu` to match the OpenAI
   weights instead of building them with GELU. The checkpoint is unchanged; cached visual
-  features (including 360 views), text embeddings and dense crash scores are recomputed on
-  the next run.
+  features (including 360 views), text embeddings and dense crash scores are recomputed (see the
+  upgrade note under Changed).
 - Install instructions load `$HOME/.local/bin/env` after the uv installer so `uv` works in a fresh
   shell.
 - `stage --exclude` matches the original path of footage read through `source_remap`, as
