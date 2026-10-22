@@ -25,7 +25,7 @@ ARG CUTPOINT_UID=1000
 ARG CUTPOINT_GID=1000
 RUN (userdel -r ubuntu 2>/dev/null || true) \
     && (getent group "$CUTPOINT_GID" >/dev/null || groupadd --gid "$CUTPOINT_GID" cutpoint) \
-    && useradd --uid "$CUTPOINT_UID" --gid "$CUTPOINT_GID" --create-home --shell /usr/sbin/nologin cutpoint \
+    && useradd --no-log-init --uid "$CUTPOINT_UID" --gid "$CUTPOINT_GID" --create-home --shell /usr/sbin/nologin cutpoint \
     && mkdir -p /data/huggingface \
     && chown -R "$CUTPOINT_UID:$CUTPOINT_GID" /data
 

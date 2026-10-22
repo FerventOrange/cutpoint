@@ -159,6 +159,10 @@ docker run --rm --network host --user "$(id -u):$(id -g)" \
 or at build time, which also keeps the named volume writable:
 `docker build --build-arg CUTPOINT_UID="$(id -u)" --build-arg CUTPOINT_GID="$(id -g)" -t cutpoint .`
 
+This applies to Docker Engine on Linux. With Docker Desktop on Windows or macOS, bind-mounted files
+already belong to your user, so skip `--user` (from a WSL shell `$(id -u)` works as written); with
+rootless Docker, files are mapped to your subordinate uid range.
+
 Upgrading from the 0.2.0 image, which ran as root: an existing `cutpoint-data` volume is
 root-owned and the new image fails with `Permission denied` on `/data`. Fix the volume once
 (use the build-arg uid:gid instead of `1000:1000` if you changed them):
@@ -181,7 +185,9 @@ docker build --build-arg INSTALL_EVENTS=true -t cutpoint:events .
 docker run --rm --mount source=cutpoint-data,target=/data cutpoint:events setup
 ```
 
-This is about 8 GB of models, and the Python dependencies are large (they include CUDA libraries
+If you run with `--user` and a bind mount, pass the same `--user` and
+`--mount type=bind,source="$HOME/cutpoint-data",target=/data` flags to `setup`, so the models land
+in the directory you actually mount. This is about 8 GB of models, and the Python dependencies are large (they include CUDA libraries
 even though the container runs on the CPU). Then run the UI as above with `cutpoint:events`.
 
 ## First run
