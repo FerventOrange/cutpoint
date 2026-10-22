@@ -40,8 +40,13 @@ The `events` model layer does not use Ollama for its main model. It starts its o
 - `<dir> was not installed by cutpoint setup (no VERSION.txt)`: a self-built or unpacked llama.cpp
   is in `tools/llama.cpp` (or `tools/llama.cpp.old`), and setup will not replace it. Move it
   elsewhere (or point `CUTPOINT_LLAMA_SERVER` at it) and run `cutpoint setup --only llama` again.
-- `Could not replace <dir>` or `Could not remove <dir>`: `llama-server` or another program holds
-  files in `tools/llama.cpp`. Stop cutpoint and any running `llama-server`, then run
+- `Could not remove tools/llama.cpp.old (a running llama-server holds files in it)`: a warning,
+  not an error. On Windows a running `llama-server` does not stop the update; the new build is
+  installed, but the previous one stays in `tools/llama.cpp.old`. Stop cutpoint and any running
+  `llama-server`, then run `cutpoint setup --only llama` again to remove it.
+- `Could not replace <dir>` or `Could not remove <dir>` (an error): another program, for example
+  antivirus or a running `llama-server`, holds files in `tools/llama.cpp` or
+  `tools/llama.cpp.old`. Stop cutpoint and any running `llama-server`, then run
   `cutpoint setup --only llama` again. The previous install is kept.
 - `sha256 mismatch`: the llama.cpp download was corrupt and was deleted. Run
   `cutpoint setup --only llama` again; the existing install is kept.

@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint setup` installs llama.cpp into a staging folder and swaps it in, so switching
   builds or using `--force` no longer leaves stale files in `tools/llama.cpp`. A failed or
   interrupted install keeps the previous one, and setup refuses to replace a `tools/llama.cpp` it
-  did not install (no `VERSION.txt`) (#36).
+  did not install (no `VERSION.txt`). If a running `llama-server` keeps the previous build from
+  being deleted (Windows), setup warns and the next `cutpoint setup --only llama` removes
+  `tools/llama.cpp.old` once the server is stopped (#36).
 - `cutpoint events` and `cutpoint 360 analyze` check that the model files and tools the selected
   layers need are installed before unloading Ollama models, importing torch or starting a long
   analyze. One error lists every missing file and the `cutpoint setup --only ...` command (#23,

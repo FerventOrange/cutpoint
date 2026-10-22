@@ -67,6 +67,10 @@ HF_URL = "https://huggingface.co/{repo}/resolve/main/{name}"
 GH_RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"
 CUDA_FLAVOR = "cuda-12.4"  # matches the cudart-llama-bin-win-cuda-12.4 runtime zip
 LINUX_ARCH = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+_OLD_KEPT = (
+    "Could not remove %s (a running llama-server holds files in it); it is removed on the "
+    "next cutpoint setup --only llama"
+)
 
 # Import names of the ``events`` extra (see pyproject.toml).
 EVENTS_MODULES = (
@@ -286,41 +290,26 @@ def _extract(archive: Path, dest: Path) -> None:
 def install_llama(force: bool = False) -> None:
     """Install the newest llama.cpp build for this platform (see the module docstring)."""
     plat = _llama_platform()
-    stamp = paths.llama_dir() / "VERSION.txt"
-    tag, flavor, assets = _latest_llama_assets(plat)
-    if stamp.exists() and not force:
-        have = stamp.read_text().strip()
-        if _stamp_fits(have, plat):
-            logger.info(
-                "llama.cpp already installed (%s); latest is %s. Use --force to replace.",
-                have,
-                tag,
-            )
-            return
-        logger.info("llama.cpp in %s is for another platform (%s); replacing", stamp.parent, have)
     llama = paths.llama_dir()
+    stamp = llama / "VERSION.txt"
     # Siblings of llama_dir, so llama_server_exe() never finds a binary in them.
     staging = llama.with_name(llama.name + ".new")
     old = llama.with_name(llama.name + ".old")
-    for d in (old, llama):  # never delete a llama.cpp folder someone else put there
-        if d.exists() and not _ours(d):
-            raise RuntimeError(
-                f"{d} was not installed by cutpoint setup (no VERSION.txt); move it "
-                "elsewhere and run cutpoint setup --only llama again"
-            )
-    if old.exists() and not llama.exists():  # interrupted between the two renames below
+    tag, flavor, assets = _latest_llama_assets(plat)
+    if old.exists() and not llama.exists() and _ours(old):  # interrupted between the renames
         old.rename(llama)
-    if staging.exists():
-        logger.info("removing %s left by an earlier run", staging)
-        shutil.rmtree(staging)
-    if old.exists():
-        logger.info("removing %s left by an earlier run", old)
-        _rmtree_ours(old)
-        if old.exists():
-            raise RuntimeError(
-                f"Could not remove {old}. Close whatever holds files in it (e.g. "
-                "llama-server) and run cutpoint setup --only llama again."
-            )
+    have = stamp.read_text().strip() if stamp.exists() and not force else None
+    if have is not None and _stamp_fits(have, plat):
+        _clean_leftovers(llama, staging, old, strict=False)
+        logger.info(
+            "llama.cpp already installed (%s); latest is %s. Use --force to replace.",
+            have,
+            tag,
+        )
+        return
+    if have is not None:
+        logger.info("llama.cpp in %s is for another platform (%s); replacing", llama, have)
+    _clean_leftovers(llama, staging, old, strict=True)
     staging.mkdir(parents=True)
     dl_root = paths.tools_dir() / "_downloads"
     try:
@@ -342,6 +331,39 @@ def install_llama(force: bool = False) -> None:
     _swap_in(staging, llama, old)
     shutil.rmtree(dl_root, ignore_errors=True)
     logger.info("llama.cpp %s (%s) installed in %s", tag, flavor, llama)
+
+
+def _clean_leftovers(llama: Path, staging: Path, old: Path, strict: bool) -> None:
+    """Remove ``staging`` and ``old`` left by an earlier run.
+
+    Folders without our VERSION.txt are never deleted. With ``strict`` (before an install)
+    such a folder, or an ``old`` that cannot be removed, raises; otherwise both are left
+    as they are, with a warning for ``old``.
+
+    Raises:
+        RuntimeError: ``strict`` and a folder is not ours or ``old`` stays.
+    """
+    for d in (old, llama):  # never delete a llama.cpp folder someone else put there
+        if d.exists() and not _ours(d):
+            if not strict:
+                return
+            raise RuntimeError(
+                f"{d} was not installed by cutpoint setup (no VERSION.txt); move it "
+                "elsewhere and run cutpoint setup --only llama again"
+            )
+    if staging.exists():
+        logger.info("removing %s left by an earlier run", staging)
+        shutil.rmtree(staging, ignore_errors=not strict)
+    if old.exists():
+        logger.info("removing %s left by an earlier run", old)
+        _rmtree_ours(old)
+        if old.exists():
+            if strict:
+                raise RuntimeError(
+                    f"Could not remove {old}. Close whatever holds files in it (e.g. "
+                    "llama-server) and run cutpoint setup --only llama again."
+                )
+            logger.warning(_OLD_KEPT, old)
 
 
 def _ours(d: Path) -> bool:
@@ -394,8 +416,8 @@ def _swap_in(staging: Path, llama: Path, old: Path) -> None:
     """Replace ``llama`` by ``staging``; the previous install goes via ``old`` and is deleted.
 
     Raises:
-        RuntimeError: A rename failed (e.g. llama-server.exe still running on
-            Windows); the previous install is restored and ``staging`` removed.
+        RuntimeError: A rename failed (e.g. a file locked by antivirus); the previous
+            install is restored and ``staging`` removed.
     """
     moved = False
     try:
@@ -412,6 +434,8 @@ def _swap_in(staging: Path, llama: Path, old: Path) -> None:
             "that is running, then run cutpoint setup --only llama again."
         ) from e
     _rmtree_ours(old)
+    if old.exists():  # Windows lets a running llama-server's folder be renamed, not deleted
+        logger.warning(_OLD_KEPT, old)
 
 
 def install_omni() -> None:

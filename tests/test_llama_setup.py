@@ -203,3 +203,19 @@ def test_install_llama_restores_install_left_aside_by_interrupted_run(release):
     with pytest.raises(RuntimeError, match="sha256 mismatch"):
         setup.install_llama(force=True)
     _assert_old_kept(llama, staging, old)
+
+
+def test_install_llama_up_to_date_removes_leftover_old_without_downloading(release, caplog):
+    release()
+    llama = _old_install()
+    _, staging, old = _dirs()
+    write(old / "VERSION.txt", OLD_STAMP)  # earlier swap could not delete it (llama-server ran)
+    write(old / "stale.dll", "old")
+    with caplog.at_level("INFO"):
+        setup.install_llama()
+    assert "already installed" in caplog.text
+    assert not old.exists()
+    assert not staging.exists()
+    assert not (ev_paths.tools_dir() / "_downloads").exists()
+    assert sorted(p.name for p in llama.iterdir()) == ["VERSION.txt", "keep.dll"]
+    assert (llama / "keep.dll").read_text() == "old"
