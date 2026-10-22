@@ -99,13 +99,22 @@ def _pip_source(info: dict[str, Any], extras: str) -> str:
         if info.get("subdirectory"):
             ref += f"#subdirectory={info['subdirectory']}"
         return f'"cutpoint[{extras}] @ {ref}"'
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme == "file":
-        # Keep the host of a UNC URL (file://server/share/...).
-        raw = parts.path if parts.netloc in ("", "localhost") else f"//{parts.netloc}{parts.path}"
-        path = Path(urllib.request.url2pathname(raw)).as_posix()
-        return f'"{path}[{extras}]"'
+    path = _file_path(url)
+    if path is not None:
+        return f'"{path.as_posix()}[{extras}]"'
     return f'"cutpoint[{extras}] @ {url}"'
+
+
+def _file_path(url: Any) -> Path | None:
+    """The local path of a ``file:`` URL, or None for any other URL."""
+    if not isinstance(url, str):
+        return None
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "file":
+        return None
+    # Keep the host of a UNC URL (file://server/share/...).
+    raw = parts.path if parts.netloc in ("", "localhost") else f"//{parts.netloc}{parts.path}"
+    return Path(urllib.request.url2pathname(raw))
 
 
 def _git_url(git: str, req: dict[str, Any]) -> str:
@@ -277,6 +286,10 @@ def install_hint(extra: str) -> str:
         exe, note = _python()
         return f"{exe} -m pip install {source}{gpu}{note}"
     if uv_managed():
+        clone = _file_path(info.get("url")) if info else None
+        if clone is not None and Path(sys.prefix).resolve() != (clone / ".venv").resolve():
+            # uv sync would change the clone's .venv, not the environment that is running.
+            return f'uv pip install --python "{sys.executable}" -e "{clone.as_posix()}[{extra}]"'
         return (
             f"uv sync --extra {extra} (list every other extra you use too: uv sync "
             f"removes packages of extras you leave out), or: uv pip install --python "
