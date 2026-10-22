@@ -76,8 +76,10 @@ times longer. Check with `uv run python -c "import torch; print(torch.cuda.is_av
 `uv sync --extra events` installs the CUDA 12.6 builds on Windows and Linux.
 
 A PyPI or wheel tool install (`uv tool install cutpoint`) gets CPU-only torch on Windows. The CUDA
-index in `pyproject.toml` also applies to tool installs from a clone directory or git URL, so
-those need no extra flags. For a PyPI or wheel install, reinstall with the PyTorch index:
+index in `pyproject.toml` also applies to tool installs and `uv pip install` from a clone directory
+or git URL, so those need no index flags (with `uv pip install`, an already-installed CPU torch also
+needs `--reinstall-package torch --reinstall-package torchvision`). `pip` does not apply it. For a
+PyPI or wheel install, reinstall with the PyTorch index:
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match --reinstall

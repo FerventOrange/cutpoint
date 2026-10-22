@@ -249,18 +249,32 @@ def test_install_hint_non_editable_reinstalls_from_origin(monkeypatch, tmp_path,
     assert extras.install_hint("ski").endswith(f" {expected}")
 
 
+_UV_INDEX = f"--index {extras.TORCH_INDEX} --index-strategy unsafe-best-match"
+_DIR = {"url": "file:///x/cutpoint", "dir_info": {}}
+_GIT = {"url": "https://github.com/x/cutpoint", "vcs_info": {"vcs": "git", "commit_id": "abc"}}
+_ARCHIVE = {"url": "https://example.com/cutpoint.whl", "archive_info": {}}
+
+
 @pytest.mark.parametrize(
-    ("uv", "flags"),
+    ("uv", "direct_url", "cpu_torch", "present", "absent"),
     [
-        (True, f"--index {extras.TORCH_INDEX} --index-strategy unsafe-best-match"),
-        (False, f"--extra-index-url {extras.TORCH_INDEX}"),
+        # uv pip applies cutpoint's [tool.uv.sources] (cu126) to a directory or git install (#71)
+        (True, _DIR, False, [], ["NVIDIA", "--index "]),
+        (True, _GIT, False, [], ["NVIDIA", "--index "]),
+        (True, _DIR, True, ["--reinstall-package torch"], ["--index "]),
+        (True, _ARCHIVE, False, [_UV_INDEX], []),
+        (False, _DIR, False, [f"--extra-index-url {extras.TORCH_INDEX}"], []),
     ],
 )
-def test_install_hint_non_editable_events_on_windows_notes_cuda(monkeypatch, tmp_path, uv, flags):
+def test_install_hint_non_editable_events_on_windows_cuda_note(
+    monkeypatch, tmp_path, uv, direct_url, cpu_torch, present, absent
+):
     monkeypatch.setattr(extras.sys, "platform", "win32")
-    monkeypatch.setattr(extras, "_cpu_torch", lambda: False)
-    _set_install(monkeypatch, tmp_path, direct_url='{"dir_info": {}}', uv=uv)
-    assert flags in extras.install_hint("events")
+    monkeypatch.setattr(extras, "_cpu_torch", lambda: cpu_torch)
+    _set_install(monkeypatch, tmp_path, direct_url=json.dumps(direct_url), uv=uv)
+    hint = extras.install_hint("events")
+    assert all(p in hint for p in present)
+    assert not any(a in hint for a in absent)
 
 
 def test_install_hint_tool_receipt_keeps_default_index_and_python(monkeypatch, tmp_path):
