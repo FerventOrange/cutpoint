@@ -65,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint 360 director --out-name` keeps the path file of a segment that is no longer selected as `<file>.bak` instead of deleting it (#58).
 - `mix --target` must be greater than 0 (#15).
 - `360 repair` no longer leaves a `mix_segments.bak.json` behind when the re-run mix fails (for example "Nothing selected"); the backup is written only after the new mix succeeds (#60).
+- `cutpoint 360 repair` no longer overwrites an earlier `mix_segments.bak.json`; it uses the next free name (`mix_segments.1.bak.json`, ...), and an `--out` that names the segments file by another path (relative, `..`) still gets a backup (#68).
 - A malformed `CUTPOINT_PANNS_URL` (e.g. `http://[foo`) is now treated as a failed mirror: setup logs a warning naming the bad value (without any `user:password@`) and continues with the Hugging Face and Zenodo mirrors (#59).
 - `cutpoint setup` verifies llama.cpp downloads against the sha256 digest GitHub publishes: a
   corrupt cached archive is downloaded again, and a mismatch aborts and keeps the existing

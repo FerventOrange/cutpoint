@@ -248,3 +248,27 @@ def test_failed_reselection_leaves_no_backup_and_the_segments_untouched(
         repair(project, segs, qa, sheet=False)
     assert segs.read_bytes() == before
     assert not (project / "mix_segments.bak.json").exists()
+
+
+def test_backup_never_overwrites_an_earlier_one(project: Path) -> None:
+    segs = project / "mix_segments.json"
+    before = segs.read_bytes()
+    first = project / "mix_segments.bak.json"
+    first.write_text('["hand-kept"]')
+    qa = _qa(project, [["occluded"]] * 9 + [[]] * 9)
+    repair(project, segs, qa, sheet=False)
+    assert first.read_text() == '["hand-kept"]'
+    assert (project / "mix_segments.1.bak.json").read_bytes() == before
+
+
+def test_out_spelled_differently_from_segments_still_gets_a_backup(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    segs = project / "mix_segments.json"
+    before = cache.load_json(segs)
+    qa = _qa(project, [["occluded"]] * 9 + [[]] * 9)
+    (project / "scratch").mkdir()
+    monkeypatch.chdir(project)
+    repair(project, segs, qa, out=Path("scratch/../mix_segments.json"), sheet=False)
+    assert cache.load_json(segs) != before
+    assert cache.load_json(project / "mix_segments.bak.json") == before

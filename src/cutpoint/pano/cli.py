@@ -752,7 +752,7 @@ def add_parser(sub: Any) -> None:
         "--out",
         metavar="FILE",
         help="write the repaired list here (relative = inside the project; default: over "
-        "--segments, the old one kept as <name>.bak.json)",
+        "--segments, the old one kept as the first free <name>.bak.json, <name>.1.bak.json, ...)",
     )
     rp.add_argument("--json", action="store_true", help="print the report as JSON")
     rp.set_defaults(func=cmd_repair)
