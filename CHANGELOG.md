@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `analyze` records its inputs in `highlights.json` `settings.inputs` as absolute paths, keeping
+  your spelling (no symlink or mapped-drive resolution). Relative inputs were stored as given, so
+  `crashes --reanalyze` or ski `events` run from another directory wrongly reported the footage as
+  moved, or re-analyzed whatever matched the relative path there. Projects analyzed earlier with
+  relative inputs keep them until `analyze` runs again (#78).
 - `crashes` and `events` skip footage that is not reachable (offline drive, moved file) with a
   warning and continue, and fail before writing anything when none is reachable. With a source
   skipped, `crashes` and ski `events` leave `highlights.json` unchanged instead of re-running the

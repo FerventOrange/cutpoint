@@ -104,14 +104,8 @@ def test_reanalyze_if_reachable_reanalyzes_when_every_recorded_path_exists(
     assert caplog.text == ""
 
 
-@pytest.mark.parametrize("both", [False, True], ids=["original-only", "original-and-copy"])
-def test_analyze_records_original_path_when_source_is_remapped(home, tmp_path, monkeypatch, both):
-    old, new = tmp_path / "old", tmp_path / "new"
-    write(old / "a.mp4")
-    write(new / "a.mp4")
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+def _stub_probe_and_transcriber(monkeypatch) -> list[Path]:
+    """Stub the media probe and the transcriber; return the list of probed paths."""
     probed: list[Path] = []
 
     def fake_probe(path):
@@ -131,6 +125,18 @@ def test_analyze_records_original_path_when_source_is_remapped(home, tmp_path, m
 
     monkeypatch.setattr(analyze, "probe", fake_probe)
     monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
+    return probed
+
+
+@pytest.mark.parametrize("both", [False, True], ids=["original-only", "original-and-copy"])
+def test_analyze_records_original_path_when_source_is_remapped(home, tmp_path, monkeypatch, both):
+    old, new = tmp_path / "old", tmp_path / "new"
+    write(old / "a.mp4")
+    write(new / "a.mp4")
+    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
+    config.get_config.cache_clear()
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    probed = _stub_probe_and_transcriber(monkeypatch)
     proj = tmp_path / "proj"
     target = [old / "a.mp4", new / "a.mp4"] if both else old / "a.mp4"
     analyze.analyze(target, get_style("funny"), proj, vision=False, use_scenes=False)
@@ -138,3 +144,14 @@ def test_analyze_records_original_path_when_source_is_remapped(home, tmp_path, m
     assert [s["path"] for s in hl["sources"]] == [str(old / "a.mp4")]
     assert (proj / "transcript.txt").read_text(encoding="utf-8").startswith(f"# {old / 'a.mp4'}")
     assert [p.resolve() for p in probed] == [(new / "a.mp4").resolve()]
+
+
+def test_analyze_records_relative_input_as_absolute(home, tmp_path, monkeypatch):
+    write(tmp_path / "videos" / "a.mp4")
+    monkeypatch.chdir(tmp_path / "videos")
+    expected = str(Path.cwd() / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    proj = tmp_path / "proj"
+    analyze.analyze(Path("a.mp4"), get_style("funny"), proj, vision=False, use_scenes=False)
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["settings"]["inputs"] == [expected]

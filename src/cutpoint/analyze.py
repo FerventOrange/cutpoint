@@ -1074,7 +1074,11 @@ def analyze(
             "target_total": style.target_total,
             "weights": style.weights,
             # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
-            "inputs": [str(t) for t in ([target] if isinstance(target, Path) else target)],
+            # Absolute (not resolved: keeps drive letters, symlinks and the user's spelling)
+            # so later commands find them from any working directory.
+            "inputs": [
+                str(Path(t).absolute()) for t in ([target] if isinstance(target, Path) else target)
+            ],
             "exclude": list(exclude),
             "recursive": recursive,
             "language": language,
