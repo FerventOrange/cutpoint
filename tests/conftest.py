@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import paths, reset_state
+from cutpoint import config, paths, reset_state
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +22,7 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
     monkeypatch.setenv("HOME", str(tmp_path / "profile"))
+    monkeypatch.setattr(config, "_drive_remote", lambda d: None)  # no real mapped drives
     reset_state()
     assert paths.home() == home, "isolation failed: CUTPOINT_HOME not honoured"
     yield home

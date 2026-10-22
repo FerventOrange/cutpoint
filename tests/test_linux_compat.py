@@ -807,3 +807,17 @@ def test_remap_source_matches_a_disconnected_mapped_drive_in_either_form(
     write(home / "config.json", json.dumps({"source_remap": {key: str(tmp_path / "copy")}}))
     config.get_config.cache_clear()
     assert config.remap_source(typed) == copy
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="mapped drives are a Windows feature")
+def test_stage_key_of_a_copy_matches_the_unc_original_of_a_mapped_drive(
+    home, tmp_path, monkeypatch
+):
+    """A staged copy of a Q: file is found by the UNC path find_videos returns."""
+    monkeypatch.setattr(config, "_drive_remote", lambda d: r"\\nas\share" if d == "Q:" else None)
+    copy = write(tmp_path / "copy" / "x.mp4")
+    write(
+        home / "config.json", json.dumps({"source_remap": {"Q:/Footage": str(tmp_path / "copy")}})
+    )
+    config.get_config.cache_clear()
+    assert stage.stage_key(copy) == stage.stage_key("//nas/share/Footage/x.mp4")

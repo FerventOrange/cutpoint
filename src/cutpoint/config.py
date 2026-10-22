@@ -232,6 +232,7 @@ def norm_path(path: str) -> str:
 _DRIVE_RE = re.compile(r"^([A-Za-z]:)(?:[\\/]|$)")
 _ERROR_MORE_DATA = 234
 _ERROR_CONNECTION_UNAVAIL = 1201  # remembered mapping, not connected; the name is still returned
+_ERROR_NOT_CONNECTED = 2250  # the letter is not a network drive
 
 
 @state.register_cache
@@ -241,26 +242,36 @@ def _drive_remote(drive: str) -> str | None:
     points to, or None.
 
     Asks ``WNetGetConnectionW``, which also names a remembered mapping that is
-    disconnected, then the persistent mapping in ``HKCU\\Network\\<letter>``.
+    disconnected, then the persistent mapping in ``HKCU\\Network\\<letter>``
+    (skipped when the API says the letter is not a network drive).
     Never raises; None on other platforms.
     """
     if sys.platform != "win32":
         return None
-    import ctypes  # noqa: PLC0415 - Windows only
-    import winreg  # noqa: PLC0415 - Windows only
-
+    rc = None
     try:
-        get_connection = ctypes.WinDLL("mpr").WNetGetConnectionW  # type: ignore[attr-defined]
-        size = ctypes.c_ulong(1024)
-        for _ in range(2):  # retry once with the size ERROR_MORE_DATA asked for
-            buf = ctypes.create_unicode_buffer(size.value)
-            rc = get_connection(drive, buf, ctypes.byref(size))
-            if rc in (0, _ERROR_CONNECTION_UNAVAIL) and buf.value.startswith("\\\\"):
-                return buf.value
-            if rc != _ERROR_MORE_DATA:
-                break
-    except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+        import ctypes  # noqa: PLC0415 - Windows only
+    except ImportError:
         pass
+    else:
+        try:
+            get_connection = ctypes.WinDLL("mpr").WNetGetConnectionW  # type: ignore[attr-defined]
+            size = ctypes.c_ulong(1024)
+            for _ in range(2):  # retry once with the size ERROR_MORE_DATA asked for
+                buf = ctypes.create_unicode_buffer(size.value)
+                rc = get_connection(drive, buf, ctypes.byref(size))
+                if rc in (0, _ERROR_CONNECTION_UNAVAIL) and buf.value.startswith("\\\\"):
+                    return buf.value
+                if rc != _ERROR_MORE_DATA:
+                    break
+        except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+            pass
+    if rc == _ERROR_NOT_CONNECTED:  # not a network drive; ignore stale registry entries
+        return None
+    try:
+        import winreg  # noqa: PLC0415 - Windows only
+    except ImportError:
+        return None
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"Network\\{drive[0]}") as key:
             remote = str(winreg.QueryValueEx(key, "RemotePath")[0])

@@ -63,11 +63,14 @@ def _fill_torch_home(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     epaths.apply_torch_home()
 
 
+# conftest stubs config._drive_remote per test; keep the real cached function to fill.
+_REAL_DRIVE_REMOTE = config._drive_remote
+
 # How to put one item into each registered lru/functools cache.
 CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.config.get_config": lambda t, m: config.get_config(),
     "cutpoint.config._prefix_forms": lambda t, m: config._prefix_forms(str(t)),
-    "cutpoint.config._drive_remote": lambda t, m: config._drive_remote("Z:"),
+    "cutpoint.config._drive_remote": lambda t, m: _REAL_DRIVE_REMOTE("Z:"),
     "cutpoint.stage._stage_index": lambda t, m: stage._stage_index(),
     "cutpoint.stage.staged_path": lambda t, m: stage.staged_path("-"),
     "cutpoint.ffmpeg_utils.find_tool": _fill_find_tool,
