@@ -173,7 +173,8 @@ def copy_once(src: Path, dst: Path, label: str) -> float:
     Returns:
         Seconds spent reading and writing.
     """
-    size = src.stat().st_size
+    st = src.stat()
+    size = st.st_size
     tmp = dst.with_name(dst.name + ".partial")
     t0 = time.perf_counter()
     done, next_log = 0, 0.1
@@ -190,7 +191,6 @@ def copy_once(src: Path, dst: Path, label: str) -> float:
                     done / 1e6 / max(el, 1e-6),
                 )
                 next_log += 0.1
-    st = src.stat()
     os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
     tmp.replace(dst)
     return time.perf_counter() - t0
@@ -208,7 +208,8 @@ def stage_sources(
     Args:
         targets: Files and/or folders (``source_remap`` is applied, so
             a source under a remapped prefix is read from its new location).
-        exclude: Glob patterns to skip.
+        exclude: Glob patterns to skip, matched against the original
+            (pre-remap) spelling, as for ``analyze``.
         recursive: Search sub-folders of folder inputs.
         min_free_gb: Refuse to start a copy that would leave less free space.
 
@@ -221,7 +222,12 @@ def stage_sources(
     stage_dir = get_config().stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     index = _load_index(stage_dir)
-    files = find_videos([remap_source(t) for t in targets], exclude=exclude, recursive=recursive)
+    # Lazy: analyze is heavy and stage is imported by the CLI at startup.
+    from cutpoint.analyze import _find_inputs  # noqa: PLC0415
+
+    # Listed and excluded as analyze does (original spelling); read where analyze reads.
+    found = _find_inputs(list(targets), exclude, recursive)
+    files = list(dict.fromkeys(remap_source(p) for p in found))
     total_b, total_s, copied, skipped = 0, 0.0, 0, 0
     for src in files:
         key = stage_key(src)
