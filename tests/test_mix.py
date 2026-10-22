@@ -7,13 +7,16 @@ import itertools
 import numpy as np
 import pytest
 
+from cutpoint import mix
 from cutpoint.clips import REACTION_LABEL, order_moments
 from cutpoint.mix import (
+    DEFAULT_QUOTAS,
     Cand,
     MixRules,
     content_qa,
     crash_candidates,
     effective_quotas,
+    mix_report,
     normalise,
     parse_quotas,
     part_candidates,
@@ -188,3 +191,32 @@ def test_content_qa_flags_each_failed_check() -> None:
     bad = content_qa(good[1:3], near_dups=1, runs_covered=6, runs=10)
     failed = {k for k, v in bad["checks"].items() if not v["ok"]}
     assert failed == {"categories", "max_share", "near_dups", "runs_covered", "opener", "length_s"}
+
+
+def test_mix_report_share_is_zero_for_an_empty_selection() -> None:
+    rep = mix_report([_c("run", 50, 0.9)], [], DEFAULT_QUOTAS, MixRules(), 60.0, 1, 1)
+    assert all(v["share"] == 0.0 for v in rep["categories"].values())
+
+
+@pytest.fixture
+def one_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """run_mix on a project whose only candidate is a 6 s run in a.mp4 (features faked)."""
+    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix, "part_candidates", lambda _d: [_c("run", 50, 0.9)])
+    monkeypatch.setattr(mix, "_runs_index", lambda _p: ([], {}))
+    monkeypatch.setattr(mix, "_embed", lambda _c: None)
+
+
+@pytest.mark.parametrize(
+    ("target", "exclude", "why"),
+    [
+        (1.0, [], "fits"),  # the 6 s run does not fit a 1 s target
+        (60.0, [{"source": "a", "start": 0, "end": 100}], "excluded"),
+    ],
+)
+def test_run_mix_with_nothing_selected_raises_and_writes_nothing(
+    one_candidate, tmp_path, target, exclude, why
+) -> None:
+    with pytest.raises(ValueError, match=rf"Nothing selected in .*{why}"):
+        mix.run_mix(tmp_path, target_s=target, exclude=exclude, out=tmp_path / "mix_segments.json")
+    assert list(tmp_path.iterdir()) == []

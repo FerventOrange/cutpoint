@@ -275,6 +275,10 @@ Action-cam module. Picks a varied set of moments (runs, jumps, crashes with reac
 rides, views, social) under per-category quotas, and writes `mix_segments.json`,
 `mix_report.json` and `mix_sheet.jpg`. Default target 240 s.
 
+If nothing is selected (no candidate fits `--target`, or every candidate is excluded), `mix`
+fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes no files. Raise
+`--target` or loosen the exclusions.
+
 ## refmatch
 
 ```text

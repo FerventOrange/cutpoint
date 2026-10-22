@@ -258,6 +258,7 @@ def test_install_hint_non_editable_reinstalls_from_origin(monkeypatch, tmp_path,
 )
 def test_install_hint_non_editable_events_on_windows_notes_cuda(monkeypatch, tmp_path, uv, flags):
     monkeypatch.setattr(extras.sys, "platform", "win32")
+    monkeypatch.setattr(extras, "_cpu_torch", lambda: False)
     _set_install(monkeypatch, tmp_path, direct_url='{"dir_info": {}}', uv=uv)
     assert flags in extras.install_hint("events")
 
@@ -272,3 +273,59 @@ def test_install_hint_tool_receipt_keeps_default_index_and_python(monkeypatch, t
     assert '--python "C:/Py/python.exe"' in hint
     assert "--default-index https://example.com/simple" in hint
     assert "--index https://example.com/simple" not in hint
+
+
+# --- install_hint: explicit indexes, CUDA note and installed CPU torch (#50) --------------
+
+_TOOL = '[tool]\nrequirements = [{ name = "cutpoint" }]\n[tool.options]\n'
+
+
+def test_install_hint_tool_receipt_explicit_index_is_left_out(monkeypatch, tmp_path):
+    receipt = _TOOL + (
+        'index = [{ name = "pytorch", url = "https://example.com/cu126", explicit = true }]\n'
+    )
+    _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
+    hint = extras.install_hint("ski")
+    assert "https://example.com/cu126" not in hint
+    assert "(explicit index pytorch left out" in hint
+
+
+@pytest.mark.parametrize(
+    ("options", "note_has_strategy"),
+    [
+        ('index = [{ url = "https://mirror.example/simple", default = true }]', True),
+        ('index = [{ url = "https://download.pytorch.org/whl/cpu" }]', True),
+        (
+            'index = [{ url = "https://mirror.example/simple", default = true }]\n'
+            'index-strategy = "unsafe-best-match"',
+            False,
+        ),
+    ],
+)
+def test_install_hint_tool_cuda_note_kept_without_cuda_index(
+    monkeypatch, tmp_path, options, note_has_strategy
+):
+    monkeypatch.setattr(extras.sys, "platform", "win32")
+    _set_install(monkeypatch, tmp_path, receipt=_TOOL + options + "\n", uv=True)
+    hint = extras.install_hint("events")
+    note = hint[hint.index("(with an NVIDIA GPU") :]
+    assert f"add --index {extras.TORCH_INDEX}" in note
+    assert ("--index-strategy unsafe-best-match" in note) is note_has_strategy
+    # the receipt's own strategy is never repeated in the note
+    assert hint.count("--index-strategy") == 1
+
+
+@pytest.mark.parametrize(
+    ("uv", "extra_flags"),
+    [
+        (True, " --reinstall-package torch --reinstall-package torchvision"),
+        (False, " --force-reinstall"),
+    ],
+)
+def test_install_hint_reinstalls_installed_cpu_torch(monkeypatch, tmp_path, uv, extra_flags):
+    monkeypatch.setattr(extras.sys, "platform", "win32")
+    _set_install(monkeypatch, tmp_path, direct_url='{"dir_info": {}}', uv=uv)
+    monkeypatch.setattr(extras, "_cpu_torch", lambda: True)
+    assert extra_flags in extras.install_hint("events")
+    monkeypatch.setattr(extras, "_cpu_torch", lambda: False)
+    assert extra_flags not in extras.install_hint("events")
