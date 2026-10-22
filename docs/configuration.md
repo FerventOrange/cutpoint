@@ -85,6 +85,11 @@ modification time, so a copy that preserves the modification time keeps its cach
 `source_remap_exclude` lists file-name or path globs that are never remapped (for example a
 copy you have not verified).
 
+Projects analyzed with a remap by cutpoint 0.1.0 recorded the copy paths. Run `analyze` again to
+record the original paths, then run `crashes` and `events` again: their existing results still
+name sources by the copy path, so event boosts and ski crash must-includes stop matching until
+they are regenerated.
+
 Prefix and key matching is case-sensitive on Linux (`source_remap` prefixes, `stage` keys) and
 stays case-insensitive on Windows.
 
