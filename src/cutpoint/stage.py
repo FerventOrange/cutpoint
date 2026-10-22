@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, state
-from cutpoint.config import canonical_source, get_config, norm_path, remap_source
+from cutpoint.config import canonical_source, get_config, norm_path, remap_source, unc_path
+from cutpoint.utils import matches_glob
 
 logger = logging.getLogger(__name__)
 
@@ -294,19 +295,69 @@ def stage_sources(
     return summary
 
 
+def _recorded_under(
+    index: dict[str, dict[str, Any]], target: Path, exclude: Sequence[str], recursive: bool
+) -> set[str]:
+    """Index keys of ``target`` itself or of the files directly below it (any
+    depth with ``recursive``), minus those matching ``exclude``.
+
+    For an input that can no longer be listed. Keys are compared normalised, on
+    a separator boundary (``old`` does not take ``older``); ``exclude`` is
+    matched as ``find_videos`` does, against the key (the original spelling,
+    case-folded on Windows, where globs ignore case anyway).
+    """
+    sep = "\\" if sys.platform == "win32" else "/"
+    absolute = os.path.abspath(str(target))  # noqa: PTH100 - normalises '..', keeps drive letters
+    # The UNC form too: a disconnected mapped drive does not resolve to it.
+    prefixes = {stage_key(target), stage_key(unc_path(absolute))}
+    keys = set()
+    for key in index:
+        for prefix in prefixes:
+            if key == prefix:
+                break
+            if key.startswith(prefix + sep) and (recursive or sep not in key[len(prefix) + 1 :]):
+                break
+        else:
+            continue
+        if not matches_glob(key, exclude):
+            keys.add(key)
+    return keys
+
+
 def clear_stage(
     targets: Sequence[Path] = (), *, exclude: Sequence[str] = (), recursive: bool = False
 ) -> int:
     """Delete staged copies (all, or only those of ``targets``); returns the count.
 
-    ``targets``, ``exclude`` and ``recursive`` select the same files that
-    :func:`stage_sources` with the same arguments would copy.
+    Each of ``targets`` is selected on its own. One that can be listed (directly
+    or through ``source_remap``) selects, with ``exclude`` and ``recursive``,
+    the same files :func:`stage_sources` would copy. One that cannot (gone
+    together with its remap target) selects the copies recorded under it in the
+    stage index (see :func:`_recorded_under`), or nothing with a WARNING; the
+    other targets are still cleared. Everything is selected before anything is
+    deleted.
     """
     stage_dir = get_config().stage_dir
     index = _load_index(stage_dir)
     keys = set(index)
     if targets:
-        wanted = {stage_key(p) for p in _stage_files(targets, exclude, recursive)}
+        wanted: set[str] = set()
+        for target in targets:
+            try:
+                files = _stage_files([target], exclude, recursive)
+            except FileNotFoundError as err:
+                recorded = _recorded_under(index, target, exclude, recursive)
+                if recorded:
+                    logger.info(
+                        "%s; clearing the %d staged copy(ies) recorded under it",
+                        err,
+                        len(recorded),
+                    )
+                else:
+                    logger.warning("%s; no staged copy recorded under it", err)
+                wanted |= recorded
+                continue
+            wanted |= {stage_key(p) for p in files}
         keys &= wanted
     for key in keys:
         (stage_dir / index[key]["file"]).unlink(missing_ok=True)

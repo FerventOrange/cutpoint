@@ -230,7 +230,11 @@ Copies sources on slow or network storage to a local folder once; every later ff
 read of those files uses the copy. Projects, caches, manifests and timelines keep the original
 path. A copy that would leave less than 5 GB free is refused. `--list` shows what is staged,
 `--clear` deletes the copies (all, or those `stage` would copy for the given inputs with the same
-`--recursive` and `--exclude`). See [slow storage](troubleshooting/storage.md).
+`--recursive` and `--exclude`). Each input is cleared on its own: one that no longer exists, even
+through `source_remap`, clears the copies recorded under its path (the file itself, or the files
+directly inside the folder, at any depth with `--recursive`, minus `--exclude` matches); one with
+none recorded gives a warning and the other inputs are still cleared. See
+[slow storage](troubleshooting/storage.md).
 
 ## crashes
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 
@@ -73,3 +75,36 @@ def test_clear_stage_finds_a_file_only_the_original_folder_has(home, tmp_path, m
     assert stage_sources([old], min_free_gb=0)["files"] == 2
 
     assert clear_stage([old]) == 2
+
+
+@pytest.mark.parametrize(
+    ("recursive", "removed", "kept"),
+    [(False, 2, ["old/sub/b.mp4", "older/x.mp4"]), (True, 3, ["older/x.mp4"])],
+    ids=["flat-keeps-subfolder-copy", "recursive-removes-subfolder-copy"],
+)
+def test_clear_stage_falls_back_to_the_index_for_inputs_that_cannot_be_listed(
+    home, tmp_path, monkeypatch, caplog, recursive, removed, kept
+):
+    old, new, other, older = (tmp_path / n for n in ("old", "new", "other", "older"))
+    write(new / "a.mp4", "aa")
+    write(new / "sub" / "b.mp4", "bbb")
+    write(other / "c.mp4", "cc")
+    write(older / "x.mp4", "xx")  # a sibling named like old's prefix; never selected
+    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
+    config.get_config.cache_clear()
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    assert stage_sources([old, other, older], recursive=True, min_free_gb=0)["files"] == 4
+    names = {"old/a.mp4": old / "a.mp4", "old/sub/b.mp4": old / "sub" / "b.mp4"}
+    names |= {"other/c.mp4": other / "c.mp4", "older/x.mp4": older / "x.mp4"}
+    copies = {n: staged_path(str(remap_source(p))) for n, p in names.items()}
+    for gone in (new, other):  # old and other can no longer be listed
+        shutil.rmtree(gone)
+
+    with caplog.at_level("WARNING"):
+        count = clear_stage([old, tmp_path / "missing", other], recursive=recursive)
+
+    assert count == removed
+    for name, copy in copies.items():
+        assert Path(copy).exists() == (name in kept)
+    assert "no staged copy recorded under it" in caplog.text
+    assert "missing" in caplog.text
