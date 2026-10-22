@@ -126,6 +126,17 @@ def _parse_size(text: str) -> tuple[int, int]:
     return w, h
 
 
+def _positive_float(text: str) -> float:
+    """argparse type: a number greater than 0."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a number") from exc
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be greater than 0")
+    return value
+
+
 def _cmd_extend(a: argparse.Namespace) -> None:
     extend_clips(
         resolve_project_path(a.clips_dir, bare_names=False),
@@ -451,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--max-candidates", type=int, help="per source, pre-merge (default: auto)")
     an.add_argument(
         "--ollama-url",
-        help="default: $OLLAMA_HOST, ollama_url in config.json, or http://localhost:11434",
+        help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
     an.add_argument("--ollama-model", help="default: qwen3-vl:8b")
     an.add_argument(
@@ -803,7 +814,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mx.add_argument("project", help="ski-analysed project (bare name = projects folder)")
     mx.add_argument(
-        "--target", type=float, default=240.0, metavar="S", help="edit length (default 240)"
+        "--target",
+        type=_positive_float,
+        default=240.0,
+        metavar="S",
+        help="edit length (default 240)",
     )
     mx.add_argument(
         "--quotas",

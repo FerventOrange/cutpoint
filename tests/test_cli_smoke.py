@@ -75,3 +75,16 @@ def test_huggingface_warning_is_printed_once():
     pytest.importorskip("huggingface_hub.utils.logging")
     assert cli.main(["paths"]) == 0
     assert logging.getLogger("huggingface_hub").handlers == []
+
+
+@pytest.mark.parametrize("target", ["0", "-5"])
+def test_mix_rejects_non_positive_target(target):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["mix", "some-project", "--target", target])
+    assert exc.value.code == 2
+
+
+def test_director_on_unscanned_project_creates_no_folder(home, caplog):
+    assert cli.main(["360", "director", "nosuchproj"]) == 1
+    assert not (home / "projects" / "nosuchproj").exists()
+    assert "cutpoint 360 scan" in caplog.text

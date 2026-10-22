@@ -7,8 +7,9 @@ available it skips the step quietly. With `--vision` you get an error instead.
 
 1. Start Ollama and pull the model: `ollama pull qwen3-vl:8b`.
 2. Check the server: open `http://127.0.0.1:11434` in a browser; it answers "Ollama is running".
-3. On Windows, `localhost` can resolve to the IPv6 address `::1` while Ollama listens on IPv4
-   only. Use the IPv4 address:
+3. The default URL is already `http://127.0.0.1:11434`. If you set `localhost` yourself, note that
+   on Windows it can resolve to the IPv6 address `::1` while Ollama listens on IPv4 only. Use the
+   IPv4 address:
 
    ```powershell
    setx OLLAMA_HOST http://127.0.0.1:11434

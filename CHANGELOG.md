@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drivers too old for CUDA 13), `pip install "cutpoint[...]"` for PyPI installs, and the
   `uv sync --extra` form only in a clone. The pip commands can be pasted into PowerShell.
 - `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
+- The Ollama default URL is `http://127.0.0.1:11434`; `localhost` could hang on some Windows
+  machines (#15).
+- The Ollama check reports "not reachable" instead of raising on a non-JSON reply (#15).
+- `mix`, `profile`, `crashes` and other commands that read cached visual data skip offline footage with a warning instead of failing (#15).
+- `360 director --preview` no longer crashes for a clip without a low-res `.lrv` proxy (#15).
+- `360 director` no longer creates folders for a project that does not exist (#15).
+- `extend` keeps a backup of a director path file before re-planning over it and never overwrites an earlier one: repeated re-plans keep `<file>.bak`, `<file>.1.bak`, and so on (#15).
+- `mix --target` must be greater than 0 (#15).
 - `cutpoint setup` verifies llama.cpp downloads against the sha256 digest GitHub publishes: a
   corrupt cached archive is downloaded again, and a mismatch aborts and keeps the existing
   install (#35).

@@ -375,13 +375,15 @@ def test_director_params_config_then_cli() -> None:
 
 
 # --------------------------------------------------------------------------- cmd_director routing
-def _run_director(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kw) -> tuple[Path, list]:
+def _run_director(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clip: SimpleNamespace | None = None, **kw
+) -> tuple[Path, list]:
     proj = tmp_path / "proj"
     proj.mkdir(exist_ok=True)
     seen: list = []
-    fake_clip = SimpleNamespace(clip_id="001", lrv="x.lrv")
+    fake_clip = clip or SimpleNamespace(clip_id="001", lrv="x.lrv")
     monkeypatch.setattr(cli, "_project", lambda arg: proj)
-    monkeypatch.setattr(P, "load", lambda project: {})
+    monkeypatch.setattr(P, "load", lambda project: {"x.lrv": fake_clip})
     monkeypatch.setattr(P, "clip_for", lambda clips, src: fake_clip)
     monkeypatch.setattr(
         cli,
@@ -440,6 +442,26 @@ def test_cmd_director_out_name_removes_only_stale_recorded_stems(
     _run_director(tmp_path, monkeypatch, out_name="mix")
     left = sorted(f.name for f in out.iterdir())
     assert left == ["001_laugh.json", "003_mine.json", "director_stems.json", "notes.txt"]
+
+
+def test_cmd_director_preview_without_lrv_renders_from_insv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cutpoint.pano import render as R  # noqa: PLC0415
+
+    srcs: list = []
+
+    def fake_render(clip, path, start, end, out, *, src, **_):
+        srcs.append(src)
+        out.write_bytes(b"x")
+        return {"seconds": 0.0}
+
+    monkeypatch.setattr(R, "render_segment", fake_render)
+    clip = SimpleNamespace(clip_id="001", lrv=None, insv=["a_00_.insv", "a_10_.insv"])
+    _run_director(tmp_path, monkeypatch, clip=clip, preview=True)
+    assert len(srcs) == 1
+    assert srcs[0].inputs == ("a_00_.insv", "a_10_.insv")
+    assert srcs[0].projection == "dfisheye"
 
 
 @pytest.mark.parametrize("name", ["../x"])

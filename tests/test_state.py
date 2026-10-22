@@ -141,7 +141,7 @@ def test_cutpoint_home_change_picked_up_after_reset(home, tmp_path, monkeypatch)
 # -- Ollama URL -----------------------------------------------------------------------
 def test_ollama_url_default_config_and_env(home, monkeypatch):
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    assert backends.ollama_url() == "http://localhost:11434"
+    assert backends.ollama_url() == "http://127.0.0.1:11434"
     write(home / "config.json", json.dumps({"ollama_url": "http://cfg:1/"}))
     reset_state()
     assert backends.ollama_url() == "http://cfg:1"
@@ -226,3 +226,27 @@ def test_torch_home_follows_cutpoint_home_but_not_the_user(home, tmp_path, monke
     monkeypatch.setenv("TORCH_HOME", str(tmp_path / "mine"))
     epaths.apply_torch_home()  # the user's own value is kept
     assert os.environ["TORCH_HOME"] == str(tmp_path / "mine")
+
+
+# -- Vision / visual cache: unreachable inputs degrade quietly --------------------------
+def test_vision_unavailable_when_ollama_returns_non_json(monkeypatch):
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cutpoint import vision  # noqa: PLC0415
+
+    def _html(*_a, **_k):
+        def _bad_json():
+            raise ValueError("Expecting value")
+
+        return SimpleNamespace(raise_for_status=lambda: None, json=_bad_json)
+
+    monkeypatch.setattr(vision.requests, "get", _html)
+    assert vision.VisionRater(url="http://x:1", model="m").available() is False
+
+
+def test_load_visual_offline_footage_is_none_with_warning(home, tmp_path, caplog):
+    from cutpoint.events import visual  # noqa: PLC0415
+
+    with caplog.at_level("WARNING"):
+        assert visual.load_visual(tmp_path / "gone.mp4") is None
+    assert "not reachable" in caplog.text

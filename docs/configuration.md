@@ -101,8 +101,8 @@ overrides it per run. Default: none.
 ### ollama_url
 
 Ollama base URL for `analyze --vision` and the model layers of `events`. `OLLAMA_HOST` overrides
-it. Default `http://localhost:11434`. On Windows, if `localhost` does not connect, use
-`http://127.0.0.1:11434` (see [troubleshooting](troubleshooting/models.md)).
+it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines; see
+[troubleshooting](troubleshooting/models.md)).
 
 ### pano
 

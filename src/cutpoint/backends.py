@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from cutpoint.config import get_config
 
-OLLAMA_FALLBACK_URL = "http://localhost:11434"
+OLLAMA_FALLBACK_URL = "http://127.0.0.1:11434"
 OLLAMA_PORT = 11434
 _ANY_HOST = ("0.0.0.0", "::", "")  # bind-all addresses: replaced below
 
@@ -16,7 +16,7 @@ def ollama_url() -> str:
     """Ollama base URL, without a trailing slash.
 
     Taken from ``$OLLAMA_HOST``, else ``ollama_url`` in ``config.json``, else
-    ``http://localhost:11434``, and normalised like Ollama's own client does:
+    ``http://127.0.0.1:11434``, and normalised like Ollama's own client does:
     a value without a scheme (``myhost``, ``0.0.0.0:11434``, ``::1``) gets
     ``http://`` and, if it has no port, ``:11434``; a bare IPv6 address is
     bracketed; a bind-all host (``0.0.0.0``, ``::`` or empty, as set for

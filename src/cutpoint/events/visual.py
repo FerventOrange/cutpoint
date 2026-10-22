@@ -174,8 +174,13 @@ def cache_path(src: Source | Path, params: VisualParams) -> Path:
 
 
 def load_visual(src: Source | Path, params: VisualParams | None = None) -> VisualData | None:
-    """Cached visual outputs of a source, or None if the layer has not run."""
-    path = cache_path(src, params or VisualParams())
+    """Cached visual outputs of a source, or None if the layer has not run or the
+    footage is offline (its cache key needs the file's size and mtime)."""
+    try:
+        path = cache_path(src, params or VisualParams())
+    except OSError as err:
+        logger.warning("%s: footage not reachable (%s); no visual data for it", src, err)
+        return None
     if not path.exists():
         return None
     with np.load(path, allow_pickle=False) as z:

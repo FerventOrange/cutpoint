@@ -83,10 +83,11 @@ class VisionRater:
         try:
             resp = requests.get(f"{self.url}/api/tags", timeout=3)
             resp.raise_for_status()
-        except requests.RequestException as err:
+            models = resp.json().get("models", [])
+        except (requests.RequestException, ValueError) as err:  # ValueError: not JSON
             logger.info("Ollama not reachable at %s (%s); skipping vision", self.url, err)
             return False
-        names = {m.get("name", "") for m in resp.json().get("models", [])}
+        names = {m.get("name", "") for m in models}
         if self.model not in names and f"{self.model}:latest" not in names:
             logger.info(
                 "Ollama model %s not pulled (have: %s); skipping vision",

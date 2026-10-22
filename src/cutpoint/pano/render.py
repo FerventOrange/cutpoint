@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import math
+import shutil
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -416,7 +417,10 @@ class PanoExporter:
         """Load ``reuse`` (an earlier, possibly hand-edited path) if it covers the range
         and is not older than :data:`director.MIN_REUSE_VERSION`, else run the director
         (with the ``pano.director`` overrides of config.json, like ``cutpoint 360
-        director``); the path is saved under ``pano_paths``."""
+        director``); the path is saved under ``pano_paths``. A re-planned ``reuse``
+        file is overwritten after a copy to the first free backup name (``<file>.bak``,
+        then ``<file>.1.bak``, ``<file>.2.bak``, ...); earlier backups are never
+        overwritten."""
         self.paths_dir.mkdir(parents=True, exist_ok=True)
         out = self.paths_dir / (Path(name).stem + ".json")
         if reuse is not None and reuse.is_file():
@@ -444,6 +448,14 @@ class PanoExporter:
         path = D.compute_path(
             clip, start, end, vertical=self.vertical, kind=kind, overrides=self.overrides
         )
+        if reuse is not None and reuse.is_file() and reuse.resolve() == out.resolve():
+            bak = out.with_name(out.name + ".bak")  # it may be hand-edited
+            n = 0
+            while bak.exists():  # never overwrite an earlier backup
+                n += 1
+                bak = out.with_name(f"{out.name}.{n}.bak")
+            shutil.copy2(out, bak)
+            logger.warning("  %s: re-planned; the previous path is kept as %s", name, bak)
         cache.save_json(out, path, indent=1)
         return path, out
 

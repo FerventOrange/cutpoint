@@ -39,7 +39,7 @@ documents every key.
 
 ``ollama_url``
     Ollama base URL for the frame rater and VLM layers. ``OLLAMA_HOST``
-    overrides it. Default ``http://localhost:11434``
+    overrides it. Default ``http://127.0.0.1:11434``
     (see :func:`cutpoint.backends.ollama_url`).
 
 ``pano``
