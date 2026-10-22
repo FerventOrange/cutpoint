@@ -20,7 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from cutpoint import paths
+from conftest import write
+from cutpoint import config, paths
 from cutpoint.pano import cli as pano_cli
 from cutpoint.pano import project, stitch
 from cutpoint.pano.x3 import X3Clip
@@ -620,6 +621,20 @@ class TestHelpers:
         monkeypatch.setenv("CUTPOINT_INSTA360_SDK", str(tmp_path / "nope.exe"))
         with pytest.raises(stitch.SdkNotConfigured, match="does not exist"):
             stitch.require_sdk()
+
+    def test_stitch_command_reads_moved_footage_through_source_remap(
+        self, home, tmp_path, monkeypatch
+    ):
+        old, new = tmp_path / "old", tmp_path / "new"
+        names = ["a_00_.insv", "a_10_.insv"]
+        for n in names:
+            write(new / n)
+        write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
+        config.get_config.cache_clear()
+        monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+        clip = X3Clip("001", "t", "5.7k", None, [str(old / n) for n in names])
+        cmd = stitch.stitch_command(tmp_path / "sdk", clip, tmp_path / "o.mp4")
+        assert cmd[1:4] == ["-inputs", *(str(new / n) for n in names)]
 
     def test_stitch_command_validates_extra_args(self, tmp_path):
         clip = X3Clip("001", "t", "5.7k", None, ["a_00_.insv", "a_10_.insv"])

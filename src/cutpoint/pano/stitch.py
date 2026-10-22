@@ -118,8 +118,11 @@ def stitch_command(exe: Path, clip: X3Clip, out: Path, extra: list[str] | None =
     Raises:
         ValueError: If the arguments hold an unsupported ``-stitch_type``.
     """
+    from cutpoint.config import remap_source  # noqa: PLC0415
+
     args = validate_stitch_args([*stitch_args(), *(extra or [])])
-    return [str(exe), "-inputs", *clip.insv, "-output", str(out), *args]
+    inputs = [str(remap_source(p)) for p in clip.insv]  # moved footage: read the new copy
+    return [str(exe), "-inputs", *inputs, "-output", str(out), *args]
 
 
 # --------------------------------------------------------------------------- output parsing

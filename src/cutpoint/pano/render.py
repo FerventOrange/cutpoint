@@ -254,6 +254,8 @@ def render_segment(
     Raises:
         FFmpegError: If ffmpeg fails with and without NVDEC.
     """
+    from cutpoint.config import remap_source  # noqa: PLC0415
+
     src = src or resolve_source(clip)
     cmd_every = int(cmd_every or pano_config().get("cmd_every", 1))
     # Start on a frame, so the audio seek matches the first video frame.
@@ -304,9 +306,10 @@ def render_segment(
     text = ""
     for hw in (True, False):
         args = ["ffmpeg", "-y", "-v", "error"]
+        # Read moved footage through source_remap; the record keeps the original inputs.
         for inp in src.inputs:
-            args += (["-hwaccel", "cuda"] if hw else []) + seek + ["-i", inp]
-        args += [*seek, "-i", str(clip.source)]
+            args += (["-hwaccel", "cuda"] if hw else []) + seek + ["-i", str(remap_source(inp))]
+        args += [*seek, "-i", str(remap_source(clip.source))]
         args += [
             "-filter_complex",
             f"{vf};{af}",

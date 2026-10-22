@@ -57,7 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, paths, state
-from cutpoint.config import path_key, source_path
+from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.pano.x3 import X3Clip, parse_name
 
 logger = logging.getLogger(__name__)
@@ -325,8 +325,9 @@ class RenderSource:
 def _studio_dirs(clip: X3Clip, extra: list[Path]) -> list[Path]:
     cfg = pano_config().get("studio_dirs")
     dirs = [Path(d) for d in (cfg if isinstance(cfg, list) else default_studio_dirs())]
-    cam = Path(clip.insv[0]).parent
-    dirs += [cam / "_stitched", cam / "export", cam / "Export", *extra]
+    # The original camera folder first, then the remapped copy (its folders moved with it).
+    cams = dict.fromkeys([Path(clip.insv[0]).parent, remap_source(clip.insv[0]).parent])
+    dirs += [c / s for c in cams for s in ("_stitched", "export", "Export")] + extra
     return list(dict.fromkeys(d for d in dirs if d.is_dir()))
 
 

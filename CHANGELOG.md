@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clips`, `extend`, `360 analyze`, `360 director`, `360 stitch` and `360 status` now read footage
+  whose raw folder moved through `source_remap`. Previously ffmpeg failed with "No such file", and
+  `360 analyze` skipped every moved clip with "no _00_.insv for the IMU". `360 status` finds the
+  Studio export next to both the original and the moved camera folder. The project keeps recording
+  the original paths (#92).
 - From an editable clone install on Windows with a CPU-only torch, the install command for a
   missing `events` or `all` extra now notes that the `uv pip install ... -e` form needs
   `--reinstall-package torch --reinstall-package torchvision` with an NVIDIA GPU, as uv keeps the
