@@ -76,6 +76,12 @@ ffmpeg skip themselves when it is not on `PATH`.
 Publishing the release runs `.github/workflows/release.yml`, which builds the package, checks
 that its version equals the tag, and publishes it to PyPI with Trusted Publishing.
 
+To test the release pipeline without releasing, run the Release workflow manually (Actions tab,
+"Run workflow"). It builds `<pyproject version>.dev<run number>` and publishes it to TestPyPI
+only, never to PyPI. One-time setup first: add a pending trusted publisher on test.pypi.org for
+project `cutpoint` (owner `FerventOrange`, repository `cutpoint`, workflow `release.yml`,
+environment `testpypi`), and create a `testpypi` environment in the repository settings.
+
 ## Layout
 
 See [docs/architecture.md](docs/architecture.md).

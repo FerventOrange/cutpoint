@@ -3,6 +3,8 @@ name: Release
 on:
   release:
     types: [published]
+  # Dry run: build and publish to TestPyPI only (never to PyPI).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,12 +17,25 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: false
+      - name: Set a unique dev version for the TestPyPI dry run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          # TestPyPI rejects re-uploads of an existing version, so suffix .devN.
+          base="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pyproject.toml | head -n1)"
+          if [ -z "$base" ]; then
+            echo "::error::Could not read version from pyproject.toml"
+            exit 1
+          fi
+          sed -i "s/^version = \".*\"$/version = \"${base}.dev${RUN_NUMBER}\"/" pyproject.toml
+          echo "EXPECTED_VERSION=${base}.dev${RUN_NUMBER}" >> "$GITHUB_ENV"
       - run: uv build
       - name: Check the built version matches the release tag
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          expected="${TAG#v}"
+          expected="${EXPECTED_VERSION:-${TAG#v}}"
           shopt -s nullglob
           wheels=(dist/cutpoint-*.whl)
           if [ "${#wheels[@]}" -ne 1 ]; then
@@ -40,6 +55,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -53,3 +69,22 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  publish-testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/cutpoint
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
