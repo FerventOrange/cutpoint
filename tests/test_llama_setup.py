@@ -247,10 +247,13 @@ def test_install_panns_falls_back_to_next_mirror(tmp_path, monkeypatch, caplog, 
     monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
     monkeypatch.delenv("CUTPOINT_PANNS_URL", raising=False)
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         setup.install_panns()
 
     assert ckpt.read_bytes() == good
+    # the user can see which mirror the checkpoint finally came from (#52); slow keeps its .part
+    verb = "resuming" if first == "slow" else "downloading"
+    assert f"{verb} {ckpt.name} from {good_url}" in caplog.text
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert len(warnings) == 1
     assert bad_url in warnings[0]
