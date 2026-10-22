@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
   drivers too old for CUDA 13), `pip install "cutpoint[...]"` for PyPI installs, and the
   `uv sync --extra` form only in a clone. The pip commands can be pasted into PowerShell.
+- The missing-extra install hint no longer shows the CUDA PyTorch index note (or the Linux driver
+  note) for tool installs from a clone directory, an editable install or a git URL, which already
+  get CUDA torch from Cutpoint's own `[tool.uv.sources]`; it appears only for wheel, sdist, URL
+  and PyPI installs (#61).
 - `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
 - The Ollama default URL is `http://127.0.0.1:11434`; `localhost` could hang on some Windows
   machines (#15).

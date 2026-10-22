@@ -79,9 +79,10 @@ Add extras with `uv tool install "cutpoint[ski,events,gpu]"` (or `".[ski,events,
 clone); with pip, `pip install "cutpoint[gpu]"`. This path is not exercised by the project's tests; if it fails, use `uv sync` and
 `uv run`.
 
-A tool install gets torch from PyPI, which is CPU-only on Windows: the CUDA 12.6 index in
-`pyproject.toml` only applies to a clone. With an NVIDIA GPU and the `events` extra, add the
-PyTorch index:
+A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on Windows. The CUDA
+12.6 index in `pyproject.toml` applies to a clone and to tool installs from a clone directory
+(including `--editable`) or a git URL, which need no extra flags. For a PyPI or wheel install
+with an NVIDIA GPU and the `events` extra, add the PyTorch index:
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match

@@ -192,7 +192,10 @@ def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
     # A PyTorch CUDA index (download.pytorch.org/whl/cu126, .../nightly/cu128) already
     # serves the CUDA wheels; a mirror or the CPU index does not.
     has_torch_index = any("download.pytorch.org/whl/" in url and "/cu" in url for _, url in indexes)
-    if not has_torch_index and extra in TORCH_EXTRAS:
+    # A directory, editable or git install resolves with cutpoint's own [tool.uv.sources],
+    # which already pins torch to the cu126 index on Windows and Linux.
+    project_sources = any(source.get(k) for k in ("editable", "directory", "git"))
+    if not has_torch_index and not project_sources and extra in TORCH_EXTRAS:
         # PyPI torch is CPU-only on Windows; on Linux it is already a CUDA 13 build.
         # --reinstall already replaces an installed CPU torch (the tool is resolved anew).
         flags = f"--index {TORCH_INDEX}"
