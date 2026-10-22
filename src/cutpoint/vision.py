@@ -83,7 +83,10 @@ class VisionRater:
         try:
             resp = requests.get(f"{self.url}/api/tags", timeout=3)
             resp.raise_for_status()
-            models = resp.json().get("models", [])
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError(f"/api/tags returned {type(data).__name__}, not an object")
+            models = data.get("models", [])
         except (requests.RequestException, ValueError) as err:  # ValueError: not JSON
             logger.info("Ollama not reachable at %s (%s); skipping vision", self.url, err)
             return False

@@ -244,6 +244,25 @@ def test_vision_unavailable_when_ollama_returns_non_json(monkeypatch):
     assert vision.VisionRater(url="http://x:1", model="m").available() is False
 
 
+@pytest.mark.parametrize("payload", [["llava"], "llava", 3])
+def test_vision_unavailable_when_ollama_json_is_not_an_object(monkeypatch, payload):
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cutpoint import vision  # noqa: PLC0415
+
+    resp = SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+    monkeypatch.setattr(vision.requests, "get", lambda *_a, **_k: resp)
+    assert vision.VisionRater(url="http://x:1", model="m").available() is False
+
+
+def test_offline_footage_has_no_voice_data(home, tmp_path, caplog):
+    from cutpoint.events import voice  # noqa: PLC0415
+
+    with caplog.at_level("WARNING"):
+        assert voice.load_voice(tmp_path / "gone.mp4") is None
+    assert caplog.text.count("not reachable") == 1
+
+
 def test_load_visual_offline_footage_is_none_with_warning(home, tmp_path, caplog):
     from cutpoint.events import visual  # noqa: PLC0415
 

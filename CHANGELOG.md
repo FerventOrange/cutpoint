@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Ollama check reports "not reachable" instead of raising on a non-JSON reply (#15).
 - `mix`, `profile`, `crashes` and other commands that read cached visual data skip offline footage with a warning instead of failing (#15).
 - `360 director --preview` no longer crashes for a clip without a low-res `.lrv` proxy (#15).
+- `360 director` and other readers of cached voice data skip offline footage with a "footage not reachable" warning instead of crashing (#46).
+- `cutpoint mix` with nothing selected (no candidate fits `--target`, or every candidate is excluded) fails with `ERROR Nothing selected in <project>: ...` and exit code 1, writes no files, and no longer crashes with `ZeroDivisionError` (#47).
+- The Ollama availability check reports "not reachable" instead of raising when `/api/tags` returns JSON that is not an object (#49).
+- Missing-extra install hints leave out explicit uv indexes (with a note to keep your uv config), show the CUDA PyTorch note also with a mirror or CPU index configured without repeating `--index-strategy`, and, when CPU-only torch is installed, add `--reinstall-package torch --reinstall-package torchvision` (uv pip) or `--force-reinstall` (pip) (#50).
 - `360 director` no longer creates folders for a project that does not exist (#15).
 - `extend` keeps a backup of a director path file before re-planning over it and never overwrites an earlier one: repeated re-plans keep `<file>.bak`, `<file>.1.bak`, and so on (#15).
 - `mix --target` must be greater than 0 (#15).

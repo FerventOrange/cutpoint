@@ -79,8 +79,13 @@ def cache_path(src: Source | Path, params: VoiceParams) -> Path:
 def load_voice(
     src: Source | Path, params: VoiceParams | None = None
 ) -> dict[str, np.ndarray] | None:
-    """Cached voice grids of a source (absolute 0.1 s grid), or None."""
-    path = cache_path(src, params or VoiceParams())
+    """Cached voice grids of a source (absolute 0.1 s grid), or None if the layer has
+    not run or the footage is offline (its cache key needs the file's size and mtime)."""
+    try:
+        path = cache_path(src, params or VoiceParams())
+    except OSError as err:
+        logger.warning("%s: footage not reachable (%s); no voice data for it", src, err)
+        return None
     if not path.exists():
         return None
     with np.load(path) as z:

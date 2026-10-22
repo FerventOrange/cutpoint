@@ -607,6 +607,13 @@ def run_mix(
     cands = apply_exclusions(cands, exclude)  # after scoring: the others keep their norm
     fixed = _carry(cands, previous) if previous else None
     chosen = select_mix(cands, target_s, q, r, n_runs=len(runs), fixed=fixed)
+    if not chosen:
+        why = (
+            f"none of {len(cands)} candidates fits the {target_s:.0f} s target"
+            if cands
+            else "every candidate is excluded"
+        )
+        raise ValueError(f"Nothing selected in {project}: {why}")
     flat = [(s, c) for c in chosen for s in (c, *c.extra)]  # chronological play order
     flat.sort(key=lambda p: (starts.get(ski._key(p[0].source)) or 0.0, p[0].source, p[0].start))
     ids = _seg_ids(flat, previous or [], fixed or [])
@@ -727,7 +734,8 @@ def mix_report(
     for cat in CATEGORIES:
         sel = [c for c in chosen if c.category == cat]
         secs = sum(c.seconds for c in sel)
-        cats[cat] = {"n": len(sel), "seconds": round(secs, 1), "share": round(secs / total, 3)}
+        share = round(secs / total, 3) if total > 0 else 0.0
+        cats[cat] = {"n": len(sel), "seconds": round(secs, 1), "share": share}
     dups = [
         (a.category, b.category)
         for i, a in enumerate(chosen)

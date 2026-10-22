@@ -164,34 +164,55 @@ def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
                 extras.update(str(e) for e in req.get("extras", []))
                 source = {k: req[k] for k in req if k not in ("name", "extras")}
         options = tool.get("options", {})
+        # An explicit index only serves packages pinned to it in tool.uv.sources, which the
+        # CLI cannot express; as --index it would serve every package. It comes from uv
+        # config (no flag sets it), which the reinstall reads again.
+        entries = [i for i in options.get("index", []) if i.get("url")]
         indexes = [
             ("--default-index" if i.get("default") else "--index", str(i["url"]))
-            for i in options.get("index", [])
-            if i.get("url")
+            for i in entries
+            if not i.get("explicit")
         ]
+        explicit = [str(i.get("name") or i["url"]) for i in entries if i.get("explicit")]
         strategy = options.get("index-strategy")
         python = tool.get("python")
     except (AttributeError, TypeError, KeyError):
-        extras, source, indexes, strategy, python = {extra}, {}, [], None, None
+        extras, source, indexes, explicit, strategy, python = {extra}, {}, [], [], None, None
     cmd = f"uv tool install {_tool_source(source, ','.join(sorted(extras)))} --reinstall"
     if python:
         cmd += f' --python "{python}"'
     cmd += "".join(f" {flag} {url}" for flag, url in indexes)
     if strategy:
         cmd += f" --index-strategy {strategy}"
-    if not indexes and extra in TORCH_EXTRAS:
+    if explicit:
+        cmd += (
+            f" (explicit index {', '.join(explicit)} left out: it applies through your uv "
+            "config, so keep that config in place)"
+        )
+    # A PyTorch CUDA index (download.pytorch.org/whl/cu126, .../nightly/cu128) already
+    # serves the CUDA wheels; a mirror or the CPU index does not.
+    has_torch_index = any("download.pytorch.org/whl/" in url and "/cu" in url for _, url in indexes)
+    if not has_torch_index and extra in TORCH_EXTRAS:
         # PyPI torch is CPU-only on Windows; on Linux it is already a CUDA 13 build.
+        # --reinstall already replaces an installed CPU torch (the tool is resolved anew).
+        flags = f"--index {TORCH_INDEX}"
+        if not strategy:
+            flags += " --index-strategy unsafe-best-match"
+        elif strategy != "unsafe-best-match":
+            flags += " and change --index-strategy to unsafe-best-match"
         if sys.platform == "win32":
-            cmd += (
-                f" (with an NVIDIA GPU add --index {TORCH_INDEX} "
-                "--index-strategy unsafe-best-match so torch uses CUDA)"
-            )
+            cmd += f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
         elif sys.platform == "linux":
-            cmd += (
-                " (with an NVIDIA driver too old for CUDA 13, add "
-                f"--index {TORCH_INDEX} --index-strategy unsafe-best-match)"
-            )
+            cmd += f" (with an NVIDIA driver too old for CUDA 13, add {flags})"
     return cmd
+
+
+def _cpu_torch() -> bool:
+    """True when an installed torch is not a CUDA build (no ``+cu`` local version)."""
+    try:
+        return "+cu" not in importlib.metadata.Distribution.from_name("torch").version
+    except importlib.metadata.PackageNotFoundError:
+        return False
 
 
 def _python() -> tuple[str, str]:
@@ -225,6 +246,14 @@ def install_hint(extra: str) -> str:
                 if uv
                 else f"--extra-index-url {TORCH_INDEX}"
             )
+            if _cpu_torch():
+                # The installed CPU torch satisfies torch==x.y.z, so it would stay without
+                # a reinstall (torchvision is likewise a CPU build then).
+                flags += (
+                    " --reinstall-package torch --reinstall-package torchvision"
+                    if uv
+                    else " --force-reinstall"
+                )
             gpu = f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
         if uv:
             return f'uv pip install --python "{sys.executable}" {source}{gpu}'
