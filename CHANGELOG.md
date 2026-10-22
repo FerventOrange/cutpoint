@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `stage --clear <inputs>` selects exactly the files `stage <inputs>` would copy: it lists the
+  original folder as `stage` does (read through `source_remap`) and honours `--recursive` and
+  `--exclude`. Previously it listed only the remapped folder and ignored sub-folders, so some
+  staged copies were not removed (#103).
 - `stage --exclude` matches the original path of footage read through `source_remap`, as
   `analyze --exclude` does, instead of the remapped location. Files are still copied from where
   `analyze` reads them (#93).
