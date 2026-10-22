@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning and continue, and fail before writing anything when none is reachable. With a source
   skipped, `crashes` and ski `events` leave `highlights.json` unchanged instead of re-running the
   analysis; other `events` styles re-rank with the events found (#57).
+- `crashes` (default `--reanalyze`) and ski `events` no longer exit 1 with "Input not found" after
+  writing results, or silently drop footage from `highlights.json`, when an input or source is not
+  at the path `analyze` recorded (moved, or only reachable through `source_remap`). They warn that
+  `highlights.json` is left unchanged and exit 0; re-analysis needs the footage at its original
+  path, or rerun `analyze` on the new location and then `crashes`/`events` (they match sources by
+  path) (#67).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
