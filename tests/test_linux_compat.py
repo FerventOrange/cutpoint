@@ -442,8 +442,8 @@ TAG = "b9000"
 PRE = f"llama-{TAG}-bin-ubuntu-"
 
 
-def _release(*names: str) -> dict[str, tuple[str, int]]:
-    return {n: (f"https://example.invalid/{n}", 1) for n in names}
+def _release(*names: str) -> dict[str, tuple[str, int, str | None]]:
+    return {n: (f"https://example.invalid/{n}", 1, None) for n in names}
 
 
 FULL = _release(
@@ -650,12 +650,16 @@ def test_extract_zip_caps_modes_at_755(tmp_path):
 def test_install_llama_only_chmods_its_own_binary(tmp_path, monkeypatch):
     other = write(tmp_path / "other" / "llama-server")
     other.chmod(0o644)
-    own = write(ev_paths.llama_dir() / "build" / "llama-server")
-    own.chmod(0o644)
     monkeypatch.setenv("CUTPOINT_LLAMA_SERVER", str(other))
     monkeypatch.setattr(setup, "_llama_platform", lambda: "linux")
-    monkeypatch.setattr(setup, "_latest_llama_assets", lambda _p: ("b1", "cpu", {}))
+    assets = {"bin": ("https://example.invalid/b.tar.gz", 1, None)}
+    monkeypatch.setattr(setup, "_latest_llama_assets", lambda _p: ("b1", "cpu", assets))
+    monkeypatch.setattr(setup, "download", lambda _u, dst, *_a: dst)
+    monkeypatch.setattr(
+        setup, "_extract", lambda _a, dest: write(dest / "build" / "llama-server").chmod(0o644)
+    )
     setup.install_llama(force=True)
+    own = ev_paths.llama_dir() / "build" / "llama-server"
     assert stat.S_IMODE(other.stat().st_mode) == 0o644
     assert stat.S_IMODE(own.stat().st_mode) & 0o111 == 0o111
     assert (ev_paths.llama_dir() / "VERSION.txt").read_text().strip() == "b1 cpu"
