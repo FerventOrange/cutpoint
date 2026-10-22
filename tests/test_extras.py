@@ -22,6 +22,10 @@ def test_missing_module_message():
     assert extras.missing_module_message("definitely_not_an_extra") is None
 
 
+def _editable_url(clone) -> str:
+    return json.dumps({"url": clone.as_uri(), "dir_info": {"editable": True}})
+
+
 class _Dist:
     def __init__(self, direct_url: str | None):
         self._direct_url = direct_url
@@ -32,8 +36,8 @@ class _Dist:
 
 
 def test_install_hint_uv_and_pip(monkeypatch, tmp_path):
-    monkeypatch.setattr(extras.sys, "prefix", str(tmp_path))  # no tool receipt
-    editable = _Dist('{"url": "file:///x", "dir_info": {"editable": true}}')
+    monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / ".venv"))  # no tool receipt
+    editable = _Dist(_editable_url(tmp_path))
     monkeypatch.setattr(extras.importlib.metadata, "distribution", lambda name: editable)
     monkeypatch.setenv("UV", "1")
     assert extras.install_hint("events").startswith("uv sync --extra events")
@@ -124,12 +128,22 @@ def test_install_hint_uv_tool_malformed_receipt_falls_back(monkeypatch, tmp_path
 
 
 def test_install_hint_editable(monkeypatch, tmp_path):
-    direct = '{"url": "file:///x", "dir_info": {"editable": true}}'
+    direct = _editable_url(tmp_path)
     _set_install(monkeypatch, tmp_path, direct_url=direct, uv=True)
+    monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / ".venv"))
     assert extras.install_hint("ski").startswith("uv sync --extra ski")
     _set_install(monkeypatch, tmp_path, direct_url=direct, uv=False)
     hint = extras.install_hint("ski")
     assert "-m pip install -e" in hint and ".[ski]" in hint
+
+
+def test_install_hint_editable_uv_outside_clone_venv(monkeypatch, tmp_path):
+    clone = tmp_path / "clone"
+    _set_install(monkeypatch, tmp_path, direct_url=_editable_url(clone), uv=True)
+    monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / "other-venv"))
+    monkeypatch.setattr(extras.sys, "executable", "/the/python")
+    hint = extras.install_hint("ski")
+    assert hint == f'uv pip install --python "/the/python" -e "{clone.as_posix()}[ski]"'
 
 
 def test_install_hint_not_installed_counts_as_source_tree(monkeypatch, tmp_path):

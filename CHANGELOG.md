@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note) for tool installs from a clone directory, an editable install or a git URL, which already
   get CUDA torch from Cutpoint's own `[tool.uv.sources]`; it appears only for wheel, sdist, URL
   and PyPI installs (#61).
+- The missing-extra hint for an editable install (`uv pip install -e <clone>`) into a venv other
+  than the clone's `.venv` no longer suggests `uv sync --extra X`, which installs into the clone's
+  `.venv` and not the running environment. It suggests `uv sync` only when Cutpoint runs from the
+  clone's `.venv`; otherwise it gives `uv pip install --python "<python>" -e "<clone path>[X]"`
+  (#83).
 - `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
 - The Ollama default URL is `http://127.0.0.1:11434`; `localhost` could hang on some Windows
   machines (#15).
