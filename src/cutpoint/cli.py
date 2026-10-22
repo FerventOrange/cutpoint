@@ -190,7 +190,9 @@ def _cmd_stage(a: argparse.Namespace) -> None:
             )
         return
     if a.clear:
-        stage.clear_stage([Path(t) for t in a.inputs])
+        stage.clear_stage(
+            [Path(t) for t in a.inputs], exclude=a.exclude or [], recursive=a.recursive
+        )
         return
     if not a.inputs:
         raise ValueError("cutpoint stage: give files/folders to stage (or --list / --clear)")

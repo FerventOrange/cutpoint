@@ -229,7 +229,8 @@ cutpoint stage [inputs ...] [--exclude GLOB] [--recursive] [--list] [--clear]
 Copies sources on slow or network storage to a local folder once; every later ffmpeg or ffprobe
 read of those files uses the copy. Projects, caches, manifests and timelines keep the original
 path. A copy that would leave less than 5 GB free is refused. `--list` shows what is staged,
-`--clear` deletes the copies. See [slow storage](troubleshooting/storage.md).
+`--clear` deletes the copies (all, or those `stage` would copy for the given inputs with the same
+`--recursive` and `--exclude`). See [slow storage](troubleshooting/storage.md).
 
 ## crashes
 

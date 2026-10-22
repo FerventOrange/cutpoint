@@ -32,7 +32,6 @@ from typing import Any
 
 from cutpoint import cache, state
 from cutpoint.config import canonical_source, get_config, norm_path, remap_source
-from cutpoint.utils import find_videos
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +195,22 @@ def copy_once(src: Path, dst: Path, label: str) -> float:
     return time.perf_counter() - t0
 
 
+def _stage_files(targets: Sequence[Path], exclude: Sequence[str], recursive: bool) -> list[Path]:
+    """Videos under ``targets`` at the path they are read from, de-duplicated.
+
+    Listed and excluded as ``analyze`` does (original spelling), then read
+    through ``source_remap``. Shared by ``stage`` and ``stage --clear``.
+
+    Raises:
+        FileNotFoundError: As ``find_videos``, when an input cannot be listed.
+    """
+    # Lazy: analyze is heavy and stage is imported by the CLI at startup.
+    from cutpoint.analyze import _find_inputs  # noqa: PLC0415
+
+    found = _find_inputs(list(targets), exclude, recursive)
+    return list(dict.fromkeys(remap_source(p) for p in found))
+
+
 def stage_sources(
     targets: Sequence[Path],
     *,
@@ -222,12 +237,7 @@ def stage_sources(
     stage_dir = get_config().stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     index = _load_index(stage_dir)
-    # Lazy: analyze is heavy and stage is imported by the CLI at startup.
-    from cutpoint.analyze import _find_inputs  # noqa: PLC0415
-
-    # Listed and excluded as analyze does (original spelling); read where analyze reads.
-    found = _find_inputs(list(targets), exclude, recursive)
-    files = list(dict.fromkeys(remap_source(p) for p in found))
+    files = _stage_files(targets, exclude, recursive)
     total_b, total_s, copied, skipped = 0, 0.0, 0, 0
     for src in files:
         key = stage_key(src)
@@ -284,13 +294,19 @@ def stage_sources(
     return summary
 
 
-def clear_stage(targets: Sequence[Path] = ()) -> int:
-    """Delete staged copies (all, or only those of ``targets``); returns the count."""
+def clear_stage(
+    targets: Sequence[Path] = (), *, exclude: Sequence[str] = (), recursive: bool = False
+) -> int:
+    """Delete staged copies (all, or only those of ``targets``); returns the count.
+
+    ``targets``, ``exclude`` and ``recursive`` select the same files that
+    :func:`stage_sources` with the same arguments would copy.
+    """
     stage_dir = get_config().stage_dir
     index = _load_index(stage_dir)
     keys = set(index)
     if targets:
-        wanted = {stage_key(p) for p in find_videos([remap_source(t) for t in targets])}
+        wanted = {stage_key(p) for p in _stage_files(targets, exclude, recursive)}
         keys &= wanted
     for key in keys:
         (stage_dir / index[key]["file"]).unlink(missing_ok=True)
