@@ -29,8 +29,9 @@ them). Extra object sections (e.g. a future ``game`` HUD vocabulary) are kept.
    the library (``<CUTPOINT_HOME>/profiles``), so the next similar video
    matches it in step 3;
 5. when the LLM is unavailable or its reply is unusable twice (the retry asks
-   for less): the nearest library profile, else ``generic``, recorded as
-   ``source: fallback`` so the next run tries again.
+   for less): a library profile named in ``context`` (``"downhill mtb"`` -> mtb),
+   else the nearest one, else ``generic``, recorded as ``source: fallback`` so the
+   next run tries again; a WARNING says that ``context`` was not applied.
 
 ``context`` always goes through the LLM: with a profile from steps 1-3 its
 output is added on top of that profile. Built-in profiles live in
@@ -39,8 +40,10 @@ output is added on top of that profile. Built-in profiles live in
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -378,6 +381,27 @@ def synthesize(
     return prof
 
 
+def _clip_installed() -> bool:
+    """True if the CLIP steps after the LLM (crash prompts, dense check) can run.
+
+    Otherwise unloading Ollama frees VRAM for nothing (the events extra is missing).
+    """
+    missing = [m for m in ("torch", "open_clip") if importlib.util.find_spec(m) is None]
+    if missing:
+        logger.info("activity: %s not installed; Ollama models stay loaded", ", ".join(missing))
+    return not missing
+
+
+def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
+    """The library profile named as a word of ``context`` (``"downhill mtb"`` -> mtb).
+
+    None when the context names no profile or several (``"ski after a hike"``).
+    """
+    words = re.findall(r"[a-z0-9-]+", context.lower())
+    named = {w for w in words if w in lib and w != "generic"}
+    return named.pop() if len(named) == 1 else None
+
+
 def default_ask() -> tuple[Ask | None, str | None]:
     """The local Ollama vision model as an :data:`Ask` (``(None, None)`` if unavailable)."""
     rater = VisionRater()
@@ -436,12 +460,16 @@ def resolve(
         seed = pick(rec["scores"])
         rec["source"] = "library" if seed else "fallback"
     profile = full(lib[seed or nearest(rec["scores"])])
+    new = None
+    why = "the local models are disabled"  # why ``context`` was not applied
     if (seed is None or context) and llm:
         rec["source"] = "fallback"  # until the LLM delivers (retried on the next run)
         model = None
         if ask is None:
             ask, model = default_ask()
+            why = "the Ollama model is unavailable (see the line above)"
         if ask is not None:
+            why = "the LLM gave no usable profile"
             if seed:
                 desc, how = lib[seed]["description"], "profile"
             else:
@@ -453,7 +481,7 @@ def resolve(
             examples = [lib[seed]] if seed else [lib[k] for k in dict.fromkeys(near[:2])]
             new = synthesize(desc, context, ask, examples) if desc or context else None
             rec.update(description=desc, described_by=how, model=model)
-            if model is not None:  # our Ollama client: free its VRAM for the CLIP steps
+            if model is not None and _clip_installed():  # free its VRAM for the CLIP steps
                 unload_ollama()
             if new is not None:  # LLM words add phrases, never re-weight known ones
                 known = (profile if seed else base())["incident"]["words"]
@@ -469,6 +497,15 @@ def resolve(
                 seed = save_to_library(new)
                 profile = full({**new, "name": seed})
                 rec["source"] = "synthesized"
+    if context and new is None:
+        named = _named_profile(context, lib) if seed is None else None
+        if named:
+            profile = full(lib[named])
+        logger.warning(
+            "activity: --context not applied: %s%s",
+            why,
+            f"; using the library profile {named!r} named in it" if named else "",
+        )
     rec["name"] = profile["name"]
     rec["profile"] = profile
     cache.save_json(path, rec)
