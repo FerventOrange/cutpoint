@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -189,6 +190,18 @@ def _hi_clamp(plan: ExtendPlan, hi: float) -> float:
     return max(hi, plan.end)
 
 
+def _read_path(e: dict[str, Any]) -> Path:
+    """File to read for a manifest entry: its source through ``source_remap``, like
+    ``clips``; the recorded ``read_from`` only when that is missing and it still exists.
+    An unreadable path (stale mount, EIO, EACCES) counts as missing."""
+    src = remap_source(e["source"])
+    old = e.get("read_from")
+    # os.path.exists: any OSError counts as missing; probe then reports the remap result.
+    if old and not os.path.exists(src) and os.path.exists(old):  # noqa: PTH110
+        return Path(old)
+    return src
+
+
 def _reusable(
     old: dict[str, Any] | None, new: dict[str, Any], same_format: bool, audio_fade: float
 ) -> bool:
@@ -203,7 +216,6 @@ def _reusable(
         return False
     return (
         old.get("source") == new.get("source")
-        and old.get("read_from") == new.get("read_from")
         and abs(float(old["start"]) - new["start"]) < 1e-3
         and abs(float(old["end"]) - new["end"]) < 1e-3
         and old.get("crop") == new.get("crop")
@@ -303,7 +315,7 @@ def extend_clips(
             logger.warning("  %s: no manifest entry (added by hand?); skipped", f.name)
             skipped.append(f.name)
             continue
-        src = Path(e.get("read_from") or remap_source(e["source"]))
+        src = _read_path(e)
         if str(src) not in infos:
             infos[str(src)] = probe(src)
         info = infos[str(src)]
@@ -395,8 +407,9 @@ def extend_clips(
         )
         p0, p1 = plan.keep
         entries.append(
-            e
+            {k: v for k, v in e.items() if k != "read_from"}
             | {
+                **({"read_from": str(src)} if str(src) != e["source"] else {}),
                 "start": start,
                 "end": end,
                 "duration": round(end - start, 3),
