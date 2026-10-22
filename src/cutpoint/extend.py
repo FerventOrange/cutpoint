@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -191,14 +192,13 @@ def _hi_clamp(plan: ExtendPlan, hi: float) -> float:
 
 def _read_path(e: dict[str, Any]) -> Path:
     """File to read for a manifest entry: its source through ``source_remap``, like
-    ``clips``; the recorded ``read_from`` only when that is missing and it still exists."""
+    ``clips``; the recorded ``read_from`` only when that is missing and it still exists.
+    An unreadable path (stale mount, EIO, EACCES) counts as missing."""
     src = remap_source(e["source"])
     old = e.get("read_from")
-    try:
-        if old and not src.exists() and Path(old).exists():
-            return Path(old)
-    except OSError:  # unreachable mount: probe reports the remap result
-        pass
+    # os.path.exists: any OSError counts as missing; probe then reports the remap result.
+    if old and not os.path.exists(src) and os.path.exists(old):  # noqa: PTH110
+        return Path(old)
     return src
 
 
