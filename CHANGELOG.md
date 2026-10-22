@@ -70,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them. They still warn and leave `highlights.json` unchanged only when re-analysis would fail,
   drop a source or re-key one, for example a file moved out of a folder input that still exists,
   or a 0.1.0 project that recorded the copy path (rerun `analyze` for those) (#80).
+- `extend` reads each clip's source through `source_remap` like `clips` does, instead of the
+  remapped copy recorded in the manifest's `read_from`. Once the copy is removed and the footage
+  is back at its original path, `extend` finds it instead of failing on the deleted copy;
+  `read_from` is used only when the source cannot be found and the copy still exists. The new
+  manifest records where each clip was read from, and `--reuse` still copies unchanged clips when
+  only the read location changed (#91).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
