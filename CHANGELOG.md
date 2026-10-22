@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Insta360 SDK runs get the needed `LD_LIBRARY_PATH` on Linux.
 - `llama-server` is cleaned up when the parent process dies on Linux.
 - Project and JSON files respect the umask instead of fixed permissions.
+- `cutpoint crashes --force` logs a source without readable GoPro telemetry at INFO instead of
+  DEBUG only (#37).
+- Insta360 X3: the `_00_` IMU file is reported with its on-disk spelling on every OS; Windows and
+  macOS showed the queried name when the case differed (#33).
 
 ## [0.1.0] - 2026-10-21
 
