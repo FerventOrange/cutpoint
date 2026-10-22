@@ -321,14 +321,22 @@ def _save_path(out_dir: Path, stem: str, path: dict[str, Any], rendering: bool) 
     cache.save_json(f, path, indent=1)
 
 
-def _drop_stale(out_dir: Path, stems: set[str]) -> None:
+def _drop_stale(out_dir: Path, stems: set[str], carried: set[str]) -> None:
     """Remove the files of stems the last director run wrote to ``out_dir`` that are not in
-    ``stems``, then record ``stems`` (``director_stems.json``; no record, nothing removed)."""
+    ``stems``, then record ``stems`` (``director_stems.json``; no record, nothing removed).
+    A path JSON (it may be hand-edited) is first copied to the first free backup name
+    (``<file>.bak``, ...) unless its stem is in ``carried`` (reused under a new stem); the
+    preview and its ``.cmd`` are rebuilt from it, so they just go."""
+    from cutpoint.pano.render import backup_path_file  # noqa: PLC0415
+
     record = out_dir / "director_stems.json"
     for stem in sorted(set(cache.load_json(record) or []) - stems):
         for f in (out_dir / f"{stem}{ext}" for ext in (".json", ".cmd", ".mp4")):
             try:
                 if f.is_file():
+                    if f.suffix == ".json" and stem not in carried:
+                        bak = backup_path_file(f)
+                        logger.warning("%s  no longer selected; the path is kept as %s", stem, bak)
                     f.unlink()
                     logger.info("removed stale %s", f.name)
             except OSError as err:
@@ -369,6 +377,7 @@ def cmd_director(a: argparse.Namespace) -> None:
     vl_report: list[dict[str, Any]] = []
     reuse = {} if checker is not None or getattr(a, "force", True) else _reusable(out_dir)
     stems: set[str] = set()
+    carried: set[str] = set()  # old stems whose path is reused under a new stem
     for i, m in enumerate(_selected_segments(project, a), 1):
         clip = clip_for(clips, m["source"])
         if clip is None:
@@ -381,6 +390,8 @@ def cmd_director(a: argparse.Namespace) -> None:
         key = _plan_key(clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p)
         preview = out_dir / f"{stem}.mp4"
         old_stem, path = reuse.get(key, (None, None))
+        if old_stem not in (None, stem):
+            carried.add(old_stem)
         fresh = (
             old_stem == stem
             and preview.is_file()
@@ -469,7 +480,7 @@ def cmd_director(a: argparse.Namespace) -> None:
         if a.preview and not checked:  # after the path JSON: a failed render keeps it
             render()
     if a.out_name:  # previews of earlier selections would mislead `360 qa`
-        _drop_stale(out_dir, stems)
+        _drop_stale(out_dir, stems, carried)
     if vl_report:
         cache.save_json(out_dir / "vl_check.json", {"segments": vl_report}, indent=1)
         secs = [r["seconds"] for r in vl_report]
