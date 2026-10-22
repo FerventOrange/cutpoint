@@ -71,7 +71,16 @@ def imu_source(path: str | Path) -> Path | None:
     cand = Path(path).with_name(f"VID_{f['date']}_{f['time']}_00_{f['num']}.insv")
     if cand.exists():
         return cand
-    hits = list(Path(path).parent.glob(f"VID_*_00_{f['num']}.insv"))
+    # Match names case-insensitively, so .INSV / vid_ also work on case-sensitive file systems.
+    try:
+        siblings = list(Path(path).parent.iterdir())
+    except OSError:
+        return None
+    exact = [p for p in siblings if p.name.casefold() == cand.name.casefold()]
+    if exact:
+        return exact[0]
+    loose = re.compile(rf"VID_.*_00_{f['num']}\.insv", re.IGNORECASE)
+    hits = [p for p in siblings if loose.fullmatch(p.name)]
     return hits[0] if len(hits) == 1 else None
 
 
@@ -189,7 +198,8 @@ def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
     """Discover the X3 clips in ``folder`` (read-only), paired and probed.
 
     Args:
-        folder: Folder with ``.insv`` / ``.lrv`` files (e.g. ``D:\\Videos\\360``).
+        folder: Folder with ``.insv`` / ``.lrv`` files (e.g. ``/media/x3/360`` or
+            ``D:\\Videos\\360``).
         with_meta: Also read the trailer metadata (camera, calibration).
 
     Returns:

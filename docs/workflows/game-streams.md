@@ -9,7 +9,7 @@ clips run on to the payoff after the banter.
 cutpoint analyze D:\Videos\Game --style gaming --out match-night
 cutpoint events match-night --player YourGameName     # needs the `events` extra and `cutpoint setup`
 cutpoint clips match-night --top 8
-cutpoint assemble projects\match-night\clips --transition fade --loudnorm
+cutpoint assemble projects/match-night/clips --transition fade --loudnorm
 ```
 
 Set `player_tags` in [`config.json`](../configuration.md#player_tags) once instead of passing

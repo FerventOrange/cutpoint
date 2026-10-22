@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -86,7 +87,7 @@ _VERSION_RE = re.compile(re.escape(VERSION_KEY) + r"\s*([0-9][0-9.]*)", re.IGNOR
 
 
 class SdkNotConfigured(FileNotFoundError):
-    """``MediaSDKTest.exe`` is not configured or not found."""
+    """The ``MediaSDKTest`` executable is not configured or not found."""
 
 
 def require_sdk() -> Path:
@@ -364,6 +365,25 @@ def _kill(proc: subprocess.Popen[str]) -> None:
         logger.warning("MediaSDKTest (pid %s) did not exit after kill", proc.pid)
 
 
+def sdk_env(exe: str | Path) -> dict[str, str] | None:
+    """Child environment for the SDK: on Linux with its ``lib`` folder on ``LD_LIBRARY_PATH``.
+
+    The folder is ``lib`` next to the executable or next to its ``bin`` folder
+    (``/opt/MediaSDK-<version>-linux/lib``), if it holds shared libraries.
+    None (inherit the environment) elsewhere or when there is none.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    exe = Path(exe)
+    for lib in (exe.parent / "lib", exe.parent.parent / "lib"):
+        if lib.is_dir() and any(lib.glob("*.so*")):
+            env = dict(os.environ)
+            old = env.get("LD_LIBRARY_PATH")
+            env["LD_LIBRARY_PATH"] = f"{lib}{os.pathsep}{old}" if old else str(lib)
+            return env
+    return None
+
+
 def run_sdk(cmd: list[str], label: str = "", timeout_s: float | None = None) -> SdkRun:
     """Run ``MediaSDKTest``, logging throttled progress; kill it on timeout or Ctrl-C.
 
@@ -384,6 +404,7 @@ def run_sdk(cmd: list[str], label: str = "", timeout_s: float | None = None) -> 
         stdin=subprocess.DEVNULL,
         encoding="utf-8",
         errors="replace",
+        env=sdk_env(cmd[0]),
     )
     out_chunks: list[str] = []
     err_chunks: list[str] = []
@@ -458,6 +479,7 @@ def probe_sdk(exe: Path, timeout_s: float = HELP_TIMEOUT_S) -> dict[str, Any]:
             timeout=timeout_s,
             stdin=subprocess.DEVNULL,
             check=False,
+            env=sdk_env(exe),
         )
     except (OSError, subprocess.TimeoutExpired) as err:
         return {
@@ -570,17 +592,34 @@ def _min_bytes(clip: X3Clip, args: list[str] | None = None) -> int:
     return max(MIN_OUTPUT_BYTES, int(clip.duration * rate))
 
 
+def _on_root_fs(path: Path) -> bool:
+    """POSIX: ``path`` (or its nearest existing parent) is on the file system of ``/``."""
+    probe = path.resolve()
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return probe.stat().st_dev == Path("/").stat().st_dev
+    except OSError:
+        return False
+
+
 def _warn_system_drive(out_dir: Path, clips: list[X3Clip]) -> None:
     """Warn when the default stitch folder is on the system drive (does not block).
 
     Only when ``pano.stitched_dir`` is unset: stitched equirects (~54 GB per hour
-    of footage) can fill the system drive quickly.
+    of footage) can fill the system drive quickly. The system drive is
+    ``%SystemDrive%`` on Windows and the file system of ``/`` elsewhere.
     """
     if not clips or pano_config().get("stitched_dir"):
         return
-    system = os.environ.get("SystemDrive") or "C:"  # noqa: SIM112 - Windows spelling
-    if out_dir.resolve().drive.lower() != system.lower():
-        return
+    if sys.platform == "win32":
+        system = os.environ.get("SystemDrive") or "C:"  # noqa: SIM112 - Windows spelling
+        if out_dir.resolve().drive.lower() != system.lower():
+            return
+    else:
+        system = "/"
+        if not _on_root_fs(out_dir):
+            return
     logger.warning(
         "Stitching to %s on the system drive (%s): about %.0f GB for %d clip(s). "
         'Set "pano": {"stitched_dir": "<folder>"} in config.json to use '

@@ -10,15 +10,21 @@ winget install --id Gyan.FFmpeg -e
 ffmpeg -version
 ```
 
-On Linux, install ffmpeg with your package manager. If you use a custom build, set the
-variables:
+On Linux, install it with your package manager (`sudo apt install ffmpeg`, or `dnf`, `pacman`).
+If the log says ffmpeg was not found, install it or point `CUTPOINT_FFMPEG` and
+`CUTPOINT_FFPROBE` at the binaries. For a custom build, set the variables:
 
 ```powershell
 setx CUTPOINT_FFMPEG C:\tools\ffmpeg\bin\ffmpeg.exe
 setx CUTPOINT_FFPROBE C:\tools\ffmpeg\bin\ffprobe.exe
 ```
 
-Open a new shell afterwards; `setx` does not change the current one.
+Open a new shell afterwards; `setx` does not change the current one. On Linux:
+
+```bash
+export CUTPOINT_FFMPEG=/opt/ffmpeg/bin/ffmpeg
+export CUTPOINT_FFPROBE=/opt/ffmpeg/bin/ffprobe
+```
 
 ## NVENC unavailable
 
@@ -37,8 +43,17 @@ Transcription uses CUDA when it can and falls back to CPU (`small` model by defa
 and Linux, so you only need a current NVIDIA driver.
 
 - Run `uv sync` again (with all the extras you use) if the libraries went missing.
-- Update the NVIDIA driver.
+- Update the NVIDIA driver. On Linux the pip-installed CUDA libraries are preloaded
+  automatically; if Whisper still falls back to the CPU, check the driver with `nvidia-smi`.
 - To force a smaller model, pass `analyze --model small`.
+
+## Captions fail on Linux
+
+`assemble --captions` needs fontconfig and a font; the font is chosen with `fc-match sans-serif`.
+
+```bash
+sudo apt install fontconfig fonts-dejavu-core
+```
 
 ## Out of GPU memory
 
@@ -63,7 +78,7 @@ uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 -
 
 Then check the tool's own Python:
 `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
-(on Linux: `"$(uv tool dir)/cutpoint/bin/python" -c ...`).
+On Linux: `"$(uv tool dir)/cutpoint/bin/python" -c "import torch; print(torch.cuda.is_available())"`.
 
 ## Slow or odd video decoding
 

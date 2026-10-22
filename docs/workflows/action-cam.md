@@ -11,7 +11,7 @@ cutpoint stage D:\Videos\trip                        # telemetry reading uses wh
 cutpoint analyze D:\Videos\trip --style ski --out trip
 cutpoint events trip                                 # sound events, voice, visual layers, crash check, model tags
 cutpoint clips trip --max-total 150
-cutpoint assemble projects\trip\clips --loudnorm
+cutpoint assemble projects/trip/clips --loudnorm
 ```
 
 `analyze --style ski` skips scene detection and the Ollama rater (pass `--vision` to use it).
@@ -81,7 +81,7 @@ is free for the CLIP steps.
 ```powershell
 cutpoint mix trip                      # mix_segments.json, mix_report.json, mix_sheet.jpg
 cutpoint clips trip --mix              # clips_mix\ in arc order
-cutpoint assemble projects\trip\clips_mix --loudnorm
+cutpoint assemble projects/trip/clips_mix --loudnorm
 ```
 
 `mix` picks runs, jumps, crashes with reactions, lift rides, views and social moments under

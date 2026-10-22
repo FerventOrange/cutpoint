@@ -55,6 +55,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.config import source_path
 from cutpoint.dsp import conv_same
 
 logger = logging.getLogger(__name__)
@@ -702,7 +703,7 @@ def extract(
         force: Ignore the cache.
     """
     from cutpoint.config import remap_source  # noqa: PLC0415
-    from cutpoint.stage import staged_path  # noqa: PLC0415
+    from cutpoint.stage import is_remote, staged_path, storage_label  # noqa: PLC0415
 
     p = params or TelemetryParams()
     cdir = cache.source_dir(src)
@@ -727,12 +728,12 @@ def extract(
     io = remap_source(src)
     x3_imu = imu_source(io)  # Insta360 X3: IMU trailer of the _00_.insv (cheap to read)
     read_path = x3_imu or Path(staged_path(str(io)))
-    if x3_imu is None and read_path == io and io.drive.upper() not in ("C:", "D:", "E:"):
+    if x3_imu is None and read_path == io and is_remote(io):
         logger.warning(
             "%s is not staged: telemetry-parser reads the whole file from %s "
             "(run `cutpoint stage` first for speed)",
             src.name,
-            io.drive,
+            storage_label(io),
         )
     tel = _compute(read_path, duration, p)
     if tel is not None and x3_imu is not None:
@@ -836,7 +837,7 @@ def join_runs(tels: list[Telemetry], max_gap_s: float = 240.0) -> dict[str, Any]
                     {"source": s["source"], "start": round(s["t0"], 1), "end": round(s["t1"], 1)}
                     for s in run
                 ],
-                "clips": list(dict.fromkeys(Path(s["source"]).name for s in run)),
+                "clips": list(dict.fromkeys(source_path(s["source"]).name for s in run)),
                 "start_local": next(
                     (c["start_local"] for c in clips if c["source"] == run[0]["source"]), None
                 ),

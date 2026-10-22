@@ -33,6 +33,8 @@ Video editing: use the Cutpoint CLI (`uv run cutpoint ...` in D:\tools\cutpoint)
 Read D:\tools\cutpoint\AGENTS.md first. Never edit source videos.
 ```
 
+On Linux, for example `uv run cutpoint ...` in ~/tools/cutpoint, and read ~/tools/cutpoint/AGENTS.md.
+
 With a tool install (`uv tool install cutpoint`) there is no repository path:
 
 ```markdown
@@ -48,7 +50,8 @@ how to install it for each agent.
 These work today:
 
 - "Using Cutpoint (D:\tools\cutpoint, see AGENTS.md), find the funniest moments in
-  D:\Videos\stream.mp4, export the top 6 clips and tell me their labels and lengths."
+  D:\Videos\stream.mp4 (Linux: ~/Videos/stream.mp4), export the top 6 clips and tell me their
+  labels and lengths."
 - "Make a 60 second vertical highlights video from ~/Videos/ride.mp4 with Cutpoint."
 - "Read the transcript in the `stream-funny` project, pick the three best banter exchanges and
   export them as clips."

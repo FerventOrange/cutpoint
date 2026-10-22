@@ -41,6 +41,7 @@ from typing import Any
 
 from cutpoint import cache, mix, ski
 from cutpoint.clips import BOUND_KEYS, index_sources, order_moments
+from cutpoint.config import path_key, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.pano.qa import runs_of
 
@@ -174,7 +175,7 @@ def plan(
     for clip, seg, a in matched:
         cat, dur, lo, hi = seg.get("category"), clip["duration"], seg["start"], seg["end"]
         frames = clip["frames"]
-        hits = [t - a for src, t in impacts if src.lower() == seg["source"].lower()]
+        hits = [t - a for src, t in impacts if path_key(src) == path_key(seg["source"])]
         hits = hits if cat == "crash" else []  # impacts in clip time
         frames = [
             {**fr, "flags": []}
@@ -228,7 +229,7 @@ def plan(
 
 def _merge(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def key(e: dict[str, Any]) -> tuple:
-        return str(e["source"]).lower(), e["start"], e["end"], e.get("category")
+        return path_key(str(e["source"])), e["start"], e["end"], e.get("category")
 
     seen = {key(e) for e in old}
     return old + [e for e in new if key(e) not in seen]
@@ -463,7 +464,7 @@ def log_repair(rep: dict[str, Any]) -> None:
                 what,
                 s["id"],
                 s["category"],
-                Path(s["source"]).name,
+                source_path(s["source"]).name,
                 s["start"],
                 s["end"],
                 was,

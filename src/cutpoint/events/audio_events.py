@@ -126,7 +126,7 @@ def _import_panns_models() -> types.ModuleType:
     """Import ``panns_inference.models`` without running the package ``__init__``.
 
     The package ``__init__`` reads (and tries to download) the label CSV in
-    ``~/panns_data``; we keep everything under ``models\\panns`` instead.
+    ``~/panns_data``; we keep everything under ``models/panns`` instead.
     """
     if "panns_inference.models" in sys.modules:
         return sys.modules["panns_inference.models"]

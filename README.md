@@ -64,8 +64,18 @@ uv run cutpoint paths
 To get a global `cutpoint` command instead, run `uv tool install cutpoint` (from PyPI) after
 installing ffmpeg and uv.
 
-On Linux, install ffmpeg and uv with your package manager or their installers, then run the
-last four commands. The optional extras and model downloads are explained in
+On Linux:
+
+```bash
+sudo apt install ffmpeg        # or dnf, pacman, zypper, ...
+curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/FerventOrange/cutpoint.git
+cd cutpoint
+uv sync
+uv run cutpoint paths
+```
+
+The optional extras and model downloads are explained in
 [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
 
 ## Documentation

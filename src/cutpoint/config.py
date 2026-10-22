@@ -8,8 +8,9 @@ documents every key.
 ``projects_dir``
     Where project folders live. ``CUTPOINT_PROJECTS_DIR`` overrides it.
     Default ``<CUTPOINT_HOME>/projects``. Project arguments that
-    are a bare name (``my-trip``) or start with ``projects\\`` are placed here;
-    absolute paths and existing relative paths are used as given.
+    are a bare name (``my-trip``) or start with ``projects/`` (``projects\\``
+    on Windows; both spellings work everywhere) are placed here; absolute
+    paths and existing relative paths are used as given.
 
 ``source_remap``
     ``{"old prefix": "new prefix"}``. A source path under an old prefix is read
@@ -56,9 +57,11 @@ import functools
 import json
 import logging
 import os
+import re
+import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 from cutpoint import paths, state
 from cutpoint.utils import matches_glob
@@ -159,7 +162,8 @@ def resolve_project_path(arg: str | Path, *, bare_names: bool = True) -> Path:
 
     Returns:
         ``arg`` unchanged if it is absolute or exists relative to the current
-        folder; ``projects_dir/<rest>`` if it starts with ``projects``;
+        folder; ``projects_dir/<rest>`` if it starts with ``projects``
+        (``projects/<name>`` or ``projects\\<name>``, on any platform);
         ``projects_dir/<name>`` for a bare name (when ``bare_names``);
         otherwise ``arg`` unchanged.
     """
@@ -167,6 +171,8 @@ def resolve_project_path(arg: str | Path, *, bare_names: bool = True) -> Path:
     if p.is_absolute() or p.drive or p.exists():
         return p
     parts = p.parts
+    if sys.platform != "win32" and "\\" in str(arg):  # projects\<name> typed on POSIX
+        parts = PurePosixPath(str(arg).replace("\\", "/")).parts
     if parts and parts[0].lower() == "projects":
         return projects_dir().joinpath(*parts[1:])
     if bare_names and len(parts) == 1 and parts[0] not in (".", ".."):
@@ -174,10 +180,53 @@ def resolve_project_path(arg: str | Path, *, bare_names: bool = True) -> Path:
     return p
 
 
+# -- path keys ---------------------------------------------------------------
+_WINDOWS_PATH_RE = re.compile(r"^[A-Za-z]:")
+
+
+def path_key(path: str) -> str:
+    """``path`` as a lookup key: lower-cased on Windows (case-insensitive file
+    systems), unchanged elsewhere."""
+    return path.lower() if sys.platform == "win32" else path
+
+
+def source_path(path: str | PurePath) -> PurePath:
+    """A stored source path as a pure path, for its ``name`` / ``stem``.
+
+    Projects written on Windows record ``D:\\Videos\\x.mp4``; on POSIX that
+    string is parsed as a Windows path (drive letter, or backslashes and no
+    ``/``), so ``.name`` is ``x.mp4`` there too. Other paths use the platform's
+    rules.
+    """
+    text = str(path)
+    if (
+        sys.platform == "win32"
+        or _WINDOWS_PATH_RE.match(text)
+        or ("\\" in text and "/" not in text)
+    ):
+        return PureWindowsPath(text)
+    return PurePosixPath(text)
+
+
 # -- source remapping ------------------------------------------------------
+def _pure(path: str) -> PurePath:
+    """``path`` with the platform's separators (backslashes on Windows)."""
+    return PureWindowsPath(path) if sys.platform == "win32" else PurePosixPath(path)
+
+
+def _sep() -> str:
+    return "\\" if sys.platform == "win32" else "/"
+
+
 def norm_path(path: str) -> str:
-    """Case-folded, backslash-separated form for prefix comparison."""
-    return str(PureWindowsPath(path)).replace("/", "\\").rstrip("\\").lower()
+    """Form of ``path`` for prefix comparison.
+
+    Windows: case-folded and backslash-separated. Elsewhere: case kept, POSIX
+    separators.
+    """
+    if sys.platform == "win32":
+        return str(PureWindowsPath(path)).replace("/", "\\").rstrip("\\").lower()
+    return str(PurePosixPath(path)).rstrip("/")
 
 
 @state.register_cache
@@ -192,10 +241,10 @@ def _prefix_forms(prefix: str) -> tuple[str, ...]:
 
 def _strip_prefix(path: str, prefix: str) -> str | None:
     """The remainder of ``path`` below ``prefix`` (any form), or None."""
-    low = norm_path(path)
+    low, sep = norm_path(path), _sep()
     for form in _prefix_forms(prefix):
-        if low == form or low.startswith(form + "\\"):
-            return str(PureWindowsPath(path))[len(form) :].lstrip("\\/")
+        if low == form or low.startswith(form + sep):
+            return str(_pure(path))[len(form) :].lstrip("\\/")
     return None
 
 
@@ -236,5 +285,5 @@ def canonical_source(path: str | Path) -> str:
     for old, new in get_config().source_remap:
         rest = _strip_prefix(text, new)
         if rest is not None:
-            return str(PureWindowsPath(old) / rest) if rest else str(PureWindowsPath(old))
+            return str(_pure(old) / rest) if rest else str(_pure(old))
     return text

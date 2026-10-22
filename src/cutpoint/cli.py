@@ -417,7 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an.add_argument(
         "--out",
-        help="project dir; a bare name or projects\\<name> goes under "
+        help="project dir; a bare name or projects/<name> (projects\\<name> on Windows) goes under "
         "the configured projects folder (CUTPOINT_PROJECTS_DIR / config.json). "
         "Default: <projects>/<input name>, or the common parent folder's "
         "name for several inputs",

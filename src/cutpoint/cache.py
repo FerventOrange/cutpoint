@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -60,6 +61,40 @@ def load_json(path: Path) -> Any | None:
 REPLACE_ATTEMPTS = 5
 
 
+def _umask() -> int:
+    """The process umask.
+
+    Linux: the ``Umask:`` line of ``/proc/self/status``. Elsewhere (or without
+    it) by setting it and restoring it at once.
+    """
+    with contextlib.suppress(OSError, ValueError):
+        for line in (
+            Path("/proc/self/status").read_text(encoding="utf-8", errors="replace").splitlines()
+        ):
+            if line.startswith("Umask:"):
+                return int(line.split()[1], 8)
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+def match_mode(tmp: Path, target: Path) -> None:
+    """Give a ``tempfile`` file (created 0600) the mode a plain write of
+    ``target`` would get, before it is renamed onto ``target``.
+
+    POSIX only: the existing target's mode if there is one, else ``0o666``
+    minus the umask. No-op on Windows.
+    """
+    if os.name != "posix":
+        return
+    try:
+        mode = target.stat().st_mode & 0o7777
+    except OSError:
+        mode = 0o666 & ~_umask()
+    with contextlib.suppress(OSError):  # some SMB/CIFS/FUSE mounts reject chmod
+        tmp.chmod(mode)
+
+
 def save_json(path: Path, data: Any, *, indent: int = 2) -> None:
     """Atomically write ``data`` as JSON (unique temp file, then rename).
 
@@ -84,6 +119,7 @@ def save_json(path: Path, data: Any, *, indent: int = 2) -> None:
         ) as f:
             tmp = Path(f.name)
             f.write(text)
+        match_mode(tmp, path)
         for attempt in range(REPLACE_ATTEMPTS):
             try:
                 os.replace(tmp, path)  # noqa: PTH105 - tests patch cache.os.replace

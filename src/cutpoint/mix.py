@@ -45,7 +45,7 @@ import numpy as np
 
 from cutpoint import cache, ski
 from cutpoint.clips import REACTION_LABEL, index_sources, order_moments
-from cutpoint.config import remap_source
+from cutpoint.config import remap_source, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.events.sheets import contact_sheet
 from cutpoint.events.visual import load_visual
@@ -760,7 +760,7 @@ def _write_sheet(segs: list[dict[str, Any]], out: Path) -> Path | None:
         {
             "path": str(remap_source(s["source"])),
             "t": (s["start"] + s["end"]) / 2,
-            "caption": f"{s['id']} {s['category']} {Path(s['source']).stem[-3:]}"
+            "caption": f"{s['id']} {s['category']} {source_path(s['source']).stem[-3:]}"
             f"@{s['start']:.0f} {s['end'] - s['start']:.0f}s",
         }
         for s in segs

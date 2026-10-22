@@ -10,8 +10,8 @@ callers expect: :func:`decode_raw` tries CUDA first (``hwaccel="cuda"``), while
 :func:`grab_images` decodes on the CPU unless asked (``hwaccel=None``).
 
 The executables are located (in order) via the ``CUTPOINT_FFMPEG`` /
-``CUTPOINT_FFPROBE`` environment variables, ``PATH``, and the WinGet package folder (so a fresh
-``winget install Gyan.FFmpeg`` works before the shell's PATH is refreshed).
+``CUTPOINT_FFPROBE`` environment variables, ``PATH``, and on Windows the WinGet package folder
+(so a fresh ``winget install Gyan.FFmpeg`` works before the shell's PATH is refreshed).
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -62,6 +63,11 @@ def find_tool(name: str) -> str:
     on_path = shutil.which(name)
     if on_path:
         return on_path
+    if sys.platform != "win32":
+        raise FFmpegError(
+            f"{name} not found. Install ffmpeg with your package manager (e.g. "
+            f"sudo apt install ffmpeg) or set CUTPOINT_{name.upper()}=/path/to/{name}."
+        )
     roots = [
         Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links",
         Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages",

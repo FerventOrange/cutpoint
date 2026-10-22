@@ -19,6 +19,7 @@ from typing import Any
 
 from cutpoint import cache
 from cutpoint import paths as cutpoint_paths
+from cutpoint.config import source_path
 from cutpoint.events import paths
 from cutpoint.events.audio_events import AudioParams, PannsDetector, detect_audio_events
 from cutpoint.events.common import (
@@ -496,7 +497,7 @@ def _audio_check(
     if best:
         src, e = best
         samples = audio_slice(sources[src], e["peak_t"] - 4, e["peak_t"] + 4)
-        where = f"{Path(src).name} @ {e['peak_t']:.1f}s (PANNs {e['confidence']:.2f})"
+        where = f"{source_path(src).name} @ {e['peak_t']:.1f}s (PANNs {e['confidence']:.2f})"
     else:
         s = next(iter(sources.values()))
         samples = audio_slice(s, 0, 8)

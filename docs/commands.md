@@ -4,7 +4,7 @@ Run `cutpoint <command> --help` for the full option list of your installed versi
 explains what each command does and its most useful options. In the examples, `cutpoint` means
 `uv run cutpoint` (or the installed tool).
 
-A project argument that is a bare name (`my-edit`) or starts with `projects\` is placed in the
+A project argument that is a bare name (`my-edit`) or starts with `projects/` is placed in the
 projects folder (see [Configuration](configuration.md#projects_dir)). Absolute paths, and
 relative paths that exist in the current folder, are used as given.
 
@@ -185,9 +185,9 @@ and want more room. Only `.mp4` files still in the folder are re-exported, with 
 names and order, so deletions and renames from review are kept.
 
 ```powershell
-cutpoint extend projects\my-edit\clips --seconds 2          # projects\my-edit\clips_ext2s
-cutpoint extend projects\my-edit\clips --start 1 --end 3    # clips_ext1-3s
-cutpoint extend projects\my-edit\clips                      # speech boundaries only, clips_speech
+cutpoint extend projects/my-edit/clips --seconds 2          # projects/my-edit/clips_ext2s
+cutpoint extend projects/my-edit/clips --start 1 --end 3    # clips_ext1-3s
+cutpoint extend projects/my-edit/clips                      # speech boundaries only, clips_speech
 ```
 
 - `--clip-override GLOB KEY=S` (repeatable) sets per-clip `speech_max_extend`, `speech_max_lead`,
@@ -302,7 +302,7 @@ Fits one learned style on several projects that already have `refmatch.json` (ru
 cutpoint setup [--only pip panns llama omni visual voice] [--force]
 ```
 
-Downloads the models and tools for `events`. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
+Downloads the models and tools for `events`. On Linux it downloads the official Linux build: the oldest CUDA build (with the cudart libraries) in the newest llama.cpp release (12.8 today; needs a recent NVIDIA driver) when an NVIDIA driver is detected, otherwise Vulkan, otherwise CPU. With an older NVIDIA driver, set `CUTPOINT_LLAMA_SERVER` or put a Vulkan or self-built `llama-server` on `PATH`. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled build, then `PATH`. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
 
 ## paths
 

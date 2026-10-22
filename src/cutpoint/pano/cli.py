@@ -3,11 +3,13 @@
 Optional 360-camera (Insta360 X3) module. Typical flow (rendering itself
 happens in ``cutpoint clips`` / ``cutpoint extend``)::
 
-    cutpoint 360 scan D:\\Videos\\360 --out trip-360             # pano.json, IMU, calibration
+    cutpoint 360 scan /media/x3/360 --out trip-360               # pano.json, IMU, calibration
     cutpoint 360 analyze trip-360 --style ski                     # views + analyze + events
     cutpoint clips trip-360 --max-total 150                       # 360 clips rendered flat
-    cutpoint extend projects\\trip-360\\clips --seconds 4
-    cutpoint assemble projects\\trip-360\\clips_ext4s --loudnorm
+    cutpoint extend projects/trip-360/clips --seconds 4
+    cutpoint assemble projects/trip-360/clips_ext4s --loudnorm
+
+On Windows, paths such as ``D:\\Videos\\360`` and ``projects\\trip-360\\clips`` work too.
 """
 
 from __future__ import annotations
@@ -647,7 +649,7 @@ def add_parser(sub: Any) -> None:
     sti = s3.add_parser(
         "stitch",
         help="stitch whole clips with the Insta360 Media SDK "
-        "(MediaSDKTest.exe; only clips holding chosen moments)",
+        "(MediaSDKTest; only clips holding chosen moments)",
     )
     sti.add_argument("project")
     g2 = sti.add_mutually_exclusive_group()

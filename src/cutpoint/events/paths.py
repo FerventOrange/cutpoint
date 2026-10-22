@@ -8,6 +8,7 @@ roots come from :mod:`cutpoint.paths`.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from cutpoint import paths as _paths
@@ -122,10 +123,19 @@ def silero_vad() -> Path:
 
 
 def llama_server_exe() -> Path:
-    """Path of ``llama-server.exe`` (``CUTPOINT_LLAMA_SERVER`` overrides it)."""
+    """Path of ``llama-server`` (``llama-server.exe`` on Windows).
+
+    ``CUTPOINT_LLAMA_SERVER`` first, then the build ``cutpoint setup`` put in
+    ``tools/llama.cpp``, then ``llama-server`` on ``PATH`` (e.g. a self-built
+    one). If none exists, the expected path in ``tools/llama.cpp``.
+    """
     env = _paths.env_path("LLAMA_SERVER")
     if env:
         return env
+    name = "llama-server.exe" if os.name == "nt" else "llama-server"
     folder = llama_dir()
-    hits = sorted(folder.glob("**/llama-server.exe"), key=lambda p: len(str(p)))
-    return hits[0] if hits else folder / "llama-server.exe"
+    hits = sorted(folder.glob(f"**/{name}"), key=lambda p: len(str(p)))
+    if hits:
+        return hits[0]
+    on_path = shutil.which("llama-server")
+    return Path(on_path) if on_path else folder / name

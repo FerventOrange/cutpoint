@@ -66,6 +66,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.config import path_key, source_path
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs
 
 logger = logging.getLogger(__name__)
@@ -154,7 +155,7 @@ class SkiContext:
 
 
 def _key(path: str | Path) -> str:
-    return str(Path(path)).lower()
+    return path_key(str(Path(path)))
 
 
 def prepare(
@@ -637,7 +638,7 @@ def merge_must_include(picks: list[Pick], forced: list[Pick]) -> list[Pick]:
 def features_path(project: Path, src: Path, offset: float = 0.0) -> Path:
     """``<project>/ski_features/<stem>-<digest>.npz`` for one source (part)."""
     digest = hashlib.sha1(f"{_key(src)}|{offset:.3f}".encode()).hexdigest()[:8]
-    return project / FEATURES_DIR / f"{Path(src).stem}-{digest}.npz"
+    return project / FEATURES_DIR / f"{source_path(src).stem}-{digest}.npz"
 
 
 def save_features(
