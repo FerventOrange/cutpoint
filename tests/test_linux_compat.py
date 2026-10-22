@@ -787,3 +787,23 @@ def test_wrapper_without_a_venv_explains_uv_sync(tmp_path):
     assert done.returncode == 1
     assert "uv sync" in done.stderr
     assert ".venv/bin/python" in done.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="mapped drives are a Windows feature")
+@pytest.mark.parametrize(
+    ("key", "typed"),
+    [
+        (r"\\nas\share\Footage", r"Q:\Footage\x.mp4"),
+        (r"Q:\Footage", r"\\nas\share\Footage\x.mp4"),
+    ],
+    ids=["unc-key-drive-input", "drive-key-unc-input"],
+)
+def test_remap_source_matches_a_disconnected_mapped_drive_in_either_form(
+    home, tmp_path, monkeypatch, key, typed
+):
+    """Q: is mapped to a NAS share but not connected here, so it cannot be resolved."""
+    monkeypatch.setattr(config, "_drive_remote", lambda d: r"\\nas\share" if d == "Q:" else None)
+    copy = write(tmp_path / "copy" / "x.mp4")
+    write(home / "config.json", json.dumps({"source_remap": {key: str(tmp_path / "copy")}}))
+    config.get_config.cache_clear()
+    assert config.remap_source(typed) == copy

@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.config import remap_source
+from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.events.scoring import rescore_highlights
 from cutpoint.ffmpeg_utils import (
@@ -873,7 +873,8 @@ def _find_input(target: Path, exclude: Sequence[str], recursive: bool) -> list[P
     if io == target:
         return find_videos(target, exclude=exclude, recursive=recursive)
     logger.info("source_remap: %s -> %s", target, io)
-    base, orig = io.resolve(), target.resolve()
+    # UNC form for a disconnected mapped drive, as find_videos records a reachable one.
+    base, orig = io.resolve(), Path(unc_path(str(target.resolve())))
     found: list[Path] = []
     for read in find_videos(io, recursive=recursive):
         # A symlink resolved outside the folder keeps the path that was read.
