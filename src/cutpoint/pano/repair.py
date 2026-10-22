@@ -28,6 +28,12 @@ segment are repaired as above; a blocking span in the lead-in or tail only caps 
 (``min_start`` / ``max_end`` on the segment, honoured by ``cutpoint clips``). When
 the rendered edit runs past ``mix.QA_LENGTH_S`` the longest extensions are capped
 the same way, social tails without speech first.
+
+A segments file not written by ``cutpoint mix`` (``[{source, start, end, label}]``,
+a segment without ``id`` and ``category``) is kept as picked: its own ``id`` names a
+segment (as in ``cutpoint clips``), else it is ``sNNN`` of the list; affected clips
+are only cut or dropped (nothing is refilled) and the length budget and content QA of
+a mix are left out.
 """
 
 from __future__ import annotations
@@ -209,7 +215,7 @@ def plan(
             if s1 > hi + EPS:  # in the tail: end before it
                 b = bounds.setdefault(seg["id"], {})
                 b["max_end"] = round(min(b.get("max_end", math.inf), s0), 2)
-        if core_why:
+        if core_why and cat is not None:  # no category: weak frames are no problem
             spans += [((a + t0, a + t1), cat) for t0, t1 in _spans(frames, dt, dur, weak)]
         for (s0, s1), only in spans:
             s0, s1 = max(s0, lo), min(s1, hi)  # inside the segment: excluded
@@ -347,18 +353,32 @@ def repair(
     Writes the repaired list to ``out`` (default: over ``segments_file``, the old one
     kept as the first free ``<name>.bak.json``, ``<name>.1.bak.json``, ...); when clips
     are cut or dropped also ``mix_report.json``, ``mix_sheet.jpg`` and the merged
-    ``mix_exclude.json`` next to it. Nothing is written when nothing needs repair.
+    ``mix_exclude.json`` next to it. For a file not written by ``cutpoint mix`` only
+    ``mix_exclude.json`` is written next to it. Nothing is written when nothing needs
+    repair.
 
     Returns:
         ``{"segments", "written", "findings", "skipped", "trimmed", "dropped", "added",
         "capped", "exclusions", "rendered_s", "content_qa"}``; ``rendered_s`` (rendered
         clips only) is ``{"before", "after", "limit"}`` and the content QA then uses the
-        rendered lengths.
+        rendered lengths; both stay ``None`` for a file not written by ``cutpoint mix``.
     """
     old = cache.load_json(segments_file)
     qa = cache.load_json(qa_file)
     if not isinstance(old, list) or not old:
         raise ValueError(f"{segments_file}: not a segments list")
+    for i, s in enumerate(old, 1):
+        try:
+            if not isinstance(s, dict) or "source" not in s:
+                raise KeyError("source")
+            start, end = float(s["start"]), float(s["end"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"{segments_file}: segment {i} needs source, start and end") from None
+        old[i - 1] = {**s, "start": start, "end": end}  # "100.0" too, as clips.load_segments
+    # run_mix writes id and category on every segment; anything else is the user's picks
+    picked = not all("id" in s and s.get("category") for s in old)
+    given = {s["id"] for s in old if "id" in s}
+    old = [s if "id" in s else {**s, "id": f"s{i:03d}"} for i, s in enumerate(old, 1)]
     if qa is None:
         raise FileNotFoundError(f"QA report not found: {qa_file}")
     src_dir = Path(qa.get("source_dir") or "")
@@ -389,34 +409,39 @@ def repair(
         written = out.with_name(mix.EXCLUDE_FILE)
         have = written if written.is_file() else project / mix.EXCLUDE_FILE
         excl = _merge(mix.load_exclusions(have), new_excl)
-        # Back up only once run_mix has written over the original: a failed selection
-        # ("Nothing selected") leaves no .bak.json and an earlier one untouched.
-        original = segments_file.read_bytes() if same else None
-        try:
-            report = mix.run_mix(
-                project,
-                target_s=report.get("target_s", 240.0),
-                quotas=report.get("quotas"),
-                out=out,
-                sheet=sheet,
-                exclude=excl,
-                previous=old,
-            )
-        except BaseException:
-            try:  # failed after writing (the sheet): keep the old
-                if original is not None and segments_file.read_bytes() != original:
-                    _backup(segments_file, original)
-            except OSError:
-                logger.warning("%s: could not write the backup", segments_file)
-            raise
-        if original is not None:
-            _backup(segments_file, original)
-        cache.save_json(written, excl)
-        new = cache.load_json(out) or []
-        rep["exclusions"], rep["content_qa"] = len(excl), report["content_qa"]
+        if picked:
+            new = _cut(new, new_excl)
+            cache.save_json(written, excl)
+            rep["exclusions"] = len(excl)
+        else:
+            # Back up only once run_mix has written over the original: a failed selection
+            # ("Nothing selected") leaves no .bak.json and an earlier one untouched.
+            original = segments_file.read_bytes() if same else None
+            try:
+                report = mix.run_mix(
+                    project,
+                    target_s=report.get("target_s", 240.0),
+                    quotas=report.get("quotas"),
+                    out=out,
+                    sheet=sheet,
+                    exclude=excl,
+                    previous=old,
+                )
+            except BaseException:
+                try:  # failed after writing (the sheet): keep the old
+                    if original is not None and segments_file.read_bytes() != original:
+                        _backup(segments_file, original)
+                except OSError:
+                    logger.warning("%s: could not write the backup", segments_file)
+                raise
+            if original is not None:
+                _backup(segments_file, original)
+            cache.save_json(written, excl)
+            new = cache.load_json(out) or []
+            rep["exclusions"], rep["content_qa"] = len(excl), report["content_qa"]
         _bound(new, _near(new, excl))
     _bound(new, bounds)
-    if manifest is not None:
+    if manifest is not None and not picked:
         est = _fit_budget(new, manifest)
         before = sum(e["duration"] for e in manifest.get("clips", []))
         rep["rendered_s"] = {
@@ -434,11 +459,36 @@ def repair(
     _changes(rep, old, new)
     if not new_excl and new == old:
         return rep
-    if not new_excl and same:
+    if (picked or not new_excl) and same:
         _backup(segments_file, segments_file.read_bytes())
+    if picked:  # the ids given here were only for matching
+        new = [{k: v for k, v in s.items() if k != "id" or v in given} for s in new]
     cache.save_json(out, new)
     rep["written"] = True
     return rep
+
+
+def _cut(segs: list[dict[str, Any]], excl: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hand-picked ``segs`` cut to their longest part outside ``excl`` (global or of the
+    segment's category) when that is at least :func:`cutpoint.mix.min_length`, else
+    dropped; nothing is refilled."""
+    out = []
+    for s in segs:
+        holes = [
+            (float(e["start"]), float(e["end"]))
+            for e in excl
+            if ski._key(e["source"]) == ski._key(s["source"])
+            and e.get("category") in (None, s.get("category"))
+        ]
+        if not holes:
+            out.append(s)
+            continue
+        part = mix._piece(
+            s["start"], s["end"], holes, mix.min_length(s.get("category") or ""), None
+        )
+        if part is not None:
+            out.append({**s, "start": part[0], "end": part[1]})
+    return out
 
 
 def _backup(segments_file: Path, original: bytes) -> None:
@@ -483,13 +533,13 @@ def _changes(rep: dict[str, Any], old: list[dict[str, Any]], new: list[dict[str,
 
 
 def _brief(s: dict[str, Any]) -> dict[str, Any]:
-    return {k: s[k] for k in ("id", "category", "source", "start", "end")}
+    return {k: s.get(k) for k in ("id", "category", "source", "start", "end")}
 
 
 def log_repair(rep: dict[str, Any]) -> None:
     """Findings, then what was trimmed, dropped, added and capped, and the content QA."""
     for f in rep["findings"]:
-        logger.info("%s %-16s %-8s %s", f["id"], f["file"], f["category"], f["problem"])
+        logger.info("%s %-16s %-8s %s", f["id"], f["file"], f["category"] or "-", f["problem"])
     if rep["skipped"]:
         logger.info("%d clip(s) skipped as stale; re-run 360 director/clips and qa", rep["skipped"])
     for what in ("trimmed", "dropped", "added", "capped"):
@@ -500,7 +550,7 @@ def log_repair(rep: dict[str, Any]) -> None:
                 "%-7s %s %-8s %s %.1f-%.1f%s%s",
                 what,
                 s["id"],
-                s["category"],
+                s["category"] or "-",
                 source_path(s["source"]).name,
                 s["start"],
                 s["end"],
@@ -521,6 +571,7 @@ def log_repair(rep: dict[str, Any]) -> None:
             logger.info("nothing to repair")
         return
     qa = rep["content_qa"]
-    failed = [k for k, v in qa["checks"].items() if not v["ok"]] if qa else []
-    logger.info("content QA: %s", f"FAIL ({', '.join(failed)})" if failed else "pass")
+    if qa:  # none for a hand-written segments file
+        failed = [k for k, v in qa["checks"].items() if not v["ok"]]
+        logger.info("content QA: %s", f"FAIL ({', '.join(failed)})" if failed else "pass")
     logger.info("wrote %s (%d exclusions)", rep["segments"], rep["exclusions"])
