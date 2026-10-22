@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `stage --exclude` matches the original path of footage read through `source_remap`, as
+  `analyze --exclude` does, instead of the remapped location. Files are still copied from where
+  `analyze` reads them (#93).
 - `clips`, `extend`, `360 analyze`, `360 director`, `360 stitch` and `360 status` now read footage
   whose raw folder moved through `source_remap`. Previously ffmpeg failed with "No such file", and
   `360 analyze` skipped every moved clip with "no _00_.insv for the IMU". `360 status` finds the
