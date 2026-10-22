@@ -1,9 +1,9 @@
 """Start, health-check and stop a local ``llama-server`` (llama.cpp) process.
 
-The server is loaded with the model + mmproj from ``models\\llm`` (``-m`` /
+The server is loaded with the model + mmproj from ``models/llm`` (``-m`` /
 ``--mmproj``). If that fails, e.g. the 400 some builds return with a manually
 loaded mmproj, :class:`LlamaServer` can retry with ``-hf`` loading, using
-``LLAMA_CACHE=models\\llama-cache`` so any download stays under ``models\\``.
+``LLAMA_CACHE=models/llama-cache`` so any download stays under ``models/``.
 
 Before starting, any Ollama models are unloaded so the two never hold VRAM at
 the same time.
@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import socket
 import subprocess
+import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +48,8 @@ def _kill_with_parent(proc: subprocess.Popen[bytes]) -> None:
     """Put ``proc`` in a Windows job object that is killed when Python exits.
 
     Without this, a crashed or killed driver leaves llama-server holding
-    ~8 GB of VRAM. No-op on other platforms or if the API is unavailable.
+    ~8 GB of VRAM. No-op on other platforms (Linux uses
+    :func:`_pdeathsig_hook`) or if the API is unavailable.
     """
     global _JOB_HANDLE
     if os.name != "nt":
@@ -106,6 +110,35 @@ def _kill_with_parent(proc: subprocess.Popen[bytes]) -> None:
         )
     except (OSError, AttributeError, ValueError) as err:
         logger.debug("job object not available: %s", err)
+
+
+def _pdeathsig_hook() -> Callable[[], None] | None:
+    """Linux ``preexec_fn`` that makes the child get SIGTERM when Python exits.
+
+    The Linux counterpart of :func:`_kill_with_parent`. libc is loaded here,
+    in the parent, so the child only calls ``prctl`` between fork and exec.
+    None on other platforms or if libc is unavailable.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes  # noqa: PLC0415
+
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+    except (OSError, AttributeError) as err:
+        logger.debug("prctl not available: %s", err)
+        return None
+    parent = os.getpid()
+
+    def hook() -> None:
+        try:
+            prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+            if os.getppid() != parent:  # parent already gone
+                os.kill(os.getpid(), signal.SIGTERM)
+        except Exception:  # noqa: BLE001 - best effort, must not break the launch
+            pass
+
+    return hook
 
 
 class LlamaServerError(RuntimeError):
@@ -194,6 +227,11 @@ class LlamaServer:
         unload_ollama()
         cmd = self.command()
         env = dict(os.environ, LLAMA_CACHE=str(paths.llama_cache()))
+        exe_dir = str(paths.llama_server_exe().parent)
+        if sys.platform.startswith("linux"):  # the Linux builds ship .so files next to the exe
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(
+                p for p in (exe_dir, env.get("LD_LIBRARY_PATH")) if p
+            )
         logger.info("Starting llama-server: %s", subprocess.list2cmdline(cmd))
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = self.log_path.open("wb")
@@ -203,8 +241,9 @@ class LlamaServer:
             stdout=log,
             stderr=subprocess.STDOUT,
             env=env,
-            cwd=str(paths.llama_server_exe().parent),
+            cwd=exe_dir,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            preexec_fn=_pdeathsig_hook(),
         )
         _kill_with_parent(self.proc)
         deadline = time.time() + self.startup_timeout_s
