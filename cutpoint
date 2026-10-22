@@ -1,0 +1,13 @@
+#!/bin/sh
+# Run Cutpoint with the project venv: ./cutpoint <analyze|clips|assemble|...> ...
+# (needs the .venv created by uv sync; run it once in the repo)
+self=$0
+if command -v readlink >/dev/null 2>&1; then
+    self=$(readlink -f -- "$0" 2>/dev/null) || self=$0
+fi
+here=$(cd -- "$(dirname -- "$self")" && pwd -P) || exit 1
+if [ ! -x "$here/.venv/bin/python" ]; then
+    echo "cutpoint: $here/.venv/bin/python not found; run 'uv sync' in $here" >&2
+    exit 1
+fi
+exec "$here/.venv/bin/python" -m cutpoint "$@"
