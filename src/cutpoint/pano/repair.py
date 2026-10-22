@@ -368,8 +368,13 @@ def repair(
     if not isinstance(old, list) or not old:
         raise ValueError(f"{segments_file}: not a segments list")
     for i, s in enumerate(old, 1):
-        if not isinstance(s, dict) or not {"source", "start", "end"} <= s.keys():
-            raise ValueError(f"{segments_file}: segment {i} needs source, start and end")
+        try:
+            if not isinstance(s, dict) or "source" not in s:
+                raise KeyError("source")
+            start, end = float(s["start"]), float(s["end"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"{segments_file}: segment {i} needs source, start and end") from None
+        old[i - 1] = {**s, "start": start, "end": end}  # "100.0" too, as clips.load_segments
     # run_mix writes id and category on every segment; anything else is the user's picks
     picked = not all("id" in s and s.get("category") for s in old)
     given = {s["id"] for s in old if "id" in s}

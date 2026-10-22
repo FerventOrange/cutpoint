@@ -377,12 +377,19 @@ def test_handwritten_segments_are_trimmed_or_dropped(
     assert (tmp_path / "final_segments.bak.json").is_file()
 
 
+@pytest.mark.parametrize(
+    "segment",
+    [
+        pytest.param({"source": "/v/a.insv", "end": 3.0}, id="missing-start"),
+        pytest.param({"source": "/v/a.insv", "start": "x", "end": 3.0}, id="non-numeric-start"),
+    ],
+)
 def test_cli_repair_reports_a_malformed_segment_as_an_error(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, segment: dict[str, object]
 ) -> None:
     qa = _handwritten(tmp_path, True)
     bad = tmp_path / "bad.json"
-    cache.save_json(bad, [{"source": "/v/a.insv", "end": 3.0}])
+    cache.save_json(bad, [segment])
     from cutpoint.cli import main  # noqa: PLC0415
 
     code = main(["360", "repair", str(tmp_path), "--segments", str(bad), "--qa", str(qa)])
