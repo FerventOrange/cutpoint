@@ -43,7 +43,7 @@ from cutpoint.clips import BOUND_KEYS, index_sources, order_moments
 from cutpoint.config import path_key, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.pano.qa import runs_of
-from cutpoint.pano.render import free_backup_name
+from cutpoint.pano.render import free_backup_name, write_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -443,12 +443,27 @@ def repair(
 
 def _backup(segments_file: Path, original: bytes) -> None:
     """Write ``original`` to the first free ``<name>.bak.json``, ``<name>.1.bak.json``,
-    ...; if that fails, put it back into ``segments_file`` and re-raise."""
+    ...; if that fails, put it back into ``segments_file`` and re-raise. Both writes go
+    through a temp file and a rename; if the atomic restore fails too, the restore falls
+    back to writing ``segments_file`` in place."""
     try:
-        free_backup_name(segments_file, segments_file.stem, ".bak.json").write_bytes(original)
+        _write_bytes(free_backup_name(segments_file, segments_file.stem, ".bak.json"), original)
     except OSError:
-        segments_file.write_bytes(original)
+        try:
+            _write_bytes(segments_file, original)
+        except OSError:  # disk full or file held open on Windows: in place needs no extra space
+            segments_file.write_bytes(original)
         raise
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    """Atomically write ``data`` to ``path`` with the mode a plain write would give."""
+
+    def fill(tmp: Path) -> None:
+        tmp.write_bytes(data)
+        cache.match_mode(tmp, path)
+
+    write_atomic(path, fill)
 
 
 def _changes(rep: dict[str, Any], old: list[dict[str, Any]], new: list[dict[str, Any]]) -> None:
