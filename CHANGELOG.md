@@ -48,9 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `crashes` (default `--reanalyze`) and ski `events` no longer exit 1 with "Input not found" after
   writing results, or silently drop footage from `highlights.json`, when an input or source is not
   at the path `analyze` recorded (moved, or only reachable through `source_remap`). They warn that
-  `highlights.json` is left unchanged and exit 0; re-analysis needs the footage at its original
-  path, or rerun `analyze` on the new location and then `crashes`/`events` (they match sources by
-  path) (#67).
+  `highlights.json` is left unchanged and exit 0 (#67). Remapped footage is now re-analyzed (#80).
 - `analyze` with `source_remap` active records the original path, not the remapped copy, in
   `highlights.json`, the `transcript.txt` headers, read errors, `telemetry.json` and ski feature
   metadata, while still reading the files through the remap. Once the copy is removed and the
@@ -58,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it as "footage not reachable". Caches are reused. Projects analyzed with a remap before this fix
   keep the copy paths until `analyze` runs again; rerun `crashes` and `events` afterwards so
   their results match the new paths (#77).
+- `analyze` on an input whose original path is gone but which `source_remap` maps to an existing
+  location reads from that location instead of failing with `Input not found`, and records the
+  original spelling; for folders, `--recursive` and `--exclude` patterns match the original paths.
+  `crashes --reanalyze` and ski `events` re-analyze such remapped projects instead of skipping
+  them. They still warn and leave `highlights.json` unchanged only when re-analysis would fail,
+  drop a source or re-key one, for example a file moved out of a folder input that still exists,
+  or a 0.1.0 project that recorded the copy path (rerun `analyze` for those) (#80).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for

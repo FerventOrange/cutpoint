@@ -51,7 +51,7 @@ from cutpoint.transcribe import (
     filter_hallucinations,
     flat_words,
 )
-from cutpoint.utils import clock, find_videos, slugify
+from cutpoint.utils import clock, find_videos, matches_glob, slugify
 from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
@@ -856,6 +856,48 @@ def auto_vision_top(total_duration_s: float) -> int:
     return max(VISION_TOP_MIN, min(VISION_TOP_MAX, math.ceil(total_duration_s / 120)))
 
 
+def _find_input(target: Path, exclude: Sequence[str], recursive: bool) -> list[Path]:
+    """``find_videos`` for one input, read through ``source_remap`` when it is missing.
+
+    A missing file or folder whose ``source_remap`` target exists is listed there;
+    each video found is returned under its original spelling (below ``target``), and
+    ``exclude`` is matched against that spelling, as for an input still in place.
+    A video in ``source_remap_exclude`` is skipped with a warning: it would be read
+    at its missing original.
+
+    Raises:
+        FileNotFoundError: As ``find_videos``, when neither path can be listed.
+    """
+    # os.path.exists: any OSError counts as missing; find_videos then reports it.
+    io = target if os.path.exists(target) else remap_source(target)  # noqa: PTH110
+    if io == target:
+        return find_videos(target, exclude=exclude, recursive=recursive)
+    logger.info("source_remap: %s -> %s", target, io)
+    base, orig = io.resolve(), target.resolve()
+    found: list[Path] = []
+    for read in find_videos(io, recursive=recursive):
+        # A symlink resolved outside the folder keeps the path that was read.
+        p = orig / read.relative_to(base) if read.is_relative_to(base) else read
+        if matches_glob(p, exclude):
+            continue
+        if p != read and remap_source(p) == p:  # source_remap_exclude: not read via the remap
+            logger.warning(
+                "Skipping %s: in source_remap_exclude and missing at its original path", p
+            )
+            continue
+        found.append(p)
+    return found
+
+
+def _find_inputs(
+    target: Path | Sequence[Path], exclude: Sequence[str], recursive: bool
+) -> list[Path]:
+    """Videos of every input (see :func:`_find_input`), de-duplicated, in input order."""
+    targets = [target] if isinstance(target, (str, Path)) else target
+    found = [p for t in targets for p in _find_input(Path(t), exclude, recursive)]
+    return list(dict.fromkeys(found))
+
+
 def analyze(
     target: Path | Sequence[Path],
     style: Style,
@@ -903,7 +945,7 @@ def analyze(
         Path of the written highlights.json.
     """
     t_start = time.perf_counter()
-    found = find_videos(target, exclude=exclude, recursive=recursive)
+    found = _find_inputs(target, exclude, recursive)
     # Projects record the original paths; files are read through config source_remap.
     # De-duplicate by the file actually read; the first spelling given is recorded.
     by_read: dict[Path, Path] = {}
@@ -1171,9 +1213,9 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
 
     ``analyze`` refuses a missing input, and without it the source would drop out
     of highlights.json; ``crashes`` and ``events`` already skipped it, so they
-    leave highlights.json unchanged instead of failing. Likewise when an input or a
-    recorded source is missing at the path analyze recorded (moved, or only
-    reachable through ``source_remap``): re-analysing would drop or re-key it.
+    leave highlights.json unchanged instead of failing. Likewise when analyze would
+    not find an input, or a recorded source under its recorded path, even through
+    ``source_remap``: re-analysing would fail, or drop or re-key the source.
 
     Returns:
         Path of highlights.json, or None if skipped.
@@ -1192,18 +1234,26 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
             offline,
         )
         return None
-    # ``analyze`` reads its inputs at their recorded paths; one reachable only through
-    # ``source_remap`` would fail it.
-    # A source missing under a folder input that still exists would silently drop out.
+    # Run analyze's own input search (through ``source_remap`` for a moved input): an
+    # input it cannot find would fail it, and a recorded source it does not find under
+    # the same spelling would drop out (e.g. moved out of a folder input that still
+    # exists) or be re-keyed (an older project that recorded the remapped copy).
+    st = hl.get("settings", {})
     srcs = [s["path"] for s in hl.get("sources", [])]
-    inputs = hl.get("settings", {}).get("inputs") or srcs
-    # os.path.exists: any OSError (e.g. a dead network mount) counts as missing
-    missing = sum(not os.path.exists(p) for p in dict.fromkeys([*inputs, *srcs]))  # noqa: PTH110
+    found: set[str] = set()
+    missing = 0
+    for p in dict.fromkeys(st.get("inputs") or srcs):
+        try:
+            batch = _find_input(Path(p), st.get("exclude") or [], bool(st.get("recursive")))
+        except FileNotFoundError:
+            missing += 1
+            continue
+        found.update(os.path.normcase(str(f)) for f in batch)
+    missing += sum(os.path.normcase(str(Path(p))) not in found for p in dict.fromkeys(srcs))
     if missing:
         logger.warning(
-            "%d path(s) not found where analyze recorded them (moved, or only reachable "
-            "through source_remap); highlights.json left unchanged, rerun once the footage "
-            "is back at its original path",
+            "%d path(s) not found where analyze recorded them, even through source_remap; "
+            "highlights.json left unchanged, rerun once the footage is back",
             missing,
         )
         return None
