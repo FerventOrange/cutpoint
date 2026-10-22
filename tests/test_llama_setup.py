@@ -264,8 +264,24 @@ def test_install_panns_falls_back_to_next_mirror(tmp_path, monkeypatch, caplog, 
 
 @pytest.mark.parametrize(
     ("bad", "shown"),
-    [("http://[foo", "[foo"), ("https://user:TOKEN@[foo/x?t=SECRET", "[foo")],
-    ids=["plain", "credentials"],
+    [
+        ("http://[foo", "[foo"),
+        ("https://user:TOKEN@[foo/x?t=SECRET", "[foo"),
+        ("user:TOKEN@host/x?t=SECRET", "host"),  # no "//": parses with no host
+        ("http://user:TOKEN@host:SECRET/x", "host"),  # nonnumeric port
+        ("TOKEN@host/x?t=SECRET", "host"),  # no scheme: "unknown url type"
+        ("TOKEN:x@host/x?t=SECRET", "host"),  # urllib reads "token" as the scheme
+        ("file:https://user:TOKEN@host/x?t=SECRET", "host"),
+    ],
+    ids=[
+        "plain",
+        "credentials",
+        "no-slashes",
+        "bad-port",
+        "no-scheme",
+        "token-user",
+        "file-nested",
+    ],
 )
 def test_install_panns_malformed_env_url_is_a_failed_mirror(
     tmp_path, monkeypatch, caplog, bad, shown
@@ -289,5 +305,5 @@ def test_install_panns_malformed_env_url_is_a_failed_mirror(
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert len(warnings) == 1
     assert shown in warnings[0]
-    assert "TOKEN" not in caplog.text
-    assert "SECRET" not in caplog.text
+    assert "token" not in caplog.text.lower()  # urllib lowercases the scheme in its text
+    assert "secret" not in caplog.text.lower()

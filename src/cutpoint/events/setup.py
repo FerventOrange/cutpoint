@@ -51,6 +51,7 @@ import shutil
 import sys
 import tarfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -116,17 +117,29 @@ def _sha256(path: Path) -> str:
 
 
 def _host(url: str) -> str:
-    """Host name of ``url`` for log lines (no credentials or port).
+    """Host name of ``url`` for log lines (no credentials, port, path or query).
 
-    A malformed ``url`` (``urlsplit`` raises ValueError) is reduced to its
-    authority without credentials (no scheme, path, query, fragment or text up
-    to the last ``@``), so a log line names the bad value instead of crashing.
+    A local ``file:`` URL (no host, absolute path) is shown as ``file://<path>``: a local path
+    carries no credentials and is what the user needs to see. Any other value
+    without a host name (malformed, or parsed with no host such as
+    ``user:TOKEN@host/x``) is reduced to its authority: no scheme, path, query,
+    fragment, text up to the last ``@`` or port. Nothing left gives a placeholder.
     """
     try:
-        return urllib.parse.urlsplit(url).hostname or url
+        parts = urllib.parse.urlsplit(url)
     except ValueError:
-        authority = re.split(r"[/?#]", url.split("://", 1)[-1], maxsplit=1)[0]
-        return authority.rpartition("@")[2]
+        parts = None
+    if parts is not None:
+        if parts.hostname:
+            return parts.hostname
+        if parts.scheme == "file" and not parts.netloc and parts.path.startswith("/"):
+            return f"file://{parts.path}"
+    authority = re.split(r"[/?#]", url.split("://", 1)[-1], maxsplit=1)[0].rpartition("@")[2]
+    if authority.startswith("["):  # IPv6 literal, possibly unclosed: drop a port after "]"
+        host = authority.partition("]")[0] + ("]" if "]" in authority else "")
+    else:
+        host = authority.partition(":")[0]
+    return host or "<no host>"
 
 
 def download(
@@ -263,7 +276,22 @@ def _download_mirrors(urls: list[str], dst: Path, size: int, sha256: str) -> Pat
             RuntimeError,  # sha256 mismatch
             SlowDownloadError,
         ) as e:
-            reason = f"too slow: {e}" if isinstance(e, SlowDownloadError) else str(e)
+            # urllib quotes parts of a bad URL (credentials, port, query, a token as
+            # the "scheme", a non-local file: path) in these messages, so only the
+            # type is shown; others get the URL redacted.
+            if (
+                isinstance(e, (ValueError, http.client.InvalidURL))
+                or (
+                    isinstance(e, urllib.error.URLError)
+                    and str(e.reason).startswith("unknown url type")
+                )
+                or (url.lower().startswith("file:") and not host.startswith("file://"))
+            ):
+                reason = type(e).__name__
+            else:
+                reason = str(e).replace(url, host)
+            if isinstance(e, SlowDownloadError):
+                reason = f"too slow: {reason}"
             nxt = "; trying the next one" if i < len(urls) - 1 else ""
             logger.warning("%s: mirror %s failed (%s)%s", dst.name, host, reason, nxt)
             failures.append(f"{host}: {reason}")
