@@ -647,13 +647,25 @@ def build_parser() -> argparse.ArgumentParser:
         "local folder once; later reads use the copy",
     )
     st.add_argument("inputs", nargs="*", metavar="input", help="video files and/or folders")
-    st.add_argument("--exclude", action="append", metavar="GLOB")
-    st.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=False)
+    st.add_argument(
+        "--exclude",
+        action="append",
+        metavar="GLOB",
+        help="skip files whose name or full path matches (repeatable), e.g. --exclude '*DVR*'",
+    )
+    st.add_argument(
+        "--recursive",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="search sub-folders of folder inputs (default: no)",
+    )
     st.add_argument("--list", action="store_true", help="list staged copies")
     st.add_argument(
         "--clear",
         action="store_true",
-        help="delete staged copies (all, or those of the given inputs)",
+        help="delete staged copies: all, or those of the given inputs, selected as staging "
+        "would (with --exclude and --recursive); a missing input falls back to the "
+        "copies recorded under it",
     )
     st.set_defaults(func=_cmd_stage)
 

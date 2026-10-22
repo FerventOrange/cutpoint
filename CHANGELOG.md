@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   original folder as `stage` does (read through `source_remap`) and honours `--recursive` and
   `--exclude`. Previously it listed only the remapped folder and ignored sub-folders, so some
   staged copies were not removed (#103).
+- `stage --clear <inputs>` clears each input on its own. An input that no longer exists (nor its
+  `source_remap` target) clears the copies recorded under its path in the stage index, honouring
+  `--recursive` and `--exclude`; with none recorded it logs a warning. Previously such a copy could
+  only be removed by a bare `--clear`, and one missing input stopped the other inputs' copies from
+  being cleared. `stage --help` now describes `--exclude` and `--recursive`.
 - `stage --exclude` matches the original path of footage read through `source_remap`, as
   `analyze --exclude` does, instead of the remapped location. Files are still copied from where
   `analyze` reads them (#93).
@@ -59,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `all` extra now notes `--extra-index-url https://download.pytorch.org/whl/cu126` for an NVIDIA
   GPU (plus `--force-reinstall` when a CPU-only torch is installed), as the non-editable pip hint
   does. pip ignores the project's CUDA torch index and would install the CPU build (#104).
+- The install command for a missing extra puts its notes in one parenthetical joined with "; "
+  instead of up to three in a row, e.g. `... -e ".[events]" (from the repository; with an NVIDIA
+  GPU add ... so torch uses CUDA; PowerShell: in cmd drop the leading &)`.
 - `analyze` records its inputs in `highlights.json` `settings.inputs` as absolute paths, keeping
   your spelling (no symlink or mapped-drive resolution). Relative inputs were stored as given, so
   `crashes --reanalyze` or ski `events` run from another directory wrongly reported the footage as
