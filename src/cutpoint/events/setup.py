@@ -115,6 +115,11 @@ def _sha256(path: Path) -> str:
         return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
+def _host(url: str) -> str:
+    """Host name of ``url`` for log lines (no credentials or port)."""
+    return urllib.parse.urlsplit(url).hostname or url
+
+
 def download(
     url: str,
     dst: Path,
@@ -154,6 +159,7 @@ def download(
     req = urllib.request.Request(url, headers={"User-Agent": "cutpoint-setup"})
     if have:
         req.add_header("Range", f"bytes={have}-")
+    logger.info("%s %s from %s", "resuming" if have else "downloading", dst.name, _host(url))
     started = time.monotonic()
     with urllib.request.urlopen(req, timeout=60) as resp:
         if have and resp.status != 206:  # server ignored Range: restart
@@ -227,7 +233,7 @@ def _download_mirrors(urls: list[str], dst: Path, size: int, sha256: str) -> Pat
     """
     failures = []
     for i, url in enumerate(urls):
-        host = urllib.parse.urlsplit(url).netloc or url
+        host = _host(url)
         min_rate = PANNS_MIN_RATE if i < len(urls) - 1 else None
         part = dst.with_name(dst.name + ".part")
         try:
@@ -239,7 +245,7 @@ def _download_mirrors(urls: list[str], dst: Path, size: int, sha256: str) -> Pat
                     raise
                 # The .part (from an earlier mirror) may have been the bad bytes;
                 # download() deleted it, so retry this mirror once from scratch.
-                logger.warning("%s: sha256 mismatch after resuming; retrying %s", dst.name, host)
+                logger.warning("%s: sha256 mismatch after resuming; restarting", dst.name)
                 return download(url, dst, size, sha256, min_rate=min_rate)
         except (
             OSError,  # includes URLError and timeouts
