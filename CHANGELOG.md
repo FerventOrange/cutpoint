@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `extend` keeps a backup of a director path file before re-planning over it and never overwrites an earlier one: repeated re-plans keep `<file>.bak`, `<file>.1.bak`, and so on (#15).
 - `360 director` keeps a hand-edited path file as `<file>.bak` (then `<file>.1.bak`, and so on) before re-planning over it, like `extend` does, and never overwrites an earlier backup (#48).
 - `mix --target` must be greater than 0 (#15).
+- `360 repair` no longer leaves a `mix_segments.bak.json` behind when the re-run mix fails (for example "Nothing selected"); the backup is written only after the new mix succeeds (#60).
 - `cutpoint setup` verifies llama.cpp downloads against the sha256 digest GitHub publishes: a
   corrupt cached archive is downloaded again, and a mismatch aborts and keeps the existing
   install (#35).

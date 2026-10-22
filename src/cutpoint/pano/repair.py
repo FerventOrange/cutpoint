@@ -388,17 +388,28 @@ def repair(
         written = out.with_name(mix.EXCLUDE_FILE)
         have = written if written.is_file() else project / mix.EXCLUDE_FILE
         excl = _merge(mix.load_exclusions(have), new_excl)
-        if out == segments_file:
-            shutil.copyfile(segments_file, segments_file.with_suffix(".bak.json"))
-        report = mix.run_mix(
-            project,
-            target_s=report.get("target_s", 240.0),
-            quotas=report.get("quotas"),
-            out=out,
-            sheet=sheet,
-            exclude=excl,
-            previous=old,
-        )
+        # Back up only once run_mix has written over the original: a failed selection
+        # ("Nothing selected") leaves no .bak.json and an earlier one untouched.
+        original = segments_file.read_bytes() if out == segments_file else None
+        try:
+            report = mix.run_mix(
+                project,
+                target_s=report.get("target_s", 240.0),
+                quotas=report.get("quotas"),
+                out=out,
+                sheet=sheet,
+                exclude=excl,
+                previous=old,
+            )
+        except BaseException:
+            if original is not None and segments_file.read_bytes() != original:
+                try:  # failed after writing (the sheet): keep the old
+                    _backup(segments_file, original)
+                except OSError:
+                    logger.warning("%s: could not write the backup", segments_file)
+            raise
+        if original is not None:
+            _backup(segments_file, original)
         cache.save_json(written, excl)
         new = cache.load_json(out) or []
         rep["exclusions"], rep["content_qa"] = len(excl), report["content_qa"]
@@ -427,6 +438,16 @@ def repair(
     cache.save_json(out, new)
     rep["written"] = True
     return rep
+
+
+def _backup(segments_file: Path, original: bytes) -> None:
+    """Write ``original`` to ``<name>.bak.json``; if that fails, put it back into
+    ``segments_file`` (overwritten by then) and re-raise."""
+    try:
+        segments_file.with_suffix(".bak.json").write_bytes(original)
+    except OSError:
+        segments_file.write_bytes(original)
+        raise
 
 
 def _changes(rep: dict[str, Any], old: list[dict[str, Any]], new: list[dict[str, Any]]) -> None:

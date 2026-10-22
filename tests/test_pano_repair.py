@@ -234,3 +234,17 @@ def test_fit_budget_caps_quiet_social_tails_first_then_the_longest() -> None:
         (None, 98.0),
     ]
     assert sum(est.values()) == pytest.approx(300.0)
+
+
+def test_failed_reselection_leaves_no_backup_and_the_segments_untouched(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    segs = project / "mix_segments.json"
+    before = segs.read_bytes()
+    qa = _qa(project, [[]] * 18, subj=False)  # the social clip goes, so the mix is re-run
+    only = [Cand("social", "a.mp4", 300, 309, 304, 0.9, "laughter", "laugh")]
+    monkeypatch.setattr(mix, "part_candidates", lambda _d: only)  # ...and nothing is left to pick
+    with pytest.raises(ValueError, match="Nothing selected"):
+        repair(project, segs, qa, sheet=False)
+    assert segs.read_bytes() == before
+    assert not (project / "mix_segments.bak.json").exists()
