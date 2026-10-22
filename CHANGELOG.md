@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `stage --exclude` matches the original path of footage read through `source_remap`, as
   `analyze --exclude` does, instead of the remapped location. Files are still copied from where
   `analyze` reads them (#93).
+- From an editable clone install on Windows with a CPU-only torch, the install command for a
+  missing `events` or `all` extra now notes that the `uv pip install ... -e` form needs
+  `--reinstall-package torch --reinstall-package torchvision` with an NVIDIA GPU, as uv keeps the
+  installed CPU torch otherwise. `uv sync` already installs the locked CUDA build (#96).
 - `analyze` records its inputs in `highlights.json` `settings.inputs` as absolute paths, keeping
   your spelling (no symlink or mapped-drive resolution). Relative inputs were stored as given, so
   `crashes --reanalyze` or ski `events` run from another directory wrongly reported the footage as
