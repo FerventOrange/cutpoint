@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -121,3 +123,45 @@ def test_find_videos_walk_skips_an_unreadable_subfolder_with_a_warning(tmp_path,
         got = find_videos(tmp_path, recursive=True)
     assert got == [(tmp_path / "ok" / "good.mp4").resolve()]
     assert any(r.levelno == logging.WARNING and "vault" in r.getMessage() for r in caplog.records)
+
+
+@needs_chmod
+def test_find_videos_walk_does_not_warn_about_an_excluded_unreadable_folder(
+    tmp_path, locked, caplog
+):
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok" / "good.mp4").write_bytes(b"x")
+    (tmp_path / "locked").mkdir()
+    (tmp_path / "locked" / "hidden.mp4").write_bytes(b"x")
+    locked(tmp_path / "locked")
+    with caplog.at_level(logging.WARNING):
+        got = find_videos(tmp_path, recursive=True, exclude=["*/locked/*"])
+    assert got == [(tmp_path / "ok" / "good.mp4").resolve()]
+    assert not any("Skipping unreadable" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("kind", ["file", "folder"])
+def test_find_videos_unreadable_input_is_not_reported_missing_when_checks_return_false(
+    tmp_path, monkeypatch, kind
+):
+    """Python 3.13 makes is_file/is_dir return False on EACCES instead of raising."""
+    target = tmp_path / "vault" / "a.mp4" if kind == "file" else tmp_path / "vault"
+    (tmp_path / "vault").mkdir()
+    if kind == "file":
+        target.write_bytes(b"x")
+
+    real_stat = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self == target:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_stat(self, *args, **kwargs)
+
+    def false_for_target(real):
+        return lambda self, *a, **k: False if self == target else real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    for name in ("is_file", "is_dir"):
+        monkeypatch.setattr(Path, name, false_for_target(getattr(Path, name)))
+    with pytest.raises(FileNotFoundError, match="Input not readable"):
+        find_videos(target)

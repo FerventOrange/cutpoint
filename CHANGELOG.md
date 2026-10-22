@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crashes --reanalyze` or ski `events` run from another directory wrongly reported the footage as
   moved, or re-analyzed whatever matched the relative path there. Projects analyzed earlier with
   relative inputs keep them until `analyze` runs again (#78).
+- With `--recursive`, a sub-folder that matches `--exclude` (for example `*/that/*`) is skipped
+  entirely, so an unreadable excluded folder no longer logs a warning. The "Input not readable"
+  error no longer depends on Python version behaviour (it uses `stat`) (#94).
 - `crashes` and `events` skip footage that is not reachable (offline drive, moved file) with a
   warning and continue, and fail before writing anything when none is reachable. With a source
   skipped, `crashes` and ski `events` leave `highlights.json` unchanged instead of re-running the
