@@ -62,9 +62,15 @@ def imu_source(path: str | Path) -> Path | None:
     only reads the trailer at the end of the file (a 7.8 GB clip parses in
     ~2 s even over a network share), so no staging is needed.
 
+    The lookup runs next to the file read through ``source_remap``, so moved
+    footage is found at its new location.
+
     Returns:
         The path (which exists), or None for a non-X3 file or a missing ``_00_``.
     """
+    from cutpoint.config import remap_source  # noqa: PLC0415
+
+    path = remap_source(path)
     f = parse_name(path)
     if f is None:
         return None

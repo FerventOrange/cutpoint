@@ -16,10 +16,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cutpoint import paths
+from conftest import write
+from cutpoint import config, ffmpeg_utils, paths
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, render
-from cutpoint.pano.x3 import X3Clip
+from cutpoint.pano.x3 import X3Clip, imu_source
 
 FPS = 30.0
 
@@ -279,6 +280,60 @@ class TestRenderSegmentSendcmd:
         assert "sendcmd=f=pan.cmd," in self._filter(ffmpeg[0])
         assert rec["commands"] > 0 and rec["cmd_file"] == "pan.cmd"
         assert (tmp_path / "pan.cmd").read_text(encoding="utf-8").strip()
+
+
+# --------------------------------------------------------------------------- moved footage
+@pytest.fixture
+def moved(home, tmp_path, monkeypatch):
+    """A clip recorded under ``old/`` whose footage now lives in ``new/`` (``source_remap``)."""
+    old, new = tmp_path / "old", tmp_path / "new"
+    names = ["VID_20260101_100000_00_001.insv", "VID_20260101_100000_10_001.insv"]
+    lrv = "LRV_20260101_100000_11_001.lrv"
+    for name in (*names, lrv):
+        write(new / name)  # the old folder is gone
+    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
+    config.get_config.cache_clear()
+    # Prefix forms depend on the real cwd / file system; keep just the typed form.
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    clip = X3Clip(
+        "001", "2026-01-01T10:00:00", "5.7k", str(old / lrv), [str(old / n) for n in names]
+    )
+    return clip, old, new
+
+
+def test_render_segment_reads_moved_footage_and_records_the_original_paths(
+    moved, tmp_path, monkeypatch
+):
+    clip, old, new = moved
+    calls: list[list[str]] = []
+    monkeypatch.setattr(render, "run", lambda args, cwd=None: calls.append(args) or "")
+    monkeypatch.setattr(render, "probe", lambda p: SimpleNamespace(duration=1.0))
+    src = project.RenderSource("studio", (str(old / clip.insv[0]),), "equirect", True, False, "t")
+    rec = render.render_segment(
+        clip, _path((0.0, 0.0, 0.0), (10.0, 0.0, 0.0)), 3.0, 4.0, tmp_path / "o.mp4", src=src
+    )
+    read = [calls[0][i + 1] for i, a in enumerate(calls[0]) if a == "-i"]
+    assert read == [str(new / Path(clip.insv[0]).name), str(new / Path(clip.lrv).name)]
+    assert rec["inputs"] == [clip.insv[0]]  # the project keeps recording the original
+
+
+def test_imu_source_finds_the_insv_of_moved_footage(moved):
+    clip, _old, new = moved
+    assert imu_source(clip.insv[1]) == new / Path(clip.insv[0]).name
+
+
+@pytest.mark.parametrize(
+    "folder", ["new", "old"], ids=["old-gone-export-in-new", "both-export-in-old"]
+)
+def test_find_studio_export_searches_the_original_and_the_remapped_folder(
+    moved, folder, monkeypatch
+):
+    clip, old, new = moved
+    monkeypatch.setattr(
+        ffmpeg_utils, "probe", lambda p: SimpleNamespace(width=200, height=100, duration=1.0)
+    )
+    export = write({"new": new, "old": old}[folder] / "export" / "20260101_100000_001.mp4")
+    assert project.find_studio_export(clip)[0] == export
 
 
 # --------------------------------------------------------------------------- orientation filter

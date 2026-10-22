@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clips`, `extend`, `360 analyze`, `360 director`, `360 stitch` and `360 status` now read footage
+  whose raw folder moved through `source_remap`. Previously ffmpeg failed with "No such file", and
+  `360 analyze` skipped every moved clip with "no _00_.insv for the IMU". `360 status` finds the
+  Studio export next to both the original and the moved camera folder. The project keeps recording
+  the original paths (#92).
 - From an editable clone install on Windows with a CPU-only torch, the install command for a
   missing `events` or `all` extra now notes that the `uv pip install ... -e` form needs
   `--reinstall-package torch --reinstall-package torchvision` with an NVIDIA GPU, as uv keeps the
@@ -72,6 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while the drive is disconnected. `analyze` records such a remapped input in UNC form, like a
   reachable one, so a project no longer mixes both spellings of the same footage, and the
   analysis cache and `stage` keys of a remapped copy match the original's (#95).
+- `extend` reads each clip's source through `source_remap` like `clips` does, instead of the
+  remapped copy recorded in the manifest's `read_from`. Once the copy is removed and the footage
+  is back at its original path, `extend` finds it instead of failing on the deleted copy;
+  `read_from` is used only when the source cannot be found and the copy still exists. The new
+  manifest records where each clip was read from, and `--reuse` still copies unchanged clips when
+  only the read location changed (#91).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
   package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
