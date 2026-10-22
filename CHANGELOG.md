@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drivers too old for CUDA 13), `pip install "cutpoint[...]"` for PyPI installs, and the
   `uv sync --extra` form only in a clone. The pip commands can be pasted into PowerShell.
 - `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
+- `cutpoint events` and `cutpoint 360 analyze` check that the model files and tools the selected
+  layers need are installed before unloading Ollama models, importing torch or starting a long
+  analyze. One error lists every missing file and the `cutpoint setup --only ...` command (#23,
+  #31). Runs whose results are cached now also need the model files.
+- `cutpoint profile` and `cutpoint crashes` only unload Ollama models when the CLIP steps can run
+  (#32).
+- `cutpoint profile --context` logs a warning when the context could not be applied (Ollama model
+  unavailable, no usable answer), and falls back to a library profile when the context names
+  exactly one, for example "mtb" (#24).
 - `cutpoint.cmd` and `cutpoint.ps1` header comments now say the `.venv` from `uv sync` is all
   they need.
 - GPU Whisper on Linux: the pip-installed CUDA libraries are preloaded.
