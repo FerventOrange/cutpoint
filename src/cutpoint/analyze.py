@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import time
 from collections.abc import Sequence
@@ -1156,7 +1157,9 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
 
     ``analyze`` refuses a missing input, and without it the source would drop out
     of highlights.json; ``crashes`` and ``events`` already skipped it, so they
-    leave highlights.json unchanged instead of failing.
+    leave highlights.json unchanged instead of failing. Likewise when an input or a
+    recorded source is missing at the path analyze recorded (moved, or only
+    reachable through ``source_remap``): re-analysing would drop or re-key it.
 
     Returns:
         Path of highlights.json, or None if skipped.
@@ -1173,6 +1176,21 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
             "%d source(s) not reachable; highlights.json left unchanged, "
             "rerun once the footage is back",
             offline,
+        )
+        return None
+    # ``analyze`` reads its inputs at their recorded paths; one reachable only through
+    # ``source_remap`` would fail it, and re-analysing the copy would re-key the sources.
+    # A source missing under a folder input that still exists would silently drop out.
+    srcs = [s["path"] for s in hl.get("sources", [])]
+    inputs = hl.get("settings", {}).get("inputs") or srcs
+    # os.path.exists: any OSError (e.g. a dead network mount) counts as missing
+    missing = sum(not os.path.exists(p) for p in dict.fromkeys([*inputs, *srcs]))  # noqa: PTH110
+    if missing:
+        logger.warning(
+            "%d path(s) not found where analyze recorded them (moved, or only reachable "
+            "through source_remap); highlights.json left unchanged, rerun once the footage "
+            "is back at its original path",
+            missing,
         )
         return None
     return reanalyze(project)
