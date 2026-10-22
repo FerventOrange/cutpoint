@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -376,7 +378,11 @@ def test_director_params_config_then_cli() -> None:
 
 # --------------------------------------------------------------------------- cmd_director routing
 def _run_director(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clip: SimpleNamespace | None = None, **kw
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clip: SimpleNamespace | None = None,
+    segments: list[dict] | None = None,
+    **kw,
 ) -> tuple[Path, list]:
     proj = tmp_path / "proj"
     proj.mkdir(exist_ok=True)
@@ -388,7 +394,9 @@ def _run_director(
     monkeypatch.setattr(
         cli,
         "_selected_segments",
-        lambda project, a: [{"source": "x.lrv", "start": 1.0, "end": 4.0, "label": "laugh"}],
+        lambda project, a: (
+            segments or [{"source": "x.lrv", "start": 1.0, "end": 4.0, "label": "laugh"}]
+        ),
     )
 
     def fake_compute(clip, start, end, *, vertical=False, kind=None, overrides=None, **_):
@@ -453,6 +461,71 @@ def test_cmd_director_out_name_removes_only_stale_recorded_stems(
     ]
     assert (out / "002_run.json.bak").read_text() == '{"keys": ["hand-edited"]}'
     assert "no longer selected" in caplog.text and "002_run.json.bak" in caplog.text
+
+
+@pytest.mark.parametrize("failing", ["backup", "unlink"])
+def test_cmd_director_keeps_stale_stem_until_its_files_are_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    out = tmp_path / "proj" / "pano_paths" / "mix"
+    out.mkdir(parents=True)
+    (out / "002_run.mp4").write_text("x")
+    (out / "002_run.json").write_text('{"keys": ["hand-edited"]}')
+    (out / "director_stems.json").write_text('["001_laugh", "002_run"]')
+    with monkeypatch.context() as m:
+        if failing == "backup":
+            real = shutil.copy2
+
+            def copy2(src, dst, **kw):
+                if Path(src).name == "002_run.json":
+                    raise OSError("locked")
+                return real(src, dst, **kw)
+
+            m.setattr(shutil, "copy2", copy2)
+        else:
+            real_unlink = Path.unlink
+
+            def unlink(self, *a, **kw):
+                if self.name == "002_run.mp4":
+                    raise OSError("in use")
+                return real_unlink(self, *a, **kw)
+
+            m.setattr(Path, "unlink", unlink)
+        _run_director(tmp_path, monkeypatch, out_name="mix")
+    assert "002_run" in json.loads((out / "director_stems.json").read_text())
+    _run_director(tmp_path, monkeypatch, out_name="mix")  # the failure is gone
+    assert not (out / "002_run.mp4").exists() and not (out / "002_run.json").exists()
+    assert (out / "002_run.json.bak").read_text() == '{"keys": ["hand-edited"]}'
+    assert "002_run" not in json.loads((out / "director_stems.json").read_text())
+
+
+def test_cmd_director_renumbered_path_taken_over_by_another_segment_is_not_backed_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "proj" / "pano_paths" / "mix"
+    out.mkdir(parents=True)
+    seg = lambda start, label: {"source": "x.lrv", "start": start, "end": start + 3, "label": label}  # noqa: E731
+    old = {
+        "version": D.PATH_VERSION,
+        "clip": "001",
+        "segment": {"start": 20.0, "end": 23.0},
+        "kind": None,
+        "vertical": False,
+        "params": asdict(D.params_for(None)),
+        "keys": ["kept"],
+    }
+    (out / "002_x.json").write_text(json.dumps(old))  # was segment B, now 003_x
+    (out / "director_stems.json").write_text('["002_x"]')
+    _run_director(
+        tmp_path,
+        monkeypatch,
+        out_name="mix",
+        force=False,
+        segments=[seg(1.0, "z"), seg(10.0, "x"), seg(20.0, "x")],
+    )
+    assert json.loads((out / "003_x.json").read_text())["keys"] == ["kept"]
+    assert not list(out.glob("002_*.bak"))
+    assert "re-planned" not in caplog.text
 
 
 def test_cmd_director_preview_without_lrv_renders_from_insv(
