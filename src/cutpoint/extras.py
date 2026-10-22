@@ -227,6 +227,11 @@ def _cpu_torch() -> bool:
         return False
 
 
+# uv keeps an installed CPU torch that satisfies torch==x.y.z unless told to reinstall it.
+_REINSTALL_TORCH = "--reinstall-package torch --reinstall-package torchvision"
+_REINSTALL_TORCH_NOTE = f" (with an NVIDIA GPU add {_REINSTALL_TORCH} so torch uses CUDA)"
+
+
 def _python() -> tuple[str, str]:
     """``sys.executable`` as a shell command prefix, and a note to append to the hint.
 
@@ -261,11 +266,7 @@ def install_hint(extra: str) -> str:
         )
         if extra in TORCH_EXTRAS and sys.platform == "win32" and project_sources:
             if _cpu_torch():
-                # uv keeps an installed CPU torch that satisfies torch==x.y.z.
-                gpu = (
-                    " (with an NVIDIA GPU add --reinstall-package torch "
-                    "--reinstall-package torchvision so torch uses CUDA)"
-                )
+                gpu = _REINSTALL_TORCH_NOTE
         elif extra in TORCH_EXTRAS and sys.platform == "win32":
             flags = (
                 f"--index {TORCH_INDEX} --index-strategy unsafe-best-match"
@@ -275,25 +276,30 @@ def install_hint(extra: str) -> str:
             if _cpu_torch():
                 # The installed CPU torch satisfies torch==x.y.z, so it would stay without
                 # a reinstall (torchvision is likewise a CPU build then).
-                flags += (
-                    " --reinstall-package torch --reinstall-package torchvision"
-                    if uv
-                    else " --force-reinstall"
-                )
+                flags += f" {_REINSTALL_TORCH}" if uv else " --force-reinstall"
             gpu = f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
         if uv:
             return f'uv pip install --python "{sys.executable}" {source}{gpu}'
         exe, note = _python()
         return f"{exe} -m pip install {source}{gpu}{note}"
     if uv_managed():
+        # uv pip applies the clone's [tool.uv.sources] (cu126 torch) but keeps an installed
+        # CPU torch. uv sync installs the locked +cu126 build, replacing a +cpu one.
+        gpu = (
+            _REINSTALL_TORCH_NOTE
+            if extra in TORCH_EXTRAS and sys.platform == "win32" and _cpu_torch()
+            else ""
+        )
         clone = _file_path(info.get("url")) if info else None
         if clone is not None and Path(sys.prefix).resolve() != (clone / ".venv").resolve():
             # uv sync would change the clone's .venv, not the environment that is running.
-            return f'uv pip install --python "{sys.executable}" -e "{clone.as_posix()}[{extra}]"'
+            return (
+                f'uv pip install --python "{sys.executable}" -e "{clone.as_posix()}[{extra}]"{gpu}'
+            )
         return (
             f"uv sync --extra {extra} (list every other extra you use too: uv sync "
             f"removes packages of extras you leave out), or: uv pip install --python "
-            f'"{sys.executable}" -e ".[{extra}]"'
+            f'"{sys.executable}" -e ".[{extra}]"{gpu}'
         )
     exe, note = _python()
     return f'{exe} -m pip install -e ".[{extra}]" (from the repository){note}'
