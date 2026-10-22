@@ -432,16 +432,27 @@ def test_cmd_director_default_and_out_name(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_cmd_director_out_name_removes_only_stale_recorded_stems(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     out = tmp_path / "proj" / "pano_paths" / "mix"
     out.mkdir(parents=True)
-    for f in ("002_run.json", "002_run.mp4", "002_run.cmd", "003_mine.json", "notes.txt"):
+    for f in ("002_run.mp4", "002_run.cmd", "003_mine.json", "notes.txt"):
         (out / f).write_text("x")
+    (out / "002_run.json").write_text('{"keys": ["hand-edited"]}')
     (out / "director_stems.json").write_text('["001_laugh", "002_run"]')  # an earlier run
     _run_director(tmp_path, monkeypatch, out_name="mix")
     left = sorted(f.name for f in out.iterdir())
-    assert left == ["001_laugh.json", "003_mine.json", "director_stems.json", "notes.txt"]
+    assert left == [
+        "001_laugh.json",
+        "002_run.json.bak",
+        "003_mine.json",
+        "director_stems.json",
+        "notes.txt",
+    ]
+    assert (out / "002_run.json.bak").read_text() == '{"keys": ["hand-edited"]}'
+    assert "no longer selected" in caplog.text and "002_run.json.bak" in caplog.text
 
 
 def test_cmd_director_preview_without_lrv_renders_from_insv(
