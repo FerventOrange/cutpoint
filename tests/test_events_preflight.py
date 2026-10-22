@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -149,6 +150,30 @@ def test_cmd_analyze_skips_preflight(monkeypatch, tmp_path: Path, flag: str):
     cli.cmd_analyze(_args(**{flag: True}))
     assert "preflight" not in order
     assert "events" not in order
+
+
+def test_cmd_analyze_footage_gone_before_rescoring_keeps_highlights(
+    monkeypatch, tmp_path: Path, caplog
+):
+    reanalyze = analyze_mod.reanalyze
+    _analyze_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(analyze_mod, "reanalyze", reanalyze)
+    lrv = tmp_path / "a.lrv"
+    lrv.write_bytes(b"x")
+    hl = tmp_path / "highlights.json"
+    written = json.dumps({"style": "ski", "sources": [{"path": str(lrv)}]})
+
+    def fake_analyze(*a, **k):
+        if not lrv.exists():  # the real analyze refuses a missing input
+            raise FileNotFoundError(lrv)
+        hl.write_text(written, encoding="utf-8")
+
+    monkeypatch.setattr(analyze_mod, "analyze", fake_analyze)
+    monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: lrv.unlink())
+    with caplog.at_level(logging.INFO):
+        cli.cmd_analyze(_args())
+    assert hl.read_bytes() == written.encode()
+    assert "rerun cutpoint 360 analyze p" in caplog.text
 
 
 # --------------------------------------------------------------------------- activity
