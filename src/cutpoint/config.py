@@ -229,22 +229,93 @@ def norm_path(path: str) -> str:
     return str(PurePosixPath(path)).rstrip("/")
 
 
+_DRIVE_RE = re.compile(r"^([A-Za-z]:)(?:[\\/]|$)")
+_ERROR_MORE_DATA = 234
+_ERROR_CONNECTION_UNAVAIL = 1201  # remembered mapping, not connected; the name is still returned
+_ERROR_NOT_CONNECTED = 2250  # the letter is not a network drive
+
+
+@state.register_cache
+@functools.cache
+def _drive_remote(drive: str) -> str | None:
+    """Windows: the UNC root (``\\\\server\\share``) mapped drive ``drive`` (``Z:``)
+    points to, or None.
+
+    Asks ``WNetGetConnectionW``, which also names a remembered mapping that is
+    disconnected, then the persistent mapping in ``HKCU\\Network\\<letter>``
+    (skipped when the API says the letter is not a network drive).
+    Never raises; None on other platforms.
+    """
+    if sys.platform != "win32":
+        return None
+    rc = None
+    try:
+        import ctypes  # noqa: PLC0415 - Windows only
+    except ImportError:
+        pass
+    else:
+        try:
+            get_connection = ctypes.WinDLL("mpr").WNetGetConnectionW  # type: ignore[attr-defined]
+            size = ctypes.c_ulong(1024)
+            for _ in range(2):  # retry once with the size ERROR_MORE_DATA asked for
+                buf = ctypes.create_unicode_buffer(size.value)
+                rc = get_connection(drive, buf, ctypes.byref(size))
+                if rc in (0, _ERROR_CONNECTION_UNAVAIL) and buf.value.startswith("\\\\"):
+                    return buf.value
+                if rc != _ERROR_MORE_DATA:
+                    break
+        except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+            pass
+    if rc == _ERROR_NOT_CONNECTED:  # not a network drive; ignore stale registry entries
+        return None
+    try:
+        import winreg  # noqa: PLC0415 - Windows only
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"Network\\{drive[0]}") as key:
+            remote = str(winreg.QueryValueEx(key, "RemotePath")[0])
+    except (OSError, ValueError):
+        return None
+    return remote if remote.startswith("\\\\") else None
+
+
+def unc_path(path: str) -> str:
+    """Windows: ``path`` on a mapped network drive in UNC form, also while the
+    drive is disconnected (``Z:\\F\\a.mp4`` -> ``\\\\server\\share\\F\\a.mp4``).
+
+    That is the form ``Path.resolve()`` gives a reachable file there. Unchanged
+    on other platforms, for local drives and UNC paths, and when the mapping
+    cannot be read.
+    """
+    if sys.platform != "win32" or not (m := _DRIVE_RE.match(path)):
+        return path
+    remote = _drive_remote(m.group(1).upper())
+    if not remote:
+        return path
+    return str(PureWindowsPath(remote, path[2:].lstrip("\\/")))
+
+
 @state.register_cache
 @functools.cache
 def _prefix_forms(prefix: str) -> tuple[str, ...]:
-    """A prefix as typed plus its resolved form (mapped drive -> UNC)."""
-    forms = {norm_path(os.path.abspath(prefix))}  # noqa: PTH100 - normalises '..', keeps drive letters
+    """A prefix as typed plus its resolved and UNC forms (mapped drive -> UNC)."""
+    absolute = os.path.abspath(prefix)  # noqa: PTH100 - normalises '..', keeps drive letters
+    forms = {norm_path(absolute), norm_path(unc_path(absolute))}
     with contextlib.suppress(OSError):
         forms.add(norm_path(str(Path(prefix).resolve())))
     return tuple(forms)
 
 
 def _strip_prefix(path: str, prefix: str) -> str | None:
-    """The remainder of ``path`` below ``prefix`` (any form), or None."""
-    low, sep = norm_path(path), _sep()
-    for form in _prefix_forms(prefix):
-        if low == form or low.startswith(form + sep):
-            return str(_pure(path))[len(form) :].lstrip("\\/")
+    """The remainder of ``path`` (as typed or in UNC form) below ``prefix`` (any
+    form), or None."""
+    sep = _sep()
+    for text in dict.fromkeys((path, unc_path(path))):
+        low = norm_path(text)
+        for form in _prefix_forms(prefix):
+            if low == form or low.startswith(form + sep):
+                return str(_pure(text))[len(form) :].lstrip("\\/")
     return None
 
 
@@ -285,11 +356,12 @@ def canonical_source(path: str | Path) -> str:
 
     A path under a remap *target* is expressed under its *source* prefix, so
     ``E:\\Footage-copy\\x.mp4`` keys like ``D:\\Footage\\x.mp4`` when the table maps
-    ``D:\\Footage`` to ``E:\\Footage-copy``.
+    ``D:\\Footage`` to ``E:\\Footage-copy``. A source prefix on a mapped drive is
+    given in UNC form (:func:`unc_path`), as a resolved original is.
     """
     text = str(path)
     for old, new in get_config().source_remap:
         rest = _strip_prefix(text, new)
         if rest is not None:
-            return str(_pure(old) / rest) if rest else str(_pure(old))
+            return unc_path(str(_pure(old) / rest) if rest else str(_pure(old)))
     return text

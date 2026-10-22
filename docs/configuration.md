@@ -91,6 +91,10 @@ record the original paths, then run `crashes` and `events` again: their existing
 name sources by the copy path, so event boosts and ski crash must-includes stop matching until
 they are regenerated.
 
+On Windows, a prefix on a mapped network drive matches in either form: `Z:\Footage` and
+`\\server\share\Footage` are the same folder, also while `Z:` is disconnected. Projects name
+sources on a mapped drive in UNC form (`settings.inputs` keeps your spelling).
+
 Prefix and key matching is case-sensitive on Linux (`source_remap` prefixes, `stage` keys) and
 stays case-insensitive on Windows.
 

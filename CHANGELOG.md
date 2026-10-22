@@ -78,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them. They still warn and leave `highlights.json` unchanged only when re-analysis would fail,
   drop a source or re-key one, for example a file moved out of a folder input that still exists,
   or a 0.1.0 project that recorded the copy path (rerun `analyze` for those) (#80).
+- Windows: a `source_remap` key and an input on a mapped network drive match whether each is
+  written with the drive letter (`Z:\Footage`) or in UNC form (`\\server\share\Footage`), also
+  while the drive is disconnected. `analyze` records such a remapped input in UNC form, like a
+  reachable one, so a project no longer mixes both spellings of the same footage, and the
+  analysis cache and `stage` keys of a remapped copy match the original's (#95).
 - `extend` reads each clip's source through `source_remap` like `clips` does, instead of the
   remapped copy recorded in the manifest's `read_from`. Once the copy is removed and the footage
   is back at its original path, `extend` finds it instead of failing on the deleted copy;
