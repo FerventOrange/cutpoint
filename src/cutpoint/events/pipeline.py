@@ -147,7 +147,12 @@ def run_events(
     for s in hl["sources"]:  # virtual parts (--recover) share one path
         if s["path"] not in seen:
             seen.add(s["path"])
-            sources.append(load_source(Path(s["path"]), s.get("duration")))
+            try:  # its cache key needs the file's size and mtime
+                sources.append(load_source(Path(s["path"]), s.get("duration")))
+            except OSError as err:
+                logger.warning("%s: footage not reachable (%s); skipped", s["path"], err)
+    if not sources:
+        raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
     bad = bad_ranges(hl, sources, avoid)
     if only:
         sources = [

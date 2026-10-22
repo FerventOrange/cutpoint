@@ -36,3 +36,15 @@ def test_run_events_fails_before_unloading_ollama(monkeypatch, tmp_path):
     with pytest.raises(ModuleNotFoundError):
         pipeline.run_events(tmp_path)
     assert calls == []
+
+
+def test_run_events_all_footage_offline_fails_before_side_effects(monkeypatch, tmp_path):
+    hl = {"sources": [{"path": str(tmp_path / "gone.mp4"), "duration": 60.0}]}
+    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    calls = []
+    monkeypatch.setattr(pipeline, "unload_ollama", lambda *a, **k: calls.append(a), raising=False)
+    with pytest.raises(ValueError, match="reachable"):
+        pipeline.run_events(tmp_path, layers=("audio",))
+    assert calls == []
+    assert not (tmp_path / "events.json").exists()

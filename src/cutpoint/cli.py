@@ -238,9 +238,9 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
         refresh_profile=a.refresh_profile,
     )
     if a.reanalyze:
-        from cutpoint.analyze import reanalyze  # noqa: PLC0415
+        from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
 
-        reanalyze(project)
+        reanalyze_if_reachable(project)
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:

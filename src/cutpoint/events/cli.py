@@ -239,9 +239,9 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
 
         if load_highlights(args.project).get("style_kind") == "ski":
             # Ski: events are features of the scorer, so re-run the (cached) analysis.
-            from cutpoint.analyze import reanalyze  # noqa: PLC0415
+            from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
 
-            reanalyze(args.project)
+            reanalyze_if_reachable(args.project)
         else:
             from cutpoint.events.scoring import rescore_highlights  # noqa: PLC0415
 

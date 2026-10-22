@@ -1099,6 +1099,16 @@ def detect_project(
     Returns:
         Path of crashes.json.
     """
+    sources = []
+    for src, dur in _project_sources(project):
+        try:
+            cache.source_dir(src)  # every cached layer is keyed by the file's size and mtime
+        except OSError as err:
+            logger.warning("%s: footage not reachable (%s); skipped", src, err)
+            continue
+        sources.append((src, dur))
+    if not sources:
+        raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
     p = params or CrashParams()
     prof = None
     if (p.pos, p.neg, p.words) == (CRASH_POS, CRASH_NEG, tuple(CRASH_WORDS.items())):
@@ -1110,7 +1120,7 @@ def detect_project(
     timings: dict[str, float] = {}
     inputs: dict[str, SourceInputs] = {}
     t0 = time.perf_counter()
-    for src, dur in _project_sources(project):
+    for src, dur in sources:
         if force:
             imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
         inputs[str(src)] = load_inputs(src, dur, p, tmp_dir)
