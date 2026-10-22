@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Docker image (#112): uv is pinned by version and digest instead of an unpinned `curl | sh`
+  install; the container runs as the non-root user `cutpoint` (uid 1000, build arguments
+  `CUTPOINT_UID` / `CUTPOINT_GID`) owning `/data`; `git` and `curl` are no longer installed; and
+  `CUTPOINT_LLAMA_BACKEND=cpu` is set. **Behavior change:** the 0.2.0 image ran as root, so an
+  existing `cutpoint-data` volume is root-owned and fails with `Permission denied`; fix it once
+  with `docker run --rm --user 0 --entrypoint chown --mount source=cutpoint-data,target=/data
+  cutpoint -R 1000:1000 /data` (see the Docker section of `docs/getting-started.md`).
+
 ## [0.2.0] - 2026-10-22
 
 ### Added
