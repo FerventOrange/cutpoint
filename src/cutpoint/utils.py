@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import logging
 import re
+import stat
 import unicodedata
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path, PurePath
@@ -71,7 +73,10 @@ def find_videos(
         targets: One path or several. Files are taken as given (any extension);
             folders contribute the videos directly inside them.
         exclude: Glob patterns matched against each file's name and its full
-            path, e.g. ``"*DVR*"`` or ``"*/Captures/*"``.
+            path, e.g. ``"*DVR*"`` or ``"*/Captures/*"``. With ``recursive``, a
+            sub-folder whose full path plus a trailing ``/`` matches is skipped
+            without being listed (folder inputs themselves are never skipped);
+            files inside it are dropped even if they link to files elsewhere.
         recursive: Also search sub-folders of folder inputs.
 
     Returns:
@@ -87,9 +92,10 @@ def find_videos(
     found: list[Path] = []
     for target in map(Path, targets):
         try:
-            is_file = target.is_file()
-            is_dir = not is_file and target.is_dir()
-            entries = list(_walk(target, recursive)) if is_dir else []
+            mode = _mode(target)
+            is_file = mode is not None and stat.S_ISREG(mode)
+            is_dir = mode is not None and stat.S_ISDIR(mode)
+            entries = list(_walk(target, recursive, exclude)) if is_dir else []
         except OSError as err:
             raise FileNotFoundError(f"Input not readable: {target} ({err.strerror})") from err
         if is_file:
@@ -105,15 +111,43 @@ def find_videos(
     return list(dict.fromkeys(found))
 
 
-def _walk(folder: Path, recursive: bool) -> Iterator[Path]:
+# Errors that ``Path.is_file()``/``is_dir()`` treat as "does not exist" (pathlib's list).
+_MISSING_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_MISSING_WINERRORS = (21, 123, 1921)  # not ready, invalid name, can't resolve name
+
+
+def _mode(p: Path, *, follow_symlinks: bool = True) -> int | None:
+    """``st_mode`` of ``p``, or None where ``is_file()``/``is_dir()`` would say False.
+
+    Unlike ``is_file()``, which on Python 3.13+ returns False for every OSError,
+    this raises OSError for real failures (permission denied, stale mount, I/O
+    error, name too long) on every version.
+    """
+    try:
+        return p.stat(follow_symlinks=follow_symlinks).st_mode
+    except OSError as err:
+        if err.errno in _MISSING_ERRNOS or getattr(err, "winerror", None) in _MISSING_WINERRORS:
+            return None
+        raise
+    except ValueError:  # embedded NUL / not encodable
+        return None
+
+
+def _walk(folder: Path, recursive: bool, exclude: Sequence[str] = ()) -> Iterator[Path]:
     """Entries of ``folder`` and, if ``recursive``, of its sub-folders (symlinked folders
     are not followed, as with ``rglob``). Iterative, so depth is not limited by the
     recursion limit; entries come in no particular order.
+
+    A sub-folder whose resolved full path plus ``/`` matches an ``exclude`` glob
+    (case-insensitive, e.g. ``"*/Captures/*"``) is neither yielded nor listed, and
+    gives no WARNING even if unreadable. ``folder`` itself is never excluded.
 
     Raises:
         OSError: If ``folder`` itself cannot be listed. Entries and sub-folders below
             it that cannot be read are skipped with a WARNING.
     """
+    pats = [pat.lower().replace("\\", "/") for pat in exclude]
+    root = folder.resolve() if pats and recursive else folder
     stack = [folder]
     while stack:
         d = stack.pop()
@@ -126,19 +160,26 @@ def _walk(folder: Path, recursive: bool) -> Iterator[Path]:
             continue
         for p in children:
             try:
-                descend = recursive and p.is_dir() and not p.is_symlink()
+                mode = _mode(p, follow_symlinks=False) if recursive else None
             except OSError as err:
                 logger.warning("Skipping unreadable path: %s (%s)", p, err.strerror)
                 continue
+            descend = mode is not None and stat.S_ISDIR(mode)
+            if descend and pats:
+                full = (root / p.relative_to(folder)).as_posix().lower() + "/"
+                if any(fnmatch.fnmatchcase(full, pat) for pat in pats):
+                    continue
             yield p
             if descend:
                 stack.append(p)
 
 
 def _is_file(p: Path) -> bool:
-    """``p.is_file()``, but False with a WARNING when ``p`` cannot be checked."""
+    """``p.is_file()`` (symlinks followed), but False with a WARNING when ``p`` cannot
+    be checked (also on Python 3.13+, where ``is_file()`` hides such errors)."""
     try:
-        return p.is_file()
+        mode = _mode(p)
     except OSError as err:
         logger.warning("Skipping unreadable file: %s (%s)", p, err.strerror)
         return False
+    return mode is not None and stat.S_ISREG(mode)

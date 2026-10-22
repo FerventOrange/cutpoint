@@ -39,7 +39,7 @@ an analysed set processes only the new file.
 | `--style` | `gaming`, `action`, `sport`, `funny`, `commentary`, `ski`, or a learned preset |
 | `--out DIR` | Project folder. Default: `<projects>\<input name>` (the common parent folder's name for several inputs) |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
-| `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no) |
+| `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
 | `--vision` / `--no-vision` | Rate top candidates with Ollama. Default: used if the server and model are reachable |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `qwen3-vl:8b` |
