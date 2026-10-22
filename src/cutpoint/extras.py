@@ -246,6 +246,20 @@ def _python() -> tuple[str, str]:
     return f'"{exe}"', ""
 
 
+def _torch_index_note(uv: bool) -> str:
+    """Note that points ``uv pip`` (``uv``) or pip at the CUDA torch index."""
+    flags = (
+        f"--index {TORCH_INDEX} --index-strategy unsafe-best-match"
+        if uv
+        else f"--extra-index-url {TORCH_INDEX}"
+    )
+    if _cpu_torch():
+        # The installed CPU torch satisfies torch==x.y.z, so it would stay without
+        # a reinstall (torchvision is likewise a CPU build then).
+        flags += f" {_REINSTALL_TORCH}" if uv else " --force-reinstall"
+    return f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
+
+
 def install_hint(extra: str) -> str:
     """The command that adds ``extra`` to the running environment."""
     receipt = _tool_receipt()
@@ -268,16 +282,7 @@ def install_hint(extra: str) -> str:
             if _cpu_torch():
                 gpu = _REINSTALL_TORCH_NOTE
         elif extra in TORCH_EXTRAS and sys.platform == "win32":
-            flags = (
-                f"--index {TORCH_INDEX} --index-strategy unsafe-best-match"
-                if uv
-                else f"--extra-index-url {TORCH_INDEX}"
-            )
-            if _cpu_torch():
-                # The installed CPU torch satisfies torch==x.y.z, so it would stay without
-                # a reinstall (torchvision is likewise a CPU build then).
-                flags += f" {_REINSTALL_TORCH}" if uv else " --force-reinstall"
-            gpu = f" (with an NVIDIA GPU add {flags} so torch uses CUDA)"
+            gpu = _torch_index_note(uv)
         if uv:
             return f'uv pip install --python "{sys.executable}" {source}{gpu}'
         exe, note = _python()
@@ -301,8 +306,10 @@ def install_hint(extra: str) -> str:
             f"removes packages of extras you leave out), or: uv pip install --python "
             f'"{sys.executable}" -e ".[{extra}]"{gpu}'
         )
+    # pip ignores [tool.uv.sources], so it installs PyPI torch (CPU-only on Windows).
+    gpu = _torch_index_note(False) if extra in TORCH_EXTRAS and sys.platform == "win32" else ""
     exe, note = _python()
-    return f'{exe} -m pip install -e ".[{extra}]" (from the repository){note}'
+    return f'{exe} -m pip install -e ".[{extra}]" (from the repository){gpu}{note}'
 
 
 def missing_module_message(module: str) -> str | None:
