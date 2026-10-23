@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, a source read through `source_remap` from a disconnected mapped drive is now
+  recorded in its network form (`\\server\share\...`), the same as `analyze` records it, so
+  exclusions and carried segments match it (#181); older `Z:\...` entries still match. Clip
+  manifests (`clips/manifest.json` `source`) now record `\\server\share\...` instead of
+  `Z:\...` for a remapped mapped drive.
 - `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times
   and ordering to candidates, and `360 repair` matches crash impacts to segments, by the resolved,
   normalised source path (symlinks, `a/../b` spellings); `360 repair` reads a relative source in
