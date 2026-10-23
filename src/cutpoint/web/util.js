@@ -14,6 +14,20 @@ export function h(tag, props = {}, ...children) {
   return el;
 }
 
+/** Decorative inline icon: svg('icon', [['path', {d: '...'}], ['circle', {cx, cy, r}]]). */
+export function svg(cls, shapes, viewBox = '0 0 24 24') {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = document.createElementNS(NS, 'svg');
+  for (const [k, v] of Object.entries({ class: cls, viewBox, 'aria-hidden': 'true', focusable: 'false', fill: 'currentColor' }))
+    el.setAttribute(k, v);
+  for (const [tag, attrs] of shapes) {
+    const s = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) s.setAttribute(k, v);
+    el.append(s);
+  }
+  return el;
+}
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 
 /** 83.5 -> "1:23.50"; 3723 -> "1:02:03.00". Tabular digits come from CSS. */

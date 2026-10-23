@@ -41,6 +41,13 @@ preview and trim candidates, save and reorder a sequence, export clips, and asse
 video with optional fades, loudness normalization and captions. Source selection browses the
 server machine's files; nothing is uploaded. It does not expose action-cam or 360 commands.
 
+The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
+remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
+JPEGs in `<project>/ui/frames/` (at most 500 per project, least recently used evicted). Drag the
+splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
+remembered per browser. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
+pass another `--port`.
+
 Jobs run one at a time with logs and cancellation. Results remain the usual Cutpoint files;
 review choices live under `<project>/ui/`. Exports use fresh `clips_ui_*` folders and finals use
 fresh `final_ui_*` names, so earlier exports are not overwritten. Assembly uses the latest

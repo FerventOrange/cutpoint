@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cutpoint ui` sequence rows show a thumbnail per clip, served by
+  `GET /api/projects/{pid}/sources/{sid}/frame` and cached in `<project>/ui/frames/` (at most 500
+  per project, least recently used evicted, stale stills removed). Rows support inline rename,
+  remove with a confirm popover, multi-select with batch remove, up/down buttons and drag reorder.
+- Resizable side column in the UI (drag, keyboard, double-click to reset); width is remembered per
+  browser.
+
+### Changed
+
+- The UI's "Remove from sequence" button moved above the video preview.
+
 ### Fixed
 
 - A failed GPU encoder probe (`cutpoint capabilities`, or a video encoder forced with
@@ -19,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their longest clean part or dropped; nothing is refilled, your segments (and ids, if any) are
   kept, and only `mix_exclude.json` is updated. A segment missing `source`, `start` or `end`
   (or with non-numeric times) gives an `ERROR` line instead of a traceback (#110).
+- UI: removing the staged clip with the stage button and clicking again no longer removes a
+  different clip; it re-adds the same one, keeping its name.
+- `cutpoint ui` binds the port before printing the URL; on a busy port it exits 1 with an error
+  naming the port and suggesting `--port`.
 
 ### Security
 

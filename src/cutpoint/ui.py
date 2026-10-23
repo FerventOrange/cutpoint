@@ -11,6 +11,8 @@ Trust boundaries:
 * Every ``/api`` call needs the per-run token (``X-Cutpoint-Token``), which only the URL printed at
   startup carries (``#t=<token>``; there is no way to fetch it from the server). Media/output URLs
   carry it as ``?t=`` because ``<video>`` cannot send headers.
+* Source stills (``.../sources/<id>/frame?at=<seconds>``) are media URLs too; they are cached in
+  the project's ``ui/frames`` folder under a name built from the source's content key.
 * A project id is a direct child folder of the projects folder. A project's media are its
   recorded source files, and only those under the source the user picked for it (or, for projects
   made on the command line, the inputs of its analysis); ``highlights.json`` alone never
@@ -20,6 +22,7 @@ Trust boundaries:
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import logging
 import math
@@ -28,6 +31,7 @@ import os
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -46,14 +50,14 @@ from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache
 from cutpoint.config import projects_dir, remap_source
-from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, probe
+from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, grab_images, probe
 from cutpoint.styles import get_style, style_names
 from cutpoint.utils import VIDEO_EXTS, find_videos, slugify
 
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
-UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/
+UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MAX_SEGMENTS = 500
 MAX_LOG_LINES = 300
@@ -64,6 +68,11 @@ BROWSER_CONTAINERS = {".mp4", ".m4v", ".mov", ".webm"}
 BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
 BROWSER_AUDIO = {None, "aac", "mp3", "opus", "vorbis"}
 SAFE_NAME = re.compile(r"[\w.-]+")
+FRAME_WIDTH = 160  # default still width (px) for sequence thumbnails
+FRAME_MIN_W, FRAME_MAX_W = 32, 640
+FRAME_TIMEOUT_S = 30.0
+FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
+FRAME_CACHE_MAX = 500  # stills kept per project; the least recently used go first
 
 
 def bad(detail: str, status: int = 400) -> HTTPException:
@@ -248,6 +257,10 @@ class Media:
         self.procs: set[subprocess.Popen[str]] = set()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cutpoint-proxy")
         self.closing = False
+        # still file name -> (its builder lock, requests using it); dropped when the last one leaves
+        self.frame_locks: dict[str, tuple[threading.Lock, int]] = {}
+        self.frame_slots = threading.BoundedSemaphore(FRAME_SLOTS)
+        self.frames_pruned: set[Path] = set()  # projects whose stale stills went this run
 
     @staticmethod
     def key(real: Path) -> str | None:
@@ -333,6 +346,89 @@ class Media:
                     self.proxies[key] = state
                 else:
                     self.proxies.pop(key, None)
+
+    def frame(self, project: Path, path: str, at: float, width: int) -> Path | None:
+        """A JPEG still of ``path`` at ``at`` s (clamped into the source), ``width`` px wide.
+
+        Cached as ``ui/frames/<content key>-<centiseconds>-<width>.jpg`` and built once even when
+        requested concurrently. None if the source cannot be read.
+
+        Raises:
+            FFmpegError: If ffmpeg decodes no image.
+        """
+        real = remap_source(path)
+        key = self.key(real)
+        res = self.info(real, key) if key else None
+        if res is None or key is None:
+            return None
+        if res[1] > 0:
+            at = min(at, max(0.0, res[1] - 0.1))  # the last instants may hold no decodable frame
+        cs = round(at * 100)
+        out = project / UI_DIR / "frames" / f"{key}-{cs}-{width}.jpg"
+        if out.is_file():
+            with contextlib.suppress(OSError):
+                os.utime(out)  # recently used: evicted last
+            return out
+        with self.lock:
+            lock, users = self.frame_locks.get(out.name, (threading.Lock(), 0))
+            self.frame_locks[out.name] = (lock, users + 1)
+        try:
+            with lock:
+                if not out.is_file():
+                    with self.frame_slots:
+                        image = grab_images(
+                            real, cs / 100, width=width, quality=5, timeout=FRAME_TIMEOUT_S
+                        )[0]
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = out.with_name(f"{out.stem}.{threading.get_ident()}.part")
+                    try:
+                        tmp.write_bytes(image)
+                        tmp.replace(out)
+                    finally:
+                        tmp.unlink(missing_ok=True)
+                    self._evict_frames(out.parent)
+        finally:
+            with self.lock:
+                lock, users = self.frame_locks[out.name]
+                if users > 1:
+                    self.frame_locks[out.name] = (lock, users - 1)
+                else:
+                    del self.frame_locks[out.name]
+        return out
+
+    def _drop_frames(self, files: list[Path]) -> None:
+        """Delete cached stills (call with ``self.lock`` held), skipping any being built."""
+        for f in files:
+            if f"{f.name.split('.')[0]}.jpg" in self.frame_locks:
+                continue
+            try:
+                f.unlink(missing_ok=True)
+            except OSError as err:  # e.g. still being sent on Windows; next time
+                logger.debug("could not delete %s: %s", f.name, err)
+
+    def _evict_frames(self, folder: Path) -> None:
+        """Keep at most ``FRAME_CACHE_MAX`` stills in ``folder``, dropping the least recently used."""
+        with self.lock:
+            stills: list[tuple[int, Path]] = []
+            for f in folder.glob("*.jpg"):
+                with contextlib.suppress(OSError):
+                    stills.append((f.stat().st_mtime_ns, f))
+            if len(stills) > FRAME_CACHE_MAX:
+                stills.sort()
+                self._drop_frames([f for _, f in stills[: len(stills) - FRAME_CACHE_MAX]])
+
+    def prune_frames(self, project: Path, paths: list[str]) -> None:
+        """Once per run and project: delete stills of sources that changed or left, and leftovers."""
+        folder = project / UI_DIR / "frames"
+        if project in self.frames_pruned:
+            return
+        keys = {self.key(remap_source(path)) for path in paths} - {None}
+        with self.lock:
+            self.frames_pruned.add(project)
+            if not folder.is_dir():
+                return
+            stale = [f for f in folder.glob("*.jpg") if f.name.split("-")[0] not in keys]
+            self._drop_frames([*stale, *folder.glob("*.part")])
 
     def shutdown(self) -> None:
         self.closing = True
@@ -853,6 +949,29 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"source is {status}", 404 if status == "failed" else 409)
         return send(file, request, entry["name"])
 
+    @served.get("/projects/{pid}/sources/{sid}/frame")
+    def source_frame(pid: str, sid: str, at: float = 0.0, w: int = FRAME_WIDTH):
+        """One still of a source (``at`` seconds in, ``w`` px wide) for thumbnails."""
+        if not math.isfinite(at) or at < 0:
+            raise bad("at must be a time in seconds, 0 or more")
+        if media.closing:
+            raise bad("the server is stopping", 503)
+        p, entry = find_source(pid, sid)
+        if p not in media.frames_pruned:
+            hl = cache.load_json(p / "highlights.json")
+            sources = source_entries(p, hl if isinstance(hl, dict) else None)
+            media.prune_frames(p, [s["path"] for s in sources])
+        try:
+            file = media.frame(p, entry["path"], at, min(max(w, FRAME_MIN_W), FRAME_MAX_W))
+        except (FFmpegError, OSError) as err:
+            logger.warning("still of %s at %.2fs failed: %s", entry["name"], at, err)
+            raise bad("could not extract a frame from this source", 500) from err
+        if file is None:
+            raise bad("source cannot be read", 404)
+        return FileResponse(
+            file, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"}
+        )
+
     @secure.post("/projects/{pid}/sources/{sid}/prepare")
     def prepare_source(pid: str, sid: str):
         p, entry = find_source(pid, sid)
@@ -877,19 +996,54 @@ def _hangup(*_: object) -> None:
     raise SystemExit(1)  # unwinds through run()'s finally, which stops the children
 
 
+def listen(port: int) -> socket.socket:
+    """A listening socket on 127.0.0.1:``port`` that no other program shares.
+
+    Raises:
+        RuntimeError: If the port is already in use.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt":  # SO_REUSEADDR there would let two servers share the port
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:  # as uvicorn does: restart at once despite TIME_WAIT; a listener still blocks it
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", port))
+        sock.listen(2048)
+    except OSError as err:
+        sock.close()
+        # Windows reports a port held exclusively (or reserved) as WSAEACCES.
+        if err.errno in {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", None)} or (
+            os.name == "nt" and err.errno == getattr(errno, "WSAEACCES", None)
+        ):
+            other = port + 1 if port < 65535 else port - 1
+            raise RuntimeError(
+                f"Port {port} is already in use on 127.0.0.1; pass --port <n> "
+                f"(for example --port {other})"
+            ) from None
+        raise
+    return sock
+
+
 def run(port: int = 8765) -> None:
     """Serve the workspace on 127.0.0.1:``port`` until interrupted."""
     import uvicorn  # noqa: PLC0415
 
     app = create_app(port)
+    sock = listen(port)
+    # Printed only once the port is ours, so the URL always works.
     # The fragment never reaches the network; the page keeps the token in sessionStorage.
     print(f"Cutpoint UI: http://127.0.0.1:{port}/#t={app.state.token} (Ctrl+C to stop)", flush=True)
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _hangup)
     try:
-        uvicorn.run(
-            app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5
+            )
         )
+        server.run(sockets=[sock])
     finally:  # jobs and ffmpeg run in their own sessions: nothing else would stop them
+        sock.close()
         app.state.jobs.shutdown()
         app.state.media.shutdown()

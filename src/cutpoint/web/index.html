@@ -43,11 +43,12 @@
       <div class="col-head">
         <h2 id="stageTitle">Preview</h2>
         <span id="stageMeta" class="muted"></span>
-        <span class="spacer"></span>
-        <button type="button" id="toggleBtn" class="btn" hidden></button>
       </div>
       <div id="stageEmpty" class="empty"></div>
       <div id="stageBody" hidden>
+        <div class="screen-bar">
+          <button type="button" id="toggleBtn" class="btn" hidden></button>
+        </div>
         <div class="screen">
           <video id="video" playsinline preload="metadata"></video>
           <p id="screenMsg" class="screen-msg" role="status"></p>
@@ -77,12 +78,21 @@
       </div>
     </section>
 
-    <section class="col side" aria-labelledby="seqTitle">
+    <div id="sideSplit" class="splitter" role="separator" tabindex="0" aria-orientation="vertical"
+         aria-controls="side" aria-label="Resize sequence column" title="Drag to resize, double-click to reset"></div>
+
+    <section class="col side" id="side" aria-labelledby="seqTitle">
       <div class="col-head">
-        <h2 id="seqTitle">Sequence</h2>
+        <h2 id="seqTitle" tabindex="-1">Sequence</h2>
         <span id="seqTotal" class="tc muted"></span>
       </div>
       <div id="seqEmpty" class="empty"></div>
+      <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
+        <span id="seqSelCount" class="tc"></span>
+        <span class="spacer"></span>
+        <button type="button" id="seqRemoveSel" class="btn small danger">Remove selected</button>
+        <button type="button" id="seqClearSel" class="btn small">Clear</button>
+      </div>
       <ol id="seqList" class="seq-list"></ol>
       <p id="seqLive" class="vh" role="status"></p>
 
@@ -155,6 +165,26 @@
       <div class="dialog-actions">
         <button type="button" class="btn" id="newCancel">Cancel</button>
         <button type="submit" class="btn primary" id="newCreate">Create project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="seqPop" class="seq-pop" popover role="dialog" aria-labelledby="seqPopTitle" aria-describedby="seqPopText">
+    <h2 id="seqPopTitle">Remove clip from sequence?</h2>
+    <p id="seqPopText" class="muted"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn small" id="seqPopCancel">Cancel</button>
+      <button type="button" class="btn small danger" id="seqPopOk">Remove</button>
+    </div>
+  </div>
+
+  <dialog id="confirmDialog" class="confirm" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+    <form method="dialog">
+      <h2 id="confirmTitle"></h2>
+      <p id="confirmText" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="btn" id="confirmCancel">Cancel</button>
+        <button type="submit" value="ok" class="btn danger" id="confirmOk">Remove</button>
       </div>
     </form>
   </dialog>
