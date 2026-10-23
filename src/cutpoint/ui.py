@@ -938,27 +938,54 @@ def load_exports(p: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _inside(p: Path, name: str) -> bool:
+    """``p / name`` still lies inside ``p`` once symlinks and junctions are resolved."""
+    try:
+        return (p / name).resolve().is_relative_to(p.resolve())
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop (Python 3.12)
+        return False
+
+
 def current_export(p: Path) -> dict[str, Any] | None:
-    """The latest export whose clips are still on disk."""
+    """The latest export whose clips are still on disk, inside the project."""
     return next(
-        (e for e in reversed(load_exports(p)) if (p / e["dir"] / "manifest.json").is_file()), None
+        (
+            e
+            for e in reversed(load_exports(p))
+            if (p / e["dir"] / "manifest.json").is_file()
+            and _inside(p, e["dir"])
+            and _inside(p, f"{e['dir']}/manifest.json")
+        ),
+        None,
     )
 
 
 def output_names(p: Path) -> list[str]:
-    """Files of the current final (video first, then timelines) that exist."""
+    """Files of the current final (video first, then timelines) that exist inside the project."""
     exp = current_export(p)
     final = (exp or {}).get("final")
-    if not isinstance(final, str) or not SAFE_NAME.fullmatch(final) or not (p / final).is_file():
+    if not isinstance(final, str) or not SAFE_NAME.fullmatch(final):
+        return []
+    if not (p / final).is_file() or not _inside(p, final):
         return []
     stem = Path(final).stem
-    return [final, *(f"{stem}{e}" for e in (".fcpxml", ".otio") if (p / f"{stem}{e}").is_file())]
+    return [
+        final,
+        *(
+            f"{stem}{e}"
+            for e in (".fcpxml", ".otio")
+            if (p / f"{stem}{e}").is_file() and _inside(p, f"{stem}{e}")
+        ),
+    ]
 
 
 def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
-    """``stem`` or ``stem-N``: the first name no file ``name + ext`` already uses."""
+    """``stem`` or ``stem-N``: the first name no file ``name + ext`` already uses.
+
+    A broken symlink counts as taken, so an output is never written through one.
+    """
     n, name = 1, stem
-    while any((parent / f"{name}{e}").exists() for e in exts):
+    while any(os.path.lexists(parent / f"{name}{e}") for e in exts):
         n += 1
         name = f"{stem}-{n}"
     return name

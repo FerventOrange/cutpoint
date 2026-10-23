@@ -769,6 +769,106 @@ def test_exports_json_cannot_point_outside_the_project(
     assert opened == [p / "clips_ui_1", p]
 
 
+def link_dir(link: Path, target: Path) -> None:
+    """Make ``link`` a directory link to ``target``: a symlink, or a junction on Windows."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        if sys.platform != "win32":
+            pytest.skip("cannot create a directory symlink here")
+    done = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False
+    )
+    if done.returncode != 0:
+        pytest.skip("cannot create a symlink or junction here")
+
+
+@pytest.mark.parametrize("kind", ["dir", "final"])
+def test_exports_json_cannot_point_through_a_link_outside_the_project(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    reveal = f"/api/projects/{pid}/reveal"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache.save_json(outside / "manifest.json", {"clips": []})
+    (outside / "final.mp4").write_bytes(b"x")
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    (p / "final.mp4").write_bytes(b"x")
+
+    def write(*items: dict[str, str]) -> None:
+        cache.save_json(p / "ui" / "exports.json", {"exports": list(items)})
+
+    good = {"dir": "clips_ui_1", "final": "final.mp4"}
+    if kind == "dir":
+        link_dir(p / "clips_link", outside)
+        bad = {"dir": "clips_link", "final": "final.mp4"}
+        write(bad)
+        assert client.post(reveal, params={"target": "clips"}).status_code == 404
+    else:
+        try:
+            (p / "final_link.mp4").symlink_to(outside / "final.mp4")
+        except (OSError, NotImplementedError):
+            pytest.skip("cannot create a file symlink here")
+        bad = {"dir": "clips_ui_1", "final": "final_link.mp4"}
+        write(bad)
+        assert client.post(reveal, params={"target": "outputs"}).status_code == 404
+
+    # dir: an earlier legitimate export takes over; final: the latest export stays current
+    # and its linked final is hidden until it is replaced.
+    write(good, bad)
+    if kind == "dir":
+        assert client.post(reveal, params={"target": "clips"}).json() == {
+            "path": str(p / "clips_ui_1")
+        }
+        assert opened == [p / "clips_ui_1"]
+    else:
+        assert client.post(reveal, params={"target": "outputs"}).status_code == 404
+        assert opened == []
+        write(good)
+        assert client.post(reveal, params={"target": "outputs"}).json() == {"path": str(p)}
+        # Timelines next to the final are served only when they stay inside the project.
+        (outside / "final.fcpxml").write_text("x")
+        (p / "final.fcpxml").symlink_to(outside / "final.fcpxml")
+        assert client.get(f"/api/projects/{pid}/outputs/final.fcpxml").status_code == 404
+        names = [o["name"] for o in client.get(f"/api/projects/{pid}").json()["outputs"]]
+        assert names == ["final.mp4"]
+
+
+def test_export_manifest_symlinked_outside_the_project_is_not_served(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache.save_json(outside / "manifest.json", {"clips": [{"label": "SECRET-OUTSIDE"}]})
+    (p / "clips_ui_1").mkdir()
+    try:
+        (p / "clips_ui_1" / "manifest.json").symlink_to(outside / "manifest.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    res = client.get(f"/api/projects/{pid}")
+    assert res.status_code == 200
+    assert "SECRET-OUTSIDE" not in res.text
+
+
+@pytest.mark.parametrize("ext", ["", ".mp4", ".fcpxml"])
+def test_fresh_name_treats_a_broken_symlink_as_taken(tmp_path: Path, ext: str) -> None:
+    try:
+        (tmp_path / f"final{ext}").symlink_to(tmp_path / "missing-target")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a symlink here")
+    exts = ("", ".mp4", ".fcpxml") if ext else ("",)
+    assert ui.fresh_name(tmp_path, "final", exts) == "final-2"
+
+
 def test_folder_opener_runs_the_platform_tool_without_a_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
