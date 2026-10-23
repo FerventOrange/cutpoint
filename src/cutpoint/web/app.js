@@ -1,11 +1,18 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession } from './api.js';
 import { initNewProject } from './picker.js';
-import { $, baseName, fmt, fmtLen, h, parseTime, round2 } from './util.js';
+import { $, baseName, fmt, fmtLen, h, parseTime, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds of rail context around a moment; trims may use the whole source
+const LABEL_MAX = 200; // characters; ui.py validate_segments rejects longer labels
+const THUMB_W = 160; // pixels requested for sequence thumbnails
 const JOB_NAMES = { analyze: 'Analysis', clips: 'Clip export', assemble: 'Assembly' };
+const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
+const SIDE_MIN = 290; // pixels; the column's CSS default is 290-380
+const SIDE_MAX = 640;
+const STAGE_MIN = 360; // pixels the preview keeps when the sequence column widens
+const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
 
 const S = {
   styles: [],
@@ -14,7 +21,7 @@ const S = {
   project: null,
   segments: [], // working sequence (may hold unsaved edits)
   savedKey: '[]',
-  drafts: {}, // trims of moments not (yet) in the sequence
+  drafts: {}, // trims of moments not (yet) in the sequence; whole segments for removed non-moments
   focus: null,
   filter: '',
   jobs: [],
@@ -22,6 +29,10 @@ const S = {
   tracked: new Map(), // job id -> last seen status
   logOpen: false,
   saving: false,
+  selected: new Set(), // sequence ids ticked for batch actions
+  renaming: null, // sequence id whose label is being edited
+  renameDraft: '',
+  renameErr: '',
 };
 
 const v = $('#video');
@@ -44,7 +55,7 @@ function current() {
   if (!id) return null;
   const seg = S.segments.find((s) => s.id === id);
   const cand = cands().find((c) => c.id === id);
-  const base = seg ?? (cand && { ...cand, ...S.drafts[id] });
+  const base = seg ?? (cand ? { ...cand, ...S.drafts[id] } : S.drafts[id]?.source && S.drafts[id]);
   if (!base) return null;
   return { id, seg, cand, source: base.source, start: base.start, end: base.end, label: base.label || id };
 }
@@ -131,6 +142,8 @@ function adopt(p, switched) {
     S.id = p.id;
     S.drafts = {};
     S.focus = null;
+    S.selected.clear();
+    S.renaming = null;
     S.segments = structuredClone(p.review?.segments ?? []);
     S.savedKey = key();
     $('#projectSelect').value = p.id;
@@ -256,7 +269,7 @@ function setRange(which, t) {
     c.seg.start = s;
     c.seg.end = e;
     changed();
-  } else S.drafts[c.id] = { start: s, end: e };
+  } else S.drafts[c.id] = { ...S.drafts[c.id], start: s, end: e };
   renderTrim(true);
   return true;
 }
@@ -439,18 +452,26 @@ seek.addEventListener('input', () => seekTo(Number(seek.value)));
 // ---------- sequence ----------
 
 function addSeg(id) {
-  const c = cands().find((x) => x.id === id);
-  if (!c || S.segments.some((s) => s.id === id)) return;
   const d = S.drafts[id];
-  S.segments.push({ id, source: c.source, start: d?.start ?? c.start, end: d?.end ?? c.end, label: c.label || id });
+  const c = cands().find((x) => x.id === id) ?? (d?.source && d);
+  if (!c || S.segments.some((s) => s.id === id)) return;
+  S.segments.push({ id, source: c.source, start: d?.start ?? c.start, end: d?.end ?? c.end, label: d?.label ?? c.label ?? id });
   delete S.drafts[id];
   renderAfterSeqChange();
+}
+
+/** Keep a removed clip's trim for re-adding; a clip that is no moment is kept whole, so the
+ * stage can still show it (and offer "Add to sequence") after it leaves the sequence. */
+function keepDraft(seg) {
+  S.drafts[seg.id] = cands().some((c) => c.id === seg.id)
+    ? { start: seg.start, end: seg.end, label: seg.label }
+    : { source: seg.source, start: seg.start, end: seg.end, label: seg.label };
 }
 
 function removeSeg(id) {
   const seg = S.segments.find((s) => s.id === id);
   if (!seg) return;
-  S.drafts[id] = { start: seg.start, end: seg.end }; // keep the trim if re-added
+  keepDraft(seg);
   S.segments = S.segments.filter((s) => s !== seg);
   renderAfterSeqChange();
 }
@@ -482,6 +503,382 @@ function changed() {
 
 let dragId = null;
 
+const ICONS = {
+  edit: [['path', { d: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z' }]],
+  trash: [['path', { d: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z' }]],
+  up: [['path', { d: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z' }]],
+  down: [['path', { d: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z' }]],
+  film: [['path', { d: 'M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z' }]],
+  grip: [[9, 5], [15, 5], [9, 12], [15, 12], [9, 19], [15, 19]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.9 }]),
+};
+const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);
+
+// Thumbnails are stills the server cuts (and caches) on request; remember how each URL went so a
+// re-render neither flashes the skeleton again nor retries a source that cannot be read.
+const thumbs = new Map(); // url -> 'ok' | 'failed'
+// New stills load a few at a time so they cannot take every connection the player's range requests need.
+const THUMB_LOADS = 3;
+const thumbQueue = []; // <img> elements waiting for their data-src
+let thumbLoading = 0;
+
+function pumpThumbs() {
+  while (thumbLoading < THUMB_LOADS && thumbQueue.length) {
+    const img = thumbQueue.shift();
+    if (!img.isConnected) continue; // a re-render replaced it before its turn
+    thumbLoading += 1;
+    img.dataset.queued = 'loading';
+    img.src = img.dataset.src;
+  }
+}
+
+function thumbUrl(s) {
+  const src = srcOf(s.source);
+  if (!src?.url) return null;
+  const [path, query] = src.url.split('?'); // query carries the session token, as for <video>
+  const at = Math.round(Math.min(s.start + 0.5, (s.start + s.end) / 2) * 10) / 10; // skip black first frames
+  return `${path}/frame?${query}&at=${at}&w=${THUMB_W}`;
+}
+
+function thumb(s) {
+  const url = thumbUrl(s);
+  const state = url ? thumbs.get(url) : 'failed';
+  const box = h('span', { class: `seq-thumb${state === 'failed' ? ' failed' : state ? '' : ' loading'}` }, icon('film'));
+  if (state !== 'failed') {
+    const done = (ok) => {
+      thumbs.set(url, ok ? 'ok' : 'failed');
+      box.classList.remove('loading');
+      box.classList.toggle('failed', !ok);
+      if (img.dataset.queued === 'loading') {
+        img.dataset.queued = '';
+        thumbLoading -= 1;
+        pumpThumbs();
+      }
+    };
+    const img = h('img', {
+      decoding: 'async', alt: '', width: 64, height: 36,
+      onload: () => done(true), onerror: () => done(false),
+    });
+    img.draggable = false; // a dragged image would carry its URL, session token included
+    if (state === 'ok') img.src = url; // seen before: the browser cache serves it
+    else {
+      img.dataset.src = url;
+      thumbQueue.push(img);
+      queueMicrotask(pumpThumbs); // after the render has put the row into the page
+    }
+    box.append(img);
+  }
+  return box;
+}
+
+/** Why a label cannot be saved (mirrors ui.py: at most 200 printable characters), or ''. */
+function labelError(text) {
+  if (text.length > LABEL_MAX) return `Use at most ${LABEL_MAX} characters.`;
+  if (/[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u.test(text)) return 'Use letters, digits, punctuation and plain spaces only.';
+  return '';
+}
+
+function startRename(id) {
+  const seg = S.segments.find((s) => s.id === id);
+  if (!seg) return;
+  S.renaming = id;
+  S.renameDraft = seg.label || seg.id;
+  S.renameErr = '';
+  renderSequence();
+  const input = $(`#seqList [data-id="${CSS.escape(id)}"] input[data-act="rename"]`);
+  input?.focus();
+  input?.select();
+}
+
+/**
+ * End the rename of ``input``'s row. Enter and Escape re-render the list; a blur (``inPlace``)
+ * swaps only this row's editor back to its title, so the focus already moving on (Tab, a click on
+ * another control) is not lost to a rebuild.
+ */
+function finishRename(commit, input, inPlace = false) {
+  const seg = S.segments.find((s) => s.id === S.renaming);
+  const text = S.renameDraft.trim();
+  if (seg && commit && text && text !== seg.label) {
+    const err = labelError(text);
+    if (err) {
+      S.renameErr = err;
+      input.setAttribute('aria-invalid', 'true');
+      input.closest('.seq-text').querySelector('.seq-rename-err').textContent = err;
+      return;
+    }
+    seg.label = text;
+    S.renaming = null;
+    $('#seqLive').textContent = `Clip renamed to ${text}`;
+    if (inPlace) closeRename(seg, input);
+    else changed();
+    if (S.focus === seg.id) renderStage(false);
+    return;
+  }
+  S.renaming = null; // cancelled, unchanged or empty: keep the old name
+  if (inPlace && seg) closeRename(seg, input);
+  else renderSequence();
+}
+
+/** Put the title and pencil back into the row of ``input`` without rebuilding the list. */
+function closeRename(seg, input) {
+  const li = input.closest('li');
+  const old = li.querySelector('.seq-main');
+  const { main, pencil } = seqMain(seg, [...old.querySelectorAll(':scope > .rank, :scope > .seq-thumb')]);
+  old.replaceWith(main);
+  li.querySelector('.seq-edit-slot').replaceWith(pencil);
+  const name = seg.label || seg.id;
+  for (const [act, label] of Object.entries(ROW_LABELS)) {
+    li.querySelector(`[data-act="${act}"]`)?.setAttribute('aria-label', label(name));
+  }
+  renderSave();
+  renderExport();
+}
+
+/** Ask with the shared dialog; resolves true when the user confirms. Focus returns to the trigger. */
+function confirmAction(title, text, ok = 'Remove') {
+  const d = $('#confirmDialog');
+  const back = document.activeElement;
+  $('#confirmTitle').textContent = title;
+  $('#confirmText').textContent = text;
+  $('#confirmOk').textContent = ok;
+  d.returnValue = '';
+  d.showModal();
+  $('#confirmCancel').focus();
+  return new Promise((resolve) => {
+    d.addEventListener('close', () => {
+      if (back?.isConnected) back.focus();
+      resolve(d.returnValue === 'ok');
+    }, { once: true });
+  });
+}
+
+/** Focus control ``act`` of the row now at ``i`` (the last row if fewer remain). */
+function focusRow(i, act) {
+  const rows = $('#seqList').children;
+  const li = rows[Math.min(i, rows.length - 1)];
+  (li?.querySelector(`[data-act="${act}"]:not(:disabled)`) ?? li?.querySelector('button') ?? $('#seqTitle')).focus();
+}
+
+/** Place the open popover over ``card``: aligned to its top, flipped upward near the viewport bottom. */
+function placePop(pop, card) {
+  const r = card.getBoundingClientRect();
+  const w = Math.min(Math.max(r.width, 260), innerWidth - 16);
+  pop.style.width = `${w}px`;
+  const ph = pop.offsetHeight;
+  const top = r.top + ph > innerHeight - 8 ? r.bottom - ph : r.top;
+  pop.style.left = `${Math.min(Math.max(8, r.right - w), innerWidth - w - 8)}px`;
+  pop.style.top = `${Math.min(Math.max(8, top), innerHeight - ph - 8)}px`;
+}
+
+/**
+ * Confirm next to one row with a light-dismiss popover (Escape, clicking outside, scrolling or
+ * resizing cancel; opening another closes this one). Resolves true on Remove; focus returns to the
+ * trigger. Browsers without the Popover API get the page dialog.
+ */
+let settlePop = null; // answers the open row popover; only one is ever pending
+
+/** Whether the row popover is showing; ':popover-open' is a syntax error without the Popover API. */
+const popOpen = () => !!HTMLElement.prototype.showPopover && $('#seqPop').matches(':popover-open');
+
+function confirmAtRow(li, text) {
+  const pop = $('#seqPop');
+  const card = li?.querySelector('.seq-card');
+  if (!pop.showPopover || !card) return confirmAction('Remove clip from sequence?', text);
+  settlePop?.(false); // a popover for another row is still open: that one is cancelled
+  const back = document.activeElement;
+  $('#seqPopText').textContent = text;
+  if (!pop.matches(':popover-open')) pop.showPopover();
+  placePop(pop, card);
+  $('#seqPopCancel').focus({ preventScroll: true });
+  return new Promise((resolve) => {
+    const hide = () => pop.matches(':popover-open') && pop.hidePopover();
+    const onToggle = (e) => e.newState === 'closed' && cancel(); // Escape or a click outside
+    const settle = (ok) => {
+      if (settlePop !== settle) return;
+      settlePop = null;
+      pop.removeEventListener('toggle', onToggle);
+      document.removeEventListener('scroll', cancel, { capture: true });
+      removeEventListener('resize', cancel);
+      resolve(ok);
+    };
+    function cancel() {
+      if (settlePop !== settle) return;
+      const inside = pop.contains(document.activeElement) || document.activeElement === document.body;
+      settle(false);
+      hide();
+      // Keyboard and in-popover dismissals go back to the trash button; a click elsewhere keeps its target.
+      if (inside && back?.isConnected) back.focus();
+    }
+    settlePop = settle;
+    $('#seqPopOk').onclick = () => {
+      settle(true);
+      hide();
+    };
+    $('#seqPopCancel').onclick = cancel;
+    pop.addEventListener('toggle', onToggle);
+    document.addEventListener('scroll', cancel, { capture: true, passive: true });
+    addEventListener('resize', cancel);
+  });
+}
+
+async function confirmRemove(id, li) {
+  const i = S.segments.findIndex((s) => s.id === id);
+  if (i < 0) return;
+  const name = S.segments[i].label || id;
+  if (!(await confirmAtRow(li, `"${name}" is taken out of the sequence. No files are deleted.`))) return;
+  removeSeg(id);
+  $('#seqLive').textContent = `${name} removed from the sequence`;
+  focusRow(i, 'remove');
+}
+
+async function removeSelected() {
+  const first = S.segments.findIndex((s) => S.selected.has(s.id));
+  const n = S.segments.filter((s) => S.selected.has(s.id)).length;
+  if (!n) return;
+  const what = `${n} clip${n > 1 ? 's' : ''}`;
+  if (!(await confirmAction(`Remove ${what} from the sequence?`, 'Only the sequence changes. No files are deleted.'))) return;
+  for (const s of S.segments) if (S.selected.has(s.id)) keepDraft(s); // as removeSeg
+  S.segments = S.segments.filter((s) => !S.selected.has(s.id));
+  S.selected.clear();
+  renderAfterSeqChange();
+  $('#seqLive').textContent = `${what} removed from the sequence`;
+  focusRow(first, 'select');
+}
+
+/** Drop ticks of clips that left the sequence; sync the batch bar, row tints and checkboxes. */
+function renderBatch() {
+  const ids = new Set(S.segments.map((s) => s.id));
+  for (const id of S.selected) if (!ids.has(id)) S.selected.delete(id);
+  const n = S.selected.size;
+  $('#seqBatch').hidden = !n;
+  $('#seqSelCount').textContent = `${n} selected`;
+  for (const li of $('#seqList').children) {
+    const on = S.selected.has(li.dataset.id);
+    li.classList.toggle('selected', on);
+    const box = li.querySelector('[data-act="select"]');
+    if (box) box.checked = on;
+  }
+}
+
+/** Accessible names of a row's controls that carry the clip name. */
+const ROW_LABELS = {
+  select: (name) => `Select ${name}`,
+  remove: (name) => `Remove ${name} from sequence`,
+  up: (name) => `Move ${name} up`,
+  down: (name) => `Move ${name} down`,
+};
+
+const seqDur = (s, range) => h('span', { class: 'seq-dur tc', text: `${(s.end - s.start).toFixed(1)} s` },
+  h('span', { class: 'vh', text: `, ${range}` }));
+
+/** A row's title button (``head``: its rank and thumbnail) and rename pencil, when not renaming. */
+function seqMain(s, head) {
+  const name = s.label || s.id;
+  const range = `${fmt(s.start)} to ${fmt(s.end)}`;
+  const main = h('button', { type: 'button', class: 'seq-main', 'data-act': 'focus', title: range, onclick: () => focusMoment(s.id) },
+    ...head,
+    h('span', { class: 'seq-text' },
+      h('span', { class: 'seq-title', text: name, title: name, ondblclick: () => startRename(s.id) }), seqDur(s, range)));
+  const pencil = h('button', {
+    type: 'button', class: 'seq-icon seq-edit', 'data-act': 'rename', 'aria-label': `Rename ${name}`,
+    title: 'Rename', onclick: () => startRename(s.id),
+  }, icon('edit'));
+  return { main, pencil };
+}
+
+function seqRow(s, i, n) {
+  const name = s.label || s.id;
+  const range = `${fmt(s.start)} to ${fmt(s.end)}`;
+  const head = [h('span', { class: 'rank tc', text: String(i + 1) }), thumb(s)];
+  let main;
+  let pencil;
+  if (S.renaming === s.id) {
+    // same-size stand-in, so the remove button does not jump when the rename closes on mousedown
+    pencil = h('span', { class: 'seq-icon seq-edit-slot', 'aria-hidden': 'true' });
+    const errId = `seqRenameErr-${i}`;
+    const input = h('input', {
+      type: 'text', class: 'seq-rename', 'data-act': 'rename', value: S.renameDraft, maxLength: LABEL_MAX,
+      autocomplete: 'off', spellcheck: false, 'aria-label': `Name of clip ${i + 1}`, 'aria-describedby': errId,
+      'aria-invalid': S.renameErr ? 'true' : null,
+      oninput: () => {
+        S.renameDraft = input.value;
+        if (S.renameErr) {
+          S.renameErr = '';
+          input.removeAttribute('aria-invalid');
+          $(`#${errId}`).textContent = '';
+        }
+      },
+      onkeydown: (e) => {
+        if (e.key === 'Enter' || e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          finishRename(e.key === 'Enter', input);
+        }
+      },
+      onblur: () => {
+        if (S.renaming === s.id && input.isConnected) finishRename(true, input, true);
+      },
+    });
+    main = h('div', { class: 'seq-main editing', title: range }, ...head,
+      h('span', { class: 'seq-text' }, input,
+        h('span', { id: errId, class: 'seq-rename-err', role: 'alert', text: S.renameErr }), seqDur(s, range)));
+  } else {
+    ({ main, pencil } = seqMain(s, head));
+  }
+  const li = h('li', {
+    class: `seq${S.selected.has(s.id) ? ' selected' : ''}`, 'data-id': s.id, 'aria-current': s.id === S.focus ? 'true' : null,
+    ondragstart: (e) => {
+      dragId = s.id;
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', s.id);
+    },
+    ondragend: () => {
+      dragId = null;
+      li.draggable = false;
+      li.classList.remove('dragging');
+      for (const el of $('#seqList').children) el.classList.remove('drop');
+    },
+    ondragover: (e) => {
+      if (!dragId) return;
+      e.preventDefault();
+      for (const el of $('#seqList').children) el.classList.toggle('drop', el.dataset.id === s.id && s.id !== dragId);
+    },
+    ondrop: (e) => {
+      e.preventDefault();
+      if (dragId) moveSeg(dragId, i);
+    },
+  },
+    h('input', {
+      type: 'checkbox', class: 'seq-check', 'data-act': 'select', checked: S.selected.has(s.id), 'aria-label': ROW_LABELS.select(name),
+      onchange: (e) => {
+        if (e.target.checked) S.selected.add(s.id);
+        else S.selected.delete(s.id);
+        renderBatch();
+      },
+    }),
+    h('div', { class: 'seq-card', onclick: (e) => !e.target.closest('button,input,a') && focusMoment(s.id) },
+      main,
+      h('span', { class: 'seq-ctl' },
+        h('span', { class: 'seq-acts' },
+          pencil,
+          h('button', {
+            type: 'button', class: 'seq-icon seq-del', 'data-act': 'remove', 'aria-label': ROW_LABELS.remove(name),
+            title: 'Remove from sequence', onclick: () => confirmRemove(s.id, li),
+          }, icon('trash'))),
+        h('span', { class: 'seq-move' },
+          h('button', { type: 'button', class: 'seq-chev', 'data-act': 'up', disabled: i === 0, 'aria-label': ROW_LABELS.up(name), onclick: () => moveSeg(s.id, i - 1) }, icon('up')),
+          h('button', { type: 'button', class: 'seq-chev', 'data-act': 'down', disabled: i === n - 1, 'aria-label': ROW_LABELS.down(name), onclick: () => moveSeg(s.id, i + 1) }, icon('down')))),
+      // The handle arms dragging for the whole row; keyboard users reorder with the chevrons.
+      h('span', {
+        class: 'seq-handle', 'aria-hidden': 'true', title: 'Drag to reorder',
+        onpointerdown: () => { li.draggable = true; },
+        onpointerup: () => { if (!dragId) li.draggable = false; },
+        onpointercancel: () => { if (!dragId) li.draggable = false; },
+      }, icon('grip'))),
+  );
+  return li;
+}
+
 function renderSequence() {
   const segs = S.segments;
   const total = segs.reduce((n, s) => n + (s.end - s.start), 0);
@@ -492,42 +889,11 @@ function renderSequence() {
   if (!S.project) setEmpty($('#seqEmpty'));
   else if (!segs.length) setEmpty($('#seqEmpty'), h('p', {}, 'Nothing in the sequence yet. Add moments from the list, then trim and reorder them here. Clips are exported in this order.'));
   else setEmpty($('#seqEmpty'));
+  if (S.renaming && !segs.some((s) => s.id === S.renaming)) S.renaming = null;
   preserveFocus(() => {
-    $('#seqList').replaceChildren(
-      ...segs.map((s, i) =>
-        h('li', {
-          class: 'seq', 'data-id': s.id, draggable: true, 'aria-current': s.id === S.focus ? 'true' : null,
-          ondragstart: (e) => {
-            dragId = s.id;
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', s.id);
-          },
-          ondragend: () => {
-            dragId = null;
-            for (const li of $('#seqList').children) li.classList.remove('drop');
-          },
-          ondragover: (e) => {
-            if (!dragId) return;
-            e.preventDefault();
-            for (const li of $('#seqList').children) li.classList.toggle('drop', li.dataset.id === s.id && s.id !== dragId);
-          },
-          ondrop: (e) => {
-            e.preventDefault();
-            if (dragId) moveSeg(dragId, i);
-          },
-        },
-          h('button', { type: 'button', class: 'seq-main', 'data-act': 'focus', onclick: () => focusMoment(s.id) },
-            h('span', { class: 'rank tc', text: String(i + 1) }),
-            h('span', { class: 'seq-title', text: s.label || s.id }),
-            h('span', { class: 'cand-time tc', text: `${fmt(s.start)} to ${fmt(s.end)}, ${(s.end - s.start).toFixed(1)} s` })),
-          h('span', { class: 'seq-actions' },
-            h('button', { type: 'button', class: 'btn small', 'data-act': 'up', disabled: i === 0, 'aria-label': `Move ${s.label || s.id} up`, onclick: () => moveSeg(s.id, i - 1), text: 'Up' }),
-            h('button', { type: 'button', class: 'btn small', 'data-act': 'down', disabled: i === segs.length - 1, 'aria-label': `Move ${s.label || s.id} down`, onclick: () => moveSeg(s.id, i + 1), text: 'Down' }),
-            h('button', { type: 'button', class: 'btn small', 'data-act': 'remove', 'aria-label': `Remove ${s.label || s.id} from sequence`, onclick: () => removeSeg(s.id), text: 'Remove' })),
-        ),
-      ),
-    );
+    $('#seqList').replaceChildren(...segs.map((s, i) => seqRow(s, i, segs.length)));
   });
+  renderBatch();
 }
 
 // ---------- save, export, assemble ----------
@@ -705,7 +1071,96 @@ function renderAll(seekToStart) {
   renderOutputs();
 }
 
+/**
+ * The separator on the sequence column's left edge: drag, arrow keys (Home/End for the limits) or
+ * double-click to reset. The width is remembered per browser; without storage it lasts the session.
+ */
+function initSplitter() {
+  const bar = $('#sideSplit');
+  const ws = $('#workspace');
+  const side = $('#side');
+  let pref = null; // dragged width in pixels, or null for the CSS default
+  try {
+    pref = Number(localStorage.getItem(SIDE_KEY)) || null;
+  } catch {
+    // storage blocked: start from the default
+  }
+  const store = () => {
+    try {
+      if (pref == null) localStorage.removeItem(SIDE_KEY);
+      else localStorage.setItem(SIDE_KEY, String(pref));
+    } catch {
+      // storage blocked or full: the width still applies until reload
+    }
+  };
+  const max = () => Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.floor(innerWidth / 2),
+    ws.clientWidth - $('.moments').offsetWidth - STAGE_MIN));
+  const clamp = (w, hi = max()) => Math.round(Math.min(Math.max(w, SIDE_MIN), hi));
+  // pref stays as chosen; only what is applied is clamped, so a wider window gets it back.
+  // Layout is read once, before the write: reading it after would force a synchronous relayout.
+  const apply = () => {
+    const hi = max();
+    const w = pref == null ? null : clamp(pref, hi);
+    if (w == null) ws.style.removeProperty('--side-w');
+    else ws.style.setProperty('--side-w', `${w}px`);
+    bar.setAttribute('aria-valuemin', SIDE_MIN);
+    bar.setAttribute('aria-valuemax', hi);
+    bar.setAttribute('aria-valuenow', w ?? side.offsetWidth);
+  };
+  const set = (w) => {
+    pref = w == null ? null : clamp(w);
+    apply();
+  };
+
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    bar.classList.add('dragging');
+    const x0 = e.clientX;
+    const w0 = side.offsetWidth;
+    // At most one resize per frame, however fast the pointer reports.
+    let next = null;
+    let frame = 0;
+    const flush = () => {
+      frame = 0;
+      if (next != null) set(next);
+      next = null;
+    };
+    const move = (ev) => {
+      next = w0 + x0 - ev.clientX; // dragging left widens the column
+      if (!frame) frame = requestAnimationFrame(flush);
+    };
+    const end = () => {
+      cancelAnimationFrame(frame);
+      flush();
+      bar.classList.remove('dragging');
+      bar.removeEventListener('pointermove', move);
+      bar.removeEventListener('lostpointercapture', end);
+      store();
+    };
+    bar.addEventListener('pointermove', move);
+    bar.addEventListener('lostpointercapture', end);
+  });
+  bar.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? SIDE_STEP * 4 : SIDE_STEP;
+    const w = side.offsetWidth;
+    const next = { ArrowLeft: w + step, ArrowRight: w - step, Home: SIDE_MIN, End: max() }[e.key];
+    if (next == null) return;
+    e.preventDefault();
+    set(next);
+    store();
+  });
+  bar.addEventListener('dblclick', () => {
+    set(null);
+    store();
+  });
+  addEventListener('resize', apply);
+  apply();
+}
+
 function bind() {
+  initSplitter();
   trimInputs.start = trimField('start', 'Start');
   trimInputs.end = trimField('end', 'End');
   $('#trimMsg').after(
@@ -731,10 +1186,19 @@ function bind() {
     renderMoments();
   });
   $('#toggleBtn').addEventListener('click', () => {
+    // The stage stays on this clip either way, so the button flips and a second click undoes.
     const c = current();
-    if (c) (c.seg ? removeSeg : addSeg)(c.id);
+    if (!c) return;
+    (c.seg ? removeSeg : addSeg)(c.id);
+    $('#seqLive').textContent = `${c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
   });
   $('#optExtend').addEventListener('input', renderSequence);
+  $('#seqRemoveSel').addEventListener('click', removeSelected);
+  $('#seqClearSel').addEventListener('click', () => {
+    S.selected.clear();
+    renderBatch();
+    focusRow(0, 'select');
+  });
   $('#analyzeBtn').addEventListener('click', () => startJob('analyze'));
   $('#clipsBtn').addEventListener('click', () => {
     try {
@@ -766,14 +1230,15 @@ function bind() {
   });
 
   addEventListener('keydown', (e) => {
-    if (e.defaultPrevented || $('#newDialog').open) return;
+    if (e.defaultPrevented || $('#newDialog').open || $('#confirmDialog').open || popOpen()) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       saveReview().catch(fail);
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.target.closest('input:not([type=range]),textarea,select')) return;
+    // text fields, the column splitter (its own arrow keys) and any dialog or popover keep their keys
+    if (e.target.closest('input:not([type=range]),textarea,select,[role=separator],dialog,[popover]')) return;
     if (e.key === '[' || e.key === ']') {
       e.preventDefault();
       setRange(e.key === '[' ? 'start' : 'end', v.currentTime);
