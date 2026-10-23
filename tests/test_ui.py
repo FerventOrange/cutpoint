@@ -1556,3 +1556,222 @@ def test_a_job_is_refused_when_the_projects_folder_changed_after_the_project_was
     finally:
         for job in list(jobs.jobs.values()):
             jobs.cancel(job.id)
+
+
+def link_file(link: Path, target: Path) -> None:
+    """Make ``link`` a file symlink to ``target`` (skip where files cannot be linked)."""
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+
+
+def project_with_link(
+    client: TestClient, tmp_path: Path, what: str, data: object = None
+) -> tuple[str, Path, Path]:
+    """A project whose ``what`` (``ui`` or a metadata file) is a link into a folder outside it.
+
+    Returns (project id, project folder, the link's target); the target holds ``data`` as JSON.
+    """
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / Path(what).name
+    if what == "ui":
+        shutil.move(p / "ui", target)
+        link_dir(p / "ui", target)
+    else:
+        cache.save_json(target, data if data is not None else {})
+        (p / what).unlink(missing_ok=True)
+        link_file(p / what, target)
+    return pid, p, target
+
+
+@pytest.mark.parametrize("what", ["ui", "highlights.json", "no meta", "review", "exports"])
+def test_metadata_read_through_a_link_outside_the_project_is_ignored(
+    client: TestClient, tmp_path: Path, what: str
+) -> None:
+    secret = {"segments": [{"id": "h001"}], "candidates": [{"id": "h001"}], "style": "funny"}
+    if what in {"ui", "no meta"}:  # a link alone does not make a folder a project
+        pid, p, _ = project_with_link(client, tmp_path, "ui" if what == "ui" else "highlights.json")
+        if what == "no meta":
+            shutil.rmtree(p / "ui")
+        assert client.get("/api/projects").json() == {"projects": []}
+        assert client.get(f"/api/projects/{pid}").status_code == 404
+        return
+    if what == "highlights.json":
+        pid, _, _ = project_with_link(client, tmp_path, what, secret)
+        got = client.get(f"/api/projects/{pid}").json()
+        assert got["highlights"] is None
+    elif what == "review":
+        pid, _, _ = project_with_link(client, tmp_path, "ui/review.json", secret)
+        got = client.get(f"/api/projects/{pid}").json()
+        assert got["review"] is None
+    else:
+        pid, p, target = project_with_link(client, tmp_path, "ui/exports.json")
+        (p / "clips_ui_1").mkdir()
+        cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": [{"label": "x"}]})
+        (p / "final.mp4").write_bytes(b"x")
+        cache.save_json(target, {"exports": [{"dir": "clips_ui_1", "final": "final.mp4"}]})
+        got = client.get(f"/api/projects/{pid}").json()
+        assert got["clips"] is None
+        assert got["outputs"] == []
+
+
+@pytest.mark.parametrize("what", ["review", "clips", "analyze", "looping review"])
+def test_metadata_written_through_a_link_outside_the_project_is_refused(
+    client: TestClient, tmp_path: Path, what: str
+) -> None:
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    src = str((folder / "a.mp4").resolve())
+    seg = {"id": "h001", "source": src, "start": 1, "end": 4.5, "label": "good"}
+    cache.save_json(p / "highlights.json", {"sources": [{"path": src, "duration": 10.0}]})
+    cache.save_json(p / "ui" / "review.json", {"segments": [seg]})
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = {
+        "review": "ui/review.json",
+        "clips": "ui/exports.json",
+        "analyze": "highlights.json",
+        "looping review": "ui/review.json",
+    }[what]
+    target = outside / "target.json"
+    cache.save_json(target, {"keep": True})
+    (p / link).unlink(missing_ok=True)
+    if what == "looping review":
+        link_file(p / link, p / link)  # a link to itself: resolving it fails
+    else:
+        link_file(p / link, target)
+    before = target.read_bytes()
+    base = f"/api/projects/{pid}"
+
+    if what in {"review", "looping review"}:
+        res = client.put(f"{base}/review", json={"segments": [seg]})
+    else:
+        res = client.post(f"{base}/jobs", json={"action": what})
+    assert res.status_code == 409, res.text
+    assert client.get("/api/jobs").json() == {"jobs": []}
+    assert target.read_bytes() == before
+    assert sorted(f.name for f in outside.iterdir()) == ["target.json"]
+    assert not list((p / "ui").glob("segments-*.json"))  # no half-made export either
+
+
+def media_link(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sub: str
+) -> tuple[str, str, Path, Path, str]:
+    """A project with a source the browser cannot play, ``ui/<sub>`` linked to a folder outside.
+
+    Returns (project id, source id, project folder, the outside folder, the source's key).
+    """
+    fake = SimpleNamespace(
+        vcodec="hevc", pix_fmt="yuv420p", acodec="aac", audio_streams=1, duration=10.0
+    )
+    monkeypatch.setattr(ui, "probe", lambda _path: fake)
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (p / "ui").mkdir(exist_ok=True)
+    link_dir(p / "ui" / sub, outside)
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    return pid, sid, p, outside, ui.Media.key((folder / "a.mp4").resolve()) or ""
+
+
+def test_proxy_in_a_cache_folder_linked_outside_is_not_served_or_built(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, _, outside, key = media_link(client, tmp_path, monkeypatch, "proxy")
+    (outside / f"{key}.mp4").write_bytes(b"outside")
+    src = client.get(f"/api/projects/{pid}").json()["sources"][0]
+    assert src["status"] == "needs-proxy"
+    assert client.get(src["url"]).status_code == 409
+    assert client.post(f"/api/projects/{pid}/sources/{sid}/prepare").status_code == 409
+    assert [f.name for f in outside.iterdir()] == [f"{key}.mp4"]
+
+
+def test_frames_folder_linked_outside_is_not_used_and_nothing_there_is_deleted(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, _, outside, key = media_link(client, tmp_path, monkeypatch, "frames")
+    stale = [outside / f"{'0' * 16}-20-160.jpg", outside / f"{key}-30-160.123.part"]
+    for f in stale:
+        f.write_bytes(b"x")
+
+    def never(*_a: object, **_k: object) -> list[bytes]:
+        raise AssertionError("a still must not be built into a linked folder")
+
+    monkeypatch.setattr(ui, "grab_images", never)
+    token = client.headers["X-Cutpoint-Token"]
+    res = client.get(f"/api/projects/{pid}/sources/{sid}/frame?at=0.5&t={token}")
+    assert res.status_code == 409
+    assert sorted(f.name for f in outside.iterdir()) == sorted(f.name for f in stale)
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["crash", "refused-write"])
+def test_a_failing_post_processing_step_fails_the_job_with_a_clean_message(
+    caplog: pytest.LogCaptureFixture, refused: bool
+) -> None:
+    def on_success() -> None:
+        raise ui.bad("x", 409) if refused else RuntimeError("boom")
+
+    jobs = ui.Jobs()
+    with caplog.at_level(logging.ERROR):
+        job = jobs.start("p", "clips", [sys.executable, "-c", "pass"], on_success=on_success)
+        assert job.done.wait(20)
+    assert (job.status, job.error) == ("failed", "x" if refused else "boom")
+    # a refusal is expected and plain; only a real crash logs its traceback
+    assert any(r.exc_info for r in caplog.records if r.levelno >= logging.ERROR) is not refused
+
+
+def cli_project(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+    """A command-line project: ``highlights.json`` only, no ``ui`` folder. Returns it and a segment."""
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"x")
+    p = ui.projects_dir() / "cli"
+    p.mkdir(parents=True)
+    hl = {"sources": [{"path": str(src), "duration": 10.0}], "settings": {"inputs": [str(src)]}}
+    cache.save_json(p / "highlights.json", hl)
+    seg = {"id": "h001", "source": str(src), "start": 1, "end": 4.5, "label": "good"}
+    return p, seg
+
+
+def test_a_command_line_project_without_a_ui_folder_can_be_reviewed_and_exported(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = cli_project(tmp_path)
+    assert not (p / "ui").exists()
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    assert client.get("/api/projects/cli").json()["review"]["segments"][0]["id"] == "h001"
+
+    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *_a: [sys.executable, "-c", "pass"])
+    res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
+    assert res.status_code == 200, res.text
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(20)
+    assert len(list((p / "ui").glob("segments-*.json"))) == 1
+
+
+def test_review_through_a_dangling_ui_link_is_refused_and_creates_nothing_outside(
+    client: TestClient, tmp_path: Path
+) -> None:
+    p, seg = cli_project(tmp_path)
+    outside = tmp_path / "outside" / "ui"
+    outside.parent.mkdir()
+    link_dir(p / "ui", outside)  # the target does not exist
+    res = client.put("/api/projects/cli/review", json={"segments": [seg]})
+    assert res.status_code == 409, res.text
+    assert not outside.exists() and list(outside.parent.iterdir()) == []
+
+
+def test_a_link_in_the_projects_folder_to_an_outside_analysis_is_not_a_project(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    cache.save_json(outside / "highlights.json", {"candidates": []})
+    link_dir(ui.projects_dir() / "linked", outside)
+    listed = [x["id"] for x in client.get("/api/projects").json()["projects"]]
+    assert listed == [pid]
+    assert client.get("/api/projects/linked").status_code == 404

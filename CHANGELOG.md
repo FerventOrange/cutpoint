@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: saving the review or exporting clips in a project made on the command line (no
+  `ui` folder yet) no longer fails with a 500 error; the `ui` folder is created first. The project
+  list no longer shows a folder that cannot be opened (for example one that is a symlink or
+  junction to outside the projects folder). A job whose result could not be recorded (see #168)
+  shows the reason as its error, without a `409:` prefix or a traceback in the server log.
 - `cutpoint mix` and `cutpoint 360 repair` match an exclusion in `mix_exclude.json` to a segment
   by the resolved, normalised path of its source, so symlinks and spellings such as `a/../b`
   match in both commands and in every repair step. On Windows, `clips --segments` rejects a
@@ -219,6 +224,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (an export whose `manifest.json` resolves outside is ignored too); a broken symlink named like the next
   `final_*.mp4` or `clips_ui_*` output counts as taken, so no output is written through it
   (#155).
+- `cutpoint ui` treats a project metadata file (`highlights.json`, and `meta.json`,
+  `review.json` and `exports.json` in the project's `ui` folder) that a symlink or Windows
+  junction inside the project resolves to outside the project folder as missing, so it is
+  neither read nor makes the folder a project; saving the review, exporting clips (its
+  `segments-*.json` file and `exports.json`), recording an assembled final and analyzing
+  (`highlights.json`) refuse with a 409 error naming the file instead of writing through the link.
+  The preview and thumbnail caches (`ui/proxy`, `ui/frames`) are not used either when they, or
+  the `ui` folder, resolve outside the project: no proxy or still is served, built or written
+  there (preparing a preview or loading a thumbnail gives a 409 error) and stale stills there are
+  never deleted (#168).
 - Docker image (#112): uv is pinned by version and digest instead of an unpinned `curl | sh`
   install; the container runs as the non-root user `cutpoint` (uid 1000, build arguments
   `CUTPOINT_UID` / `CUTPOINT_GID`) owning `/data`; `git` and `curl` are no longer installed; and

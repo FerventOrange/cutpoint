@@ -550,6 +550,8 @@ class Jobs:
                     if on_success:
                         on_success()
                     job.status = "completed"
+                except HTTPException as err:  # a refused write: its message is the error
+                    job.error, job.status = err.detail, "failed"
                 except Exception as err:  # surfaced to the user as the job error
                     logger.exception("job %s post-processing failed", job.id)
                     job.error, job.status = str(err), "failed"
@@ -645,7 +647,7 @@ class Media:
         if res[0]:
             return "ready", real
         proxy = project / UI_DIR / "proxy" / f"{key}.mp4"
-        if proxy.is_file():
+        if proxy.is_file() and _inside(project, f"{UI_DIR}/proxy/{key}.mp4"):
             return "ready", proxy
         return {"preparing": "preparing", "failed": "failed"}.get(
             self.proxies.get(key, ""), "needs-proxy"
@@ -657,7 +659,8 @@ class Media:
         key = self.key(real)
         res = self.info(real, key) if key else None
         if res is not None and key is not None and not res[0] and not self.closing:
-            proxy = project / UI_DIR / "proxy" / f"{key}.mp4"
+            proxy = _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # never built through a link
+            _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")  # nor its temporary
             with self.lock:
                 if not proxy.is_file() and self.proxies.get(key) != "preparing":
                     self.proxies[key] = "preparing"
@@ -707,7 +710,7 @@ class Media:
         if res[1] > 0:
             at = min(at, max(0.0, res[1] - 0.1))  # the last instants may hold no decodable frame
         cs = round(at * 100)
-        out = project / UI_DIR / "frames" / f"{key}-{cs}-{width}.jpg"
+        out = _own(project, f"{UI_DIR}/frames/{key}-{cs}-{width}.jpg")  # nor cached through one
         if out.is_file():
             with contextlib.suppress(OSError):
                 os.utime(out)  # recently used: evicted last
@@ -723,7 +726,7 @@ class Media:
                             real, cs / 100, width=width, quality=5, timeout=FRAME_TIMEOUT_S
                         )[0]
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = out.with_name(f"{out.stem}.{threading.get_ident()}.part")
+                    tmp = _own(project, f"{UI_DIR}/frames/{out.stem}.{threading.get_ident()}.part")
                     try:
                         tmp.write_bytes(image)
                         tmp.replace(out)
@@ -768,8 +771,8 @@ class Media:
         keys = {self.key(remap_source(path)) for path in paths} - {None}
         with self.lock:
             self.frames_pruned.add(project)
-            if not folder.is_dir():
-                return
+            if not folder.is_dir() or not _inside(project, f"{UI_DIR}/frames"):
+                return  # never delete in a folder a link takes outside the project
             stale = [f for f in folder.glob("*.jpg") if f.name.split("-")[0] not in keys]
             self._drop_frames([*stale, *folder.glob("*.part")])
 
@@ -803,13 +806,13 @@ def project_dir(pid: str) -> Path:
         ok = p.is_dir() and p.resolve().parent == root.resolve()
     except OSError:
         ok = False
-    if not ok or not ((p / UI_DIR / "meta.json").is_file() or (p / "highlights.json").is_file()):
+    if not ok or not _is_project(p):
         raise bad("unknown project", 404)
     return p
 
 
 def read_meta(p: Path) -> dict[str, Any]:
-    meta = cache.load_json(p / UI_DIR / "meta.json")
+    meta = _load(p, f"{UI_DIR}/meta.json")
     return meta if isinstance(meta, dict) else {}
 
 
@@ -866,7 +869,7 @@ def source_folder(p: Path) -> Path | None:
             is_file = x.is_file() or (not x.exists() and x.suffix.lower() in VIDEO_EXTS)
             folders = [x.parent if is_file else x]
         else:
-            hl = cache.load_json(p / "highlights.json")
+            hl = _load(p, "highlights.json")
             entries = source_entries(p, hl if isinstance(hl, dict) else None)
             folders = [remap_source(Path(s["path"])).parent for s in entries]
         try:
@@ -947,7 +950,7 @@ def validate_segments(
 
 
 def load_exports(p: Path) -> list[dict[str, Any]]:
-    data = cache.load_json(p / UI_DIR / "exports.json")
+    data = _load(p, f"{UI_DIR}/exports.json")
     items = data.get("exports") if isinstance(data, dict) else None
     return [
         e
@@ -962,6 +965,25 @@ def _inside(p: Path, name: str) -> bool:
         return (p / name).resolve().is_relative_to(p.resolve())
     except (OSError, RuntimeError):  # RuntimeError: a symlink loop (Python 3.12)
         return False
+
+
+def _load(p: Path, name: str) -> Any | None:
+    """The project file ``p / name`` as JSON; None (as if missing) when a link takes it outside."""
+    return cache.load_json(p / name) if _inside(p, name) else None
+
+
+def _own(p: Path, name: str) -> Path:
+    """``p / name`` to write, else 409 when a symlink or junction takes it outside the project."""
+    if not _inside(p, name):
+        raise bad(f"{name} resolves outside the project folder; remove the link", 409)
+    return p / name
+
+
+def _is_project(d: Path) -> bool:
+    """``d`` holds UI metadata or an analysis of its own (not one a link points to)."""
+    return any(
+        (d / n).is_file() and _inside(d, n) for n in (f"{UI_DIR}/meta.json", "highlights.json")
+    )
 
 
 def current_export(p: Path) -> dict[str, Any] | None:
@@ -1166,10 +1188,13 @@ def create_app(port: int) -> FastAPI:
         root = projects_dir()
         found = []
         for d in sorted(root.iterdir()) if root.is_dir() else []:
-            if d.name.startswith(".") or not d.is_dir() or (d / "pano.json").exists():
+            if not d.is_dir() or (d / "pano.json").exists():
                 continue
-            if (d / UI_DIR / "meta.json").is_file() or (d / "highlights.json").is_file():
-                found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
+            try:
+                project_dir(d.name)  # listed only if it opens: the same name, folder and link rules
+            except HTTPException:
+                continue
+            found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
         return {"projects": found}
 
     @owned.post("/projects")
@@ -1196,9 +1221,9 @@ def create_app(port: int) -> FastAPI:
     def get_project(pid: str):
         p = project_dir(pid)
         meta = read_meta(p)
-        hl = cache.load_json(p / "highlights.json")
+        hl = _load(p, "highlights.json")
         hl = hl if isinstance(hl, dict) else None
-        review = cache.load_json(p / UI_DIR / "review.json")
+        review = _load(p, f"{UI_DIR}/review.json")
         exp = current_export(p)
         manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
         sources = []
@@ -1231,12 +1256,14 @@ def create_app(port: int) -> FastAPI:
     @owned.put("/projects/{pid}/review")
     def put_review(pid: str, body: dict[str, Any]):
         p = project_dir(pid)
-        hl = cache.load_json(p / "highlights.json")
+        hl = _load(p, "highlights.json")
         segments = validate_segments(
             body.get("segments"), source_entries(p, hl if isinstance(hl, dict) else None), media
         )
         review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
-        cache.save_json(p / UI_DIR / "review.json", review)
+        file = _own(p, f"{UI_DIR}/review.json")
+        file.parent.mkdir(exist_ok=True)  # a command-line project has no ui folder yet
+        cache.save_json(file, review)
         return review
 
     @owned.post("/projects/{pid}/reveal")
@@ -1275,7 +1302,7 @@ def create_app(port: int) -> FastAPI:
         p = project_dir(pid)
         action = body.get("action")
         meta = read_meta(p)
-        hl = cache.load_json(p / "highlights.json")
+        hl = _load(p, "highlights.json")
         hl = hl if isinstance(hl, dict) else None
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         on_success: Callable[[], None] | None = None
@@ -1288,6 +1315,7 @@ def create_app(port: int) -> FastAPI:
             style = meta.get("style") or (hl or {}).get("style")
             if not inputs or not style:
                 raise bad("project has no recorded source to analyze")
+            _own(p, "highlights.json")  # the analysis rewrites it
             args = cutpoint_cmd(
                 "analyze", *map(str, inputs), "--style", str(style), "--out", str(p)
             )
@@ -1298,7 +1326,7 @@ def create_app(port: int) -> FastAPI:
             if st.get("recursive") is True:
                 args.append("--recursive")
         elif action == "clips":
-            raw = cache.load_json(p / UI_DIR / "review.json")
+            raw = _load(p, f"{UI_DIR}/review.json")
             segments = validate_segments(
                 (raw.get("segments") or []) if isinstance(raw, dict) else [],
                 source_entries(p, hl),
@@ -1315,7 +1343,9 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"extend must be 0-{MAX_EXTEND_S:g} seconds")
             vertical = _flag(body, "vertical")
             out_name = fresh_name(p, f"clips_ui_{stamp}")
-            seg_file = p / UI_DIR / f"segments-{out_name[len('clips_ui_') :]}.json"
+            seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
+            _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the export
+            seg_file.parent.mkdir(exist_ok=True)  # a command-line project has no ui folder yet
             # Exactly the trims the user made, in their order: no smart tails or speech snapping.
             cache.save_json(
                 seg_file, [{**s, "smart_tail": False, "speech_aware": False} for s in segments]
@@ -1335,7 +1365,7 @@ def create_app(port: int) -> FastAPI:
                 items.append(
                     {"dir": out_name, "created": stamp, "vertical": vertical, "final": None}
                 )
-                cache.save_json(p / UI_DIR / "exports.json", {"exports": items})
+                cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
         elif action == "assemble":
             exp = current_export(p)
@@ -1373,7 +1403,7 @@ def create_app(port: int) -> FastAPI:
                 for e in items:
                     if e["dir"] == exp_dir:
                         e["final"] = f"{stem}.mp4"
-                cache.save_json(p / UI_DIR / "exports.json", {"exports": items})
+                cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
         else:
             raise bad("action must be 'analyze', 'clips' or 'assemble'")
@@ -1406,7 +1436,7 @@ def create_app(port: int) -> FastAPI:
 
     def find_source(pid: str, sid: str) -> tuple[Path, dict[str, Any]]:
         p = project_dir(pid)
-        hl = cache.load_json(p / "highlights.json")
+        hl = _load(p, "highlights.json")
         entry = next(
             (s for s in source_entries(p, hl if isinstance(hl, dict) else None) if s["id"] == sid),
             None,
@@ -1432,7 +1462,7 @@ def create_app(port: int) -> FastAPI:
             raise bad("the server is stopping", 503)
         p, entry = find_source(pid, sid)
         if p not in media.frames_pruned:
-            hl = cache.load_json(p / "highlights.json")
+            hl = _load(p, "highlights.json")
             sources = source_entries(p, hl if isinstance(hl, dict) else None)
             media.prune_frames(p, [s["path"] for s in sources])
         try:
