@@ -42,6 +42,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -390,6 +391,27 @@ def repair(
         IsADirectoryError: If ``segments_file``, ``qa_file`` or ``out`` is a folder.
         FileNotFoundError: If ``segments_file`` or ``qa_file`` is missing.
     """
+    made: list[Path] = []  # folders this run created for ``out``, deepest first
+    try:
+        return _repair(project, segments_file, qa_file, out, sheet, made)
+    except BaseException:  # interrupted too: remove the folders it created while still empty
+        for folder in made:
+            try:
+                folder.rmdir()
+            except OSError:  # not empty (something was written into it): keep it
+                continue
+        raise
+
+
+def _repair(
+    project: Path,
+    segments_file: Path,
+    qa_file: Path,
+    out: Path | None,
+    sheet: bool,
+    made: list[Path],
+) -> dict[str, Any]:
+    """:func:`repair`; the folders it creates for ``out`` are added to ``made``."""
     old = read_json_file(segments_file)
     if out is not None and out.is_dir():
         raise IsADirectoryError(f"{out} is a folder, not a segments file")
@@ -457,7 +479,7 @@ def repair(
     }
     new = [dict(s) for s in old]
     if new_excl:
-        _make_parent(out)
+        _make_parent(out, made)
         written = out.with_name(mix.EXCLUDE_FILE)
         have = written if written.is_file() else project / mix.EXCLUDE_FILE
         usable, ignored = mix.read_exclusions(have)
@@ -528,18 +550,34 @@ def repair(
             }
             for s in new
         ]
-    _make_parent(out)
+    _make_parent(out, made)
     cache.save_json(out, new)
     rep["written"] = True
     return rep
 
 
-def _make_parent(out: Path) -> None:
-    """Create the folder of ``out`` (``--out`` into a new folder).
+def _make_parent(out: Path, made: list[Path]) -> None:
+    """Create the folder of ``out`` (``--out`` into a new folder); the levels created are
+    added to ``made``, deepest first.
 
     Raises:
         NotADirectoryError: If a file is in the way.
     """
+    missing = []
+    for folder in (out.parent, *out.parent.parents):
+        if os.path.lexists(folder):
+            break
+        missing.append(folder)
+    # top down, recording only what this call's own mkdir created: a level that exists by
+    # then (another process, or ``x/..``, which is an existing folder) is never recorded
+    for folder in reversed(missing):
+        try:
+            folder.mkdir()
+        except FileExistsError:
+            continue
+        except OSError:  # a file in the way or no permission: the mkdir below decides
+            break
+        made.insert(0, folder)
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
     except (FileExistsError, NotADirectoryError):

@@ -51,10 +51,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` project metadata edge cases (#184): a preview proxy is not built or moved into
+  place when `ui/proxy` became a link outside the project while queued or encoding (its temporary
+  file is removed); one unreadable entry in the projects folder is skipped instead of failing the
+  project list with a 500 error; saving the review when `<project>/ui` is a file or a broken link
+  inside the project gives a 409 error "<project>/ui is not a folder; remove or rename it" instead
+  of a 500 error (a clips export gives it if `ui` changes during the request), and nothing is
+  created through the link (preparing a preview then fails with a WARNING naming it, without a
+  traceback); a clips export refused because another job is running or the
+  projects folder changed, or whose command could not be started, no longer leaves a
+  `segments-*.json` file behind.
 - On Windows, `clips --force`, `extend` in place and `extend --out ... --force` refuse a volume
   mounted into an NTFS folder (for example `C:\mnt\vol`) with the mount-point message instead of
   calling it a drive root. A real drive root (`C:\`, a UNC share root) keeps the drive-root
   message (#185).
+- On Windows, a source read through `source_remap` from a disconnected mapped drive is now
+  recorded in its network form (`\\server\share\...`), the same as `analyze` records it, so
+  exclusions and carried segments match it (#181); older `Z:\...` entries still match. Clip
+  manifests (`clips/manifest.json` `source`) now record `\\server\share\...` instead of
+  `Z:\...` for a remapped mapped drive.
+- A failed or interrupted `cutpoint 360 repair --out <new folder>` removes the folders it created
+  for `--out`, only while they are empty; existing folders and files are kept (#189).
 - `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times
   and ordering to candidates, and `360 repair` matches crash impacts to segments, by the resolved,
   normalised source path (symlinks, `a/../b` spellings); `360 repair` reads a relative source in

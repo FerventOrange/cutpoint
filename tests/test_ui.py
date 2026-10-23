@@ -1775,3 +1775,136 @@ def test_a_link_in_the_projects_folder_to_an_outside_analysis_is_not_a_project(
     listed = [x["id"] for x in client.get("/api/projects").json()["projects"]]
     assert listed == [pid]
     assert client.get("/api/projects/linked").status_code == 404
+
+
+def swap_ui(p: Path, kind: str) -> None:
+    """Replace ``p/ui`` with a plain file, or a link to a folder that does not exist (inside p)."""
+    shutil.rmtree(p / "ui", ignore_errors=True)
+    if kind == "file":
+        (p / "ui").write_bytes(b"x")
+    else:
+        link_dir(p / "ui", p / "gone")
+
+
+@pytest.mark.parametrize("kind", ["file", "dangling link"])
+@pytest.mark.parametrize("via", ["review", "clips job"])
+def test_an_unusable_ui_is_a_409_and_nothing_is_created(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, via: str, kind: str
+) -> None:
+    p, seg = cli_project(tmp_path)
+    if via == "review":
+        swap_ui(p, kind)
+        res = client.put("/api/projects/cli/review", json={"segments": [seg]})
+    else:  # the review was read, then ui was replaced: the job must not write through it
+        assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+
+        def cmd_after_ui_changes(*_a: str) -> list[str]:
+            swap_ui(p, kind)
+            return [sys.executable, "-c", "pass"]
+
+        monkeypatch.setattr(ui, "cutpoint_cmd", cmd_after_ui_changes)
+        res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"] == "cli/ui is not a folder; remove or rename it"
+    assert not client.app.state.jobs.jobs
+    assert sorted(f.name for f in p.rglob("*") if f.name != "ui") == ["highlights.json"]
+    assert not (p / "gone").exists()
+
+
+@pytest.mark.parametrize("why", ["folder changed", "job running", "cannot start"])
+def test_a_clips_job_that_does_not_start_leaves_no_segments_file(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, why: str
+) -> None:
+    p, seg = cli_project(tmp_path)
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    jobs = client.app.state.jobs
+    busy = None
+    if why == "folder changed":
+        real_cmd = ui.cutpoint_cmd
+
+        def cmd_while_the_folder_changes(*args: str) -> list[str]:
+            config.set_config_value("projects_dir", str(tmp_path / "other"))
+            return real_cmd(*args)
+
+        monkeypatch.setattr(ui, "cutpoint_cmd", cmd_while_the_folder_changes)
+    elif why == "job running":
+        busy = jobs.start("x", "analyze", [sys.executable, "-c", "import time; time.sleep(60)"])
+    else:
+
+        def no_spawn(_args: list[str]) -> None:
+            raise OSError("not found")
+
+        monkeypatch.setattr(ui, "spawn", no_spawn)
+    try:
+        res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
+        assert res.status_code == (500 if why == "cannot start" else 409), res.text
+        assert not list(p.rglob("segments-*.json"))
+    finally:
+        if busy:
+            jobs.cancel(busy.id)
+
+
+def test_one_unreadable_entry_does_not_fail_the_project_list(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("bad", "good"):
+        (ui.projects_dir() / name).mkdir(parents=True)
+        cache.save_json(ui.projects_dir() / name / "highlights.json", {"candidates": []})
+    real_is_dir = Path.is_dir
+
+    def is_dir(self: Path) -> bool:
+        if self.name == "bad":
+            raise PermissionError("denied")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    res = client.get("/api/projects")
+    assert res.status_code == 200
+    assert [x["id"] for x in res.json()["projects"]] == ["good"]
+
+
+@pytest.mark.parametrize("fault", ["ui is a file", "proxy linked during the encode"])
+def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    fault: str,
+) -> None:
+    fake = SimpleNamespace(
+        vcodec="hevc", pix_fmt="yuv420p", acodec="aac", audio_streams=1, duration=10.0
+    )
+    monkeypatch.setattr(ui, "probe", lambda _path: fake)
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if fault == "ui is a file":
+        shutil.rmtree(p / "ui")
+        (p / "ui").write_bytes(b"x")
+    monkeypatch.setattr(ui, "proxy_args", lambda _real, tmp, _n: [str(tmp)])
+
+    class Encoder:
+        returncode = 0
+
+        def __init__(self, args: list[str]) -> None:
+            self.tmp = Path(args[0])
+
+        def communicate(self) -> tuple[str, None]:
+            shutil.rmtree(p / "ui" / "proxy")  # ui/proxy becomes a link while the encode runs
+            link_dir(p / "ui" / "proxy", outside)
+            self.tmp.write_bytes(b"proxy")
+            return "", None
+
+    monkeypatch.setattr(ui, "spawn", Encoder)
+    with caplog.at_level(logging.INFO):
+        media = client.app.state.media
+        media.prepare(p, str(folder / "a.mp4"))
+        media.pool.submit(int).result(30)  # the one worker has finished the build
+    assert list(outside.iterdir()) == []
+    assert not list(p.rglob("*.part.mp4"))
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [r.levelno for r in warnings] == [logging.WARNING] and not warnings[0].exc_info
+    if fault == "ui is a file":
+        assert "is not a folder" in warnings[0].getMessage()
+    assert media.status(p, str(folder / "a.mp4"))[0] == "failed"
