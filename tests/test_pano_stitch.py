@@ -166,7 +166,7 @@ class TestFailureReasons:
 
     def test_nonzero_exit_and_unsigned_windows_code(self):
         assert self._ok(returncode=3) == ["exit code 3 (bad arguments?)"]
-        assert self._ok(returncode=2**32 - 2) == ["exit code -2 (bad arguments?)"]
+        assert self._ok(returncode=2**32 - 2) == ["exit code -2 (0xFFFFFFFE) (bad arguments?)"]
 
     @pytest.mark.parametrize(
         "status, failed",

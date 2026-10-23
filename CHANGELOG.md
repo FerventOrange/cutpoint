@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then does `taskkill /T /F` run (also the fallback when the UI has no console, for example under
   pythonw). The UI no longer treats a hidden leftover `.<name>.part.mp4` as an exported clip when
   deciding whether there is something to assemble (#125).
+- Windows: a JSON result file (`highlights.json`, `manifest.json`, cache files, ...) that stays
+  locked now gives the same "open in another program" error naming the file as a locked clip,
+  instead of a bare `PermissionError`. For "Access is denied" (error 5) the hint also says the
+  file or its folder may be read-only. llama-server and `360 stitch` exit codes are shown signed
+  with their hex form, e.g. `-1073741819 (0xC0000005)`, like ffmpeg's. A failed `360 director`
+  run, or a failed 360 `clips`/`extend` run, no longer leaves an empty `pano_paths/<name>` folder
+  it created (#146).
 - Windows: Ctrl+Break (or `CTRL_BREAK_EVENT` sent to the process group) now stops a command
   like Ctrl+C: partial files are removed and the exit code is 130 instead of `0xC000013A`.
   AGENTS.md notes which ways of stopping Cutpoint on Windows give 130 and which end it without
