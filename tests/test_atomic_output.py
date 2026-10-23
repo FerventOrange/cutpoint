@@ -488,6 +488,7 @@ def test_extend_out_force_refuses_a_mount_point_or_root_before_exporting(
     [
         ("drive root", "is a drive root"),
         ("mount point", "is a mount point"),
+        ("volume mount", "is a mount point"),
         ("bind mount", "is on another file system than its parent folder"),
     ],
 )
@@ -508,7 +509,7 @@ def test_clips_force_and_in_place_extend_refuse_a_root_or_mount_before_exporting
             "is_mount",
             lambda self: self.resolve() == clips_dir.resolve() or real_is_mount(self),
         )
-    elif kind == "drive root":
+    elif kind in ("drive root", "volume mount"):
         # A nameless path stands in for the root; nothing is ever opened at the real root.
         monkeypatch.setattr(
             Path,
@@ -517,6 +518,10 @@ def test_clips_force_and_in_place_extend_refuse_a_root_or_mount_before_exporting
                 Path(clips_dir.anchor) if self == clips_dir else real_resolve(self, *a, **kw)
             ),
         )
+        if kind == "volume mount":  # #185: a volume mounted into a folder resolves to a root
+            monkeypatch.setattr(
+                Path, "is_mount", lambda self: self == clips_dir or real_is_mount(self)
+            )
     else:
 
         def rename(self, target):
@@ -535,6 +540,33 @@ def test_clips_force_and_in_place_extend_refuse_a_root_or_mount_before_exporting
     assert message in _errors(caplog)
     assert _snapshot(clips_dir) == before
     _only_original_folders(project)
+
+
+@pytest.mark.parametrize(
+    ("folder", "is_mount", "message"),
+    [
+        ("root", True, "is a drive root"),
+        pytest.param(
+            "unc", True, "is a drive root",
+            marks=pytest.mark.skipif(os.name != "nt", reason="UNC paths"),
+        ),
+    ],
+)  # fmt: skip
+def test_swap_target_that_resolves_to_a_nameless_root(
+    monkeypatch, tmp_path, folder, is_mount, message
+):
+    """#185: only a folder that is a mount point itself is called one; a real root or a link
+    that lands on a root keeps the drive-root message. The error names the folder as given."""
+    dst = {
+        "root": Path(tmp_path.anchor),
+        "unc": Path(r"\\srv\share"),
+    }[folder]
+    root = Path(tmp_path.anchor)
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **kw: root if self == dst else self)
+    monkeypatch.setattr(Path, "is_mount", lambda self: is_mount and self == dst)
+    with pytest.raises(ValueError, match=message) as err:
+        ffmpeg_utils.check_swap_target(dst)
+    assert str(dst) in str(err.value)
 
 
 @pytest.mark.parametrize("kind", ["drive root", "mount point", "bind mount"])
