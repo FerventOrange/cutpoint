@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows: Ctrl+Break (or `CTRL_BREAK_EVENT` sent to the process group) now stops a command
+  like Ctrl+C: partial files are removed and the exit code is 130 instead of `0xC000013A`.
+  AGENTS.md notes which ways of stopping Cutpoint on Windows give 130 and which end it without
+  cleanup (exit 1) (#148).
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects

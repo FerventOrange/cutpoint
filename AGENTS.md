@@ -27,6 +27,10 @@ below.
   [docs/getting-started.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
   Check it works with `cutpoint paths` (or `uv run cutpoint paths`).
 - Exit codes: `0` success, `1` error, `130` interrupted, `2` bad arguments.
+  On Windows, Ctrl+C or Ctrl+Break gives `130` and removes partial files; from a program, start
+  Cutpoint with `CREATE_NEW_PROCESS_GROUP` and send `CTRL_BREAK_EVENT` (`CTRL_C_EVENT` to a
+  process id is not delivered). `taskkill /F`, `Stop-Process` and `Popen.terminate()`/`kill()`
+  stop it without cleanup (exit `1`; `-1` from `Stop-Process`).
 - Logs and errors go to stderr as `HH:MM:SS LEVEL message`; errors are `ERROR` lines. Use
   `cutpoint -v <command>` (flag before the command) for debug output and tracebacks.
 - Paths inside a project must start with `projects/<name>/...` (forward slashes work on every OS; do not use backslashes in bash) or be absolute; a bare name means
