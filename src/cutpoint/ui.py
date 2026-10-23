@@ -692,7 +692,8 @@ class Media:
         except OSError:
             logger.exception("proxy of %s failed", real.name)
         finally:
-            tmp.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):  # e.g. NotADirectoryError when ui is a file
+                tmp.unlink(missing_ok=True)
             with self.lock:
                 if state:
                     self.proxies[key] = state
@@ -737,7 +738,8 @@ class Media:
                         tmp.write_bytes(image)
                         tmp.replace(out)
                     finally:
-                        tmp.unlink(missing_ok=True)
+                        with contextlib.suppress(OSError):  # keeps the write's own error
+                            tmp.unlink(missing_ok=True)
                     self._evict_frames(out.parent)
         finally:
             with self.lock:
