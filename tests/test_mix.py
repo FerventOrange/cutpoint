@@ -220,3 +220,39 @@ def test_run_mix_with_nothing_selected_raises_and_writes_nothing(
     with pytest.raises(ValueError, match=rf"Nothing selected in .*{why}"):
         mix.run_mix(tmp_path, target_s=target, exclude=exclude, out=tmp_path / "mix_segments.json")
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("spelling", ["symlink", "dotdot"])
+def test_apply_exclusions_matches_a_differently_spelt_source(tmp_path, spelling) -> None:
+    """Issue #175: an exclusion whose source is a symlink to, or a ``..`` spelling of, the
+    candidate's source still cuts it."""
+    (tmp_path / "sub").mkdir()
+    real = tmp_path / "sub" / "a.mp4"
+    real.write_bytes(b"")
+    if spelling == "symlink":
+        alias = tmp_path / "alias.mp4"
+        try:
+            alias.symlink_to(real)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable")
+    else:
+        alias = tmp_path / "sub" / ".." / "sub" / "a.mp4"
+    cand = _c("run", 50, 0.9, src=str(real))
+    assert mix.apply_exclusions([cand], [{"source": str(alias), "start": 0, "end": 100}]) == []
+
+
+def test_load_exclusions_takes_a_relative_source_against_the_file_folder(
+    tmp_path, monkeypatch
+) -> None:
+    """Issue #175: a relative source (as old ``360 repair`` wrote it) is the file's folder's,
+    not the working directory's, so it cuts the candidate with the absolute path."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.insv").write_bytes(b"")
+    path = project / mix.EXCLUDE_FILE
+    path.write_text('[{"source": "a.insv", "start": 0, "end": 100}]', encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    cand = _c("run", 50, 0.9, src=str(project / "a.insv"))
+    assert mix.apply_exclusions([cand], mix.load_exclusions(path)) == []
