@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, sources
-from cutpoint.config import path_key, remap_source, source_path
+from cutpoint.config import is_absolute_any, path_key, remap_source, source_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
@@ -202,6 +203,65 @@ def _arc(chrono: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def segment_source(source: str | Path, base: Path) -> tuple[str, Path]:
+    """``(identity, read path)`` of a segments file's ``source``.
+
+    A relative ``source`` is taken against ``base`` (the file's folder). The read path
+    is its :func:`~cutpoint.config.remap_source`; the identity (recorded, matched) stays
+    the original path, resolved, or only made absolute when the remap applies. A Windows
+    path read elsewhere (``D:\\Videos\\a.insv``, as a project written on Windows records
+    it) is absolute too; its identity is its Windows form, as Windows records it.
+    """
+    src = Path(source)
+    if not src.is_absolute() and is_absolute_any(source):  # resolve() would prefix the cwd
+        return ntpath.normpath(str(source)), remap_source(str(source))
+    src = src if src.is_absolute() else (base / src)
+    io_path = remap_source(src)
+    identity = str(src.resolve()) if io_path == src else os.path.abspath(src)  # noqa: PTH100 - normalises '..', keeps drive letters
+    return identity, io_path
+
+
+def _letters(k: int) -> str:
+    """``k`` (1-based) as ``a``, ``b``, ..., ``z``, ``aa``, ``ab``, ..."""
+    out = ""
+    while k:
+        k, r = divmod(k - 1, 26)
+        out = chr(ord("a") + r) + out
+    return out
+
+
+def segment_ids(items: list[Any]) -> list[Any]:
+    """The id of each segments-file entry: its own ``id``, else ``sNNN`` of its place
+    in the list; a generated id another entry already has gets a suffix (``s002b``,
+    ``s002c``, ...).
+
+    Raises:
+        ValueError: If two entries give the same ``id``.
+    """
+    given: dict[Any, int] = {}
+    for i, item in enumerate(items, 1):
+        if isinstance(item, dict) and "id" in item:
+            try:
+                j = given.setdefault(item["id"], i)
+            except TypeError:  # a list or object
+                raise ValueError(f"Segment {i}: id must be a string or a number") from None
+            if j != i:
+                raise ValueError(f"Segments {j} and {i} have the same id {item['id']!r}")
+    taken = set(given)
+    ids = []
+    for i, item in enumerate(items, 1):
+        if isinstance(item, dict) and "id" in item:
+            ids.append(item["id"])
+            continue
+        sid, k = f"s{i:03d}", 1
+        while sid in taken:
+            k += 1
+            sid = f"s{i:03d}{_letters(k)}"
+        taken.add(sid)
+        ids.append(sid)
+    return ids
+
+
 def load_segments(path: Path) -> list[dict[str, Any]]:
     """Load a hand-picked segment list: ``[{source, start, end, label}, ...]`` in play order.
 
@@ -219,7 +279,7 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
     with lead-in, tails or padding; ``cutpoint 360 repair``).
 
     Raises:
-        ValueError: If the file is malformed or a segment is invalid.
+        ValueError: If the file is malformed, a segment is invalid or two share an id.
         FileNotFoundError: If the file or a source video is missing.
     """
     if not path.is_file():
@@ -230,6 +290,7 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
         raise ValueError(f"{path} is not valid JSON: {err}") from None
     if not isinstance(items, list) or not items:
         raise ValueError(f"{path} must contain a non-empty JSON list")
+    ids = segment_ids(items)
     moments = []
     for i, item in enumerate(items, 1):
         try:
@@ -237,16 +298,13 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
             start, end = float(item["start"]), float(item["end"])
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"Segment {i} needs source, start and end: {item!r}") from None
-        src = src if src.is_absolute() else (path.parent / src)
-        io_path = remap_source(src)
+        identity, io_path = segment_source(src, path.parent)
         if not io_path.is_file():
             raise FileNotFoundError(f"Segment {i}: source not found: {io_path}")
-        # Identity stays the original path; a remapped source is only read elsewhere.
-        identity = str(src.resolve()) if io_path == src else os.path.abspath(src)  # noqa: PTH100 - normalises '..', keeps drive letters
         if end <= start or start < 0:
             raise ValueError(f"Segment {i}: invalid range {start}-{end}")
         moment = {
-            "id": item.get("id", f"s{i:03d}"),
+            "id": ids[i - 1],
             "source": identity,
             "start": start,
             "end": end,

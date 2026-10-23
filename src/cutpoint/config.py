@@ -206,6 +206,15 @@ def path_key(path: str) -> str:
     return path.lower() if sys.platform == "win32" else path
 
 
+def is_absolute_any(path: str | PurePath) -> bool:
+    """``path`` is absolute here or as a Windows path (``D:\\x``, ``D:/x``, ``\\\\server\\share``).
+
+    A project written on Windows records ``D:\\Videos\\x.mp4``; on POSIX that string
+    is not :meth:`Path.is_absolute`, but it must not be joined to a folder either.
+    """
+    return Path(path).is_absolute() or PureWindowsPath(str(path)).is_absolute()
+
+
 def source_path(path: str | PurePath) -> PurePath:
     """A stored source path as a pure path, for its ``name`` / ``stem``.
 

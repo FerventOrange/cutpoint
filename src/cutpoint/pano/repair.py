@@ -31,7 +31,8 @@ the same way, social tails without speech first.
 
 A segments file not written by ``cutpoint mix`` (``[{source, start, end, label}]``,
 a segment without ``id`` and ``category``) is kept as picked: its own ``id`` names a
-segment (as in ``cutpoint clips``), else it is ``sNNN`` of the list; affected clips
+segment (as in ``cutpoint clips``), else it is ``sNNN`` of the list (``s002b``, ... when
+taken); a relative ``source`` is taken against the file's folder; affected clips
 are only cut or dropped (nothing is refilled) and the length budget and content QA of
 a mix are left out.
 """
@@ -45,8 +46,8 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, mix, ski
-from cutpoint.clips import BOUND_KEYS, index_sources, order_moments
-from cutpoint.config import path_key, source_path
+from cutpoint.clips import BOUND_KEYS, index_sources, order_moments, segment_ids, segment_source
+from cutpoint.config import is_absolute_any, path_key, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.pano.qa import runs_of
 from cutpoint.pano.render import free_backup_name, write_atomic
@@ -367,18 +368,30 @@ def repair(
     qa = cache.load_json(qa_file)
     if not isinstance(old, list) or not old:
         raise ValueError(f"{segments_file}: not a segments list")
+    sources = []
     for i, s in enumerate(old, 1):
         try:
             if not isinstance(s, dict) or "source" not in s:
                 raise KeyError("source")
             start, end = float(s["start"]), float(s["end"])
+            sources.append(segment_source(s["source"], segments_file.parent)[0])
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"{segments_file}: segment {i} needs source, start and end") from None
         old[i - 1] = {**s, "start": start, "end": end}  # "100.0" too, as clips.load_segments
     # run_mix writes id and category on every segment; anything else is the user's picks
     picked = not all("id" in s and s.get("category") for s in old)
+    try:
+        ids = segment_ids(old)
+    except ValueError as err:
+        raise ValueError(f"{segments_file}: {err}") from None
     given = {s["id"] for s in old if "id" in s}
-    old = [s if "id" in s else {**s, "id": f"s{i:03d}"} for i, s in enumerate(old, 1)]
+    old = [{**s, "id": sid} for s, sid in zip(old, ids, strict=True)]
+    # The user's picks are matched (manifest.json, crashes) and excluded by source as
+    # cutpoint clips records it; the file keeps its own spelling. run_mix's sources are
+    # its candidates' own and stay as they are.
+    spelt = {s["id"]: s["source"] for s in old} if picked else {}
+    if picked:
+        old = [{**s, "source": src} for s, src in zip(old, sources, strict=True)]
     if qa is None:
         raise FileNotFoundError(f"QA report not found: {qa_file}")
     src_dir = Path(qa.get("source_dir") or "")
@@ -461,8 +474,19 @@ def repair(
         return rep
     if (picked or not new_excl) and same:
         _backup(segments_file, segments_file.read_bytes())
-    if picked:  # the ids given here were only for matching
-        new = [{k: v for k, v in s.items() if k != "id" or v in given} for s in new]
+    if picked:  # the ids given here were only for matching; the sources as given
+        # a relative spelling is relative to the file's folder: kept only in that folder
+        here = out.resolve().parent == segments_file.resolve().parent
+        new = [
+            {
+                k: spelt[s["id"]]
+                if k == "source" and (here or is_absolute_any(spelt[s["id"]]))
+                else v
+                for k, v in s.items()
+                if k != "id" or v in given
+            }
+            for s in new
+        ]
     cache.save_json(out, new)
     rep["written"] = True
     return rep
