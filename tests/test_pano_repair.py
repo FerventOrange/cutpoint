@@ -688,3 +688,86 @@ def test_repair_keeps_a_drive_relative_exclusion_when_it_rewrites_the_file(
     repair(tmp_path, segs, qa, sheet=False)
     stored = cache.load_json(tmp_path / mix.EXCLUDE_FILE)
     assert drive in stored and other in stored and len(stored) > 2
+
+
+def _failing_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, out: Path, write: Path | None = None
+) -> None:
+    """Run a picked-segments ``repair`` into ``out`` whose cut (after the folder is made)
+    writes the file ``write``, if given, and raises."""
+    import cutpoint.pano.repair as repair_mod  # noqa: PLC0415
+
+    def boom(*_a: object, **_k: object) -> None:
+        if write:
+            write.write_text("keep me")
+        raise RuntimeError("cut")
+
+    monkeypatch.setattr(repair_mod, "_cut", boom)
+    qa = _handwritten(tmp_path, False)
+    with pytest.raises(RuntimeError):
+        repair(tmp_path, tmp_path / "final_segments.json", qa, out=out, sheet=False)
+
+
+@pytest.mark.parametrize(
+    ("rel", "leftovers"),
+    [
+        ("new/deep", ["new"]),
+        ("sub/..", ["sub"]),  # keep/sub/../x.json: ``..`` names the existing ``keep``
+        ("a/../b", ["a", "b"]),
+    ],
+    ids=["plain", "dotdot", "dotdot-sibling"],
+)
+@pytest.mark.parametrize("branch", ["picked", "mix"])
+def test_failed_repair_removes_the_out_folders_it_created(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str,
+    rel: str,
+    leftovers: list[str],
+) -> None:
+    """Issue #189: a repair that fails (or is interrupted) leaves no empty ``--out`` folders it
+    made, only the ones that were already there."""
+    out = tmp_path.joinpath("keep", *rel.split("/"), "x.json")
+    (tmp_path / "keep").mkdir()
+    if branch == "picked":
+        _failing_repair(tmp_path, monkeypatch, out)
+    else:  # a Ctrl+C in the reselection
+        request.getfixturevalue("project")
+        qa = _qa(tmp_path, [["occluded"]] * 9 + [[]] * 9)
+
+        def interrupt(*_a: object, **_k: object) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(mix, "run_mix", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            repair(tmp_path, tmp_path / "mix_segments.json", qa, out=out, sheet=False)
+    assert (tmp_path / "keep").is_dir()  # it pre-existed: never removed (Windows resolves ``..``)
+    assert not [n for n in leftovers if (tmp_path / "keep" / n).exists()]
+
+
+@pytest.mark.parametrize("case", ["existing_empty", "written_into", "sibling_written_into"])
+def test_failed_repair_keeps_the_out_folders_it_did_not_create_or_that_are_not_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Issue #189: the cleanup never removes a folder that was already there, nor a created one
+    something was written into."""
+    out = tmp_path / "new" / "x.json"
+    mine = out.parent / "mine.txt"
+    if case == "existing_empty":
+        out.parent.mkdir()
+        _failing_repair(tmp_path, monkeypatch, out)
+        assert out.parent.is_dir()
+    elif case == "sibling_written_into":
+        # keep/a/../b: the created levels are siblings; a non-empty one must not stop the
+        # cleanup of the empty ``a`` (on Windows ``a`` is never made: ``..`` collapses)
+        keep = tmp_path / "keep"
+        keep.mkdir()
+        mine = keep / "b" / "mine.txt"
+        _failing_repair(tmp_path, monkeypatch, keep / "a" / ".." / "b" / "x.json", mine)
+        assert mine.read_text() == "keep me"
+        assert not (keep / "a").exists()
+        assert keep.is_dir()
+    else:
+        _failing_repair(tmp_path, monkeypatch, out, mine)
+        assert mine.read_text() == "keep me"
