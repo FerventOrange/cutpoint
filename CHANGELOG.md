@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows: Ctrl+Break (or `CTRL_BREAK_EVENT` sent to the process group) now stops a command
+  like Ctrl+C: partial files are removed and the exit code is 130 instead of `0xC000013A`.
+  AGENTS.md notes which ways of stopping Cutpoint on Windows give 130 and which end it without
+  cleanup (exit 1, or -1 from Stop-Process) (#148).
 - A running `cutpoint ui` (or any long-running process) now picks up edits to `config.json`
   without a restart. Valid edits apply; a config broken after startup is reported (HTTP 409 in the
   UI) until it is fixed. A changed `video_encoder` applies to the next encode (#137).
@@ -71,6 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another encoding (UTF-16, ANSI) counts as unreadable instead of failing with a traceback, and
   `cutpoint ui` leaves out a learned style that fails to load, with a WARNING naming its file,
   instead of failing the request (#126).
+- A `source_remap` key spelled the Windows way (for example `D:\Videos` -> `/mnt/d/Videos`) now
+  applies on Linux and macOS (#149). It matches Windows-style sources case-insensitively with
+  either slash, so a Windows project (or `clips --segments` with `D:\` sources) opened on Linux
+  finds its footage. Stage keys for Windows-form sources are built as on Windows (no
+  current-folder prefix, case-insensitive: `d:\videos\t\x.mp4`), so `stage` and `stage --clear`
+  accept any spelling of such a path. Reading a staged copy accepts either slash and any case of
+  the `source_remap` prefix; below the prefix the case must match the staged file. The analysis cache key becomes
+  `D:\Videos\T\x.mp4` (was `D:\Videos/T/x.mp4`), so those files are analyzed once more and
+  staged copies under such a key must be staged once more. Old copies stay until
+  `cutpoint stage --clear` with no targets; `--clear <target>` does not match old keys.
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects

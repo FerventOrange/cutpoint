@@ -971,24 +971,26 @@ def _raise_interrupt(signum: int, frame: object) -> None:
 
 
 @contextlib.contextmanager
-def _sigterm_as_interrupt() -> Iterator[None]:
-    """Treat SIGTERM like Ctrl+C while a command runs.
+def _stop_signal_as_interrupt() -> Iterator[None]:
+    """Treat SIGTERM (POSIX) or SIGBREAK (Windows) like Ctrl+C while a command runs.
 
     The UI cancels a job by sending SIGTERM to its process group; by default Python then dies
     without unwinding, leaving half-written ``.part.mp4`` files behind. Raising
     KeyboardInterrupt runs the cleanup and the exit-130 path. ffmpeg children get the same
-    SIGTERM from the group kill. Windows: the UI uses ``taskkill /T /F``, which cannot be
-    caught, so nothing is installed there. Outside the main thread ``signal.signal`` raises
-    ValueError, so nothing is installed there either.
+    SIGTERM from the group kill. Windows: Ctrl+Break (or CTRL_BREAK_EVENT sent to the process
+    group) would otherwise end the process with 0xC000013A and no cleanup; ``taskkill /F``
+    and TerminateProcess cannot be caught. Outside the main thread ``signal.signal`` raises
+    ValueError, so nothing is installed there.
     """
-    if os.name == "nt" or threading.current_thread() is not threading.main_thread():
+    if threading.current_thread() is not threading.main_thread():
         yield
         return
-    previous = signal.signal(signal.SIGTERM, _raise_interrupt)
+    signum = signal.SIGBREAK if os.name == "nt" else signal.SIGTERM
+    previous = signal.signal(signum, _raise_interrupt)
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        signal.signal(signum, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1023,7 +1025,7 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         pass
     try:
-        with _sigterm_as_interrupt():
+        with _stop_signal_as_interrupt():
             code = args.func(args)
     except ModuleNotFoundError as err:
         from cutpoint.extras import missing_module_message  # noqa: PLC0415
