@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
+  no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
+  config file and the error, the banner shows it, and Settings stays usable to fix the projects
+  folder. A rejected `video_encoder` now names where it came from: `config.json` or
+  `CUTPOINT_VIDEO_ENCODER`.
 - `clips --segments` with a missing file now says what a relative path was resolved against (#127).
 - Segment ids: a generated `sNNN` id that a user id already uses gets a letter suffix (`s002b`),
   and duplicate user ids are an error naming both segments, in `clips` and `360 repair` (#120).

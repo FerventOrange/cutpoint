@@ -132,10 +132,8 @@ def get_config() -> Config:
     encoder = str(paths.env("VIDEO_ENCODER") or data.get("video_encoder") or "auto")
     encoder = encoder.strip().lower()
     if encoder not in VIDEO_ENCODERS:
-        raise ValueError(
-            f"video_encoder / CUTPOINT_VIDEO_ENCODER is {encoder!r}; "
-            f"expected one of {', '.join(VIDEO_ENCODERS)}"
-        )
+        where = "CUTPOINT_VIDEO_ENCODER" if paths.env("VIDEO_ENCODER") else f"{path}: video_encoder"
+        raise ValueError(f"{where} is {encoder!r}; expected one of {', '.join(VIDEO_ENCODERS)}")
     return Config(
         projects,
         pairs,

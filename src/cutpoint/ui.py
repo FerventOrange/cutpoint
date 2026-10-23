@@ -27,6 +27,8 @@ Trust boundaries:
   dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
 * Settings (``GET``/``PUT /api/settings``) change only ``projects_dir`` in ``config.json``, never
   while a job runs or when ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved.
+  While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
+  409 naming the file and the error; session, pick and settings keep working.
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths
 from cutpoint.config import (
+    get_config,
     load_config_data,
     projects_dir,
     remap_source,
@@ -381,11 +384,31 @@ def config_data() -> dict[str, Any]:
         raise bad(str(err), 409) from err
 
 
+def require_config() -> None:
+    """Dependency of every route that reads the projects folder or remaps sources.
+
+    Raises:
+        HTTPException: 409 naming the rejected setting's source (``config.json`` or a
+            ``CUTPOINT_`` variable) and what is wrong with it, when
+            :func:`~cutpoint.config.get_config` rejects it (Settings stay usable to fix it).
+    """
+    try:
+        get_config()
+    except ValueError as err:  # its message names the file or variable
+        raise bad(str(err), 409) from err
+    except TypeError as err:  # a wrongly typed value (e.g. a number for a path)
+        raise bad(f"Invalid config file {paths.config_file()}: {err}", 409) from err
+
+
 def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     """The settings for config ``data``; only the projects folder, so other invalid keys in
-    ``config.json`` do not hide it."""
+    ``config.json`` do not hide it; a wrongly typed ``projects_dir`` is shown as is, to replace."""
+    try:
+        folder = str(resolve_projects_dir(data))
+    except TypeError:
+        folder = str(data.get("projects_dir"))
     return {
-        "projects_dir": str(resolve_projects_dir(data)),
+        "projects_dir": folder,
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
         "config_file": str(paths.config_file()),
     }
@@ -1023,7 +1046,9 @@ def create_app(port: int) -> FastAPI:
 
     api = APIRouter(prefix="/api")
     secure = APIRouter(dependencies=[Depends(auth)])
-    served = APIRouter(dependencies=[Depends(auth_media)])
+    # Project routes need a config.json get_config() accepts; session, pick and settings do not.
+    owned = APIRouter(dependencies=[Depends(auth), Depends(require_config)])
+    served = APIRouter(dependencies=[Depends(auth_media), Depends(require_config)])
 
     def url(pid: str, kind: str, name: str) -> str:
         return f"/api/projects/{quote(pid, safe='')}/{kind}/{quote(name, safe='')}?t={token}"
@@ -1070,7 +1095,7 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
         return settings_view({"projects_dir": str(folder)})
 
-    @secure.get("/projects")
+    @owned.get("/projects")
     def list_projects():
         root = projects_dir()
         found = []
@@ -1081,7 +1106,7 @@ def create_app(port: int) -> FastAPI:
                 found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
         return {"projects": found}
 
-    @secure.post("/projects")
+    @owned.post("/projects")
     def create_project(body: dict[str, Any]):
         name, source, style = body.get("name"), body.get("source"), body.get("style", "gaming")
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
@@ -1101,7 +1126,7 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"source is not readable: {err}") from err
         return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
 
-    @secure.get("/projects/{pid}")
+    @owned.get("/projects/{pid}")
     def get_project(pid: str):
         p = project_dir(pid)
         meta = read_meta(p)
@@ -1137,7 +1162,7 @@ def create_app(port: int) -> FastAPI:
             "sources": sources,
         }
 
-    @secure.put("/projects/{pid}/review")
+    @owned.put("/projects/{pid}/review")
     def put_review(pid: str, body: dict[str, Any]):
         p = project_dir(pid)
         hl = cache.load_json(p / "highlights.json")
@@ -1148,7 +1173,7 @@ def create_app(port: int) -> FastAPI:
         cache.save_json(p / UI_DIR / "review.json", review)
         return review
 
-    @secure.post("/projects/{pid}/reveal")
+    @owned.post("/projects/{pid}/reveal")
     def reveal_folder(pid: str, target: str = "sources"):
         """Show a project folder in the file manager: its videos, latest clips or final (path from
         the project; ``target`` only picks which)."""
@@ -1179,7 +1204,7 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"could not open the folder: {err.strerror or err}", 500) from err
         return {"path": str(folder)}
 
-    @secure.post("/projects/{pid}/jobs")
+    @owned.post("/projects/{pid}/jobs")
     def start_job(pid: str, body: dict[str, Any]):
         p = project_dir(pid)
         action = body.get("action")
@@ -1345,7 +1370,7 @@ def create_app(port: int) -> FastAPI:
             file, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"}
         )
 
-    @secure.post("/projects/{pid}/sources/{sid}/prepare")
+    @owned.post("/projects/{pid}/sources/{sid}/prepare")
     def prepare_source(pid: str, sid: str):
         p, entry = find_source(pid, sid)
         return {"status": media.prepare(p, entry["path"])}
@@ -1358,6 +1383,7 @@ def create_app(port: int) -> FastAPI:
         return send(p / name, request)
 
     api.include_router(secure)
+    api.include_router(owned)
     api.include_router(served)
     app.include_router(api)
     if WEB_DIR.is_dir():
