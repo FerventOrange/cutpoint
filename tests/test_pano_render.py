@@ -392,3 +392,54 @@ class TestQuatTrack:
         old = np.stack([o.r_vw(i / fps) for i in idx])
         cos = (np.trace(np.einsum("kji,kjl->kil", old, new), axis1=1, axis2=2) - 1) / 2
         assert np.degrees(np.arccos(np.clip(cos, -1, 1))).max() < 2.0
+
+
+# --------------------------------------------------------------------------- PanoExporter._source warnings
+class TestExporterSourceWarnings:
+    def _exporter(self, tmp_path, monkeypatch, available):
+        """Exporter whose resolve_source offers only the modes in ``available``."""
+        modes = {
+            "dfisheye": ("dfisheye", "dfisheye", True),
+            "sdk": ("sdk", "equirect", False),
+        }
+
+        def fake(clip, prefer="auto"):
+            mode = prefer
+            if prefer == "auto":
+                mode = "sdk" if "sdk" in available else "dfisheye"
+            if mode not in available and mode != "dfisheye":
+                raise FileNotFoundError(f"no {mode} file")
+            m, proj, preview = modes[mode]
+            return project.RenderSource(m, ("f",), proj, False, preview, m)
+
+        monkeypatch.setattr(render, "load", lambda p: {})
+        monkeypatch.setattr(render, "resolve_source", fake)
+        return render.PanoExporter(tmp_path, tmp_path / "clips")
+
+    def test_unavailable_recorded_mode_falls_back_to_auto_with_a_warning(
+        self, tmp_path, monkeypatch, clip, caplog
+    ):
+        ex = self._exporter(tmp_path, monkeypatch, available={"dfisheye"})
+        with caplog.at_level(logging.WARNING):
+            src = ex._source(clip, "sdk")
+        assert src.mode == "dfisheye"
+        assert "recorded 360 source 'sdk' unavailable" in caplog.text
+        assert "no sdk file" in caplog.text and "using auto" in caplog.text
+
+    def test_better_source_than_the_recorded_preview_one_is_suggested(
+        self, tmp_path, monkeypatch, clip, caplog
+    ):
+        ex = self._exporter(tmp_path, monkeypatch, available={"dfisheye", "sdk"})
+        with caplog.at_level(logging.WARNING):
+            src = ex._source(clip, "dfisheye")
+        assert src.mode == "dfisheye"  # the recorded source is still what is rendered
+        assert "a better one exists now (sdk)" in caplog.text
+        assert "--pano-source auto" in caplog.text
+
+    def test_recorded_preview_source_without_a_better_one_is_silent(
+        self, tmp_path, monkeypatch, clip, caplog
+    ):
+        ex = self._exporter(tmp_path, monkeypatch, available={"dfisheye"})
+        with caplog.at_level(logging.WARNING):
+            assert ex._source(clip, "dfisheye").mode == "dfisheye"
+        assert caplog.text == ""

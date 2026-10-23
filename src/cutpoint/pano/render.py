@@ -65,6 +65,7 @@ from cutpoint.ffmpeg_utils import (
     VideoEncoder,
     atomic_output,
     encode_with_fallback,
+    output_dir,
     probe,
     run,
 )
@@ -485,8 +486,23 @@ class PanoExporter:
         director``); the path is saved under ``pano_paths``. A re-planned ``reuse``
         file is overwritten after a copy to the first free backup name (``<file>.bak``,
         then ``<file>.1.bak``, ``<file>.2.bak``, ...); earlier backups are never
-        overwritten."""
-        self.paths_dir.mkdir(parents=True, exist_ok=True)
+        overwritten.
+
+        On failure ``paths_dir`` (and ``pano_paths``) is removed again if this call
+        created it and it is still empty (see :func:`~cutpoint.ffmpeg_utils.output_dir`)."""
+        with output_dir(self.paths_dir):
+            return self._path_for(clip, name, start, end, kind, reuse)
+
+    def _path_for(
+        self,
+        clip: X3Clip,
+        name: str,
+        start: float,
+        end: float,
+        kind: str | None,
+        reuse: Path | None,
+    ) -> tuple[dict[str, Any], Path]:
+        """:meth:`path_for` inside the existing ``paths_dir``."""
         out = self.paths_dir / (Path(name).stem + ".json")
         if reuse is not None and reuse.is_file():
             path = cache.load_json(reuse) or {}

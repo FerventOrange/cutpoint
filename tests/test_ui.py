@@ -769,6 +769,106 @@ def test_exports_json_cannot_point_outside_the_project(
     assert opened == [p / "clips_ui_1", p]
 
 
+def link_dir(link: Path, target: Path) -> None:
+    """Make ``link`` a directory link to ``target``: a symlink, or a junction on Windows."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        if sys.platform != "win32":
+            pytest.skip("cannot create a directory symlink here")
+    done = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False
+    )
+    if done.returncode != 0:
+        pytest.skip("cannot create a symlink or junction here")
+
+
+@pytest.mark.parametrize("kind", ["dir", "final"])
+def test_exports_json_cannot_point_through_a_link_outside_the_project(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    reveal = f"/api/projects/{pid}/reveal"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache.save_json(outside / "manifest.json", {"clips": []})
+    (outside / "final.mp4").write_bytes(b"x")
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    (p / "final.mp4").write_bytes(b"x")
+
+    def write(*items: dict[str, str]) -> None:
+        cache.save_json(p / "ui" / "exports.json", {"exports": list(items)})
+
+    good = {"dir": "clips_ui_1", "final": "final.mp4"}
+    if kind == "dir":
+        link_dir(p / "clips_link", outside)
+        bad = {"dir": "clips_link", "final": "final.mp4"}
+        write(bad)
+        assert client.post(reveal, params={"target": "clips"}).status_code == 404
+    else:
+        try:
+            (p / "final_link.mp4").symlink_to(outside / "final.mp4")
+        except (OSError, NotImplementedError):
+            pytest.skip("cannot create a file symlink here")
+        bad = {"dir": "clips_ui_1", "final": "final_link.mp4"}
+        write(bad)
+        assert client.post(reveal, params={"target": "outputs"}).status_code == 404
+
+    # dir: an earlier legitimate export takes over; final: the latest export stays current
+    # and its linked final is hidden until it is replaced.
+    write(good, bad)
+    if kind == "dir":
+        assert client.post(reveal, params={"target": "clips"}).json() == {
+            "path": str(p / "clips_ui_1")
+        }
+        assert opened == [p / "clips_ui_1"]
+    else:
+        assert client.post(reveal, params={"target": "outputs"}).status_code == 404
+        assert opened == []
+        write(good)
+        assert client.post(reveal, params={"target": "outputs"}).json() == {"path": str(p)}
+        # Timelines next to the final are served only when they stay inside the project.
+        (outside / "final.fcpxml").write_text("x")
+        (p / "final.fcpxml").symlink_to(outside / "final.fcpxml")
+        assert client.get(f"/api/projects/{pid}/outputs/final.fcpxml").status_code == 404
+        names = [o["name"] for o in client.get(f"/api/projects/{pid}").json()["outputs"]]
+        assert names == ["final.mp4"]
+
+
+def test_export_manifest_symlinked_outside_the_project_is_not_served(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache.save_json(outside / "manifest.json", {"clips": [{"label": "SECRET-OUTSIDE"}]})
+    (p / "clips_ui_1").mkdir()
+    try:
+        (p / "clips_ui_1" / "manifest.json").symlink_to(outside / "manifest.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink here")
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    res = client.get(f"/api/projects/{pid}")
+    assert res.status_code == 200
+    assert "SECRET-OUTSIDE" not in res.text
+
+
+@pytest.mark.parametrize("ext", ["", ".mp4", ".fcpxml"])
+def test_fresh_name_treats_a_broken_symlink_as_taken(tmp_path: Path, ext: str) -> None:
+    try:
+        (tmp_path / f"final{ext}").symlink_to(tmp_path / "missing-target")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a symlink here")
+    exts = ("", ".mp4", ".fcpxml") if ext else ("",)
+    assert ui.fresh_name(tmp_path, "final", exts) == "final-2"
+
+
 def test_folder_opener_runs_the_platform_tool_without_a_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1351,3 +1451,93 @@ def test_a_broken_learned_style_is_left_out_with_a_warning(
     listed = res.json()["styles"]
     assert "mine" in listed and "funny" in listed and "broken" not in listed
     assert str(styles / "broken.json") in caplog.text
+
+
+# ------------------------------------------------- settings change vs job start (#143)
+SLEEP_JOB = [sys.executable, "-c", "import time; time.sleep(60)"]
+
+
+def test_put_settings_refuses_a_job_that_started_during_the_check_and_removes_the_new_folder(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = client.app.state.jobs
+    real_check = ui.check_projects_dir
+    started: list = []
+
+    def check_then_start_job(value):
+        result = real_check(value)  # creates the folder
+        started.append(jobs.start("p", "analyze", SLEEP_JOB))  # a second tab wins the race
+        return result
+
+    monkeypatch.setattr(ui, "check_projects_dir", check_then_start_job)
+    new = tmp_path / "fresh"
+    try:
+        res = client.put("/api/settings", json={"projects_dir": str(new)})
+        assert res.status_code == 409 and "running job" in res.json()["detail"]
+        assert not new.exists()
+        assert not (home / "config.json").exists()
+    finally:
+        for job in started:
+            jobs.cancel(job.id)
+
+
+def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = client.app.state.jobs
+    real_write = ui.set_config_value
+    attempt: dict = {}
+
+    def write_while_another_tab_starts_a_job(key, value):
+        def start() -> None:
+            attempt["job"] = jobs.start("p", "analyze", SLEEP_JOB)
+            attempt["wrote"] = wrote.is_set()
+            done.set()
+
+        wrote, done = threading.Event(), threading.Event()
+        attempt["wrote_event"] = wrote
+        threading.Thread(target=start, daemon=True).start()
+        attempt["overlapped"] = done.wait(0.5)  # True: the job started mid-write
+        real_write(key, value)
+        wrote.set()
+
+    monkeypatch.setattr(ui, "set_config_value", write_while_another_tab_starts_a_job)
+    new = tmp_path / "elsewhere"
+    try:
+        res = client.put("/api/settings", json={"projects_dir": str(new)})
+        assert res.status_code == 200, res.text
+        assert attempt["overlapped"] is False
+        assert attempt["wrote_event"].wait(5)
+    finally:
+        deadline = time.time() + 5
+        while "job" not in attempt and time.time() < deadline:
+            time.sleep(0.02)
+        if "job" in attempt:
+            jobs.cancel(attempt["job"].id)
+    assert attempt["wrote"] is True  # the job started only after the new folder was saved
+
+
+def test_a_job_is_refused_when_the_projects_folder_changed_after_the_project_was_opened(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jobs = client.app.state.jobs
+    p = ui.projects_dir() / "p"
+    p.mkdir(parents=True)
+    settings = {"inputs": [str(tmp_path / "clip.mp4")]}
+    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings})
+    other = tmp_path / "other"
+    other.mkdir()
+    real_cmd = ui.cutpoint_cmd
+
+    def cmd_while_the_folder_changes(*args: str) -> list[str]:
+        config.set_config_value("projects_dir", str(other))  # a second tab saves the settings
+        return real_cmd(*args)
+
+    monkeypatch.setattr(ui, "cutpoint_cmd", cmd_while_the_folder_changes)
+    try:
+        res = client.post("/api/projects/p/jobs", json={"action": "analyze"})
+        assert res.status_code == 409 and "projects folder changed" in res.json()["detail"]
+        assert not jobs.jobs
+    finally:
+        for job in list(jobs.jobs.values()):
+            jobs.cancel(job.id)
