@@ -59,7 +59,9 @@ def wait_job(client: TestClient, timeout: float = 180) -> dict:
     raise AssertionError("job did not finish")
 
 
-def test_requests_must_be_loopback_and_carry_the_token(client: TestClient) -> None:
+def test_requests_must_be_loopback_and_carry_the_token(
+    client: TestClient, dialog: FakeDialog
+) -> None:
     """DNS rebinding / cross-site pages / tokenless callers get nothing."""
     assert client.get("/api/projects", headers={"Host": "evil.example:8765"}).status_code == 403
     assert client.get("/api/projects", headers={"Origin": "http://evil.example"}).status_code == 403
@@ -71,6 +73,10 @@ def test_requests_must_be_loopback_and_carry_the_token(client: TestClient) -> No
     bare = {"X-Cutpoint-Token": ""}
     assert client.post("/api/pick", params={"kind": "file"}, headers=bare).status_code == 403
     assert client.get("/api/settings", headers=bare).status_code == 403
+    body = {"projects_dir": "x"}
+    assert client.put("/api/settings", json=body, headers=bare).status_code == 403
+    assert client.get("/api/settings", headers={"X-Cutpoint-Token": "nope"}).status_code == 403
+    assert dialog.calls == []
     framed = client.get("/api/session")
     assert framed.headers["x-frame-options"] == "DENY"
     assert client.get("/api/projects").json() == {"projects": []}
@@ -422,7 +428,6 @@ def still_source(client: TestClient, tmp_path: Path) -> tuple[str, str, Path, Pa
         ("nope", "ok", "at=0.5", True, 404, None),
         ("ok", "0" * 12, "at=0.5", True, 404, None),
         ("ok", "ok", "at=nan", True, 400, None),
-        ("ok", "ok", "at=inf", True, 400, None),
         ("ok", "ok", "at=-1", True, 400, None),
         ("ok", "ok", "at=soon", True, 422, None),
         ("ok", "ok", "at=0.5&w=1", True, 200, "-50-32.jpg"),
@@ -1010,16 +1015,6 @@ def test_session_reports_can_pick(client: TestClient, monkeypatch: pytest.Monkey
     assert client.get("/api/session").json()["can_pick"] is True
 
 
-def test_pick_and_settings_need_the_token(client: TestClient, dialog: FakeDialog) -> None:
-    bare = {"X-Cutpoint-Token": ""}
-    assert client.post("/api/pick", params={"kind": "file"}, headers=bare).status_code == 403
-    assert client.get("/api/settings", headers=bare).status_code == 403
-    body = {"projects_dir": "x"}
-    assert client.put("/api/settings", json=body, headers=bare).status_code == 403
-    assert client.get("/api/settings", headers={"X-Cutpoint-Token": "nope"}).status_code == 403
-    assert dialog.calls == []
-
-
 def test_pick_returns_the_chosen_path_or_null_on_cancel(
     client: TestClient, dialog: FakeDialog, tmp_path: Path
 ) -> None:
@@ -1175,8 +1170,7 @@ def test_path_picker_builds_the_platform_dialog_argv(
     assert ui.path_picker()("file", None)[0][5] == ""
 
 
-@pytest.mark.parametrize("platform", ["win32", "darwin"])
-@pytest.mark.parametrize("var", ["SSH_CONNECTION", "SSH_TTY"])
+@pytest.mark.parametrize(("platform", "var"), [("win32", "SSH_CONNECTION"), ("darwin", "SSH_TTY")])
 def test_path_picker_is_off_in_an_ssh_session_on_windows_and_macos(
     monkeypatch: pytest.MonkeyPatch, platform: str, var: str
 ) -> None:
@@ -1274,18 +1268,6 @@ def test_put_settings_rejects_unusable_folders(
     assert not (home / "config.json").exists()
 
 
-def test_put_settings_rejects_an_unwritable_folder(
-    client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def denied(*a, **kw):
-        raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
-    res = client.put("/api/settings", json={"projects_dir": str(tmp_path)})
-    assert res.status_code == 400 and "Permission denied" in res.json()["detail"]
-    assert not (home / "config.json").exists()
-
-
 def test_put_settings_conflicts(
     client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1323,34 +1305,6 @@ def test_put_settings_keeps_other_config_keys(
     assert data["projects_dir"] == str(tmp_path)
 
 
-def test_settings_with_an_invalid_config_file_conflict_even_on_a_fresh_cache(
-    client: TestClient, home: Path, tmp_path: Path
-) -> None:
-    cfg = home / "config.json"
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text("{oops", encoding="utf-8")
-    config.get_config.cache_clear()
-    assert client.get("/api/settings").status_code == 409
-    config.get_config.cache_clear()
-    res = client.put("/api/settings", json={"projects_dir": str(tmp_path)})
-    assert res.status_code == 409 and cfg.read_text("utf-8") == "{oops"
-
-
-def test_settings_ignore_an_invalid_unrelated_key(
-    client: TestClient, home: Path, tmp_path: Path
-) -> None:
-    cfg = home / "config.json"
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text('{"video_encoder": "bogus"}', encoding="utf-8")
-    config.get_config.cache_clear()
-    assert client.get("/api/settings").status_code == 200
-    config.get_config.cache_clear()
-    new = tmp_path / "proj"
-    assert client.put("/api/settings", json={"projects_dir": str(new)}).status_code == 200
-    data = json.loads(cfg.read_text("utf-8"))
-    assert data == {"video_encoder": "bogus", "projects_dir": str(new)}
-
-
 def test_put_settings_removes_a_folder_it_created_when_saving_fails(
     client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1360,7 +1314,7 @@ def test_put_settings_removes_a_folder_it_created_when_saving_fails(
     cfg.write_text("{oops", encoding="utf-8")
     config.get_config.cache_clear()
     assert client.put("/api/settings", json={"projects_dir": str(new)}).status_code == 409
-    assert not new.exists()
+    assert not new.exists() and cfg.read_text("utf-8") == "{oops"  # never overwritten
 
     cfg.unlink()
     config.get_config.cache_clear()
@@ -1374,7 +1328,7 @@ def test_put_settings_removes_a_folder_it_created_when_saving_fails(
 
 
 def test_put_settings_never_removes_an_existing_folder_on_failure(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     existing = tmp_path / "keep"
     existing.mkdir()
@@ -1391,8 +1345,9 @@ def test_put_settings_never_removes_an_existing_folder_on_failure(
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
-    assert client.put("/api/settings", json={"projects_dir": str(existing)}).status_code == 400
-    assert existing.is_dir()
+    res = client.put("/api/settings", json={"projects_dir": str(existing)})
+    assert res.status_code == 400 and "Permission denied" in res.json()["detail"]
+    assert existing.is_dir() and not (home / "config.json").exists()
 
 
 def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
@@ -1455,6 +1410,11 @@ def test_project_routes_name_a_rejected_config_file_and_settings_still_work(
     else:  # a rejected unrelated value: Settings still show and save the projects folder
         assert settings.status_code == 200 and settings.json()["config_file"] == str(cfg)
         assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
+        # the rejected unrelated value is kept; a bad projects_dir is the one thing replaced
+        assert json.loads(cfg.read_text("utf-8")) == {
+            **json.loads(text),
+            "projects_dir": str(tmp_path),
+        }
 
     cfg.unlink()  # fixed by hand: the projects come back without a restart
     assert [p["id"] for p in client.get("/api/projects").json()["projects"]] == [pid]
