@@ -91,7 +91,7 @@ copy. Projects keep the original paths in their records, so nothing has to be re
 only reads are redirected. `analyze` also accepts an input whose original path is gone when
 the remap maps it to an existing location, and still records the original spelling. The analysis cache key uses the canonical (original) path, size and
 modification time, so a copy that preserves the modification time keeps its cache.
-`source_remap_exclude` lists file-name or path globs that are never remapped (for example a
+`source_remap_exclude` is a list of file-name or path globs (a single string is rejected) that are never remapped (for example a
 copy you have not verified).
 
 Projects analyzed with a remap by cutpoint 0.1.0 recorded the copy paths. Run `analyze` again to

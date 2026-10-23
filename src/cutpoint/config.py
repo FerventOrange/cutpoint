@@ -64,6 +64,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
@@ -102,33 +103,72 @@ def load_config_data(path: Path | None = None) -> dict:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as err:
+        # utf-8-sig: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a BOM.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except UnicodeDecodeError:  # e.g. a UTF-16 file
+        raise ValueError(f"Invalid config file {path}: not UTF-8 text (save it as UTF-8)") from None
+    except (OSError, ValueError) as err:  # ValueError: JSONDecodeError
         raise ValueError(f"Invalid config file {path}: {err}") from None
     if not isinstance(data, dict):
         raise ValueError(f"Invalid config file {path}: expected a JSON object")
     return data
 
 
+def _is_str(value: object) -> bool:
+    return isinstance(value, str)
+
+
+def _is_str_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _is_str_or_list(value: object) -> bool:
+    return isinstance(value, str) or _is_str_list(value)
+
+
+def _is_str_map(value: object) -> bool:
+    return isinstance(value, dict) and all(isinstance(v, str) for v in value.values())
+
+
+def _check_type(path: Path, data: dict, key: str, ok: Callable[[object], bool], what: str) -> None:
+    """Raise ``ValueError`` naming ``path``, ``key`` and the value's type unless ``data[key]`` is
+    unset (missing or null) or passes ``ok``."""
+    value = data.get(key)
+    if value is None or ok(value):
+        return
+    got = type(value).__name__
+    items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    bad = [type(v).__name__ for v in items if not isinstance(v, str)]
+    if bad:
+        got += f" containing {bad[0]}"
+    raise ValueError(f"{path}: {key} must be {what}, not {got}")
+
+
 @state.register_cache
 @lru_cache(maxsize=1)
 def get_config() -> Config:
-    """Load ``config.json`` plus environment overrides (cached per process)."""
+    """Load ``config.json`` plus environment overrides (cached per process).
+
+    Raises:
+        ValueError: Naming the file (or ``CUTPOINT_`` variable) and key, for an invalid file or a
+            value of the wrong type or out of range. A failed call is not cached.
+    """
     path = paths.config_file()
     data = load_config_data(path)
+    for key in ("projects_dir", "stage_dir", "ollama_url", "video_encoder"):
+        _check_type(path, data, key, _is_str, "a string")
+    _check_type(path, data, "source_remap", _is_str_map, "an object mapping strings to strings")
+    _check_type(path, data, "source_remap_exclude", _is_str_list, "a list of strings")
+    _check_type(path, data, "player_tags", _is_str_or_list, "a list of names")
     projects = resolve_projects_dir(data)
     remap = data.get("source_remap") or {}
-    if not isinstance(remap, dict):
-        raise ValueError(f"{path}: source_remap must be an object of prefix pairs")
     # Longest prefix first, so nested prefixes win.
-    pairs = tuple(sorted(((str(k), str(v)) for k, v in remap.items()), key=lambda kv: -len(kv[0])))
-    exclude = tuple(str(p) for p in data.get("source_remap_exclude") or ())
+    pairs = tuple(sorted(remap.items(), key=lambda kv: -len(kv[0])))
+    exclude = tuple(data.get("source_remap_exclude") or ())
     stage = resolve_stage_dir(data)
     tags = data.get("player_tags") or ()
     if isinstance(tags, str):
         tags = (tags,)
-    if not isinstance(tags, (list, tuple)):
-        raise ValueError(f"{path}: player_tags must be a list of names")
     encoder = str(paths.env("VIDEO_ENCODER") or data.get("video_encoder") or "auto")
     encoder = encoder.strip().lower()
     if encoder not in VIDEO_ENCODERS:
@@ -139,7 +179,7 @@ def get_config() -> Config:
         pairs,
         exclude,
         stage,
-        tuple(str(t) for t in tags if str(t).strip()),
+        tuple(t for t in tags if t.strip()),
         str(data.get("ollama_url") or ""),
         encoder,
     )

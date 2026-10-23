@@ -110,6 +110,44 @@ def test_missing_segments_file_is_one_error_line(
     assert "Traceback" not in capsys.readouterr().err + caplog.text
 
 
+@pytest.mark.parametrize("command", ["clips", "repair"])
+def test_segments_folder_is_one_error_line(
+    tmp_path: Path,
+    home: Path,
+    caplog: pytest.LogCaptureFixture,
+    command: str,
+) -> None:
+    """Issue #150: ``--segments`` given a folder says so instead of "not found"."""
+    (home / "projects" / "proj").mkdir(parents=True)
+    folder = tmp_path / "segs"
+    folder.mkdir()
+    if command == "clips":
+        argv = ["clips", "proj", "--segments", str(folder)]
+    else:
+        argv = ["360", "repair", str(tmp_path), "--segments", str(folder), "--qa", "qa.json"]
+    assert cli.main(argv) == 1
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "is a folder, not a segments file" in errors[0].getMessage()
+
+
+def test_segments_file_with_a_bom_loads_and_utf16_is_not_valid_json(
+    tmp_path: Path, home: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Issue #150: PowerShell 5.1 writes a BOM (loads) or UTF-16 (one clear error line)."""
+    f = _write_segments(tmp_path, [{}])
+    text = f.read_text(encoding="utf-8")
+    f.write_text(text, encoding="utf-8-sig")
+    assert load_segments(f)[0]["start"] == 1.0
+    f.write_text(text, encoding="utf-16")
+    (home / "projects" / "proj").mkdir(parents=True)
+    assert cli.main(["clips", "proj", "--segments", str(f)]) == 1
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert f"{f} is not valid JSON" in errors[0].getMessage()
+    assert "not UTF-8 text" in errors[0].getMessage()
+
+
 @pytest.mark.parametrize("source", ["D:\\Videos\\a.insv", "D:/Videos/a.insv"])
 def test_windows_source_keeps_its_drive_and_is_not_joined_to_the_folder(
     tmp_path: Path, source: str

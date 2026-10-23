@@ -100,6 +100,8 @@ def _cmd_clips(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.project)
     segments = resolve_project_path(a.segments, bare_names=False) if a.segments else None
     if segments is not None and not a.mix and not segments.is_file():
+        if segments.is_dir():
+            raise IsADirectoryError(f"{segments} is a folder, not a segments file")
         where = _segments_where(a.segments, Path(a.segments), segments)
         raise FileNotFoundError(f"Segments file not found: {segments}{where}")
     order = a.order
@@ -1038,13 +1040,15 @@ def main(argv: list[str] | None = None) -> int:
         FFmpegError,
         OSError,
         ValueError,
+        TypeError,
         RuntimeError,
         ImportError,
         subprocess.CalledProcessError,
         shutil.Error,
         urllib.error.URLError,
     ) as err:
-        # FileNotFoundError / FileExistsError are OSErrors; URLError too.
+        # FileNotFoundError / FileExistsError are OSErrors; URLError too. TypeError is a fallback
+        # for a wrongly typed setting that get_config does not check.
         logger.debug("command failed", exc_info=True)
         logger.error("%s", err)
         return 1
