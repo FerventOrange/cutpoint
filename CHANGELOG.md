@@ -57,11 +57,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config.json` saved with a UTF-8 byte order mark (Windows PowerShell 5.1
   `Set-Content -Encoding UTF8`) is now accepted; a UTF-16 file gives the
   "Invalid config file <path>" error.
+- JSON files saved with a UTF-8 BOM (Windows Notepad, PowerShell) are read correctly, one in
+  another encoding (UTF-16, ANSI) counts as unreadable instead of failing with a traceback, and
+  `cutpoint ui` leaves out a learned style that fails to load, with a WARNING naming its file,
+  instead of failing the request (#126).
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects
   folder. A rejected `video_encoder` now names where it came from: `config.json` or
   `CUTPOINT_VIDEO_ENCODER`.
+- `cutpoint ui` project picker shows "Projects unavailable" instead of staying empty when the
+  project list cannot be loaded (for example an invalid `config.json`), and "New project" is
+  disabled until a later load succeeds. A new project that cannot be opened after creation shows
+  the error on the banner (#152).
 - `clips --segments` with a missing file now says what a relative path was resolved against (#127);
   a Windows path starting with `\` or `/` is shown as typed, without that note.
 - Segment ids: a generated `sNNN` id that a user id already uses gets a letter suffix (`s002b`),
@@ -120,6 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `cutpoint ui` ignores an `exports.json` entry whose export folder (`dir`) or final video
+  (`final`) is `.`, `..` or does not start with a letter, digit or `_`, so a hand-edited or corrupted file can no longer point
+  outside the project folder (#141).
 - Docker image (#112): uv is pinned by version and digest instead of an unpinned `curl | sh`
   install; the container runs as the non-root user `cutpoint` (uid 1000, build arguments
   `CUTPOINT_UID` / `CUTPOINT_GID`) owning `/data`; `git` and `curl` are no longer installed; and

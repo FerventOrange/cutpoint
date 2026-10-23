@@ -73,7 +73,7 @@ from cutpoint.config import (
     set_config_value,
 )
 from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, grab_images, probe
-from cutpoint.styles import get_style, style_names
+from cutpoint.styles import get_style, learned_styles, style_names
 from cutpoint.utils import VIDEO_EXTS, find_videos, slugify
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ MAX_EXTEND_S = 30.0
 BROWSER_CONTAINERS = {".mp4", ".m4v", ".mov", ".webm"}
 BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
 BROWSER_AUDIO = {None, "aac", "mp3", "opus", "vorbis"}
-SAFE_NAME = re.compile(r"[\w.-]+")
+SAFE_NAME = re.compile(r"\w[\w.-]*")  # a name inside the project: no ".", ".." or ".x"
 FRAME_WIDTH = 160  # default still width (px) for sequence thumbnails
 FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
@@ -984,8 +984,21 @@ def new_project(name: str, source: str, style: str) -> dict[str, str]:
 
 
 def ui_styles() -> list[str]:
-    """Styles for standard video (telemetry-driven action-cam styles are command-line only)."""
-    return [n for n in style_names() if get_style(n).kind != "ski"]
+    """Styles for standard video (telemetry-driven action-cam styles are command-line only).
+
+    A learned style that fails to load is left out with a warning, so one bad file does not
+    break the UI.
+    """
+    names = []
+    for n in style_names():
+        try:
+            style = get_style(n)
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning("skipping learned style %s: %s", learned_styles().get(n, n), e)
+            continue
+        if style.kind != "ski":
+            names.append(n)
+    return names
 
 
 # --------------------------------------------------------------------------- app
