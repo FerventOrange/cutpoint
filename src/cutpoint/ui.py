@@ -503,10 +503,14 @@ class Jobs:
         action: str,
         args: list[str],
         on_success: Callable[[], None] | None = None,
+        check: Callable[[], None] | None = None,
     ) -> Job:
+        """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it."""
         with self.lock:
             if any(j.status == "running" for j in self.jobs.values()):
                 raise bad("another job is already running", 409)
+            if check:
+                check()
             job = Job(project_id, action)
             try:
                 job.proc = spawn(args)
@@ -952,27 +956,54 @@ def load_exports(p: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _inside(p: Path, name: str) -> bool:
+    """``p / name`` still lies inside ``p`` once symlinks and junctions are resolved."""
+    try:
+        return (p / name).resolve().is_relative_to(p.resolve())
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop (Python 3.12)
+        return False
+
+
 def current_export(p: Path) -> dict[str, Any] | None:
-    """The latest export whose clips are still on disk."""
+    """The latest export whose clips are still on disk, inside the project."""
     return next(
-        (e for e in reversed(load_exports(p)) if (p / e["dir"] / "manifest.json").is_file()), None
+        (
+            e
+            for e in reversed(load_exports(p))
+            if (p / e["dir"] / "manifest.json").is_file()
+            and _inside(p, e["dir"])
+            and _inside(p, f"{e['dir']}/manifest.json")
+        ),
+        None,
     )
 
 
 def output_names(p: Path) -> list[str]:
-    """Files of the current final (video first, then timelines) that exist."""
+    """Files of the current final (video first, then timelines) that exist inside the project."""
     exp = current_export(p)
     final = (exp or {}).get("final")
-    if not isinstance(final, str) or not SAFE_NAME.fullmatch(final) or not (p / final).is_file():
+    if not isinstance(final, str) or not SAFE_NAME.fullmatch(final):
+        return []
+    if not (p / final).is_file() or not _inside(p, final):
         return []
     stem = Path(final).stem
-    return [final, *(f"{stem}{e}" for e in (".fcpxml", ".otio") if (p / f"{stem}{e}").is_file())]
+    return [
+        final,
+        *(
+            f"{stem}{e}"
+            for e in (".fcpxml", ".otio")
+            if (p / f"{stem}{e}").is_file() and _inside(p, f"{stem}{e}")
+        ),
+    ]
 
 
 def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
-    """``stem`` or ``stem-N``: the first name no file ``name + ext`` already uses."""
+    """``stem`` or ``stem-N``: the first name no file ``name + ext`` already uses.
+
+    A broken symlink counts as taken, so an output is never written through one.
+    """
     n, name = 1, stem
-    while any((parent / f"{name}{e}").exists() for e in exts):
+    while any(os.path.lexists(parent / f"{name}{e}") for e in exts):
         n += 1
         name = f"{stem}-{n}"
     return name
@@ -1107,16 +1138,24 @@ def create_app(port: int) -> FastAPI:
             raise bad(
                 "CUTPOINT_PROJECTS_DIR sets the projects folder; change or unset it there", 409
             )
+        busy = "wait for the running job to finish before changing the projects folder"
         if any(j.status == "running" for j in list(jobs.jobs.values())):
-            raise bad("wait for the running job to finish before changing the projects folder", 409)
+            raise bad(busy, 409)
         config_data()  # an unreadable config.json: refuse before creating the folder
         folder, created = check_projects_dir(body.get("projects_dir"))
+        # The jobs lock makes the running-job check and the write atomic against Jobs.start,
+        # so no job starts against the old folder while the setting changes.
         try:
-            set_config_value("projects_dir", str(folder))
-        except (ValueError, OSError) as err:
+            with jobs.lock:
+                if any(j.status == "running" for j in jobs.jobs.values()):
+                    raise bad(busy, 409)
+                set_config_value("projects_dir", str(folder))
+        except (ValueError, OSError, HTTPException) as err:
             if created:
                 with contextlib.suppress(OSError):
                     folder.rmdir()
+            if isinstance(err, HTTPException):
+                raise
             if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
                 raise bad(str(err), 409) from err
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
@@ -1338,7 +1377,14 @@ def create_app(port: int) -> FastAPI:
 
         else:
             raise bad("action must be 'analyze', 'clips' or 'assemble'")
-        return jobs.start(pid, action, args, on_success).view()
+
+        def same_folder() -> None:
+            # Under the jobs lock, like the settings change: a folder changed since ``p`` was
+            # resolved would run the job against the old one.
+            if projects_dir().resolve() != p.resolve().parent:
+                raise bad("the projects folder changed; reload the page", 409)
+
+        return jobs.start(pid, action, args, on_success, same_folder).view()
 
     @secure.get("/jobs")
     def list_jobs():
