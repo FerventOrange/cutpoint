@@ -35,6 +35,6 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.12"
-      # The tests are CPU-only; only the dev extra is synced (no gpu/events extras).
-      - run: uv sync --locked --extra dev
+      # The tests are CPU-only; only the default dev group is synced (no gpu/events extras).
+      - run: uv sync --locked
       - run: uv run --no-sync pytest -q
