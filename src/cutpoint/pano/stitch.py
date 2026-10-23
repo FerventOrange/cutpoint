@@ -265,12 +265,13 @@ def failure_reasons(
         output_bytes: Size of the output file, or None if it is missing.
         min_bytes: Smallest plausible output size.
     """
+    from cutpoint.ffmpeg_utils import exit_code  # noqa: PLC0415
+
     reasons = []
     if returncode is None:
         reasons.append("process killed")
     elif returncode != 0:
-        rc = returncode - 2**32 if returncode >= 2**31 else returncode  # Windows: unsigned
-        reasons.append(f"exit code {rc} (bad arguments?)")
+        reasons.append(f"exit code {exit_code(returncode)} (bad arguments?)")
     reasons += [f"error: {e}" for e in result.errors]
     if not result.finished:
         reasons.append(

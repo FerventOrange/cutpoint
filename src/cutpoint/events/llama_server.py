@@ -26,6 +26,7 @@ import requests
 
 from cutpoint.events import paths
 from cutpoint.events.common import unload_ollama
+from cutpoint.ffmpeg_utils import exit_code
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ class LlamaServer:
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 raise LlamaServerError(
-                    f"llama-server exited ({self.proc.returncode}); "
+                    f"llama-server exited ({exit_code(self.proc.returncode)}); "
                     f"see {self.log_path}:\n{self.log_tail()}"
                 )
             try:

@@ -352,3 +352,31 @@ def test_install_panns_malformed_env_url_is_a_failed_mirror(
     assert shown in warnings[0]
     assert "token" not in caplog.text.lower()  # urllib lowercases the scheme in its text
     assert "secret" not in caplog.text.lower()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "shown"), [(3, "3"), (0xC0000005, "-1073741819 (0xC0000005)")]
+)
+def test_llama_server_early_exit_shows_signed_and_hex_code(
+    tmp_path, monkeypatch, returncode, shown
+):
+    from cutpoint.events import llama_server  # noqa: PLC0415
+
+    write(ev_paths.llama_server_exe())
+    monkeypatch.setattr(llama_server, "unload_ollama", lambda: None)
+    monkeypatch.setattr(llama_server, "_kill_with_parent", lambda proc: None)
+    monkeypatch.setattr(llama_server.subprocess, "Popen", lambda *a, **k: _Dead(returncode))
+    server = llama_server.LlamaServer(
+        tmp_path / "m.gguf", tmp_path / "p.gguf", log_path=tmp_path / "log.txt"
+    )
+    with pytest.raises(llama_server.LlamaServerError, match=r"llama-server exited \(") as exc:
+        server.start()
+    assert f"exited ({shown})" in str(exc.value)
+
+
+class _Dead:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
