@@ -734,6 +734,41 @@ def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
     assert res.status_code == 500 and "Access is denied" in res.json()["detail"]
 
 
+@pytest.mark.parametrize("bad", ["..", ".", ".hidden"])
+def test_exports_json_cannot_point_outside_the_project(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    reveal = f"/api/projects/{pid}/reveal"
+    # Manifests and videos where a "." / ".." / dot-leading name would resolve to.
+    for folder in (p, p.parent, p / ".hidden"):
+        folder.mkdir(exist_ok=True)
+        cache.save_json(folder / "manifest.json", {"clips": []})
+    (p / ".hidden.mp4").write_bytes(b"x")
+
+    def write(*items: dict[str, str]) -> None:
+        cache.save_json(p / "ui" / "exports.json", {"exports": list(items)})
+
+    write({"dir": bad})
+    assert client.post(reveal, params={"target": "clips"}).status_code == 404
+
+    # A bad final is ignored; the good export stays usable.
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    write({"dir": "clips_ui_1", "final": ".hidden.mp4" if bad == ".hidden" else bad})
+    assert client.post(reveal, params={"target": "outputs"}).status_code == 404
+
+    # A bad entry after a legitimate one is dropped, not used as the current export.
+    (p / "final.mp4").write_bytes(b"x")
+    write({"dir": "clips_ui_1", "final": "final.mp4"}, {"dir": bad})
+    assert client.post(reveal, params={"target": "clips"}).json() == {"path": str(p / "clips_ui_1")}
+    assert client.post(reveal, params={"target": "outputs"}).json() == {"path": str(p)}
+    assert opened == [p / "clips_ui_1", p]
+
+
 def test_folder_opener_runs_the_platform_tool_without_a_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

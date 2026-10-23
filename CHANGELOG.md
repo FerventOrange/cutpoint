@@ -112,6 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `cutpoint ui` ignores an `exports.json` entry whose export folder (`dir`) or final video
+  (`final`) is `.`, `..` or does not start with a letter, digit or `_`, so a hand-edited or corrupted file can no longer point
+  outside the project folder (#141).
 - Docker image (#112): uv is pinned by version and digest instead of an unpinned `curl | sh`
   install; the container runs as the non-root user `cutpoint` (uid 1000, build arguments
   `CUTPOINT_UID` / `CUTPOINT_GID`) owning `/data`; `git` and `curl` are no longer installed; and
