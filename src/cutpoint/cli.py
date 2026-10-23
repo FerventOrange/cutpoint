@@ -20,7 +20,7 @@ import urllib.error
 from collections.abc import Iterator
 from dataclasses import replace
 from importlib.resources import files
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from cutpoint import __version__, paths, stage
 from cutpoint.activity import resolve as resolve_activity
@@ -83,17 +83,24 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         raise
 
 
+def _segments_where(text: str, given: PurePath, segments: Path) -> str:
+    """What a missing ``--segments`` path ``text`` (parsed as ``given``) was relative to (#127).
+
+    A path with a drive or a root (``C:x.json``, Windows ``\\x.json``) gets no suffix: it is
+    shown as typed and not resolved against the current folder or the projects folder.
+    """
+    if given.anchor:
+        return ""
+    if segments == given:
+        return f" (relative to the current folder {Path.cwd()})"
+    return f" ({text}, relative to the projects folder {projects_dir()})"  # projects/<name>/...
+
+
 def _cmd_clips(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.project)
     segments = resolve_project_path(a.segments, bare_names=False) if a.segments else None
     if segments is not None and not a.mix and not segments.is_file():
-        given = Path(a.segments)
-        if given.is_absolute() or given.drive:
-            where = ""
-        elif segments == given:
-            where = f" (relative to the current folder {Path.cwd()})"
-        else:  # projects/<name>/...
-            where = f" ({a.segments}, relative to the projects folder {projects_dir()})"
+        where = _segments_where(a.segments, Path(a.segments), segments)
         raise FileNotFoundError(f"Segments file not found: {segments}{where}")
     order = a.order
     if a.mix:  # cutpoint mix's selection, played in arc order
