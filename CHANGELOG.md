@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A running `cutpoint ui` (or any long-running process) now picks up edits to `config.json`
   without a restart. Valid edits apply; a config broken after startup is reported (HTTP 409 in the
   UI) until it is fixed. A changed `video_encoder` applies to the next encode (#137).
+- `cutpoint ui` changing the projects folder (`PUT /api/settings`) and starting a job are now
+  mutually exclusive: a job started from a second tab while the folder changes can no longer run
+  against the old folder; the settings change is refused with 409 instead, and starting a job
+  is refused with 409 if the folder changed after the project was opened (#143).
 - `clips --segments`, `360 director --segments`, `360 stitch --segments` and
   `360 repair --segments` pointing at an existing folder now say `<path> is a folder, not a
   segments file`. `360 repair --segments` also says "Segments file not found" for a missing path
