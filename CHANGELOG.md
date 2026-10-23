@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui` New Project "Choose video…" and "Choose folder…" buttons open the operating
+  system's own file or folder dialog on the computer running the server (Windows: system dialog
+  through tkinter; Linux, with a display: zenity, falling back to kdialog; macOS: osascript)
+  through `POST /api/pick`. Where no dialog is available (headless, Docker, or an SSH session on
+  Windows and macOS) the buttons are hidden;
+  the Source field always accepts a typed or pasted full path.
+- `cutpoint ui` Settings (gear button in the header) sets the projects folder, saved as
+  `projects_dir` in `config.json` through `GET`/`PUT /api/settings`. The folder must exist or only
+  its last part may be missing (it is created), and it must be writable. Existing projects are not
+  moved. The setting is read-only when `CUTPOINT_PROJECTS_DIR` is set and cannot change while a job
+  is running.
 - `cutpoint ui` sequence rows show a thumbnail per clip, served by
   `GET /api/projects/{pid}/sources/{sid}/frame` and cached in `<project>/ui/frames/` (at most 500
   per project, least recently used evicted, stale stills removed). Rows support inline rename,
@@ -30,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The UI's New Project Source field no longer has the in-browser "Browse" button and folder
+  browser; the `/api/browse` endpoint is removed.
 - The UI's "Remove from sequence" button moved above the video preview.
 - The UI's Moments column header no longer shows the "Moments" title (kept for screen readers);
   after analysis it shows the moment count, "Analyze again" and "Show folder".

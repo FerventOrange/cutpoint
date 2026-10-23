@@ -80,7 +80,8 @@ Where project folders live. Default `<CUTPOINT_HOME>\projects`. A project argume
 name (`my-edit`) or starts with `projects/` is placed here. That applies to `analyze --out`,
 `clips <project>`, `events <project>`, and, with a `projects/` prefix, to `clips --out`,
 `clips --segments`, `assemble <clips_dir>` and `assemble --out`. Absolute paths, and relative
-paths that exist in the current folder, are used as given.
+paths that exist in the current folder, are used as given. The UI's Settings (gear) dialog writes
+this key.
 
 ### source_remap and source_remap_exclude
 

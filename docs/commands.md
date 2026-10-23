@@ -38,8 +38,20 @@ you already use when installing or running.
 Open the complete printed loopback URL, including `#t=…`; keep it private because it grants access
 to local footage. The workspace can create/open projects, analyze standard video,
 preview and trim candidates, save and reorder a sequence, export clips, and assemble a final
-video with optional fades, loudness normalization and captions. Source selection browses the
-server machine's files; nothing is uploaded. It does not expose action-cam or 360 commands.
+video with optional fades, loudness normalization and captions. Nothing is uploaded. It does not expose action-cam or 360 commands.
+
+New Project's Source field takes a full path that you type or paste; it always accepts one.
+"Choose video…" and "Choose folder…" open the operating system's own file or folder dialog on the
+computer running `cutpoint ui` (Windows: the system dialog through tkinter; Linux, with a display
+(DISPLAY or WAYLAND_DISPLAY): zenity, falling back to kdialog; macOS: osascript). Where no dialog is
+available (headless, Docker, no display, or an SSH session on Windows and macOS), those buttons are
+hidden and you type or paste the path.
+
+The gear button in the header opens Settings, which sets the projects folder (saved as
+`projects_dir` in `config.json`). The folder must exist, or only its last part may be missing, in
+which case it is created; it must be writable. Existing projects are not moved. The setting is
+read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a job is running.
+The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
