@@ -925,6 +925,8 @@ def test_path_picker_builds_the_platform_dialog_argv(
     monkeypatch.setattr(ui.shutil, "which", lambda n: f"/bin/{n}" if n in present else None)
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
     monkeypatch.setattr(sys, "platform", "linux")
 
     present.update({"zenity", "kdialog"})
@@ -1217,3 +1219,80 @@ def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
     monkeypatch.undo()
     assert ui.check_projects_dir(str(new)) == (new, True)
     assert ui.check_projects_dir(str(new)) == (new, False)
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("{oops", "Expecting property name"),
+        ('{"video_encoder": "bogus"}', "video_encoder is 'bogus'"),
+        ('{"source_remap_exclude": 5}', "int"),  # TypeError, not a 500
+        ('{"projects_dir": 5}', "int"),
+    ],
+)
+def test_project_routes_name_a_rejected_config_file_and_settings_still_work(
+    client: TestClient, home: Path, tmp_path: Path, text: str, error: str
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    cfg = home / "config.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(text, encoding="utf-8")
+    config.get_config.cache_clear()
+    token = client.app.state.token
+    calls = [
+        ("GET", "/api/projects", {}),
+        ("POST", "/api/projects", {"json": {"name": "x", "source": str(tmp_path / "footage")}}),
+        ("GET", f"/api/projects/{pid}", {}),
+        ("PUT", f"/api/projects/{pid}/review", {"json": {}}),
+        ("POST", f"/api/projects/{pid}/reveal", {}),
+        ("POST", f"/api/projects/{pid}/jobs", {"json": {"action": "analyze"}}),
+        ("POST", f"/api/projects/{pid}/sources/s0/prepare", {}),
+        ("GET", f"/api/projects/{pid}/sources/s0", {"params": {"t": token}}),
+        ("GET", f"/api/projects/{pid}/sources/s0/frame", {"params": {"t": token}}),
+        ("GET", f"/api/projects/{pid}/outputs/final.mp4", {"params": {"t": token}}),
+    ]
+    for method, path, kw in calls:
+        res = client.request(method, path, **kw)
+        assert res.status_code == 409, (method, path, res.text)
+        detail = res.json()["detail"]
+        assert str(cfg) in detail and error in detail, (path, detail)
+    assert client.get("/api/projects", headers={"X-Cutpoint-Token": "nope"}).status_code == 403
+    assert client.get("/api/session").status_code == 200
+    assert client.get("/api/jobs").status_code == 200
+    settings = client.get("/api/settings")
+    if text.startswith("{oops"):  # unreadable: Settings say so too, and never overwrite it
+        assert settings.status_code == 409 and str(cfg) in settings.json()["detail"]
+    else:  # a rejected unrelated value: Settings still show and save the projects folder
+        assert settings.status_code == 200 and settings.json()["config_file"] == str(cfg)
+        assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
+
+    cfg.unlink()  # fixed by hand: the projects come back without a restart
+    assert [p["id"] for p in client.get("/api/projects").json()["projects"]] == [pid]
+
+
+def test_a_rejected_encoder_variable_is_named_instead_of_config_json(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = home / "config.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "bogus")
+    config.get_config.cache_clear()
+    res = client.get("/api/projects")
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert detail.startswith("CUTPOINT_VIDEO_ENCODER is 'bogus'; expected one of auto,"), detail
+    assert str(cfg) not in detail
+
+
+def test_settings_show_a_wrongly_typed_projects_folder_so_it_can_be_replaced(
+    client: TestClient, home: Path, tmp_path: Path
+) -> None:
+    cfg = home / "config.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text('{"projects_dir": 5}', encoding="utf-8")
+    config.get_config.cache_clear()
+    res = client.get("/api/settings")
+    assert res.status_code == 200 and res.json()["projects_dir"] == "5"
+    assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
+    assert json.loads(cfg.read_text("utf-8")) == {"projects_dir": str(tmp_path)}

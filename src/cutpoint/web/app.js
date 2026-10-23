@@ -1467,7 +1467,6 @@ async function main() {
       await loadProjects();
       await openProject(created.id);
     }, S.canPick);
-    await loadProjects();
   } catch (e) {
     fail(e);
     $('#newBtn').disabled = true;
@@ -1475,6 +1474,13 @@ async function main() {
     $('#settingsBtn').disabled = true;
     setEmpty($('#stageEmpty'), h('p', {}, e.message));
     return;
+  }
+  try {
+    await loadProjects();
+  } catch (e) {
+    // e.g. a config.json the server rejects (409 names the file): the banner says what to fix,
+    // and Settings stays usable.
+    fail(e);
   }
   const wanted = decodeURIComponent(location.hash.slice(1));
   const first = S.projects.find((p) => p.id === wanted) ?? S.projects[0];
