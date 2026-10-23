@@ -64,6 +64,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths
+from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     get_config,
     load_config_data,
@@ -74,7 +75,7 @@ from cutpoint.config import (
 )
 from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, grab_images, probe
 from cutpoint.styles import get_style, learned_styles, style_names
-from cutpoint.utils import VIDEO_EXTS, find_videos, slugify
+from cutpoint.utils import VIDEO_EXTS, clip_files, find_videos, slugify
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,6 @@ LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MAX_SEGMENTS = 500
 MAX_LOG_LINES = 300
 MAX_JOBS = 50
-MIN_CLIP_S = 0.1  # export_clips rejects shorter clips
 MAX_EXTEND_S = 30.0
 BROWSER_CONTAINERS = {".mp4", ".m4v", ".mov", ".webm"}
 BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
@@ -632,16 +632,19 @@ class Media:
                 self.probed[key] = None
         return self.probed[key]
 
-    def duration(self, real: Path) -> float | None:
+    def _lookup(self, real: Path) -> tuple[str | None, tuple[bool, float, int] | None]:
+        """``(content key, info)`` of ``real``; both None if it is missing."""
         key = self.key(real)
-        res = self.info(real, key) if key else None
+        return key, self.info(real, key) if key else None
+
+    def duration(self, real: Path) -> float | None:
+        res = self._lookup(real)[1]
         return res[1] if res else None
 
     def status(self, project: Path, path: str) -> tuple[str, Path | None]:
         """``(status, file to serve)``: ready | needs-proxy | preparing | failed. No side effects."""
         real = remap_source(path)
-        key = self.key(real)
-        res = self.info(real, key) if key else None
+        key, res = self._lookup(real)
         if res is None or key is None:
             return "failed", None
         if res[0]:
@@ -656,8 +659,7 @@ class Media:
     def prepare(self, project: Path, path: str) -> str:
         """Queue the proxy build of one source (also retries a failed build); returns its status."""
         real = remap_source(path)
-        key = self.key(real)
-        res = self.info(real, key) if key else None
+        key, res = self._lookup(real)
         if res is not None and key is not None and not res[0] and not self.closing:
             proxy = _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # never built through a link
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")  # nor its temporary
@@ -710,8 +712,7 @@ class Media:
             FFmpegError: If ffmpeg decodes no image.
         """
         real = remap_source(path)
-        key = self.key(real)
-        res = self.info(real, key) if key else None
+        key, res = self._lookup(real)
         if res is None or key is None:
             return None
         if res[1] > 0:
@@ -936,8 +937,8 @@ def validate_segments(
         if src is None:
             raise bad(f"segment {i}: source is not part of this project")
         start, end = _num(item, "start", i), _num(item, "end", i)
-        if start < 0 or end - start < MIN_CLIP_S:
-            raise bad(f"segment {i}: needs 0 <= start and end at least {MIN_CLIP_S}s after start")
+        if start < 0 or end - start < MIN_EXPORT_S:
+            raise bad(f"segment {i}: needs 0 <= start and end at least {MIN_EXPORT_S}s after start")
         duration = src["duration"] or media.duration(remap_source(src["path"]))
         if duration is None:
             raise bad(f"segment {i}: source cannot be read")
@@ -1395,10 +1396,7 @@ def create_app(port: int) -> FastAPI:
 
         elif action == "assemble":
             exp = current_export(p)
-            # Dot files are temporaries (a killed export's ``.NNN_x.part.mp4``), not clips.
-            if exp is None or not any(
-                not f.name.startswith(".") for f in (p / exp["dir"]).glob("*.mp4")
-            ):
+            if exp is None or not clip_files(p / exp["dir"]):
                 raise bad("export clips before assembling")
             transition = body.get("transition", "cut")
             if transition not in ("cut", "fade"):
