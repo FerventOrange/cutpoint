@@ -58,7 +58,7 @@ from cutpoint.clips import (
     segment_source,
     source_key,
 )
-from cutpoint.config import is_absolute_any, path_key, source_path
+from cutpoint.config import is_absolute_any, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.pano.qa import runs_of
 from cutpoint.pano.render import free_backup_name, write_atomic
@@ -191,10 +191,11 @@ def plan(
     """
     matched, skipped = _match(segments, qa, src_dir, qa_time)
     excl, findings, bounds = [], [], {}
+    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for clip, seg, a in matched:
         cat, dur, lo, hi = seg.get("category"), clip["duration"], seg["start"], seg["end"]
         frames = clip["frames"]
-        hits = [t - a for src, t in impacts if path_key(src) == path_key(seg["source"])]
+        hits = [t - a for src, t in impacts if key(src) == key(seg["source"])]
         hits = hits if cat == "crash" else []  # impacts in clip time
         frames = [
             {**fr, "flags": []}
@@ -247,8 +248,10 @@ def plan(
 
 
 def _merge(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    src = functools.cache(source_key)  # resolving reads the disk: once per source
+
     def key(e: dict[str, Any]) -> tuple:
-        return path_key(str(e["source"])), e["start"], e["end"], e.get("category")
+        return src(str(e["source"])), e["start"], e["end"], e.get("category")
 
     seen = {key(e) for e in old}
     return old + [e for e in new if key(e) not in seen]
@@ -428,12 +431,13 @@ def repair(
         raise ValueError(f"{segments_file}: {err}") from None
     given = {s["id"] for s in old if "id" in s}
     old = [{**s, "id": sid} for s, sid in zip(old, ids, strict=True)]
-    # The user's picks are matched (manifest.json, crashes) and excluded by source as
-    # cutpoint clips records it; the file keeps its own spelling. run_mix's sources are
-    # its candidates' own and stay as they are.
+    # Segments are matched (manifest.json, crashes, run_mix's candidates) and excluded by
+    # source as cutpoint clips records it: a relative one is relative to the file's folder.
+    # The file keeps its own spelling; run_mix's sources are its candidates' own.
+    keyed = [{**s, "source": src} for s, src in zip(old, sources, strict=True)]
     spelt = {s["id"]: s["source"] for s in old} if picked else {}
     if picked:
-        old = [{**s, "source": src} for s, src in zip(old, sources, strict=True)]
+        old = keyed
     if qa_file.is_dir():
         raise IsADirectoryError(f"{qa_file} is a folder, not a QA report")
     if not qa_file.is_file():
@@ -446,7 +450,7 @@ def repair(
         src_dir = qa_file.parent.with_name(qa_file.parent.name.removesuffix("_qa"))
     crashes = (load_crashes(project) or {}).get("crashes", [])
     impacts = [(c["source"], impact_time(c)) for c in crashes]
-    new_excl, findings, skipped, bounds = plan(old, qa, src_dir, qa_file.stat().st_mtime, impacts)
+    new_excl, findings, skipped, bounds = plan(keyed, qa, src_dir, qa_file.stat().st_mtime, impacts)
     manifest = cache.load_json(src_dir / "manifest.json")
     out = out or segments_file
     same = out.resolve() == segments_file.resolve()
@@ -469,10 +473,12 @@ def repair(
         _make_parent(out)
         written = out.with_name(mix.EXCLUDE_FILE)
         have = written if written.is_file() else project / mix.EXCLUDE_FILE
-        excl = _merge(mix.load_exclusions(have), new_excl)
+        usable, ignored = mix.read_exclusions(have)
+        excl = _merge(usable, new_excl)
+        kept = excl + ignored  # the file keeps the entries mix leaves out (drive-relative)
         if picked:
             new = _cut(new, new_excl)
-            cache.save_json(written, excl)
+            cache.save_json(written, kept)
             rep["exclusions"] = len(excl)
         else:
             # Back up only once run_mix has written over the original: a failed selection
@@ -486,7 +492,7 @@ def repair(
                     out=out,
                     sheet=sheet,
                     exclude=excl,
-                    previous=old,
+                    previous=keyed,
                 )
             except BaseException:
                 try:  # failed after writing (the sheet): keep the old
@@ -497,7 +503,7 @@ def repair(
                 raise
             if original is not None:
                 _backup(segments_file, original)
-            cache.save_json(written, excl)
+            cache.save_json(written, kept)
             new = cache.load_json(out) or []
             rep["exclusions"], rep["content_qa"] = len(excl), report["content_qa"]
         _bound(new, _near(new, excl))
