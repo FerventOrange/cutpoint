@@ -103,8 +103,13 @@ On Windows, a prefix on a mapped network drive matches in either form: `Z:\Foota
 `\\server\share\Footage` are the same folder, also while `Z:` is disconnected. Projects name
 sources on a mapped drive in UNC form (`settings.inputs` keeps your spelling).
 
-Prefix and key matching is case-sensitive on Linux (`source_remap` prefixes, `stage` keys) and
-stays case-insensitive on Windows.
+A key spelled the Windows way (`D:\Videos`) also works on Linux and macOS: it matches
+Windows-style sources case-insensitively with either slash (drive-letter forms), for example
+`D:\Videos` -> `/mnt/d/Videos`. A network path (`\\server\share\...`) must be written with
+backslashes in both the key and the source (in JSON, `"\\\\server\\share"`).
+
+Prefix and key matching is case-sensitive on Linux (`source_remap` prefixes, `stage` keys), except
+for Windows-form `source_remap` keys (above), and case-insensitive on Windows.
 
 ### stage_dir
 

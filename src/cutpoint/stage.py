@@ -31,7 +31,14 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, state
-from cutpoint.config import canonical_source, get_config, norm_path, remap_source, unc_path
+from cutpoint.config import (
+    canonical_source,
+    get_config,
+    is_foreign_windows,
+    norm_path,
+    remap_source,
+    unc_path,
+)
 from cutpoint.utils import matches_glob
 
 logger = logging.getLogger(__name__)
@@ -306,7 +313,6 @@ def _recorded_under(
     matched as ``find_videos`` does, against the key (the original spelling,
     case-folded on Windows, where globs ignore case anyway).
     """
-    sep = "\\" if sys.platform == "win32" else "/"
     absolute = os.path.abspath(str(target))  # noqa: PTH100 - normalises '..', keeps drive letters
     # The UNC form too: a disconnected mapped drive does not resolve to it.
     prefixes = {stage_key(target), stage_key(unc_path(absolute))}
@@ -315,6 +321,8 @@ def _recorded_under(
         for prefix in prefixes:
             if key == prefix:
                 break
+            # A Windows-recorded key on POSIX (canonical form of a remap target) uses '\\'.
+            sep = "\\" if sys.platform == "win32" or is_foreign_windows(prefix) else "/"
             if key.startswith(prefix + sep) and (recursive or sep not in key[len(prefix) + 1 :]):
                 break
         else:

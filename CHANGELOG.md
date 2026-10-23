@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `source_remap` key spelled the Windows way (for example `D:\Videos` -> `/mnt/d/Videos`) now
+  applies on Linux and macOS (#149). It matches Windows-style sources case-insensitively with
+  either slash, so a Windows project (or `clips --segments` with `D:\` sources) opened on Linux
+  finds its footage. Files under a Windows-form key get a new cache and stage key
+  (`D:\Videos\T\x.mp4` instead of `D:\Videos/T/x.mp4`), so they are analyzed and staged once
+  more; `cutpoint stage --clear` removes the old staged copies.
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects

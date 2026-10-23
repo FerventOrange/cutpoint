@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -108,3 +109,19 @@ def test_clear_stage_falls_back_to_the_index_for_inputs_that_cannot_be_listed(
         assert Path(copy).exists() == (name in kept)
     assert "no staged copy recorded under it" in caplog.text
     assert "missing" in caplog.text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows-form key is foreign only on POSIX")
+def test_clear_stage_finds_copies_recorded_under_a_windows_form_key(home, tmp_path):
+    """#149: keys recorded as ``D:\\Videos\\T\\x.mp4`` use backslashes, not ``/``."""
+    new = tmp_path / "copy"
+    write(new / "T" / "x.mp4", "xx")
+    write(new / "Tx" / "z.mp4", "zz")  # a sibling named like T's prefix; never selected
+    write(home / "config.json", json.dumps({"source_remap": {r"D:\Videos": str(new)}}))
+    config.get_config.cache_clear()
+    assert stage_sources([new / "T", new / "Tx"], min_free_gb=0)["files"] == 2
+    copies = {n: Path(staged_path(str(new / n))) for n in ("T/x.mp4", "Tx/z.mp4")}
+    shutil.rmtree(new)  # the remap target is gone, so only the index can find them
+
+    assert clear_stage([new / "T"]) == 1
+    assert [c.exists() for c in copies.values()] == [False, True]
