@@ -327,7 +327,8 @@ path. A copy that would leave less than 5 GB free is refused. `--list` shows wha
 `--recursive` and `--exclude`). Each input is cleared on its own: one that no longer exists, even
 through `source_remap`, clears the copies recorded under its path (the file itself, or the files
 directly inside the folder, at any depth with `--recursive`, minus `--exclude` matches); one with
-none recorded gives a warning and the other inputs are still cleared. See
+none recorded gives a warning and the other inputs are still cleared. A running `cutpoint ui`
+uses new copies, and a changed `stage_dir` or `source_remap`, without a restart. See
 [slow storage](troubleshooting/storage.md).
 
 ## crashes
