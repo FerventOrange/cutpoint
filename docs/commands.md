@@ -219,7 +219,8 @@ complete; a failed run there may keep the finished clips.
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
 
-Segments file (`--segments`). Relative `source` paths resolve against the JSON file's folder:
+Segments file (`--segments`). Relative `source` paths resolve against the JSON file's folder
+(on Windows, a drive-relative path such as `D:foo.mp4` is an error; give the full path):
 
 ```json
 [

@@ -10,9 +10,10 @@ import json
 import logging
 import ntpath
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, sources
@@ -51,6 +52,7 @@ ARC_MAX_REPEAT = 2  # same-category clips in a row
 ARC_WINDOW = 4  # how far ahead a local swap may reach (clips)
 REACTION_LABEL = "crash reaction"  # ``cutpoint mix`` label of a crash's reaction segment
 BOUND_KEYS = ("min_start", "max_end")  # source-time limits of a segment's lead-in and tails
+_WINDOWS = sys.platform == "win32"  # D:foo is drive-relative only here (elsewhere a file name)
 
 Unit = list[dict[str, Any]]  # a clip, or a crash plus its reaction
 
@@ -222,6 +224,29 @@ def segment_source(source: str | Path, base: Path) -> tuple[str, Path]:
     return identity, io_path
 
 
+def source_key(source: str | Path) -> str:
+    """An absolute ``source`` as a lookup key, normalised as :func:`segment_source` records
+    it (resolved, so through a symlink too), for matching exclusions to segments."""
+    return path_key(segment_source(source, Path.cwd())[0])
+
+
+def drive_relative(source: str) -> str:
+    """The drive of a drive-relative Windows ``source`` (``D:foo``, relative to drive D's
+    current folder) on Windows, else ``""``."""
+    if not _WINDOWS:
+        return ""
+    p = PureWindowsPath(source)
+    return p.drive if p.drive and not p.root else ""
+
+
+def drive_relative_error(source: str, drive: str) -> str:
+    """Why a segments file's drive-relative ``source`` on ``drive`` is refused."""
+    return (
+        f"source {source!r} is relative to the current folder of drive {drive}; give the "
+        f"full path ({drive}\\...) or one relative to the segments file"
+    )
+
+
 def _letters(k: int) -> str:
     """``k`` (1-based) as ``a``, ``b``, ..., ``z``, ``aa``, ``ab``, ..."""
     out = ""
@@ -304,6 +329,8 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
             start, end = float(item["start"]), float(item["end"])
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"Segment {i} needs source, start and end: {item!r}") from None
+        if drive := drive_relative(str(item["source"])):  # Windows: against drive's current folder
+            raise ValueError(f"Segment {i}: {drive_relative_error(item['source'], drive)}")
         identity, io_path = segment_source(src, path.parent)
         if not io_path.is_file():
             raise FileNotFoundError(f"Segment {i}: source not found: {io_path}")

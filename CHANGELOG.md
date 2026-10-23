@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list no longer shows a folder that cannot be opened (for example one that is a symlink or
   junction to outside the projects folder). A job whose result could not be recorded (see #168)
   shows the reason as its error, without a `409:` prefix or a traceback in the server log.
+- `cutpoint mix` and `cutpoint 360 repair` match an exclusion in `mix_exclude.json` to a segment
+  by the resolved, normalised path of its source, so symlinks and spellings such as `a/../b`
+  match in both commands and in every repair step. On Windows, `clips --segments` rejects a
+  drive-relative source such as `D:foo.mp4` with the same message as `360 repair`.
+  A relative `source` in `mix_exclude.json` (or the file given to `mix --exclude-file`) is now read
+  against that file's folder instead of never matching, so `mix` honours exclusions written by older
+  `360 repair` versions (#175).
 - `cutpoint ui` on Windows: cancelling a job now sends `CTRL_BREAK_EVENT` to its process group
   first and waits up to 5 seconds, so the command removes its partial files and exits 130; only
   then does `taskkill /T /F` run (also the fallback when the UI has no console, for example under

@@ -545,7 +545,7 @@ def test_cli_repair_reports_bad_out_and_drive_relative_source_as_one_error(
 ) -> None:
     """Issue #151: ``--out`` that is a folder, or inside a file, and (on Windows) a
     drive-relative source are one ERROR line, exit 1, before anything is written."""
-    import cutpoint.pano.repair as repair_mod  # noqa: PLC0415
+    import cutpoint.clips as clips_mod  # noqa: PLC0415
     from cutpoint.cli import main  # noqa: PLC0415
 
     qa = _handwritten(tmp_path, True)
@@ -561,7 +561,7 @@ def test_cli_repair_reports_bad_out_and_drive_relative_source_as_one_error(
         argv += ["--segments", str(segs), "--out", str(out)]
         phrase = f"Cannot write {out}: "
     else:
-        monkeypatch.setattr(repair_mod, "_WINDOWS", True)
+        monkeypatch.setattr(clips_mod, "_WINDOWS", True)
         segs = tmp_path / "drive.json"
         cache.save_json(segs, [{"source": "D:foo.insv", "start": 1, "end": 3}])
         argv += ["--segments", str(segs)]
@@ -580,10 +580,37 @@ def test_drive_relative_source_is_a_plain_file_name_off_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Issue #151: ``D:foo.insv`` is only drive-relative on Windows; elsewhere it is a name."""
-    import cutpoint.pano.repair as repair_mod  # noqa: PLC0415
+    import cutpoint.clips as clips_mod  # noqa: PLC0415
 
-    monkeypatch.setattr(repair_mod, "_WINDOWS", False)
+    monkeypatch.setattr(clips_mod, "_WINDOWS", False)
     qa = _handwritten(tmp_path, True)
     segs = tmp_path / "drive.json"
     cache.save_json(segs, [{"source": "D:foo.insv", "start": 1, "end": 3}])
     repair(tmp_path, segs, qa, sheet=False)  # no ValueError
+
+
+@pytest.mark.parametrize("spelling", ["symlink", "dotdot"])
+def test_repair_honours_an_exclusion_spelt_differently_from_the_segment_source(
+    tmp_path: Path, spelling: str
+) -> None:
+    """Issue #175: a ``mix_exclude.json`` source that is a symlink to, or a ``..`` spelling
+    of, the segment's source still bounds the lead-in / tail at it."""
+    qa = _handwritten(tmp_path, False)
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "a.insv").write_bytes(b"")
+    if spelling == "symlink":
+        alias = tmp_path / "alias.insv"
+        try:
+            alias.symlink_to(tmp_path / "raw" / "a.insv")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable")
+    else:
+        alias = tmp_path / "raw" / ".." / "raw" / "a.insv"
+    cache.save_json(
+        tmp_path / mix.EXCLUDE_FILE, [{"source": str(alias), "start": 110.0, "end": 112.0}]
+    )
+    repair(tmp_path, tmp_path / "final_segments.json", qa, sheet=False)
+    jump = next(
+        s for s in cache.load_json(tmp_path / "final_segments.json") if s["label"] == "jump"
+    )
+    assert jump["max_end"] == 110.0
