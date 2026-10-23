@@ -275,11 +275,11 @@ function renderUnanalyzed(el, n) {
   );
 }
 
-/** Ask the server to show the project's source folder in the file manager. */
-async function revealFolder(btn) {
+/** Ask the server to show a project folder in the file manager: 'sources', 'clips' or 'outputs'. */
+async function revealFolder(btn, target = 'sources') {
   btn.disabled = true; // one request at a time
   try {
-    await api(`/api/projects/${encodeURIComponent(S.id)}/reveal`, { method: 'POST' });
+    await api(`/api/projects/${encodeURIComponent(S.id)}/reveal?target=${target}`, { method: 'POST' });
     banner('');
   } catch (e) {
     fail(e);
@@ -1046,6 +1046,10 @@ function renderBusy() {
   }
   set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
   set('#assembleBtn', !p || busy || !p.clips, busy ? why : 'Export clips first.');
+  // Never disabled by a job: showing a folder is harmless. Without a project both are hidden too,
+  // so the fieldsets being disabled below never catches them.
+  $('#revealClipsBtn').hidden = !p?.clips || !S.canReveal;
+  $('#revealOutBtn').hidden = !p?.outputs?.length || !S.canReveal;
   $('#exportPanel').disabled = !p;
   $('#assemblePanel').disabled = !p;
 }
@@ -1292,6 +1296,10 @@ function bind() {
   $('#analyzeBtn').addEventListener('click', () => startJob('analyze'));
   $('#revealHeadBtn').prepend(icon('folder'));
   $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
+  for (const [id, target] of [['#revealClipsBtn', 'clips'], ['#revealOutBtn', 'outputs']]) {
+    $(id).prepend(icon('folder'));
+    $(id).addEventListener('click', (e) => revealFolder(e.currentTarget, target));
+  }
   $('#clipsBtn').addEventListener('click', () => {
     try {
       startJob('clips', exportOptions());

@@ -17,8 +17,10 @@ Trust boundaries:
   recorded source files, and only those under the source the user picked for it (or, for projects
   made on the command line, the inputs of its analysis); ``highlights.json`` alone never
   grants access to a file.
-* "Show folder" (``.../reveal``) opens only the folder of the project's own sources in the file
-  manager, without a shell; the request carries no path.
+* "Show folder" (``.../reveal?target=``) opens, in the file manager and without a shell, one of
+  three folders the server resolves from the project: its own sources (the default), the clips
+  folder of its latest export, or the project folder holding its assembled final. The request
+  names only the target, never a path.
 """
 
 from __future__ import annotations
@@ -840,11 +842,25 @@ def create_app(port: int) -> FastAPI:
         return review
 
     @secure.post("/projects/{pid}/reveal")
-    def reveal_folder(pid: str):
-        """Show the folder of the project's videos in the file manager (path from the project)."""
-        folder = source_folder(project_dir(pid))
-        if folder is None:
-            raise bad("the folder with this project's videos no longer exists", 404)
+    def reveal_folder(pid: str, target: str = "sources"):
+        """Show a project folder in the file manager: its videos, latest clips or final (path from
+        the project; ``target`` only picks which)."""
+        p = project_dir(pid)
+        if target == "sources":
+            folder = source_folder(p)
+            if folder is None:
+                raise bad("the folder with this project's videos no longer exists", 404)
+        elif target == "clips":
+            exp = current_export(p)
+            if exp is None:
+                raise bad("nothing has been exported yet", 404)
+            folder = p / exp["dir"]
+        elif target == "outputs":
+            if not output_names(p):
+                raise bad("nothing has been assembled yet", 404)
+            folder = p
+        else:
+            raise bad("unknown folder")
         opener = folder_opener()
         if opener is None:
             logger.info("cannot open %s: no file manager is available here", folder)
