@@ -597,6 +597,14 @@ def test_show_folder_opens_only_the_projects_own_source_folder(
     assert client.post(f"/api/projects/{pid}/reveal").status_code == 200
     assert opened == [folder]
 
+    # A picked video that was deleted while its folder remains still opens that folder.
+    cache.save_json(
+        ui.project_dir(pid) / "ui" / "meta.json", {**meta, "source": str(folder / "gone.mp4")}
+    )
+    opened.clear()
+    assert client.post(f"/api/projects/{pid}/reveal").status_code == 200
+    assert opened == [folder]
+
     shutil.rmtree(folder)
     opened.clear()
     res = client.post(f"/api/projects/{pid}/reveal")

@@ -167,6 +167,7 @@ function renderMoments() {
   const hl = p?.highlights;
   const list = cands();
   $('#analyzeBtn').hidden = !hl; // before analysis the empty state's own button replaces it
+  $('.moments').classList.toggle('bare', !hl);
   $('#analyzeBtn').textContent = 'Analyze again';
   $('#filterWrap').hidden = !list.length;
   $('#momentsCount').textContent = hl ? `${list.length} found, ${hl.style ?? p.style} style` : '';
@@ -218,7 +219,7 @@ function renderMoments() {
   if (list.length && !items.length)
     $('#candList').replaceChildren(h('li', { class: 'empty', text: 'No moments match this filter.' }));
   if (hadFocus && !empty.contains(document.activeElement))
-    ($('#analyzeBig') ?? $('#candList button') ?? $('#momentsTitle')).focus();
+    ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
 }
 
