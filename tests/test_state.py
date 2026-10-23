@@ -75,7 +75,6 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.stage.staged_path": lambda t, m: stage.staged_path("-"),
     "cutpoint.ffmpeg_utils.find_tool": _fill_find_tool,
     "cutpoint.ffmpeg_utils.encoder_error": _fill_encoder,
-    "cutpoint.ffmpeg_utils.video_encoder": _fill_encoder,
     "cutpoint.events.visual._aesthetic_layers": _fill_aesthetic,
     "cutpoint.events.paths._TORCH_HOME_SET": _fill_torch_home,
 }
@@ -127,13 +126,24 @@ def test_reset_state_keeps_models_by_default(tmp_path, monkeypatch):
     assert models[0].size() == 0
 
 
-def test_projects_dir_change_picked_up_after_reset(home, tmp_path):
-    write(home / "config.json", json.dumps({"projects_dir": str(tmp_path / "a")}))
+def test_config_edit_picked_up_without_reset(home, tmp_path):
+    """#137: an edited config.json is re-read; a broken one raises every time, not cached."""
+    cfg = home / "config.json"
+
+    def edit(text: str, step: int) -> None:
+        write(cfg, text)
+        os.utime(cfg, ns=(step * 10**9, step * 10**9))  # distinct stamp, whatever the size
+
+    edit(json.dumps({"projects_dir": str(tmp_path / "a")}), 1)
     assert config.projects_dir() == tmp_path / "a"
-    write(home / "config.json", json.dumps({"projects_dir": str(tmp_path / "b")}))
-    assert config.projects_dir() == tmp_path / "a"  # cached for the process
-    reset_state()
+    edit(json.dumps({"projects_dir": str(tmp_path / "b")}), 2)
     assert config.projects_dir() == tmp_path / "b"
+    edit("{broken", 3)
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            config.projects_dir()
+    edit(json.dumps({"projects_dir": str(tmp_path / "c")}), 4)
+    assert config.projects_dir() == tmp_path / "c"
 
 
 def test_cutpoint_home_change_picked_up_after_reset(home, tmp_path, monkeypatch):

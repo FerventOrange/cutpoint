@@ -9,8 +9,8 @@ environment or ``config.json`` between jobs must forget them first.
 Every module that keeps such state registers it here when it is imported::
 
     @state.register_cache
-    @functools.lru_cache(maxsize=1)
-    def get_config() -> Config: ...
+    @functools.cache
+    def find_tool(name: str) -> str: ...
 
     _SEEN: set[str] = state.register_container(__name__, "_SEEN", set())
 

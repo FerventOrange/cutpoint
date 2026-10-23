@@ -66,8 +66,8 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from typing import NamedTuple
 
 from cutpoint import cache, paths, state
 from cutpoint.utils import matches_glob
@@ -144,16 +144,54 @@ def _check_type(path: Path, data: dict, key: str, ok: Callable[[object], bool], 
     raise ValueError(f"{path}: {key} must be {what}, not {got}")
 
 
-@state.register_cache
-@lru_cache(maxsize=1)
+class _CacheInfo(NamedTuple):
+    currsize: int
+
+
+# The last loaded config, keyed by everything it is read from (see get_config).
+_LOADED: dict[tuple, Config] = {}
+
+
+def _config_key(path: Path) -> tuple:
+    """What :func:`get_config` depends on: the file's identity (one stat; None when missing),
+    ``CUTPOINT_HOME`` (the default folders) and the ``CUTPOINT_*`` overrides it reads."""
+    try:
+        st = path.stat()
+        stamp: tuple | None = (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        stamp = None
+    env = tuple(paths.env(name) for name in ("PROJECTS_DIR", "STAGE_DIR", "VIDEO_ENCODER"))
+    return (path, stamp, paths.home(), *env)
+
+
 def get_config() -> Config:
-    """Load ``config.json`` plus environment overrides (cached per process).
+    """Load ``config.json`` plus environment overrides.
+
+    The result is cached until the file changes (modification time, size or inode; also when it
+    appears or disappears) or a ``CUTPOINT_`` variable it reads changes, so a long-lived process
+    (``cutpoint ui``) sees hand edits. ``get_config.cache_clear()`` drops the cache.
 
     Raises:
         ValueError: Naming the file (or ``CUTPOINT_`` variable) and key, for an invalid file or a
             value of the wrong type or out of range. A failed call is not cached.
     """
     path = paths.config_file()
+    key = _config_key(path)
+    cfg = _LOADED.get(key)
+    if cfg is None:
+        cfg = _load_config(path)
+        _LOADED.clear()
+        _LOADED[key] = cfg
+    return cfg
+
+
+get_config.cache_clear = _LOADED.clear  # type: ignore[attr-defined]
+get_config.cache_info = lambda: _CacheInfo(len(_LOADED))  # type: ignore[attr-defined]
+state.register_cache(get_config)  # type: ignore[arg-type]
+
+
+def _load_config(path: Path) -> Config:
+    """:func:`get_config` without the cache."""
     data = load_config_data(path)
     for key in ("projects_dir", "stage_dir", "ollama_url", "video_encoder"):
         _check_type(path, data, key, _is_str, "a string")

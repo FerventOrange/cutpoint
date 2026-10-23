@@ -311,8 +311,10 @@ def fake_clip_encode(monkeypatch, broken: set[str]) -> list[str]:
 def test_auto_gpu_encode_that_fails_is_redone_on_the_cpu_and_remembered(
     monkeypatch, tmp_path, caplog
 ):
+    """Also #137 (F1): naming a GPU encoder afterwards beats the remembered CPU fallback."""
     fake_ffmpeg(monkeypatch, works={"h264_nvenc", "libx264"})  # the probe passes
-    codecs = fake_clip_encode(monkeypatch, broken={"h264_nvenc"})
+    broken = {"h264_nvenc"}
+    codecs = fake_clip_encode(monkeypatch, broken)
     info, fmt = _clip_job(tmp_path)
     caplog.set_level("WARNING")
 
@@ -322,6 +324,11 @@ def test_auto_gpu_encode_that_fails_is_redone_on_the_cpu_and_remembered(
     assert codecs == ["h264_nvenc", "libx264", "libx264"]  # clip 2 skips the broken encoder
     assert (tmp_path / "001.mp4").exists() and (tmp_path / "002.mp4").exists()
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+    broken.clear()  # the driver is fixed and the user names nvenc
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "nvenc")
+    encode.export_clip(info.path, info, 0.0, 2.0, tmp_path / "003.mp4", fmt, False)
+    assert codecs[-1] == "h264_nvenc"  # tried again, not pinned to libx264
 
 
 def test_forced_gpu_encode_that_fails_names_the_cpu_setting_and_is_not_retried(
