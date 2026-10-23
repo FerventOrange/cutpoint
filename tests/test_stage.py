@@ -210,9 +210,11 @@ def test_staged_path_follows_stage_dir_and_index_changes_without_reload(home, tm
     assert staged_path(str(src)) == copy
 
     # a copy that vanished or was cut short is not returned, though the index still lists it
-    Path(copy).write_text("")
-    assert staged_path(str(src)) == str(src)
     Path(copy).unlink()
+    assert staged_path(str(src)) == str(src)
+    stage_sources([src], min_free_gb=0)  # re-copies and rewrites index.json
+    assert staged_path(str(src)) == copy
+    Path(copy).write_text("")
     assert staged_path(str(src)) == str(src)
 
     other = tmp_path / "other-stage"
