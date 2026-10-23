@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removes the temp file. A hard kill (SIGKILL, or the UI cancel on Windows, which uses
   `taskkill /F`) can leave a hidden `.part.mp4`; every command ignores it and `clips --force`
   removes it.
+- A failed run of `clips`, `extend` or `assemble` no longer leaves behind an empty output folder
+  that it created. When a file stays locked on Windows (open in a player, an editor or a virus
+  scanner), the error now names the file and says to close it and re-run. ffmpeg crash codes
+  show signed with their hex value, for example `exit -1073741819 (0xC0000005)` (#109).
 - With `video_encoder` `auto`, if a GPU encode (NVENC, AMF or VAAPI) fails on real footage, that
   clip, 360 render or final video is redone once on the CPU (libx264) with one WARNING, and the
   rest of the run uses the CPU. A forced GPU encoder is not retried; its error now says to set

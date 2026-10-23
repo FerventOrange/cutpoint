@@ -49,6 +49,19 @@ class FFmpegError(RuntimeError):
     """Raised when ffmpeg/ffprobe is missing or a command fails."""
 
 
+def exit_code(rc: int) -> str:
+    """``rc`` as error messages show it.
+
+    Windows reports crash codes (NTSTATUS) unsigned, e.g. 3221225477; these are shown
+    signed with their hex form, ``-1073741819 (0xC0000005)``. Ordinary codes and POSIX
+    signals (``-9``) are shown as they are.
+    """
+    if -256 < rc < 2**31:
+        return str(rc)
+    u = rc & 0xFFFFFFFF
+    return f"{u - 2**32 if u >= 2**31 else u} (0x{u:08X})"
+
+
 @state.register_cache
 @cache
 def find_tool(name: str) -> str:
@@ -134,7 +147,7 @@ def run(
     out = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         tail = "\n".join(out.strip().splitlines()[-15:])
-        raise FFmpegError(f"{args[0]} failed (exit {proc.returncode}):\n{tail}")
+        raise FFmpegError(f"{args[0]} failed (exit {exit_code(proc.returncode)}):\n{tail}")
     return out
 
 
@@ -198,7 +211,8 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
         stderr = err.read().decode("utf-8", "replace")
         if proc.returncode != 0:
             tail = "\n".join(stderr.strip().splitlines()[-15:])
-            raise FFmpegError(f"ffmpeg failed during {label} (exit {proc.returncode}):\n{tail}")
+            code = exit_code(proc.returncode)
+            raise FFmpegError(f"ffmpeg failed during {label} (exit {code}):\n{tail}")
     return ProgressResult(stderr=stderr, out_time=out_time)
 
 
@@ -662,6 +676,57 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
     return result
 
 
+# Windows "Access is denied" and "being used by another process": the file is open elsewhere.
+_LOCKED_WINERRORS = (5, 32)
+
+
+def retry_locked[T](op: Callable[[], T], path: Path, action: str) -> T:
+    """Run ``op`` (replacing or deleting ``path``), retrying briefly on PermissionError.
+
+    On Windows another process (a player, an editor, a virus scanner) holding ``path``
+    open makes a rename or delete fail for a moment.
+
+    Raises:
+        PermissionError: Naming ``path`` and the program holding it, if it is still locked
+            (Windows error 5 or 32) after the retries; any other error as raised by ``op``.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            return op()
+        except PermissionError as err:
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+                continue
+            if getattr(err, "winerror", None) not in _LOCKED_WINERRORS:
+                raise
+            raise PermissionError(
+                f"Cannot {action} {path}: it is open in another program (a player, an editor "
+                f"or a virus scanner). Close it and re-run. ({err.strerror})"
+            ) from err
+    raise AssertionError("unreachable")
+
+
+@contextmanager
+def output_dir(path: Path) -> Iterator[Path]:
+    """Create the folder ``path``; on failure (Ctrl+C included) remove it again if this call
+    created it and it is still empty, so a failed run leaves no empty folder behind.
+
+    Missing parents are created too and removed the same way. A folder that existed before,
+    or that holds anything, is always kept.
+    """
+    created = [p for p in (path, *path.parents) if not p.exists()]
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        yield path
+    except BaseException:
+        for p in created:  # innermost first; a non-empty folder stops the walk
+            try:
+                p.rmdir()
+            except OSError:
+                break
+        raise
+
+
 def part_path(out: Path) -> Path:
     """Temporary name :func:`atomic_output` writes ``out`` to: ``.<stem>.part<suffix>``.
 
@@ -682,14 +747,7 @@ def atomic_output(out: Path) -> Iterator[Path]:
     part = part_path(out)
     try:
         yield part
-        for attempt in range(REPLACE_ATTEMPTS):
-            try:
-                part.replace(out)
-                break
-            except PermissionError:
-                if attempt == REPLACE_ATTEMPTS - 1:
-                    raise
-                time.sleep(min(0.05 * 2**attempt, 0.5))
+        retry_locked(lambda: part.replace(out), out, "replace")
     except BaseException:
         # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
         with suppress(OSError):
@@ -819,7 +877,7 @@ def ffprobe_json(
     proc = _exec("ffprobe", args, timeout, path)
     if proc.returncode != 0:
         raise FFmpegError(
-            f"ffprobe failed on {path} (exit {proc.returncode}):\n{_tail(proc.stderr)}"
+            f"ffprobe failed on {path} (exit {exit_code(proc.returncode)}):\n{_tail(proc.stderr)}"
         )
     try:  # decoded leniently, as run() always has (tags may hold invalid UTF-8)
         return json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
@@ -1244,8 +1302,9 @@ def decode_pcm(
     )
     proc = _exec("ffmpeg", args, timeout, path)
     if proc.returncode != 0:
+        code = exit_code(proc.returncode)
         raise FFmpegError(
-            f"ffmpeg audio decode of {path} failed (exit {proc.returncode}):\n{_tail(proc.stderr)}"
+            f"ffmpeg audio decode of {path} failed (exit {code}):\n{_tail(proc.stderr)}"
         )
     data = proc.stdout
     return np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2")

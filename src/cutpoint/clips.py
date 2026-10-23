@@ -11,6 +11,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +20,7 @@ from cutpoint.config import remap_source, source_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
-from cutpoint.ffmpeg_utils import MediaInfo, probe
+from cutpoint.ffmpeg_utils import MediaInfo, output_dir, probe, retry_locked
 from cutpoint.planning import Padding, pad, select_moments, speech_pass
 from cutpoint.styles import Style, get_style
 from cutpoint.tail import TailResult, TailSettings, smart_tail
@@ -760,77 +761,78 @@ def export_clips(
         if not force:
             raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
         for old in [*out_dir.glob("*.mp4"), out_dir / "manifest.json"]:
-            old.unlink(missing_ok=True)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    from cutpoint.pano.render import exporter_for  # noqa: PLC0415
+            retry_locked(partial(old.unlink, missing_ok=True), old, "delete")
+    # A run that fails before writing anything leaves no empty clips folder behind.
+    with output_dir(out_dir):
+        from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
-    pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
-    if pano is not None and not any(pano.handles(m["source"]) for m in ordered):
-        pano = None
+        pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
+        if pano is not None and not any(pano.handles(m["source"]) for m in ordered):
+            pano = None
 
-    # Sources keep their recorded path as identity (events, tails, manifest);
-    # the file actually read may be a remapped copy (config ``source_remap``).
-    io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
-    for s, p in io_paths.items():
-        if str(p) != s:
-            logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
-    infos = {s: probe(p) for s, p in io_paths.items()}
-    fmt = choose_format(
-        [i for s, i in infos.items() if pano is None or not pano.handles(s)]
-        or list(infos.values()),
-        vertical,
-    )
-    if size is not None and not vertical:
-        w, h = size
-        if w <= 0 or h <= 0 or w % 2 or h % 2:
-            raise ValueError(f"--size {w}x{h}: width and height must be positive and even")
-        fmt = OutputFormat(width=w, height=h, fps=fmt.fps)
-    if pano is not None:  # 360 renders are 1920x1080 (or 1080x1920): match them
-        fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
-        pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
-    logger.info(
-        "Exporting %d clips at %dx%d@%d (%s order); smart tail %s (min %.1fs, max %.1fs)",
-        len(ordered),
-        fmt.width,
-        fmt.height,
-        fmt.fps,
-        order,
-        "on" if base_tail.enabled else "off",
-        base_tail.tail_min,
-        base_tail.tail_max,
-    )
+        # Sources keep their recorded path as identity (events, tails, manifest);
+        # the file actually read may be a remapped copy (config ``source_remap``).
+        io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
+        for s, p in io_paths.items():
+            if str(p) != s:
+                logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
+        infos = {s: probe(p) for s, p in io_paths.items()}
+        fmt = choose_format(
+            [i for s, i in infos.items() if pano is None or not pano.handles(s)]
+            or list(infos.values()),
+            vertical,
+        )
+        if size is not None and not vertical:
+            w, h = size
+            if w <= 0 or h <= 0 or w % 2 or h % 2:
+                raise ValueError(f"--size {w}x{h}: width and height must be positive and even")
+            fmt = OutputFormat(width=w, height=h, fps=fmt.fps)
+        if pano is not None:  # 360 renders are 1920x1080 (or 1080x1920): match them
+            fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
+            pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
+        logger.info(
+            "Exporting %d clips at %dx%d@%d (%s order); smart tail %s (min %.1fs, max %.1fs)",
+            len(ordered),
+            fmt.width,
+            fmt.height,
+            fmt.fps,
+            order,
+            "on" if base_tail.enabled else "off",
+            base_tail.tail_min,
+            base_tail.tail_max,
+        )
 
-    plans = plan_clips(
-        ordered,
-        project,
-        io_paths=io_paths,
-        infos=infos,
-        tail=base_tail,
-        events=project_events,
-        event_settings=ev_settings,
-        speech=speech,
-        padding=extend,
-        crop=crop,
-        project_cfg=project_cfg,
-        pano=pano,
-    )
-    results = render_clips(
-        plans, out_dir, fmt=fmt, vertical=vertical, audio_fade=audio_fade, pano=pano
-    )
-    write_manifest(
-        out_dir,
-        project,
-        plans,
-        results,
-        order=order,
-        fmt=fmt,
-        vertical=vertical,
-        style=style,
-        tail=base_tail,
-        event_settings=ev_settings,
-        padding=extend,
-        speech=speech,
-        audio_fade=audio_fade,
-        crop=crop,
-    )
+        plans = plan_clips(
+            ordered,
+            project,
+            io_paths=io_paths,
+            infos=infos,
+            tail=base_tail,
+            events=project_events,
+            event_settings=ev_settings,
+            speech=speech,
+            padding=extend,
+            crop=crop,
+            project_cfg=project_cfg,
+            pano=pano,
+        )
+        results = render_clips(
+            plans, out_dir, fmt=fmt, vertical=vertical, audio_fade=audio_fade, pano=pano
+        )
+        write_manifest(
+            out_dir,
+            project,
+            plans,
+            results,
+            order=order,
+            fmt=fmt,
+            vertical=vertical,
+            style=style,
+            tail=base_tail,
+            event_settings=ev_settings,
+            padding=extend,
+            speech=speech,
+            audio_fade=audio_fade,
+            crop=crop,
+        )
     return out_dir

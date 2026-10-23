@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import signal
+import subprocess
 from fractions import Fraction
 from pathlib import Path
 
 import pytest
 
-from cutpoint import assemble, cli, encode
+from cutpoint import assemble, cli, clips, encode, ffmpeg_utils
 from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
 
 
@@ -83,3 +86,146 @@ def test_sigterm_cancels_a_command_like_ctrl_c(monkeypatch):
 
     assert cli.main(["paths"]) == 130
     assert signal.getsignal(signal.SIGTERM) is before
+
+
+# --- exit codes, failed-run cleanup, locked files ---
+
+
+@pytest.mark.parametrize(
+    ("rc", "shown"),
+    [
+        (3752568763, "-542398533 (0xDFABA7BB)"),  # Windows crash code, reported unsigned
+        (-9, "-9"),  # POSIX: killed by SIGKILL
+        (1, "1"),
+    ],
+)
+def test_ffmpeg_failure_shows_crash_codes_readably(monkeypatch, rc, shown):
+    monkeypatch.setattr(ffmpeg_utils, "find_tool", lambda name: name)
+    monkeypatch.setattr(ffmpeg_utils, "stage_inputs", lambda cmd: cmd)
+    monkeypatch.setattr(
+        ffmpeg_utils.subprocess,
+        "run",
+        lambda cmd, **_kw: subprocess.CompletedProcess(cmd, rc, "", "boom"),
+    )
+    with pytest.raises(FFmpegError, match=rf"\(exit {re.escape(shown)}\)"):
+        ffmpeg_utils.run(["ffmpeg", "-i", "x"])
+
+
+def _project(home: Path) -> tuple[Path, Path]:
+    project = home / "projects" / "p"
+    project.mkdir(parents=True)
+    src = project / "src.mp4"
+    src.write_bytes(b"x")
+    seg = project / "seg.json"
+    seg.write_text(
+        json.dumps([{"source": str(src), "start": 0.0, "end": 2.0, "label": "a"}]),
+        encoding="utf-8",
+    )
+    return project, seg
+
+
+@pytest.mark.parametrize("preexisting", [False, True], ids=["created", "preexisting"])
+def test_failed_export_leaves_no_new_empty_clips_folder(monkeypatch, home, preexisting):
+    project, seg = _project(home)
+    out = project / "clips"
+    if preexisting:
+        out.mkdir()
+
+    def broken_probe(_path):
+        raise FFmpegError("ffprobe failed")
+
+    monkeypatch.setattr(clips, "probe", broken_probe)
+    with pytest.raises(FFmpegError):
+        clips.export_clips(project, segments=seg)
+    assert out.is_dir() is preexisting
+
+
+def _locked(winerror: int) -> PermissionError:
+    err = PermissionError(13, "The process cannot access the file")
+    err.winerror = winerror
+    return err
+
+
+@pytest.mark.parametrize("winerror", [32, 5])
+def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, caplog, winerror):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+    project, seg = _project(home)
+    old = project / "clips" / "001_a.mp4"
+    old.parent.mkdir()
+    old.write_bytes(b"x")
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self == old:
+            raise _locked(winerror)
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert cli.main(["clips", "p", "--segments", str(seg), "--force"]) == 1
+    assert "open in another program" in caplog.text
+    assert "001_a.mp4" in caplog.text
+
+
+def test_clips_force_retries_a_lock_that_clears(monkeypatch, home):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+    project, seg = _project(home)
+    old = project / "clips" / "001_a.mp4"
+    old.parent.mkdir()
+    old.write_bytes(b"x")
+    real_unlink = Path.unlink
+    attempts = []
+
+    def unlink(self, missing_ok=False):
+        if self == old and not attempts:
+            attempts.append(1)
+            raise _locked(32)
+        return real_unlink(self, missing_ok=missing_ok)
+
+    def stop(_path):  # past the delete; no real ffmpeg needed
+        raise FFmpegError("stop here")
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(clips, "probe", stop)
+    with pytest.raises(FFmpegError, match="stop here"):
+        clips.export_clips(project, segments=seg, force=True)
+    assert attempts and not old.exists()
+
+
+def test_locked_final_video_names_the_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+    out = tmp_path / "final.mp4"
+
+    def replace(self, target):
+        raise _locked(32)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    with (
+        pytest.raises(PermissionError, match="open in another program") as exc,
+        ffmpeg_utils.atomic_output(out) as part,
+    ):
+        part.write_bytes(b"x")
+    assert str(out) in str(exc.value)
+    assert not ffmpeg_utils.part_path(out).exists()
+
+
+@pytest.mark.parametrize("winerror", [None, 2])
+def test_non_lock_permission_error_is_reraised_unchanged(monkeypatch, tmp_path, winerror):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+    out = tmp_path / "final.mp4"
+
+    def replace(self, target):
+        err = PermissionError(13, "denied")
+        if winerror is not None:
+            err.winerror = winerror
+        raise err
+
+    monkeypatch.setattr(Path, "replace", replace)
+    with (
+        pytest.raises(PermissionError) as exc,
+        ffmpeg_utils.atomic_output(out) as part,
+    ):
+        part.write_bytes(b"x")
+    assert "another program" not in str(exc.value)
+    assert exc.value.errno == 13
+    assert exc.value.strerror == "denied"
+    assert not ffmpeg_utils.part_path(out).exists()

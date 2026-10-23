@@ -29,6 +29,7 @@ from cutpoint.ffmpeg_utils import (
     encode_with_fallback,
     extract_audio,
     measure_loudness,
+    output_dir,
     probe,
     run,
 )
@@ -490,25 +491,26 @@ def assemble(
     files = list_clips(clips_dir, exclude={out})
     if not files:
         raise FileNotFoundError(f"No .mp4 clips in {clips_dir}")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    infos = [probe(f) for f in files]
-    logger.info(
-        "Assembling %d clips (%s): %s", len(files), transition, ", ".join(f.name for f in files)
-    )
+    # A run that fails before writing anything leaves no empty output folder behind.
+    with output_dir(out.parent):
+        infos = [probe(f) for f in files]
+        logger.info(
+            "Assembling %d clips (%s): %s", len(files), transition, ", ".join(f.name for f in files)
+        )
 
-    # Written to a temporary name: final.mp4 only appears once complete.
-    with atomic_output(out) as part:
-        stage = out.with_name(f".{out.stem}.stage.mp4") if (loudnorm or captions) else part
-        try:
-            _join(files, infos, clips_dir, stage, transition, fade_dur, audio_fade)
-            if loudnorm:
-                lufs, tp = normalize_with_ceiling(stage, out, captions, caption_model, part)
-                logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
-            elif captions:
-                post_process(stage, out, False, captions, caption_model, dst=part)
-        finally:
-            if stage != part:
-                stage.unlink(missing_ok=True)
+        # Written to a temporary name: final.mp4 only appears once complete.
+        with atomic_output(out) as part:
+            stage = out.with_name(f".{out.stem}.stage.mp4") if (loudnorm or captions) else part
+            try:
+                _join(files, infos, clips_dir, stage, transition, fade_dur, audio_fade)
+                if loudnorm:
+                    lufs, tp = normalize_with_ceiling(stage, out, captions, caption_model, part)
+                    logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
+                elif captions:
+                    post_process(stage, out, False, captions, caption_model, dst=part)
+            finally:
+                if stage != part:
+                    stage.unlink(missing_ok=True)
 
     fcp, oti = write_timelines(infos, out)
     logger.info("Wrote %s (%.2fs), %s, %s", out, probe(out).duration, fcp.name, oti.name)
