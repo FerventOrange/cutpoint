@@ -10,22 +10,23 @@ tests.
 ```powershell
 git clone https://github.com/FerventOrange/cutpoint.git
 cd cutpoint
-uv sync --extra dev
+uv sync
 ```
 
+The dev tools (pytest, ruff, pre-commit) are a default dependency group, so no flag is needed.
 Add `--extra ski --extra events` when working on those modules (list every extra you use;
 `uv sync` removes the others).
 
 ## Check your change
 
 ```powershell
-uv run --extra dev pytest
+uv run pytest
 uvx ruff@0.17.1 check src tests
 uvx ruff@0.17.1 format --check src tests
 ```
 
 CI runs the same lint and format checks, and the tests on Windows and Linux. Optionally install
-the hooks with `uv run --extra dev pre-commit install`; they run ruff on commit. Ruff settings
+the hooks with `uv run pre-commit install`; they run ruff on commit. Ruff settings
 (line length 100, rule set) are in `pyproject.toml`.
 
 ## Writing tests
