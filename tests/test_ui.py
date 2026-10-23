@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -561,3 +562,146 @@ def test_ui_on_a_taken_port_fails_cleanly_without_printing_a_url(
     assert "Traceback" not in caplog.text
     out = capsys.readouterr()
     assert "http://" not in out.out + out.err
+
+
+def test_show_folder_opens_only_the_projects_own_source_folder(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder comes from the project, never the request; token, 404 and 501 cases."""
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    assert client.get("/api/session").json()["can_reveal"] is True
+
+    assert (
+        client.post(f"/api/projects/{pid}/reveal", headers={"X-Cutpoint-Token": ""}).status_code
+        == 403
+    )
+    assert opened == []
+    # A path in the query or body is ignored: the project's folder is what opens.
+    res = client.post(
+        f"/api/projects/{pid}/reveal", params={"path": str(tmp_path)}, json={"path": str(tmp_path)}
+    )
+    assert res.status_code == 200, res.text
+    assert opened == [folder] and res.json() == {"path": str(folder)}
+    assert client.post("/api/projects/nope/reveal").status_code == 404
+    assert client.post("/api/projects/..%2F..%2Fx/reveal").status_code != 200
+    assert opened == [folder]
+
+    # A source that is one video file opens its folder.
+    meta = cache.load_json(ui.project_dir(pid) / "ui" / "meta.json")
+    cache.save_json(
+        ui.project_dir(pid) / "ui" / "meta.json", {**meta, "source": str(folder / "a.mp4")}
+    )
+    opened.clear()
+    assert client.post(f"/api/projects/{pid}/reveal").status_code == 200
+    assert opened == [folder]
+
+    shutil.rmtree(folder)
+    opened.clear()
+    res = client.post(f"/api/projects/{pid}/reveal")
+    assert res.status_code == 404 and "no longer exists" in res.json()["detail"]
+    assert opened == []
+
+    folder.mkdir()
+    monkeypatch.setattr(ui, "folder_opener", lambda: None)
+    assert client.get("/api/session").json()["can_reveal"] is False
+    res = client.post(f"/api/projects/{pid}/reveal")
+    assert (
+        res.status_code == 501
+        and res.json()["detail"] == "Opening folders isn't available on this machine"
+    )
+
+
+def test_show_folder_for_a_command_line_project_uses_its_recorded_sources(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    footage = tmp_path / "footage"
+    for name in ("day1/a.mp4", "day2/b.mp4"):
+        (footage / name).parent.mkdir(parents=True, exist_ok=True)
+        (footage / name).write_bytes(b"x")
+    p = ui.projects_dir() / "cli-proj"
+    p.mkdir(parents=True)
+    cache.save_json(
+        p / "highlights.json",
+        {
+            "settings": {"inputs": [str(footage)]},
+            "sources": [{"path": str(footage / n)} for n in ("day1/a.mp4", "day2/b.mp4")],
+            "candidates": [],
+        },
+    )
+    assert client.post("/api/projects/cli-proj/reveal").status_code == 200
+    assert opened == [footage]
+
+
+def test_show_folder_is_404_when_the_picked_folder_is_gone_or_unreadable(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deleted source folder is never swapped for its parent; OS errors are a 404, not a 500."""
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    meta = cache.load_json(ui.project_dir(pid) / "ui" / "meta.json")
+    assert Path(meta["source"]) == folder
+
+    def unreadable(real: Callable[..., bool]) -> Callable[..., bool]:
+        def check(self: Path, *args: object, **kwargs: object) -> bool:
+            if self == folder or folder in self.parents:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real(self, *args, **kwargs)
+
+        return check
+
+    with monkeypatch.context() as m:
+        for name in ("is_file", "is_dir", "exists"):
+            m.setattr(Path, name, unreadable(getattr(Path, name)))
+        res = client.post(f"/api/projects/{pid}/reveal")
+    assert res.status_code == 404 and "no longer exists" in res.json()["detail"]
+
+    shutil.rmtree(folder)
+    res = client.post(f"/api/projects/{pid}/reveal")
+    assert res.status_code == 404 and "no longer exists" in res.json()["detail"]
+    assert opened == []
+
+
+def test_folder_opener_runs_the_platform_tool_without_a_shell(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[object, dict]] = []
+
+    class FakeProc:
+        def wait(self) -> int:
+            return 0
+
+    def popen(args, **kw):
+        calls.append((args, kw))
+        return FakeProc()
+
+    monkeypatch.setattr(ui.subprocess, "Popen", popen)
+    monkeypatch.setattr(ui.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert ui.folder_opener() is None  # no display: nobody would see the window
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    ui.folder_opener()(tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    ui.folder_opener()(tmp_path)
+    assert [c[0] for c in calls] == [
+        ["/usr/bin/xdg-open", str(tmp_path)],
+        ["/usr/bin/open", str(tmp_path)],
+    ]
+    assert all(not kw.get("shell") for _, kw in calls)
+    assert all(kw["stdout"] == kw["stderr"] == subprocess.DEVNULL for _, kw in calls)
+
+    monkeypatch.setattr(ui.shutil, "which", lambda name: None)
+    assert ui.folder_opener() is None  # macOS without `open`, or Linux without xdg-open
+
+    started: list[str] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ui.os, "startfile", started.append, raising=False)
+    ui.folder_opener()(tmp_path)
+    assert started == [str(tmp_path)] and len(calls) == 2
