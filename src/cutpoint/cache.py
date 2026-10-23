@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import tempfile
-import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -99,12 +99,16 @@ def save_json(path: Path, data: Any, *, indent: int = 2) -> None:
     """Atomically write ``data`` as JSON (unique temp file, then rename).
 
     On Windows the rename fails with PermissionError while another process has
-    ``path`` open; it is retried a few times with a short backoff. The temp file
-    is removed if the rename never succeeds.
+    ``path`` open; it is retried a few times with a short backoff
+    (:func:`cutpoint.ffmpeg_utils.retry_locked`). The temp file is removed if the
+    rename never succeeds.
 
     Raises:
-        PermissionError: If ``path`` stays locked through all attempts.
+        PermissionError: If ``path`` stays locked through all attempts (naming it and
+            the program that may hold it, see :func:`~cutpoint.ffmpeg_utils.retry_locked`).
     """
+    from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415 - it imports this module
+
     text = json.dumps(data, indent=indent, ensure_ascii=False)
     tmp: Path | None = None
     replaced = False
@@ -120,15 +124,9 @@ def save_json(path: Path, data: Any, *, indent: int = 2) -> None:
             tmp = Path(f.name)
             f.write(text)
         match_mode(tmp, path)
-        for attempt in range(REPLACE_ATTEMPTS):
-            try:
-                os.replace(tmp, path)  # noqa: PTH105 - tests patch cache.os.replace
-                replaced = True
-                return
-            except PermissionError:
-                if attempt == REPLACE_ATTEMPTS - 1:
-                    raise
-                time.sleep(min(0.05 * 2**attempt, 0.5))
+        # os.replace, not Path.replace: tests patch cache.os.replace
+        retry_locked(partial(os.replace, tmp, path), path, "replace")
+        replaced = True
     finally:
         if tmp is not None and not replaced:
             tmp.unlink(missing_ok=True)

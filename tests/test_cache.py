@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cache, crash, telemetry
+from cutpoint import cache, crash, ffmpeg_utils, telemetry
 from cutpoint.events import common
 
 
@@ -88,7 +88,7 @@ def test_save_json_retries_permission_error_then_succeeds(tmp_path, monkeypatch)
 
     sleeps = []
     monkeypatch.setattr(cache.os, "replace", flaky)
-    monkeypatch.setattr(cache.time, "sleep", sleeps.append)
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", sleeps.append)
     cache.save_json(target, {"ok": True})
     assert len(calls) == 4
     assert len(sleeps) == 3 and all(0 < s <= 0.5 for s in sleeps)
@@ -106,7 +106,7 @@ def test_save_json_always_locked_raises_and_cleans_up(tmp_path, monkeypatch):
         raise PermissionError("locked")
 
     monkeypatch.setattr(cache.os, "replace", locked)
-    monkeypatch.setattr(cache.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda s: None)
     with pytest.raises(PermissionError):
         cache.save_json(target, {"new": 2})
     assert len(calls) == cache.REPLACE_ATTEMPTS
@@ -142,3 +142,22 @@ def test_load_json_handles_the_encoding_a_file_was_saved_with(tmp_path, encoding
     target = tmp_path / "saved.json"
     target.write_bytes(json.dumps({"name": "Café"}, ensure_ascii=False).encode(encoding))
     assert cache.load_json(target) == expected
+
+
+@pytest.mark.parametrize("winerror", [32, 5])
+def test_save_json_locked_file_gets_the_open_in_another_program_hint(
+    tmp_path, monkeypatch, winerror
+):
+    target = tmp_path / "d.json"
+
+    def locked(src, dst):
+        err = PermissionError(13, "The process cannot access the file")
+        err.winerror = winerror
+        raise err
+
+    monkeypatch.setattr(cache.os, "replace", locked)
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError, match="open in another program") as exc:
+        cache.save_json(target, {"new": 2})
+    assert str(target) in str(exc.value)
+    assert [p.name for p in tmp_path.iterdir()] == []  # temp file removed

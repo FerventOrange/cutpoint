@@ -689,7 +689,8 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
     return result
 
 
-# Windows "Access is denied" and "being used by another process": the file is open elsewhere.
+# Windows "Access is denied" and "being used by another process": the file is open elsewhere
+# (error 5 can also mean a read-only file or folder).
 _LOCKED_WINERRORS = (5, 32)
 
 
@@ -701,7 +702,8 @@ def retry_locked[T](op: Callable[[], T], path: Path, action: str) -> T:
 
     Raises:
         PermissionError: Naming ``path`` and the program holding it, if it is still locked
-            (Windows error 5 or 32) after the retries; any other error as raised by ``op``.
+            (Windows error 5 or 32) after the retries (for error 5 also a read-only file or
+            folder); any other error as raised by ``op``.
     """
     for attempt in range(REPLACE_ATTEMPTS):
         try:
@@ -712,9 +714,15 @@ def retry_locked[T](op: Callable[[], T], path: Path, action: str) -> T:
                 continue
             if getattr(err, "winerror", None) not in _LOCKED_WINERRORS:
                 raise
+            read_only = (
+                " If no program has it open, the file or its folder may be read-only: clear the"
+                " read-only attribute and re-run."
+                if getattr(err, "winerror", None) == 5
+                else ""
+            )
             raise PermissionError(
                 f"Cannot {action} {path}: it is open in another program (a player, an editor "
-                f"or a virus scanner). Close it and re-run. ({err.strerror})"
+                f"or a virus scanner). Close it and re-run.{read_only} ({err.strerror})"
             ) from err
     raise AssertionError("unreachable")
 

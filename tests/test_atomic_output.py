@@ -937,3 +937,17 @@ def test_clips_force_refuses_a_new_clip_name_reached_through_source_remap(
     before = _snapshot(out)
     assert cli.main(_argv("clips", project, "--force")) == 1
     assert _snapshot(out) == before
+
+
+@pytest.mark.parametrize(("winerror", "read_only_hint"), [(32, False), (5, True)])
+def test_lock_hint_mentions_read_only_only_for_access_denied(
+    monkeypatch, tmp_path, winerror, read_only_hint
+):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+
+    def op():
+        raise _locked(winerror)
+
+    with pytest.raises(PermissionError, match="open in another program") as exc:
+        ffmpeg_utils.retry_locked(op, tmp_path / "x.json", "write")
+    assert ("read-only" in str(exc.value)) is read_only_hint

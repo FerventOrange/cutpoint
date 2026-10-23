@@ -49,6 +49,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` on Windows: cancelling a job now sends `CTRL_BREAK_EVENT` to its process group
+  first and waits up to 5 seconds, so the command removes its partial files and exits 130; only
+  then does `taskkill /T /F` run (also the fallback when the UI has no console, for example under
+  pythonw). The UI no longer treats a hidden leftover `.<name>.part.mp4` as an exported clip when
+  deciding whether there is something to assemble (#125).
+- Windows: a JSON result file (`highlights.json`, `manifest.json`, cache files, ...) that stays
+  locked now gives the same "open in another program" error naming the file as a locked clip,
+  instead of a bare `PermissionError`. For "Access is denied" (error 5) the hint also says the
+  file or its folder may be read-only. llama-server and `360 stitch` exit codes are shown signed
+  with their hex form, e.g. `-1073741819 (0xC0000005)`, like ffmpeg's. A failed `360 director`
+  run, or a failed 360 `clips`/`extend` run, no longer leaves an empty `pano_paths/<name>` folder
+  it created (#146).
 - Windows: Ctrl+Break (or `CTRL_BREAK_EVENT` sent to the process group) now stops a command
   like Ctrl+C: partial files are removed and the exit code is 130 instead of `0xC000013A`.
   AGENTS.md notes which ways of stopping Cutpoint on Windows give 130 and which end it without
@@ -56,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A running `cutpoint ui` (or any long-running process) now picks up edits to `config.json`
   without a restart. Valid edits apply; a config broken after startup is reported (HTTP 409 in the
   UI) until it is fixed. A changed `video_encoder` applies to the next encode (#137).
+- `cutpoint ui` changing the projects folder (`PUT /api/settings`) and starting a job are now
+  mutually exclusive: a job started from a second tab while the folder changes can no longer run
+  against the old folder; the settings change is refused with 409 instead, and starting a job
+  is refused with 409 if the folder changed after the project was opened (#143).
 - `clips --segments`, `360 director --segments`, `360 stitch --segments` and
   `360 repair --segments` pointing at an existing folder now say `<path> is a folder, not a
   segments file`. `360 repair --segments` also says "Segments file not found" for a missing path
@@ -173,6 +189,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui` ignores an `exports.json` entry whose export folder (`dir`) or final video
   (`final`) is `.`, `..` or does not start with a letter, digit or `_`, so a hand-edited or corrupted file can no longer point
   outside the project folder (#141).
+- `cutpoint ui` also ignores an `exports.json` export folder or final video (and its
+  `.fcpxml`/`.otio` timelines) that a symlink or Windows junction inside the project resolves
+  to outside the project folder, so neither is shown, served nor opened in the file manager
+  (an export whose `manifest.json` resolves outside is ignored too); a broken symlink named like the next
+  `final_*.mp4` or `clips_ui_*` output counts as taken, so no output is written through it
+  (#155).
 - Docker image (#112): uv is pinned by version and digest instead of an unpinned `curl | sh`
   install; the container runs as the non-root user `cutpoint` (uid 1000, build arguments
   `CUTPOINT_UID` / `CUTPOINT_GID`) owning `/data`; `git` and `curl` are no longer installed; and
