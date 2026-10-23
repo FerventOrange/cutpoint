@@ -32,7 +32,6 @@ import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +39,15 @@ from cutpoint import boundaries, cache
 from cutpoint.config import remap_source
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import OutputFormat, export_clip_checked
-from cutpoint.ffmpeg_utils import MediaInfo, atomic_output, output_dir, probe, retry_locked
+from cutpoint.ffmpeg_utils import (
+    MediaInfo,
+    atomic_output,
+    output_dir,
+    probe,
+    recover_swap,
+    staged_dir,
+    swap_in,
+)
 from cutpoint.planning import Padding, pad, speech_pass
 from cutpoint.utils import natural_key
 
@@ -276,6 +283,7 @@ def extend_clips(
             and ``force`` is False.
         ValueError: If nothing could be re-exported.
     """
+    recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
     manifest = cache.load_json(clips_dir / "manifest.json")
     if manifest is None:
         raise FileNotFoundError(
@@ -297,11 +305,9 @@ def extend_clips(
             f"{out_dir} {'is the input folder' if in_place else 'is not empty'};"
             " use --force to overwrite"
         )
-    work = out_dir.with_name(out_dir.name + ".tmp") if in_place else out_dir
-    if work.exists() and work != out_dir:
-        shutil.rmtree(work)
-    # A run that fails before writing anything leaves no empty folder behind.
-    with output_dir(work):
+    # In place, the clips are exported into a hidden staging folder and swapped in only when
+    # all succeeded. A run that fails before writing anything leaves no empty folder behind.
+    with staged_dir(out_dir) if in_place else output_dir(out_dir) as work:
         by_file = {e["file"]: e for e in manifest.get("clips", [])}
         fmt_d = manifest.get("format") or {}
         fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
@@ -451,11 +457,8 @@ def extend_clips(
                 "clips": entries,
             },
         )
-        if in_place:  # each original stays until its new clip replaces it
-            for new in work.iterdir():
-                dst = clips_dir / new.name
-                retry_locked(partial(new.replace, dst), dst, "replace")
-            work.rmdir()
+        if in_place:  # all or nothing; clips skipped for lack of an entry stay
+            swap_in(work, clips_dir)
     logger.info(
         "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",
         len(entries),

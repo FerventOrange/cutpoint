@@ -28,18 +28,18 @@ import threading
 import time
 import wave
 from collections import deque
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 
 from cutpoint import paths, state
-from cutpoint.cache import REPLACE_ATTEMPTS
+from cutpoint.cache import REPLACE_ATTEMPTS, load_json, save_json
 from cutpoint.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -753,6 +753,180 @@ def atomic_output(out: Path) -> Iterator[Path]:
         with suppress(OSError):
             part.unlink(missing_ok=True)
         raise
+
+
+# --- all-or-nothing folder replace (``clips --force``, ``extend --out <clips_dir> --force``)
+#
+# A run exports into the hidden staging folder ``.<name>.cutpoint-tmp`` next to the output,
+# then :func:`swap_in` moves the originals it replaces into ``.<name>.cutpoint-bak`` and the
+# new files in. The backup holds a journal (the old and new names) until every new file is
+# in; on any failure the originals are put back. A hard kill leaves the journal, so the next
+# run's :func:`recover_swap` finishes the job: journal present, put the originals back;
+# backup without journal, the new set was complete, drop the backup.
+
+_SWAP_JOURNAL = ".cutpoint-swap.json"
+
+
+def staging_path(dst: Path) -> Path:
+    """Hidden staging folder of ``dst``: ``.<name>.cutpoint-tmp`` next to it."""
+    dst = dst.resolve()  # "." and ".." have no usable name; a symlink's target is the folder
+    return dst.with_name(f".{dst.name}.cutpoint-tmp")
+
+
+def backup_path(dst: Path) -> Path:
+    """Hidden folder :func:`swap_in` moves the replaced originals of ``dst`` to."""
+    dst = dst.resolve()
+    return dst.with_name(f".{dst.name}.cutpoint-bak")
+
+
+def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
+    """Put the originals in ``bak`` back into ``dst`` and drop the new-only files there.
+
+    Both steps are best effort: one locked file does not stop the others. The journal is
+    removed last and only if every file went back, so a restore that fails half-way is
+    redone by :func:`recover_swap`. A ``dst`` the swap created is removed when empty.
+
+    Raises:
+        OSError: The first error, after every file was tried.
+    """
+    errors: list[OSError] = []
+    old = set(journal["old"])
+    for name in journal["old"]:
+        src = bak / name
+        if src.exists() or src.is_symlink():  # else it never left dst
+            try:
+                retry_locked(partial(src.replace, dst / name), dst / name, "restore")
+            except OSError as err:
+                errors.append(err)
+    for name in journal["new"]:
+        if name not in old:  # never a user file: swap_in records every existing name as old
+            f = dst / name
+            try:
+                retry_locked(partial(f.unlink, missing_ok=True), f, "delete")
+            except OSError as err:
+                errors.append(err)
+    if errors:
+        raise errors[0]
+    (bak / _SWAP_JOURNAL).unlink()
+    bak.rmdir()
+    if journal.get("created"):
+        with suppress(OSError):  # not empty: something else was put there meanwhile
+            dst.rmdir()
+
+
+def recover_swap(dst: Path) -> None:
+    """Clean up after a :func:`swap_in` or staged export killed hard (``taskkill /F``).
+
+    With a journal the originals are put back; a backup without one is from a completed
+    swap and is removed. A stale staging folder (only this tool's output) is removed.
+
+    Raises:
+        RuntimeError: If the journal is unreadable or malformed; the backup is left as is.
+    """
+    bak = backup_path(dst)
+    if bak.exists():
+        path = bak / _SWAP_JOURNAL
+        if not (path.exists() or path.is_symlink()):
+            shutil.rmtree(bak)
+        else:
+            journal = load_json(path)
+            if not (
+                isinstance(journal, dict)
+                and all(
+                    isinstance(journal.get(k), list) and all(isinstance(n, str) for n in journal[k])
+                    for k in ("old", "new")
+                )
+            ):
+                raise RuntimeError(
+                    f"An earlier replace of {dst} was interrupted and its record {path} cannot "
+                    f"be read. The original files are in {bak}: move them back into {dst} by "
+                    f"hand, then delete {bak} and re-run."
+                )
+            _restore(dst, bak, journal)
+            logger.warning("Put back the original files of %s from an interrupted replace", dst)
+    tmp = staging_path(dst)
+    if tmp.exists():
+        shutil.rmtree(tmp)
+
+
+@contextmanager
+def staged_dir(dst: Path) -> Iterator[Path]:
+    """Yield a fresh :func:`staging_path` of ``dst`` to export into, removed on failure.
+
+    The caller moves the result in with :func:`swap_in`. Call :func:`recover_swap` first
+    when ``dst`` is checked for existing files before this.
+    """
+    recover_swap(dst)
+    tmp = staging_path(dst)
+    tmp.mkdir()
+    try:
+        yield tmp
+    except BaseException:
+        # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
+        try:
+            shutil.rmtree(tmp)
+        except OSError as err:
+            logger.warning("Could not remove %s (%s); the next run removes it", tmp, err)
+        raise
+
+
+def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
+    """Move every file of ``new`` into ``dst``, all or nothing, and remove ``new``.
+
+    The files ``old`` (names in ``dst``) and those the new files replace are moved to
+    :func:`backup_path` first and deleted only after every new file is in. On any failure
+    (a locked file, Ctrl+C) the originals are put back and the error is re-raised. If even
+    that fails, the backup is kept and the next run puts them back (:func:`recover_swap`).
+    A missing ``dst`` is created, and removed again on failure.
+
+    Raises:
+        PermissionError: Naming the file, if one stays locked (see :func:`retry_locked`).
+    """
+    created = not dst.exists()
+    # manifest.json last in, first out: it never lists a clip that is not there
+    names = sorted((p.name for p in new.iterdir()), key=lambda n: (n == "manifest.json", n))
+    olds = (
+        []
+        if created
+        else sorted(
+            {n for n in [*old, *names] if (dst / n).exists() or (dst / n).is_symlink()},
+            key=lambda n: (n != "manifest.json", n),
+        )
+    )
+    journal = {"old": olds, "new": names, "created": created}
+    bak = backup_path(dst)
+    bak.mkdir()
+    try:
+        save_json(bak / _SWAP_JOURNAL, journal)
+        if created:
+            dst.mkdir()
+        for n in olds:
+            retry_locked(partial((dst / n).replace, bak / n), dst / n, "replace")
+        for n in names:
+            retry_locked(partial((new / n).replace, dst / n), dst / n, "replace")
+    except BaseException:
+        try:
+            if (bak / _SWAP_JOURNAL).exists():
+                _restore(dst, bak, journal)
+            else:
+                bak.rmdir()
+        except BaseException as err:  # a second Ctrl+C too: say where the originals are
+            logger.error(
+                "Could not put back every original file of %s (%s): the rest are in %s. "
+                "The next cutpoint run on this folder puts them back.",
+                dst,
+                err or type(err).__name__,
+                bak,
+            )
+            if not isinstance(err, Exception):
+                raise
+        raise
+    # The new set is complete: the backup is no longer needed.
+    journal_path = bak / _SWAP_JOURNAL
+    retry_locked(journal_path.unlink, journal_path, "delete")
+    shutil.rmtree(bak, ignore_errors=True)
+    with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
+        new.rmdir()
 
 
 def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:

@@ -159,7 +159,10 @@ Exports moments as `001_<label>.mp4`, `002_<label>.mp4`, ... in playback order, 
 `manifest.json`. Cuts are re-encoded for frame accuracy with a working NVIDIA/AMD hardware
 encoder, or libx264 when no hardware encoder passes its probe. Every clip gets the same
 resolution, frame rate, pixel format and audio, so clips join losslessly. The command refuses
-to write into a non-empty folder without `--force`.
+to write into a non-empty folder without `--force`. With `--force`, the new clips are exported
+into a hidden `.<folder>.cutpoint-tmp` next to the folder and replace its `.mp4` files and
+`manifest.json` only when every clip succeeded; other files in the folder stay. A failed or
+cancelled run leaves the old clips as they were.
 
 | Option | Meaning |
 |---|---|
@@ -176,7 +179,7 @@ to write into a non-empty folder without `--force`.
 | `--extend S`, `--extend-start S`, `--extend-end S` | Padding ("handles") for trimming in an editor |
 | `--speech-aware` / `--no-speech-aware`, `--speech-max-extend`, `--speech-max-lead` | Move in/out points to utterance boundaries |
 | `--audio-fade S` | Audio fade baked into each clip (default 0.25, 0 = off) |
-| `--out DIR`, `--force` | Output folder; replace a non-empty folder |
+| `--out DIR`, `--force` | Output folder; replace the clips of a non-empty folder |
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
 
@@ -245,7 +248,9 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   `--clip-override 005_* speech_max_extend=45`.
 - `--reuse DIR` copies a clip from an earlier output instead of re-encoding when source, in/out
   points, crop, format and fade are identical.
-- The original folder is never overwritten unless you pass `--out <clips_dir> --force`.
+- The original folder is never overwritten unless you pass `--out <clips_dir> --force`. Then
+  the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
+  or a clip locked by another program, leaves the original clips as they were.
 
 ## assemble
 

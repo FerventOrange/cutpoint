@@ -24,7 +24,8 @@ nvidia-smi                      # driver and GPU are visible (NVIDIA)
 | `No module named ...` followed by an install command | An optional extra is missing. Run the printed `uv sync --extra ...` command and list every extra you use, because `uv sync` removes the packages of extras you leave out |
 | A command works in `uv run` but not as plain `cutpoint` | The tool is not on `PATH`. Use `uv run cutpoint`, install with `uv tool install cutpoint` (or `uv tool install .` from a clone), or use the wrappers `.\cutpoint.cmd` / `.\cutpoint.ps1` (Windows) or `./cutpoint` (Linux, needs `uv sync`) |
 | PowerShell refuses to run `cutpoint.ps1` | Use `.\cutpoint.cmd`, or `uv run cutpoint` |
-| `clips` refuses to write | The output folder is not empty. Use another `--out`, or `--force` to replace it |
+| `clips` refuses to write | The output folder is not empty. Use another `--out`, or `--force` to replace its clips (they are replaced only when the new export succeeds) |
+| `clips` or `extend` stops with an ERROR naming `.<folder>.cutpoint-bak` | An earlier replace was cut short (for example a power loss) and its record in that hidden folder cannot be read. Nothing is deleted. Move the files from the backup folder back into the clips folder, delete the backup folder, and re-run |
 | `assemble` joined the wrong clips or order | It uses the `.mp4` files in the folder now, in natural filename order. Rename or delete files and run it again |
 | Results look stale after a code or setting change | Analysis is cached per source file in `<CUTPOINT_HOME>\cache`. The cache is safe to delete, or recompute layers with `events --force LAYER` |
 | Wrong clips in `highlights.json` for silent footage | Scoring is heuristic and works best with voice or mic audio. Silent gameplay relies on loudness, scene cuts and vision only. Pick segments yourself with `clips --segments` |

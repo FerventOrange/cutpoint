@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removes the temp file. A hard kill (SIGKILL, or the UI cancel on Windows, which uses
   `taskkill /F`) can leave a hidden `.part.mp4`; every command ignores it and `clips --force`
   removes it.
+- `clips --force` and `extend --out <clips_dir> --force` replace the folder all or nothing
+  (#109). The new clips are exported into a hidden `.<folder>.cutpoint-tmp` next to the folder
+  and swapped in only when every clip succeeded. Before, `clips --force` deleted the old clips
+  and `manifest.json` first, so a failed or cancelled run left an empty folder, and an in-place
+  `extend` stopped by a locked clip left a mix of new and old clips and a `clips.tmp` folder.
+  Now a failure (a GPU encode error, Ctrl+C, a clip locked by another program) leaves the old
+  clips and manifest untouched and no temp folder. `--force` still replaces only the `.mp4`
+  files and `manifest.json`; other files in the folder stay. After a hard kill mid-swap, the
+  next `clips` or `extend` on that folder puts the old clips back from `.<folder>.cutpoint-bak` (if its record is unreadable, it stops with an error and leaves the backup for you to restore by hand).
+  A failed fresh `clips` run now leaves no partial clips, so it can be re-run without `--force`.
 - A failed run of `clips`, `extend` or `assemble` no longer leaves behind an empty output folder
   that it created. When a file stays locked on Windows (open in a player, an editor or a virus
   scanner), the error now names the file and says to close it and re-run. ffmpeg crash codes
