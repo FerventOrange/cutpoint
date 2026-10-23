@@ -70,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exclusions and carried segments match it (#181); older `Z:\...` entries still match. Clip
   manifests (`clips/manifest.json` `source`) now record `\\server\share\...` instead of
   `Z:\...` for a remapped mapped drive.
+- A failed or interrupted `cutpoint 360 repair --out <new folder>` removes the folders it created
+  for `--out`, only while they are empty; existing folders and files are kept (#189).
 - `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times
   and ordering to candidates, and `360 repair` matches crash impacts to segments, by the resolved,
   normalised source path (symlinks, `a/../b` spellings); `360 repair` reads a relative source in
