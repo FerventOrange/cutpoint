@@ -599,18 +599,30 @@ def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
     return None, errors
 
 
-@state.register_cache
-@cache
+# video_encoder() results by configured choice, so an edited ``video_encoder`` is followed (the
+# probes stay cached in encoder_error).
+_ENCODERS: dict[str, VideoEncoder] = state.register_container(__name__, "_ENCODERS", {})
+
+
 def video_encoder() -> VideoEncoder:
     """The encoder to use: the configured one (``video_encoder``), else the first that works.
 
     Auto tries NVENC, then AMF (Windows) or VAAPI and AMF (Linux), by actually encoding a short
-    clip, and falls back to libx264. A named encoder that does not work is an error.
+    clip, and falls back to libx264. A named encoder that does not work is an error. Cached per
+    configured value; a failure is not cached.
 
     Raises:
         EncoderUnavailableError: A GPU encoder was named but cannot encode here.
     """
     choice = get_config().video_encoder
+    enc = _ENCODERS.get(choice)
+    if enc is None:
+        enc = _ENCODERS[choice] = _pick_encoder(choice)
+    return enc
+
+
+def _pick_encoder(choice: str) -> VideoEncoder:
+    """:func:`video_encoder` for ``choice`` without the cache."""
     if choice == "cpu":
         return VideoEncoder("cpu")
     if choice != "auto":
@@ -642,7 +654,7 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
     The probe in :func:`video_encoder` encodes 0.2 s of black, so a driver can still fail
     on real footage. With ``video_encoder`` "auto" a failed GPU encode is retried with
     libx264 (one WARNING); if that works, the GPU encoder is skipped for the rest of the
-    process. ffmpeg's error does not reliably say whether the encoder or something else
+    process while ``video_encoder`` stays "auto". ffmpeg's error does not reliably say whether the encoder or something else
     (a bad read, a filter) failed, so any failure is retried; a failure that is not the
     encoder's fails again on the CPU and that error is raised. A CPU encode is not retried.
 
@@ -650,13 +662,13 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
         FFmpegError: If the CPU encode fails, or a GPU encoder named in ``video_encoder``
             fails (the message names the setting that switches to the CPU).
     """
-    enc = VideoEncoder("cpu") if _GPU_ENCODE_FAILED else video_encoder()
+    choice = get_config().video_encoder
+    enc = VideoEncoder("cpu") if _GPU_ENCODE_FAILED and choice == "auto" else video_encoder()
     try:
         return encode(enc)
     except FFmpegError as err:
         if enc.kind == "cpu":
             raise
-        choice = get_config().video_encoder
         if choice != "auto":
             raise FFmpegError(
                 f"{err}\n{what}: {enc.codec} (video_encoder {choice!r}) failed. Set "

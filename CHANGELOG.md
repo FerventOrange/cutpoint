@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like Ctrl+C: partial files are removed and the exit code is 130 instead of `0xC000013A`.
   AGENTS.md notes which ways of stopping Cutpoint on Windows give 130 and which end it without
   cleanup (exit 1, or -1 from Stop-Process) (#148).
+- A running `cutpoint ui` (or any long-running process) now picks up edits to `config.json`
+  without a restart. Valid edits apply; a config broken after startup is reported (HTTP 409 in the
+  UI) until it is fixed. A changed `video_encoder` applies to the next encode (#137).
 - `clips --segments`, `360 director --segments`, `360 stitch --segments` and
   `360 repair --segments` pointing at an existing folder now say `<path> is a folder, not a
   segments file`. `360 repair --segments` also says "Segments file not found" for a missing path
