@@ -332,6 +332,10 @@ select { max-width: 100%; }
 .panel > h3 { padding: 0; }
 .panel .btn { justify-self: start; }
 .panel:disabled { opacity: 0.6; }
+/* the primary action, then its Show folder; they wrap onto two rows in a narrow side column */
+.panel-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.panel-acts .btn { white-space: nowrap; }
+#revealClipsBtn, #revealOutBtn { display: flex; align-items: center; gap: 6px; }
 #finalVideo { width: 100%; background: #0d1622; border-radius: 4px; max-height: 40dvh; }
 .out-list { display: grid; gap: 4px; }
 .out-list a { color: var(--amber); overflow-wrap: anywhere; }

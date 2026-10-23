@@ -674,6 +674,64 @@ def test_show_folder_is_404_when_the_picked_folder_is_gone_or_unreadable(
     assert opened == []
 
 
+def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``target`` picks one of the project's folders; the path still never comes from the client."""
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    reveal = f"/api/projects/{pid}/reveal"
+
+    assert (
+        client.post(
+            reveal, params={"target": "clips"}, headers={"X-Cutpoint-Token": ""}
+        ).status_code
+        == 403
+    )
+    for target in ("clips", "outputs"):
+        res = client.post(reveal, params={"target": target})
+        assert res.status_code == 404, target
+    for target in ("../x", str(tmp_path), "Clips", ""):
+        assert client.post(reveal, params={"target": target}).status_code == 400, target
+    assert opened == []
+
+    # An export: clips opens its folder, outputs is still 404 until something is assembled.
+    (p / "clips_vertical").mkdir()
+    cache.save_json(p / "clips_vertical" / "manifest.json", {"clips": []})
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_vertical"}]})
+    res = client.post(reveal, params={"target": "clips", "path": str(tmp_path)})
+    assert res.status_code == 200 and res.json() == {"path": str(p / "clips_vertical")}
+    assert opened == [p / "clips_vertical"]
+    assert client.post(reveal, params={"target": "outputs"}).status_code == 404
+
+    cache.save_json(
+        p / "ui" / "exports.json", {"exports": [{"dir": "clips_vertical", "final": "final.mp4"}]}
+    )
+    (p / "final.mp4").write_bytes(b"x")
+    opened.clear()
+    res = client.post(reveal, params={"target": "outputs"}, json={"path": str(tmp_path)})
+    assert res.status_code == 200 and res.json() == {"path": str(p)}
+    assert opened == [p]
+
+    # No target still means the sources, as before.
+    opened.clear()
+    assert client.post(reveal).status_code == 200
+    assert client.post(reveal, params={"target": "sources"}).status_code == 200
+    assert opened == [folder, folder]
+
+    monkeypatch.setattr(ui, "folder_opener", lambda: None)
+    assert client.post(reveal, params={"target": "clips"}).status_code == 501
+
+    def broken(_: Path) -> None:
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(ui, "folder_opener", lambda: broken)
+    res = client.post(reveal, params={"target": "outputs"})
+    assert res.status_code == 500 and "Access is denied" in res.json()["detail"]
+
+
 def test_folder_opener_runs_the_platform_tool_without_a_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

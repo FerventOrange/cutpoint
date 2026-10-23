@@ -106,7 +106,10 @@
           <input type="number" id="optExtend" min="0" max="30" step="0.5" value="0" inputmode="decimal">
         </label>
         <p id="exportState" class="muted"></p>
-        <button type="button" id="clipsBtn" class="btn primary">Export clips</button>
+        <div class="panel-acts">
+          <button type="button" id="clipsBtn" class="btn primary">Export clips</button>
+          <button type="button" id="revealClipsBtn" class="btn outline" aria-label="Show folder of the exported clips" hidden>Show folder</button>
+        </div>
       </fieldset>
 
       <fieldset class="panel" id="assemblePanel">
@@ -116,7 +119,10 @@
         </label>
         <label class="check"><input type="checkbox" id="optLoudnorm"> Normalize loudness</label>
         <label class="check"><input type="checkbox" id="optCaptions"> Burn in captions</label>
-        <button type="button" id="assembleBtn" class="btn primary">Assemble</button>
+        <div class="panel-acts">
+          <button type="button" id="assembleBtn" class="btn primary">Assemble</button>
+          <button type="button" id="revealOutBtn" class="btn outline" aria-label="Show folder of the final video" hidden>Show folder</button>
+        </div>
       </fieldset>
 
       <section class="panel" id="outputs" aria-labelledby="outTitle" hidden>
