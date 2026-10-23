@@ -132,3 +132,13 @@ def test_save_json_unserialisable_leaves_nothing(tmp_path):
     with pytest.raises(TypeError):
         cache.save_json(tmp_path / "d.json", {"a": object()})
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("encoding", "expected"),
+    [("utf-8-sig", {"name": "Café"}), ("utf-16", None), ("cp1252", None)],
+)
+def test_load_json_handles_the_encoding_a_file_was_saved_with(tmp_path, encoding, expected):
+    target = tmp_path / "saved.json"
+    target.write_bytes(json.dumps({"name": "Café"}, ensure_ascii=False).encode(encoding))
+    assert cache.load_json(target) == expected

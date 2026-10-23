@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import write
-from cutpoint import config
+from cutpoint import cli, config
 from cutpoint.pano import project, stitch
 
 
@@ -151,3 +151,48 @@ def test_resolve_projects_dir_prefers_env_then_data_then_default(tmp_path, monke
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(tmp_path / "env"))
     got = config.resolve_projects_dir({"projects_dir": str(tmp_path / "cfg")})
     assert got == tmp_path / "env"
+
+
+# -- wrongly typed values and file encodings, through the CLI ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("projects_dir", 5),
+        ("stage_dir", ["a"]),
+        ("ollama_url", 5),
+        ("video_encoder", 5),
+        ("source_remap", ["a"]),
+        ("source_remap", {"D:/": 5}),
+        ("source_remap_exclude", "D:/"),
+        ("source_remap_exclude", [5]),
+        ("player_tags", 5),
+        ("player_tags", [5]),
+    ],
+)
+def test_wrongly_typed_config_value_is_one_error_not_a_traceback(home, caplog, key, value):
+    """#138/#140: a wrongly typed config.json value exits 1 with one ERROR naming file and key."""
+    set_config(home, **{key: value})
+    assert cli.main(["paths"]) == 1
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert str(home / "config.json") in errors[0].getMessage()
+    assert key in errors[0].getMessage()
+    assert all(r.exc_info is None for r in caplog.records)
+
+
+def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):
+    """#140 follow-up: a BOM (PowerShell 5.1) loads; UTF-16 is one error saying to save as UTF-8."""
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / "config.json"
+    path.write_bytes(b'\xef\xbb\xbf{"player_tags": ["Me"]}')
+    config.get_config.cache_clear()
+    assert config.player_tags() == ("Me",)
+    path.write_text('{"player_tags": ["Me"]}', encoding="utf-16")
+    config.get_config.cache_clear()
+    assert cli.main(["paths"]) == 1
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert str(path) in errors[0].getMessage()
+    assert "not UTF-8 text" in errors[0].getMessage()
