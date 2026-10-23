@@ -205,16 +205,20 @@ def test_analyze_reads_a_missing_input_through_source_remap_and_records_the_orig
 
 @pytest.mark.skipif(sys.platform != "win32", reason="mapped drives are a Windows feature")
 def test_analyze_records_a_missing_mapped_drive_input_in_unc_form(home, tmp_path, monkeypatch):
-    """Q: is mapped to a NAS share but disconnected; the copy is read, UNC is recorded."""
-    monkeypatch.setattr(config, "_drive_remote", lambda d: r"\\nas\share" if d == "Q:" else None)
+    """A mapped drive is disconnected from its NAS share; the copy is read, UNC is recorded."""
+    letter = next((c for c in "ZYXWVUTSRQPONMLKJIHGFED" if not Path(f"{c}:\\").exists()), None)
+    if letter is None:
+        pytest.skip("no free drive letter on this machine")
+    drive = f"{letter}:"
+    monkeypatch.setattr(config, "_drive_remote", lambda d: r"\\nas\share" if d == drive else None)
     new = tmp_path / "new"
     write(new / "a.mp4")
-    write(home / "config.json", json.dumps({"source_remap": {r"Q:\Footage": str(new)}}))
+    write(home / "config.json", json.dumps({"source_remap": {drive + "\\Footage": str(new)}}))
     config.get_config.cache_clear()
     probed = _stub_probe_and_transcriber(monkeypatch)
     proj = tmp_path / "proj"
     analyze.analyze(
-        Path(r"Q:\Footage\a.mp4"), get_style("funny"), proj, vision=False, use_scenes=False
+        Path(drive + "\\Footage\\a.mp4"), get_style("funny"), proj, vision=False, use_scenes=False
     )
     hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     assert [s["path"] for s in hl["sources"]] == [r"\\nas\share\Footage\a.mp4"]
