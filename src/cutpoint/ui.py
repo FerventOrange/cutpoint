@@ -73,7 +73,7 @@ from cutpoint.config import (
     set_config_value,
 )
 from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, grab_images, probe
-from cutpoint.styles import get_style, style_names
+from cutpoint.styles import get_style, learned_styles, style_names
 from cutpoint.utils import VIDEO_EXTS, find_videos, slugify
 
 logger = logging.getLogger(__name__)
@@ -984,8 +984,21 @@ def new_project(name: str, source: str, style: str) -> dict[str, str]:
 
 
 def ui_styles() -> list[str]:
-    """Styles for standard video (telemetry-driven action-cam styles are command-line only)."""
-    return [n for n in style_names() if get_style(n).kind != "ski"]
+    """Styles for standard video (telemetry-driven action-cam styles are command-line only).
+
+    A learned style that fails to load is left out with a warning, so one bad file does not
+    break the UI.
+    """
+    names = []
+    for n in style_names():
+        try:
+            style = get_style(n)
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning("skipping learned style %s: %s", learned_styles().get(n, n), e)
+            continue
+        if style.kind != "ski":
+            names.append(n)
+    return names
 
 
 # --------------------------------------------------------------------------- app
