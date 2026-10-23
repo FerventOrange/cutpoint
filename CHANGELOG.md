@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `360 repair --segments` pointing at an existing folder now say `<path> is a folder, not a
   segments file`. `360 repair --segments` also says "Segments file not found" for a missing path
   instead of "not a segments list" (#150).
+- `360 repair` now says `<path> is not valid JSON: not UTF-8 text (save it as UTF-8)` for a
+  UTF-16 `--segments` or `--qa` file (and `<path> is not valid JSON: ...` for broken JSON)
+  instead of "not a segments list" or "QA report not found". `--qa <folder>` says `<path> is a
+  folder, not a QA report`, and a `--qa` file that is not a JSON object says `<path>: not a QA
+  report` instead of crashing (follow-up to #150).
 - A `--segments` file saved with a UTF-8 BOM (Windows PowerShell 5.1) now loads for `clips`,
   `360 director` and `360 stitch`; a UTF-16 file gives `<path> is not valid JSON` naming the file
   (#150).

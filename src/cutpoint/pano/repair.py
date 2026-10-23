@@ -39,6 +39,7 @@ a mix are left out.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from collections.abc import Callable, Sequence
@@ -345,6 +346,20 @@ def _fit_budget(segs: list[dict[str, Any]], manifest: dict[str, Any]) -> dict[st
     }
 
 
+def _read_json(path: Path) -> Any:
+    """JSON from the file ``path`` (a UTF-8 BOM is allowed), as clips.load_segments reads it.
+
+    Raises:
+        ValueError: If the file is not UTF-8 text or not valid JSON.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
+    except UnicodeDecodeError:  # e.g. UTF-16 from > / Out-File
+        raise ValueError(f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8)") from None
+    except ValueError as err:  # JSONDecodeError
+        raise ValueError(f"{path} is not valid JSON: {err}") from None
+
+
 def repair(
     project: Path, segments_file: Path, qa_file: Path, out: Path | None = None, sheet: bool = True
 ) -> dict[str, Any]:
@@ -365,15 +380,14 @@ def repair(
         rendered lengths; both stay ``None`` for a file not written by ``cutpoint mix``.
 
     Raises:
-        IsADirectoryError: If ``segments_file`` is a folder.
+        IsADirectoryError: If ``segments_file`` or ``qa_file`` is a folder.
         FileNotFoundError: If ``segments_file`` or ``qa_file`` is missing.
     """
     if segments_file.is_dir():
         raise IsADirectoryError(f"{segments_file} is a folder, not a segments file")
     if not segments_file.is_file():
         raise FileNotFoundError(f"Segments file not found: {segments_file}")
-    old = cache.load_json(segments_file)
-    qa = cache.load_json(qa_file)
+    old = _read_json(segments_file)
     if not isinstance(old, list) or not old:
         raise ValueError(f"{segments_file}: not a segments list")
     sources = []
@@ -400,8 +414,13 @@ def repair(
     spelt = {s["id"]: s["source"] for s in old} if picked else {}
     if picked:
         old = [{**s, "source": src} for s, src in zip(old, sources, strict=True)]
-    if qa is None:
+    if qa_file.is_dir():
+        raise IsADirectoryError(f"{qa_file} is a folder, not a QA report")
+    if not qa_file.is_file():
         raise FileNotFoundError(f"QA report not found: {qa_file}")
+    qa = _read_json(qa_file)
+    if not isinstance(qa, dict):
+        raise ValueError(f"{qa_file}: not a QA report")
     src_dir = Path(qa.get("source_dir") or "")
     if not qa.get("source_dir") or not src_dir.is_dir():
         src_dir = qa_file.parent.with_name(qa_file.parent.name.removesuffix("_qa"))
