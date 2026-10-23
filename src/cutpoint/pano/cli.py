@@ -373,15 +373,8 @@ def _drop_stale(out_dir: Path, stems: set[str], carried: set[str]) -> None:
 
 def cmd_director(a: argparse.Namespace) -> None:
     """Plan (and optionally preview) director paths without the full render."""
-    from cutpoint.pano import director as D  # noqa: PLC0415
-    from cutpoint.pano.project import (  # noqa: PLC0415
-        RenderSource,
-        clip_for,
-        load,
-        resolve_source,
-    )
-    from cutpoint.pano.render import Format360, render_segment  # noqa: PLC0415
-    from cutpoint.utils import slugify  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import output_dir  # noqa: PLC0415
+    from cutpoint.pano.project import load  # noqa: PLC0415
 
     project = _project(a.project)
     clips = load(project)
@@ -392,7 +385,27 @@ def cmd_director(a: argparse.Namespace) -> None:
     if not name or Path(name).name != name or name in (".", ".."):
         raise ValueError(f"--out-name must be a plain folder name, got {name!r}")
     out_dir = project / "pano_paths" / name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    with output_dir(out_dir):  # a failed run leaves no empty folder behind
+        _direct(a, project, clips, overrides, out_dir)
+
+
+def _direct(
+    a: argparse.Namespace,
+    project: Path,
+    clips: dict[str, Any],
+    overrides: dict[str, Any] | None,
+    out_dir: Path,
+) -> None:
+    """The body of :func:`cmd_director`, writing into the existing ``out_dir``."""
+    from cutpoint.pano import director as D  # noqa: PLC0415
+    from cutpoint.pano.project import (  # noqa: PLC0415
+        RenderSource,
+        clip_for,
+        resolve_source,
+    )
+    from cutpoint.pano.render import Format360, render_segment  # noqa: PLC0415
+    from cutpoint.utils import slugify  # noqa: PLC0415
+
     checker = None
     if getattr(a, "vl_check", False):  # absent on hand-built namespaces
         from cutpoint.pano.vlcheck import VLChecker  # noqa: PLC0415

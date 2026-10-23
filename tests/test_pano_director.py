@@ -532,3 +532,48 @@ def test_views_cache_follows_clip_identity(tmp_path, monkeypatch):
         with monkeypatch.context() as changed:
             changed.setattr(V, attr, f"{getattr(V, attr)}-other")
             assert VW.load_views(src) is None
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_failed_director_run_removes_only_the_folder_it_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existed: bool
+) -> None:
+    import argparse  # noqa: PLC0415
+
+    from cutpoint.pano import cli  # noqa: PLC0415
+    from cutpoint.pano import project as P  # noqa: PLC0415
+
+    def boom(*a, **k):
+        raise RuntimeError("director failed")
+
+    monkeypatch.setattr(cli, "_project", lambda arg: tmp_path)
+    monkeypatch.setattr(P, "load", lambda project: {"x.lrv": SimpleNamespace(clip_id="001")})
+    monkeypatch.setattr(cli, "_direct", boom)
+    out = tmp_path / "pano_paths" / "director"
+    if existed:
+        out.mkdir(parents=True)
+    a = argparse.Namespace(project="p", vertical=False, param=[], out_name=None)
+    with pytest.raises(RuntimeError, match="director failed"):
+        cli.cmd_director(a)
+    assert out.is_dir() is existed
+    assert (tmp_path / "pano_paths").is_dir() is existed
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_failed_path_for_removes_only_the_folder_it_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existed: bool
+) -> None:
+    from cutpoint.pano import render as R  # noqa: PLC0415
+
+    def boom(*a, **k):
+        raise RuntimeError("director failed")
+
+    monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "compute_path", boom)
+    ex = R.PanoExporter(tmp_path, tmp_path / "clips")
+    if existed:
+        ex.paths_dir.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="director failed"):
+        ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None)
+    assert ex.paths_dir.is_dir() is existed
+    assert (tmp_path / "pano_paths").is_dir() is existed
