@@ -336,8 +336,13 @@ def extract_audio(src: Path, dst: Path, info: MediaInfo, start: float = 0.0) -> 
     else:
         args += ["-map", "0:a:0"]
     args += ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(tmp)]
-    res = run_progress(args, info.duration - start, f"audio extract {src.name}")
-    tmp.replace(dst)
+    try:
+        res = run_progress(args, info.duration - start, f"audio extract {src.name}")
+        tmp.replace(dst)
+    except BaseException:
+        with suppress(OSError):  # still locked (Windows, right after Ctrl+C): keep the real error
+            tmp.unlink(missing_ok=True)
+        raise
     return res
 
 
@@ -692,13 +697,17 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
 # Windows "Access is denied" and "being used by another process": the file is open elsewhere
 # (error 5 can also mean a read-only file or folder).
 _LOCKED_WINERRORS = (5, 32)
+_LOCK_HINT = "it is open in another program (a player, an editor or a virus scanner)"
 
 
-def retry_locked[T](op: Callable[[], T], path: Path, action: str) -> T:
+def retry_locked[T](
+    op: Callable[[], T], path: Path, action: str, locked: Callable[[OSError], bool] | None = None
+) -> T:
     """Run ``op`` (replacing or deleting ``path``), retrying briefly on PermissionError.
 
     On Windows another process (a player, an editor, a virus scanner) holding ``path``
-    open makes a rename or delete fail for a moment.
+    open makes a rename or delete fail for a moment. ``locked`` picks the errors to retry
+    instead; the last one is then re-raised as is, for the caller to word.
 
     Raises:
         PermissionError: Naming ``path`` and the program holding it, if it is still locked
@@ -708,11 +717,13 @@ def retry_locked[T](op: Callable[[], T], path: Path, action: str) -> T:
     for attempt in range(REPLACE_ATTEMPTS):
         try:
             return op()
-        except PermissionError as err:
+        except OSError as err:
+            if not (locked(err) if locked else isinstance(err, PermissionError)):
+                raise
             if attempt < REPLACE_ATTEMPTS - 1:
                 time.sleep(min(0.05 * 2**attempt, 0.5))
                 continue
-            if getattr(err, "winerror", None) not in _LOCKED_WINERRORS:
+            if locked or getattr(err, "winerror", None) not in _LOCKED_WINERRORS:
                 raise
             read_only = (
                 " If no program has it open, the file or its folder may be read-only: clear the"
@@ -721,8 +732,8 @@ def retry_locked[T](op: Callable[[], T], path: Path, action: str) -> T:
                 else ""
             )
             raise PermissionError(
-                f"Cannot {action} {path}: it is open in another program (a player, an editor "
-                f"or a virus scanner). Close it and re-run.{read_only} ({err.strerror})"
+                f"Cannot {action} {path}: {_LOCK_HINT}. Close it and re-run.{read_only} "
+                f"({err.strerror})"
             ) from err
     raise AssertionError("unreachable")
 
@@ -786,7 +797,8 @@ def atomic_output(out: Path) -> Iterator[Path]:
 # run's :func:`recover_swap` finishes the job: journal present, put the originals back;
 # backup without journal, the new set was complete, drop the backup.
 # Both folders sit on the parent's file system, so :func:`staged_dir` refuses a ``dst`` that
-# is a drive root (no parent to hold them), a mount point or a bind mount before any export.
+# is a drive root (no parent to hold them), a mount point or a bind mount before any export,
+# unless an empty one is exported into directly (``direct_if_empty``).
 
 _SWAP_JOURNAL = ".cutpoint-swap.json"
 _SWAP_PROBE = ".cutpoint-swap-probe"
@@ -838,30 +850,6 @@ def check_swap_target(dst: Path) -> None:
         raise ValueError(
             f"{dst} is a mount point, so the clips cannot be swapped in safely; {_SWAP_FIX}"
         )
-
-
-def can_stage(dst: Path) -> bool:
-    """True if :func:`staged_dir` would accept ``dst``: False for a drive root, a mount point
-    or a bind mount (the checks of :func:`check_swap_target` and :func:`_check_rename`).
-
-    Call :func:`recover_swap` first; the probe's staging folder is removed again.
-    """
-    try:
-        check_swap_target(dst)
-    except ValueError:
-        return False
-    if not dst.exists():
-        return True
-    tmp = staging_path(dst)
-    tmp.mkdir(exist_ok=True)
-    try:
-        _check_rename(tmp, dst)
-    except ValueError:
-        return False
-    finally:
-        with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
-            shutil.rmtree(tmp)
-    return True
 
 
 def _check_rename(tmp: Path, dst: Path) -> None:
@@ -977,50 +965,68 @@ def _remove_leftover(path: Path, why: str) -> None:
             briefly keeps it non-empty, error 145).
         OSError: Saying ``why`` it is there, for any other failure.
     """
-    for attempt in range(REPLACE_ATTEMPTS):
-        try:
-            shutil.rmtree(path)
-            return
-        except OSError as err:
-            locked = isinstance(err, PermissionError) or getattr(err, "winerror", None) == 145
-            if not locked:
-                raise OSError(
-                    f"Cannot remove {path}, {why}: {err.strerror or err}. Delete the folder "
-                    f"and re-run."
-                ) from err
-            if attempt < REPLACE_ATTEMPTS - 1:
-                time.sleep(min(0.05 * 2**attempt, 0.5))
-                continue
+
+    def locked(err: OSError) -> bool:
+        return isinstance(err, PermissionError) or getattr(err, "winerror", None) == 145
+
+    try:
+        retry_locked(partial(shutil.rmtree, path), path, "remove", locked)
+    except OSError as err:
+        if locked(err):
             raise PermissionError(
-                f"Cannot remove {path}, {why}: it is open in another program (a player, an "
-                f"editor or a virus scanner). Close it, or delete the folder, and re-run. "
-                f"({err.strerror or err})"
+                f"Cannot remove {path}, {why}: {_LOCK_HINT}. Close it, or delete the folder, "
+                f"and re-run. ({err.strerror or err})"
             ) from err
+        raise OSError(
+            f"Cannot remove {path}, {why}: {err.strerror or err}. Delete the folder and re-run."
+        ) from err
 
 
 @contextmanager
-def staged_dir(dst: Path) -> Iterator[Path]:
+def staged_dir(dst: Path, *, direct_if_empty: bool = False) -> Iterator[Path]:
     """Yield a fresh :func:`staging_path` of ``dst`` to export into, removed on failure.
 
-    The caller moves the result in with :func:`swap_in`. Call :func:`recover_swap` first
-    when ``dst`` is checked for existing files before this.
+    The caller moves the result in with :func:`swap_in`, unless ``dst`` itself was yielded:
+    with ``direct_if_empty``, an existing empty ``dst`` that cannot be staged (a drive root,
+    a mount point or a bind mount) is exported into directly and kept on failure. Call
+    :func:`recover_swap` first when ``dst`` is checked for existing files before this.
 
     Raises:
-        ValueError: If ``dst`` is a drive root, a mount point or a bind mount, before the
-            caller exports anything (see :func:`check_swap_target`).
+        ValueError: If ``dst`` is a drive root, a mount point or a bind mount that is not
+            exported into directly, before the caller exports anything (see
+            :func:`check_swap_target`).
     """
-    check_swap_target(dst)
+    direct = direct_if_empty and dst.exists() and not any(dst.iterdir())
+    try:
+        check_swap_target(dst)
+        stageable = True
+    except ValueError:
+        if not direct:
+            raise
+        stageable = False  # a root or mount point: no staging folder next to it
+    if not stageable:
+        yield dst
+        return
     recover_swap(dst)
     tmp = staging_path(dst)
     tmp.mkdir()
+    work = tmp
     try:
         if dst.exists():
-            _check_rename(tmp, dst)
-        yield tmp
+            try:
+                _check_rename(tmp, dst)
+            except ValueError:
+                if not direct:
+                    raise
+                work = dst
+                with suppress(OSError):  # still open (a virus scanner): recover_swap removes it
+                    shutil.rmtree(tmp)
+        yield work
     except BaseException:
         # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
         try:
-            shutil.rmtree(tmp)
+            if work is tmp:  # a direct export keeps its finished clips
+                shutil.rmtree(tmp)
         except OSError as err:
             logger.warning("Could not remove %s (%s); the next run removes it", tmp, err)
         raise
@@ -1044,6 +1050,16 @@ def file_keys(path: Path) -> set[Any]:
 def same_file(path: Path, keys: set[Any]) -> bool:
     """True if ``path`` is one of the files whose :func:`file_keys` are in ``keys``."""
     return bool(file_keys(path) & keys)
+
+
+def source_keys(reads: Iterable[tuple[str, Path, Iterable[Path]]]) -> set[Any]:
+    """:func:`file_keys` of every file a run reads, given per source ``(source as recorded,
+    path read (source_remap), files of a 360 source (PanoExporter.inputs))``."""
+    keys: set[Any] = set()
+    for s, p, pano_files in reads:
+        for f in (Path(s), p, *pano_files):
+            keys |= file_keys(f)
+    return keys
 
 
 def check_not_sources(dst: Path, names: Iterable[str], sources: set[Any]) -> None:

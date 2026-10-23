@@ -23,13 +23,12 @@ from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
-    can_stage,
     check_not_sources,
-    file_keys,
     output_dir,
     probe,
     recover_swap,
     same_file,
+    source_keys,
     staged_dir,
     swap_in,
 )
@@ -759,16 +758,6 @@ def write_manifest(
     )
 
 
-def source_keys(io_paths: dict[str, Path], pano: PanoExporter | None) -> set[Any]:
-    """:func:`file_keys` of every file a run reads: each source as recorded and as read
-    (``source_remap``), and the files of its 360 sources (:meth:`PanoExporter.inputs`)."""
-    keys: set[Any] = set()
-    for s, p in io_paths.items():
-        for f in (Path(s), p, *(pano.inputs(s) if pano else ())):
-            keys |= file_keys(f)
-    return keys
-
-
 def _replaced_files(
     out_dir: Path, new: list[str], sources: set[Any]
 ) -> tuple[list[str], list[str], list[str], bool]:
@@ -946,8 +935,7 @@ def export_clips(
     # mount point or a bind mount before any export; only an empty one is exported into
     # directly (each clip under a temporary name until complete; a failed run keeps the
     # finished clips).
-    direct = out_dir.exists() and not non_empty and not can_stage(out_dir)
-    with output_dir(out_dir.parent), output_dir(out_dir) if direct else staged_dir(out_dir) as work:
+    with output_dir(out_dir.parent), staged_dir(out_dir, direct_if_empty=True) as work:
         from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
         pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
@@ -1002,7 +990,9 @@ def export_clips(
         )
         # --force replaces only what an earlier run made, never a file this run reads.
         replace, kept_sources, kept, had_manifest = _replaced_files(
-            out_dir, [p.name for p in plans], source_keys(io_paths, pano)
+            out_dir,
+            [p.name for p in plans],
+            source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
         )
         results = render_clips(
             plans, work, fmt=fmt, vertical=vertical, audio_fade=audio_fade, pano=pano
@@ -1023,7 +1013,7 @@ def export_clips(
             audio_fade=audio_fade,
             crop=crop,
         )
-        if not direct:
+        if work != out_dir:  # staged, not exported into directly
             swap_in(work, out_dir, [*replace, "manifest.json"])
     hint = "assemble includes them, so move them out if they are not part of the edit"
     if kept_sources:
