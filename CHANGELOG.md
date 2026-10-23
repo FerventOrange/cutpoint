@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The UI's "Remove from sequence" button moved above the video preview.
 - The UI's Moments column header no longer shows the "Moments" title (kept for screen readers);
   after analysis it shows the moment count, "Analyze again" and "Show folder".
+- The `dev` extra is replaced by a `dev` dependency group that `uv sync` and `uv run` install by
+  default, so `uv run pytest` works in a fresh clone; `--extra dev` is no longer accepted (#122).
 
 ### Fixed
 
