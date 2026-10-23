@@ -925,6 +925,8 @@ def test_path_picker_builds_the_platform_dialog_argv(
     monkeypatch.setattr(ui.shutil, "which", lambda n: f"/bin/{n}" if n in present else None)
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
     monkeypatch.setattr(sys, "platform", "linux")
 
     present.update({"zenity", "kdialog"})
