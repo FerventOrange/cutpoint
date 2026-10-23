@@ -416,17 +416,31 @@ def test_extend_out_finishes_a_killed_earlier_replace_before_checking_it_is_empt
     assert not bak.exists()
 
 
-def test_extend_out_force_refuses_a_mount_point_before_exporting(monkeypatch, home):
-    """#147: the staging and backup folders sit next to --out, so a mount point cannot be swapped."""
+@pytest.mark.parametrize("kind", ["mount point", "drive root"])
+def test_extend_out_force_refuses_a_mount_point_or_root_before_exporting(
+    monkeypatch, home, caplog, kind
+):
+    """#147: the staging and backup folders sit next to --out, so a mount point or a drive root
+    (no name, no parent to hold them) cannot be swapped. Only ``out`` is made to look like one."""
     project = _setup(home, monkeypatch)
     out = project / "out"
     shutil.copytree(project / "clips", out)
     (out / "notes.txt").write_text("keep me", encoding="utf-8")
     before = _snapshot(out)
-    real_is_mount = Path.is_mount
-    monkeypatch.setattr(
-        Path, "is_mount", lambda self: self.resolve() == out.resolve() or real_is_mount(self)
-    )
+    real_is_mount, real_resolve = Path.is_mount, Path.resolve
+    if kind == "mount point":
+        monkeypatch.setattr(
+            Path, "is_mount", lambda self: self.resolve() == out.resolve() or real_is_mount(self)
+        )
+    else:
+        # A nameless path stands in for the root; nothing is ever opened at the real root.
+        monkeypatch.setattr(
+            Path,
+            "resolve",
+            lambda self, *a, **kw: (
+                Path(out.anchor) if self == out else real_resolve(self, *a, **kw)
+            ),
+        )
 
     def export(*_a, **_kw):
         raise AssertionError("exported before the mount point was refused")
@@ -434,6 +448,7 @@ def test_extend_out_force_refuses_a_mount_point_before_exporting(monkeypatch, ho
     monkeypatch.setattr(extend, "export_clip_checked", export)
     argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
     assert cli.main([*argv, "--out", str(out), "--force"]) == 1
+    assert kind in caplog.text
     assert _snapshot(out) == before
     assert sorted(p.name for p in project.iterdir()) == ["clips", "out", "seg.json", "src.mp4"]
 
