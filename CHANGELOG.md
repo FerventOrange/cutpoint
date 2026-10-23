@@ -49,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clips --segments`, `360 director --segments`, `360 stitch --segments` and
+  `360 repair --segments` pointing at an existing folder now say `<path> is a folder, not a
+  segments file`. `360 repair --segments` also says "Segments file not found" for a missing path
+  instead of "not a segments list" (#150).
+- A `--segments` file saved with a UTF-8 BOM (Windows PowerShell 5.1) now loads for `clips`,
+  `360 director` and `360 stitch`; a UTF-16 file gives `<path> is not valid JSON` naming the file
+  (#150).
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects
