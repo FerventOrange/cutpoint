@@ -165,6 +165,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui` ignores an `exports.json` entry whose export folder (`dir`) or final video
   (`final`) is `.`, `..` or does not start with a letter, digit or `_`, so a hand-edited or corrupted file can no longer point
   outside the project folder (#141).
+- `cutpoint ui` also ignores an `exports.json` export folder or final video (and its
+  `.fcpxml`/`.otio` timelines) that a symlink or Windows junction inside the project resolves
+  to outside the project folder, so neither is shown, served nor opened in the file manager
+  (an export whose `manifest.json` resolves outside is ignored too); a broken symlink named like the next
+  `final_*.mp4` or `clips_ui_*` output counts as taken, so no output is written through it
+  (#155).
 - Docker image (#112): uv is pinned by version and digest instead of an unpinned `curl | sh`
   install; the container runs as the non-root user `cutpoint` (uid 1000, build arguments
   `CUTPOINT_UID` / `CUTPOINT_GID`) owning `/data`; `git` and `curl` are no longer installed; and
