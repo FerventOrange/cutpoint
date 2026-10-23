@@ -8,7 +8,7 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
-from cutpoint import cli
+from cutpoint import cli, clips, mix
 from cutpoint.clips import load_segments, segment_ids, segment_source
 
 
@@ -203,3 +203,60 @@ def test_load_segments_refuses_a_drive_relative_source_only_on_windows(
     else:
         (tmp_path / "D:foo.mp4").write_bytes(b"")  # POSIX only: a plain file name
         assert load_segments(f)[0]["source"].endswith("D:foo.mp4")
+
+
+def _mapped_drive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remap: bool
+) -> tuple[Path, Path]:
+    """``old`` stands for a disconnected mapped drive ``Z:\\`` and ``unc`` for its
+    ``\\\\server\\share`` form (``clips.unc_path`` stubbed, it is a no-op off Windows);
+    with ``remap`` a copy of the footage under ``new`` is reachable through ``source_remap``."""
+
+    base = tmp_path.resolve()
+    old, unc, new = base / "Z", base / "server_share", base / "copy"
+    if remap:
+        (new / "F").mkdir(parents=True)
+        (new / "F" / "a.mp4").write_bytes(b"")
+        (base / "home").mkdir(exist_ok=True)
+        (base / "home" / "config.json").write_text(
+            json.dumps({"source_remap": {str(old): str(new)}}), encoding="utf-8"
+        )
+
+    def fake_unc(path: str) -> str:
+        return str(unc) + path[len(str(old)) :] if path.startswith(str(old)) else path
+
+    monkeypatch.setattr(clips, "unc_path", fake_unc, raising=False)
+    return old, unc
+
+
+def test_segment_source_records_a_remapped_mapped_drive_source_in_unc_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #181: with ``source_remap`` applying while the mapped drive is disconnected,
+    the identity is the UNC form ``analyze`` records, not the drive letter; the read path
+    is the copy."""
+    old, unc = _mapped_drive(tmp_path, monkeypatch, remap=True)
+    identity, io_path = segment_source(old / "F" / "a.mp4", tmp_path)
+    assert identity == str(unc / "F" / "a.mp4")
+    assert io_path == tmp_path.resolve() / "copy" / "F" / "a.mp4"
+
+
+def test_segment_source_without_a_remap_keeps_the_resolved_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #181: no remap -> unchanged (the resolved path; UNC form is resolve()'s job)."""
+    old, _ = _mapped_drive(tmp_path, monkeypatch, remap=False)
+    assert segment_source(old / "a.mp4", tmp_path)[0] == str(old / "a.mp4")
+
+
+@pytest.mark.parametrize("remap", [True, False])
+def test_apply_exclusions_matches_a_drive_letter_exclusion_to_a_unc_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remap: bool
+) -> None:
+    """Issue #181: an exclusion recorded as ``Z:\\F\\a.mp4`` (drive disconnected, with or
+    without a ``source_remap`` copy) cuts a candidate recorded as
+    ``\\\\server\\share\\F\\a.mp4``."""
+    old, unc = _mapped_drive(tmp_path, monkeypatch, remap)
+    cand = mix.Cand("run", str(unc / "F" / "a.mp4"), 10.0, 20.0, 15.0, 0.9, "run", "run")
+    exclusion = [{"source": str(old / "F" / "a.mp4"), "start": 0, "end": 100}]
+    assert mix.apply_exclusions([cand], exclusion) == []
