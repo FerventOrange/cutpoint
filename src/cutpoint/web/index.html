@@ -19,6 +19,7 @@
     <span class="spacer"></span>
     <span id="saveState" class="save" role="status"></span>
     <button type="button" id="saveBtn" class="btn primary" disabled>Save sequence</button>
+    <button type="button" id="settingsBtn" class="btn outline icon-btn" aria-label="Settings" aria-haspopup="dialog" title="Settings"></button>
   </header>
 
   <div id="banner" class="banner" role="alert" hidden></div>
@@ -148,21 +149,15 @@
   <dialog id="newDialog" aria-labelledby="newTitle">
     <form method="dialog" id="newForm" novalidate>
       <h2 id="newTitle">New project</h2>
-      <label class="field">Source video or folder
-        <span class="row">
-          <input id="newSource" required autocomplete="off" spellcheck="false"
+      <div class="field">
+        <label for="newSource">Source video or folder</label>
+        <span class="row wrap">
+          <input id="newSource" required autocomplete="off" spellcheck="false" aria-describedby="newSourceHint"
                  placeholder="/path/to/video.mp4 or /path/to/footage">
-          <button type="button" class="btn" id="browseBtn" aria-expanded="false" aria-controls="browser">Browse</button>
+          <button type="button" class="btn" id="pickFileBtn" data-pick="file" hidden>Choose video…</button>
+          <button type="button" class="btn" id="pickFolderBtn" data-pick="folder" hidden>Choose folder…</button>
         </span>
-      </label>
-      <div id="browser" class="browser" hidden>
-        <div class="browser-head">
-          <button type="button" class="btn" id="browseUp">Up</button>
-          <code id="browsePath"></code>
-          <button type="button" class="btn" id="browseUse">Use this folder</button>
-        </div>
-        <ul id="browseList" class="browse-list"></ul>
-        <p id="browseMsg" class="muted" role="status"></p>
+        <p id="newSourceHint" class="hint"></p>
       </div>
       <label class="field">Project name
         <input id="newName" required autocomplete="off" placeholder="Taken from the source name">
@@ -174,6 +169,28 @@
       <div class="dialog-actions">
         <button type="button" class="btn" id="newCancel">Cancel</button>
         <button type="submit" class="btn primary" id="newCreate">Create project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" aria-labelledby="settingsTitle">
+    <form method="dialog" id="settingsForm" novalidate>
+      <h2 id="settingsTitle">Settings</h2>
+      <fieldset class="panel">
+        <legend>Projects</legend>
+        <div class="field">
+          <label for="setProjects">Projects folder</label>
+          <span class="row wrap">
+            <input id="setProjects" autocomplete="off" spellcheck="false" aria-describedby="setProjectsNote">
+            <button type="button" class="btn" id="setProjectsPick" data-pick="folder" hidden>Choose folder…</button>
+          </span>
+          <p id="setProjectsNote" class="hint"></p>
+        </div>
+      </fieldset>
+      <p id="settingsError" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="settingsCancel">Cancel</button>
+        <button type="submit" class="btn primary" id="settingsSave">Save</button>
       </div>
     </form>
   </dialog>

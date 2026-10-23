@@ -68,7 +68,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
-from cutpoint import paths, state
+from cutpoint import cache, paths, state
 from cutpoint.utils import matches_glob
 
 logger = logging.getLogger(__name__)
@@ -116,9 +116,7 @@ def get_config() -> Config:
     """Load ``config.json`` plus environment overrides (cached per process)."""
     path = paths.config_file()
     data = load_config_data(path)
-    projects = (
-        paths.env_path("PROJECTS_DIR") or data.get("projects_dir") or paths.default_projects_dir()
-    )
+    projects = resolve_projects_dir(data)
     remap = data.get("source_remap") or {}
     if not isinstance(remap, dict):
         raise ValueError(f"{path}: source_remap must be an object of prefix pairs")
@@ -139,13 +137,43 @@ def get_config() -> Config:
             f"expected one of {', '.join(VIDEO_ENCODERS)}"
         )
     return Config(
-        Path(projects),
+        projects,
         pairs,
         exclude,
         stage,
         tuple(str(t) for t in tags if str(t).strip()),
         str(data.get("ollama_url") or ""),
         encoder,
+    )
+
+
+def set_config_value(key: str, value: object, path: Path | None = None) -> Path:
+    """Write ``key`` into ``config.json`` atomically, keeping the other keys, their order and the
+    file's indentation; the cached :func:`get_config` is dropped. Returns the file written.
+
+    Raises:
+        ValueError: If the file exists but is not valid JSON.
+        OSError: If it cannot be written.
+    """
+    path = path or paths.config_file()
+    data = load_config_data(path)
+    indent: int | str = 2
+    with contextlib.suppress(OSError):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        lead = next((ln[: len(ln) - len(ln.lstrip())] for ln in lines[1:] if ln.strip()), "")
+        if lead:
+            indent = len(lead) if lead.strip(" ") == "" else lead
+    data[key] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache.save_json(path, data, indent=indent)  # type: ignore[arg-type]
+    get_config.cache_clear()
+    return path
+
+
+def resolve_projects_dir(data: dict) -> Path:
+    """Effective projects folder for config ``data``: env, then ``projects_dir``, then default."""
+    return Path(
+        paths.env_path("PROJECTS_DIR") or data.get("projects_dir") or paths.default_projects_dir()
     )
 
 

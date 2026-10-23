@@ -50,7 +50,8 @@ uv run --extra ui cutpoint ui
 ```
 
 Open the complete URL printed in the terminal, including `#t=…`. Create a project from a local
-video or folder and choose a highlight style. Run analysis, preview candidates, adjust their
+video or folder (use "Choose video…" or "Choose folder…", or type or paste the full path; the
+buttons are hidden where the computer has no file dialog, such as Docker) and choose a highlight style. Run analysis, preview candidates, adjust their
 start/end times, and add them
 to the sequence. Reorder and save the sequence, export clips, then assemble a final video.
 The final preview includes download links for the MP4, FCPXML and OTIO files.

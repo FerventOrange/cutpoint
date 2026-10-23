@@ -1,77 +1,60 @@
-// "New project" dialog with a read-only local path browser (the server lists, nothing uploads).
+// "New project" dialog, and the machine's own open dialog for choosing a path (the server opens it;
+// nothing uploads). Without one (headless, Docker) the path is typed or pasted.
 import { api } from './api.js';
 import { $, baseName, h } from './util.js';
 
-const VIDEO = /\.(mp4|m4v|mov|mkv|avi|webm|mts|m2ts|ts|wmv|flv|mpe?g)$/i;
+const SOURCE_HINT = 'Choose a video or a folder of videos, or type or paste its full path.';
+const SOURCE_HINT_TYPED = 'Type or paste the full path of a video, or of a folder of videos, on the computer running cutpoint.';
 
-export function initNewProject(onCreated) {
+let picking = false; // the server allows one open dialog at a time
+
+/**
+ * Ask for a video (`kind` 'file') or a folder in the native dialog, opened near `start`. Every
+ * [data-pick] button is disabled while it is open. Resolves the chosen path, or null on cancel.
+ */
+export async function pickPath(kind, start = '') {
+  if (picking) return null;
+  picking = true;
+  const back = document.activeElement;
+  for (const b of document.querySelectorAll('[data-pick]')) b.disabled = true;
+  try {
+    const q = new URLSearchParams({ kind });
+    if (start.trim()) q.set('start', start.trim());
+    return (await api(`/api/pick?${q}`, { method: 'POST' })).path;
+  } finally {
+    picking = false;
+    for (const b of document.querySelectorAll('[data-pick]')) b.disabled = false;
+    if (back?.isConnected && document.activeElement === document.body) back.focus(); // disabling dropped it
+  }
+}
+
+export function initNewProject(onCreated, canPick) {
   const dlg = $('#newDialog');
   const source = $('#newSource');
   const name = $('#newName');
   const style = $('#newStyle');
   const error = $('#newError');
-  const browser = $('#browser');
-  const browseBtn = $('#browseBtn');
-  let current = null; // {path, parent}
   let nameTouched = false;
 
   const setError = (msg) => (error.textContent = msg || '');
   const stem = (p) => baseName(p.replace(/[\\/]+$/, '')).replace(/\.[^.]+$/, '');
 
-  function useSource(path) {
-    source.value = path;
-    if (!nameTouched) name.value = stem(path);
+  for (const b of dlg.querySelectorAll('[data-pick]')) {
+    b.hidden = !canPick;
+    b.addEventListener('click', async () => {
+      setError('');
+      try {
+        const path = await pickPath(b.dataset.pick, source.value);
+        if (!path) return;
+        source.value = path;
+        source.dispatchEvent(new Event('input')); // as if typed: the name follows
+        source.focus();
+      } catch (e) {
+        setError(e.message);
+      }
+    });
   }
-
-  async function load(path) {
-    const msg = $('#browseMsg');
-    msg.textContent = 'Loading…';
-    try {
-      const r = await api(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`);
-      current = r;
-      $('#browsePath').textContent = r.path;
-      $('#browseUp').disabled = !r.parent;
-      const entries = r.entries
-        .filter((e) => e.directory || VIDEO.test(e.name))
-        .sort((a, b) => b.directory - a.directory || a.name.localeCompare(b.name, undefined, { numeric: true }));
-      $('#browseList').replaceChildren(
-        ...entries.map((e) =>
-          h('li', {},
-            h('button', {
-              type: 'button',
-              class: `entry ${e.directory ? 'dir' : 'file'}`,
-              onclick: () => {
-                if (e.directory) load(e.path);
-                else {
-                  useSource(e.path);
-                  toggleBrowser(false);
-                  source.focus();
-                }
-              },
-            }, e.directory ? `${e.name}/` : e.name)),
-        ),
-      );
-      msg.textContent = entries.length ? '' : 'No folders or videos here.';
-    } catch (e) {
-      msg.textContent = e.message;
-      if (path) load(''); // the typed path was not browsable; fall back to the server default
-    }
-  }
-
-  function toggleBrowser(show) {
-    browser.hidden = !show;
-    browseBtn.setAttribute('aria-expanded', String(show));
-    if (show) load(source.value.trim());
-  }
-
-  browseBtn.addEventListener('click', () => toggleBrowser(browser.hidden));
-  $('#browseUp').addEventListener('click', () => current?.parent && load(current.parent));
-  $('#browseUse').addEventListener('click', () => {
-    if (!current) return;
-    useSource(current.path);
-    toggleBrowser(false);
-    source.focus();
-  });
+  $('#newSourceHint').textContent = canPick ? SOURCE_HINT : SOURCE_HINT_TYPED;
   name.addEventListener('input', () => (nameTouched = true));
   source.addEventListener('input', () => !nameTouched && (name.value = stem(source.value.trim())));
   $('#newCancel').addEventListener('click', () => dlg.close());
@@ -99,7 +82,6 @@ export function initNewProject(onCreated) {
     nameTouched = false;
     source.value = name.value = '';
     setError('');
-    toggleBrowser(false);
     style.replaceChildren(...styles.map((s) => h('option', { value: s, text: s })));
     dlg.showModal();
     source.focus();
