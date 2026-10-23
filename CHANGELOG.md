@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, `clips --force`, `extend` in place and `extend --out ... --force` refuse a volume
+  mounted into an NTFS folder (for example `C:\mnt\vol`) with the mount-point message instead of
+  calling it a drive root. A real drive root (`C:\`, a UNC share root) keeps the drive-root
+  message (#185).
 - `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times
   and ordering to candidates, and `360 repair` matches crash impacts to segments, by the resolved,
   normalised source path (symlinks, `a/../b` spellings); `360 repair` reads a relative source in
