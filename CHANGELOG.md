@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `360 repair --segments` pointing at an existing folder now say `<path> is a folder, not a
   segments file`. `360 repair --segments` also says "Segments file not found" for a missing path
   instead of "not a segments list" (#150).
+- `360 repair` now says `<path> is not valid JSON: not UTF-8 text (save it as UTF-8)` for a
+  UTF-16 `--segments` or `--qa` file (and `<path> is not valid JSON: ...` for broken JSON)
+  instead of "not a segments list" or "QA report not found". `--qa <folder>` says `<path> is a
+  folder, not a QA report`, and a `--qa` file that is not a JSON object says `<path>: not a QA
+  report` instead of crashing (follow-up to #150).
 - A `--segments` file saved with a UTF-8 BOM (Windows PowerShell 5.1) now loads for `clips`,
   `360 director` and `360 stitch`; a UTF-16 file gives `<path> is not valid JSON` naming the file
   (#150).
@@ -77,6 +82,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clips --force`: a failure or Ctrl+C leaves `DIR` unchanged. Files in `DIR` that the run does not
   write stay, and a WARNING names the `.mp4` clips left there that were not re-exported (`assemble`
   includes them). Same-named files are overwritten as before. `--out` pointing at a non-empty drive root or mount point with `--force` is refused before any export.
+- A `source_remap` key spelled the Windows way (for example `D:\Videos` -> `/mnt/d/Videos`) now
+  applies on Linux and macOS (#149). It matches Windows-style sources case-insensitively with
+  either slash, so a Windows project (or `clips --segments` with `D:\` sources) opened on Linux
+  finds its footage. Stage keys for Windows-form sources are built as on Windows (no
+  current-folder prefix, case-insensitive: `d:\videos\t\x.mp4`), so `stage` and `stage --clear`
+  accept any spelling of such a path. Reading a staged copy accepts either slash and any case of
+  the `source_remap` prefix; below the prefix the case must match the staged file. The analysis cache key becomes
+  `D:\Videos\T\x.mp4` (was `D:\Videos/T/x.mp4`), so those files are analyzed once more and
+  staged copies under such a key must be staged once more. Old copies stay until
+  `cutpoint stage --clear` with no targets; `--clear <target>` does not match old keys.
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects

@@ -131,6 +131,34 @@ def test_segments_folder_is_one_error_line(
     assert "is a folder, not a segments file" in errors[0].getMessage()
 
 
+@pytest.mark.parametrize("case", ["qa-folder", "qa-utf16", "qa-broken-json", "qa-not-object"])
+def test_repair_input_errors_name_the_file_and_the_problem(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, case: str
+) -> None:
+    """360 repair input errors name the file and the problem (follow-up to #150/#156)."""
+    segs = tmp_path / "segs.json"
+    segs.write_text(json.dumps([{"source": "a.insv", "start": 1, "end": 2}]), encoding="utf-8")
+    qa = tmp_path / "qa.json"
+    qa.write_text("{", encoding="utf-8")
+    target, phrase = qa, "is not valid JSON: "
+    if case == "qa-folder":
+        qa.unlink()
+        qa.mkdir()
+        phrase = "is a folder, not a QA report"
+    elif case == "qa-utf16":
+        qa.write_text("{}", encoding="utf-16")
+        phrase = "not UTF-8 text (save it as UTF-8)"
+    elif case == "qa-not-object":
+        qa.write_text("[]", encoding="utf-8")
+        phrase = ": not a QA report"
+    argv = ["360", "repair", str(tmp_path), "--segments", str(segs), "--qa", str(qa)]
+    assert cli.main(argv) == 1
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert str(target) in errors[0].getMessage()
+    assert phrase in errors[0].getMessage()
+
+
 def test_segments_file_with_a_bom_loads_and_utf16_is_not_valid_json(
     tmp_path: Path, home: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
