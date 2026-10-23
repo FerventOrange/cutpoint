@@ -317,15 +317,15 @@ def test_clips_force_that_fails_before_the_swap_keeps_the_old_clips(monkeypatch,
     _only_original_folders(project)
 
 
-def _fail_nth_swap_replace(monkeypatch, project: Path, n: int, mode: str):
-    """Fail the n-th distinct move in or out of the clips folder (retries of it included)."""
-    clips_dir = project / "clips"
+def _fail_nth_swap_replace(monkeypatch, project: Path, n: int, mode: str, folder: str = "clips"):
+    """Fail the n-th distinct move in or out of the folder (retries of it included)."""
+    clips_dir = project / folder
     seen: list[tuple[Path, Path]] = []
     real_replace = Path.replace
 
     def replace(self, target):
         target = Path(target)
-        if {self.parent.name, target.parent.name} & {"clips", ".clips.cutpoint-bak"}:
+        if {self.parent.name, target.parent.name} & {folder, f".{folder}.cutpoint-bak"}:
             if (self, target) not in seen:
                 seen.append((self, target))
             if seen[n - 1 : n] == [(self, target)]:
@@ -355,6 +355,105 @@ def test_failed_swap_puts_every_original_back(monkeypatch, home, caplog, cmd, mo
         assert rc == 130
     assert _snapshot(project / "clips") == before
     _only_original_folders(project)
+
+
+@pytest.mark.parametrize(
+    ("fail", "n"),
+    [("export-ctrl-c", 0), ("lock", 4)],
+)
+def test_extend_out_force_into_a_non_empty_folder_stays_unchanged_when_it_fails(
+    monkeypatch, home, fail, n
+):
+    """#147: extend --out DIR --force swaps like in place, so a failure leaves DIR as it was."""
+    project = _setup(home, monkeypatch)
+    out = project / "out"
+    shutil.copytree(project / "clips", out)
+    (out / "notes.txt").write_text("keep me", encoding="utf-8")
+    before = _snapshot(out)
+    if fail == "export-ctrl-c":
+        calls = []
+
+        def export(src, info, start, end, dst, *_a, **_kw):
+            calls.append(dst)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+            dst.write_bytes(b"new")
+
+        monkeypatch.setattr(extend, "export_clip_checked", export)
+        seen = None
+    else:
+        seen = _fail_nth_swap_replace(monkeypatch, project, n, fail, folder="out")
+    clips_dir = str(project / "clips")
+    argv = [
+        "extend",
+        clips_dir,
+        "--seconds",
+        "1",
+        "--no-speech-aware",
+        "--out",
+        str(out),
+        "--force",
+    ]
+    assert cli.main(argv) == (1 if fail == "lock" else 130)
+    if seen is not None:
+        assert len(seen) >= n, "the swap never reached the failing move"
+    assert _snapshot(out) == before
+    assert sorted(p.name for p in project.iterdir()) == ["clips", "out", "seg.json", "src.mp4"]
+
+
+def test_extend_out_finishes_a_killed_earlier_replace_before_checking_it_is_empty(
+    monkeypatch, home
+):
+    """#147: a hard-killed `extend --out DIR --force` left DIR empty and its originals in a backup."""
+    project = _setup(home, monkeypatch)
+    out = project / "out"
+    out.mkdir()
+    bak = project / ".out.cutpoint-bak"
+    bak.mkdir()
+    (bak / "001_a.mp4").write_bytes(b"old out")
+    journal = {"old": ["001_a.mp4"], "new": ["001_a.mp4"], "created": False}
+    (bak / ".cutpoint-swap.json").write_text(json.dumps(journal), encoding="utf-8")
+    argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
+    assert cli.main([*argv, "--out", str(out)]) == 1  # restored, so not empty: needs --force
+    assert (out / "001_a.mp4").read_bytes() == b"old out"
+    assert not bak.exists()
+
+
+@pytest.mark.parametrize("kind", ["mount point", "drive root"])
+def test_extend_out_force_refuses_a_mount_point_or_root_before_exporting(
+    monkeypatch, home, caplog, kind
+):
+    """#147: the staging and backup folders sit next to --out, so a mount point or a drive root
+    (no name, no parent to hold them) cannot be swapped. Only ``out`` is made to look like one."""
+    project = _setup(home, monkeypatch)
+    out = project / "out"
+    shutil.copytree(project / "clips", out)
+    (out / "notes.txt").write_text("keep me", encoding="utf-8")
+    before = _snapshot(out)
+    real_is_mount, real_resolve = Path.is_mount, Path.resolve
+    if kind == "mount point":
+        monkeypatch.setattr(
+            Path, "is_mount", lambda self: self.resolve() == out.resolve() or real_is_mount(self)
+        )
+    else:
+        # A nameless path stands in for the root; nothing is ever opened at the real root.
+        monkeypatch.setattr(
+            Path,
+            "resolve",
+            lambda self, *a, **kw: (
+                Path(out.anchor) if self == out else real_resolve(self, *a, **kw)
+            ),
+        )
+
+    def export(*_a, **_kw):
+        raise AssertionError("exported before the mount point was refused")
+
+    monkeypatch.setattr(extend, "export_clip_checked", export)
+    argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
+    assert cli.main([*argv, "--out", str(out), "--force"]) == 1
+    assert kind in caplog.text
+    assert _snapshot(out) == before
+    assert sorted(p.name for p in project.iterdir()) == ["clips", "out", "seg.json", "src.mp4"]
 
 
 def _killed_mid_swap(monkeypatch, project: Path, cmd: str, n: int) -> dict[str, bytes]:
@@ -425,7 +524,7 @@ def test_backup_without_a_journal_means_the_swap_finished(monkeypatch, home, cmd
 
 
 @pytest.mark.parametrize("cmd", ["clips", "extend"])
-def test_force_replaces_clips_and_keeps_the_users_other_files(monkeypatch, home, cmd):
+def test_force_replaces_clips_and_keeps_the_users_other_files(monkeypatch, home, caplog, cmd):
     project = _setup(home, monkeypatch)
     clips_dir = project / "clips"
     (clips_dir / "notes.txt").write_text("keep me", encoding="utf-8")
@@ -442,6 +541,22 @@ def test_force_replaces_clips_and_keeps_the_users_other_files(monkeypatch, home,
     assert "cutpoint-tmp" not in manifest
     assert [c["file"] for c in json.loads(manifest)["clips"]] == NAMES
     _only_original_folders(project)
+    # extend --out DIR (not the input folder) keeps the user's files too, and says so
+    if cmd != "extend":
+        return
+    out = project / "out"
+    shutil.copytree(clips_dir, out, ignore=shutil.ignore_patterns("extra"))
+    (out / "notes.txt").write_text("keep me", encoding="utf-8")
+    (out / "009_gone.mp4").write_bytes(b"stale")
+    argv = ["extend", str(clips_dir), "--seconds", "1", "--no-speech-aware", "--out", str(out)]
+    caplog.clear()
+    assert cli.main([*argv, "--force"]) == 0
+    assert (out / "notes.txt").read_text(encoding="utf-8") == "keep me"
+    assert (out / "009_gone.mp4").read_bytes() == b"stale"
+    assert "009_gone.mp4" in caplog.text
+    assert all((out / n).read_bytes() == b"new" for n in NAMES)
+    out_manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert [c["file"] for c in out_manifest["clips"]] == NAMES
 
 
 @pytest.mark.parametrize("cmd", ["clips", "extend"])

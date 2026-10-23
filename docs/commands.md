@@ -282,7 +282,11 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   points, crop, format and fade are identical.
 - The original folder is never overwritten unless you pass `--out <clips_dir> --force`. Then
   the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
-  or a clip locked by another program, leaves the original clips as they were.
+  or a clip locked by another program, leaves the original clips as they were. The same holds for
+  `--out DIR --force` into a non-empty `DIR`: `DIR` is unchanged unless every clip was exported.
+  Files in `DIR` that the run does not write stay; a WARNING names `.mp4` clips left there that
+  were not re-exported, because `assemble` will include them. `--out DIR --force` is refused
+  before any export when a non-empty `DIR` is a drive root or a mount point; use a folder on it.
 
 ## assemble
 
