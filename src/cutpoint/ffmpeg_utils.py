@@ -40,7 +40,7 @@ import numpy as np
 
 from cutpoint import paths, state
 from cutpoint.cache import REPLACE_ATTEMPTS, load_json, save_json
-from cutpoint.config import get_config
+from cutpoint.config import get_config, path_key
 
 logger = logging.getLogger(__name__)
 
@@ -822,12 +822,15 @@ def recover_swap(dst: Path) -> None:
 
     Raises:
         RuntimeError: If the journal is unreadable or malformed; the backup is left as is.
+        PermissionError: If a leftover backup or staging folder cannot be removed (a file
+            in it is still open); the next swap could not start with it in place.
     """
     bak = backup_path(dst)
     if bak.exists():
         path = bak / _SWAP_JOURNAL
         if not (path.exists() or path.is_symlink()):
-            shutil.rmtree(bak)
+            # Nothing in it is needed, but it must go: the next swap_in creates it anew.
+            _remove_leftover(bak, f"left over from a finished replace of {dst}")
         else:
             journal = load_json(path)
             if not (
@@ -846,7 +849,37 @@ def recover_swap(dst: Path) -> None:
             logger.warning("Put back the original files of %s from an interrupted replace", dst)
     tmp = staging_path(dst)
     if tmp.exists():
-        shutil.rmtree(tmp)
+        _remove_leftover(tmp, f"left over from an interrupted export into {dst}")
+
+
+def _remove_leftover(path: Path, why: str) -> None:
+    """Remove the folder ``path`` (retried briefly while a file in it is locked).
+
+    Raises:
+        PermissionError: Saying ``why`` it is there and how to fix it, if it stays locked
+            (on Windows: a file in it is open in a player or a virus scanner, or a scanner
+            briefly keeps it non-empty, error 145).
+        OSError: Saying ``why`` it is there, for any other failure.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as err:
+            locked = isinstance(err, PermissionError) or getattr(err, "winerror", None) == 145
+            if not locked:
+                raise OSError(
+                    f"Cannot remove {path}, {why}: {err.strerror or err}. Delete the folder "
+                    f"and re-run."
+                ) from err
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+                continue
+            raise PermissionError(
+                f"Cannot remove {path}, {why}: it is open in another program (a player, an "
+                f"editor or a virus scanner). Close it, or delete the folder, and re-run. "
+                f"({err.strerror or err})"
+            ) from err
 
 
 @contextmanager
@@ -868,6 +901,42 @@ def staged_dir(dst: Path) -> Iterator[Path]:
         except OSError as err:
             logger.warning("Could not remove %s (%s); the next run removes it", tmp, err)
         raise
+
+
+def file_keys(path: Path) -> set[Any]:
+    """Identities of the file ``path`` for :func:`same_file`: its resolved path (case-folded
+    on Windows) and, where the file system has them, its device and inode numbers, so a
+    symlink, a hard link or another spelling of the same file matches. Empty if missing."""
+    keys: set[Any] = set()
+    try:
+        st = path.stat()
+    except OSError:
+        return keys
+    keys.add(path_key(str(path.resolve())))
+    if st.st_ino:  # 0: no usable inode numbers (some network shares)
+        keys.add((st.st_dev, st.st_ino))
+    return keys
+
+
+def same_file(path: Path, keys: set[Any]) -> bool:
+    """True if ``path`` is one of the files whose :func:`file_keys` are in ``keys``."""
+    return bool(file_keys(path) & keys)
+
+
+def check_not_sources(dst: Path, names: Iterable[str], sources: set[Any]) -> None:
+    """Fail before any export if writing ``names`` into ``dst`` would replace a source.
+
+    ``sources`` holds the :func:`file_keys` of every file the run reads.
+
+    Raises:
+        ValueError: Naming the first such file.
+    """
+    for n in names:
+        if same_file(dst / n, sources):
+            raise ValueError(
+                f"Cannot write {dst / n}: this run reads it as a source. Move the source out "
+                f"of {dst}, or export into another folder (--out)."
+            )
 
 
 def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
@@ -924,7 +993,10 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     # The new set is complete: the backup is no longer needed.
     journal_path = bak / _SWAP_JOURNAL
     retry_locked(journal_path.unlink, journal_path, "delete")
-    shutil.rmtree(bak, ignore_errors=True)
+    try:
+        shutil.rmtree(bak)
+    except OSError as err:  # still open (a virus scanner): recover_swap removes it later
+        logger.warning("Could not remove %s (%s); the next run removes it", bak, err)
     with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
         new.rmdir()
 

@@ -543,15 +543,23 @@ class PanoExporter:
                 ", ".join(diff[:8]) + (", ..." if len(diff) > 8 else ""),
             )
 
+    def _modes(self, mode: str | None) -> list[str]:
+        """Source modes :meth:`_source` tries, in order: ``source_mode`` alone, or a
+        recorded ``mode`` that differs from it, then ``auto``."""
+        if mode is None or mode == self.source_mode:
+            return [self.source_mode]
+        return [mode, "auto"]
+
     def _source(self, clip: X3Clip, mode: str | None) -> RenderSource:
         """Render source for ``mode`` (a clip's recorded mode), else ``source_mode``.
 
         A recorded mode that is no longer available falls back to ``auto``.
         """
-        if mode is None or mode == self.source_mode:
-            return resolve_source(clip, self.source_mode)
+        first, *fallback = self._modes(mode)
+        if not fallback:
+            return resolve_source(clip, first)
         try:
-            src = resolve_source(clip, mode)
+            src = resolve_source(clip, first)
         except (FileNotFoundError, ValueError) as err:
             logger.warning(
                 "  clip %s: recorded 360 source %r unavailable (%s); using auto",
@@ -559,7 +567,7 @@ class PanoExporter:
                 mode,
                 err,
             )
-            return resolve_source(clip, "auto")
+            return resolve_source(clip, fallback[0])
         if src.preview:
             best = resolve_source(clip, "auto")
             if not best.preview:
@@ -571,6 +579,26 @@ class PanoExporter:
                     best.mode,
                 )
         return src
+
+    def inputs(self, source: str, mode: str | None = None) -> list[Path]:
+        """Files a render of ``source`` may read, kept safe from ``clips --force``: the
+        camera files (``.lrv``, ``.insv``), ``clip.source`` and the render input that
+        :meth:`export` with ``source_mode=mode`` picks (falling back to ``auto``), each as
+        recorded and through ``source_remap``. Never raises for an unavailable mode (the
+        render reports it); empty if ``source`` is not an X3 clip of the project."""
+        from cutpoint.config import remap_source  # noqa: PLC0415
+
+        clip = clip_for(self.clips, source)
+        if clip is None:
+            return []
+        files = [p for p in (clip.lrv, *clip.insv, clip.source) if p]
+        for m in dict.fromkeys([*self._modes(mode), "auto"]):
+            try:
+                files += resolve_source(clip, m).inputs
+                break
+            except (FileNotFoundError, ValueError):
+                continue
+        return [q for f in files for q in (Path(f), remap_source(f))]
 
     def export(
         self,

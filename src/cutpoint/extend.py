@@ -42,6 +42,8 @@ from cutpoint.encode import OutputFormat, export_clip_checked
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
     atomic_output,
+    check_not_sources,
+    file_keys,
     output_dir,
     probe,
     recover_swap,
@@ -359,6 +361,15 @@ def extend_clips(
                 pano_cmd_every,
             )
             pano.fmt = Format360(fmt.width, fmt.height, fmt.fps)
+        # Only clips with a manifest entry are written; none may be a file this run reads.
+        sources: set[Any] = set()
+        for plan in plans:
+            e = plan.entry
+            mode = None if pano_source else (e.get("pano") or {}).get("mode")
+            pano_files = pano.inputs(e["source"], mode) if pano and e.get("pano") else []
+            for f in (Path(e["source"]), plan.src, *pano_files):
+                sources |= file_keys(f)
+        check_not_sources(out_dir, [p.name for p in plans], sources)
         entries = []
         reused = 0
         for plan in plans:

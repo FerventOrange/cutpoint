@@ -160,9 +160,15 @@ Exports moments as `001_<label>.mp4`, `002_<label>.mp4`, ... in playback order, 
 encoder, or libx264 when no hardware encoder passes its probe. Every clip gets the same
 resolution, frame rate, pixel format and audio, so clips join losslessly. The command refuses
 to write into a non-empty folder without `--force`. With `--force`, the new clips are exported
-into a hidden `.<folder>.cutpoint-tmp` next to the folder and replace its `.mp4` files and
-`manifest.json` only when every clip succeeded; other files in the folder stay. A failed or
-cancelled run leaves the old clips as they were.
+into a hidden `.<folder>.cutpoint-tmp` next to the folder and swapped in only when every clip
+succeeded; a failed or cancelled run leaves the old clips as they were. `--force` replaces only
+what an earlier run made: the clips listed in the old `manifest.json`, leftover `.part.mp4`
+files, the names this run writes and `manifest.json`. A file the run reads as a source is never
+replaced; if a new clip name is one, the run stops with an error before exporting. Every other
+file stays, including `.mp4` files the old manifest does not list (renamed or added by hand); a
+WARNING names them, since `assemble` includes every `.mp4` in the folder; move them out before
+re-running `clips --force` if they are not part of the edit. Without a readable
+old manifest, only the new names are replaced.
 
 | Option | Meaning |
 |---|---|
@@ -179,7 +185,7 @@ cancelled run leaves the old clips as they were.
 | `--extend S`, `--extend-start S`, `--extend-end S` | Padding ("handles") for trimming in an editor |
 | `--speech-aware` / `--no-speech-aware`, `--speech-max-extend`, `--speech-max-lead` | Move in/out points to utterance boundaries |
 | `--audio-fade S` | Audio fade baked into each clip (default 0.25, 0 = off) |
-| `--out DIR`, `--force` | Output folder; replace the clips of a non-empty folder |
+| `--out DIR`, `--force` | Output folder; replace the clips an earlier run made in a non-empty folder |
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
 

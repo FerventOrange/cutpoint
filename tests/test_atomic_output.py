@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 from fractions import Fraction
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning
+from cutpoint import assemble, cli, clips, config, encode, extend, ffmpeg_utils, planning
 from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
 
 
@@ -431,8 +432,8 @@ def test_force_replaces_clips_and_keeps_the_users_other_files(monkeypatch, home,
     assert cli.main(_argv(cmd, project, "--force")) == 0
     assert (clips_dir / "notes.txt").read_text(encoding="utf-8") == "keep me"
     assert (clips_dir / "extra" / "a.txt").read_text(encoding="utf-8") == "deep"
-    # clips --force drops clips the new set lacks; extend only rewrites what the manifest lists
-    assert (clips_dir / "009_gone.mp4").exists() is (cmd == "extend")
+    # not in the old manifest: not made by cutpoint, so neither command replaces it
+    assert (clips_dir / "009_gone.mp4").read_bytes() == b"stale"
     assert all((clips_dir / n).read_bytes() == b"new" for n in NAMES)
     manifest = (clips_dir / "manifest.json").read_text(encoding="utf-8")
     assert "cutpoint-tmp" not in manifest
@@ -496,3 +497,241 @@ def test_clips_force_with_dot_as_out_inside_the_clips_folder(monkeypatch, home):
     assert cli.main(_argv("clips", project, "--out", ".", "--force")) == 0
     assert all((clips_dir / n).read_bytes() == b"new" for n in NAMES)
     _only_original_folders(project)
+
+
+# --- --force replaces only what an earlier run made; a source is never replaced ---
+
+
+def _warnings(caplog) -> str:
+    return "\n".join(r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+
+def _errors(caplog) -> str:
+    return "\n".join(r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+
+
+def _segments(path: Path, src: Path, labels: str = "a") -> None:
+    path.write_text(
+        json.dumps(
+            [{"source": str(src), "start": i * 5.0, "end": i * 5.0 + 2, "label": c}
+             for i, c in enumerate(labels)]
+        ),
+        encoding="utf-8",
+    )  # fmt: skip
+
+
+def test_clips_force_keeps_a_source_and_other_files_in_the_output_folder(monkeypatch, home, caplog):
+    out = home / "projects" / "p" / "clips"
+    out.mkdir(parents=True)
+    src = out / "source.mp4"
+    src.write_bytes(b"precious source")
+    (out / "readme.txt").write_text("hi", encoding="utf-8")
+    _segments(home / "seg.json", src)
+    _fake_export(monkeypatch)
+    argv = ["clips", "p", "--segments", str(home / "seg.json"), "--out", str(out), "--force"]
+    assert cli.main(argv) == 0
+    assert src.read_bytes() == b"precious source"
+    assert (out / "readme.txt").read_text(encoding="utf-8") == "hi"
+    assert (out / "001_a.mp4").read_bytes() == b"new"
+    assert "source.mp4" in _warnings(caplog)
+
+
+def _symlink_to(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+
+
+@pytest.mark.parametrize("kind", ["plain", "symlink"])
+def test_clips_force_refuses_a_new_clip_name_that_is_a_source(monkeypatch, home, caplog, kind):
+    project, seg = _project(home)
+    out = project / "clips"
+    out.mkdir()
+    if kind == "plain":
+        src = out / "001_a.mp4"
+        src.write_bytes(b"precious source")
+    else:
+        src = project / "real.mp4"
+        src.write_bytes(b"precious source")
+        _symlink_to(out / "001_a.mp4", src)
+    _segments(seg, src)
+    (out / "notes.txt").write_text("keep", encoding="utf-8")
+    exported = []
+    _fake_export(monkeypatch)
+    monkeypatch.setattr(clips, "export_clip_checked", lambda *a, **_kw: exported.append(a))
+    before = sorted(p.name for p in out.iterdir())
+    assert cli.main(["clips", "p", "--segments", str(seg), "--force"]) == 1
+    assert "001_a.mp4" in _errors(caplog)
+    assert not exported
+    assert src.read_bytes() == b"precious source"
+    assert sorted(p.name for p in out.iterdir()) == before
+    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == []
+
+
+def _write_old_set(project: Path, manifest: str | None) -> Path:
+    out = project / "clips"
+    for n in (*NAMES, "009_user.mp4", ".004_x.part.mp4"):
+        (out / n).write_bytes(b"old")
+    if manifest is None:
+        (out / "manifest.json").unlink()
+    else:
+        (out / "manifest.json").write_text(manifest, encoding="utf-8")
+    return out
+
+
+def test_clips_force_replaces_only_clips_of_the_old_manifest(monkeypatch, home, caplog):
+    project = _setup(home, monkeypatch)
+    _segments(project / "seg.json", project / "src.mp4")  # one clip: 002 and 003 are dropped
+    out = _write_old_set(project, (project / "clips" / "manifest.json").read_text("utf-8"))
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    assert sorted(p.name for p in out.glob("*.mp4") if not p.name.startswith(".")) == [
+        "001_a.mp4",
+        "009_user.mp4",
+    ]
+    assert (out / "001_a.mp4").read_bytes() == b"new"
+    assert (out / "009_user.mp4").read_bytes() == b"old"
+    assert not (out / ".004_x.part.mp4").exists()
+    assert "009_user.mp4" in _warnings(caplog)
+
+
+@pytest.mark.parametrize("manifest", [None, "{not json"], ids=["missing", "unreadable"])
+def test_clips_force_without_a_readable_manifest_replaces_only_the_new_names(
+    monkeypatch, home, caplog, manifest
+):
+    project = _setup(home, monkeypatch)
+    _segments(project / "seg.json", project / "src.mp4")
+    out = _write_old_set(project, manifest)
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    assert (out / "001_a.mp4").read_bytes() == b"new"
+    for n in ("002_b.mp4", "003_c.mp4", "009_user.mp4"):
+        assert (out / n).read_bytes() == b"old"
+    assert "manifest.json" in _warnings(caplog)
+
+
+def _point_manifest_at(clips_dir: Path, name: str, source: Path) -> None:
+    path = clips_dir / "manifest.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for e in data["clips"]:
+        if e["file"] == name:
+            e["source"] = str(source)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize("where", ["in-place", "out-is-source-folder"])
+def test_extend_refuses_to_overwrite_a_source_before_exporting(monkeypatch, home, caplog, where):
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    if where == "in-place":
+        src, out = clips_dir / "001_a.mp4", clips_dir
+    else:
+        out = project / "footage"
+        out.mkdir()
+        src = out / "001_a.mp4"
+        src.write_bytes(b"precious source")
+    _point_manifest_at(clips_dir, "001_a.mp4", src)
+    exported = []
+    monkeypatch.setattr(extend, "export_clip_checked", lambda *a, **_kw: exported.append(a))
+    before_src, before_out = src.read_bytes(), sorted(p.name for p in out.iterdir())
+    argv = ["extend", str(clips_dir), "--seconds", "1", "--no-speech-aware"]
+    assert cli.main([*argv, "--out", str(out), "--force"]) == 1
+    assert "001_a.mp4" in _errors(caplog)
+    assert not exported
+    assert src.read_bytes() == before_src
+    assert sorted(p.name for p in out.iterdir()) == before_out
+    assert not (project / ".clips.cutpoint-tmp").exists()
+
+
+# --- a leftover that cannot be removed stops the run with a hint ---
+
+
+@pytest.mark.parametrize("leftover", [".clips.cutpoint-bak", ".clips.cutpoint-tmp"])
+def test_locked_leftover_folder_stops_the_run_until_it_is_released(
+    monkeypatch, home, caplog, leftover
+):
+    project = _setup(home, monkeypatch)
+    stale = project / leftover
+    stale.mkdir()
+    (stale / "001_a.mp4").write_bytes(b"old")  # no journal: nothing in it is needed
+    locked = [True]
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path, *a, **kw):
+        if locked and Path(path) == stale:
+            raise _locked(32)
+        return real_rmtree(path, *a, **kw)
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree)
+    argv = _argv("clips", project, "--force")
+    assert cli.main(argv) == 1
+    assert "open in another program" in caplog.text
+    assert leftover in caplog.text
+    assert stale.exists()
+
+    locked.clear()
+    assert cli.main(argv) == 0
+    assert all((project / "clips" / n).read_bytes() == b"new" for n in NAMES)
+    _only_original_folders(project)
+
+
+# --- a manifest-listed clip that this run reads as a source is kept, however it is reached ---
+
+
+def _hard_link(link: Path, target: Path) -> None:
+    try:
+        os.link(target, link)
+    except (OSError, NotImplementedError, AttributeError) as err:
+        pytest.skip(f"hard links are not supported here: {err}")
+
+
+@pytest.mark.parametrize("kind", ["old-clip", "hard-link"])
+def test_clips_force_keeps_an_old_clip_that_is_this_runs_source(monkeypatch, home, caplog, kind):
+    project = _setup(home, monkeypatch)
+    out = project / "clips"
+    kept = out / "003_c.mp4"
+    if kind == "old-clip":
+        source = kept
+        expected = b"old 003_c.mp4"
+    else:
+        kept.unlink()
+        source = project / "src.mp4"
+        _hard_link(kept, source)
+        expected = source.read_bytes()
+    _segments(project / "seg.json", source)
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    assert kept.read_bytes() == expected
+    assert not (out / "002_b.mp4").exists()
+    warned = _warnings(caplog)
+    assert "reads as a source" in warned
+    assert "003_c.mp4" in warned
+
+
+def _remap_clips(home: Path, monkeypatch, old: Path, new: Path) -> None:
+    data = {"source_remap": {str(old): str(new)}}
+    (home / "config.json").write_text(json.dumps(data), encoding="utf-8")
+    config.get_config.cache_clear()
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+
+
+def test_clips_force_keeps_a_clip_reached_through_source_remap(monkeypatch, home, caplog, tmp_path):
+    project = _setup(home, monkeypatch)
+    out = project / "clips"
+    gone = tmp_path / "gone"
+    _remap_clips(home, monkeypatch, gone, out)
+    _segments(project / "seg.json", gone / "003_c.mp4")
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    assert (out / "003_c.mp4").read_bytes() == b"old 003_c.mp4"
+    assert "reads as a source" in _warnings(caplog)
+
+
+def test_clips_force_refuses_a_new_clip_name_reached_through_source_remap(
+    monkeypatch, home, tmp_path
+):
+    project = _setup(home, monkeypatch)
+    out = project / "clips"
+    gone = tmp_path / "gone"
+    _remap_clips(home, monkeypatch, gone, out)
+    _segments(project / "seg.json", gone / "001_a.mp4")
+    before = _snapshot(out)
+    assert cli.main(_argv("clips", project, "--force")) == 1
+    assert _snapshot(out) == before
