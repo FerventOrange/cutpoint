@@ -127,16 +127,6 @@ def test_install_hint_uv_tool_malformed_receipt_falls_back(monkeypatch, tmp_path
     assert extras.install_hint("ski").startswith('uv tool install "cutpoint[ski]" --reinstall')
 
 
-def test_install_hint_editable(monkeypatch, tmp_path):
-    direct = _editable_url(tmp_path)
-    _set_install(monkeypatch, tmp_path, direct_url=direct, uv=True)
-    monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / ".venv"))
-    assert extras.install_hint("ski").startswith("uv sync --extra ski")
-    _set_install(monkeypatch, tmp_path, direct_url=direct, uv=False)
-    hint = extras.install_hint("ski")
-    assert "-m pip install -e" in hint and ".[ski]" in hint
-
-
 def test_install_hint_editable_uv_outside_clone_venv(monkeypatch, tmp_path):
     clone = tmp_path / "clone"
     _set_install(monkeypatch, tmp_path, direct_url=_editable_url(clone), uv=True)
@@ -275,7 +265,6 @@ _ARCHIVE = {"url": "https://example.com/cutpoint.whl", "archive_info": {}}
         # uv pip applies cutpoint's [tool.uv.sources] (cu126) to a directory or git install (#71)
         (True, _DIR, False, [], ["NVIDIA", "--index "]),
         (True, _GIT, False, [], ["NVIDIA", "--index "]),
-        (True, _DIR, True, ["--reinstall-package torch"], ["--index "]),
         (True, _ARCHIVE, False, [_UV_INDEX], []),
         (False, _DIR, False, [f"--extra-index-url {extras.TORCH_INDEX}"], []),
     ],

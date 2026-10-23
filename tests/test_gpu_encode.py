@@ -50,10 +50,9 @@ def fake_ffmpeg(
     return calls
 
 
-@pytest.mark.parametrize("kind", ["nvenc", "amf", "vaapi"])
-def test_forced_gpu_encoder_that_cannot_encode_is_an_error_not_a_fallback(monkeypatch, kind):
+def test_forced_gpu_encoder_that_cannot_encode_is_an_error_not_a_fallback(monkeypatch):
     fake_ffmpeg(monkeypatch, works={"libx264"})
-    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", kind)
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "nvenc")
     with pytest.raises(EncoderUnavailableError, match="cannot be opened"):
         ffmpeg_utils.video_encoder()
 

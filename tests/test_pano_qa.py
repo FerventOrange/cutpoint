@@ -307,13 +307,12 @@ def test_single_short_flags_within_limits_pass() -> None:
     assert a["pass"] is True, a["fails"]
 
 
-@pytest.mark.parametrize("flag", ["occluded"])
 @pytest.mark.parametrize(("flagged", "ok"), [((9,), True), ((3, 12), False)])
-def test_single_flagged_frame_is_not_a_share_failure(flag: str, flagged, ok: bool) -> None:
+def test_single_flagged_frame_is_not_a_share_failure(flagged, ok: bool) -> None:
     # 19 frames: one flagged frame is 5.3 %, above the 3 % / 5 % shares
     frames = [rec(i / 2, []) for i in range(19)]
     for i in flagged:
-        frames[i]["flags"] = [flag]
+        frames[i]["flags"] = ["occluded"]
     a = qa.aggregate_clip(frames, 2.0, PAN_OK, None, TH)
     assert a["pass"] is ok, a["fails"]
 

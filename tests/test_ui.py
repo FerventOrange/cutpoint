@@ -298,6 +298,61 @@ def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) ->
     assert (failing.status, failing.error) == ("failed", "boom")
 
 
+@pytest.mark.parametrize(
+    ("event_sent", "exits_in_time"),
+    [(1, True), (0, False), (1, False)],
+    ids=["soft-stop-works", "no-console", "ignores-the-event"],
+)
+def test_windows_cancel_tries_ctrl_break_before_taskkill(
+    monkeypatch: pytest.MonkeyPatch, event_sent: int, exits_in_time: bool
+) -> None:
+    sent: list[tuple[int, int]] = []
+    waits: list[float] = []
+    runs: list[list[str]] = []
+
+    def send(event: int, pid: int) -> int:
+        sent.append((event, pid))
+        return event_sent
+
+    def wait(timeout: float) -> int:
+        waits.append(timeout)
+        if exits_in_time:
+            return 130
+        raise subprocess.TimeoutExpired("job", timeout)
+
+    kernel32 = SimpleNamespace(GenerateConsoleCtrlEvent=send)
+    monkeypatch.setitem(sys.modules, "ctypes", SimpleNamespace(WinDLL=lambda name: kernel32))
+    monkeypatch.setattr(ui, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(ui, "signal", SimpleNamespace(CTRL_BREAK_EVENT=1))
+    monkeypatch.setattr(ui, "SOFT_STOP_S", 0.01)
+    monkeypatch.setattr(
+        ui,
+        "subprocess",
+        SimpleNamespace(
+            run=lambda args, **kw: runs.append(args), TimeoutExpired=subprocess.TimeoutExpired
+        ),
+    )
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
+    assert sent == [(1, 4242)]
+    assert waits == ([0.01] if event_sent else [])  # no event, nothing to wait for
+    # taskkill /T /F always follows: it ends a job that ignored the event, with its ffmpeg
+    assert runs == [["taskkill", "/PID", "4242", "/T", "/F"]]
+
+
+def test_assemble_ignores_a_hidden_part_file_left_by_a_killed_export(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    (p / "clips_ui_1" / ".001_a.part.mp4").write_bytes(b"x")
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "assemble"})
+    assert res.status_code == 400
+    assert "export clips before assembling" in res.text
+
+
 @needs_ffmpeg
 def test_export_keeps_saved_order_and_each_assembly_is_kept(
     client: TestClient, tmp_path: Path

@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` on Windows: cancelling a job now sends `CTRL_BREAK_EVENT` to its process group
+  first and waits up to 5 seconds, so the command removes its partial files and exits 130; only
+  then does `taskkill /T /F` run (also the fallback when the UI has no console, for example under
+  pythonw). The UI no longer treats a hidden leftover `.<name>.part.mp4` as an exported clip when
+  deciding whether there is something to assemble (#125).
 - Windows: a JSON result file (`highlights.json`, `manifest.json`, cache files, ...) that stays
   locked now gives the same "open in another program" error naming the file as a locked clip,
   instead of a bare `PermissionError`. For "Access is denied" (error 5) the hint also says the

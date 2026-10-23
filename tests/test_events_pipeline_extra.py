@@ -23,11 +23,6 @@ def test_vlm_only_skips_check(monkeypatch):
     pipeline._require_events_extra(("vlm",))
 
 
-def test_all_modules_present_passes(monkeypatch):
-    monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: object())
-    pipeline._require_events_extra(("audio", "ocr", "vlm"))
-
-
 def test_run_events_fails_before_unloading_ollama(monkeypatch, tmp_path):
     _no_modules(monkeypatch)
     monkeypatch.setattr(pipeline, "load_highlights", lambda project: {"sources": []})

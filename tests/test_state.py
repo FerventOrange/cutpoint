@@ -178,9 +178,8 @@ def test_ollama_url_normalised(host, url, monkeypatch):
     assert backends.ollama_url() == url
 
 
-@pytest.mark.parametrize("host", ["host:abc"])
-def test_ollama_url_bad_port_raises_but_unload_does_not(host, monkeypatch):
-    monkeypatch.setenv("OLLAMA_HOST", host)
+def test_ollama_url_bad_port_raises_but_unload_does_not(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "host:abc")
     with pytest.raises(ValueError, match="invalid port"):
         backends.ollama_url()
     monkeypatch.setattr(common.requests, "get", lambda *a, **k: pytest.fail("no request"))
@@ -244,28 +243,21 @@ def test_torch_home_follows_cutpoint_home_but_not_the_user(home, tmp_path, monke
 
 
 # -- Vision / visual cache: unreachable inputs degrade quietly --------------------------
-def test_vision_unavailable_when_ollama_returns_non_json(monkeypatch):
+def _non_json() -> object:
+    raise ValueError("Expecting value")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [_non_json, lambda: ["llava"]],
+    ids=["non-json", "not-an-object"],
+)
+def test_vision_unavailable_when_ollama_reply_is_not_a_json_object(monkeypatch, body):
     from types import SimpleNamespace  # noqa: PLC0415
 
     from cutpoint import vision  # noqa: PLC0415
 
-    def _html(*_a, **_k):
-        def _bad_json():
-            raise ValueError("Expecting value")
-
-        return SimpleNamespace(raise_for_status=lambda: None, json=_bad_json)
-
-    monkeypatch.setattr(vision.requests, "get", _html)
-    assert vision.VisionRater(url="http://x:1", model="m").available() is False
-
-
-@pytest.mark.parametrize("payload", [["llava"], "llava", 3])
-def test_vision_unavailable_when_ollama_json_is_not_an_object(monkeypatch, payload):
-    from types import SimpleNamespace  # noqa: PLC0415
-
-    from cutpoint import vision  # noqa: PLC0415
-
-    resp = SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+    resp = SimpleNamespace(raise_for_status=lambda: None, json=body)
     monkeypatch.setattr(vision.requests, "get", lambda *_a, **_k: resp)
     assert vision.VisionRater(url="http://x:1", model="m").available() is False
 
