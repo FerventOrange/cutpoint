@@ -17,6 +17,8 @@ Trust boundaries:
   recorded source files, and only those under the source the user picked for it (or, for projects
   made on the command line, the inputs of its analysis); ``highlights.json`` alone never
   grants access to a file.
+* "Show folder" (``.../reveal``) opens only the folder of the project's own sources in the file
+  manager, without a shell; the request carries no path.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -119,6 +122,36 @@ def kill_tree(proc: subprocess.Popen[str]) -> None:
 
 def cutpoint_cmd(*args: str) -> list[str]:
     return [sys.executable, "-m", "cutpoint", *args]
+
+
+def folder_opener() -> Callable[[Path], None] | None:
+    """How this machine shows a folder in its file manager (no shell, no waiting), else None.
+
+    None where nobody could see the window: no ``xdg-open`` or no display (servers, Docker).
+    """
+    if sys.platform == "win32":
+        start = getattr(os, "startfile", None)
+        return None if start is None else lambda folder: start(str(folder))
+    if sys.platform == "darwin":
+        exe = shutil.which("open")
+    elif os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        exe = shutil.which("xdg-open")
+    else:
+        exe = None
+    if exe is None:
+        return None
+
+    def run(folder: Path) -> None:
+        proc = subprocess.Popen(
+            [exe, str(folder)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        threading.Thread(target=proc.wait, daemon=True).start()  # reap it; never block the request
+
+    return run
 
 
 # --------------------------------------------------------------------------- jobs
@@ -512,6 +545,29 @@ def source_entries(p: Path, hl: dict[str, Any] | None) -> list[dict[str, Any]]:
     ]
 
 
+def source_folder(p: Path) -> Path | None:
+    """The folder holding the project's videos: its picked source (a file's parent), or for a
+    command-line project the deepest folder shared by its recorded sources. Never client input."""
+    source = read_meta(p).get("source")
+    try:
+        if source:
+            # A picked folder that is gone must not fall back to its parent; only files step up.
+            x = remap_source(Path(str(source)))
+            is_file = x.is_file() or (not x.exists() and x.suffix.lower() in VIDEO_EXTS)
+            folders = [x.parent if is_file else x]
+        else:
+            hl = cache.load_json(p / "highlights.json")
+            entries = source_entries(p, hl if isinstance(hl, dict) else None)
+            folders = [remap_source(Path(s["path"])).parent for s in entries]
+        try:
+            folder = Path(os.path.commonpath(folders)) if folders else None
+        except ValueError:  # on different drives: there is no one folder to show
+            return None
+        return folder if folder is not None and folder.is_dir() else None
+    except OSError:  # unreadable or stale (permissions, network share): treat as gone
+        return None
+
+
 def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
     """Keep saved trims attached to source intervals, not mutable CLI ranks."""
     if hl is None:
@@ -703,7 +759,7 @@ def create_app(port: int) -> FastAPI:
 
     @secure.get("/session")
     def session():
-        return {"styles": ui_styles()}
+        return {"styles": ui_styles(), "can_reveal": folder_opener() is not None}
 
     @secure.get("/projects")
     def list_projects():
@@ -782,6 +838,23 @@ def create_app(port: int) -> FastAPI:
         review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
         cache.save_json(p / UI_DIR / "review.json", review)
         return review
+
+    @secure.post("/projects/{pid}/reveal")
+    def reveal_folder(pid: str):
+        """Show the folder of the project's videos in the file manager (path from the project)."""
+        folder = source_folder(project_dir(pid))
+        if folder is None:
+            raise bad("the folder with this project's videos no longer exists", 404)
+        opener = folder_opener()
+        if opener is None:
+            logger.info("cannot open %s: no file manager is available here", folder)
+            raise bad("Opening folders isn't available on this machine", 501)
+        try:
+            opener(folder)
+        except OSError as err:
+            logger.warning("opening %s failed: %s", folder, err)
+            raise bad(f"could not open the folder: {err.strerror or err}", 500) from err
+        return {"path": str(folder)}
 
     @secure.post("/projects/{pid}/jobs")
     def start_job(pid: str, body: dict[str, Any]):

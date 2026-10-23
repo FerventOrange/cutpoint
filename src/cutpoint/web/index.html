@@ -26,10 +26,13 @@
   <main id="workspace">
     <section class="col moments" aria-labelledby="momentsTitle">
       <div class="col-head">
-        <h2 id="momentsTitle">Moments</h2>
+        <h2 id="momentsTitle" tabindex="-1">Moments</h2>
         <span id="momentsCount" class="muted"></span>
         <span class="spacer"></span>
-        <button type="button" id="analyzeBtn" class="btn" hidden>Analyze footage</button>
+        <div class="moments-acts">
+          <button type="button" id="analyzeBtn" class="btn" hidden>Analyze again</button>
+          <button type="button" id="revealHeadBtn" class="btn outline" hidden>Show folder</button>
+        </div>
       </div>
       <label class="filter" id="filterWrap" hidden>
         <span class="vh">Filter moments by label or transcript</span>

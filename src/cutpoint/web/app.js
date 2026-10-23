@@ -16,6 +16,7 @@ const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
 
 const S = {
   styles: [],
+  canReveal: false, // the server can open a folder in this machine's file manager
   projects: [],
   id: null,
   project: null,
@@ -144,6 +145,7 @@ function adopt(p, switched) {
     S.focus = null;
     S.selected.clear();
     S.renaming = null;
+    delete $('#momentsEmpty').dataset.refocus;
     S.segments = structuredClone(p.review?.segments ?? []);
     S.savedKey = key();
     $('#projectSelect').value = p.id;
@@ -164,16 +166,25 @@ function renderMoments() {
   const p = S.project;
   const hl = p?.highlights;
   const list = cands();
-  $('#analyzeBtn').hidden = !p;
-  $('#analyzeBtn').textContent = hl ? 'Analyze again' : 'Analyze footage';
+  $('#analyzeBtn').hidden = !hl; // before analysis the empty state's own button replaces it
+  $('#revealHeadBtn').hidden = !hl || !S.canReveal; // likewise its own Show folder
+  $('.moments').classList.toggle('bare', !hl);
+  $('#analyzeBtn').textContent = 'Analyze again';
   $('#filterWrap').hidden = !list.length;
   $('#momentsCount').textContent = hl ? `${list.length} found, ${hl.style ?? p.style} style` : '';
-  if (!p) setEmpty($('#momentsEmpty'));
-  else if (!hl)
-    setEmpty($('#momentsEmpty'), h('p', {}, 'This project has not been analyzed yet. Analysis transcribes the audio and ranks the strongest moments. It can take a while on long footage.'));
+  const empty = $('#momentsEmpty');
+  // the big button had focus (disabling it while analysis runs moves focus to body): keep it in this column
+  const hadFocus = empty.contains(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
+  empty.classList.toggle('fresh', !!p && !hl);
+  if (!p) setEmpty(empty);
+  else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0);
   else if (!list.length)
-    setEmpty($('#momentsEmpty'), h('p', {}, 'Analysis found no moments. Try another style, or add footage and analyze again.'));
-  else setEmpty($('#momentsEmpty'));
+    setEmpty(empty, h('p', {}, 'Analysis found no moments. Try another style, or add footage and analyze again.'));
+  else setEmpty(empty);
+  if (!p || hl) {
+    delete empty.dataset.n;
+    delete empty.dataset.refocus;
+  }
 
   const q = S.filter.trim().toLowerCase();
   const max = Math.max(...list.map((c) => c.score), 1e-9);
@@ -208,7 +219,74 @@ function renderMoments() {
   });
   if (list.length && !items.length)
     $('#candList').replaceChildren(h('li', { class: 'empty', text: 'No moments match this filter.' }));
+  if (hadFocus && !empty.contains(document.activeElement))
+    ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
+}
+
+/** Folder with level bars, flanked by sound waves; decorative. Fixed 158:80 box so CSS cannot distort it. */
+function folderArt() {
+  const line = (x, len) => ['line', { class: 'wave', x1: x, x2: x, y1: 42 - len / 2, y2: 42 + len / 2 }];
+  const waves = [[4, 8], [9, 16], [14, 26], [19, 18], [24, 32], [29, 12]];
+  const el = svg('fresh-art', [
+    ['path', { d: 'M42 6h20l7 8h47a4 4 0 0 1 4 4v50a4 4 0 0 1-4 4H42a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z' }],
+    ['path', { d: 'M38 23h82' }],
+    ['rect', { x: 63, y: 50, width: 5, height: 11, rx: 1 }],
+    ['rect', { x: 72, y: 39, width: 5, height: 22, rx: 1 }],
+    ['rect', { x: 81, y: 42, width: 5, height: 19, rx: 1 }],
+    ['rect', { x: 90, y: 34, width: 5, height: 27, rx: 1 }],
+    ...waves.map(([x, len]) => line(x, len)),
+    ...waves.map(([x, len]) => line(154 - x, len)),
+  ], '0 0 158 80');
+  for (const [k, v] of Object.entries({ width: 158, height: 80, preserveAspectRatio: 'xMidYMid meet' })) el.setAttribute(k, v);
+  return el;
+}
+
+/** Project open but not analyzed: source count and the one button that starts analysis. */
+function renderUnanalyzed(el, n) {
+  if (el.dataset.n === String(n)) return; // polling re-renders; keep the button (and its focus)
+  el.dataset.n = n;
+  setEmpty(el,
+    folderArt(),
+    h('p', { class: `fresh-count${n ? '' : ' none'}` },
+      n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory'),
+    h('h3', { text: 'No moments analyzed yet' }),
+    h('p', { text: 'Analyze footage to transcribe audio and rank the strongest moments.' }),
+    h('button', {
+      type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
+      onclick: async (e) => {
+        e.currentTarget.disabled = true; // no second start while the request is in flight
+        el.dataset.refocus = '1';
+        // only until the user moves on: their next click or focus change ends it
+        const stop = new AbortController();
+        const drop = () => { delete el.dataset.refocus; stop.abort(); };
+        document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
+        document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
+        await startJob('analyze');
+        if (![...S.tracked.values()].includes('running')) renderBusy(); // it failed: enable again
+      },
+    }, 'Analyze footage'),
+    h('button', {
+      type: 'button', id: 'revealBtn', class: 'btn outline', hidden: !S.canReveal,
+      onclick: (e) => revealFolder(e.currentTarget),
+    }, icon('folder'), 'Show folder'),
+    h('p', { id: 'analyzeWhy', class: 'fresh-why', 'aria-live': 'polite' }),
+    h('p', { id: 'analyzeNote', class: 'fresh-note', text: 'This process can take a long time on large footage.' }),
+  );
+}
+
+/** Ask the server to show the project's source folder in the file manager. */
+async function revealFolder(btn) {
+  btn.disabled = true; // one request at a time
+  try {
+    await api(`/api/projects/${encodeURIComponent(S.id)}/reveal`, { method: 'POST' });
+    banner('');
+  } catch (e) {
+    fail(e);
+  } finally {
+    btn.disabled = false;
+    if (document.activeElement === document.body && btn.isConnected) btn.focus(); // disabling dropped it
+  }
 }
 
 function focusMoment(id) {
@@ -509,6 +587,7 @@ const ICONS = {
   up: [['path', { d: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z' }]],
   down: [['path', { d: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z' }]],
   film: [['path', { d: 'M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z' }]],
+  folder: [['path', { d: 'M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z' }]],
   grip: [[9, 5], [15, 5], [9, 12], [15, 12], [9, 19], [15, 19]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.9 }]),
 };
 const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);
@@ -954,6 +1033,17 @@ function renderBusy() {
     b.title = off ? reason : '';
   };
   set('#analyzeBtn', !p || busy, why);
+  const big = $('#analyzeBig');
+  if (big) {
+    const own = S.active?.project_id === S.id && S.active?.action === 'analyze';
+    const reason = own ? 'Analyzing… progress is in Jobs.' : busy ? why : 'Add videos to the source folder first.';
+    set('#analyzeBig', !p || busy || !p.sources?.length, reason);
+    const label = own ? 'Analyzing…' : 'Analyze footage';
+    if (big.textContent !== label) big.textContent = label;
+    const out = $('#analyzeWhy');
+    out.classList.toggle('progress', own);
+    if (out.textContent !== big.title) out.textContent = big.title; // live region: announce changes only
+  }
   set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
   set('#assembleBtn', !p || busy || !p.clips, busy ? why : 'Export clips first.');
   $('#exportPanel').disabled = !p;
@@ -1200,6 +1290,8 @@ function bind() {
     focusRow(0, 'select');
   });
   $('#analyzeBtn').addEventListener('click', () => startJob('analyze'));
+  $('#revealHeadBtn').prepend(icon('folder'));
+  $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
   $('#clipsBtn').addEventListener('click', () => {
     try {
       startJob('clips', exportOptions());
@@ -1255,7 +1347,9 @@ function bind() {
 async function main() {
   bind();
   try {
-    S.styles = (await startSession()).styles ?? [];
+    const session = await startSession();
+    S.styles = session.styles ?? [];
+    S.canReveal = session.can_reveal === true;
     openDialog = initNewProject(async (created) => {
       await loadProjects();
       await openProject(created.id);
