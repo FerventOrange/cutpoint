@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times
+  and ordering to candidates, and `360 repair` matches crash impacts to segments, by the resolved,
+  normalised source path (symlinks, `a/../b` spellings); `360 repair` reads a relative source in
+  the segments file against that file's folder, so a re-mix keeps carried clips and their ids. On
+  Windows a drive-relative source such as `D:a.insv` in `mix_exclude.json` is ignored with a
+  WARNING instead of silently never matching, and the rest of the file loads (`360 repair` keeps
+  the entry in the file when it rewrites it). `360 repair` stores one exclusion for a span already
+  stored under another spelling of its source (#181).
 - `cutpoint ui`: saving the review or exporting clips in a project made on the command line (no
   `ui` folder yet) no longer fails with a 500 error; the `ui` folder is created first. The project
   list no longer shows a folder that cannot be opened (for example one that is a symlink or
