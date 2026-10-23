@@ -829,8 +829,12 @@ def check_swap_target(dst: Path) -> None:
     """
     res = dst.resolve()
     if not res.name:
-        raise _root_error(dst)
-    if res.is_mount():
+        # A volume mounted into a folder (C:\mnt\vol) resolves to the volume's own root on
+        # Windows, so only a folder that is a root before resolving is a drive root.
+        own = Path(os.path.abspath(dst))  # noqa: PTH100 - normalises "..", no resolving
+        if not own.name or not own.is_mount():
+            raise _root_error(dst)
+    if not res.name or res.is_mount():
         raise ValueError(
             f"{dst} is a mount point, so the clips cannot be swapped in safely; {_SWAP_FIX}"
         )

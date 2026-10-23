@@ -11,9 +11,9 @@ ENV UV_LINK_MODE=copy UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE AGENTS.md ./
-RUN uv sync --locked --no-install-project --extra ui && uv cache clean
+RUN uv sync --locked --no-install-project --no-dev --extra ui && uv cache clean
 ARG INSTALL_EVENTS=false
-RUN if [ "$INSTALL_EVENTS" = true ]; then uv sync --locked --no-install-project --extra ui --extra events && uv cache clean; fi
+RUN if [ "$INSTALL_EVENTS" = true ]; then uv sync --locked --no-install-project --no-dev --extra ui --extra events && uv cache clean; fi
 
 COPY src ./src
 RUN uv pip install --no-deps --editable . && uv cache clean

@@ -46,9 +46,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The UI's "Remove from sequence" button moved above the video preview.
 - The UI's Moments column header no longer shows the "Moments" title (kept for screen readers);
   after analysis it shows the moment count, "Analyze again" and "Show folder".
+- The `dev` extra is replaced by a `dev` dependency group that `uv sync` and `uv run` install by
+  default, so `uv run pytest` works in a fresh clone; `--extra dev` is no longer accepted (#122).
 
 ### Fixed
 
+- `cutpoint ui` project metadata edge cases (#184): a preview proxy is not built or moved into
+  place when `ui/proxy` became a link outside the project while queued or encoding (its temporary
+  file is removed); one unreadable entry in the projects folder is skipped instead of failing the
+  project list with a 500 error; saving the review when `<project>/ui` is a file or a broken link
+  inside the project gives a 409 error "<project>/ui is not a folder; remove or rename it" instead
+  of a 500 error (a clips export gives it if `ui` changes during the request), and nothing is
+  created through the link (preparing a preview then fails with a WARNING naming it, without a
+  traceback); a clips export refused because another job is running or the
+  projects folder changed, or whose command could not be started, no longer leaves a
+  `segments-*.json` file behind.
+- On Windows, `clips --force`, `extend` in place and `extend --out ... --force` refuse a volume
+  mounted into an NTFS folder (for example `C:\mnt\vol`) with the mount-point message instead of
+  calling it a drive root. A real drive root (`C:\`, a UNC share root) keeps the drive-root
+  message (#185).
 - A failed or interrupted `cutpoint 360 repair --out <new folder>` removes the folders it created
   for `--out`, only while they are empty; existing folders and files are kept (#189).
 - `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times

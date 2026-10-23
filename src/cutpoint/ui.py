@@ -664,14 +664,17 @@ class Media:
             with self.lock:
                 if not proxy.is_file() and self.proxies.get(key) != "preparing":
                     self.proxies[key] = "preparing"
-                    self.pool.submit(self._build, real, proxy, key, res[2])
+                    self.pool.submit(self._build, project, real, proxy, key, res[2])
         return self.status(project, path)[0]
 
-    def _build(self, real: Path, proxy: Path, key: str, audio_streams: int) -> None:
+    def _build(self, project: Path, real: Path, proxy: Path, key: str, audio_streams: int) -> None:
         tmp = proxy.with_name(f"{key}.part.mp4")
         state = "failed"
         try:
-            proxy.parent.mkdir(parents=True, exist_ok=True)
+            _ui_folder(project)  # a ui that is a file: a clear refusal, not a traceback
+            proxy.parent.mkdir(exist_ok=True)
+            # a link made while this build was queued
+            _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")
             proc = spawn(proxy_args(real, tmp, audio_streams))
             self.procs.add(proc)
             try:
@@ -679,14 +682,18 @@ class Media:
             finally:
                 self.procs.discard(proc)
             if proc.returncode == 0 and not self.closing:
+                _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # a link made during the encode
                 tmp.replace(proxy)
                 state = ""
             else:
                 logger.warning("proxy of %s failed: %s", real.name, tail)
+        except HTTPException as err:  # refused: the temporary is removed below
+            logger.warning("proxy of %s failed: %s", real.name, err.detail)
         except OSError:
             logger.exception("proxy of %s failed", real.name)
         finally:
-            tmp.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):  # e.g. NotADirectoryError when ui is a file
+                tmp.unlink(missing_ok=True)
             with self.lock:
                 if state:
                     self.proxies[key] = state
@@ -731,7 +738,8 @@ class Media:
                         tmp.write_bytes(image)
                         tmp.replace(out)
                     finally:
-                        tmp.unlink(missing_ok=True)
+                        with contextlib.suppress(OSError):  # keeps the write's own error
+                            tmp.unlink(missing_ok=True)
                     self._evict_frames(out.parent)
         finally:
             with self.lock:
@@ -979,6 +987,15 @@ def _own(p: Path, name: str) -> Path:
     return p / name
 
 
+def _ui_folder(p: Path) -> None:
+    """Create ``p/ui`` if missing; 409 when it is a file or a dangling link (never followed)."""
+    _own(p, UI_DIR)
+    try:
+        (p / UI_DIR).mkdir(exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        raise bad(f"{p.name}/{UI_DIR} is not a folder; remove or rename it", 409) from None
+
+
 def _is_project(d: Path) -> bool:
     """``d`` holds UI metadata or an analysis of its own (not one a link points to)."""
     return any(
@@ -1188,11 +1205,14 @@ def create_app(port: int) -> FastAPI:
         root = projects_dir()
         found = []
         for d in sorted(root.iterdir()) if root.is_dir() else []:
-            if not d.is_dir() or (d / "pano.json").exists():
-                continue
             try:
+                if not d.is_dir() or (d / "pano.json").exists():
+                    continue
                 project_dir(d.name)  # listed only if it opens: the same name, folder and link rules
             except HTTPException:
+                continue
+            except OSError as err:  # one unreadable entry must not fail the whole list
+                logger.debug("skipping %s: %s", d.name, err)
                 continue
             found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
         return {"projects": found}
@@ -1262,7 +1282,7 @@ def create_app(port: int) -> FastAPI:
         )
         review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
         file = _own(p, f"{UI_DIR}/review.json")
-        file.parent.mkdir(exist_ok=True)  # a command-line project has no ui folder yet
+        _ui_folder(p)  # a command-line project has no ui folder yet
         cache.save_json(file, review)
         return review
 
@@ -1306,6 +1326,8 @@ def create_app(port: int) -> FastAPI:
         hl = hl if isinstance(hl, dict) else None
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         on_success: Callable[[], None] | None = None
+        prepare: Callable[[], None] | None = None
+        written: list[Path] = []  # files ``prepare`` wrote, removed if the job does not start
         if action == "analyze":
             inputs = (
                 [meta["source"]]
@@ -1345,11 +1367,15 @@ def create_app(port: int) -> FastAPI:
             out_name = fresh_name(p, f"clips_ui_{stamp}")
             seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
             _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the export
-            seg_file.parent.mkdir(exist_ok=True)  # a command-line project has no ui folder yet
-            # Exactly the trims the user made, in their order: no smart tails or speech snapping.
-            cache.save_json(
-                seg_file, [{**s, "smart_tail": False, "speech_aware": False} for s in segments]
-            )
+
+            def prepare() -> None:
+                _ui_folder(p)  # a command-line project has no ui folder yet
+                # Exactly the trims the user made, in their order: no smart tails or speech snapping.
+                cache.save_json(
+                    seg_file, [{**s, "smart_tail": False, "speech_aware": False} for s in segments]
+                )
+                written.append(seg_file)
+
             args = cutpoint_cmd(
                 "clips", str(p), "--segments", str(seg_file), "--out", str(p / out_name)
             )
@@ -1413,8 +1439,16 @@ def create_app(port: int) -> FastAPI:
             # resolved would run the job against the old one.
             if projects_dir().resolve() != p.resolve().parent:
                 raise bad("the projects folder changed; reload the page", 409)
+            if prepare:
+                prepare()  # only once the job may start: a refused one leaves no file behind
 
-        return jobs.start(pid, action, args, on_success, same_folder).view()
+        try:
+            return jobs.start(pid, action, args, on_success, same_folder).view()
+        except HTTPException:  # for example the command could not be started
+            for f in written:
+                with contextlib.suppress(OSError):
+                    f.unlink(missing_ok=True)
+            raise
 
     @secure.get("/jobs")
     def list_jobs():
