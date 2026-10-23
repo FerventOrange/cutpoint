@@ -76,7 +76,8 @@ Encoder checks actually encode a short clip; an encoder listed by ffmpeg is not 
 usable. This command downloads nothing. `--json` writes the report to stdout for other tools.
 
 Use `video_encoder` in `config.json` or `CUTPOINT_VIDEO_ENCODER` to select `auto`, `nvenc`,
-`amf`, `vaapi` or `cpu`. Auto falls back to software when no hardware probe succeeds; an
+`amf`, `vaapi` or `cpu`. Auto falls back to software when no hardware probe succeeds, and redoes an
+export once on the CPU if a GPU encode fails on real footage (one WARNING); an
 explicit unavailable GPU encoder fails rather than silently selecting another backend.
 AMD transcription remains CPU-only with the current faster-whisper runtime.
 See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device permissions.
@@ -170,7 +171,16 @@ Exports moments as `001_<label>.mp4`, `002_<label>.mp4`, ... in playback order, 
 `manifest.json`. Cuts are re-encoded for frame accuracy with a working NVIDIA/AMD hardware
 encoder, or libx264 when no hardware encoder passes its probe. Every clip gets the same
 resolution, frame rate, pixel format and audio, so clips join losslessly. The command refuses
-to write into a non-empty folder without `--force`.
+to write into a non-empty folder without `--force`. With `--force`, the new clips are exported
+into a hidden `.<folder>.cutpoint-tmp` next to the folder and swapped in only when every clip
+succeeded; a failed or cancelled run leaves the old clips as they were. `--force` replaces only
+what an earlier run made: the clips listed in the old `manifest.json`, leftover `.part.mp4`
+files, the names this run writes and `manifest.json`. A file the run reads as a source is never
+replaced; if a new clip name is one, the run stops with an error before exporting. Every other
+file stays, including `.mp4` files the old manifest does not list (renamed or added by hand); a
+WARNING names them, since `assemble` includes every `.mp4` in the folder; move them out before
+re-running `clips --force` if they are not part of the edit. Without a readable
+old manifest, only the new names are replaced.
 
 | Option | Meaning |
 |---|---|
@@ -187,7 +197,7 @@ to write into a non-empty folder without `--force`.
 | `--extend S`, `--extend-start S`, `--extend-end S` | Padding ("handles") for trimming in an editor |
 | `--speech-aware` / `--no-speech-aware`, `--speech-max-extend`, `--speech-max-lead` | Move in/out points to utterance boundaries |
 | `--audio-fade S` | Audio fade baked into each clip (default 0.25, 0 = off) |
-| `--out DIR`, `--force` | Output folder; replace a non-empty folder |
+| `--out DIR`, `--force` | Output folder; replace the clips an earlier run made in a non-empty folder |
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
 
@@ -256,7 +266,9 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   `--clip-override 005_* speech_max_extend=45`.
 - `--reuse DIR` copies a clip from an earlier output instead of re-encoding when source, in/out
   points, crop, format and fade are identical.
-- The original folder is never overwritten unless you pass `--out <clips_dir> --force`.
+- The original folder is never overwritten unless you pass `--out <clips_dir> --force`. Then
+  the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
+  or a clip locked by another program, leaves the original clips as they were.
 
 ## assemble
 

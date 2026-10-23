@@ -28,23 +28,38 @@ import threading
 import time
 import wave
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 
 from cutpoint import paths, state
-from cutpoint.config import get_config
+from cutpoint.cache import REPLACE_ATTEMPTS, load_json, save_json
+from cutpoint.config import get_config, path_key
 
 logger = logging.getLogger(__name__)
 
 
 class FFmpegError(RuntimeError):
     """Raised when ffmpeg/ffprobe is missing or a command fails."""
+
+
+def exit_code(rc: int) -> str:
+    """``rc`` as error messages show it.
+
+    Windows reports crash codes (NTSTATUS) unsigned, e.g. 3221225477; these are shown
+    signed with their hex form, ``-1073741819 (0xC0000005)``. Ordinary codes and POSIX
+    signals (``-9``) are shown as they are.
+    """
+    if -256 < rc < 2**31:
+        return str(rc)
+    u = rc & 0xFFFFFFFF
+    return f"{u - 2**32 if u >= 2**31 else u} (0x{u:08X})"
 
 
 @state.register_cache
@@ -132,7 +147,7 @@ def run(
     out = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         tail = "\n".join(out.strip().splitlines()[-15:])
-        raise FFmpegError(f"{args[0]} failed (exit {proc.returncode}):\n{tail}")
+        raise FFmpegError(f"{args[0]} failed (exit {exit_code(proc.returncode)}):\n{tail}")
     return out
 
 
@@ -196,7 +211,8 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
         stderr = err.read().decode("utf-8", "replace")
         if proc.returncode != 0:
             tail = "\n".join(stderr.strip().splitlines()[-15:])
-            raise FFmpegError(f"ffmpeg failed during {label} (exit {proc.returncode}):\n{tail}")
+            code = exit_code(proc.returncode)
+            raise FFmpegError(f"ffmpeg failed during {label} (exit {code}):\n{tail}")
     return ProgressResult(stderr=stderr, out_time=out_time)
 
 
@@ -615,6 +631,376 @@ def video_encoder() -> VideoEncoder:
     return VideoEncoder("cpu")
 
 
+# Codecs of auto-chosen GPU encoders that failed on real footage while libx264 then worked:
+# the rest of the run encodes on the CPU instead of failing and retrying every clip.
+_GPU_ENCODE_FAILED: set[str] = state.register_container(__name__, "_GPU_ENCODE_FAILED", set())
+
+
+def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T:
+    """Run ``encode`` with :func:`video_encoder`; retry once on the CPU if a GPU encode fails.
+
+    The probe in :func:`video_encoder` encodes 0.2 s of black, so a driver can still fail
+    on real footage. With ``video_encoder`` "auto" a failed GPU encode is retried with
+    libx264 (one WARNING); if that works, the GPU encoder is skipped for the rest of the
+    process. ffmpeg's error does not reliably say whether the encoder or something else
+    (a bad read, a filter) failed, so any failure is retried; a failure that is not the
+    encoder's fails again on the CPU and that error is raised. A CPU encode is not retried.
+
+    Raises:
+        FFmpegError: If the CPU encode fails, or a GPU encoder named in ``video_encoder``
+            fails (the message names the setting that switches to the CPU).
+    """
+    enc = VideoEncoder("cpu") if _GPU_ENCODE_FAILED else video_encoder()
+    try:
+        return encode(enc)
+    except FFmpegError as err:
+        if enc.kind == "cpu":
+            raise
+        choice = get_config().video_encoder
+        if choice != "auto":
+            raise FFmpegError(
+                f"{err}\n{what}: {enc.codec} (video_encoder {choice!r}) failed. Set "
+                'CUTPOINT_VIDEO_ENCODER=cpu or "video_encoder": "cpu" in config.json to '
+                "encode on the CPU."
+            ) from err
+        logger.warning(
+            "%s: %s failed (%s); retrying on the CPU (libx264)",
+            what,
+            enc.codec,
+            _first_error_line(err),
+        )
+    result = encode(VideoEncoder("cpu"))
+    if enc.codec not in _GPU_ENCODE_FAILED:
+        logger.info("Encoding the rest of this run with libx264 instead of %s", enc.codec)
+        _GPU_ENCODE_FAILED.add(enc.codec)
+    return result
+
+
+# Windows "Access is denied" and "being used by another process": the file is open elsewhere.
+_LOCKED_WINERRORS = (5, 32)
+
+
+def retry_locked[T](op: Callable[[], T], path: Path, action: str) -> T:
+    """Run ``op`` (replacing or deleting ``path``), retrying briefly on PermissionError.
+
+    On Windows another process (a player, an editor, a virus scanner) holding ``path``
+    open makes a rename or delete fail for a moment.
+
+    Raises:
+        PermissionError: Naming ``path`` and the program holding it, if it is still locked
+            (Windows error 5 or 32) after the retries; any other error as raised by ``op``.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            return op()
+        except PermissionError as err:
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+                continue
+            if getattr(err, "winerror", None) not in _LOCKED_WINERRORS:
+                raise
+            raise PermissionError(
+                f"Cannot {action} {path}: it is open in another program (a player, an editor "
+                f"or a virus scanner). Close it and re-run. ({err.strerror})"
+            ) from err
+    raise AssertionError("unreachable")
+
+
+@contextmanager
+def output_dir(path: Path) -> Iterator[Path]:
+    """Create the folder ``path``; on failure (Ctrl+C included) remove it again if this call
+    created it and it is still empty, so a failed run leaves no empty folder behind.
+
+    Missing parents are created too and removed the same way. A folder that existed before,
+    or that holds anything, is always kept.
+    """
+    created = [p for p in (path, *path.parents) if not p.exists()]
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        yield path
+    except BaseException:
+        for p in created:  # innermost first; a non-empty folder stops the walk
+            try:
+                p.rmdir()
+            except OSError:
+                break
+        raise
+
+
+def part_path(out: Path) -> Path:
+    """Temporary name :func:`atomic_output` writes ``out`` to: ``.<stem>.part<suffix>``.
+
+    The suffix is kept so ffmpeg picks the muxer; the leading dot keeps it out of the
+    clip listings (``assemble``, ``extend``).
+    """
+    return out.with_name(f".{out.stem}.part{out.suffix}")
+
+
+@contextmanager
+def atomic_output(out: Path) -> Iterator[Path]:
+    """Yield :func:`part_path` of ``out`` to write to, renamed onto ``out`` on success.
+
+    On any failure (Ctrl+C included) the partial file is removed and ``out`` is left as
+    it was, so a truncated file never appears under the final name. On Windows the rename
+    is retried briefly while another process (a virus scanner, a player) holds a file open.
+    """
+    part = part_path(out)
+    try:
+        yield part
+        retry_locked(lambda: part.replace(out), out, "replace")
+    except BaseException:
+        # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
+        with suppress(OSError):
+            part.unlink(missing_ok=True)
+        raise
+
+
+# --- all-or-nothing folder replace (``clips --force``, ``extend --out <clips_dir> --force``)
+#
+# A run exports into the hidden staging folder ``.<name>.cutpoint-tmp`` next to the output,
+# then :func:`swap_in` moves the originals it replaces into ``.<name>.cutpoint-bak`` and the
+# new files in. The backup holds a journal (the old and new names) until every new file is
+# in; on any failure the originals are put back. A hard kill leaves the journal, so the next
+# run's :func:`recover_swap` finishes the job: journal present, put the originals back;
+# backup without journal, the new set was complete, drop the backup.
+
+_SWAP_JOURNAL = ".cutpoint-swap.json"
+
+
+def staging_path(dst: Path) -> Path:
+    """Hidden staging folder of ``dst``: ``.<name>.cutpoint-tmp`` next to it."""
+    dst = dst.resolve()  # "." and ".." have no usable name; a symlink's target is the folder
+    return dst.with_name(f".{dst.name}.cutpoint-tmp")
+
+
+def backup_path(dst: Path) -> Path:
+    """Hidden folder :func:`swap_in` moves the replaced originals of ``dst`` to."""
+    dst = dst.resolve()
+    return dst.with_name(f".{dst.name}.cutpoint-bak")
+
+
+def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
+    """Put the originals in ``bak`` back into ``dst`` and drop the new-only files there.
+
+    Both steps are best effort: one locked file does not stop the others. The journal is
+    removed last and only if every file went back, so a restore that fails half-way is
+    redone by :func:`recover_swap`. A ``dst`` the swap created is removed when empty.
+
+    Raises:
+        OSError: The first error, after every file was tried.
+    """
+    errors: list[OSError] = []
+    old = set(journal["old"])
+    for name in journal["old"]:
+        src = bak / name
+        if src.exists() or src.is_symlink():  # else it never left dst
+            try:
+                retry_locked(partial(src.replace, dst / name), dst / name, "restore")
+            except OSError as err:
+                errors.append(err)
+    for name in journal["new"]:
+        if name not in old:  # never a user file: swap_in records every existing name as old
+            f = dst / name
+            try:
+                retry_locked(partial(f.unlink, missing_ok=True), f, "delete")
+            except OSError as err:
+                errors.append(err)
+    if errors:
+        raise errors[0]
+    (bak / _SWAP_JOURNAL).unlink()
+    bak.rmdir()
+    if journal.get("created"):
+        with suppress(OSError):  # not empty: something else was put there meanwhile
+            dst.rmdir()
+
+
+def recover_swap(dst: Path) -> None:
+    """Clean up after a :func:`swap_in` or staged export killed hard (``taskkill /F``).
+
+    With a journal the originals are put back; a backup without one is from a completed
+    swap and is removed. A stale staging folder (only this tool's output) is removed.
+
+    Raises:
+        RuntimeError: If the journal is unreadable or malformed; the backup is left as is.
+        PermissionError: If a leftover backup or staging folder cannot be removed (a file
+            in it is still open); the next swap could not start with it in place.
+    """
+    bak = backup_path(dst)
+    if bak.exists():
+        path = bak / _SWAP_JOURNAL
+        if not (path.exists() or path.is_symlink()):
+            # Nothing in it is needed, but it must go: the next swap_in creates it anew.
+            _remove_leftover(bak, f"left over from a finished replace of {dst}")
+        else:
+            journal = load_json(path)
+            if not (
+                isinstance(journal, dict)
+                and all(
+                    isinstance(journal.get(k), list) and all(isinstance(n, str) for n in journal[k])
+                    for k in ("old", "new")
+                )
+            ):
+                raise RuntimeError(
+                    f"An earlier replace of {dst} was interrupted and its record {path} cannot "
+                    f"be read. The original files are in {bak}: move them back into {dst} by "
+                    f"hand, then delete {bak} and re-run."
+                )
+            _restore(dst, bak, journal)
+            logger.warning("Put back the original files of %s from an interrupted replace", dst)
+    tmp = staging_path(dst)
+    if tmp.exists():
+        _remove_leftover(tmp, f"left over from an interrupted export into {dst}")
+
+
+def _remove_leftover(path: Path, why: str) -> None:
+    """Remove the folder ``path`` (retried briefly while a file in it is locked).
+
+    Raises:
+        PermissionError: Saying ``why`` it is there and how to fix it, if it stays locked
+            (on Windows: a file in it is open in a player or a virus scanner, or a scanner
+            briefly keeps it non-empty, error 145).
+        OSError: Saying ``why`` it is there, for any other failure.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as err:
+            locked = isinstance(err, PermissionError) or getattr(err, "winerror", None) == 145
+            if not locked:
+                raise OSError(
+                    f"Cannot remove {path}, {why}: {err.strerror or err}. Delete the folder "
+                    f"and re-run."
+                ) from err
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+                continue
+            raise PermissionError(
+                f"Cannot remove {path}, {why}: it is open in another program (a player, an "
+                f"editor or a virus scanner). Close it, or delete the folder, and re-run. "
+                f"({err.strerror or err})"
+            ) from err
+
+
+@contextmanager
+def staged_dir(dst: Path) -> Iterator[Path]:
+    """Yield a fresh :func:`staging_path` of ``dst`` to export into, removed on failure.
+
+    The caller moves the result in with :func:`swap_in`. Call :func:`recover_swap` first
+    when ``dst`` is checked for existing files before this.
+    """
+    recover_swap(dst)
+    tmp = staging_path(dst)
+    tmp.mkdir()
+    try:
+        yield tmp
+    except BaseException:
+        # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
+        try:
+            shutil.rmtree(tmp)
+        except OSError as err:
+            logger.warning("Could not remove %s (%s); the next run removes it", tmp, err)
+        raise
+
+
+def file_keys(path: Path) -> set[Any]:
+    """Identities of the file ``path`` for :func:`same_file`: its resolved path (case-folded
+    on Windows) and, where the file system has them, its device and inode numbers, so a
+    symlink, a hard link or another spelling of the same file matches. Empty if missing."""
+    keys: set[Any] = set()
+    try:
+        st = path.stat()
+    except OSError:
+        return keys
+    keys.add(path_key(str(path.resolve())))
+    if st.st_ino:  # 0: no usable inode numbers (some network shares)
+        keys.add((st.st_dev, st.st_ino))
+    return keys
+
+
+def same_file(path: Path, keys: set[Any]) -> bool:
+    """True if ``path`` is one of the files whose :func:`file_keys` are in ``keys``."""
+    return bool(file_keys(path) & keys)
+
+
+def check_not_sources(dst: Path, names: Iterable[str], sources: set[Any]) -> None:
+    """Fail before any export if writing ``names`` into ``dst`` would replace a source.
+
+    ``sources`` holds the :func:`file_keys` of every file the run reads.
+
+    Raises:
+        ValueError: Naming the first such file.
+    """
+    for n in names:
+        if same_file(dst / n, sources):
+            raise ValueError(
+                f"Cannot write {dst / n}: this run reads it as a source. Move the source out "
+                f"of {dst}, or export into another folder (--out)."
+            )
+
+
+def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
+    """Move every file of ``new`` into ``dst``, all or nothing, and remove ``new``.
+
+    The files ``old`` (names in ``dst``) and those the new files replace are moved to
+    :func:`backup_path` first and deleted only after every new file is in. On any failure
+    (a locked file, Ctrl+C) the originals are put back and the error is re-raised. If even
+    that fails, the backup is kept and the next run puts them back (:func:`recover_swap`).
+    A missing ``dst`` is created, and removed again on failure.
+
+    Raises:
+        PermissionError: Naming the file, if one stays locked (see :func:`retry_locked`).
+    """
+    created = not dst.exists()
+    # manifest.json last in, first out: it never lists a clip that is not there
+    names = sorted((p.name for p in new.iterdir()), key=lambda n: (n == "manifest.json", n))
+    olds = (
+        []
+        if created
+        else sorted(
+            {n for n in [*old, *names] if (dst / n).exists() or (dst / n).is_symlink()},
+            key=lambda n: (n != "manifest.json", n),
+        )
+    )
+    journal = {"old": olds, "new": names, "created": created}
+    bak = backup_path(dst)
+    bak.mkdir()
+    try:
+        save_json(bak / _SWAP_JOURNAL, journal)
+        if created:
+            dst.mkdir()
+        for n in olds:
+            retry_locked(partial((dst / n).replace, bak / n), dst / n, "replace")
+        for n in names:
+            retry_locked(partial((new / n).replace, dst / n), dst / n, "replace")
+    except BaseException:
+        try:
+            if (bak / _SWAP_JOURNAL).exists():
+                _restore(dst, bak, journal)
+            else:
+                bak.rmdir()
+        except BaseException as err:  # a second Ctrl+C too: say where the originals are
+            logger.error(
+                "Could not put back every original file of %s (%s): the rest are in %s. "
+                "The next cutpoint run on this folder puts them back.",
+                dst,
+                err or type(err).__name__,
+                bak,
+            )
+            if not isinstance(err, Exception):
+                raise
+        raise
+    # The new set is complete: the backup is no longer needed.
+    journal_path = bak / _SWAP_JOURNAL
+    retry_locked(journal_path.unlink, journal_path, "delete")
+    try:
+        shutil.rmtree(bak)
+    except OSError as err:  # still open (a virus scanner): recover_swap removes it later
+        logger.warning("Could not remove %s (%s); the next run removes it", bak, err)
+    with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
+        new.rmdir()
+
+
 def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:
     """Decode a single frame at time ``t`` and return it as JPEG bytes."""
     try:
@@ -737,7 +1123,7 @@ def ffprobe_json(
     proc = _exec("ffprobe", args, timeout, path)
     if proc.returncode != 0:
         raise FFmpegError(
-            f"ffprobe failed on {path} (exit {proc.returncode}):\n{_tail(proc.stderr)}"
+            f"ffprobe failed on {path} (exit {exit_code(proc.returncode)}):\n{_tail(proc.stderr)}"
         )
     try:  # decoded leniently, as run() always has (tags may hold invalid UTF-8)
         return json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
@@ -1162,8 +1548,9 @@ def decode_pcm(
     )
     proc = _exec("ffmpeg", args, timeout, path)
     if proc.returncode != 0:
+        code = exit_code(proc.returncode)
         raise FFmpegError(
-            f"ffmpeg audio decode of {path} failed (exit {proc.returncode}):\n{_tail(proc.stderr)}"
+            f"ffmpeg audio decode of {path} failed (exit {code}):\n{_tail(proc.stderr)}"
         )
     data = proc.stdout
     return np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2")

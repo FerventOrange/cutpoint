@@ -30,7 +30,9 @@ def clip_sheets(
 
     manifest = cache.load_json(clips_dir / "manifest.json") or {}
     by_file = {e["file"]: e for e in manifest.get("clips", [])}
-    files = sorted(clips_dir.glob("*.mp4"), key=natural_key)
+    files = sorted(
+        (f for f in clips_dir.glob("*.mp4") if not f.name.startswith(".")), key=natural_key
+    )
     out_dir = clips_dir.with_name(clips_dir.name + "_check")
     sheets: list[Path] = []
     for k in range(0, len(files), clips_per_sheet):

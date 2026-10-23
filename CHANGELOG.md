@@ -31,6 +31,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Exports no longer leave a broken file under the real name (#109). Clips, `extend`, 360 renders
+  and `final.mp4` are written to a hidden `.<name>.part.mp4` and renamed when complete. A failed
+  or cancelled export (Ctrl+C, or the UI cancel on Linux and macOS) leaves no partial file and
+  removes the temp file. A hard kill (SIGKILL, or the UI cancel on Windows, which uses
+  `taskkill /F`) can leave a hidden `.part.mp4`; every command ignores it and `clips --force`
+  removes it.
+- `clips --force` and `extend --out <clips_dir> --force` replace the folder all or nothing
+  (#109). The new clips are exported into a hidden `.<folder>.cutpoint-tmp` next to the folder
+  and swapped in only when every clip succeeded. Before, `clips --force` deleted the old clips
+  and `manifest.json` first, so a failed or cancelled run left an empty folder, and an in-place
+  `extend` stopped by a locked clip left a mix of new and old clips and a `clips.tmp` folder.
+  Now a failure (a GPU encode error, Ctrl+C, a clip locked by another program) leaves the old
+  clips and manifest untouched and no temp folder. `clips --force` replaces only what an earlier
+  cutpoint run made: the clips listed in the old `manifest.json`, leftover `.part.mp4` files and
+  the names it writes, plus `manifest.json`. Before, it deleted every `.mp4` in the folder, so
+  with `--out` pointing at the folder of the footage it deleted the source video it had just
+  read. Now a file the run reads is never replaced (a new clip name that is a source stops the
+  run with an error before any export); any other `.mp4` (a clip renamed during review or added
+  by hand) stays and is assembled, with a WARNING naming it; with
+  no readable old manifest only the new names are replaced. After a hard kill mid-swap, the
+  next `clips` or `extend` on that folder puts the old clips back from `.<folder>.cutpoint-bak` (if its record is unreadable, it stops with an error and leaves the backup for you to restore by hand).
+  A failed fresh `clips` run now leaves no partial clips, so it can be re-run without `--force`.
+  A leftover `.<folder>.cutpoint-bak` or `.cutpoint-tmp` that cannot be removed (a file in it
+  still open, on Windows) now stops the next run with an error that names the folder and says
+  to close the program or delete the folder, instead of a raw `[WinError 32]`.
+- A failed run of `clips`, `extend` or `assemble` no longer leaves behind an empty output folder
+  that it created. When a file stays locked on Windows (open in a player, an editor or a virus
+  scanner), the error now names the file and says to close it and re-run. ffmpeg crash codes
+  show signed with their hex value, for example `exit -1073741819 (0xC0000005)` (#109).
+- With `video_encoder` `auto`, if a GPU encode (NVENC, AMF or VAAPI) fails on real footage, that
+  clip, 360 render or final video is redone once on the CPU (libx264) with one WARNING, and the
+  rest of the run uses the CPU. A forced GPU encoder is not retried; its error now says to set
+  `CUTPOINT_VIDEO_ENCODER=cpu` or `"video_encoder": "cpu"` in `config.json` (#109).
 - A failed GPU encoder probe (`cutpoint capabilities`, or a video encoder forced with
   `CUTPOINT_VIDEO_ENCODER`) now reports ffmpeg's first real error, for example "Cannot load
   libcuda.so.1", instead of the trailing "Nothing was written into output file" or "Conversion

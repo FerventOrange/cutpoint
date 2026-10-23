@@ -62,9 +62,11 @@ from cutpoint.encode import audio_fade_filter
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
+    VideoEncoder,
+    atomic_output,
+    encode_with_fallback,
     probe,
     run,
-    video_encoder,
 )
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
@@ -297,24 +299,22 @@ def render_segment(
         f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
         f"v_fov={init['v_fov']:.3f}:w={fmt.width}:h={fmt.height}:interp=line"
     )
-    enc = video_encoder()  # resolved before the NVDEC retry loop, which would swallow its error
     body = (
         f"{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
         f"setsar=1,fps={fmt.fps}:round=down,format=yuv420p"
     )
-    vf = f"{stack}{enc.chain(body)}[v]"
     af = f"[{audio_idx}:a:0]{a_fmt}[a]"
-    t0 = time.perf_counter()
-    text = ""
-    for hw in (True, False):
+
+    def args_for(enc: VideoEncoder, hw: bool, dst: Path) -> list[str]:
         args = ["ffmpeg", "-y", "-v", "error"]
         # Read moved footage through source_remap; the record keeps the original inputs.
         for inp in src.inputs:
             args += (["-hwaccel", "cuda"] if hw else []) + seek + ["-i", str(remap_source(inp))]
         args += [*seek, "-i", str(remap_source(clip.source))]
-        args += [
+        return [
+            *args,
             "-filter_complex",
-            f"{vf};{af}",
+            f"{stack}{enc.chain(body)}[v];{af}",
             "-map",
             "[v]",
             "-map",
@@ -338,21 +338,32 @@ def render_segment(
             "90000",
             "-movflags",
             "+faststart",
-            str(out),
+            str(dst),
         ]
-        try:
-            text = run(args, cwd=work)
-            break
-        except FFmpegError as err:
-            if not hw:
-                raise
-            logger.warning(
-                "  %s: NVDEC render failed, retrying on the CPU (%s)",
-                out.name,
-                str(err).splitlines()[-1][:200],
-            )
+
+    # Once NVDEC failed for this segment, the CPU-encoder retry decodes on the CPU too.
+    nvdec = [True]
+
+    def encode(enc: VideoEncoder, dst: Path) -> str:
+        """Render into ``dst`` with ``enc``: NVDEC first, then CPU decoding."""
+        if nvdec[0]:
+            try:
+                return run(args_for(enc, True, dst), cwd=work)
+            except FFmpegError as err:
+                nvdec[0] = False
+                logger.warning(
+                    "  %s: NVDEC render failed, retrying on the CPU (%s)",
+                    out.name,
+                    str(err).splitlines()[-1][:200],
+                )
+        return run(args_for(enc, False, dst), cwd=work)
+
+    t0 = time.perf_counter()
+    # A failed auto GPU encode is redone with libx264; out only appears once complete.
+    with atomic_output(out) as part:
+        text = encode_with_fallback(lambda enc: encode(enc, part), out.name)
+        got = probe(part).duration
     el = time.perf_counter() - t0
-    got = probe(out).duration
     found = [m.strip() for m in READ_ERROR_RE.findall(text)]
     read_err = None
     if found or got < dur - 0.3:
@@ -532,15 +543,23 @@ class PanoExporter:
                 ", ".join(diff[:8]) + (", ..." if len(diff) > 8 else ""),
             )
 
+    def _modes(self, mode: str | None) -> list[str]:
+        """Source modes :meth:`_source` tries, in order: ``source_mode`` alone, or a
+        recorded ``mode`` that differs from it, then ``auto``."""
+        if mode is None or mode == self.source_mode:
+            return [self.source_mode]
+        return [mode, "auto"]
+
     def _source(self, clip: X3Clip, mode: str | None) -> RenderSource:
         """Render source for ``mode`` (a clip's recorded mode), else ``source_mode``.
 
         A recorded mode that is no longer available falls back to ``auto``.
         """
-        if mode is None or mode == self.source_mode:
-            return resolve_source(clip, self.source_mode)
+        first, *fallback = self._modes(mode)
+        if not fallback:
+            return resolve_source(clip, first)
         try:
-            src = resolve_source(clip, mode)
+            src = resolve_source(clip, first)
         except (FileNotFoundError, ValueError) as err:
             logger.warning(
                 "  clip %s: recorded 360 source %r unavailable (%s); using auto",
@@ -548,7 +567,7 @@ class PanoExporter:
                 mode,
                 err,
             )
-            return resolve_source(clip, "auto")
+            return resolve_source(clip, fallback[0])
         if src.preview:
             best = resolve_source(clip, "auto")
             if not best.preview:
@@ -560,6 +579,26 @@ class PanoExporter:
                     best.mode,
                 )
         return src
+
+    def inputs(self, source: str, mode: str | None = None) -> list[Path]:
+        """Files a render of ``source`` may read, kept safe from ``clips --force``: the
+        camera files (``.lrv``, ``.insv``), ``clip.source`` and the render input that
+        :meth:`export` with ``source_mode=mode`` picks (falling back to ``auto``), each as
+        recorded and through ``source_remap``. Never raises for an unavailable mode (the
+        render reports it); empty if ``source`` is not an X3 clip of the project."""
+        from cutpoint.config import remap_source  # noqa: PLC0415
+
+        clip = clip_for(self.clips, source)
+        if clip is None:
+            return []
+        files = [p for p in (clip.lrv, *clip.insv, clip.source) if p]
+        for m in dict.fromkeys([*self._modes(mode), "auto"]):
+            try:
+                files += resolve_source(clip, m).inputs
+                break
+            except (FileNotFoundError, ValueError):
+                continue
+        return [q for f in files for q in (Path(f), remap_source(f))]
 
     def export(
         self,

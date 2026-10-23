@@ -24,11 +24,14 @@ from pathlib import Path
 from cutpoint.encode import audio_fade_filter
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
+    VideoEncoder,
+    atomic_output,
+    encode_with_fallback,
     extract_audio,
     measure_loudness,
+    output_dir,
     probe,
     run,
-    video_encoder,
 )
 from cutpoint.timeline import write_timelines
 from cutpoint.transcribe import Segment, Transcriber, flat_words
@@ -88,7 +91,10 @@ def _normalize_inputs(
 
 
 def _encode(files: list[Path], graph: str, out: Path) -> None:
-    enc = video_encoder()
+    encode_with_fallback(lambda enc: _encode_with(enc, files, graph, out), "assemble")
+
+
+def _encode_with(enc: VideoEncoder, files: list[Path], graph: str, out: Path) -> None:
     if enc.upload:  # the graphs end in [v]: hand the frames to the GPU encoder
         graph += f";[v]{enc.upload}[vgpu]"
     args = ["ffmpeg", "-y", "-v", "error"]
@@ -351,14 +357,17 @@ def post_process(
     model: str | None,
     limit_db: float = LIMIT_START_DB,
     ass: Path | None = None,
+    dst: Path | None = None,
 ) -> Path | None:
     """Apply loudness normalisation (+ true-peak limiter) and/or burned-in captions.
+
+    ffmpeg writes ``dst`` (default ``out``); the caption files are named after ``out``.
 
     Returns:
         The caption ASS file (reuse it via ``ass`` when re-running), if any.
     """
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(stage.resolve())]
-    cwd = None
+    cwd, vf = None, None
     if captions:
         if ass is None:
             info = probe(stage)
@@ -377,31 +386,35 @@ def post_process(
                 "Captions: %d chunks (whisper %s on %s)", len(chunks), tr.model_name, tr.device
             )
         cwd = ass.parent  # relative path avoids Windows drive-colon escaping in filters
-        enc = video_encoder()
-        args += ["-vf", enc.chain(f"ass={ass.name}"), *enc.args()]
-    else:
-        args += ["-c:v", "copy"]
+        vf = f"ass={ass.name}"
     if loudnorm:
-        args += ["-af", f"{loudnorm_filter(stage)},{limiter_filter(limit_db)}", *FINAL_AUDIO_OUT]
+        a_args = ["-af", f"{loudnorm_filter(stage)},{limiter_filter(limit_db)}", *FINAL_AUDIO_OUT]
     else:
-        args += ["-c:a", "copy"]
-    args += ["-movflags", "+faststart", str(out.resolve())]
-    run(args, cwd=cwd)
+        a_args = ["-c:a", "copy"]
+    tail = [*a_args, "-movflags", "+faststart", str((dst or out).resolve())]
+    if vf is None:
+        run([*args, "-c:v", "copy", *tail])
+    else:
+        encode_with_fallback(
+            lambda enc: run([*args, "-vf", enc.chain(vf), *enc.args(), *tail], cwd=cwd), out.name
+        )
     return ass
 
 
 def normalize_with_ceiling(
-    stage: Path, out: Path, captions: bool, model: str | None
+    stage: Path, out: Path, captions: bool, model: str | None, dst: Path | None = None
 ) -> tuple[float, float]:
     """Loudnorm + limiter, re-run with a lower ceiling until true peak <= TP_CEILING.
+
+    ``dst`` as for :func:`post_process`.
 
     Returns:
         Measured (integrated LUFS, true peak dBTP) of the final file.
     """
     limit_db, ass = LIMIT_START_DB, None
     for attempt in range(1, LIMIT_PASSES + 1):
-        ass = post_process(stage, out, True, captions, model, limit_db, ass)
-        lufs, tp = measure_loudness(out)
+        ass = post_process(stage, out, True, captions, model, limit_db, ass, dst)
+        lufs, tp = measure_loudness(dst or out)
         logger.info(
             "Loudness pass %d: %.1f LUFS, true peak %+.2f dBTP (limiter %.1f dBFS)",
             attempt,
@@ -416,6 +429,38 @@ def normalize_with_ceiling(
         "True peak %+.2f dBTP is still above %.1f after %d passes", tp, TP_CEILING, LIMIT_PASSES
     )
     return lufs, tp
+
+
+def _join(
+    files: list[Path],
+    infos: list[MediaInfo],
+    clips_dir: Path,
+    out: Path,
+    transition: str,
+    fade_dur: float,
+    audio_fade: float,
+) -> None:
+    """Join ``files`` into ``out`` with cuts or crossfades (see :func:`assemble`)."""
+    if len(files) == 1 or transition == "cut":
+        baked = baked_fades(clips_dir, files)
+        fades = [0.0 if b > 0 else max(0.0, audio_fade) for b in baked]
+        n_add = sum(f > 0 for f in fades)
+        logger.info(
+            "Audio edge fades: %d clip(s) already faded (baked), %s",
+            sum(b > 0 for b in baked),
+            f"adding {audio_fade:g}s to {n_add}" if n_add else "adding none",
+        )
+        uniform = len({i.concat_key() for i in infos}) == 1 and infos[0].audio_streams == 1
+        if uniform:
+            concat_copy(files, out, infos, fades)
+        else:
+            logger.info("Clip parameters differ; re-encoding instead of stream copy")
+            concat_reencode(files, infos, out, fades)
+    elif transition == "fade":
+        used = crossfade(files, infos, out, fade_dur)
+        logger.info("Crossfade duration %.3fs", used)
+    else:
+        raise ValueError(f"Unknown transition {transition!r}")
 
 
 def assemble(
@@ -446,43 +491,26 @@ def assemble(
     files = list_clips(clips_dir, exclude={out})
     if not files:
         raise FileNotFoundError(f"No .mp4 clips in {clips_dir}")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    infos = [probe(f) for f in files]
-    logger.info(
-        "Assembling %d clips (%s): %s", len(files), transition, ", ".join(f.name for f in files)
-    )
-
-    stage = out.with_name(f".{out.stem}.stage.mp4") if (loudnorm or captions) else out
-    if len(files) == 1 or transition == "cut":
-        baked = baked_fades(clips_dir, files)
-        fades = [0.0 if b > 0 else max(0.0, audio_fade) for b in baked]
-        n_add = sum(f > 0 for f in fades)
+    # A run that fails before writing anything leaves no empty output folder behind.
+    with output_dir(out.parent):
+        infos = [probe(f) for f in files]
         logger.info(
-            "Audio edge fades: %d clip(s) already faded (baked), %s",
-            sum(b > 0 for b in baked),
-            f"adding {audio_fade:g}s to {n_add}" if n_add else "adding none",
+            "Assembling %d clips (%s): %s", len(files), transition, ", ".join(f.name for f in files)
         )
-        uniform = len({i.concat_key() for i in infos}) == 1 and infos[0].audio_streams == 1
-        if uniform:
-            concat_copy(files, stage, infos, fades)
-        else:
-            logger.info("Clip parameters differ; re-encoding instead of stream copy")
-            concat_reencode(files, infos, stage, fades)
-    elif transition == "fade":
-        used = crossfade(files, infos, stage, fade_dur)
-        logger.info("Crossfade duration %.3fs", used)
-    else:
-        raise ValueError(f"Unknown transition {transition!r}")
 
-    if stage != out:
-        try:
-            if loudnorm:
-                lufs, tp = normalize_with_ceiling(stage, out, captions, caption_model)
-                logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
-            else:
-                post_process(stage, out, False, captions, caption_model)
-        finally:
-            stage.unlink(missing_ok=True)
+        # Written to a temporary name: final.mp4 only appears once complete.
+        with atomic_output(out) as part:
+            stage = out.with_name(f".{out.stem}.stage.mp4") if (loudnorm or captions) else part
+            try:
+                _join(files, infos, clips_dir, stage, transition, fade_dur, audio_fade)
+                if loudnorm:
+                    lufs, tp = normalize_with_ceiling(stage, out, captions, caption_model, part)
+                    logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
+                elif captions:
+                    post_process(stage, out, False, captions, caption_model, dst=part)
+            finally:
+                if stage != part:
+                    stage.unlink(missing_ok=True)
 
     fcp, oti = write_timelines(infos, out)
     logger.info("Wrote %s (%.2fs), %s, %s", out, probe(out).duration, fcp.name, oti.name)

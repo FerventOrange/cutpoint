@@ -12,9 +12,12 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import urllib.error
+from collections.abc import Iterator
 from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
@@ -945,6 +948,31 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _raise_interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
+@contextlib.contextmanager
+def _sigterm_as_interrupt() -> Iterator[None]:
+    """Treat SIGTERM like Ctrl+C while a command runs.
+
+    The UI cancels a job by sending SIGTERM to its process group; by default Python then dies
+    without unwinding, leaving half-written ``.part.mp4`` files behind. Raising
+    KeyboardInterrupt runs the cleanup and the exit-130 path. ffmpeg children get the same
+    SIGTERM from the group kill. Windows: the UI uses ``taskkill /T /F``, which cannot be
+    caught, so nothing is installed there. Outside the main thread ``signal.signal`` raises
+    ValueError, so nothing is installed there either.
+    """
+    if os.name == "nt" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGTERM, _raise_interrupt)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
     args = build_parser().parse_args(argv)
@@ -977,7 +1005,8 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         pass
     try:
-        code = args.func(args)
+        with _sigterm_as_interrupt():
+            code = args.func(args)
     except ModuleNotFoundError as err:
         from cutpoint.extras import missing_module_message  # noqa: PLC0415
 

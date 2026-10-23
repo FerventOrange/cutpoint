@@ -15,11 +15,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, sources
-from cutpoint.config import remap_source, source_path
+from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
-from cutpoint.ffmpeg_utils import MediaInfo, probe
+from cutpoint.ffmpeg_utils import (
+    MediaInfo,
+    check_not_sources,
+    file_keys,
+    output_dir,
+    probe,
+    recover_swap,
+    same_file,
+    staged_dir,
+    swap_in,
+)
 from cutpoint.planning import Padding, pad, select_moments, speech_pass
 from cutpoint.styles import Style, get_style
 from cutpoint.tail import TailResult, TailSettings, smart_tail
@@ -638,6 +648,65 @@ def write_manifest(
     )
 
 
+def source_keys(io_paths: dict[str, Path], pano: PanoExporter | None) -> set[Any]:
+    """:func:`file_keys` of every file a run reads: each source as recorded and as read
+    (``source_remap``), and the files of its 360 sources (:meth:`PanoExporter.inputs`)."""
+    keys: set[Any] = set()
+    for s, p in io_paths.items():
+        for f in (Path(s), p, *(pano.inputs(s) if pano else ())):
+            keys |= file_keys(f)
+    return keys
+
+
+def _replaced_files(
+    out_dir: Path, new: list[str], sources: set[Any]
+) -> tuple[list[str], list[str], list[str], bool]:
+    """What ``--force`` replaces in ``out_dir`` besides the names ``new`` this run writes.
+
+    Only files an earlier run made are replaced: the clips listed in the old manifest.json
+    and leftover ``.<name>.part.mp4`` files. A file this run reads (``sources``, see
+    :func:`source_keys`) is never replaced; neither is any other ``.mp4``.
+
+    Returns:
+        ``(names to replace, .mp4 kept as sources of this run, other .mp4 kept, whether
+        the old manifest.json was readable)``.
+
+    Raises:
+        ValueError: If a name in ``new`` is a source of this run (before any export).
+    """
+    check_not_sources(out_dir, new, sources)
+    if not out_dir.is_dir():
+        return [], [], [], True
+    manifest = cache.load_json(out_dir / "manifest.json")
+    entries = manifest.get("clips") if isinstance(manifest, dict) else None
+    listed: list[str] = []
+    if isinstance(entries, list):
+        for e in entries:
+            f = e.get("file") if isinstance(e, dict) else None
+            # a bare clip name only: never a path out of the folder or another kind of file
+            if isinstance(f, str) and f == Path(f).name and f.lower().endswith(".mp4"):
+                listed.append(f)
+    elif any(out_dir.iterdir()):
+        logger.warning(
+            "%s has no readable manifest.json: --force replaces only the clips this run "
+            "writes and keeps every other file",
+            out_dir,
+        )
+    parts = [p.name for p in out_dir.glob(".*.part.mp4")]
+    replace: list[str] = []
+    kept_sources: list[str] = []
+    for n in dict.fromkeys([*listed, *parts]):
+        f = out_dir / n
+        if f.is_file() or f.is_symlink():
+            (kept_sources if same_file(f, sources) else replace).append(n)
+    done = {path_key(n) for n in (*new, *replace, *kept_sources)}
+    kept: list[str] = []
+    for p in sorted(out_dir.glob("*.mp4")):
+        if not p.name.startswith(".") and path_key(p.name) not in done:
+            (kept_sources if same_file(p, sources) else kept).append(p.name)
+    return replace, kept_sources, kept, isinstance(entries, list)
+
+
 def export_clips(
     project: Path,
     *,
@@ -756,81 +825,111 @@ def export_clips(
     )
     project_cfg = cache.load_json(project / "project.json")
     out_dir = out_dir or project / ("clips_vertical" if vertical else "clips")
-    if out_dir.exists() and any(out_dir.iterdir()):
-        if not force:
-            raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
-        for old in [*out_dir.glob("*.mp4"), out_dir / "manifest.json"]:
-            old.unlink(missing_ok=True)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    from cutpoint.pano.render import exporter_for  # noqa: PLC0415
+    recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
+    if out_dir.exists() and any(out_dir.iterdir()) and not force:
+        raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
+    # The clips are exported into a hidden staging folder and swapped in only when all
+    # succeeded, so a failed or cancelled run (--force included) leaves the folder as it was.
+    # A run that fails leaves no empty folders behind.
+    with output_dir(out_dir.parent), staged_dir(out_dir) as work:
+        from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
-    pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
-    if pano is not None and not any(pano.handles(m["source"]) for m in ordered):
-        pano = None
+        pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
+        if pano is not None and not any(pano.handles(m["source"]) for m in ordered):
+            pano = None
 
-    # Sources keep their recorded path as identity (events, tails, manifest);
-    # the file actually read may be a remapped copy (config ``source_remap``).
-    io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
-    for s, p in io_paths.items():
-        if str(p) != s:
-            logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
-    infos = {s: probe(p) for s, p in io_paths.items()}
-    fmt = choose_format(
-        [i for s, i in infos.items() if pano is None or not pano.handles(s)]
-        or list(infos.values()),
-        vertical,
-    )
-    if size is not None and not vertical:
-        w, h = size
-        if w <= 0 or h <= 0 or w % 2 or h % 2:
-            raise ValueError(f"--size {w}x{h}: width and height must be positive and even")
-        fmt = OutputFormat(width=w, height=h, fps=fmt.fps)
-    if pano is not None:  # 360 renders are 1920x1080 (or 1080x1920): match them
-        fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
-        pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
-    logger.info(
-        "Exporting %d clips at %dx%d@%d (%s order); smart tail %s (min %.1fs, max %.1fs)",
-        len(ordered),
-        fmt.width,
-        fmt.height,
-        fmt.fps,
-        order,
-        "on" if base_tail.enabled else "off",
-        base_tail.tail_min,
-        base_tail.tail_max,
-    )
+        # Sources keep their recorded path as identity (events, tails, manifest);
+        # the file actually read may be a remapped copy (config ``source_remap``).
+        io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
+        for s, p in io_paths.items():
+            if str(p) != s:
+                logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
+        infos = {s: probe(p) for s, p in io_paths.items()}
+        fmt = choose_format(
+            [i for s, i in infos.items() if pano is None or not pano.handles(s)]
+            or list(infos.values()),
+            vertical,
+        )
+        if size is not None and not vertical:
+            w, h = size
+            if w <= 0 or h <= 0 or w % 2 or h % 2:
+                raise ValueError(f"--size {w}x{h}: width and height must be positive and even")
+            fmt = OutputFormat(width=w, height=h, fps=fmt.fps)
+        if pano is not None:  # 360 renders are 1920x1080 (or 1080x1920): match them
+            fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
+            pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
+        logger.info(
+            "Exporting %d clips at %dx%d@%d (%s order); smart tail %s (min %.1fs, max %.1fs)",
+            len(ordered),
+            fmt.width,
+            fmt.height,
+            fmt.fps,
+            order,
+            "on" if base_tail.enabled else "off",
+            base_tail.tail_min,
+            base_tail.tail_max,
+        )
 
-    plans = plan_clips(
-        ordered,
-        project,
-        io_paths=io_paths,
-        infos=infos,
-        tail=base_tail,
-        events=project_events,
-        event_settings=ev_settings,
-        speech=speech,
-        padding=extend,
-        crop=crop,
-        project_cfg=project_cfg,
-        pano=pano,
-    )
-    results = render_clips(
-        plans, out_dir, fmt=fmt, vertical=vertical, audio_fade=audio_fade, pano=pano
-    )
-    write_manifest(
-        out_dir,
-        project,
-        plans,
-        results,
-        order=order,
-        fmt=fmt,
-        vertical=vertical,
-        style=style,
-        tail=base_tail,
-        event_settings=ev_settings,
-        padding=extend,
-        speech=speech,
-        audio_fade=audio_fade,
-        crop=crop,
-    )
+        plans = plan_clips(
+            ordered,
+            project,
+            io_paths=io_paths,
+            infos=infos,
+            tail=base_tail,
+            events=project_events,
+            event_settings=ev_settings,
+            speech=speech,
+            padding=extend,
+            crop=crop,
+            project_cfg=project_cfg,
+            pano=pano,
+        )
+        # --force replaces only what an earlier run made, never a file this run reads.
+        replace, kept_sources, kept, had_manifest = _replaced_files(
+            out_dir, [p.name for p in plans], source_keys(io_paths, pano)
+        )
+        results = render_clips(
+            plans, work, fmt=fmt, vertical=vertical, audio_fade=audio_fade, pano=pano
+        )
+        write_manifest(
+            work,
+            project,
+            plans,
+            results,
+            order=order,
+            fmt=fmt,
+            vertical=vertical,
+            style=style,
+            tail=base_tail,
+            event_settings=ev_settings,
+            padding=extend,
+            speech=speech,
+            audio_fade=audio_fade,
+            crop=crop,
+        )
+        swap_in(work, out_dir, [*replace, "manifest.json"])
+    hint = "assemble includes them, so move them out if they are not part of the edit"
+    if kept_sources:
+        logger.warning(
+            "Kept %s in %s: a file this run reads as a source is never replaced. They are not "
+            "in the new manifest.json and %s",
+            ", ".join(kept_sources),
+            out_dir,
+            hint,
+        )
+    if kept and had_manifest:
+        logger.warning(
+            "Kept %s in %s: the old manifest.json does not list them (renamed during review or "
+            "added by hand); %s",
+            ", ".join(kept),
+            out_dir,
+            hint,
+        )
+    elif kept:
+        logger.warning(
+            "Kept %s in %s: not replaced because there is no readable manifest.json; %s",
+            ", ".join(kept),
+            out_dir,
+            hint,
+        )
     return out_dir

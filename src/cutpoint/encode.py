@@ -12,7 +12,15 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint.crop import Crop
-from cutpoint.ffmpeg_utils import READ_ERROR_RE, MediaInfo, probe, run, video_encoder
+from cutpoint.ffmpeg_utils import (
+    READ_ERROR_RE,
+    MediaInfo,
+    VideoEncoder,
+    atomic_output,
+    encode_with_fallback,
+    probe,
+    run,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +103,48 @@ def export_clip(
 
     ``audio_fade`` > 0 bakes a short audio fade-in/out into the clip (the
     video stays a hard cut), so a cut never slaps from sound to silence.
+    ``out`` only appears once the clip is complete (:func:`atomic_output`); a failed
+    auto-chosen GPU encode is redone on the CPU (:func:`encode_with_fallback`).
 
     Returns:
         ffmpeg's stderr (check it for read errors; ffmpeg exits 0 after them).
     """
+    with atomic_output(out) as part:
+        return _export(src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name)
+
+
+def _export(
+    src: Path,
+    info: MediaInfo,
+    start: float,
+    end: float,
+    out: Path,
+    fmt: OutputFormat,
+    vertical: bool,
+    crop: Crop | None,
+    audio_fade: float,
+    name: str,
+) -> str:
+    """:func:`export_clip` straight into ``out`` (no temporary name); ``name`` is for logs."""
+    return encode_with_fallback(
+        lambda enc: _encode(enc, src, info, start, end, out, fmt, vertical, crop, audio_fade),
+        name,
+    )
+
+
+def _encode(
+    enc: VideoEncoder,
+    src: Path,
+    info: MediaInfo,
+    start: float,
+    end: float,
+    out: Path,
+    fmt: OutputFormat,
+    vertical: bool,
+    crop: Crop | None,
+    audio_fade: float,
+) -> str:
+    """One ffmpeg run of :func:`export_clip` with ``enc``."""
     dur = end - start
     args = [
         "ffmpeg",
@@ -112,7 +158,6 @@ def export_clip(
         "-i",
         str(src),
     ]
-    enc = video_encoder()
     vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop))}[v]"
     a_fmt = (
         "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:"
@@ -173,17 +218,35 @@ def export_clip_checked(
     If ffmpeg reports a read error or the clip comes out short, the read is
     retried once (marginal sectors sometimes read on a second try). If it is
     still short, the clip is re-encoded to end just before the failure so it
-    ends cleanly instead of with mismatched audio/video.
+    ends cleanly instead of with mismatched audio/video. Every attempt writes to
+    the temporary name; ``out`` only appears with the final result.
 
     Returns:
         None if the clip is complete, else a record for manifest.json with
         ``failure_time``, ``messages``, ``retried`` and the ``end`` used.
     """
+    with atomic_output(out) as part:
+        return _export_checked(src, info, start, end, part, fmt, vertical, crop, audio_fade, out)
+
+
+def _export_checked(
+    src: Path,
+    info: MediaInfo,
+    start: float,
+    end: float,
+    part: Path,
+    fmt: OutputFormat,
+    vertical: bool,
+    crop: Crop | None,
+    audio_fade: float,
+    out: Path,
+) -> dict[str, Any] | None:
+    """:func:`export_clip_checked` writing to ``part``; ``out`` names the clip in logs."""
     expected = end - start
     messages: list[str] = []
     for attempt in (1, 2):
-        text = export_clip(src, info, start, end, out, fmt, vertical, crop, audio_fade)
-        got = probe(out).duration
+        text = _export(src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name)
+        got = probe(part).duration
         found = [m.strip() for m in READ_ERROR_RE.findall(text)]
         if not found and got >= expected - CLIP_SHORT_S:
             if attempt == 1:
@@ -205,7 +268,7 @@ def export_clip_checked(
         logger.warning("  ffmpeg: %s", "; ".join(messages) or "output shorter than requested")
         logger.warning("!" * 78)
     safe_end = max(start + 0.1, fail_t - SAFE_END_MARGIN_S)
-    export_clip(src, info, start, safe_end, out, fmt, vertical, crop, audio_fade)
+    _export(src, info, start, safe_end, part, fmt, vertical, crop, audio_fade, out.name)
     logger.warning("  %s trimmed to end at %.2f (before the unreadable spot)", out.name, safe_end)
     return {
         "failure_time": round(fail_t, 3),

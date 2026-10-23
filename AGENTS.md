@@ -33,7 +33,11 @@ below.
   the project itself.
 - Results are files, not stdout. Read the JSON files below instead of parsing logs.
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
-  `clips` refuses a non-empty output folder without `--force`.
+  `clips` refuses a non-empty output folder without `--force`, which replaces only the clips its
+  `manifest.json` lists, once every new clip is exported (other files, sources included, stay;
+  clips renamed or added by hand stay and are assembled; a WARNING names them, so tell the
+  user, and move them out only if they are clips you exported, never delete a file you did not
+  export).
 - Transcription, `events` and export can take minutes to hours. Run them in the background or
   with a long timeout.
 - Never modify or delete the user's source videos. You may delete or rename clips in a project's
