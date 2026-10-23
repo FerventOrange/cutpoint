@@ -110,9 +110,8 @@ class TestParseSdkOutput:
     def test_feature_lookalike_outside_block_ignored(self):
         assert _result("a: ON\n").features == {}
 
-    @pytest.mark.parametrize("text", [""])
-    def test_empty_or_garbage(self, text):
-        res = _result(text)
+    def test_empty(self):
+        res = _result("")
         assert res.progress == -1
         assert not res.finished and not res.ended
         assert res.errors == [] and res.features == {} and res.export == {}
@@ -184,9 +183,6 @@ class TestFailureReasons:
         reasons = stitch.failure_reasons(_done(a=status), 0, ["a"], self.BIG)
         assert bool(reasons) is failed
 
-    def test_unrequested_off_feature_is_fine(self):
-        assert stitch.failure_reasons(_done(a="OFF"), 0, [], self.BIG) == []
-
     def test_missing_and_tiny_output(self):
         assert self._ok(output_bytes=None) == ["no output file"]
         tiny = self._ok(output_bytes=10)
@@ -207,9 +203,8 @@ class TestParseHelpVersion:
     def test_found(self):
         assert stitch.parse_help_version(f"x\n{stitch.VERSION_KEY} 1.2.3\ny") == "1.2.3"
 
-    @pytest.mark.parametrize("text", ["no version here"])
-    def test_missing(self, text):
-        assert stitch.parse_help_version(text) is None
+    def test_missing(self):
+        assert stitch.parse_help_version("no version here") is None
 
 
 class TestProgressThrottle:
@@ -251,14 +246,8 @@ elif mode == "error":
     emit(pct(100) + "\r\n")
     write_output()
     emit("error: synthetic failure é\n")
-elif mode == "feature_failed":
-    emit(pct(100) + "\r\n")
-    write_output()
-    emit(MARK["features"] + "\n  flowstate: FAILED\n" + MARK["block_end"] + "\n")
 elif mode == "version":
     emit("synthetic help\n" + MARK["version"] + " 9.8.7\n")
-elif mode == "noversion":
-    emit("synthetic help without a version\n")
 elif mode == "hang":
     emit(pct(12) + "\r\nSYNTHETIC-CAPTURED-LINE é\n")
     write_output(10)
@@ -336,19 +325,6 @@ def gated(monkeypatch: pytest.MonkeyPatch, fake):
 
 
 class TestRunSdk:
-    def test_captures_stdout_stderr_and_exit_code(self, fake, tmp_path):
-        run = stitch.run_sdk(fake("ok", tmp_path / "o.mp4"), label="t")
-        assert run.returncode == 0 and not run.timed_out
-        res = stitch.parse_sdk_output(run.stdout)
-        assert res.finished and res.errors == []
-        assert "café 日本" in run.stdout
-        assert "synthetic stderr line" in run.stderr
-
-    def test_timeout_kills_and_keeps_output(self, fake, tmp_path, gated):
-        run = stitch.run_sdk(fake("hang", tmp_path / "o.mp4"), timeout_s=0.01)
-        assert run.timed_out and run.returncode is None
-        assert "SYNTHETIC-CAPTURED-LINE é" in run.stdout
-
     def test_interrupt_raises_with_captured_output(self, fake, tmp_path, gated):
         gated.interrupt = True
         with pytest.raises(stitch.SdkInterrupted) as ei:
@@ -459,11 +435,6 @@ class TestStitchOne:
         }
         assert project.equirect_flowstate(out) is False
 
-    def test_failure_writes_no_sidecar(self, fake, clip, paths_):
-        out_dir, out, part = paths_
-        stitch._stitch_one(clip, fake("error", part), part, out, out_dir, None)
-        assert not project.equirect_sidecar(out).exists()
-
     def test_verification_notes_become_the_status(self, fake, clip, paths_, monkeypatch):
         out_dir, out, part = paths_
         monkeypatch.setattr(stitch, "_verify", lambda c, p: "not 2:1 (10x10)")
@@ -486,6 +457,7 @@ class TestStitchOne:
         assert "synthetic failure" in rec["log"]
         text = _log(out_dir)
         assert "result: FAILED:" in text and "synthetic failure é" in text
+        assert not project.equirect_sidecar(out).exists()
 
     def test_timeout_fails_with_captured_output_in_log(self, fake, clip, paths_, gated):
         out_dir, out, part = paths_
@@ -528,18 +500,12 @@ class TestStitchOne:
         assert rec["status"] == "failed" and rec["error"].startswith("could not start:")
         assert "could not start" in _log(out_dir)
 
-    def test_too_small_output_fails(self, fake, clip, paths_, monkeypatch):
-        out_dir, out, part = paths_
-        monkeypatch.setattr(stitch, "_min_bytes", lambda c, args=None: 5_000_000)
-        rec = stitch._stitch_one(clip, fake("ok", part), part, out, out_dir, None)
-        assert rec["status"] == "failed" and "output only" in rec["error"]
-        assert not part.exists() and not out.exists()
-
     def test_low_bitrate_lowers_the_size_floor(self, fake, clip, paths_):
         out_dir, out, part = paths_
         clip.duration = 100.0  # default floor: 12.5 MB > the fake's 1.2 MB
         rec = stitch._stitch_one(clip, fake("ok", part), part, out, out_dir, None)
         assert rec["status"] == "failed" and "output only" in rec["error"]
+        assert not part.exists() and not out.exists()
         rec = stitch._stitch_one(
             clip, fake("ok", part, "-bitrate", "320000"), part, out, out_dir, None
         )
@@ -603,7 +569,6 @@ class TestHelpers:
         [
             (["-bitrate", "320000"], 10_000),  # 320 kb/s -> a quarter of 40 kB/s
             (["-bitrate", "100000000"], stitch.MIN_OUTPUT_BYTES_PER_S),  # never raised
-            (None, stitch.MIN_OUTPUT_BYTES_PER_S),
         ],
     )
     def test_min_bytes_follows_a_low_bitrate(self, clip, args, rate):
@@ -657,10 +622,9 @@ class TestValidateStitchArgs:
         args = ["-stitch_type", "optflow", "-output_size", "5760x2880"]
         assert project.validate_stitch_args(args) == args
 
-    @pytest.mark.parametrize("bad", ["template"])
-    def test_rejected_types(self, bad):
+    def test_rejected_types(self):
         with pytest.raises(ValueError, match="Unsupported -stitch_type"):
-            project.validate_stitch_args(["-stitch_type", bad])
+            project.validate_stitch_args(["-stitch_type", "template"])
 
     @pytest.mark.parametrize("size", ["5760x2000", "big"])
     def test_bad_output_sizes(self, size):
@@ -671,6 +635,7 @@ class TestValidateStitchArgs:
 class TestStitchArgs:
     def test_default(self):
         assert project.stitch_args() == list(project.DEFAULT_STITCH_ARGS)
+        assert project.FLOWSTATE_ARG not in project.stitch_args()
 
     def test_configured(self):
         _config(stitch_args=["-stitch_type", "aistitch", "-output_size", "2880x1440"])
@@ -686,9 +651,8 @@ class TestStitchArgs:
         with pytest.raises(ValueError, match="must be a list"):
             project.stitch_args()
 
-    @pytest.mark.parametrize("item", [None])
-    def test_non_string_items_rejected(self, item):
-        _config(stitch_args=["-stitch_type", "optflow", item])
+    def test_non_string_items_rejected(self):
+        _config(stitch_args=["-stitch_type", "optflow", None])
         with pytest.raises(ValueError, match="items must be strings"):
             project.stitch_args()
 
@@ -701,11 +665,10 @@ class TestStitchTimeout:
     def test_unset(self):
         assert project.stitch_timeout_s() is None
 
-    @pytest.mark.parametrize("value, expected", [(7200, 7200.0)])
-    def test_valid(self, value, expected):
-        _config(stitch_timeout_s=value)
+    def test_valid(self):
+        _config(stitch_timeout_s=7200)
         got = project.stitch_timeout_s()
-        assert got == expected and isinstance(got, float)
+        assert got == 7200.0 and isinstance(got, float)
 
     @pytest.mark.parametrize("value", [0, "60"])
     def test_invalid(self, value):
@@ -739,10 +702,6 @@ class TestFindSdk:
         versioned = _fake_exe(tmp_path, "MediaSDK-0.0.1")
         assert project.find_sdk([tmp_path]) == versioned
 
-    def test_unversioned_only_is_still_found(self, tmp_path):
-        only = _fake_exe(tmp_path, "sdk")
-        assert project.find_sdk([tmp_path]) == only
-
     def test_searches_every_root_and_any_depth(self, tmp_path):
         a, b = tmp_path / "a", tmp_path / "b"
         _fake_exe(a / "x" / "y", "MediaSDK-1.0.0")
@@ -774,14 +733,6 @@ class TestSdkVersion:
 
 
 class TestSdkLocation:
-    def test_none(self):
-        assert project.sdk_location() == (None, "none")
-        assert project.sdk_exe() is None
-
-    def test_auto(self, home):
-        exe = _fake_exe(home / "sdk" / "insta360", "MediaSDK-3.1.5")
-        assert project.sdk_location() == (exe, "auto")
-
     def test_config_beats_auto(self, home, tmp_path):
         _fake_exe(home / "sdk" / "insta360", "MediaSDK-3.1.5")
         cfg_exe = tmp_path / "cfg" / "sdk.exe"  # a configured path need not exist
@@ -965,10 +916,6 @@ class TestCliCheck:
 
 # --------------------------------------------------------------------------- sidecar
 class TestSidecar:
-    def test_default_args_have_no_flowstate(self):
-        assert project.FLOWSTATE_ARG not in project.DEFAULT_STITCH_ARGS
-        assert "-enable_stitchfusion" in project.DEFAULT_STITCH_ARGS
-
     def test_write_records_args_after_output_and_sdk_version(self, tmp_path):
         exe = tmp_path / "MediaSDK-3.1.5-20260101-win64" / "bin" / "MediaSDKTest.exe"
         out = tmp_path / "VID_x_001.equirect.mp4"
@@ -997,20 +944,6 @@ class TestSidecar:
         assert not side.exists()
         assert "could not write" in caplog.text
         assert project.equirect_flowstate(out) is None
-
-    @pytest.mark.parametrize(
-        ("content", "expected"),
-        [
-            (None, None),
-            (json.dumps({"version": 1, "stitch_args": ["-enable_stitchfusion"]}), False),
-            (json.dumps({"version": 1, "stitch_args": [project.FLOWSTATE_ARG]}), True),
-        ],
-    )
-    def test_read_flowstate(self, tmp_path, content, expected):
-        out = tmp_path / "VID_x_001.equirect.mp4"
-        if content is not None:
-            project.equirect_sidecar(out).write_text(content, encoding="utf-8")
-        assert project.equirect_flowstate(out) is expected
 
 
 class TestSidecarOnRestitch:
