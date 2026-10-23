@@ -197,7 +197,7 @@ def legacy_cases(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict]:
         monkeypatch.setattr(VW, "forward_yaw", lambda pv: 10.0)
         monkeypatch.setattr(D, "_voice_at", lambda src, times, v=talk: v * (times > 6.0))
         pv = make_views(boxes, f"legacy_{name}.lrv")
-        params = D.DirectorParams.legacy() if hasattr(D.DirectorParams, "legacy") else None
+        params = D.DirectorParams.legacy()
         p = path_of(pv, params, kind=kind, **kw)
         out[name] = {k: p[k] for k in ("keys", "cuts", "seconds_by_target")}
     return out

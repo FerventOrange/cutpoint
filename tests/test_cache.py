@@ -29,9 +29,6 @@ SAMPLES = [
 def test_params_hash_matches_legacy_formula(params):
     assert cache.params_hash(params) == legacy(params)
     assert cache.params_hash(params, 16) == legacy(params, 16)
-
-
-def test_params_hash_known_value():
     # Pinned: changing this invalidates every user's existing cache entries.
     assert cache.params_hash({"v": 1}) == hashlib.sha1(b'{"v": 1}').hexdigest()[:10]
 
