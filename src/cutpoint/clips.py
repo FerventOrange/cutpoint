@@ -281,12 +281,17 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
     Raises:
         ValueError: If the file is malformed, a segment is invalid or two share an id.
         FileNotFoundError: If the file or a source video is missing.
+        IsADirectoryError: If ``path`` is a folder.
     """
+    if path.is_dir():
+        raise IsADirectoryError(f"{path} is a folder, not a segments file")
     if not path.is_file():
         raise FileNotFoundError(f"Segments file not found: {path}")
     try:
-        items = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as err:
+        items = json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
+    except UnicodeDecodeError:  # e.g. UTF-16 from > / Out-File
+        raise ValueError(f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8)") from None
+    except ValueError as err:  # JSONDecodeError
         raise ValueError(f"{path} is not valid JSON: {err}") from None
     if not isinstance(items, list) or not items:
         raise ValueError(f"{path} must contain a non-empty JSON list")
