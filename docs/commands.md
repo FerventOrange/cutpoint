@@ -41,6 +41,10 @@ preview and trim candidates, save and reorder a sequence, export clips, and asse
 video with optional fades, loudness normalization and captions. Source selection browses the
 server machine's files; nothing is uploaded. It does not expose action-cam or 360 commands.
 
+Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
+opens the folder with the project's videos in the system file manager (hidden where that is not
+possible, such as Docker).
+
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 500 per project, least recently used evicted). Drag the
