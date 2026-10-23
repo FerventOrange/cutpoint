@@ -34,6 +34,7 @@ spans out of the candidates before selection, see :func:`apply_exclusions`.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import logging
 import math
@@ -44,8 +45,15 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, ski
-from cutpoint.clips import REACTION_LABEL, index_sources, order_moments
-from cutpoint.config import remap_source, source_path
+from cutpoint.clips import (
+    REACTION_LABEL,
+    drive_relative,
+    index_sources,
+    order_moments,
+    segment_source,
+    source_key,
+)
+from cutpoint.config import is_absolute_any, remap_source, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.events.sheets import contact_sheet
 from cutpoint.events.visual import load_visual
@@ -470,6 +478,11 @@ def min_length(category: str) -> float:
 def load_exclusions(path: Path) -> list[dict[str, Any]]:
     """``[{source, start, end, category?, reason?}, ...]`` from ``path`` (none if missing).
 
+    A relative ``source`` is taken against ``path``'s folder, as hand-picked sources are
+    now recorded: ``cutpoint 360 repair`` used to write one as spelt in the segments file
+    (relative to its folder, next to which the file is written by default), and it never
+    matched. A drive-relative one (``D:a.insv``) stays as it is.
+
     Raises:
         ValueError: If an entry lacks ``source`` / ``start`` / ``end``.
     """
@@ -478,7 +491,12 @@ def load_exclusions(path: Path) -> list[dict[str, Any]]:
         isinstance(e, dict) and {"source", "start", "end"} <= e.keys() for e in items
     ):
         raise ValueError(f"{path}: expected a list of {{source, start, end}} objects")
-    return items
+    return [
+        e
+        if is_absolute_any(str(e["source"])) or drive_relative(str(e["source"]))
+        else {**e, "source": segment_source(str(e["source"]), path.parent)[0]}
+        for e in items
+    ]
 
 
 def _piece(
@@ -506,12 +524,12 @@ def apply_exclusions(cands: list[Cand], exclude: list[dict[str, Any]]) -> list[C
     reaction is cut the same way on its own (at least :data:`MIN_CLIP_S`).
     """
     out = []
+    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for c in cands:
         holes = [
             (float(e["start"]), float(e["end"]))
             for e in exclude
-            if ski._key(e["source"]) == ski._key(c.source)
-            and e.get("category") in (None, c.category)
+            if key(e["source"]) == key(c.source) and e.get("category") in (None, c.category)
         ]
         if not holes:
             out.append(c)

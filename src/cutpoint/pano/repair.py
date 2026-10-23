@@ -39,16 +39,25 @@ a mix are left out.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
-import sys
 from collections.abc import Callable, Sequence
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, mix, ski
-from cutpoint.clips import BOUND_KEYS, index_sources, order_moments, segment_ids, segment_source
+from cutpoint import cache, mix
+from cutpoint.clips import (
+    BOUND_KEYS,
+    drive_relative,
+    drive_relative_error,
+    index_sources,
+    order_moments,
+    segment_ids,
+    segment_source,
+    source_key,
+)
 from cutpoint.config import is_absolute_any, path_key, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.pano.qa import runs_of
@@ -64,7 +73,6 @@ CRASH_LEAD_S = 2.0  # a crash keeps this much approach: blocked spans are cut ba
 BLOCKED = ("occluded", "too_close", "dark")
 EPS = 0.05  # s: rendered this far past the segment is lead-in / tail
 REACH_S = 15.0  # s: the most a lead-in / tail adds (event tails reach 14 s)
-_WINDOWS = sys.platform == "win32"  # D:foo is drive-relative only here (elsewhere a file name)
 
 
 def _dt(frames: list[dict[str, Any]], dur: float) -> float:
@@ -131,6 +139,7 @@ def _match(
     manifest = cache.load_json(src_dir / "manifest.json")
     entries = {e["file"]: e for e in (manifest or {}).get("clips", [])}
     by_id = {s["id"]: s for s in segments}
+    key = functools.cache(source_key)  # resolving reads the disk: once per source
     out, skipped = [], 0
     for clip in qa.get("clips", []):
         if manifest is not None:
@@ -138,7 +147,7 @@ def _match(
             seg = by_id.get(e.get("id"))
             ok = (
                 seg is not None
-                and _identity(seg["source"]) == _identity(e["source"])
+                and key(seg["source"]) == key(e["source"])
                 and seg["start"] - 0.01 <= e["pick"]["start"]
                 and e["original_end"] <= seg["end"] + 0.01
             )
@@ -161,21 +170,6 @@ def _match(
             continue
         out.append((clip, seg, first))
     return out, skipped
-
-
-def _identity(source: str) -> str:
-    """An absolute ``source`` as a lookup key, normalised as ``cutpoint clips`` records it
-    (:func:`~cutpoint.clips.segment_source`: resolved, so through a symlink too)."""
-    return path_key(segment_source(source, Path.cwd())[0])
-
-
-def _drive_relative(source: str) -> str:
-    """The drive of a drive-relative Windows ``source`` (``D:foo``, relative to drive D's
-    current folder) on Windows, else ``""``."""
-    if not _WINDOWS:
-        return ""
-    p = PureWindowsPath(source)
-    return p.drive if p.drive and not p.root else ""
 
 
 def plan(
@@ -260,19 +254,6 @@ def _merge(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[st
     return old + [e for e in new if key(e) not in seen]
 
 
-def _absolute(excl: list[dict[str, Any]], base: Path) -> list[dict[str, Any]]:
-    """``excl`` with relative sources taken against ``base`` (the folder of the
-    ``mix_exclude.json`` holding them), as hand-picked sources are now recorded. Repair
-    used to write a hand-picked source as spelt in the segments file (relative to its
-    folder, next to which the file is written by default), and it never matched."""
-    return [
-        e
-        if is_absolute_any(str(e["source"])) or _drive_relative(str(e["source"]))
-        else {**e, "source": segment_source(str(e["source"]), base)[0]}
-        for e in excl
-    ]
-
-
 def _bound(segs: list[dict[str, Any]], bounds: dict[str, dict[str, float]]) -> None:
     """Tighten each segment's ``min_start`` / ``max_end`` by ``bounds`` (in place),
     never into the segment."""
@@ -290,9 +271,10 @@ def _near(segs: list[dict[str, Any]], excl: list[dict[str, Any]]) -> dict[str, d
     """Bounds at the nearest exclusion (global or of the segment's category) within
     :data:`REACH_S` before / after each segment, so lead-in and tails stay out of it."""
     out: dict[str, dict[str, float]] = {}
+    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for s in segs:
         for e in excl:
-            if ski._key(e["source"]) != ski._key(s["source"]) or e.get("category") not in (
+            if key(e["source"]) != key(s["source"]) or e.get("category") not in (
                 None,
                 s.get("category"),
             ):
@@ -428,16 +410,14 @@ def repair(
             if not isinstance(s, dict) or "source" not in s:
                 raise KeyError("source")
             start, end = float(s["start"]), float(s["end"])
-            drive = _drive_relative(s["source"])
+            drive = drive_relative(s["source"])
             if not drive:
                 sources.append(segment_source(s["source"], segments_file.parent)[0])
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"{segments_file}: segment {i} needs source, start and end") from None
         if drive:  # joined to the folder, Windows takes it against drive's current folder
             raise ValueError(
-                f"{segments_file}: segment {i} source {s['source']!r} is relative to the "
-                f"current folder of drive {drive}; give the full path ({drive}\\...) or one "
-                "relative to the segments file"
+                f"{segments_file}: segment {i} {drive_relative_error(s['source'], drive)}"
             )
         old[i - 1] = {**s, "start": start, "end": end}  # "100.0" too, as clips.load_segments
     # run_mix writes id and category on every segment; anything else is the user's picks
@@ -489,7 +469,7 @@ def repair(
         _make_parent(out)
         written = out.with_name(mix.EXCLUDE_FILE)
         have = written if written.is_file() else project / mix.EXCLUDE_FILE
-        excl = _merge(_absolute(mix.load_exclusions(have), have.parent), new_excl)
+        excl = _merge(mix.load_exclusions(have), new_excl)
         if picked:
             new = _cut(new, new_excl)
             cache.save_json(written, excl)
@@ -579,11 +559,12 @@ def _cut(segs: list[dict[str, Any]], excl: list[dict[str, Any]]) -> list[dict[st
     segment's category) when that is at least :func:`cutpoint.mix.min_length`, else
     dropped; nothing is refilled."""
     out = []
+    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for s in segs:
         holes = [
             (float(e["start"]), float(e["end"]))
             for e in excl
-            if ski._key(e["source"]) == ski._key(s["source"])
+            if key(e["source"]) == key(s["source"])
             and e.get("category") in (None, s.get("category"))
         ]
         if not holes:
