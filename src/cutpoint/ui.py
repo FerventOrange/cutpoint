@@ -489,10 +489,14 @@ class Jobs:
         action: str,
         args: list[str],
         on_success: Callable[[], None] | None = None,
+        check: Callable[[], None] | None = None,
     ) -> Job:
+        """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it."""
         with self.lock:
             if any(j.status == "running" for j in self.jobs.values()):
                 raise bad("another job is already running", 409)
+            if check:
+                check()
             job = Job(project_id, action)
             try:
                 job.proc = spawn(args)
@@ -1093,16 +1097,24 @@ def create_app(port: int) -> FastAPI:
             raise bad(
                 "CUTPOINT_PROJECTS_DIR sets the projects folder; change or unset it there", 409
             )
+        busy = "wait for the running job to finish before changing the projects folder"
         if any(j.status == "running" for j in list(jobs.jobs.values())):
-            raise bad("wait for the running job to finish before changing the projects folder", 409)
+            raise bad(busy, 409)
         config_data()  # an unreadable config.json: refuse before creating the folder
         folder, created = check_projects_dir(body.get("projects_dir"))
+        # The jobs lock makes the running-job check and the write atomic against Jobs.start,
+        # so no job starts against the old folder while the setting changes.
         try:
-            set_config_value("projects_dir", str(folder))
-        except (ValueError, OSError) as err:
+            with jobs.lock:
+                if any(j.status == "running" for j in jobs.jobs.values()):
+                    raise bad(busy, 409)
+                set_config_value("projects_dir", str(folder))
+        except (ValueError, OSError, HTTPException) as err:
             if created:
                 with contextlib.suppress(OSError):
                     folder.rmdir()
+            if isinstance(err, HTTPException):
+                raise
             if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
                 raise bad(str(err), 409) from err
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
@@ -1321,7 +1333,14 @@ def create_app(port: int) -> FastAPI:
 
         else:
             raise bad("action must be 'analyze', 'clips' or 'assemble'")
-        return jobs.start(pid, action, args, on_success).view()
+
+        def same_folder() -> None:
+            # Under the jobs lock, like the settings change: a folder changed since ``p`` was
+            # resolved would run the job against the old one.
+            if projects_dir().resolve() != p.resolve().parent:
+                raise bad("the projects folder changed; reload the page", 409)
+
+        return jobs.start(pid, action, args, on_success, same_folder).view()
 
     @secure.get("/jobs")
     def list_jobs():
