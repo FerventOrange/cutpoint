@@ -829,3 +829,28 @@ def test_stage_key_of_a_copy_matches_the_unc_original_of_a_mapped_drive(
     )
     config.get_config.cache_clear()
     assert stage.stage_key(copy) == stage.stage_key("//nas/share/Footage/x.mp4")
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("typed", "rest"),
+    [
+        (r"D:\Videos\Trip\x.mp4", "Trip/x.mp4"),
+        ("D:/Videos/Trip/x.mp4", "Trip/x.mp4"),
+        (r"d:\videos\Trip\x.mp4", "Trip/x.mp4"),
+        (r"D:\VideosX\x.mp4", None),
+    ],
+    ids=["backslashes", "forward-slashes", "other-case", "sibling-prefix-not-matched"],
+)
+def test_remap_source_matches_a_windows_key_on_posix(home, tmp_path, typed, rest):
+    """#149: a ``D:\\Videos`` key was made absolute onto the cwd, so it never matched."""
+    copy = write(tmp_path / "copy" / "Trip" / "x.mp4")
+    write(
+        home / "config.json", json.dumps({"source_remap": {r"D:\Videos": str(tmp_path / "copy")}})
+    )
+    config.get_config.cache_clear()
+    if rest is None:
+        assert config.remap_source(typed) == Path(typed)
+        return
+    assert config.remap_source(typed) == tmp_path / "copy" / rest == copy
+    assert config.canonical_source(copy) == r"D:\Videos\Trip\x.mp4"

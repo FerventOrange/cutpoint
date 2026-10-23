@@ -320,6 +320,17 @@ def norm_path(path: str) -> str:
     return str(PurePosixPath(path)).rstrip("/")
 
 
+def is_foreign_windows(path: str) -> bool:
+    """POSIX: ``path`` is absolute only as a Windows path (``D:\\x``, ``\\\\server\\share``),
+    as recorded by a project written on Windows. False on Windows."""
+    return sys.platform != "win32" and is_absolute_any(path) and not Path(path).is_absolute()
+
+
+def windows_norm(path: str) -> str:
+    """:func:`norm_path` with Windows rules on any platform: case-folded, backslashes."""
+    return str(PureWindowsPath(path)).replace("/", "\\").rstrip("\\").lower()
+
+
 _DRIVE_RE = re.compile(r"^([A-Za-z]:)(?:[\\/]|$)")
 _ERROR_MORE_DATA = 234
 _ERROR_CONNECTION_UNAVAIL = 1201  # remembered mapping, not connected; the name is still returned
@@ -390,7 +401,13 @@ def unc_path(path: str) -> str:
 @state.register_cache
 @functools.cache
 def _prefix_forms(prefix: str) -> tuple[str, ...]:
-    """A prefix as typed plus its resolved and UNC forms (mapped drive -> UNC)."""
+    """A prefix as typed plus its resolved and UNC forms (mapped drive -> UNC).
+
+    A Windows prefix on POSIX (``D:\\Videos``) is compared the Windows way
+    (:func:`windows_norm`); making it absolute here would prepend the current folder.
+    """
+    if is_foreign_windows(prefix):
+        return (windows_norm(prefix),)
     absolute = os.path.abspath(prefix)  # noqa: PTH100 - normalises '..', keeps drive letters
     forms = {norm_path(absolute), norm_path(unc_path(absolute))}
     with contextlib.suppress(OSError):
@@ -401,12 +418,15 @@ def _prefix_forms(prefix: str) -> tuple[str, ...]:
 def _strip_prefix(path: str, prefix: str) -> str | None:
     """The remainder of ``path`` (as typed or in UNC form) below ``prefix`` (any
     form), or None."""
-    sep = _sep()
     for text in dict.fromkeys((path, unc_path(path))):
-        low = norm_path(text)
+        if is_foreign_windows(text):  # D:\Videos\x.mp4 on POSIX: rest with POSIX separators
+            low, sep, pure = windows_norm(text), "\\", str(PureWindowsPath(text))
+        else:
+            low, sep, pure = norm_path(text), _sep(), str(_pure(text))
         for form in _prefix_forms(prefix):
             if low == form or low.startswith(form + sep):
-                return str(_pure(text))[len(form) :].lstrip("\\/")
+                rest = pure[len(form) :].lstrip("\\/")
+                return rest.replace("\\", "/") if sep != _sep() else rest
     return None
 
 
@@ -454,5 +474,6 @@ def canonical_source(path: str | Path) -> str:
     for old, new in get_config().source_remap:
         rest = _strip_prefix(text, new)
         if rest is not None:
-            return unc_path(str(_pure(old) / rest) if rest else str(_pure(old)))
+            base = PureWindowsPath(old) if is_foreign_windows(old) else _pure(old)
+            return unc_path(str(base / rest) if rest else str(base))
     return text
