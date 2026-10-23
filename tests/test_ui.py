@@ -1296,3 +1296,23 @@ def test_settings_show_a_wrongly_typed_projects_folder_so_it_can_be_replaced(
     assert res.status_code == 200 and res.json()["projects_dir"] == "5"
     assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
     assert json.loads(cfg.read_text("utf-8")) == {"projects_dir": str(tmp_path)}
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{oops", '{"base": "funny", "weights": [1, 2]}', '{"base": "funny", "weights": {"x": null}}'],
+    ids=["invalid-json", "weights-not-object", "weight-null"],
+)
+def test_a_broken_learned_style_is_left_out_with_a_warning(
+    client: TestClient, home: Path, caplog: pytest.LogCaptureFixture, content: str
+) -> None:
+    styles = home / "styles"
+    styles.mkdir(parents=True)
+    (styles / "broken.json").write_text(content, encoding="utf-8")
+    (styles / "mine.json").write_text('{"base": "funny"}', encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        res = client.get("/api/session")
+    assert res.status_code == 200
+    listed = res.json()["styles"]
+    assert "mine" in listed and "funny" in listed and "broken" not in listed
+    assert str(styles / "broken.json") in caplog.text
