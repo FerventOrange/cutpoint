@@ -22,6 +22,7 @@ from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
+    can_stage,
     check_not_sources,
     file_keys,
     output_dir,
@@ -889,15 +890,17 @@ def export_clips(
     project_cfg = cache.load_json(project / "project.json")
     out_dir = out_dir or project / ("clips_vertical" if vertical else "clips")
     recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
-    staged = out_dir.exists() and any(out_dir.iterdir())
-    if staged and not force:
+    non_empty = out_dir.exists() and any(out_dir.iterdir())
+    if non_empty and not force:
         raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
-    # With --force into a non-empty folder, the clips are exported into a hidden staging
-    # folder and swapped in only when all succeeded, so a failed or cancelled run leaves the
-    # folder as it was; staged_dir refuses a drive root, a mount point or a bind mount before
-    # any export. Into an empty or new folder they are exported directly, each clip under a
-    # temporary name until complete. A run that fails leaves no empty folders behind.
-    with output_dir(out_dir.parent), staged_dir(out_dir) if staged else output_dir(out_dir) as work:
+    # The clips are exported into a hidden staging folder and swapped in only when all
+    # succeeded, so a failed or cancelled run (--force included) leaves the folder as it was.
+    # A run that fails leaves no empty folders behind. staged_dir refuses a drive root, a
+    # mount point or a bind mount before any export; only an empty one is exported into
+    # directly (each clip under a temporary name until complete; a failed run keeps the
+    # finished clips).
+    direct = out_dir.exists() and not non_empty and not can_stage(out_dir)
+    with output_dir(out_dir.parent), output_dir(out_dir) if direct else staged_dir(out_dir) as work:
         from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
         pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
@@ -973,7 +976,7 @@ def export_clips(
             audio_fade=audio_fade,
             crop=crop,
         )
-        if staged:
+        if not direct:
             swap_in(work, out_dir, [*replace, "manifest.json"])
     hint = "assemble includes them, so move them out if they are not part of the edit"
     if kept_sources:

@@ -836,6 +836,30 @@ def check_swap_target(dst: Path) -> None:
         )
 
 
+def can_stage(dst: Path) -> bool:
+    """True if :func:`staged_dir` would accept ``dst``: False for a drive root, a mount point
+    or a bind mount (the checks of :func:`check_swap_target` and :func:`_check_rename`).
+
+    Call :func:`recover_swap` first; the probe's staging folder is removed again.
+    """
+    try:
+        check_swap_target(dst)
+    except ValueError:
+        return False
+    if not dst.exists():
+        return True
+    tmp = staging_path(dst)
+    tmp.mkdir(exist_ok=True)
+    try:
+        _check_rename(tmp, dst)
+    except ValueError:
+        return False
+    finally:
+        with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
+            shutil.rmtree(tmp)
+    return True
+
+
 def _check_rename(tmp: Path, dst: Path) -> None:
     """Fail if a file cannot be renamed from ``tmp`` into ``dst``.
 

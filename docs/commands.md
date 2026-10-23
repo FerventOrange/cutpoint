@@ -196,8 +196,9 @@ WARNING names them, since `assemble` includes every `.mp4` in the folder; move t
 re-running `clips --force` if they are not part of the edit. Without a readable
 old manifest, only the new names are replaced. Because the staging folder sits next to the output
 folder, `clips --force` refuses before any export a non-empty output folder that is a drive
-root, a mount point or a bind mount; use `--out` with a folder on that drive. Into an empty or
-new folder, clips are exported directly, each under a temporary name until it is complete.
+root, a mount point or a bind mount; use `--out` with a folder on that drive. An empty drive
+root or mount point is exported into directly, each clip under a temporary name until it is
+complete; a failed run there may keep the finished clips.
 
 | Option | Meaning |
 |---|---|

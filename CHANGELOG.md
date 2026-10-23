@@ -107,8 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root crashed with an "empty name" error, and a mount point or bind mount failed with a
   permission error or a cross-device rollback only after every clip was exported.
   `extend --out DIR --force` into such a non-empty `DIR` gives the same message, and a
-  bind-mounted `DIR` is caught too. `clips` into an empty or new folder exports straight into
-  it again, so an empty drive root or mount point works, as with `extend --out` (#160).
+  bind-mounted `DIR` is caught too. `clips` into an empty drive root or mount point exports
+  straight into it, as `extend --out` does (a failed run there may keep the finished clips);
+  every other folder is still staged (#160).
 - A `source_remap` key spelled the Windows way (for example `D:\Videos` -> `/mnt/d/Videos`) now
   applies on Linux and macOS (#149). It matches Windows-style sources case-insensitively with
   either slash, so a Windows project (or `clips --segments` with `D:\` sources) opened on Linux
