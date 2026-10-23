@@ -49,7 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `clips --segments` with a missing file now says what a relative path was resolved against (#127).
+- `clips --segments` with a missing file now says what a relative path was resolved against (#127);
+  a Windows path starting with `\` or `/` is shown as typed, without that note.
 - Segment ids: a generated `sNNN` id that a user id already uses gets a letter suffix (`s002b`),
   and duplicate user ids are an error naming both segments, in `clips` and `360 repair` (#120).
 - `360 repair` resolves relative `source` paths in a hand-written segments file against the
