@@ -194,7 +194,10 @@ replaced; if a new clip name is one, the run stops with an error before exportin
 file stays, including `.mp4` files the old manifest does not list (renamed or added by hand); a
 WARNING names them, since `assemble` includes every `.mp4` in the folder; move them out before
 re-running `clips --force` if they are not part of the edit. Without a readable
-old manifest, only the new names are replaced.
+old manifest, only the new names are replaced. Because the staging folder sits next to the output
+folder, `clips --force` refuses before any export a non-empty output folder that is a drive
+root, a mount point or a bind mount; use `--out` with a folder on that drive. Into an empty or
+new folder, clips are exported directly, each under a temporary name until it is complete.
 
 | Option | Meaning |
 |---|---|
@@ -286,7 +289,8 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   `--out DIR --force` into a non-empty `DIR`: `DIR` is unchanged unless every clip was exported.
   Files in `DIR` that the run does not write stay; a WARNING names `.mp4` clips left there that
   were not re-exported, because `assemble` will include them. `--out DIR --force` is refused
-  before any export when a non-empty `DIR` is a drive root or a mount point; use a folder on it.
+  before any export when a non-empty `DIR` is a drive root, a mount point or a bind mount, and
+  so is in-place `extend` of such a clips folder; use `--out` with a folder on that drive.
 
 ## assemble
 

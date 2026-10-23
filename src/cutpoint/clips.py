@@ -889,12 +889,15 @@ def export_clips(
     project_cfg = cache.load_json(project / "project.json")
     out_dir = out_dir or project / ("clips_vertical" if vertical else "clips")
     recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
-    if out_dir.exists() and any(out_dir.iterdir()) and not force:
+    staged = out_dir.exists() and any(out_dir.iterdir())
+    if staged and not force:
         raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
-    # The clips are exported into a hidden staging folder and swapped in only when all
-    # succeeded, so a failed or cancelled run (--force included) leaves the folder as it was.
-    # A run that fails leaves no empty folders behind.
-    with output_dir(out_dir.parent), staged_dir(out_dir) as work:
+    # With --force into a non-empty folder, the clips are exported into a hidden staging
+    # folder and swapped in only when all succeeded, so a failed or cancelled run leaves the
+    # folder as it was; staged_dir refuses a drive root, a mount point or a bind mount before
+    # any export. Into an empty or new folder they are exported directly, each clip under a
+    # temporary name until complete. A run that fails leaves no empty folders behind.
+    with output_dir(out_dir.parent), staged_dir(out_dir) if staged else output_dir(out_dir) as work:
         from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
         pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
@@ -970,7 +973,8 @@ def export_clips(
             audio_fade=audio_fade,
             crop=crop,
         )
-        swap_in(work, out_dir, [*replace, "manifest.json"])
+        if staged:
+            swap_in(work, out_dir, [*replace, "manifest.json"])
     hint = "assemble includes them, so move them out if they are not part of the edit"
     if kept_sources:
         logger.warning(

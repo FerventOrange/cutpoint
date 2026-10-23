@@ -62,7 +62,7 @@ error tells you to set `CUTPOINT_VIDEO_ENCODER=cpu` or `"video_encoder": "cpu"` 
 Clips, `extend`, 360 renders and `final.mp4` are written to a hidden `.<name>.part.mp4` and
 renamed when complete, so a failed or cancelled export leaves no partial file under the real
 name. A hard kill (SIGKILL, or the UI cancel on Windows) can leave a hidden `.part.mp4`; commands
-ignore it and `clips --force` removes it. `clips`, in-place `extend` and `extend --out DIR --force` into a non-empty `DIR` export into a hidden
+ignore it and `clips --force` removes it. `clips --force` and `extend --out DIR --force` into a non-empty `DIR`, and in-place `extend`, export into a hidden
 `.<folder>.cutpoint-tmp` (and `.<folder>.cutpoint-bak` while swapping); the next run on that
 folder removes them and, if the swap was cut short, puts the old clips back. If the record of the swap in the backup folder cannot be read (for
 example after a power loss), the run stops with an ERROR naming the backup folder and deletes

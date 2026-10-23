@@ -85,6 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clips --force`: a failure or Ctrl+C leaves `DIR` unchanged. Files in `DIR` that the run does not
   write stay, and a WARNING names the `.mp4` clips left there that were not re-exported (`assemble`
   includes them). Same-named files are overwritten as before. `--out` pointing at a non-empty drive root or mount point with `--force` is refused before any export.
+- `clips --force` into a non-empty folder and in-place `extend`, where the clips folder is a
+  drive root, a mount point or a Linux bind mount, are now refused before any export with one
+  ERROR line naming the folder and saying to use `--out` with a folder on that drive. A drive
+  root crashed with an "empty name" error, and a mount point or bind mount failed with a
+  permission error or a cross-device rollback only after every clip was exported.
+  `extend --out DIR --force` into such a non-empty `DIR` gives the same message, and a
+  bind-mounted `DIR` is caught too. `clips` into an empty or new folder exports straight into
+  it again, so an empty drive root or mount point works, as with `extend --out` (#160).
 - A `source_remap` key spelled the Windows way (for example `D:\Videos` -> `/mnt/d/Videos`) now
   applies on Linux and macOS (#149). It matches Windows-style sources case-insensitively with
   either slash, so a Windows project (or `clips --segments` with `D:\` sources) opened on Linux
