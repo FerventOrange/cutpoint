@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Exports no longer leave a broken file under the real name (#109). Clips, `extend`, 360 renders
+  and `final.mp4` are written to a hidden `.<name>.part.mp4` and renamed when complete. A failed
+  or cancelled export (Ctrl+C, or the UI cancel on Linux and macOS) leaves no partial file and
+  removes the temp file. A hard kill (SIGKILL, or the UI cancel on Windows, which uses
+  `taskkill /F`) can leave a hidden `.part.mp4`; every command ignores it and `clips --force`
+  removes it.
+- With `video_encoder` `auto`, if a GPU encode (NVENC, AMF or VAAPI) fails on real footage, that
+  clip, 360 render or final video is redone once on the CPU (libx264) with one WARNING, and the
+  rest of the run uses the CPU. A forced GPU encoder is not retried; its error now says to set
+  `CUTPOINT_VIDEO_ENCODER=cpu` or `"video_encoder": "cpu"` in `config.json` (#109).
 - A failed GPU encoder probe (`cutpoint capabilities`, or a video encoder forced with
   `CUTPOINT_VIDEO_ENCODER`) now reports ffmpeg's first real error, for example "Cannot load
   libcuda.so.1", instead of the trailing "Nothing was written into output file" or "Conversion

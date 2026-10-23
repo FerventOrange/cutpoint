@@ -578,7 +578,7 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
         "imu_levelled"}`` per clip (``path`` is the director path dict
         or None; ``path_missing`` when the manifest names a path file that is gone).
     """
-    files = sorted(qa_dir.glob("*.mp4"), key=natural_key)
+    files = sorted((f for f in qa_dir.glob("*.mp4") if not f.name.startswith(".")), key=natural_key)
     manifest = cache.load_json(qa_dir / "manifest.json")
     out = []
     if manifest is not None:

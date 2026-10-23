@@ -62,9 +62,11 @@ from cutpoint.encode import audio_fade_filter
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
+    VideoEncoder,
+    atomic_output,
+    encode_with_fallback,
     probe,
     run,
-    video_encoder,
 )
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
@@ -297,24 +299,22 @@ def render_segment(
         f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
         f"v_fov={init['v_fov']:.3f}:w={fmt.width}:h={fmt.height}:interp=line"
     )
-    enc = video_encoder()  # resolved before the NVDEC retry loop, which would swallow its error
     body = (
         f"{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
         f"setsar=1,fps={fmt.fps}:round=down,format=yuv420p"
     )
-    vf = f"{stack}{enc.chain(body)}[v]"
     af = f"[{audio_idx}:a:0]{a_fmt}[a]"
-    t0 = time.perf_counter()
-    text = ""
-    for hw in (True, False):
+
+    def args_for(enc: VideoEncoder, hw: bool, dst: Path) -> list[str]:
         args = ["ffmpeg", "-y", "-v", "error"]
         # Read moved footage through source_remap; the record keeps the original inputs.
         for inp in src.inputs:
             args += (["-hwaccel", "cuda"] if hw else []) + seek + ["-i", str(remap_source(inp))]
         args += [*seek, "-i", str(remap_source(clip.source))]
-        args += [
+        return [
+            *args,
             "-filter_complex",
-            f"{vf};{af}",
+            f"{stack}{enc.chain(body)}[v];{af}",
             "-map",
             "[v]",
             "-map",
@@ -338,21 +338,32 @@ def render_segment(
             "90000",
             "-movflags",
             "+faststart",
-            str(out),
+            str(dst),
         ]
-        try:
-            text = run(args, cwd=work)
-            break
-        except FFmpegError as err:
-            if not hw:
-                raise
-            logger.warning(
-                "  %s: NVDEC render failed, retrying on the CPU (%s)",
-                out.name,
-                str(err).splitlines()[-1][:200],
-            )
+
+    # Once NVDEC failed for this segment, the CPU-encoder retry decodes on the CPU too.
+    nvdec = [True]
+
+    def encode(enc: VideoEncoder, dst: Path) -> str:
+        """Render into ``dst`` with ``enc``: NVDEC first, then CPU decoding."""
+        if nvdec[0]:
+            try:
+                return run(args_for(enc, True, dst), cwd=work)
+            except FFmpegError as err:
+                nvdec[0] = False
+                logger.warning(
+                    "  %s: NVDEC render failed, retrying on the CPU (%s)",
+                    out.name,
+                    str(err).splitlines()[-1][:200],
+                )
+        return run(args_for(enc, False, dst), cwd=work)
+
+    t0 = time.perf_counter()
+    # A failed auto GPU encode is redone with libx264; out only appears once complete.
+    with atomic_output(out) as part:
+        text = encode_with_fallback(lambda enc: encode(enc, part), out.name)
+        got = probe(part).duration
     el = time.perf_counter() - t0
-    got = probe(out).duration
     found = [m.strip() for m in READ_ERROR_RE.findall(text)]
     read_err = None
     if found or got < dur - 0.3:

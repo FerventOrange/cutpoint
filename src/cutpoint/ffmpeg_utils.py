@@ -28,7 +28,8 @@ import threading
 import time
 import wave
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import cache
@@ -38,6 +39,7 @@ from typing import Any, Literal
 import numpy as np
 
 from cutpoint import paths, state
+from cutpoint.cache import REPLACE_ATTEMPTS
 from cutpoint.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -613,6 +615,86 @@ def video_encoder() -> VideoEncoder:
             return enc
     logger.info("No GPU video encoder works; encoding with libx264")
     return VideoEncoder("cpu")
+
+
+# Codecs of auto-chosen GPU encoders that failed on real footage while libx264 then worked:
+# the rest of the run encodes on the CPU instead of failing and retrying every clip.
+_GPU_ENCODE_FAILED: set[str] = state.register_container(__name__, "_GPU_ENCODE_FAILED", set())
+
+
+def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T:
+    """Run ``encode`` with :func:`video_encoder`; retry once on the CPU if a GPU encode fails.
+
+    The probe in :func:`video_encoder` encodes 0.2 s of black, so a driver can still fail
+    on real footage. With ``video_encoder`` "auto" a failed GPU encode is retried with
+    libx264 (one WARNING); if that works, the GPU encoder is skipped for the rest of the
+    process. ffmpeg's error does not reliably say whether the encoder or something else
+    (a bad read, a filter) failed, so any failure is retried; a failure that is not the
+    encoder's fails again on the CPU and that error is raised. A CPU encode is not retried.
+
+    Raises:
+        FFmpegError: If the CPU encode fails, or a GPU encoder named in ``video_encoder``
+            fails (the message names the setting that switches to the CPU).
+    """
+    enc = VideoEncoder("cpu") if _GPU_ENCODE_FAILED else video_encoder()
+    try:
+        return encode(enc)
+    except FFmpegError as err:
+        if enc.kind == "cpu":
+            raise
+        choice = get_config().video_encoder
+        if choice != "auto":
+            raise FFmpegError(
+                f"{err}\n{what}: {enc.codec} (video_encoder {choice!r}) failed. Set "
+                'CUTPOINT_VIDEO_ENCODER=cpu or "video_encoder": "cpu" in config.json to '
+                "encode on the CPU."
+            ) from err
+        logger.warning(
+            "%s: %s failed (%s); retrying on the CPU (libx264)",
+            what,
+            enc.codec,
+            _first_error_line(err),
+        )
+    result = encode(VideoEncoder("cpu"))
+    if enc.codec not in _GPU_ENCODE_FAILED:
+        logger.info("Encoding the rest of this run with libx264 instead of %s", enc.codec)
+        _GPU_ENCODE_FAILED.add(enc.codec)
+    return result
+
+
+def part_path(out: Path) -> Path:
+    """Temporary name :func:`atomic_output` writes ``out`` to: ``.<stem>.part<suffix>``.
+
+    The suffix is kept so ffmpeg picks the muxer; the leading dot keeps it out of the
+    clip listings (``assemble``, ``extend``).
+    """
+    return out.with_name(f".{out.stem}.part{out.suffix}")
+
+
+@contextmanager
+def atomic_output(out: Path) -> Iterator[Path]:
+    """Yield :func:`part_path` of ``out`` to write to, renamed onto ``out`` on success.
+
+    On any failure (Ctrl+C included) the partial file is removed and ``out`` is left as
+    it was, so a truncated file never appears under the final name. On Windows the rename
+    is retried briefly while another process (a virus scanner, a player) holds a file open.
+    """
+    part = part_path(out)
+    try:
+        yield part
+        for attempt in range(REPLACE_ATTEMPTS):
+            try:
+                part.replace(out)
+                break
+            except PermissionError:
+                if attempt == REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+    except BaseException:
+        # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
+        with suppress(OSError):
+            part.unlink(missing_ok=True)
+        raise
 
 
 def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:

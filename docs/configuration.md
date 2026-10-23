@@ -123,7 +123,7 @@ it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Wi
 
 ### video_encoder
 
-`auto` (default), `nvenc`, `amf`, `vaapi` or `cpu` (libx264). `CUTPOINT_VIDEO_ENCODER` overrides it. `auto` really encodes a short test clip with each candidate (NVENC, then AMF on Windows or VAAPI and AMF on Linux; on Linux every `/dev/dri/renderD*` node is tried) and uses the first one that works, else libx264. A named GPU encoder that does not work is an error, not a silent fallback. `cutpoint capabilities` shows what works on this machine.
+`auto` (default), `nvenc`, `amf`, `vaapi` or `cpu` (libx264). `CUTPOINT_VIDEO_ENCODER` overrides it. `auto` really encodes a short test clip with each candidate (NVENC, then AMF on Windows or VAAPI and AMF on Linux; on Linux every `/dev/dri/renderD*` node is tried) and uses the first one that works, else libx264. A named GPU encoder that does not work is an error, not a silent fallback (the error suggests `cpu`). With `auto`, a GPU encode that fails on real footage is redone once on the CPU with a WARNING, and the rest of the run uses the CPU. `cutpoint capabilities` shows what works on this machine.
 
 ### pano
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -276,3 +277,63 @@ def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, 
     assert (cap.width, cap.height) == (320, 240)
     assert cap.duration == pytest.approx(joined.duration, abs=0.2)
     assert np.abs(_first_frame(captioned) - _first_frame(final)).max() > 60  # the text is drawn
+
+
+# -- a GPU encode that fails on real footage ----------------------------------------------------
+
+
+def _clip_job(tmp_path: Path):
+    """Arguments for ``encode.export_clip`` of a clip that needs no real source file."""
+    info = ffmpeg_utils.MediaInfo(
+        path=tmp_path / "src.mp4", duration=100.0, vduration=100.0, width=1920, height=1080,
+        fps=Fraction(30), pix_fmt="yuv420p", vcodec="h264", audio_streams=1,
+        acodec="aac", sample_rate=48000, channels=2,
+    )  # fmt: skip
+    return info, encode.OutputFormat(1920, 1080, 30)
+
+
+def fake_clip_encode(monkeypatch, broken: set[str]) -> list[str]:
+    """``encode.run``: writes the output unless its video codec is in ``broken``; returns codecs."""
+    codecs: list[str] = []
+
+    def run(args, **_kw):
+        codec = args[args.index("-c:v") + 1]
+        codecs.append(codec)
+        Path(args[-1]).write_bytes(b"x")
+        if codec in broken:
+            raise FFmpegError(f"ffmpeg failed (exit 1):\n{codec} died on real footage")
+        return ""
+
+    monkeypatch.setattr(encode, "run", run)
+    return codecs
+
+
+def test_auto_gpu_encode_that_fails_is_redone_on_the_cpu_and_remembered(
+    monkeypatch, tmp_path, caplog
+):
+    fake_ffmpeg(monkeypatch, works={"h264_nvenc", "libx264"})  # the probe passes
+    codecs = fake_clip_encode(monkeypatch, broken={"h264_nvenc"})
+    info, fmt = _clip_job(tmp_path)
+    caplog.set_level("WARNING")
+
+    for name in ("001.mp4", "002.mp4"):
+        encode.export_clip(info.path, info, 0.0, 2.0, tmp_path / name, fmt, False)
+
+    assert codecs == ["h264_nvenc", "libx264", "libx264"]  # clip 2 skips the broken encoder
+    assert (tmp_path / "001.mp4").exists() and (tmp_path / "002.mp4").exists()
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+def test_forced_gpu_encode_that_fails_names_the_cpu_setting_and_is_not_retried(
+    monkeypatch, tmp_path
+):
+    fake_ffmpeg(monkeypatch, works={"h264_nvenc", "libx264"})
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "nvenc")
+    codecs = fake_clip_encode(monkeypatch, broken={"h264_nvenc"})
+    info, fmt = _clip_job(tmp_path)
+
+    with pytest.raises(FFmpegError, match="CUTPOINT_VIDEO_ENCODER=cpu"):
+        encode.export_clip(info.path, info, 0.0, 2.0, tmp_path / "001.mp4", fmt, False)
+
+    assert codecs == ["h264_nvenc"]
+    assert list(tmp_path.glob("*.mp4")) == []  # no final file, no .part

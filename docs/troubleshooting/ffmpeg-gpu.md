@@ -54,6 +54,16 @@ GPU encoder that does not work stops the command with
 `video_encoder 'X' cannot encode on this machine (...)` and the ffmpeg error; it never falls back
 silently. Use `cpu` to force libx264 and `auto` to go back to detection.
 
+With `auto`, the probe only proves that a short test clip encodes. If a GPU encode then fails on
+real footage, Cutpoint logs one WARNING, redoes that clip, 360 render or final video once on the
+CPU (libx264) and uses the CPU for the rest of the run. A forced GPU encoder is not retried; its
+error tells you to set `CUTPOINT_VIDEO_ENCODER=cpu` or `"video_encoder": "cpu"` in `config.json`.
+
+Clips, `extend`, 360 renders and `final.mp4` are written to a hidden `.<name>.part.mp4` and
+renamed when complete, so a failed or cancelled export leaves no partial file under the real
+name. A hard kill (SIGKILL, or the UI cancel on Windows) can leave a hidden `.part.mp4`; commands
+ignore it and `clips --force` removes it.
+
 Common causes when the GPU encoder is not used:
 
 - **NVENC:** no NVIDIA GPU, a very old driver (check `nvidia-smi`), an ffmpeg build without

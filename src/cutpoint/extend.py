@@ -39,7 +39,7 @@ from cutpoint import boundaries, cache
 from cutpoint.config import remap_source
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import OutputFormat, export_clip_checked
-from cutpoint.ffmpeg_utils import MediaInfo, probe
+from cutpoint.ffmpeg_utils import MediaInfo, atomic_output, probe
 from cutpoint.planning import Padding, pad, speech_pass
 from cutpoint.utils import natural_key
 
@@ -305,7 +305,10 @@ def extend_clips(
     fmt_d = manifest.get("format") or {}
     fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
     vertical = bool(fmt_d.get("vertical"))
-    files = sorted(clips_dir.glob("*.mp4"), key=natural_key)
+    # Dot files are temporaries (an interrupted export's ``.NNN_x.part.mp4``), not clips.
+    files = sorted(
+        (f for f in clips_dir.glob("*.mp4") if not f.name.startswith(".")), key=natural_key
+    )
     infos: dict[str, MediaInfo] = {}
     plans: list[ExtendPlan] = []
     skipped: list[str] = []
@@ -361,7 +364,8 @@ def extend_clips(
             and (reuse_dir / name).is_file()
             and _reusable(prior, e | {"start": start, "end": end}, reuse_same_format, audio_fade)
         ):
-            shutil.copy2(reuse_dir / name, work / name)
+            with atomic_output(work / name) as part:
+                shutil.copy2(reuse_dir / name, part)
             reused += 1
             read_err = None
             logger.info("  %s: unchanged, copied from %s", name, reuse_dir.name)
@@ -442,10 +446,7 @@ def extend_clips(
             "clips": entries,
         },
     )
-    if in_place:
-        for old in clips_dir.glob("*.mp4"):
-            if old.name in {x["file"] for x in entries}:
-                old.unlink()
+    if in_place:  # each original stays until its new clip replaces it
         for new in work.iterdir():
             new.replace(clips_dir / new.name)
         work.rmdir()

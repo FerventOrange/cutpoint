@@ -250,6 +250,7 @@ class TestRenderSegmentSendcmd:
 
         def run(args, cwd=None):
             calls.append(args)
+            Path(args[-1]).write_bytes(b"x")  # the output, which render_segment then renames
             return ""
 
         monkeypatch.setattr(render, "run", run)
@@ -306,7 +307,13 @@ def test_render_segment_reads_moved_footage_and_records_the_original_paths(
 ):
     clip, old, new = moved
     calls: list[list[str]] = []
-    monkeypatch.setattr(render, "run", lambda args, cwd=None: calls.append(args) or "")
+
+    def run(args, cwd=None):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"x")
+        return ""
+
+    monkeypatch.setattr(render, "run", run)
     monkeypatch.setattr(render, "probe", lambda p: SimpleNamespace(duration=1.0))
     src = project.RenderSource("studio", (str(old / clip.insv[0]),), "equirect", True, False, "t")
     rec = render.render_segment(

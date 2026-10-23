@@ -64,7 +64,8 @@ Encoder checks actually encode a short clip; an encoder listed by ffmpeg is not 
 usable. This command downloads nothing. `--json` writes the report to stdout for other tools.
 
 Use `video_encoder` in `config.json` or `CUTPOINT_VIDEO_ENCODER` to select `auto`, `nvenc`,
-`amf`, `vaapi` or `cpu`. Auto falls back to software when no hardware probe succeeds; an
+`amf`, `vaapi` or `cpu`. Auto falls back to software when no hardware probe succeeds, and redoes an
+export once on the CPU if a GPU encode fails on real footage (one WARNING); an
 explicit unavailable GPU encoder fails rather than silently selecting another backend.
 AMD transcription remains CPU-only with the current faster-whisper runtime.
 See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device permissions.
