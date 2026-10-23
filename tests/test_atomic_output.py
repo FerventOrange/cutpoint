@@ -74,19 +74,22 @@ def test_failed_or_interrupted_assemble_leaves_no_final_video(monkeypatch, tmp_p
     ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the UI kills Windows jobs with taskkill, not SIGTERM")
-def test_sigterm_cancels_a_command_like_ctrl_c(monkeypatch):
-    """A UI cancel (SIGTERM) unwinds as exit 130 and leaves the caller's handler alone."""
+def test_stop_signal_cancels_a_command_like_ctrl_c(monkeypatch):
+    """A UI cancel (SIGTERM) or Windows Ctrl+Break (SIGBREAK) unwinds as exit 130.
+
+    The caller's handler is left alone afterwards.
+    """
+    stop = signal.SIGBREAK if os.name == "nt" else signal.SIGTERM
 
     def cancelled(_args):
-        signal.raise_signal(signal.SIGTERM)
+        signal.raise_signal(stop)
         return 0
 
     monkeypatch.setattr(cli, "_cmd_paths", cancelled)
-    before = signal.getsignal(signal.SIGTERM)
+    before = signal.getsignal(stop)
 
     assert cli.main(["paths"]) == 130
-    assert signal.getsignal(signal.SIGTERM) is before
+    assert signal.getsignal(stop) is before
 
 
 # --- exit codes, failed-run cleanup, locked files ---
