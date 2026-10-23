@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -22,7 +23,7 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from cutpoint import cache, cli, ui
+from cutpoint import cache, cli, config, ui
 
 PORT = 8765
 needs_ffmpeg = pytest.mark.skipif(
@@ -67,8 +68,9 @@ def test_requests_must_be_loopback_and_carry_the_token(client: TestClient) -> No
         client.get("/api/session", headers={"X-Cutpoint-Token": ""}).status_code == 403
     )  # no bootstrap
     assert client.get("/api/projects", headers={"X-Cutpoint-Token": "nope"}).status_code == 403
-    assert client.get("/api/browse", headers={"X-Cutpoint-Token": ""}).status_code == 403
-    assert client.get("/api/browse", params={"path": "/\0"}).status_code == 400
+    bare = {"X-Cutpoint-Token": ""}
+    assert client.post("/api/pick", params={"kind": "file"}, headers=bare).status_code == 403
+    assert client.get("/api/settings", headers=bare).status_code == 403
     framed = client.get("/api/session")
     assert framed.headers["x-frame-options"] == "DENY"
     assert client.get("/api/projects").json() == {"projects": []}
@@ -771,3 +773,447 @@ def test_folder_opener_runs_the_platform_tool_without_a_shell(
     monkeypatch.setattr(ui.os, "startfile", started.append, raising=False)
     ui.folder_opener()(tmp_path)
     assert started == [str(tmp_path)] and len(calls) == 2
+
+
+# --------------------------------------------------------------------------- native picker
+class FakeDialog:
+    """A stand-in for the dialog process: fixed output, or blocks until released."""
+
+    def __init__(self, out: str = "", code: int = 0, err: str = "") -> None:
+        self.out, self.returncode, self.err = out, code, err
+        self.calls: list[list[str]] = []
+        self.opened = threading.Event()
+        self.release = threading.Event()
+        self.block = False
+
+    def __call__(self, args, **kw):
+        self.calls.append(args)
+        outer = self
+
+        class Proc:
+            returncode = outer.returncode
+
+            def communicate(self):
+                outer.opened.set()
+                if outer.block:
+                    assert outer.release.wait(30)
+                return outer.out, outer.err
+
+            def kill(self):
+                outer.release.set()
+
+        return Proc()
+
+
+@pytest.fixture
+def dialog(monkeypatch: pytest.MonkeyPatch) -> FakeDialog:
+    fake = FakeDialog()
+    monkeypatch.setattr(ui.subprocess, "Popen", fake)
+    monkeypatch.setattr(ui, "path_picker", lambda: lambda kind, start: (["dlg", kind], 1))
+    return fake
+
+
+def test_session_reports_can_pick(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ui, "path_picker", lambda: None)
+    assert client.get("/api/session").json()["can_pick"] is False
+    monkeypatch.setattr(ui, "path_picker", lambda: lambda kind, start: ([], None))
+    assert client.get("/api/session").json()["can_pick"] is True
+
+
+def test_pick_and_settings_need_the_token(client: TestClient, dialog: FakeDialog) -> None:
+    bare = {"X-Cutpoint-Token": ""}
+    assert client.post("/api/pick", params={"kind": "file"}, headers=bare).status_code == 403
+    assert client.get("/api/settings", headers=bare).status_code == 403
+    body = {"projects_dir": "x"}
+    assert client.put("/api/settings", json=body, headers=bare).status_code == 403
+    assert client.get("/api/settings", headers={"X-Cutpoint-Token": "nope"}).status_code == 403
+    assert dialog.calls == []
+
+
+def test_pick_returns_the_chosen_path_or_null_on_cancel(
+    client: TestClient, dialog: FakeDialog, tmp_path: Path
+) -> None:
+    video = tmp_path / "v.mp4"
+    dialog.out = f"{video}\n"
+    res = client.post("/api/pick", params={"kind": "file"})
+    assert res.status_code == 200 and res.json() == {"path": os.path.normpath(video)}
+    assert dialog.calls == [["dlg", "file"]]
+
+    dialog.out = ""  # closed without choosing (exit 0, nothing printed)
+    assert client.post("/api/pick", params={"kind": "folder"}).json() == {"path": None}
+    dialog.returncode = 1  # the cancel exit code of zenity/kdialog
+    assert client.post("/api/pick", params={"kind": "folder"}).json() == {"path": None}
+
+
+def test_pick_errors(
+    client: TestClient, dialog: FakeDialog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert client.post("/api/pick", params={"kind": "other"}).status_code == 400
+    assert dialog.calls == []
+
+    dialog.returncode, dialog.err = 2, "boom"
+    res = client.post("/api/pick", params={"kind": "file"})
+    assert res.status_code == 500 and "failed" in res.json()["detail"]
+
+    dialog.returncode, dialog.out = 0, "relative/path.mp4\n"
+    assert client.post("/api/pick", params={"kind": "file"}).status_code == 500
+
+    def broken(*a, **kw):
+        raise OSError(2, "No such file")
+
+    monkeypatch.setattr(ui.subprocess, "Popen", broken)
+    res = client.post("/api/pick", params={"kind": "file"})
+    assert res.status_code == 500 and "No such file" in res.json()["detail"]
+    # The failure released the lock, so the next dialog can open.
+    monkeypatch.setattr(ui.subprocess, "Popen", dialog)
+    dialog.out = ""
+    assert client.post("/api/pick", params={"kind": "file"}).status_code == 200
+
+    monkeypatch.setattr(ui, "path_picker", lambda: None)
+    assert client.post("/api/pick", params={"kind": "file"}).status_code == 501
+
+
+def test_pick_allows_one_dialog_at_a_time(
+    client: TestClient, dialog: FakeDialog, tmp_path: Path
+) -> None:
+    dialog.block, dialog.out = True, str(tmp_path / "v.mp4")
+    first: list[int] = []
+    t = threading.Thread(
+        target=lambda: first.append(client.post("/api/pick", params={"kind": "file"}).status_code)
+    )
+    t.start()
+    try:
+        assert dialog.opened.wait(30)
+        assert client.post("/api/pick", params={"kind": "folder"}).status_code == 409
+    finally:
+        dialog.release.set()
+        t.join(30)
+    assert first == [200] and len(dialog.calls) == 1
+    assert client.post("/api/pick", params={"kind": "file"}).status_code == 200
+
+
+def test_pick_start_is_the_nearest_existing_absolute_folder(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "f.mp4").write_bytes(b"x")
+    assert ui.pick_start(str(tmp_path / "a")) == tmp_path / "a"
+    assert ui.pick_start(str(tmp_path / "a" / "gone" / "deeper")) == tmp_path / "a"
+    assert ui.pick_start(str(tmp_path / "f.mp4")) == tmp_path  # a file: its folder
+    for ignored in ("", "relative/dir", "a", "bad\0path"):
+        assert ui.pick_start(ignored) is None, ignored
+
+
+def test_pick_passes_start_to_the_dialog(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    starts: list[Path | None] = []
+
+    def build(kind, start):
+        starts.append(start)
+        return ["dlg"], None
+
+    monkeypatch.setattr(ui, "path_picker", lambda: build)
+    monkeypatch.setattr(ui.subprocess, "Popen", FakeDialog())
+    client.post("/api/pick", params={"kind": "file", "start": str(tmp_path / "missing" / "x")})
+    client.post("/api/pick", params={"kind": "file", "start": "relative"})
+    assert starts == [tmp_path, None]
+
+
+def test_path_picker_builds_the_platform_dialog_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    present: set[str] = set()
+    monkeypatch.setattr(ui.shutil, "which", lambda n: f"/bin/{n}" if n in present else None)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    present.update({"zenity", "kdialog"})
+    assert ui.path_picker() is None  # no display: nobody would see the window
+    monkeypatch.setenv("DISPLAY", ":0")
+    argv, cancel = ui.path_picker()("folder", tmp_path)
+    assert argv == [
+        "/bin/zenity",
+        "--file-selection",
+        "--directory",
+        "--title=Choose a folder",
+        f"--filename={tmp_path}{os.sep}",
+    ]
+    assert cancel == 1
+    argv, _ = ui.path_picker()("file", None)
+    assert argv[:3] == ["/bin/zenity", "--file-selection", "--title=Choose a video"]
+    assert "*.mp4" in argv[3] and not any(a.startswith("--filename") for a in argv)
+
+    present.discard("zenity")  # kdialog is the fallback
+    argv, cancel = ui.path_picker()("folder", tmp_path)
+    assert argv == [
+        "/bin/kdialog",
+        "--title",
+        "Choose a folder",
+        "--getexistingdirectory",
+        str(tmp_path),
+    ]
+    argv, cancel = ui.path_picker()("file", tmp_path)
+    assert argv[:5] == [
+        "/bin/kdialog",
+        "--title",
+        "Choose a video",
+        "--getopenfilename",
+        str(tmp_path),
+    ]
+    assert "*.mp4" in argv[5] and cancel == 1
+
+    present.clear()
+    assert ui.path_picker() is None  # a display but no dialog tool
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert ui.path_picker() is None
+    present.add("osascript")
+    argv, cancel = ui.path_picker()("folder", tmp_path)
+    assert argv[:2] == ["/bin/osascript", "-e"] and "choose" in argv[2]
+    assert argv[3:] == ["folder", str(tmp_path)] and cancel is None
+    assert ui.path_picker()("file", None)[0][3:] == ["file"]
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: None)
+    assert ui.path_picker() is None  # Python without tkinter
+    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: object())
+    argv, cancel = ui.path_picker()("folder", tmp_path)
+    assert argv[:3] == [sys.executable, "-I", "-c"]
+    assert argv[4:6] == ["folder", str(tmp_path)] and "*.mp4" in argv[6] and cancel is None
+    assert ui.path_picker()("file", None)[0][5] == ""
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+@pytest.mark.parametrize("var", ["SSH_CONNECTION", "SSH_TTY"])
+def test_path_picker_is_off_in_an_ssh_session_on_windows_and_macos(
+    monkeypatch: pytest.MonkeyPatch, platform: str, var: str
+) -> None:
+    monkeypatch.setattr(ui.shutil, "which", lambda n: f"/bin/{n}")
+    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
+    assert ui.path_picker() is not None
+    monkeypatch.setenv(
+        var, "10.0.0.1 22 10.0.0.2 5555" if var == "SSH_CONNECTION" else "/dev/pts/0"
+    )
+    assert ui.path_picker() is None
+
+
+def test_picker_shutdown_kills_an_open_dialog_and_frees_the_lock(
+    client: TestClient, dialog: FakeDialog, tmp_path: Path
+) -> None:
+    dialog.block = True
+    killed: list[bool] = []
+    real_kill = dialog.release.set
+    dialog.release.set = lambda: (killed.append(True), real_kill())[1]  # type: ignore[method-assign]
+    status: list[int] = []
+    t = threading.Thread(
+        target=lambda: status.append(client.post("/api/pick", params={"kind": "file"}).status_code)
+    )
+    t.start()
+    try:
+        assert dialog.opened.wait(30)
+        picker = client.app.state.picker
+        assert picker.proc is not None
+        picker.shutdown()
+    finally:
+        dialog.release.set()
+        t.join(30)
+    assert not t.is_alive() and killed and picker.proc is None
+    dialog.block, dialog.out = False, ""
+    assert client.post("/api/pick", params={"kind": "file"}).status_code == 200
+
+
+# --------------------------------------------------------------------------- settings
+def test_settings_report_the_folder_the_lock_and_the_config_file(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    res = client.get("/api/settings")
+    assert res.status_code == 200
+    assert res.json() == {
+        "projects_dir": str(config.projects_dir()),
+        "projects_dir_locked": False,
+        "config_file": str(home / "config.json"),
+    }
+    locked = tmp_path / "locked"
+    monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(locked))
+    config.get_config.cache_clear()
+    got = client.get("/api/settings").json()
+    assert got["projects_dir_locked"] is True and got["projects_dir"] == str(locked)
+
+
+def test_put_settings_saves_the_folder_and_lists_projects_from_it(
+    client: TestClient, home: Path, tmp_path: Path
+) -> None:
+    new = tmp_path / "elsewhere"  # only the last part may be created
+    res = client.put("/api/settings", json={"projects_dir": str(new)})
+    assert res.status_code == 200, res.text
+    assert res.json()["projects_dir"] == str(new) and new.is_dir()
+    assert json.loads((home / "config.json").read_text("utf-8")) == {"projects_dir": str(new)}
+    assert client.get("/api/settings").json()["projects_dir"] == str(new)
+
+    (new / "trip").mkdir()
+    cache.save_json(new / "trip" / "highlights.json", {})
+    assert [p["id"] for p in client.get("/api/projects").json()["projects"]] == ["trip"]
+
+    other = tmp_path / "other"  # an existing folder works too
+    other.mkdir()
+    assert client.put("/api/settings", json={"projects_dir": f" {other} "}).status_code == 200
+    assert client.get("/api/projects").json() == {"projects": []}
+
+
+def test_put_settings_rejects_unusable_folders(
+    client: TestClient, home: Path, tmp_path: Path
+) -> None:
+    a_file = tmp_path / "file.txt"
+    a_file.write_text("x")
+    cases = [
+        {},
+        {"projects_dir": ""},
+        {"projects_dir": 5},
+        {"projects_dir": "relative/dir"},
+        {"projects_dir": str(a_file)},
+        {"projects_dir": str(tmp_path / "no" / "parent")},
+    ]
+    for body in cases:
+        assert client.put("/api/settings", json=body).status_code == 400, body
+    assert not (tmp_path / "no").exists()
+    assert not (home / "config.json").exists()
+
+
+def test_put_settings_rejects_an_unwritable_folder(
+    client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
+    res = client.put("/api/settings", json={"projects_dir": str(tmp_path)})
+    assert res.status_code == 400 and "Permission denied" in res.json()["detail"]
+    assert not (home / "config.json").exists()
+
+
+def test_put_settings_conflicts(
+    client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = {"projects_dir": str(tmp_path)}
+    cfg = home / "config.json"
+
+    assert client.get("/api/settings").status_code == 200  # config loaded (and cached) while valid
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{not json", encoding="utf-8")
+    res = client.put("/api/settings", json=body)
+    assert res.status_code == 409 and cfg.read_text("utf-8") == "{not json"  # never overwritten
+    cfg.unlink()
+    config.get_config.cache_clear()
+
+    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running")
+    assert client.put("/api/settings", json=body).status_code == 409
+    client.app.state.jobs.jobs["j1"].status = "done"
+    assert client.put("/api/settings", json=body).status_code == 200
+
+    monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(tmp_path / "env"))
+    res = client.put("/api/settings", json={"projects_dir": str(tmp_path / "x")})
+    assert res.status_code == 409 and "CUTPOINT_PROJECTS_DIR" in res.json()["detail"]
+    assert json.loads(cfg.read_text("utf-8")) == {"projects_dir": str(tmp_path)}
+
+
+def test_put_settings_keeps_other_config_keys(
+    client: TestClient, home: Path, tmp_path: Path
+) -> None:
+    cfg = home / "config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('{\n    "player_tags": ["Me"],\n    "projects_dir": "/old"\n}', encoding="utf-8")
+    assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
+    data = json.loads(cfg.read_text("utf-8"))
+    assert list(data) == ["player_tags", "projects_dir"] and data["player_tags"] == ["Me"]
+    assert data["projects_dir"] == str(tmp_path)
+
+
+def test_settings_with_an_invalid_config_file_conflict_even_on_a_fresh_cache(
+    client: TestClient, home: Path, tmp_path: Path
+) -> None:
+    cfg = home / "config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{oops", encoding="utf-8")
+    config.get_config.cache_clear()
+    assert client.get("/api/settings").status_code == 409
+    config.get_config.cache_clear()
+    res = client.put("/api/settings", json={"projects_dir": str(tmp_path)})
+    assert res.status_code == 409 and cfg.read_text("utf-8") == "{oops"
+
+
+def test_settings_ignore_an_invalid_unrelated_key(
+    client: TestClient, home: Path, tmp_path: Path
+) -> None:
+    cfg = home / "config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('{"video_encoder": "bogus"}', encoding="utf-8")
+    config.get_config.cache_clear()
+    assert client.get("/api/settings").status_code == 200
+    config.get_config.cache_clear()
+    new = tmp_path / "proj"
+    assert client.put("/api/settings", json={"projects_dir": str(new)}).status_code == 200
+    data = json.loads(cfg.read_text("utf-8"))
+    assert data == {"video_encoder": "bogus", "projects_dir": str(new)}
+
+
+def test_put_settings_removes_a_folder_it_created_when_saving_fails(
+    client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    new = tmp_path / "fresh"
+    cfg = home / "config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{oops", encoding="utf-8")
+    config.get_config.cache_clear()
+    assert client.put("/api/settings", json={"projects_dir": str(new)}).status_code == 409
+    assert not new.exists()
+
+    cfg.unlink()
+    config.get_config.cache_clear()
+
+    def broken(*a, **kw):
+        raise OSError(28, "No space left")
+
+    monkeypatch.setattr(ui, "set_config_value", broken)
+    res = client.put("/api/settings", json={"projects_dir": str(new)})
+    assert res.status_code == 500 and not new.exists()
+
+
+def test_put_settings_never_removes_an_existing_folder_on_failure(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = tmp_path / "keep"
+    existing.mkdir()
+    (existing / "f.txt").write_text("x")
+
+    def broken(*a, **kw):
+        raise OSError(28, "No space left")
+
+    monkeypatch.setattr(ui, "set_config_value", broken)
+    res = client.put("/api/settings", json={"projects_dir": str(existing)})
+    assert res.status_code == 500 and (existing / "f.txt").exists()
+
+    def denied(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
+    assert client.put("/api/settings", json={"projects_dir": str(existing)}).status_code == 400
+    assert existing.is_dir()
+
+
+def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    new = tmp_path / "probe"
+    monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
+    with pytest.raises(HTTPException) as e:
+        ui.check_projects_dir(str(new))
+    assert e.value.status_code == 400 and not new.exists()
+    monkeypatch.undo()
+    assert ui.check_projects_dir(str(new)) == (new, True)
+    assert ui.check_projects_dir(str(new)) == (new, False)

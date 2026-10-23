@@ -21,6 +21,12 @@ Trust boundaries:
   three folders the server resolves from the project: its own sources (the default), the clips
   folder of its latest export, or the project folder holding its assembled final. The request
   names only the target, never a path.
+* Choosing a source or folder (``POST /api/pick?kind=file|folder``) opens the machine's own open
+  dialog (Windows: Tk's system dialog; macOS: ``osascript``; Linux: zenity, else kdialog) in a
+  child process without a shell, one at a time; the server never lists folders itself. With no
+  dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
+* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir`` in ``config.json``, never
+  while a job runs or when ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import hashlib
+import importlib.util
 import logging
 import math
 import mimetypes
@@ -39,6 +46,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from collections import deque
 from collections.abc import Callable
@@ -53,8 +61,14 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from cutpoint import cache
-from cutpoint.config import projects_dir, remap_source
+from cutpoint import cache, paths
+from cutpoint.config import (
+    load_config_data,
+    projects_dir,
+    remap_source,
+    resolve_projects_dir,
+    set_config_value,
+)
 from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, grab_images, probe
 from cutpoint.styles import get_style, style_names
 from cutpoint.utils import VIDEO_EXTS, find_videos, slugify
@@ -154,6 +168,259 @@ def folder_opener() -> Callable[[Path], None] | None:
         threading.Thread(target=proc.wait, daemon=True).start()  # reap it; never block the request
 
     return run
+
+
+# Windows: Tk 8.6's dialogs are the system's IFileDialog (breadcrumbs, search, quick access; the
+# folder one too, unlike WinForms' tree FolderBrowserDialog in Windows PowerShell). A hidden topmost
+# owner keeps them above the browser. Runs as ``python -I -c`` (no current folder on sys.path).
+TK_PICK = """\
+import sys
+kind, start, exts = sys.argv[1], sys.argv[2] or None, sys.argv[3]
+try:
+    import ctypes
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text on scaled displays
+except Exception:
+    pass
+try:
+    import tkinter
+    from tkinter import filedialog
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    root.update()
+    if kind == "folder":
+        out = filedialog.askdirectory(
+            parent=root, initialdir=start, mustexist=True, title="Choose a folder"
+        )
+    else:
+        out = filedialog.askopenfilename(
+            parent=root, initialdir=start, title="Choose a video",
+            filetypes=[("Videos", exts), ("All files", "*.*")],
+        )
+    root.destroy()
+except Exception as err:
+    sys.stderr.write(f"{err}\\n")
+    sys.exit(3)
+sys.stdout.buffer.write((out or "").encode("utf-8"))
+"""
+
+# macOS: ``choose file`` has no "All files" switch, so it lists videos only. A cancel prints nothing.
+OSA_PICK = """\
+on run argv
+  activate
+  try
+    if item 1 of argv is "folder" then
+      if (count of argv) > 1 then
+        set f to choose folder with prompt "Choose a folder" default location (POSIX file (item 2 of argv))
+      else
+        set f to choose folder with prompt "Choose a folder"
+      end if
+    else
+      if (count of argv) > 1 then
+        set f to choose file with prompt "Choose a video" of type {%s} default location (POSIX file (item 2 of argv))
+      else
+        set f to choose file with prompt "Choose a video" of type {%s}
+      end if
+    end if
+  on error number -128
+    return ""
+  end try
+  return POSIX path of f
+end run
+"""
+
+
+def path_picker() -> Callable[[str, Path | None], tuple[list[str], int | None]] | None:
+    """How this machine asks the user for a video (``kind`` "file") or a folder, else None.
+
+    The result maps ``(kind, start folder)`` to the dialog's argv (no shell) and the exit code that
+    means "cancelled" (None: a cancel exits 0 and prints nothing). None where nobody could see the
+    window: no display, or neither zenity nor kdialog (Linux), no ``osascript`` (macOS), no
+    tkinter (Windows), or an SSH session (Windows, macOS: the dialog would open on the remote
+    desktop, if any, and keep the one-dialog lock until someone closes it there).
+    """
+    exts = sorted(e.lstrip(".") for e in VIDEO_EXTS)
+    if sys.platform in ("win32", "darwin") and (
+        os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")
+    ):
+        return None
+    if sys.platform == "win32":
+        if importlib.util.find_spec("_tkinter") is None:
+            return None
+        patterns = " ".join(f"*.{e}" for e in exts)
+        return lambda kind, start: (
+            [sys.executable, "-I", "-c", TK_PICK, kind, str(start or ""), patterns],
+            None,
+        )
+    if sys.platform == "darwin":
+        osa = shutil.which("osascript")
+        if osa is None:
+            return None
+        script = OSA_PICK % ((", ".join(f'"{e}"' for e in exts),) * 2)
+        return lambda kind, start: (
+            [osa, "-e", script, kind, *([str(start)] if start else [])],
+            None,
+        )
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return None
+    if zenity := shutil.which("zenity"):
+        globs = " ".join(f"*.{x}" for e in exts for x in (e, e.upper()))
+
+        def zenity_args(kind: str, start: Path | None) -> tuple[list[str], int | None]:
+            args = [zenity, "--file-selection"]
+            args += (
+                ["--directory", "--title=Choose a folder"]
+                if kind == "folder"
+                else [
+                    "--title=Choose a video",
+                    f"--file-filter=Videos | {globs}",
+                    "--file-filter=All files | *",
+                ]
+            )
+            if start:
+                args.append(f"--filename={start}{os.sep}")
+            return args, 1
+
+        return zenity_args
+    if kdialog := shutil.which("kdialog"):
+        kfilter = f"{' '.join(f'*.{e}' for e in exts)}|Videos\n*|All files"
+
+        def kdialog_args(kind: str, start: Path | None) -> tuple[list[str], int | None]:
+            where = str(start or Path.home())
+            if kind == "folder":
+                return [kdialog, "--title", "Choose a folder", "--getexistingdirectory", where], 1
+            return [kdialog, "--title", "Choose a video", "--getopenfilename", where, kfilter], 1
+
+        return kdialog_args
+    return None
+
+
+class Picker:
+    """The one native open dialog allowed at a time."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.proc: subprocess.Popen[str] | None = None
+
+    def ask(self, kind: str, start: Path | None) -> str | None:
+        """The path the user chose, or None if they cancelled; waits as long as the dialog is open.
+
+        Raises:
+            HTTPException: 501 without a dialog here, 409 while one is open, 500 if it failed.
+        """
+        build = path_picker()
+        if build is None:
+            raise bad("File dialogs aren't available on this machine; type or paste the path", 501)
+        if not self.lock.acquire(blocking=False):
+            raise bad("a file dialog is already open", 409)
+        try:
+            args, cancel_code = build(kind, start)
+            try:
+                self.proc = subprocess.Popen(
+                    args,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                out, err = self.proc.communicate()
+            except OSError as e:
+                raise bad(f"could not open the file dialog: {e.strerror or e}", 500) from e
+            code = self.proc.returncode
+            if cancel_code is not None and code == cancel_code:
+                return None
+            if code != 0:
+                logger.warning("file dialog exited with %s: %s", code, err.strip()[-500:])
+                raise bad("the file dialog failed", 500)
+            path = out.rstrip("\r\n")
+            if not path:
+                return None
+            if not Path(path).is_absolute():
+                raise bad("the file dialog returned no usable path", 500)
+            return os.path.normpath(path)
+        finally:
+            self.proc = None
+            self.lock.release()
+
+    def shutdown(self) -> None:
+        if (proc := self.proc) is not None:
+            with contextlib.suppress(OSError):
+                proc.kill()
+
+
+def pick_start(start: str) -> Path | None:
+    """Where a dialog opens: ``start``'s folder, or its nearest existing ancestor (None if none)."""
+    if not start:
+        return None
+    try:
+        p = Path(start)
+        if not p.is_absolute():
+            return None
+        while not p.is_dir():
+            if p.parent == p:
+                return None
+            p = p.parent
+    except (OSError, ValueError):  # ValueError: NUL byte in the path
+        return None
+    return p
+
+
+# --------------------------------------------------------------------------- settings
+def config_data() -> dict[str, Any]:
+    """The raw ``config.json`` object.
+
+    Raises:
+        HTTPException: 409 if the file is not a valid JSON object (it is never overwritten).
+    """
+    try:
+        return load_config_data()
+    except ValueError as err:
+        raise bad(str(err), 409) from err
+
+
+def settings_view(data: dict[str, Any]) -> dict[str, Any]:
+    """The settings for config ``data``; only the projects folder, so other invalid keys in
+    ``config.json`` do not hide it."""
+    return {
+        "projects_dir": str(resolve_projects_dir(data)),
+        "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
+        "config_file": str(paths.config_file()),
+    }
+
+
+def check_projects_dir(value: Any) -> tuple[Path, bool]:
+    """A folder the user may make the projects folder: absolute, a folder (the last part is created
+    if only it is missing) and writable; and whether it was created here.
+
+    Raises:
+        HTTPException: 400 naming what is wrong.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise bad("projects_dir must be a folder path")
+    folder = Path(value.strip())
+    if not folder.is_absolute():
+        raise bad("the projects folder must be an absolute path")
+    folder = Path(os.path.abspath(folder))  # noqa: PTH100 - drops '..', keeps mapped drive letters
+    created = False
+    try:
+        if not folder.exists():
+            if not folder.parent.is_dir():
+                raise bad(f"{folder.parent} does not exist")
+            folder.mkdir()
+            created = True
+        if not folder.is_dir():
+            raise bad(f"{folder} is not a folder")
+        with tempfile.TemporaryFile(dir=folder):
+            pass
+    except (OSError, ValueError) as err:
+        if created:
+            with contextlib.suppress(OSError):
+                folder.rmdir()
+        raise bad(f"cannot use {folder}: {getattr(err, 'strerror', None) or err}") from err
+    return folder, created
 
 
 # --------------------------------------------------------------------------- jobs
@@ -708,19 +975,21 @@ def _flag(body: dict[str, Any], key: str) -> bool:
 
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
-    jobs, media = Jobs(), Media()
+    jobs, media, picker = Jobs(), Media(), Picker()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
         jobs.shutdown()
         media.shutdown()
+        picker.shutdown()
 
     app = FastAPI(
         title="Cutpoint", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
     )
 
     app.state.token, app.state.jobs, app.state.media = token, jobs, media
+    app.state.picker = picker
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -761,7 +1030,45 @@ def create_app(port: int) -> FastAPI:
 
     @secure.get("/session")
     def session():
-        return {"styles": ui_styles(), "can_reveal": folder_opener() is not None}
+        return {
+            "styles": ui_styles(),
+            "can_reveal": folder_opener() is not None,
+            "can_pick": path_picker() is not None,
+        }
+
+    @secure.post("/pick")
+    def pick_path(kind: str, start: str = ""):
+        """Ask for a video (``kind=file``) or a folder in this machine's own open dialog; waits
+        until the user closes it. ``{"path": null}`` when they cancel."""
+        if kind not in ("file", "folder"):
+            raise bad("kind must be 'file' or 'folder'")
+        return {"path": picker.ask(kind, pick_start(start))}
+
+    @secure.get("/settings")
+    def get_settings():
+        return settings_view(config_data())
+
+    @secure.put("/settings")
+    def put_settings(body: dict[str, Any]):
+        """Change the projects folder in ``config.json``. Existing projects stay where they are."""
+        if paths.env("PROJECTS_DIR") is not None:
+            raise bad(
+                "CUTPOINT_PROJECTS_DIR sets the projects folder; change or unset it there", 409
+            )
+        if any(j.status == "running" for j in list(jobs.jobs.values())):
+            raise bad("wait for the running job to finish before changing the projects folder", 409)
+        config_data()  # an unreadable config.json: refuse before creating the folder
+        folder, created = check_projects_dir(body.get("projects_dir"))
+        try:
+            set_config_value("projects_dir", str(folder))
+        except (ValueError, OSError) as err:
+            if created:
+                with contextlib.suppress(OSError):
+                    folder.rmdir()
+            if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
+                raise bad(str(err), 409) from err
+            raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
+        return settings_view({"projects_dir": str(folder)})
 
     @secure.get("/projects")
     def list_projects():
@@ -986,29 +1293,6 @@ def create_app(port: int) -> FastAPI:
     def cancel_job(job_id: str):
         return jobs.cancel(job_id).view()
 
-    @secure.get("/browse")
-    def browse(path: str = ""):
-        target = Path(path) if path else Path.home()
-        if not target.is_absolute():
-            raise bad("path must be absolute")
-        try:
-            target = target.resolve()
-            entries = []
-            for e in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
-                if e.name.startswith("."):
-                    continue
-                directory = e.is_dir()
-                if directory or e.suffix.lower() in VIDEO_EXTS:
-                    entries.append({"name": e.name, "path": str(e), "directory": directory})
-        except (OSError, ValueError) as err:  # ValueError: NUL byte in the path
-            raise bad(f"cannot read {target}: {getattr(err, 'strerror', None) or err}") from err
-        parent = target.parent
-        return {
-            "path": str(target),
-            "parent": str(parent) if parent != target else None,
-            "entries": entries[:5000],
-        }
-
     def send(file: Path, request: Request, name: str | None = None) -> FileResponse:
         """Range-capable file response; ``?download=1`` makes the browser save it."""
         download = request.query_params.get("download") == "1"
@@ -1136,3 +1420,4 @@ def run(port: int = 8765) -> None:
         sock.close()
         app.state.jobs.shutdown()
         app.state.media.shutdown()
+        app.state.picker.shutdown()

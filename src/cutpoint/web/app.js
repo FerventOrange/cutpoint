@@ -1,6 +1,6 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession } from './api.js';
-import { initNewProject } from './picker.js';
+import { initNewProject, pickPath } from './picker.js';
 import { $, baseName, fmt, fmtLen, h, parseTime, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
@@ -17,6 +17,7 @@ const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
 const S = {
   styles: [],
   canReveal: false, // the server can open a folder in this machine's file manager
+  canPick: false, // the server can show this machine's own open dialog
   projects: [],
   id: null,
   project: null,
@@ -135,6 +136,22 @@ async function refreshProject() {
   } catch (e) {
     fail(e);
   }
+}
+
+/** Leave the open project (its folder is no longer listed): back to the empty workspace. */
+function closeProject() {
+  S.id = null;
+  S.project = null;
+  S.drafts = {};
+  S.focus = null;
+  S.selected.clear();
+  S.renaming = null;
+  S.segments = [];
+  S.savedKey = key();
+  clearTimeout(S.prepTimer);
+  drop('');
+  history.replaceState(null, '', location.pathname + location.search);
+  renderAll(true);
 }
 
 function adopt(p, switched) {
@@ -588,6 +605,7 @@ const ICONS = {
   down: [['path', { d: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z' }]],
   film: [['path', { d: 'M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z' }]],
   folder: [['path', { d: 'M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z' }]],
+  gear: [['path', { d: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.47.47 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z' }]],
   grip: [[9, 5], [15, 5], [9, 12], [15, 12], [9, 19], [15, 19]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.9 }]),
 };
 const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);
@@ -1154,6 +1172,91 @@ function renderJobs() {
   }
 }
 
+// ---------- settings ----------
+
+const PROJECTS_NOTE = 'New projects are created in this folder. Existing projects are not moved; the project list then shows the projects in the new folder.';
+
+/** Fill and open the settings dialog; focus returns to the gear button when it closes. */
+async function openSettings() {
+  const d = $('#settingsDialog');
+  const input = $('#setProjects');
+  $('#settingsError').textContent = '';
+  let st;
+  try {
+    st = await api('/api/settings');
+  } catch (e) {
+    return fail(e);
+  }
+  input.value = st.projects_dir;
+  input.readOnly = st.projects_dir_locked;
+  input.dataset.saved = st.projects_dir;
+  $('#setProjectsPick').hidden = !S.canPick || st.projects_dir_locked;
+  $('#settingsSave').hidden = st.projects_dir_locked;
+  $('#setProjectsNote').textContent = st.projects_dir_locked
+    ? 'Set by the CUTPOINT_PROJECTS_DIR environment variable. Change or unset it, then restart cutpoint ui, to choose the folder here.'
+    : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
+  $('#settingsCancel').textContent = st.projects_dir_locked ? 'Close' : 'Cancel';
+  d.showModal();
+  input.focus();
+}
+
+async function saveSettings() {
+  const input = $('#setProjects');
+  const err = $('#settingsError');
+  const value = input.value.trim();
+  err.textContent = '';
+  if (!value) return (err.textContent = 'Enter the full path of a folder.');
+  if (value === input.dataset.saved) return $('#settingsDialog').close();
+  if (dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
+  $('#settingsSave').disabled = true;
+  let st;
+  try {
+    st = await api('/api/settings', { method: 'PUT', body: { projects_dir: value } });
+  } catch (e) {
+    err.textContent = e.message;
+    return;
+  } finally {
+    $('#settingsSave').disabled = false;
+  }
+  input.value = input.dataset.saved = st.projects_dir;
+  $('#settingsDialog').close();
+  // A project of the same id in the new folder is another project: start afresh either way.
+  try {
+    const was = S.id;
+    closeProject();
+    banner('');
+    await loadProjects();
+    const next = S.projects.find((p) => p.id === was) ?? S.projects[0];
+    if (next) await openProject(next.id);
+  } catch (e) {
+    fail(e);
+  }
+}
+
+function bindSettings() {
+  const d = $('#settingsDialog');
+  const gear = $('#settingsBtn');
+  gear.append(icon('gear'));
+  gear.addEventListener('click', openSettings);
+  d.addEventListener('close', () => gear.focus());
+  $('#settingsCancel').addEventListener('click', () => d.close());
+  $('#settingsForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!$('#settingsSave').hidden) saveSettings();
+  });
+  $('#setProjectsPick').addEventListener('click', async () => {
+    const input = $('#setProjects');
+    $('#settingsError').textContent = '';
+    try {
+      const path = await pickPath('folder', input.value);
+      if (path) input.value = path;
+      input.focus();
+    } catch (e) {
+      $('#settingsError').textContent = e.message;
+    }
+  });
+}
+
 // ---------- wiring ----------
 
 function renderAll(seekToStart) {
@@ -1255,6 +1358,7 @@ function initSplitter() {
 
 function bind() {
   initSplitter();
+  bindSettings();
   trimInputs.start = trimField('start', 'Start');
   trimInputs.end = trimField('end', 'End');
   $('#trimMsg').after(
@@ -1330,7 +1434,7 @@ function bind() {
   });
 
   addEventListener('keydown', (e) => {
-    if (e.defaultPrevented || $('#newDialog').open || $('#confirmDialog').open || popOpen()) return;
+    if (e.defaultPrevented || $('#newDialog').open || $('#confirmDialog').open || $('#settingsDialog').open || popOpen()) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       saveReview().catch(fail);
@@ -1358,15 +1462,17 @@ async function main() {
     const session = await startSession();
     S.styles = session.styles ?? [];
     S.canReveal = session.can_reveal === true;
+    S.canPick = session.can_pick === true;
     openDialog = initNewProject(async (created) => {
       await loadProjects();
       await openProject(created.id);
-    });
+    }, S.canPick);
     await loadProjects();
   } catch (e) {
     fail(e);
     $('#newBtn').disabled = true;
     $('#projectSelect').disabled = true;
+    $('#settingsBtn').disabled = true;
     setEmpty($('#stageEmpty'), h('p', {}, e.message));
     return;
   }
