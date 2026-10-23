@@ -363,7 +363,15 @@ def repair(
         "capped", "exclusions", "rendered_s", "content_qa"}``; ``rendered_s`` (rendered
         clips only) is ``{"before", "after", "limit"}`` and the content QA then uses the
         rendered lengths; both stay ``None`` for a file not written by ``cutpoint mix``.
+
+    Raises:
+        IsADirectoryError: If ``segments_file`` is a folder.
+        FileNotFoundError: If ``segments_file`` or ``qa_file`` is missing.
     """
+    if segments_file.is_dir():
+        raise IsADirectoryError(f"{segments_file} is a folder, not a segments file")
+    if not segments_file.is_file():
+        raise FileNotFoundError(f"Segments file not found: {segments_file}")
     old = cache.load_json(segments_file)
     qa = cache.load_json(qa_file)
     if not isinstance(old, list) or not old:
