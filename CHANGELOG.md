@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /api/projects/{pid}/reveal` (token-protected; it only opens the project's own source
   folder). The button is hidden where no file manager is available (for example Docker, or Linux
   without a display); `/api/session` reports `can_reveal`.
+- `cutpoint ui` "Show folder" buttons next to "Export clips" (opens the latest export folder,
+  `clips_ui_*`) and next to "Assemble" (opens the project folder holding the latest final video
+  and its `.fcpxml` and `.otio` timelines). Each appears only once that folder exists and
+  where a file manager is available. `POST /api/projects/{pid}/reveal` takes
+  `?target=sources|clips|outputs` (default `sources`); the server resolves every path itself.
 - Resizable side column in the UI (drag, keyboard, double-click to reset); width is remembered per
   browser.
 
