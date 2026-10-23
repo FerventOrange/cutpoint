@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A wrongly typed `config.json` value (for example `"projects_dir": 5`) now gives one
+  `ERROR` line, `<config path>: <key> must be <type>, not <found>`, and exit code 1 instead of a
+  traceback, in the CLI and in `cutpoint ui` jobs; the UI's 409 response shows the same message
+  (#138, #140). `source_remap_exclude` given as a single string is now rejected instead of being
+  split per character.
+- `config.json` saved with a UTF-8 byte order mark (Windows PowerShell 5.1
+  `Set-Content -Encoding UTF8`) is now accepted; a UTF-16 file gives the
+  "Invalid config file <path>" error.
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects
