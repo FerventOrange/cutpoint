@@ -136,3 +136,87 @@ def test_clear_stage_finds_copies_recorded_under_a_windows_form_key(home, tmp_pa
 
     assert clear_stage([new / "T" if target == "copy-path" else Path(r"D:\Videos\T")]) == 1
     assert [c.exists() for c in copies.values()] == [False, True]
+
+
+def _windows_remap(home, new):
+    write(home / "config.json", json.dumps({"source_remap": {r"D:\Videos": str(new)}}))
+    config.get_config.cache_clear()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows-form key is foreign only on POSIX")
+def test_case_twins_below_a_windows_form_remap_are_staged_separately(home, tmp_path, caplog):
+    """#163: ``T/x.mp4`` and ``T/X.MP4`` share a stage key but get their own copy and entry."""
+    new = tmp_path / "copy"
+    low, up = write(new / "T" / "x.mp4", "low"), write(new / "T" / "X.MP4", "UPPER")
+    if len(list((new / "T").iterdir())) < 2:
+        pytest.skip("case-insensitive file system")
+    _windows_remap(home, new)
+    caplog.set_level("INFO", logger="cutpoint.stage")
+
+    assert stage_sources([new / "T"], min_free_gb=0)["files"] == 2
+    assert stage_sources([new / "T"], min_free_gb=0)["files"] == 0
+    assert caplog.text.count("Already staged") == 2
+
+    copies = {p: Path(staged_path(str(p))) for p in (low, up)}
+    assert [c.read_text() for c in copies.values()] == ["low", "UPPER"]
+    assert copies[low] != copies[up]
+
+    assert clear_stage([low]) == 1
+    assert staged_path(str(up)) == str(copies[up])
+    assert not copies[low].exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows-form key is foreign only on POSIX")
+def test_index_entries_without_rel_still_match_and_get_it(home, tmp_path, caplog):
+    """#163: an index written before ``rel`` existed is used without a new copy."""
+    new = tmp_path / "copy"
+    src = write(new / "T" / "x.mp4", "xx")
+    _windows_remap(home, new)
+    stage_sources([src], min_free_gb=0)
+    copy = staged_path(str(src))
+    index_file = config.get_config().stage_dir / "index.json"
+    index = json.loads(index_file.read_text())
+    assert [e.pop("rel") for e in index.values()] == [["T", "x.mp4"]]
+    index_file.write_text(json.dumps(index))
+    caplog.set_level("INFO", logger="cutpoint.stage")
+
+    assert staged_path(str(src)) == copy
+    assert stage_sources([src], min_free_gb=0)["files"] == 0
+    assert "Already staged" in caplog.text
+    assert len(list(index_file.parent.glob("*-x.mp4"))) == 1
+    assert [e["rel"] for e in json.loads(index_file.read_text()).values()] == [["T", "x.mp4"]]
+
+
+def test_staged_path_follows_stage_dir_and_index_changes_without_reload(home, tmp_path):
+    """#163: a running process sees another process's index, an edited ``stage_dir`` or
+    ``source_remap``, and a copy removed by hand."""
+    src = write(tmp_path / "src" / "x.mp4", "xx")
+    remap = json.dumps({"source_remap": {str(tmp_path / "gone"): str(src.parent)}})
+    write(home / "config.json", remap)  # staged under its original path, as recorded
+    stage_sources([src], min_free_gb=0)
+    copy = staged_path(str(src))
+    assert copy != str(src)
+    index_file = Path(copy).parent / "index.json"
+    saved = index_file.read_text()
+
+    index_file.write_text("{}")  # another process cleared the stage
+    assert staged_path(str(src)) == str(src)
+    index_file.write_text(saved)  # ...and staged it again
+    assert staged_path(str(src)) == copy
+
+    write(home / "config.json", "{}")  # the remap is gone: the key no longer matches
+    assert staged_path(str(src)) == str(src)
+    write(home / "config.json", remap)
+    assert staged_path(str(src)) == copy
+
+    # a copy that vanished or was cut short is not returned, though the index still lists it
+    Path(copy).unlink()
+    assert staged_path(str(src)) == str(src)
+    stage_sources([src], min_free_gb=0)  # re-copies and rewrites index.json
+    assert staged_path(str(src)) == copy
+    Path(copy).write_text("")
+    assert staged_path(str(src)) == str(src)
+
+    other = tmp_path / "other-stage"
+    write(home / "config.json", json.dumps({"stage_dir": str(other)}))
+    assert staged_path(str(src)) == str(src)

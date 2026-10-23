@@ -11,13 +11,14 @@ proxy, OCR decode, VLM frames, clip export). Projects keep recording the
 original path; the stage folder is disposable.
 
 Layout: ``<stage_dir>/<digest>-<file name>`` plus ``index.json`` mapping the
-canonical source path to ``{"file", "size", "mtime_ns", "source", "read_s"}``.
+canonical source path (:func:`stage_key`) to ``{"file", "size", "mtime_ns", "source",
+"read_s"}``, plus ``"rel"`` (the exact path parts below a Windows-form ``source_remap``
+prefix, on POSIX only) and, for case-twins below such a prefix, extra keys (see :func:`_find`).
 """
 
 from __future__ import annotations
 
 import contextlib
-import functools
 import hashlib
 import logging
 import os
@@ -26,9 +27,8 @@ import shutil
 import sys
 import time
 from collections.abc import Sequence
-from functools import lru_cache
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, NamedTuple
 
 from cutpoint import cache, state
 from cutpoint.config import (
@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 CHUNK = 16 * 1024 * 1024
 STAGE_INDEX = "index.json"
+# A case-twin's index key is <key>|<its "rel" joined by "/">. A POSIX file name may contain "|",
+# so only that exact suffix is stripped (_base_key).
+_TWIN_SEP = "|"
 _NETWORK_FS = (
     "nfs",
     "nfs4",
@@ -122,10 +125,20 @@ def stage_key(path: str | Path) -> str:
     On POSIX, a Windows path (``D:\\Footage\\x.mp4``, as recorded on Windows or
     as the canonical form under a Windows ``source_remap`` prefix) is keyed the
     Windows way (:func:`cutpoint.config.windows_norm`: case-folded, backslashes),
-    without resolving it against the current folder.
+    without resolving it against the current folder. Files that differ only in
+    case below that prefix share the key; see :func:`_find`.
     """
+    return _identity(path)[0]
+
+
+def _identity(path: str | Path) -> tuple[str, tuple[str, ...]]:
+    """``(stage key, exact parts of the canonical path)``; the parts only for a Windows-form
+    key on POSIX (``()`` otherwise), the one kind of key that folds case on a case-sensitive
+    file system."""
     text = _canonical(path)
-    return windows_norm(text) if is_foreign_windows(text) else norm_path(text)
+    if is_foreign_windows(text):
+        return windows_norm(text), PureWindowsPath(text).parts
+    return norm_path(text), ()
 
 
 def _canonical(path: str | Path) -> str:
@@ -138,70 +151,174 @@ def _canonical(path: str | Path) -> str:
     return canonical_source(text)
 
 
-def _same_source(path: str, key: str, recorded: str | None) -> bool:
-    """``path`` is the file whose copy was recorded as ``recorded`` under ``key``.
-
-    Only differs from "same key" on POSIX for a Windows key (``d:\\videos\\t\\x.mp4``):
-    those are case-folded, but the files below a Windows ``source_remap`` prefix may
-    sit on a case-sensitive file system (``T/x.mp4`` and ``T/X.MP4``). There the
-    spellings below that prefix must match exactly; the prefix itself compares
-    the Windows way.
-    """
-    if not recorded or not is_foreign_windows(key):
-        return True
-    stored = _canonical(recorded)
-    if not is_foreign_windows(stored):  # its remap target moved since: the key decides
-        return True
-    stored = str(PureWindowsPath(stored))
-    asked = str(PureWindowsPath(_canonical(path)))
-    skip = 0
+def _below_prefix(key: str, parts: tuple[str, ...]) -> tuple[str, ...] | None:
+    """The exact ``parts`` below the deepest Windows-form ``source_remap`` prefix holding
+    ``key`` (``("T", "x.mp4")`` for ``D:\\Videos\\T\\x.mp4`` under ``D:\\Videos``), or None
+    when no such prefix holds it (any key that is not Windows-form on POSIX)."""
+    if not parts:
+        return None
+    depth = None
     for old, _new in get_config().source_remap:
         form = windows_norm(old) if is_foreign_windows(old) else None
         if form and (key == form or key.startswith(form + "\\")):
-            skip = max(skip, len(form))
-    return asked[skip:] == stored[skip:]
+            depth = max(depth or 0, len(PureWindowsPath(old).parts))
+    return None if depth is None else parts[depth:]
 
 
-@state.register_cache
-@lru_cache(maxsize=1)
+def _same_file(entry: dict[str, Any], parts: tuple[str, ...], rel: tuple[str, ...] | None) -> bool:
+    """``entry`` (under the same Windows-form key) is the copy of the file with ``parts``.
+
+    The key compares the Windows way, but the files below a Windows ``source_remap`` prefix
+    may sit on a case-sensitive file system (``T/x.mp4`` and ``T/X.MP4``): there the spelling
+    must match exactly. ``entry["rel"]`` is that spelling, recorded when it was staged. An
+    entry staged before it was recorded (#163) is compared through its ``source`` (the path
+    it was read from, under the remap target): its last ``len(rel)`` parts, with ``rel`` the
+    asked file's parts below the prefix in the current ``source_remap``. Without either, the
+    key decides.
+    """
+    stored = entry.get("rel")
+    if isinstance(stored, list):
+        want = tuple(stored)
+    elif rel is not None and isinstance(entry.get("source"), str):
+        source = entry["source"]
+        read = (PureWindowsPath(source) if is_foreign_windows(source) else Path(source)).parts
+        if len(rel) > len(read):
+            return False
+        want = read[len(read) - len(rel) :]
+    else:
+        return True
+    return len(want) <= len(parts) and parts[len(parts) - len(want) :] == want
+
+
+def _find(index: dict[str, dict[str, Any]], key: str, parts: tuple[str, ...]) -> str | None:
+    """Index key of the entry for the file with stage key ``key`` and ``parts``, or None.
+
+    Usually ``key`` itself. Case-twins under a Windows-form key on POSIX (``T/x.mp4`` and
+    ``T/X.MP4``) share ``key``: the first one staged has it, every other one
+    ``<key>|<exact path below the prefix>``; each entry is told apart by :func:`_same_file`
+    (which also rejects a different file whose own key merely starts with ``<key>|``).
+    """
+    if not parts:
+        return key if key in index else None
+    rel = _below_prefix(key, parts)
+    twins = (k for k in index if k.startswith(key + _TWIN_SEP))
+    for slot in (key, *twins):
+        entry = index.get(slot)
+        if entry and _same_file(entry, parts, rel):
+            return slot
+    return None
+
+
+def _base_key(slot: str, entry: dict[str, Any]) -> str:
+    """Stage key of an index key: a case-twin's key without its ``|<rel>`` suffix (a ``|`` in
+    a file name stays)."""
+    rel = entry.get("rel")
+    suffix = _TWIN_SEP + "/".join(rel) if isinstance(rel, list) else None
+    return slot[: -len(suffix)] if suffix and slot.endswith(suffix) else slot
+
+
+class _CacheInfo(NamedTuple):
+    currsize: int
+
+
+# The last loaded stage index and the last staged_path results, each keyed by what it was built
+# from, so a long-lived process (`cutpoint ui`) sees copies staged by another process and an
+# edited stage_dir or source_remap without reload_stage_index().
+_INDEX: dict[tuple, dict[str, dict]] = {}
+# staged_path results: path -> (result, size of the copy; None when result is path).
+_STAGED: dict[tuple, dict[str, tuple[str, int | None]]] = {}
+
+
+def _index_stamp(stage_dir: Path) -> tuple:
+    """``(stage_dir, (mtime_ns, size, inode) of its index or None when missing)``: what a loaded
+    index depends on (one stat; the index is replaced on every write, so its inode changes)."""
+    try:
+        st = (stage_dir / STAGE_INDEX).stat()
+        stamp: tuple | None = (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        stamp = None
+    return (stage_dir, stamp)
+
+
 def _stage_index() -> dict[str, dict]:
-    """The stage index ``{key: {"file", "size", "mtime_ns"}}`` (cached per process)."""
-    data = cache.load_json(get_config().stage_dir / STAGE_INDEX)
-    return data if isinstance(data, dict) else {}
+    """The stage index ``{key: {"file", "size", "mtime_ns", ...}}``, cached until
+    ``stage_dir`` or the index file changes."""
+    stamp = _index_stamp(get_config().stage_dir)
+    index = _INDEX.get(stamp)
+    if index is None:
+        index = _load_index(stamp[0])
+        _INDEX.clear()
+        _INDEX[stamp] = index
+    return index
+
+
+_stage_index.cache_clear = _INDEX.clear  # type: ignore[attr-defined]
+_stage_index.cache_info = lambda: _CacheInfo(len(_INDEX))  # type: ignore[attr-defined]
+state.register_cache(_stage_index)  # type: ignore[arg-type]
 
 
 def reload_stage_index() -> None:
-    """Forget the cached stage index (after ``cutpoint stage`` wrote new copies)."""
-    _stage_index.cache_clear()
-    staged_path.cache_clear()
+    """Forget the cached stage index and staged paths (they also reload by themselves when
+    ``stage_dir``, ``source_remap`` or the index file changes)."""
+    _stage_index.cache_clear()  # type: ignore[attr-defined]
+    staged_path.cache_clear()  # type: ignore[attr-defined]
 
 
-@state.register_cache
-@functools.cache  # not `cache`: that name is the cutpoint.cache module here
 def staged_path(path: str) -> str:
     """Local staged copy of a source if one exists, else ``path`` unchanged.
 
     A copy counts only if its size matches the size recorded when it was
     staged. Non-video arguments (pipes, lavfi specs, outputs) never match the
     index, so this is safe to apply to any ffmpeg ``-i`` argument.
+
+    Results are cached until ``stage_dir``, ``source_remap`` or the stage index
+    file changes; a cached copy is checked again (one stat), so one deleted or
+    truncated by hand is no longer returned.
     """
+    cfg = get_config()
+    deps = (cfg.source_remap, _index_stamp(cfg.stage_dir))
+    memo = _STAGED.get(deps)
+    if memo is None:
+        _STAGED.clear()
+        memo = _STAGED[deps] = {}
+    hit = memo.get(path)
+    if hit is not None and hit[1] is not None:
+        try:
+            if Path(hit[0]).stat().st_size != hit[1]:
+                hit = None
+        except OSError:
+            hit = None
+    if hit is None:
+        hit = memo[path] = _staged_path(path)
+    return hit[0]
+
+
+staged_path.cache_clear = _STAGED.clear  # type: ignore[attr-defined]
+staged_path.cache_info = lambda: _CacheInfo(  # type: ignore[attr-defined]
+    sum(len(memo) for memo in _STAGED.values())
+)
+state.register_cache(staged_path)  # type: ignore[arg-type]
+
+
+def _staged_path(path: str) -> tuple[str, int | None]:
+    """:func:`staged_path` without the cache: ``(result, size of the copy or None)``."""
     if not path or path.startswith(("-", "pipe:")) or "=" in path:
-        return path
+        return path, None
     index = _stage_index()
     if not index:
-        return path
-    key = stage_key(path)
-    entry = index.get(key)
-    if not entry or not _same_source(path, key, entry.get("source")):
-        return path
+        return path, None
+    slot = _find(index, *_identity(path))
+    if slot is None:
+        return path, None
+    entry = index[slot]
     copy = get_config().stage_dir / entry["file"]
     try:
         if copy.stat().st_size != entry["size"]:
-            return path
+            return path, None
     except OSError:
-        return path
+        return path, None
     logger.debug("staged read %s -> %s", path, copy)
-    return str(copy)
+    return str(copy), entry["size"]
 
 
 def _load_index(stage_dir: Path) -> dict[str, dict[str, Any]]:
@@ -287,9 +404,11 @@ def stage_sources(
     files = _stage_files(targets, exclude, recursive)
     total_b, total_s, copied, skipped = 0, 0.0, 0, 0
     for src in files:
-        key = stage_key(src)
+        key, parts = _identity(src)
+        rel = _below_prefix(key, parts)
         st = src.stat()
-        entry = index.get(key)
+        slot = _find(index, key, parts)
+        entry = index.get(slot) if slot else None
         if entry:
             dst = stage_dir / entry["file"]
             if (
@@ -299,25 +418,34 @@ def stage_sources(
             ):
                 logger.info("Already staged: %s", src.name)
                 skipped += 1
+                if rel is not None and "rel" not in entry:  # staged before #163: record it now
+                    entry["rel"] = list(rel)
+                    _save_index(stage_dir, index)
                 continue
+        if slot is None:  # a new file; a case-twin of a staged one gets its own key
+            slot = key
+            if key in index:
+                slot += _TWIN_SEP + "/".join(rel if rel is not None else parts)
         free = shutil.disk_usage(stage_dir).free
         if free - st.st_size < min_free_gb * 1e9:
             raise OSError(
                 f"Not enough space in {stage_dir} for {src.name} "
                 f"({st.st_size / 1e9:.1f} GB, {free / 1e9:.1f} GB free)"
             )
-        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha1(slot.encode("utf-8")).hexdigest()[:8]
         dst = stage_dir / f"{digest}-{src.name}"
         logger.info("Staging %s (%.2f GB) -> %s", src, st.st_size / 1e9, dst)
         secs = copy_once(src, dst, src.name)
         logger.info("  staged in %.0fs (%.0f MB/s)", secs, st.st_size / 1e6 / secs)
-        index[key] = {
+        index[slot] = {
             "file": dst.name,
             "size": st.st_size,
             "mtime_ns": st.st_mtime_ns,
             "source": str(src),
             "read_s": round(secs, 1),
         }
+        if rel is not None:
+            index[slot]["rel"] = list(rel)
         _save_index(stage_dir, index)
         total_b += st.st_size
         total_s += secs
@@ -350,13 +478,15 @@ def _recorded_under(
     For an input that can no longer be listed. Keys are compared normalised, on
     a separator boundary (``old`` does not take ``older``); ``exclude`` is
     matched as ``find_videos`` does, against the key (the original spelling,
-    case-folded on Windows, where globs ignore case anyway).
+    case-folded on Windows, where globs ignore case anyway). A case-twin's key
+    (:func:`_find`) is compared without its suffix, so twins are selected together.
     """
     absolute = os.path.abspath(str(target))  # noqa: PTH100 - normalises '..', keeps drive letters
     # The UNC form too: a disconnected mapped drive does not resolve to it.
     prefixes = {stage_key(target), stage_key(unc_path(absolute))}
     keys = set()
-    for key in index:
+    for slot in index:
+        key = _base_key(slot, index[slot])
         for prefix in prefixes:
             if key == prefix:
                 break
@@ -367,7 +497,7 @@ def _recorded_under(
         else:
             continue
         if not matches_glob(key, exclude):
-            keys.add(key)
+            keys.add(slot)
     return keys
 
 
@@ -404,7 +534,8 @@ def clear_stage(
                     logger.warning("%s; no staged copy recorded under it", err)
                 wanted |= recorded
                 continue
-            wanted |= {stage_key(p) for p in files}
+            found = (_find(index, *_identity(p)) for p in files)
+            wanted |= {slot for slot in found if slot is not None}
         keys &= wanted
     for key in keys:
         (stage_dir / index[key]["file"]).unlink(missing_ok=True)

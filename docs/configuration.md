@@ -109,7 +109,9 @@ Windows-style sources case-insensitively with either slash (drive-letter forms),
 backslashes in both the key and the source (in JSON, `"\\\\server\\share"`).
 
 Prefix and key matching is case-sensitive on Linux (`source_remap` prefixes, `stage` keys), except
-for Windows-form `source_remap` keys and the `stage` keys of Windows-form sources (above; when reading a staged copy, case below the `source_remap` prefix must match the staged file), and case-insensitive on Windows.
+for Windows-form `source_remap` keys and the `stage` keys of Windows-form sources (above; when
+reading a staged copy, case below the `source_remap` prefix must match the staged file, and files
+there that differ only in case are staged separately), and case-insensitive on Windows.
 
 ### stage_dir
 
