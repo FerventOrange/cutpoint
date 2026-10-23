@@ -95,6 +95,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `D:\Videos\T\x.mp4` (was `D:\Videos/T/x.mp4`), so those files are analyzed once more and
   staged copies under such a key must be staged once more. Old copies stay until
   `cutpoint stage --clear` with no targets; `--clear <target>` does not match old keys.
+- `cutpoint stage` on Linux and macOS keeps files that differ only in case below a Windows-form
+  `source_remap` prefix (`T/x.mp4` and `T/X.MP4`) apart: each gets its own copy and index entry,
+  the second is no longer reported as "Already staged" or replaces the first's entry, and reading
+  one never returns the other's copy. Index entries now record the exact path below the prefix
+  (`"rel"`); existing entries keep working without a new copy and get it the next time `stage`
+  sees them. A running process (`cutpoint ui`) now picks up copies staged by another process and
+  an edited `stage_dir` or `source_remap` without a restart, and stops using a copy that was
+  deleted or truncated by hand (#163).
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects
