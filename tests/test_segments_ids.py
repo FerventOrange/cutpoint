@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -120,3 +120,10 @@ def test_windows_source_keeps_its_drive_and_is_not_joined_to_the_folder(
     assert identity == "D:\\Videos\\a.insv"
     assert str(tmp_path) not in str(io_path)
     assert str(io_path).replace("\\", "/") == "D:/Videos/a.insv"
+
+
+@pytest.mark.parametrize("given", ["/nope.json", "\\nope.json", "C:nope.json", "C:/nope.json"])
+def test_missing_segments_file_rooted_or_drive_path_has_no_suffix(given: str) -> None:
+    """Follow-up to #127: Windows ``\\nope.json`` is relative to the current drive's root."""
+    win = PureWindowsPath(given)
+    assert cli._segments_where(given, win, Path("C:/nope.json")) == ""

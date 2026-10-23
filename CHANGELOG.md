@@ -54,7 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config file and the error, the banner shows it, and Settings stays usable to fix the projects
   folder. A rejected `video_encoder` now names where it came from: `config.json` or
   `CUTPOINT_VIDEO_ENCODER`.
-- `clips --segments` with a missing file now says what a relative path was resolved against (#127).
+- `clips --segments` with a missing file now says what a relative path was resolved against (#127);
+  a Windows path starting with `\` or `/` is shown as typed, without that note.
 - Segment ids: a generated `sNNN` id that a user id already uses gets a letter suffix (`s002b`),
   and duplicate user ids are an error naming both segments, in `clips` and `360 repair` (#120).
 - `360 repair` resolves relative `source` paths in a hand-written segments file against the
