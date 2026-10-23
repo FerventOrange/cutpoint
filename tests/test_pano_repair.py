@@ -19,12 +19,14 @@ from cutpoint.pano.repair import _fit_budget, plan, repair
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A one-source project: lift 100-105, social 300-309 / 700-706, run 500-506."""
 
+    src = str(tmp_path / "a.mp4")  # analyze records absolute sources
+
     def cands(_d: object) -> list[Cand]:
         return [
-            Cand("lift", "a.mp4", 100, 105, 102, 1.0, "beauty", "lift"),
-            Cand("social", "a.mp4", 300, 309, 304, 0.9, "laughter", "laugh"),
-            Cand("social", "a.mp4", 700, 706, 703, 0.5, "laughter", "laugh"),
-            Cand("run", "a.mp4", 500, 506, 503, 1.0, "carve", "run"),
+            Cand("lift", src, 100, 105, 102, 1.0, "beauty", "lift"),
+            Cand("social", src, 300, 309, 304, 0.9, "laughter", "laugh"),
+            Cand("social", src, 700, 706, 703, 0.5, "laughter", "laugh"),
+            Cand("run", src, 500, 506, 503, 1.0, "carve", "run"),
         ]
 
     monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
@@ -176,7 +178,8 @@ def test_rendered_tail_problem_caps_the_tail_and_keeps_the_segment(project: Path
     clips_dir = project / "clips_mix"
     clips_dir.mkdir()
     (clips_dir / "002_laugh.mp4").write_bytes(b"")
-    entry = {"file": "002_laugh.mp4", "id": "m002", "source": "a.mp4", "start": 297.0}
+    entry = {"file": "002_laugh.mp4", "id": "m002", "source": str(project / "a.mp4")}
+    entry |= {"start": 297.0}
     entry |= {"end": 315.0, "duration": 18.0, "original_end": 309.0, "pick": {"start": 300.0}}
     cache.save_json(clips_dir / "manifest.json", {"clips": [entry]})
     frames = [
@@ -242,7 +245,7 @@ def test_failed_reselection_leaves_no_backup_and_the_segments_untouched(
     segs = project / "mix_segments.json"
     before = segs.read_bytes()
     qa = _qa(project, [[]] * 18, subj=False)  # the social clip goes, so the mix is re-run
-    only = [Cand("social", "a.mp4", 300, 309, 304, 0.9, "laughter", "laugh")]
+    only = [Cand("social", str(project / "a.mp4"), 300, 309, 304, 0.9, "laughter", "laugh")]
     monkeypatch.setattr(mix, "part_candidates", lambda _d: only)  # ...and nothing is left to pick
     with pytest.raises(ValueError, match="Nothing selected"):
         repair(project, segs, qa, sheet=False)
@@ -614,3 +617,74 @@ def test_repair_honours_an_exclusion_spelt_differently_from_the_segment_source(
         s for s in cache.load_json(tmp_path / "final_segments.json") if s["label"] == "jump"
     )
     assert jump["max_end"] == 110.0
+
+
+def _spell(project: Path, spelling: str) -> str:
+    """Another spelling of the project's ``a.mp4`` (the one the candidates have)."""
+    real = project / "a.mp4"
+    real.write_bytes(b"")
+    (project / "sub").mkdir(exist_ok=True)
+    if spelling == "dotdot":
+        return str(project / "sub" / ".." / "a.mp4")
+    alias = project / "alias.mp4"
+    try:
+        alias.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    return str(alias)
+
+
+@pytest.mark.parametrize("spelling", ["relative", "dotdot", "symlink"])
+def test_repair_keeps_the_ids_when_the_segments_spell_their_source_differently(
+    project: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """Issue #181: segments naming the source relative to their file's folder (with another
+    working directory), or by a ``..`` path or a symlink, are still the clips of run_mix's
+    candidates: the re-mix keeps their ids and only the trimmed clip changes."""
+    segs = project / "mix_segments.json"
+    before = cache.load_json(segs)
+    src = "a.mp4" if spelling == "relative" else _spell(project, spelling)
+    cache.save_json(segs, [{**s, "source": src} for s in before])
+    (project / "elsewhere").mkdir()
+    monkeypatch.chdir(project / "elsewhere")
+    qa = _qa(project, [["occluded"]] * 9 + [[]] * 9)
+    rep = repair(project, segs, qa, sheet=False)
+    after = cache.load_json(segs)
+    assert [s["id"] for s in after] == ["m001", "m002", "m003"] and not rep["dropped"]
+    assert [(s["start"], s["end"]) for s in after if s["id"] == "m002"] == [(304.25, 309.0)]
+    assert [s for s in after if s["id"] != "m002"] == [s for s in before if s["id"] != "m002"]
+
+
+def test_repair_stores_one_exclusion_for_a_span_spelt_two_ways(project: Path) -> None:
+    """Issue #181: an exclusion already stored with the source spelt by a ``..`` path is the
+    one the trim finds again, not a second entry."""
+    qa = _qa(project, [["occluded"]] * 9 + [[]] * 9)
+    segs = project / "mix_segments.json"
+    repair(project, segs, qa, sheet=False)
+    (stored,) = cache.load_json(project / mix.EXCLUDE_FILE)
+    cache.save_json(project / mix.EXCLUDE_FILE, [{**stored, "source": _spell(project, "dotdot")}])
+    cache.save_json(segs, cache.load_json(project / "mix_segments.bak.json"))
+    rep = repair(project, segs, qa, sheet=False)
+    assert rep["exclusions"] == 1 and len(cache.load_json(project / mix.EXCLUDE_FILE)) == 1
+
+
+@pytest.mark.parametrize("branch", ["picked", "mix"])
+def test_repair_keeps_a_drive_relative_exclusion_when_it_rewrites_the_file(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, branch: str
+) -> None:
+    """Issue #181: on Windows the ``mix_exclude.json`` entries mix cannot use (``D:a.insv``)
+    are left out of the selection but stay, as written, in the file ``360 repair`` rewrites."""
+    import cutpoint.clips as clips_mod  # noqa: PLC0415
+
+    if branch == "picked":
+        qa, segs = _handwritten(tmp_path, False), tmp_path / "final_segments.json"
+    else:  # the picked branch has no mix_segments.json: the project fixture writes one
+        request.getfixturevalue("project")
+        qa, segs = _qa(tmp_path, [["occluded"]] * 9 + [[]] * 9), tmp_path / "mix_segments.json"
+    monkeypatch.setattr(clips_mod, "_WINDOWS", True)
+    drive = {"source": "D:a.insv", "start": 1, "end": 2, "reason": "mine"}
+    other = {"source": str(tmp_path / "raw" / "b.insv"), "start": 0.0, "end": 1.0}
+    cache.save_json(tmp_path / mix.EXCLUDE_FILE, [other, drive])
+    repair(tmp_path, segs, qa, sheet=False)
+    stored = cache.load_json(tmp_path / mix.EXCLUDE_FILE)
+    assert drive in stored and other in stored and len(stored) > 2

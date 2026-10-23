@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import itertools
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from cutpoint import mix
+from cutpoint import cache, mix
 from cutpoint.clips import REACTION_LABEL, order_moments
 from cutpoint.mix import (
     DEFAULT_QUOTAS,
@@ -256,3 +258,102 @@ def test_load_exclusions_takes_a_relative_source_against_the_file_folder(
     monkeypatch.chdir(elsewhere)
     cand = _c("run", 50, 0.9, src=str(project / "a.insv"))
     assert mix.apply_exclusions([cand], mix.load_exclusions(path)) == []
+
+
+def _alias(real: Path, spelling: str) -> Path:
+    """Another spelling of ``real``: a symlink to it, or a ``..`` path."""
+    if spelling == "dotdot":
+        return real.parent / ".." / real.parent.name / real.name
+    alias = real.with_name(f"alias_{real.name}")
+    try:
+        alias.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    return alias
+
+
+@pytest.mark.parametrize("spelling", ["symlink", "dotdot"])
+def test_run_mix_matches_previous_and_telemetry_sources_spelt_differently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """Issue #181: a previous segment (keeps its id and lead-in / tail bound) and
+    telemetry.json (orders the clips by start time) name the source by another spelling
+    than the candidate's."""
+    (tmp_path / "sub").mkdir()
+    a, b = tmp_path / "sub" / "a.mp4", tmp_path / "sub" / "b.mp4"
+    a.write_bytes(b"")
+    b.write_bytes(b"")
+    cands = [_c("run", 50, 0.9, src=str(a)), _c("run", 50, 0.8, src=str(b))]
+    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix, "part_candidates", lambda _d: cands)
+    monkeypatch.setattr(mix, "_embed", lambda _c: None)
+    alias_a, alias_b = str(_alias(a, spelling)), str(_alias(b, spelling))
+    clips = [  # b was filmed first, though a sorts first
+        {"source": alias_a, "start_epoch": 2000.0},
+        {"source": alias_b, "start_epoch": 1000.0},
+    ]
+    cache.save_json(tmp_path / "telemetry.json", {"runs": [], "clips": clips})
+    prev = [{"id": "m007", "source": alias_a, "start": 47.0, "end": 53.0}]
+    prev[0] |= {"category": "run", "max_end": 60.0}
+    mix.run_mix(tmp_path, target_s=60, sheet=False, exclude=[], previous=prev)
+    segs = cache.load_json(tmp_path / "mix_segments.json")
+    assert [(s["source"], s["id"]) for s in segs] == [(str(b), "m008"), (str(a), "m007")]
+    assert segs[1]["max_end"] == 60.0
+
+
+def test_run_mix_rerun_reads_relative_sources_of_the_segments_file_against_its_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #181: a plain re-run (no ``previous``) keeps the lead-in / tail bounds of a
+    ``mix_segments.json`` entry whose source is relative to that file's folder, whatever
+    the working directory."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "sub" / "a.mp4").write_bytes(b"")
+    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(
+        mix, "part_candidates", lambda _d: [_c("run", 50, 0.9, src=str(tmp_path / "sub" / "a.mp4"))]
+    )
+    monkeypatch.setattr(mix, "_embed", lambda _c: None)
+    prev = {"id": "m001", "source": "sub/a.mp4", "start": 47.0, "end": 53.0, "category": "run"}
+    cache.save_json(tmp_path / "mix_segments.json", [prev | {"max_end": 60.0}])
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    mix.run_mix(tmp_path, target_s=60, sheet=False, exclude=[])
+    (seg,) = cache.load_json(tmp_path / "mix_segments.json")
+    assert seg["max_end"] == 60.0
+
+
+@pytest.mark.parametrize(
+    "windows",
+    [
+        True,
+        pytest.param(
+            False,
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="D:a.insv is drive-relative on Windows"
+            ),
+        ),
+    ],
+    ids=["windows", "elsewhere"],
+)
+def test_load_exclusions_drops_a_drive_relative_source_only_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog, windows: bool
+) -> None:
+    """Issue #181: ``D:a.insv`` is relative to drive D's current folder on Windows, so it
+    never matches: dropped with a WARNING, the other entries kept. Elsewhere it is a file
+    name next to the exclusions file."""
+    import cutpoint.clips as clips_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(clips_mod, "_WINDOWS", windows)
+    path = tmp_path / mix.EXCLUDE_FILE
+    other = {"source": "b.insv", "start": 0, "end": 5}
+    cache.save_json(path, [other, {"source": "D:a.insv", "start": 1, "end": 2}, other])
+    with caplog.at_level("WARNING", logger="cutpoint.mix"):
+        got = mix.load_exclusions(path)
+    if windows:
+        assert [e["source"] for e in got] == [str(tmp_path / "b.insv")] * 2
+        (msg,) = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert str(path) in msg
+    else:
+        assert [e["source"] for e in got][1] == str(tmp_path / "D:a.insv")
+        assert not caplog.records

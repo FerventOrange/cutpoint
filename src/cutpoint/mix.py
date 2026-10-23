@@ -38,6 +38,7 @@ import functools
 import itertools
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -454,16 +455,20 @@ def _embed(cands: list[Cand]) -> None:
 
 
 def _runs_index(project: Path) -> tuple[list[dict[str, Any]], dict[str, float | None]]:
-    """Telemetry runs and each source's start (epoch; None if unknown) from telemetry.json."""
+    """Telemetry runs and each source's start (epoch; None if unknown) from telemetry.json,
+    keyed by :func:`~cutpoint.clips.source_key`."""
     tj = cache.load_json(project / "telemetry.json") or {}
-    starts = {ski._key(c["source"]): c.get("start_epoch") for c in tj.get("clips", [])}
+    key = functools.cache(source_key)  # resolving reads the disk: once per source
+    starts = {key(c["source"]): c.get("start_epoch") for c in tj.get("clips", [])}
     return tj.get("runs", []), starts
 
 
-def _run_of(runs: list[dict[str, Any]], src: str, t: float) -> int | None:
+def _run_of(
+    runs: list[dict[str, Any]], src: str, t: float, key: Callable[[str], str]
+) -> int | None:
     for i, r in enumerate(runs):
         for s in r.get("segments", []):
-            if ski._key(s["source"]) == ski._key(src) and s["start"] <= t <= s["end"]:
+            if key(s["source"]) == key(src) and s["start"] <= t <= s["end"]:
                 return i
     return None
 
@@ -476,12 +481,20 @@ def min_length(category: str) -> float:
 
 
 def load_exclusions(path: Path) -> list[dict[str, Any]]:
-    """``[{source, start, end, category?, reason?}, ...]`` from ``path`` (none if missing).
+    """``[{source, start, end, category?, reason?}, ...]`` from ``path`` (none if missing):
+    the usable part of :func:`read_exclusions`."""
+    return read_exclusions(path)[0]
+
+
+def read_exclusions(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The usable exclusions in ``path`` (none if missing) and the entries left out, as
+    written (to keep them when the file is rewritten).
 
     A relative ``source`` is taken against ``path``'s folder, as hand-picked sources are
     now recorded: ``cutpoint 360 repair`` used to write one as spelt in the segments file
     (relative to its folder, next to which the file is written by default), and it never
-    matched. A drive-relative one (``D:a.insv``) stays as it is.
+    matched. A drive-relative one (``D:a.insv``, Windows only) would never match either:
+    it is left out with a WARNING.
 
     Raises:
         ValueError: If an entry lacks ``source`` / ``start`` / ``end``.
@@ -491,12 +504,25 @@ def load_exclusions(path: Path) -> list[dict[str, Any]]:
         isinstance(e, dict) and {"source", "start", "end"} <= e.keys() for e in items
     ):
         raise ValueError(f"{path}: expected a list of {{source, start, end}} objects")
-    return [
-        e
-        if is_absolute_any(str(e["source"])) or drive_relative(str(e["source"]))
-        else {**e, "source": segment_source(str(e["source"]), path.parent)[0]}
-        for e in items
-    ]
+    out, ignored = [], []
+    for i, e in enumerate(items, 1):
+        src = str(e["source"])
+        if drive := drive_relative(src):
+            logger.warning(
+                "%s: exclusion %d ignored: source %r is relative to the current folder of "
+                "drive %s; give the full path (%s\\...) or one relative to the file's folder",
+                path,
+                i,
+                src,
+                drive,
+                drive,
+            )
+            ignored.append(e)
+            continue
+        out.append(
+            e if is_absolute_any(src) else {**e, "source": segment_source(src, path.parent)[0]}
+        )
+    return out, ignored
 
 
 def _piece(
@@ -553,22 +579,26 @@ def _inside(start: float, end: float, seg: dict[str, Any]) -> bool:
     return start >= seg["start"] - 0.05 and end <= seg["end"] + 0.05
 
 
-def _same(seg: dict[str, Any], s: Cand) -> bool:
-    """``seg`` (a segments-file entry) and span ``s`` share source and category and ``s``
-    lies within it (:func:`_inside`)."""
+def _same(seg: dict[str, Any], s: Cand, key: Callable[[str], str]) -> bool:
+    """``seg`` (a segments-file entry) and span ``s`` share source (by ``key``) and
+    category and ``s`` lies within it (:func:`_inside`)."""
     return (
-        ski._key(seg["source"]) == ski._key(s.source)
+        key(seg["source"]) == key(s.source)
         and seg.get("category") == s.category
         and _inside(s.start, s.end, seg)
     )
 
 
-def _carry(cands: list[Cand], previous: list[dict[str, Any]]) -> list[Cand]:
+def _carry(
+    cands: list[Cand], previous: list[dict[str, Any]], key: Callable[[str], str] | None = None
+) -> list[Cand]:
     """The candidates behind ``previous`` segments (best overlap, inside the segment) that
-    survived the exclusions."""
+    survived the exclusions; sources compared by ``key`` (default a cached
+    :func:`~cutpoint.clips.source_key`)."""
+    key = key or functools.cache(source_key)  # resolving reads the disk: once per source
     keep: list[Cand] = []
     for seg in previous:
-        hits = [(c, s) for c in cands for s in (c, *c.extra) if _same(seg, s)]
+        hits = [(c, s) for c in cands for s in (c, *c.extra) if _same(seg, s, key)]
         if not hits:
             logger.info("mix: %s (%s) is gone", seg.get("id"), seg.get("category"))
             continue
@@ -579,14 +609,17 @@ def _carry(cands: list[Cand], previous: list[dict[str, Any]]) -> list[Cand]:
 
 
 def _seg_ids(
-    flat: list[tuple[Cand, Cand]], previous: list[dict[str, Any]], fixed: list[Cand]
+    flat: list[tuple[Cand, Cand]],
+    previous: list[dict[str, Any]],
+    fixed: list[Cand],
+    key: Callable[[str], str],
 ) -> list[str]:
     """The previous id of each span carried over (its candidate in ``fixed``); the rest
     get new ``mNNN`` ids above the highest previous one (``m001``... without ``previous``)."""
     nums = [int(p["id"][1:]) for p in previous if str(p["id"])[:1] == "m" and p["id"][1:].isdigit()]
     fresh = (f"m{k:03d}" for k in itertools.count(max(nums, default=0) + 1))
     return [
-        (next((p["id"] for p in previous if _same(p, s)), None) if c in fixed else None)
+        (next((p["id"] for p in previous if _same(p, s, key)), None) if c in fixed else None)
         or next(fresh)
         for s, c in flat
     ]
@@ -610,7 +643,9 @@ def run_mix(
             project's :data:`EXCLUDE_FILE`.
         previous: An earlier selection (segments-file entries) to keep: its clips that
             survive the exclusions stay (cut if needed, same ids, never swapped out)
-            and only the freed budget is filled anew.
+            and only the freed budget is filled anew. Its sources are matched by
+            :func:`~cutpoint.clips.source_key`, so a relative one is taken against the
+            current folder: make it absolute first.
 
     Returns:
         The report.
@@ -623,16 +658,17 @@ def run_mix(
     if not cands:
         raise ValueError(f"No candidates in {project}; run `cutpoint analyze --style ski` first")
     runs, starts = _runs_index(project)
+    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for c in cands:
-        c.run = _run_of(runs, c.source, c.peak_t)
-        start = starts.get(ski._key(c.source))
+        c.run = _run_of(runs, c.source, c.peak_t, key)
+        start = starts.get(key(c.source))
         c.abs_t = None if start is None else start + c.peak_t
     normalise(cands)
     _embed(cands)
     if exclude is None:
         exclude = load_exclusions(project / EXCLUDE_FILE)
     cands = apply_exclusions(cands, exclude)  # after scoring: the others keep their norm
-    fixed = _carry(cands, previous) if previous else None
+    fixed = _carry(cands, previous, key) if previous else None
     chosen = select_mix(cands, target_s, q, r, n_runs=len(runs), fixed=fixed)
     if not chosen:
         why = (
@@ -642,8 +678,8 @@ def run_mix(
         )
         raise ValueError(f"Nothing selected in {project}: {why}")
     flat = [(s, c) for c in chosen for s in (c, *c.extra)]  # chronological play order
-    flat.sort(key=lambda p: (starts.get(ski._key(p[0].source)) or 0.0, p[0].source, p[0].start))
-    ids = _seg_ids(flat, previous or [], fixed or [])
+    flat.sort(key=lambda p: (starts.get(key(p[0].source)) or 0.0, p[0].source, p[0].start))
+    ids = _seg_ids(flat, previous or [], fixed or [], key)
     segs = [
         {
             "id": ids[i],
@@ -659,10 +695,16 @@ def run_mix(
         for i, (s, c) in enumerate(flat)
     ]
     out = out or project / "mix_segments.json"
-    prior = previous if previous is not None else cache.load_json(out) or []
+    if previous is not None:
+        prior = previous
+    else:  # as written: a relative source is relative to the file's folder
+        prior = [
+            {**p, "source": segment_source(str(p["source"]), out.parent)[0]} if "source" in p else p
+            for p in cache.load_json(out) or []
+        ]
     for s in segs:  # keep the lead-in / tail bounds (360 repair) of the same clip
         p = next((p for p in prior if p.get("id") == s["id"]), None)
-        if p is None or ski._key(p["source"]) != ski._key(s["source"]):
+        if p is None or key(p["source"]) != key(s["source"]):
             continue
         if not _inside(s["start"], s["end"], p):  # a different clip
             continue
