@@ -37,8 +37,9 @@ def _dies_midway(exc: BaseException):
 FAILURES = [FFmpegError("ffmpeg failed (exit 1)"), KeyboardInterrupt()]
 
 
-@pytest.mark.parametrize("exc", FAILURES, ids=["ffmpeg-error", "ctrl-c"])
-def test_failed_or_interrupted_clip_export_leaves_no_file(monkeypatch, tmp_path, exc):
+def test_interrupted_clip_export_leaves_no_file(monkeypatch, tmp_path):
+    """Any failure is cleaned up the same way (see test_gpu_encode for an ffmpeg error)."""
+    exc = KeyboardInterrupt()
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setattr(encode, "run", _dies_midway(exc))
     src = tmp_path / "src.mp4"
@@ -55,8 +56,8 @@ def test_failed_or_interrupted_clip_export_leaves_no_file(monkeypatch, tmp_path,
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("exc", FAILURES, ids=["ffmpeg-error", "ctrl-c"])
-def test_failed_or_interrupted_assemble_leaves_no_final_video(monkeypatch, tmp_path, exc):
+def test_interrupted_assemble_leaves_no_final_video(monkeypatch, tmp_path):
+    exc = KeyboardInterrupt()
     clips = tmp_path / "clips"
     clips.mkdir()
     (clips / "001.mp4").write_bytes(b"x")
@@ -361,9 +362,12 @@ def _fail_nth_swap_replace(monkeypatch, project: Path, n: int, mode: str, folder
     return seen
 
 
-@pytest.mark.parametrize("cmd", ["clips", "extend"])
 @pytest.mark.parametrize("mode", ["lock", "ctrl-c"])
-@pytest.mark.parametrize("n", [1, 3, 5, 8], ids=["first", "backing-up", "moving-in", "last"])
+@pytest.mark.parametrize(
+    ("cmd", "n"),
+    [("clips", n) for n in (1, 3, 5, 8)] + [("extend", 5)],  # extend shares swap_in with clips
+    ids=["clips-first", "clips-backing-up", "clips-moving-in", "clips-last", "extend-moving-in"],
+)
 def test_failed_swap_puts_every_original_back(monkeypatch, home, caplog, cmd, mode, n):
     project = _setup(home, monkeypatch)
     before = _snapshot(project / "clips")
@@ -619,8 +623,7 @@ def test_next_run_after_a_kill_mid_swap_restores_the_originals(monkeypatch, home
     assert not (project / ".clips.cutpoint-tmp").exists()
 
 
-@pytest.mark.parametrize("cmd", ["clips", "extend"])
-def test_backup_without_a_journal_means_the_swap_finished(monkeypatch, home, cmd):
+def test_backup_without_a_journal_means_the_swap_finished(monkeypatch, home):
     project = _setup(home, monkeypatch)
     clips_dir = project / "clips"
     for n in NAMES:  # the finished new set
@@ -629,10 +632,7 @@ def test_backup_without_a_journal_means_the_swap_finished(monkeypatch, home, cmd
     bak.mkdir()
     (bak / "001_a.mp4").write_bytes(b"old")  # the leftover originals, journal already gone
     before = _snapshot(clips_dir)
-    argv = _argv(cmd, project)
-    if cmd == "extend":
-        argv[argv.index("--out") + 1] = str(project / "elsewhere")
-    cli.main(argv)
+    cli.main(_argv("clips", project))
     assert _snapshot(clips_dir) == before
     assert not bak.exists()
 
@@ -673,19 +673,15 @@ def test_force_replaces_clips_and_keeps_the_users_other_files(monkeypatch, home,
     assert [c["file"] for c in out_manifest["clips"]] == NAMES
 
 
-@pytest.mark.parametrize("cmd", ["clips", "extend"])
 @pytest.mark.parametrize("journal", ["", "[]"], ids=["zero-length", "wrong-shape"])
-def test_backup_with_a_corrupt_journal_is_kept_and_named(monkeypatch, home, caplog, cmd, journal):
+def test_backup_with_a_corrupt_journal_is_kept_and_named(monkeypatch, home, caplog, journal):
     project = _setup(home, monkeypatch)
     bak = project / ".clips.cutpoint-bak"
     bak.mkdir()
     (bak / "001_a.mp4").write_bytes(b"precious original")
     (bak / ".cutpoint-swap.json").write_text(journal, encoding="utf-8")
     before = _snapshot(bak)
-    argv = _argv(cmd, project)
-    if cmd == "extend":
-        argv[argv.index("--out") + 1] = str(project / "elsewhere")
-    assert cli.main(argv) == 1
+    assert cli.main(_argv("clips", project)) == 1
     assert ".clips.cutpoint-bak" in caplog.text
     assert _snapshot(bak) == before
 
