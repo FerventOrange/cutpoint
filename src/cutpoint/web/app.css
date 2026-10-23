@@ -120,7 +120,7 @@ select { max-width: 100%; }
 .side { border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
 .side > * { flex: none; }
 .side .col-head { margin-bottom: 0; }
-/* moments header band: count centred; "Analyze again" on the right, or below it when there is no room; the title is visually hidden */
+/* moments header band: count centred; "Analyze again" and "Show folder" on the right, or below it when there is no room; the title is visually hidden */
 .moments { container: moments / inline-size; }
 .moments .col-head {
   position: relative; /* keeps the hidden title inside the band, so focusing it doesn't scroll */
@@ -131,13 +131,21 @@ select { max-width: 100%; }
 .moments .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 #momentsCount { grid-area: 1 / 2; text-align: center; font-size: 13px; }
 #momentsCount:empty, .moments .col-head .spacer { display: none; }
-#analyzeBtn { grid-column: 3; grid-row: 1; justify-self: end; white-space: nowrap; }
+.moments-acts { grid-column: 3; grid-row: 1; justify-self: end; display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; }
+.moments-acts .btn { white-space: nowrap; }
+#revealHeadBtn { display: flex; align-items: center; gap: 6px; }
 /* with no project or before analysis the band would be empty: drop it */
 .moments.bare > .col-head { margin: 0; padding: 0; min-height: 0; background: none; border: 0; }
-@container moments (width < 440px) { /* room for the button on both sides of the longest count */
+.moments.bare .moments-acts { display: none; }
+@container moments (width < 440px) { /* room for one button on both sides of the longest count */
   .moments .col-head { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   #momentsCount { grid-area: auto; }
-  #analyzeBtn { grid-column: 1; grid-row: auto; justify-self: center; margin-top: 6px; }
+  .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; margin-top: 6px; }
+}
+@container moments (width < 760px) { /* the same with both buttons */
+  .moments .col-head:has(#revealHeadBtn:not([hidden])) { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+  .moments .col-head:has(#revealHeadBtn:not([hidden])) #momentsCount { grid-area: auto; }
+  .moments .col-head:has(#revealHeadBtn:not([hidden])) .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; margin-top: 6px; }
 }
 .stage { background: var(--slate); }
 .stage:focus { outline: none; }

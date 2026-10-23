@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remove with a confirm popover, multi-select with batch remove, up/down buttons and drag reorder.
 - `cutpoint ui` Moments empty state for a project that is not analyzed yet: the number of videos
   found, "No moments analyzed yet", an "Analyze footage" button and a "Show folder" button.
+  After analysis, "Show folder" sits next to "Analyze again" in the column header.
   "Show folder" opens the folder of the project's videos in the system file manager through
   `POST /api/projects/{pid}/reveal` (token-protected; it only opens the project's own source
   folder). The button is hidden where no file manager is available (for example Docker, or Linux
@@ -26,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The UI's "Remove from sequence" button moved above the video preview.
 - The UI's Moments column header no longer shows the "Moments" title (kept for screen readers);
-  after analysis it shows the moment count and "Analyze again".
+  after analysis it shows the moment count, "Analyze again" and "Show folder".
 
 ### Fixed
 

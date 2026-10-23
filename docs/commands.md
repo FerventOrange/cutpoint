@@ -43,7 +43,8 @@ server machine's files; nothing is uploaded. It does not expose action-cam or 36
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
-possible, such as Docker).
+possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
+in the column header.
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as

@@ -167,6 +167,7 @@ function renderMoments() {
   const hl = p?.highlights;
   const list = cands();
   $('#analyzeBtn').hidden = !hl; // before analysis the empty state's own button replaces it
+  $('#revealHeadBtn').hidden = !hl || !S.canReveal; // likewise its own Show folder
   $('.moments').classList.toggle('bare', !hl);
   $('#analyzeBtn').textContent = 'Analyze again';
   $('#filterWrap').hidden = !list.length;
@@ -219,7 +220,7 @@ function renderMoments() {
   if (list.length && !items.length)
     $('#candList').replaceChildren(h('li', { class: 'empty', text: 'No moments match this filter.' }));
   if (hadFocus && !empty.contains(document.activeElement))
-    ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+    ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
 }
 
@@ -1289,6 +1290,8 @@ function bind() {
     focusRow(0, 'select');
   });
   $('#analyzeBtn').addEventListener('click', () => startJob('analyze'));
+  $('#revealHeadBtn').prepend(icon('folder'));
+  $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
   $('#clipsBtn').addEventListener('click', () => {
     try {
       startJob('clips', exportOptions());
