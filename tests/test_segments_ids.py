@@ -22,21 +22,13 @@ def _segs(*ids: object) -> list[dict[str, object]]:
         pytest.param((None, None, None), ["s001", "s002", "s003"], id="no-collision"),
         pytest.param(("s002", None), ["s002", "s002b"], id="generated-id-is-taken"),
         pytest.param(("s002", "s002b", None), ["s002", "s002b", "s003"], id="other-slot"),
+        pytest.param(("s002", None, "s003", None), ["s002", "s002b", "s003", "s004"], id="chained"),
+        pytest.param((None, "s001", "s001b"), ["s001c", "s001", "s001b"], id="next-letter"),
         pytest.param(("x", "s002b", "s002", None), ["x", "s002b", "s002", "s004"], id="plain"),
     ],
 )
 def test_segment_ids(given: tuple[object, ...], expected: list[object]) -> None:
     assert segment_ids(_segs(*given)) == expected
-
-
-def test_segment_ids_chained_collision_gets_the_next_letter() -> None:
-    assert segment_ids([{"id": "s002"}, {}, {"id": "s003"}, {}]) == [
-        "s002",
-        "s002b",
-        "s003",
-        "s004",
-    ]
-    assert segment_ids([{}, {"id": "s001"}, {"id": "s001b"}]) == ["s001c", "s001", "s001b"]
 
 
 def test_duplicate_ids_name_both_segments_and_the_id() -> None:
@@ -58,23 +50,9 @@ def _write_segments(tmp_path: Path, entries: list[dict[str, object]]) -> Path:
     return f
 
 
-def test_load_segments_suffixes_a_generated_id_taken_by_a_user_id(tmp_path: Path) -> None:
-    f = _write_segments(tmp_path, [{"id": "s002"}, {}])
-    assert [m["id"] for m in load_segments(f)] == ["s002", "s002b"]
-
-
 def test_load_segments_keeps_plain_ids_without_collision(tmp_path: Path) -> None:
     f = _write_segments(tmp_path, [{}, {"id": "intro"}, {}])
     assert [m["id"] for m in load_segments(f)] == ["s001", "intro", "s003"]
-
-
-def test_load_segments_rejects_duplicate_and_unhashable_ids(tmp_path: Path) -> None:
-    f = _write_segments(tmp_path, [{"id": "x"}, {}, {"id": "x"}])
-    with pytest.raises(ValueError, match=r"Segments 1 and 3 have the same id 'x'"):
-        load_segments(f)
-    f = _write_segments(tmp_path, [{"id": ["x"]}])
-    with pytest.raises(ValueError, match="Segment 1: id must be"):
-        load_segments(f)
 
 
 @pytest.mark.parametrize("kind", ["relative", "projects", "absolute"])

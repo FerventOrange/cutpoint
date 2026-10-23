@@ -28,13 +28,6 @@ def test_player_tags_single_string_becomes_list(home):
     assert config.player_tags() == ("Me",)
 
 
-@pytest.mark.parametrize("bad", [5])
-def test_player_tags_non_list_raises(home, bad):
-    set_config(home, player_tags=bad)
-    with pytest.raises(ValueError, match="player_tags must be a list"):
-        config.get_config()
-
-
 def test_player_tags_blank_names_dropped(home):
     set_config(home, player_tags=["Me", "", "   ", "\t", "Other"])
     assert config.player_tags() == ("Me", "Other")
@@ -45,9 +38,8 @@ def test_player_tags_blank_names_dropped(home):
 # -- pano_config ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad", [["a"]])
-def test_pano_config_non_object_raises(home, bad):
-    set_config(home, pano=bad)
+def test_pano_config_non_object_raises(home):
+    set_config(home, pano=["a"])
     with pytest.raises(ValueError, match="'pano' must be an object"):
         project.pano_config()
 
@@ -179,6 +171,8 @@ def test_wrongly_typed_config_value_is_one_error_not_a_traceback(home, caplog, k
     assert len(errors) == 1
     assert str(home / "config.json") in errors[0].getMessage()
     assert key in errors[0].getMessage()
+    if (key, value) == ("player_tags", 5):
+        assert "player_tags must be a list" in errors[0].getMessage()
     assert all(r.exc_info is None for r in caplog.records)
 
 
