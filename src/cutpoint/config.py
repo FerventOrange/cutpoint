@@ -286,7 +286,7 @@ def is_foreign_windows(path: str) -> bool:
     return sys.platform != "win32" and is_absolute_any(path) and not Path(path).is_absolute()
 
 
-def _windows_norm(path: str) -> str:
+def windows_norm(path: str) -> str:
     """:func:`norm_path` with Windows rules on any platform: case-folded, backslashes."""
     return str(PureWindowsPath(path)).replace("/", "\\").rstrip("\\").lower()
 
@@ -364,10 +364,10 @@ def _prefix_forms(prefix: str) -> tuple[str, ...]:
     """A prefix as typed plus its resolved and UNC forms (mapped drive -> UNC).
 
     A Windows prefix on POSIX (``D:\\Videos``) is compared the Windows way
-    (:func:`_windows_norm`); making it absolute here would prepend the current folder.
+    (:func:`windows_norm`); making it absolute here would prepend the current folder.
     """
     if is_foreign_windows(prefix):
-        return (_windows_norm(prefix),)
+        return (windows_norm(prefix),)
     absolute = os.path.abspath(prefix)  # noqa: PTH100 - normalises '..', keeps drive letters
     forms = {norm_path(absolute), norm_path(unc_path(absolute))}
     with contextlib.suppress(OSError):
@@ -380,7 +380,7 @@ def _strip_prefix(path: str, prefix: str) -> str | None:
     form), or None."""
     for text in dict.fromkeys((path, unc_path(path))):
         if is_foreign_windows(text):  # D:\Videos\x.mp4 on POSIX: rest with POSIX separators
-            low, sep, pure = _windows_norm(text), "\\", str(PureWindowsPath(text))
+            low, sep, pure = windows_norm(text), "\\", str(PureWindowsPath(text))
         else:
             low, sep, pure = norm_path(text), _sep(), str(_pure(text))
         for form in _prefix_forms(prefix):

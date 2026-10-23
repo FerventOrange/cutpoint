@@ -112,7 +112,8 @@ def test_clear_stage_falls_back_to_the_index_for_inputs_that_cannot_be_listed(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a Windows-form key is foreign only on POSIX")
-def test_clear_stage_finds_copies_recorded_under_a_windows_form_key(home, tmp_path):
+@pytest.mark.parametrize("target", ["copy-path", "windows-path"])
+def test_clear_stage_finds_copies_recorded_under_a_windows_form_key(home, tmp_path, target):
     """#149: keys recorded as ``D:\\Videos\\T\\x.mp4`` use backslashes, not ``/``."""
     new = tmp_path / "copy"
     write(new / "T" / "x.mp4", "xx")
@@ -121,7 +122,17 @@ def test_clear_stage_finds_copies_recorded_under_a_windows_form_key(home, tmp_pa
     config.get_config.cache_clear()
     assert stage_sources([new / "T", new / "Tx"], min_free_gb=0)["files"] == 2
     copies = {n: Path(staged_path(str(new / n))) for n in ("T/x.mp4", "Tx/z.mp4")}
+    twin = new / "T" / "X.mp4"  # a different file on a case-sensitive file system
+    write(twin, "XX")
+    twin_path = str(twin)
     shutil.rmtree(new)  # the remap target is gone, so only the index can find them
 
-    assert clear_stage([new / "T"]) == 1
+    # a differently-spelled Windows-form source still reads the staged copy
+    for spelled in ("d:/videos/T/x.mp4", r"D:\Videos\T\x.mp4"):
+        assert staged_path(spelled) == str(copies["T/x.mp4"])
+    assert staged_path("d:/videos/Tx/z.mp4") == str(copies["Tx/z.mp4"])
+    # ...but below the remap prefix the case must match: T/X.mp4 is not T/x.mp4
+    assert staged_path(twin_path) == twin_path
+
+    assert clear_stage([new / "T" if target == "copy-path" else Path(r"D:\Videos\T")]) == 1
     assert [c.exists() for c in copies.values()] == [False, True]

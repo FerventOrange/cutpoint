@@ -27,7 +27,7 @@ import sys
 import time
 from collections.abc import Sequence
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from cutpoint import cache, state
@@ -38,6 +38,7 @@ from cutpoint.config import (
     norm_path,
     remap_source,
     unc_path,
+    windows_norm,
 )
 from cutpoint.utils import matches_glob
 
@@ -117,11 +118,48 @@ def stage_key(path: str | Path) -> str:
     network drive (``N:\\Footage\\x.mp4``) and its UNC form
     (``\\\\server\\share\\Footage\\x.mp4``, what ``find_videos`` returns) give
     the same key.
+
+    On POSIX, a Windows path (``D:\\Footage\\x.mp4``, as recorded on Windows or
+    as the canonical form under a Windows ``source_remap`` prefix) is keyed the
+    Windows way (:func:`cutpoint.config.windows_norm`: case-folded, backslashes),
+    without resolving it against the current folder.
     """
-    text = os.path.abspath(str(path))  # noqa: PTH100 - normalises '..', keeps drive letters
-    with contextlib.suppress(OSError):
-        text = str(Path(text).resolve())
-    return norm_path(canonical_source(text))
+    text = _canonical(path)
+    return windows_norm(text) if is_foreign_windows(text) else norm_path(text)
+
+
+def _canonical(path: str | Path) -> str:
+    """``path`` resolved (unless a Windows path on POSIX) and in its pre-remap spelling."""
+    text = str(path)
+    if not is_foreign_windows(text):
+        text = os.path.abspath(text)  # noqa: PTH100 - normalises '..', keeps drive letters
+        with contextlib.suppress(OSError):
+            text = str(Path(text).resolve())
+    return canonical_source(text)
+
+
+def _same_source(path: str, key: str, recorded: str | None) -> bool:
+    """``path`` is the file whose copy was recorded as ``recorded`` under ``key``.
+
+    Only differs from "same key" on POSIX for a Windows key (``d:\\videos\\t\\x.mp4``):
+    those are case-folded, but the files below a Windows ``source_remap`` prefix may
+    sit on a case-sensitive file system (``T/x.mp4`` and ``T/X.MP4``). There the
+    spellings below that prefix must match exactly; the prefix itself compares
+    the Windows way.
+    """
+    if not recorded or not is_foreign_windows(key):
+        return True
+    stored = _canonical(recorded)
+    if not is_foreign_windows(stored):  # its remap target moved since: the key decides
+        return True
+    stored = str(PureWindowsPath(stored))
+    asked = str(PureWindowsPath(_canonical(path)))
+    skip = 0
+    for old, _new in get_config().source_remap:
+        form = windows_norm(old) if is_foreign_windows(old) else None
+        if form and (key == form or key.startswith(form + "\\")):
+            skip = max(skip, len(form))
+    return asked[skip:] == stored[skip:]
 
 
 @state.register_cache
@@ -152,8 +190,9 @@ def staged_path(path: str) -> str:
     index = _stage_index()
     if not index:
         return path
-    entry = index.get(stage_key(path))
-    if not entry:
+    key = stage_key(path)
+    entry = index.get(key)
+    if not entry or not _same_source(path, key, entry.get("source")):
         return path
     copy = get_config().stage_dir / entry["file"]
     try:
