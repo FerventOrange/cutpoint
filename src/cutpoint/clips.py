@@ -17,7 +17,7 @@ from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, sources
-from cutpoint.config import is_absolute_any, path_key, remap_source, source_path
+from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
@@ -211,7 +211,9 @@ def segment_source(source: str | Path, base: Path) -> tuple[str, Path]:
 
     A relative ``source`` is taken against ``base`` (the file's folder). The read path
     is its :func:`~cutpoint.config.remap_source`; the identity (recorded, matched) stays
-    the original path, resolved, or only made absolute when the remap applies. A Windows
+    the original path, resolved, or only made absolute when the remap applies (then in
+    UNC form on a mapped drive, :func:`~cutpoint.config.unc_path`, as ``analyze`` and a
+    resolved reachable file record it, also while the drive is disconnected). A Windows
     path read elsewhere (``D:\\Videos\\a.insv``, as a project written on Windows records
     it) is absolute too; its identity is its Windows form, as Windows records it.
     """
@@ -220,14 +222,20 @@ def segment_source(source: str | Path, base: Path) -> tuple[str, Path]:
         return ntpath.normpath(str(source)), remap_source(str(source))
     src = src if src.is_absolute() else (base / src)
     io_path = remap_source(src)
-    identity = str(src.resolve()) if io_path == src else os.path.abspath(src)  # noqa: PTH100 - normalises '..', keeps drive letters
-    return identity, io_path
+    if io_path == src:
+        return str(src.resolve()), io_path
+    # Remapped: abspath normalises '..'; Z:\ -> \\server\share (cached lookup).
+    return unc_path(os.path.abspath(src)), io_path  # noqa: PTH100
 
 
 def source_key(source: str | Path) -> str:
     """An absolute ``source`` as a lookup key, normalised as :func:`segment_source` records
-    it (resolved, so through a symlink too), for matching exclusions to segments."""
-    return path_key(segment_source(source, Path.cwd())[0])
+    it (resolved, so through a symlink too), for matching exclusions to segments.
+
+    A mapped drive is in UNC form (:func:`~cutpoint.config.unc_path`), so ``Z:\\F\\a.mp4``
+    recorded while the drive was disconnected matches ``\\\\server\\share\\F\\a.mp4``.
+    """
+    return path_key(unc_path(segment_source(source, Path.cwd())[0]))
 
 
 def drive_relative(source: str) -> str:
