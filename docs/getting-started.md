@@ -127,7 +127,8 @@ The repository also has wrappers that use `.venv` without activating it: `.\cutp
 
 ### Docker (Linux, CPU only)
 
-The repository `Dockerfile` builds an Ubuntu 24.04 image with ffmpeg and the browser workspace.
+The repository `Dockerfile` builds an Ubuntu 24.04 image with ffmpeg and the browser workspace. uv is pinned to an exact
+release and image digest, and the container runs as the non-root user `cutpoint` (uid 1000).
 No model weights are downloaded at build or start-up. No GPU is forwarded, so inference and video
 encoding run on the CPU. Create your footage folder first, then:
 
@@ -143,6 +144,34 @@ Open the **complete** `http://127.0.0.1:8765/#t=…` URL printed in the log; the
 required. The UI binds to loopback only, so Docker's bridge port publishing (`-p`) cannot reach it.
 On Linux, `--network host` is required ([host networking](https://docs.docker.com/engine/network/drivers/host/)).
 
+Files the container writes into a bind mount belong to uid 1000 on the host. If your host user is
+not uid 1000, match it so projects stay yours, either at run time (the `/data` volume must then
+be writable by that uid, so prefer a bind mount such as `--mount type=bind,source="$HOME/cutpoint-data",target=/data`):
+
+```bash
+mkdir -p "$HOME/cutpoint-data"
+docker run --rm --network host --user "$(id -u):$(id -g)" \
+  --mount type=bind,source="$HOME/cutpoint-data",target=/data \
+  --mount type=bind,source="$HOME/Videos",target=/footage,readonly \
+  cutpoint
+```
+
+or at build time, which also keeps the named volume writable:
+`docker build --build-arg CUTPOINT_UID="$(id -u)" --build-arg CUTPOINT_GID="$(id -g)" -t cutpoint .`
+
+This applies to Docker Engine on Linux. With Docker Desktop on Windows or macOS, bind-mounted files
+already belong to your user, so skip `--user` (from a WSL shell `$(id -u)` works as written); with
+rootless Docker, files are mapped to your subordinate uid range.
+
+Upgrading from the 0.2.0 image, which ran as root: an existing `cutpoint-data` volume is
+root-owned and the new image fails with `Permission denied` on `/data`. Fix the volume once
+(use the build-arg uid:gid instead of `1000:1000` if you changed them):
+
+```bash
+docker run --rm --user 0 --entrypoint chown \
+  --mount source=cutpoint-data,target=/data cutpoint -R 1000:1000 /data
+```
+
 Inside the UI, choose sources under `/footage`; the bind mount is read-only, so your videos are never
 modified. The `cutpoint-data` volume is `CUTPOINT_HOME=/data` and keeps projects, models and the
 Hugging Face cache (`HF_HOME=/data/huggingface`) between runs. The only automatic download is the
@@ -156,7 +185,9 @@ docker build --build-arg INSTALL_EVENTS=true -t cutpoint:events .
 docker run --rm --mount source=cutpoint-data,target=/data cutpoint:events setup
 ```
 
-This is about 8 GB of models, and the Python dependencies are large (they include CUDA libraries
+If you run with `--user` and a bind mount, pass the same `--user` and
+`--mount type=bind,source="$HOME/cutpoint-data",target=/data` flags to `setup`, so the models land
+in the directory you actually mount. This is about 8 GB of models, and the Python dependencies are large (they include CUDA libraries
 even though the container runs on the CPU). Then run the UI as above with `cutpoint:events`.
 
 ## First run
