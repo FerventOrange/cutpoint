@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.utils import natural_key
+from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,7 @@ def clip_sheets(
 
     manifest = cache.load_json(clips_dir / "manifest.json") or {}
     by_file = {e["file"]: e for e in manifest.get("clips", [])}
-    files = sorted(
-        (f for f in clips_dir.glob("*.mp4") if not f.name.startswith(".")), key=natural_key
-    )
+    files = clip_files(clips_dir)
     out_dir = clips_dir.with_name(clips_dir.name + "_check")
     sheets: list[Path] = []
     for k in range(0, len(files), clips_per_sheet):

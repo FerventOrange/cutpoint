@@ -49,6 +49,12 @@ def natural_key(path: Path) -> list[object]:
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", path.name)]
 
 
+def clip_files(folder: Path) -> list[Path]:
+    """The .mp4 clips directly in ``folder`` in natural filename order (none if missing)."""
+    # Dot files are temporaries (an interrupted export's ``.NNN_x.part.mp4``), not clips.
+    return sorted((f for f in folder.glob("*.mp4") if not f.name.startswith(".")), key=natural_key)
+
+
 def matches_glob(path: str | PurePath, patterns: Iterable[str]) -> bool:
     """True if ``path``'s file name or full path matches any glob.
 

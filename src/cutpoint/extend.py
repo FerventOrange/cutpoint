@@ -51,7 +51,7 @@ from cutpoint.ffmpeg_utils import (
     swap_in,
 )
 from cutpoint.planning import Padding, pad, speech_pass
-from cutpoint.utils import natural_key
+from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
 
@@ -321,10 +321,7 @@ def extend_clips(
         fmt_d = manifest.get("format") or {}
         fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
         vertical = bool(fmt_d.get("vertical"))
-        # Dot files are temporaries (an interrupted export's ``.NNN_x.part.mp4``), not clips.
-        files = sorted(
-            (f for f in clips_dir.glob("*.mp4") if not f.name.startswith(".")), key=natural_key
-        )
+        files = clip_files(clips_dir)
         infos: dict[str, MediaInfo] = {}
         plans: list[ExtendPlan] = []
         skipped: list[str] = []
@@ -479,14 +476,7 @@ def extend_clips(
             swap_in(work, out_dir)
     if staged and not in_place:
         written = {path_key(e["file"]) for e in entries}
-        kept = sorted(
-            (
-                p
-                for p in out_dir.glob("*.mp4")
-                if not p.name.startswith(".") and path_key(p.name) not in written
-            ),
-            key=natural_key,
-        )
+        kept = [p for p in clip_files(out_dir) if path_key(p.name) not in written]
         if kept:
             logger.warning(
                 "Kept %s in %s: not re-exported by this run, so not in the new manifest.json; "

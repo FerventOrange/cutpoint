@@ -205,7 +205,7 @@ def one_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     """run_mix on a project whose only candidate is a 6 s run in a.mp4 (features faked)."""
     monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(mix, "part_candidates", lambda _d: [_c("run", 50, 0.9)])
-    monkeypatch.setattr(mix, "_runs_index", lambda _p: ([], {}))
+    monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))
     monkeypatch.setattr(mix, "_embed", lambda _c: None)
 
 

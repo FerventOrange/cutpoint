@@ -35,7 +35,7 @@ from cutpoint.ffmpeg_utils import (
 )
 from cutpoint.timeline import write_timelines
 from cutpoint.transcribe import Segment, Transcriber, flat_words
-from cutpoint.utils import natural_key
+from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +45,7 @@ AUDIO_OUT = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 
 def list_clips(clips_dir: Path, exclude: set[Path]) -> list[Path]:
     """All .mp4 files directly in ``clips_dir`` in natural filename order."""
-    files = [
-        p
-        for p in clips_dir.glob("*.mp4")
-        if p.resolve() not in exclude and not p.name.startswith(".")
-    ]
-    return sorted(files, key=natural_key)
+    return [p for p in clip_files(clips_dir) if p.resolve() not in exclude]
 
 
 def baked_fades(clips_dir: Path, files: list[Path]) -> list[float]:

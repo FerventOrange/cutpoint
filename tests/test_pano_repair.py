@@ -32,7 +32,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(mix, "part_candidates", cands)
     monkeypatch.setattr(mix, "load_crashes", lambda _p: None)
-    monkeypatch.setattr(mix, "_runs_index", lambda _p: ([], {}))
+    monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))
     monkeypatch.setattr(mix, "_embed", lambda _c: None)
     mix.run_mix(tmp_path, target_s=25, sheet=False)
     return tmp_path

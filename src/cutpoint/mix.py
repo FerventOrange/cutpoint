@@ -454,11 +454,12 @@ def _embed(cands: list[Cand]) -> None:
             c.emb = c.emb - mean
 
 
-def _runs_index(project: Path) -> tuple[list[dict[str, Any]], dict[str, float | None]]:
+def _runs_index(
+    project: Path, key: Callable[[str], str]
+) -> tuple[list[dict[str, Any]], dict[str, float | None]]:
     """Telemetry runs and each source's start (epoch; None if unknown) from telemetry.json,
-    keyed by :func:`~cutpoint.clips.source_key`."""
+    keyed by ``key`` (a cached :func:`~cutpoint.clips.source_key`)."""
     tj = cache.load_json(project / "telemetry.json") or {}
-    key = functools.cache(source_key)  # resolving reads the disk: once per source
     starts = {key(c["source"]): c.get("start_epoch") for c in tj.get("clips", [])}
     return tj.get("runs", []), starts
 
@@ -541,16 +542,19 @@ def _piece(
     return round(best[0], 2), round(best[1], 2)
 
 
-def apply_exclusions(cands: list[Cand], exclude: list[dict[str, Any]]) -> list[Cand]:
+def apply_exclusions(
+    cands: list[Cand], exclude: list[dict[str, Any]], key: Callable[[str], str] | None = None
+) -> list[Cand]:
     """Cut excluded source spans (of every category, or only of the entry's
-    ``category``) out of the candidates.
+    ``category``) out of the candidates; sources compared by ``key`` (default a cached
+    :func:`~cutpoint.clips.source_key`).
 
     A cut candidate keeps its longest remaining part (a crash the part holding its
     peak) when that is at least :func:`min_length`, else it is dropped; a crash
     reaction is cut the same way on its own (at least :data:`MIN_CLIP_S`).
     """
     out = []
-    key = functools.cache(source_key)  # resolving reads the disk: once per source
+    key = key or functools.cache(source_key)  # resolving reads the disk: once per call
     for c in cands:
         holes = [
             (float(e["start"]), float(e["end"]))
@@ -595,7 +599,7 @@ def _carry(
     """The candidates behind ``previous`` segments (best overlap, inside the segment) that
     survived the exclusions; sources compared by ``key`` (default a cached
     :func:`~cutpoint.clips.source_key`)."""
-    key = key or functools.cache(source_key)  # resolving reads the disk: once per source
+    key = key or functools.cache(source_key)  # resolving reads the disk: once per call
     keep: list[Cand] = []
     for seg in previous:
         hits = [(c, s) for c in cands for s in (c, *c.extra) if _same(seg, s, key)]
@@ -657,8 +661,8 @@ def run_mix(
     cands += crash_candidates((load_crashes(project) or {}).get("crashes", []))
     if not cands:
         raise ValueError(f"No candidates in {project}; run `cutpoint analyze --style ski` first")
-    runs, starts = _runs_index(project)
-    key = functools.cache(source_key)  # resolving reads the disk: once per source
+    key = functools.cache(source_key)  # shared by every step: resolving reads the disk
+    runs, starts = _runs_index(project, key)
     for c in cands:
         c.run = _run_of(runs, c.source, c.peak_t, key)
         start = starts.get(key(c.source))
@@ -667,7 +671,7 @@ def run_mix(
     _embed(cands)
     if exclude is None:
         exclude = load_exclusions(project / EXCLUDE_FILE)
-    cands = apply_exclusions(cands, exclude)  # after scoring: the others keep their norm
+    cands = apply_exclusions(cands, exclude, key)  # after scoring: the others keep their norm
     fixed = _carry(cands, previous, key) if previous else None
     chosen = select_mix(cands, target_s, q, r, n_runs=len(runs), fixed=fixed)
     if not chosen:

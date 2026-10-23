@@ -36,7 +36,7 @@ from cutpoint.ffmpeg_utils import (
 from cutpoint.planning import Padding, pad, select_moments, speech_pass
 from cutpoint.styles import Style, get_style
 from cutpoint.tail import TailResult, TailSettings, smart_tail
-from cutpoint.utils import slugify
+from cutpoint.utils import clip_files, slugify
 
 if TYPE_CHECKING:
     from cutpoint.pano.render import PanoExporter
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_AUDIO_FADE_S = 0.25  # audio fade in/out baked into every exported clip
+MIN_EXPORT_S = 0.1  # shortest clip export_clips accepts
 
 
 ARC_GROUPS = ("lift", "scenery", "run", "jump", "crash", "social")  # within a stretch of the day
@@ -288,6 +289,26 @@ def segment_ids(items: list[Any]) -> list[Any]:
     return ids
 
 
+def read_json_file(path: Path, what: str = "segments file") -> Any:
+    """JSON from the file ``path`` (a UTF-8 BOM is allowed); ``what`` names it in errors.
+
+    Raises:
+        IsADirectoryError: If ``path`` is a folder.
+        FileNotFoundError: If ``path`` is missing.
+        ValueError: If the file is not UTF-8 text or not valid JSON.
+    """
+    if path.is_dir():
+        raise IsADirectoryError(f"{path} is a folder, not a {what}")
+    if not path.is_file():
+        raise FileNotFoundError(f"{what[:1].upper()}{what[1:]} not found: {path}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
+    except UnicodeDecodeError:  # e.g. UTF-16 from > / Out-File
+        raise ValueError(f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8)") from None
+    except ValueError as err:  # JSONDecodeError
+        raise ValueError(f"{path} is not valid JSON: {err}") from None
+
+
 def load_segments(path: Path) -> list[dict[str, Any]]:
     """Load a hand-picked segment list: ``[{source, start, end, label}, ...]`` in play order.
 
@@ -309,16 +330,7 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
         FileNotFoundError: If the file or a source video is missing.
         IsADirectoryError: If ``path`` is a folder.
     """
-    if path.is_dir():
-        raise IsADirectoryError(f"{path} is a folder, not a segments file")
-    if not path.is_file():
-        raise FileNotFoundError(f"Segments file not found: {path}")
-    try:
-        items = json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
-    except UnicodeDecodeError:  # e.g. UTF-16 from > / Out-File
-        raise ValueError(f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8)") from None
-    except ValueError as err:  # JSONDecodeError
-        raise ValueError(f"{path} is not valid JSON: {err}") from None
+    items = read_json_file(path)
     if not isinstance(items, list) or not items:
         raise ValueError(f"{path} must contain a non-empty JSON list")
     ids = segment_ids(items)
@@ -536,7 +548,7 @@ def plan_clips(
         src = io_paths[m["source"]]
         info = infos[m["source"]]
         start, end = m["start"], min(m["end"], info.duration)
-        if end - start < 0.1:
+        if end - start < MIN_EXPORT_S:
             raise ValueError(f"{m['id']}: {start:.2f}-{m['end']:.2f} is outside {src.name}")
         limit = sources.readable_end(src, start, info.duration)
         if nxt is not None:
@@ -792,8 +804,8 @@ def _replaced_files(
             (kept_sources if same_file(f, sources) else replace).append(n)
     done = {path_key(n) for n in (*new, *replace, *kept_sources)}
     kept: list[str] = []
-    for p in sorted(out_dir.glob("*.mp4")):
-        if not p.name.startswith(".") and path_key(p.name) not in done:
+    for p in sorted(clip_files(out_dir)):
+        if path_key(p.name) not in done:
             (kept_sources if same_file(p, sources) else kept).append(p.name)
     return replace, kept_sources, kept, isinstance(entries, list)
 

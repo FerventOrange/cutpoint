@@ -40,7 +40,6 @@ a mix are left out.
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import math
 from collections.abc import Callable, Sequence
@@ -54,6 +53,7 @@ from cutpoint.clips import (
     drive_relative_error,
     index_sources,
     order_moments,
+    read_json_file,
     segment_ids,
     segment_source,
     source_key,
@@ -126,7 +126,11 @@ def impact_time(crash: dict[str, Any]) -> float:
 
 
 def _match(
-    segments: list[dict[str, Any]], qa: dict[str, Any], src_dir: Path, qa_time: float
+    segments: list[dict[str, Any]],
+    qa: dict[str, Any],
+    src_dir: Path,
+    qa_time: float,
+    key: Callable[[str], str],
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any], float]], int]:
     """``(QA clip, segment, source time of its first frame)`` per usable clip, and the
     number skipped.
@@ -139,7 +143,6 @@ def _match(
     manifest = cache.load_json(src_dir / "manifest.json")
     entries = {e["file"]: e for e in (manifest or {}).get("clips", [])}
     by_id = {s["id"]: s for s in segments}
-    key = functools.cache(source_key)  # resolving reads the disk: once per source
     out, skipped = [], 0
     for clip in qa.get("clips", []):
         if manifest is not None:
@@ -178,6 +181,7 @@ def plan(
     src_dir: Path,
     qa_time: float = float("inf"),
     impacts: Sequence[tuple[str, float]] = (),
+    key: Callable[[str], str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, dict[str, dict[str, float]]]:
     """``(exclusions, findings, skipped, bounds)`` for the blocking problems in ``qa``.
 
@@ -187,11 +191,12 @@ def plan(
     (``{id: {"min_start" | "max_end": source s}}``). Crash clips ignore flags from
     :data:`PRE_IMPACT_S` before an ``impacts`` ``(source, t)`` to :data:`IMPACT_S` after
     it; blocked spans ending within :data:`CRASH_LEAD_S` before it are cut back to end
-    there (the approach stays).
+    there (the approach stays). Sources are compared by ``key`` (default a cached
+    :func:`~cutpoint.clips.source_key`).
     """
-    matched, skipped = _match(segments, qa, src_dir, qa_time)
+    key = key or functools.cache(source_key)  # resolving reads the disk: once per call
+    matched, skipped = _match(segments, qa, src_dir, qa_time, key)
     excl, findings, bounds = [], [], {}
-    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for clip, seg, a in matched:
         cat, dur, lo, hi = seg.get("category"), clip["duration"], seg["start"], seg["end"]
         frames = clip["frames"]
@@ -247,9 +252,9 @@ def plan(
     return excl, findings, skipped, bounds
 
 
-def _merge(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    src = functools.cache(source_key)  # resolving reads the disk: once per source
-
+def _merge(
+    old: list[dict[str, Any]], new: list[dict[str, Any]], src: Callable[[str], str]
+) -> list[dict[str, Any]]:
     def key(e: dict[str, Any]) -> tuple:
         return src(str(e["source"])), e["start"], e["end"], e.get("category")
 
@@ -270,11 +275,12 @@ def _bound(segs: list[dict[str, Any]], bounds: dict[str, dict[str, float]]) -> N
             s["max_end"] = round(max(min(s.get("max_end", math.inf), b["max_end"]), s["end"]), 2)
 
 
-def _near(segs: list[dict[str, Any]], excl: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+def _near(
+    segs: list[dict[str, Any]], excl: list[dict[str, Any]], key: Callable[[str], str]
+) -> dict[str, dict[str, float]]:
     """Bounds at the nearest exclusion (global or of the segment's category) within
     :data:`REACH_S` before / after each segment, so lead-in and tails stay out of it."""
     out: dict[str, dict[str, float]] = {}
-    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for s in segs:
         for e in excl:
             if key(e["source"]) != key(s["source"]) or e.get("category") not in (
@@ -361,20 +367,6 @@ def _fit_budget(segs: list[dict[str, Any]], manifest: dict[str, Any]) -> dict[st
     }
 
 
-def _read_json(path: Path) -> Any:
-    """JSON from the file ``path`` (a UTF-8 BOM is allowed), as clips.load_segments reads it.
-
-    Raises:
-        ValueError: If the file is not UTF-8 text or not valid JSON.
-    """
-    try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
-    except UnicodeDecodeError:  # e.g. UTF-16 from > / Out-File
-        raise ValueError(f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8)") from None
-    except ValueError as err:  # JSONDecodeError
-        raise ValueError(f"{path} is not valid JSON: {err}") from None
-
-
 def repair(
     project: Path, segments_file: Path, qa_file: Path, out: Path | None = None, sheet: bool = True
 ) -> dict[str, Any]:
@@ -398,13 +390,9 @@ def repair(
         IsADirectoryError: If ``segments_file``, ``qa_file`` or ``out`` is a folder.
         FileNotFoundError: If ``segments_file`` or ``qa_file`` is missing.
     """
-    if segments_file.is_dir():
-        raise IsADirectoryError(f"{segments_file} is a folder, not a segments file")
-    if not segments_file.is_file():
-        raise FileNotFoundError(f"Segments file not found: {segments_file}")
+    old = read_json_file(segments_file)
     if out is not None and out.is_dir():
         raise IsADirectoryError(f"{out} is a folder, not a segments file")
-    old = _read_json(segments_file)
     if not isinstance(old, list) or not old:
         raise ValueError(f"{segments_file}: not a segments list")
     sources = []
@@ -438,11 +426,7 @@ def repair(
     spelt = {s["id"]: s["source"] for s in old} if picked else {}
     if picked:
         old = keyed
-    if qa_file.is_dir():
-        raise IsADirectoryError(f"{qa_file} is a folder, not a QA report")
-    if not qa_file.is_file():
-        raise FileNotFoundError(f"QA report not found: {qa_file}")
-    qa = _read_json(qa_file)
+    qa = read_json_file(qa_file, "QA report")
     if not isinstance(qa, dict):
         raise ValueError(f"{qa_file}: not a QA report")
     src_dir = Path(qa.get("source_dir") or "")
@@ -450,7 +434,10 @@ def repair(
         src_dir = qa_file.parent.with_name(qa_file.parent.name.removesuffix("_qa"))
     crashes = (load_crashes(project) or {}).get("crashes", [])
     impacts = [(c["source"], impact_time(c)) for c in crashes]
-    new_excl, findings, skipped, bounds = plan(keyed, qa, src_dir, qa_file.stat().st_mtime, impacts)
+    key = functools.cache(source_key)  # shared by every step: resolving reads the disk
+    new_excl, findings, skipped, bounds = plan(
+        keyed, qa, src_dir, qa_file.stat().st_mtime, impacts, key
+    )
     manifest = cache.load_json(src_dir / "manifest.json")
     out = out or segments_file
     same = out.resolve() == segments_file.resolve()
@@ -474,10 +461,10 @@ def repair(
         written = out.with_name(mix.EXCLUDE_FILE)
         have = written if written.is_file() else project / mix.EXCLUDE_FILE
         usable, ignored = mix.read_exclusions(have)
-        excl = _merge(usable, new_excl)
+        excl = _merge(usable, new_excl, key)
         kept = excl + ignored  # the file keeps the entries mix leaves out (drive-relative)
         if picked:
-            new = _cut(new, new_excl)
+            new = _cut(new, new_excl, key)
             cache.save_json(written, kept)
             rep["exclusions"] = len(excl)
         else:
@@ -506,7 +493,7 @@ def repair(
             cache.save_json(written, kept)
             new = cache.load_json(out) or []
             rep["exclusions"], rep["content_qa"] = len(excl), report["content_qa"]
-        _bound(new, _near(new, excl))
+        _bound(new, _near(new, excl, key))
     _bound(new, bounds)
     if manifest is not None and not picked:
         est = _fit_budget(new, manifest)
@@ -560,12 +547,13 @@ def _make_parent(out: Path) -> None:
         raise NotADirectoryError(f"Cannot write {out}: {blocker} is not a folder") from None
 
 
-def _cut(segs: list[dict[str, Any]], excl: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _cut(
+    segs: list[dict[str, Any]], excl: list[dict[str, Any]], key: Callable[[str], str]
+) -> list[dict[str, Any]]:
     """Hand-picked ``segs`` cut to their longest part outside ``excl`` (global or of the
     segment's category) when that is at least :func:`cutpoint.mix.min_length`, else
     dropped; nothing is refilled."""
     out = []
-    key = functools.cache(source_key)  # resolving reads the disk: once per source
     for s in segs:
         holes = [
             (float(e["start"]), float(e["end"]))
