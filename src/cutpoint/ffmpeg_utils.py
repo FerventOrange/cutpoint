@@ -16,6 +16,7 @@ The executables are located (in order) via the ``CUTPOINT_FFMPEG`` /
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -784,20 +785,106 @@ def atomic_output(out: Path) -> Iterator[Path]:
 # in; on any failure the originals are put back. A hard kill leaves the journal, so the next
 # run's :func:`recover_swap` finishes the job: journal present, put the originals back;
 # backup without journal, the new set was complete, drop the backup.
+# Both folders sit on the parent's file system, so :func:`staged_dir` refuses a ``dst`` that
+# is a drive root (no parent to hold them), a mount point or a bind mount before any export.
 
 _SWAP_JOURNAL = ".cutpoint-swap.json"
+_SWAP_PROBE = ".cutpoint-swap-probe"
+_SWAP_FIX = "use --out with a folder on that drive"
+
+
+def _root_error(dst: Path) -> ValueError:
+    return ValueError(f"{dst} is a drive root; {_SWAP_FIX}")
 
 
 def staging_path(dst: Path) -> Path:
-    """Hidden staging folder of ``dst``: ``.<name>.cutpoint-tmp`` next to it."""
-    dst = dst.resolve()  # "." and ".." have no usable name; a symlink's target is the folder
-    return dst.with_name(f".{dst.name}.cutpoint-tmp")
+    """Hidden staging folder of ``dst``: ``.<name>.cutpoint-tmp`` next to it.
+
+    Raises:
+        ValueError: If ``dst`` is a drive root.
+    """
+    res = dst.resolve()  # "." and ".." have no usable name; a symlink's target is the folder
+    if not res.name:
+        raise _root_error(dst)
+    return res.with_name(f".{res.name}.cutpoint-tmp")
 
 
 def backup_path(dst: Path) -> Path:
-    """Hidden folder :func:`swap_in` moves the replaced originals of ``dst`` to."""
-    dst = dst.resolve()
-    return dst.with_name(f".{dst.name}.cutpoint-bak")
+    """Hidden folder :func:`swap_in` moves the replaced originals of ``dst`` to.
+
+    Raises:
+        ValueError: If ``dst`` is a drive root.
+    """
+    res = dst.resolve()
+    if not res.name:
+        raise _root_error(dst)
+    return res.with_name(f".{res.name}.cutpoint-bak")
+
+
+def check_swap_target(dst: Path) -> None:
+    """Fail before any export if ``dst`` cannot be replaced through :func:`staged_dir`.
+
+    Raises:
+        ValueError: If ``dst`` is a drive root or a mount point, saying what to do.
+    """
+    res = dst.resolve()
+    if not res.name:
+        raise _root_error(dst)
+    if res.is_mount():
+        raise ValueError(
+            f"{dst} is a mount point, so the clips cannot be swapped in safely; {_SWAP_FIX}"
+        )
+
+
+def can_stage(dst: Path) -> bool:
+    """True if :func:`staged_dir` would accept ``dst``: False for a drive root, a mount point
+    or a bind mount (the checks of :func:`check_swap_target` and :func:`_check_rename`).
+
+    Call :func:`recover_swap` first; the probe's staging folder is removed again.
+    """
+    try:
+        check_swap_target(dst)
+    except ValueError:
+        return False
+    if not dst.exists():
+        return True
+    tmp = staging_path(dst)
+    tmp.mkdir(exist_ok=True)
+    try:
+        _check_rename(tmp, dst)
+    except ValueError:
+        return False
+    finally:
+        with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
+            shutil.rmtree(tmp)
+    return True
+
+
+def _check_rename(tmp: Path, dst: Path) -> None:
+    """Fail if a file cannot be renamed from ``tmp`` into ``dst``.
+
+    Catches what :func:`check_swap_target` cannot see: a Linux bind mount of a folder on the
+    same device, where ``is_mount()`` is False but a rename across it fails with EXDEV.
+    Any other error is left to :func:`swap_in`, which retries and names the file.
+
+    Raises:
+        ValueError: If ``dst`` is on another file system than ``tmp``.
+    """
+    probe = tmp / _SWAP_PROBE
+    try:
+        probe.touch()
+        probe.rename(dst / _SWAP_PROBE)  # a leftover there is removed by recover_swap
+    except OSError as err:
+        with suppress(OSError):  # else swap_in would move it into dst
+            probe.unlink(missing_ok=True)
+        if err.errno == errno.EXDEV:
+            raise ValueError(
+                f"{dst} is on another file system than its parent folder (a mount point or "
+                f"bind mount), so the clips cannot be swapped in safely; {_SWAP_FIX}"
+            ) from err
+        return
+    with suppress(OSError):
+        (dst / _SWAP_PROBE).unlink()
 
 
 def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
@@ -846,6 +933,10 @@ def recover_swap(dst: Path) -> None:
         PermissionError: If a leftover backup or staging folder cannot be removed (a file
             in it is still open); the next swap could not start with it in place.
     """
+    if not dst.resolve().name:  # a drive root: nothing is ever staged next to it
+        return
+    with suppress(OSError):  # a probe of _check_rename left by a hard kill
+        (dst / _SWAP_PROBE).unlink(missing_ok=True)
     bak = backup_path(dst)
     if bak.exists():
         path = bak / _SWAP_JOURNAL
@@ -909,11 +1000,18 @@ def staged_dir(dst: Path) -> Iterator[Path]:
 
     The caller moves the result in with :func:`swap_in`. Call :func:`recover_swap` first
     when ``dst`` is checked for existing files before this.
+
+    Raises:
+        ValueError: If ``dst`` is a drive root, a mount point or a bind mount, before the
+            caller exports anything (see :func:`check_swap_target`).
     """
+    check_swap_target(dst)
     recover_swap(dst)
     tmp = staging_path(dst)
     tmp.mkdir()
     try:
+        if dst.exists():
+            _check_rename(tmp, dst)
         yield tmp
     except BaseException:
         # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.

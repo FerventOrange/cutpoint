@@ -302,9 +302,7 @@ def extend_clips(
         else clips_dir.with_name(f"{clips_dir.name}_speech")
     )
     in_place = out_dir.resolve() == clips_dir.resolve()
-    # A drive root has no name, so no staging or backup folder next to it.
-    rootless = not out_dir.resolve().name
-    if not in_place and not rootless:
+    if not in_place:
         recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
     non_empty = out_dir.exists() and any(out_dir.iterdir())
     if (in_place or non_empty) and not force:
@@ -312,18 +310,10 @@ def extend_clips(
             f"{out_dir} {'is the input folder' if in_place else 'is not empty'};"
             " use --force to overwrite"
         )
-    if non_empty and not in_place:
-        if rootless:
-            raise ValueError(f"--out {out_dir} is a drive root; export into a folder on it")
-        # The staging and backup folders go next to it, on the parent's file system.
-        if out_dir.resolve().is_mount():
-            raise ValueError(
-                f"{out_dir} is a mount point; --force can only replace it safely in a folder "
-                "on that drive"
-            )
     # Into a non-empty folder (in place or --out with --force), the clips are exported into a
     # hidden staging folder and swapped in only when all succeeded, so a failed or cancelled
-    # run leaves the folder as it was. A run that fails before writing anything leaves no
+    # run leaves the folder as it was; staged_dir refuses a drive root, a mount point or a
+    # bind mount before any export. A run that fails before writing anything leaves no
     # empty folder behind.
     staged = in_place or non_empty
     with staged_dir(out_dir) if staged else output_dir(out_dir) as work:
