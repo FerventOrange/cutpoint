@@ -734,6 +734,41 @@ def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
     assert res.status_code == 500 and "Access is denied" in res.json()["detail"]
 
 
+@pytest.mark.parametrize("bad", ["..", ".", ".hidden"])
+def test_exports_json_cannot_point_outside_the_project(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    reveal = f"/api/projects/{pid}/reveal"
+    # Manifests and videos where a "." / ".." / dot-leading name would resolve to.
+    for folder in (p, p.parent, p / ".hidden"):
+        folder.mkdir(exist_ok=True)
+        cache.save_json(folder / "manifest.json", {"clips": []})
+    (p / ".hidden.mp4").write_bytes(b"x")
+
+    def write(*items: dict[str, str]) -> None:
+        cache.save_json(p / "ui" / "exports.json", {"exports": list(items)})
+
+    write({"dir": bad})
+    assert client.post(reveal, params={"target": "clips"}).status_code == 404
+
+    # A bad final is ignored; the good export stays usable.
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    write({"dir": "clips_ui_1", "final": ".hidden.mp4" if bad == ".hidden" else bad})
+    assert client.post(reveal, params={"target": "outputs"}).status_code == 404
+
+    # A bad entry after a legitimate one is dropped, not used as the current export.
+    (p / "final.mp4").write_bytes(b"x")
+    write({"dir": "clips_ui_1", "final": "final.mp4"}, {"dir": bad})
+    assert client.post(reveal, params={"target": "clips"}).json() == {"path": str(p / "clips_ui_1")}
+    assert client.post(reveal, params={"target": "outputs"}).json() == {"path": str(p)}
+    assert opened == [p / "clips_ui_1", p]
+
+
 def test_folder_opener_runs_the_platform_tool_without_a_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1226,7 +1261,7 @@ def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
     [
         ("{oops", "Expecting property name"),
         ('{"video_encoder": "bogus"}', "video_encoder is 'bogus'"),
-        ('{"source_remap_exclude": 5}', "int"),  # TypeError, not a 500
+        ('{"source_remap_exclude": 5}', "int"),  # wrong type: ValueError -> 409, not a 500
         ('{"projects_dir": 5}', "int"),
     ],
 )
@@ -1296,3 +1331,23 @@ def test_settings_show_a_wrongly_typed_projects_folder_so_it_can_be_replaced(
     assert res.status_code == 200 and res.json()["projects_dir"] == "5"
     assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
     assert json.loads(cfg.read_text("utf-8")) == {"projects_dir": str(tmp_path)}
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{oops", '{"base": "funny", "weights": [1, 2]}', '{"base": "funny", "weights": {"x": null}}'],
+    ids=["invalid-json", "weights-not-object", "weight-null"],
+)
+def test_a_broken_learned_style_is_left_out_with_a_warning(
+    client: TestClient, home: Path, caplog: pytest.LogCaptureFixture, content: str
+) -> None:
+    styles = home / "styles"
+    styles.mkdir(parents=True)
+    (styles / "broken.json").write_text(content, encoding="utf-8")
+    (styles / "mine.json").write_text('{"base": "funny"}', encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        res = client.get("/api/session")
+    assert res.status_code == 200
+    listed = res.json()["styles"]
+    assert "mine" in listed and "funny" in listed and "broken" not in listed
+    assert str(styles / "broken.json") in caplog.text

@@ -1038,13 +1038,15 @@ def main(argv: list[str] | None = None) -> int:
         FFmpegError,
         OSError,
         ValueError,
+        TypeError,
         RuntimeError,
         ImportError,
         subprocess.CalledProcessError,
         shutil.Error,
         urllib.error.URLError,
     ) as err:
-        # FileNotFoundError / FileExistsError are OSErrors; URLError too.
+        # FileNotFoundError / FileExistsError are OSErrors; URLError too. TypeError is a fallback
+        # for a wrongly typed setting that get_config does not check.
         logger.debug("command failed", exc_info=True)
         logger.error("%s", err)
         return 1

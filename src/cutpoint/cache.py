@@ -51,10 +51,10 @@ def source_dir(src: Path, offset: float = 0.0) -> Path:
 
 
 def load_json(path: Path) -> Any | None:
-    """Load JSON from ``path`` or return None if missing/corrupt."""
+    """Load JSON from ``path`` or return None if missing/corrupt (a UTF-8 BOM is allowed)."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):  # ValueError: JSONDecodeError, UnicodeDecodeError
         return None
 
 
