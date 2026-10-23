@@ -104,8 +104,19 @@ const setEmpty = (el, ...kids) => {
 // ---------- projects ----------
 
 async function loadProjects() {
-  S.projects = (await api('/api/projects')).projects;
   const sel = $('#projectSelect');
+  try {
+    S.projects = (await api('/api/projects')).projects;
+  } catch (e) {
+    // e.g. an invalid config.json (409): creating a project would fail the same way until a load
+    // succeeds. Settings stays usable to fix it.
+    S.projects = [];
+    sel.replaceChildren(h('option', { value: '', text: 'Projects unavailable', disabled: true }));
+    sel.value = '';
+    $('#newBtn').disabled = true;
+    throw e;
+  }
+  $('#newBtn').disabled = false;
   sel.replaceChildren(
     ...(S.projects.length
       ? S.projects.map((p) => h('option', { value: p.id, text: p.name }))
@@ -1464,8 +1475,12 @@ async function main() {
     S.canReveal = session.can_reveal === true;
     S.canPick = session.can_pick === true;
     openDialog = initNewProject(async (created) => {
-      await loadProjects();
-      await openProject(created.id);
+      try {
+        await loadProjects();
+        await openProject(created.id);
+      } catch (e) {
+        fail(e); // the dialog has closed: report on the banner
+      }
     }, S.canPick);
   } catch (e) {
     fail(e);
