@@ -145,6 +145,7 @@ def test_segments_file_with_a_bom_loads_and_utf16_is_not_valid_json(
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1
     assert f"{f} is not valid JSON" in errors[0].getMessage()
+    assert "not UTF-8 text" in errors[0].getMessage()
 
 
 @pytest.mark.parametrize("source", ["D:\\Videos\\a.insv", "D:/Videos/a.insv"])

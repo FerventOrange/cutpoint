@@ -289,7 +289,9 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
         raise FileNotFoundError(f"Segments file not found: {path}")
     try:
         items = json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
-    except ValueError as err:  # JSONDecodeError; UnicodeDecodeError (UTF-16 from > / Out-File)
+    except UnicodeDecodeError:  # e.g. UTF-16 from > / Out-File
+        raise ValueError(f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8)") from None
+    except ValueError as err:  # JSONDecodeError
         raise ValueError(f"{path} is not valid JSON: {err}") from None
     if not isinstance(items, list) or not items:
         raise ValueError(f"{path} must contain a non-empty JSON list")
