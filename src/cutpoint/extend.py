@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import boundaries, cache
-from cutpoint.config import remap_source
+from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import OutputFormat, export_clip_checked
 from cutpoint.ffmpeg_utils import (
@@ -302,14 +302,31 @@ def extend_clips(
         else clips_dir.with_name(f"{clips_dir.name}_speech")
     )
     in_place = out_dir.resolve() == clips_dir.resolve()
-    if (in_place or (out_dir.exists() and any(out_dir.iterdir()))) and not force:
+    # A drive root has no name, so no staging or backup folder next to it.
+    rootless = not out_dir.resolve().name
+    if not in_place and not rootless:
+        recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
+    non_empty = out_dir.exists() and any(out_dir.iterdir())
+    if (in_place or non_empty) and not force:
         raise FileExistsError(
             f"{out_dir} {'is the input folder' if in_place else 'is not empty'};"
             " use --force to overwrite"
         )
-    # In place, the clips are exported into a hidden staging folder and swapped in only when
-    # all succeeded. A run that fails before writing anything leaves no empty folder behind.
-    with staged_dir(out_dir) if in_place else output_dir(out_dir) as work:
+    if non_empty and not in_place:
+        if rootless:
+            raise ValueError(f"--out {out_dir} is a drive root; export into a folder on it")
+        # The staging and backup folders go next to it, on the parent's file system.
+        if out_dir.resolve().is_mount():
+            raise ValueError(
+                f"{out_dir} is a mount point; --force can only replace it safely in a folder "
+                "on that drive"
+            )
+    # Into a non-empty folder (in place or --out with --force), the clips are exported into a
+    # hidden staging folder and swapped in only when all succeeded, so a failed or cancelled
+    # run leaves the folder as it was. A run that fails before writing anything leaves no
+    # empty folder behind.
+    staged = in_place or non_empty
+    with staged_dir(out_dir) if staged else output_dir(out_dir) as work:
         by_file = {e["file"]: e for e in manifest.get("clips", [])}
         fmt_d = manifest.get("format") or {}
         fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
@@ -468,8 +485,25 @@ def extend_clips(
                 "clips": entries,
             },
         )
-        if in_place:  # all or nothing; clips skipped for lack of an entry stay
-            swap_in(work, clips_dir)
+        if staged:  # all or nothing; only the clips written here and manifest.json are replaced
+            swap_in(work, out_dir)
+    if staged and not in_place:
+        written = {path_key(e["file"]) for e in entries}
+        kept = sorted(
+            (
+                p
+                for p in out_dir.glob("*.mp4")
+                if not p.name.startswith(".") and path_key(p.name) not in written
+            ),
+            key=natural_key,
+        )
+        if kept:
+            logger.warning(
+                "Kept %s in %s: not re-exported by this run, so not in the new manifest.json; "
+                "assemble includes them, so move them out if they are not part of the edit",
+                ", ".join(p.name for p in kept),
+                out_dir,
+            )
     logger.info(
         "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",
         len(entries),

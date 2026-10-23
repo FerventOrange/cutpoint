@@ -755,7 +755,8 @@ def atomic_output(out: Path) -> Iterator[Path]:
         raise
 
 
-# --- all-or-nothing folder replace (``clips --force``, ``extend --out <clips_dir> --force``)
+# --- all-or-nothing folder replace (``clips --force``, ``extend --out <clips_dir> --force``,
+# ``extend --out DIR --force`` into a non-empty DIR)
 #
 # A run exports into the hidden staging folder ``.<name>.cutpoint-tmp`` next to the output,
 # then :func:`swap_in` moves the originals it replaces into ``.<name>.cutpoint-bak`` and the

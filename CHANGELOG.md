@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `extend <clips_dir> --out DIR --force` into a non-empty `DIR` now exports into a hidden staging
+  folder and swaps the result in only when every clip succeeded (#147), like in-place `extend` and
+  `clips --force`: a failure or Ctrl+C leaves `DIR` unchanged. Files in `DIR` that the run does not
+  write stay, and a WARNING names the `.mp4` clips left there that were not re-exported (`assemble`
+  includes them). Same-named files are overwritten as before. `--out` pointing at a non-empty drive root or mount point with `--force` is refused before any export.
 - `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
   no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
   config file and the error, the banner shows it, and Settings stays usable to fix the projects
