@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cache, mix
+from cutpoint import cache, ffmpeg_utils, mix
 from cutpoint.mix import Cand, apply_exclusions
 from cutpoint.pano import cli as pano_cli
 from cutpoint.pano.repair import _fit_budget, plan, repair
@@ -275,6 +275,30 @@ def test_out_spelled_differently_from_segments_still_gets_a_backup(
     repair(project, segs, qa, out=Path("scratch/../mix_segments.json"), sheet=False)
     assert cache.load_json(segs) != before
     assert cache.load_json(project / "mix_segments.bak.json") == before
+
+
+def test_backup_survives_a_transiently_locked_rename(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os  # noqa: PLC0415
+
+    real = os.replace
+    calls = []
+
+    def flaky(src: str, dst: str) -> None:
+        if Path(dst).name.endswith(".bak.json") and not calls:
+            calls.append(1)
+            raise PermissionError("locked")  # a virus scanner holds the new file for a moment
+        real(src, dst)
+
+    segs = project / "mix_segments.json"
+    before = segs.read_bytes()
+    qa = _qa(project, [["occluded"]] * 9 + [[]] * 9)
+    monkeypatch.setattr(cache.os, "replace", flaky)
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+    repair(project, segs, qa, sheet=False)
+    assert calls == [1]
+    assert (project / "mix_segments.bak.json").read_bytes() == before
 
 
 def test_backup_failing_midway_leaves_no_partial_file_and_the_segments_intact(

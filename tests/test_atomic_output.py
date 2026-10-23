@@ -1009,3 +1009,115 @@ def test_lock_hint_mentions_read_only_only_for_access_denied(
     with pytest.raises(PermissionError, match="open in another program") as exc:
         ffmpeg_utils.retry_locked(op, tmp_path / "x.json", "write")
     assert ("read-only" in str(exc.value)) is read_only_hint
+
+
+# --- staged_dir(direct_if_empty) and retry_locked(locked=) ---
+
+
+def test_failed_direct_export_into_an_empty_mount_keeps_the_clips_already_written(
+    monkeypatch, home, caplog
+):
+    """#160: an empty folder that cannot be swapped is exported into directly; a failing
+    export leaves the earlier clips (nothing was replaced) and no staging folder or warning."""
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    shutil.rmtree(clips_dir)
+    clips_dir.mkdir()
+    real_rename = Path.rename
+
+    def rename(self, target):
+        if self.name == ffmpeg_utils._SWAP_PROBE:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    calls = []
+
+    def export(src, info, start, end, out, *_a, **_kw):
+        calls.append(out)
+        if len(calls) == 2:
+            raise FFmpegError("ffmpeg failed (exit 1)")
+        out.write_bytes(b"new")
+
+    monkeypatch.setattr(clips, "export_clip_checked", export)
+    assert cli.main(_argv("clips", project)) == 1
+    assert len(calls) == 2
+    assert [p.name for p in clips_dir.glob("001_*")] != []
+    assert not (project / ".clips.cutpoint-tmp").exists()
+    assert "Could not remove" not in caplog.text
+
+
+def test_retry_locked_predicate_picks_what_is_retried_and_reraises_the_last_unchanged(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+    errs = [_locked(32) for _ in range(ffmpeg_utils.REPLACE_ATTEMPTS)]
+    calls = []
+
+    def op():
+        calls.append(1)
+        raise errs[len(calls) - 1]
+
+    with pytest.raises(OSError) as exc:
+        ffmpeg_utils.retry_locked(op, tmp_path / "x", "remove", lambda e: True)
+    assert exc.value is errs[-1]  # not reworded, though winerror 32 would be
+    assert len(calls) == ffmpeg_utils.REPLACE_ATTEMPTS
+
+
+def test_retry_locked_predicate_rejecting_an_error_does_not_retry_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+    calls = []
+
+    def op():
+        calls.append(1)
+        raise PermissionError(13, "denied")  # retried by default, rejected by this predicate
+
+    with pytest.raises(PermissionError, match="denied"):
+        ffmpeg_utils.retry_locked(op, tmp_path / "x", "remove", lambda e: False)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (
+            _locked(32),
+            "Cannot remove {p}, why: it is open in another program (a player, an editor or a "
+            "virus scanner). Close it, or delete the folder, and re-run. (The process cannot "
+            "access the file)",
+        ),
+        (
+            OSError(errno.EIO, "Input/output error"),
+            "Cannot remove {p}, why: Input/output error. Delete the folder and re-run.",
+        ),
+    ],
+)
+def test_remove_leftover_messages(monkeypatch, tmp_path, error, message):
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
+
+    def rmtree(*_a, **_kw):
+        raise error
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree)
+    expected_type = PermissionError if isinstance(error, PermissionError) else OSError
+    with pytest.raises(expected_type) as exc:
+        ffmpeg_utils._remove_leftover(tmp_path, "why")
+    assert str(exc.value) == message.format(p=tmp_path)
+    assert exc.value.__cause__ is error
+
+
+def test_extract_audio_leaves_no_temp_wav_when_it_fails_or_is_interrupted_midway(
+    monkeypatch, tmp_path
+):
+    dst = tmp_path / "cache" / "a.wav"
+    for exc in (FFmpegError("ffmpeg failed"), KeyboardInterrupt()):
+
+        def run(args, *_a, exc=exc, **_kw):
+            Path(args[-1]).write_bytes(b"partial")  # ffmpeg had started writing
+            raise exc
+
+        monkeypatch.setattr(ffmpeg_utils, "run_progress", run)
+        with pytest.raises(type(exc)) as err:
+            ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, _info(tmp_path / "a.mp4"))
+        assert err.value is exc
+        assert list(dst.parent.iterdir()) == []

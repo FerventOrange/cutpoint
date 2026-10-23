@@ -51,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failed or interrupted audio extraction (`analyze`, `assemble --captions`) now removes its
+  temporary `.tmp.wav` file in the cache folder or next to the final video. On Windows, removal
+  after Ctrl+C is best effort, like the `.part` files: ffmpeg may still hold the file.
+- On Windows, `cutpoint 360 repair` retries writing its segments backup (`<name>.bak.json`) for a
+  moment while another program (a virus scanner) briefly holds the file, like its other writes.
 - `cutpoint ui` project metadata edge cases (#184): a preview proxy is not built or moved into
   place when `ui/proxy` became a link outside the project while queued or encoding (its temporary
   file is removed); one unreadable entry in the projects folder is skipped instead of failing the

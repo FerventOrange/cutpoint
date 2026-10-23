@@ -96,7 +96,16 @@ def match_mode(tmp: Path, target: Path) -> None:
 
 
 def save_json(path: Path, data: Any, *, indent: int = 2) -> None:
-    """Atomically write ``data`` as JSON (unique temp file, then rename).
+    """Atomically write ``data`` as JSON, UTF-8, with the platform's line endings (see
+    :func:`save_bytes`)."""
+    text = json.dumps(data, indent=indent, ensure_ascii=False)
+    # strings escape their newlines, so these are only the indent's line breaks
+    save_bytes(path, text.replace("\n", os.linesep).encode("utf-8"))
+
+
+def save_bytes(path: Path, data: bytes) -> None:
+    """Atomically write ``data`` (unique temp file, then rename), with the mode a plain
+    write would give (:func:`match_mode`).
 
     On Windows the rename fails with PermissionError while another process has
     ``path`` open; it is retried a few times with a short backoff
@@ -109,27 +118,17 @@ def save_json(path: Path, data: Any, *, indent: int = 2) -> None:
     """
     from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415 - it imports this module
 
-    text = json.dumps(data, indent=indent, ensure_ascii=False)
-    tmp: Path | None = None
-    replaced = False
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(name)
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            dir=path.parent,
-            prefix=path.name + ".",
-            suffix=".tmp",
-            delete=False,
-            encoding="utf-8",
-        ) as f:
-            tmp = Path(f.name)
-            f.write(text)
+        tmp.write_bytes(data)
         match_mode(tmp, path)
         # os.replace, not Path.replace: tests patch cache.os.replace
         retry_locked(partial(os.replace, tmp, path), path, "replace")
-        replaced = True
-    finally:
-        if tmp is not None and not replaced:
-            tmp.unlink(missing_ok=True)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def params_hash(params: dict[str, Any], length: int = 10) -> str:

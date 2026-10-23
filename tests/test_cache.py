@@ -65,6 +65,20 @@ def test_save_json_roundtrip_and_no_tmp(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["d.json"]
 
 
+def test_save_json_bytes_are_utf8_with_the_platform_line_endings(tmp_path):
+    target = tmp_path / "d.json"
+    cache.save_json(target, {"name": "Café", "n": [1]})
+    text = json.dumps({"name": "Café", "n": [1]}, indent=2, ensure_ascii=False)
+    assert target.read_bytes() == text.replace("\n", os.linesep).encode("utf-8")
+
+
+def test_save_bytes_writes_the_bytes_as_given(tmp_path):
+    target = tmp_path / "d.bin"
+    cache.save_bytes(target, b"a\r\nb\n")
+    assert target.read_bytes() == b"a\r\nb\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["d.bin"]
+
+
 def test_load_json_missing_or_corrupt(tmp_path):
     assert cache.load_json(tmp_path / "nope.json") is None
     bad = tmp_path / "bad.json"
