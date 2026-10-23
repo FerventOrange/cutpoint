@@ -1226,7 +1226,7 @@ def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
     [
         ("{oops", "Expecting property name"),
         ('{"video_encoder": "bogus"}', "video_encoder is 'bogus'"),
-        ('{"source_remap_exclude": 5}', "int"),  # TypeError, not a 500
+        ('{"source_remap_exclude": 5}', "int"),  # wrong type: ValueError -> 409, not a 500
         ('{"projects_dir": 5}', "int"),
     ],
 )
