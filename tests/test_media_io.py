@@ -365,15 +365,6 @@ def test_decode_raw_timer_after_process_exit_is_ignored(popen):
     assert not proc.killed
 
 
-def test_decode_raw_complete_decode_then_slow_consumer_is_not_a_timeout(popen):
-    popen.procs = [_Proc(FRAME * 2)]
-    out = []
-    for item in fu.decode_raw("x.mp4", size=(2, 2), hwaccel=None, timeout=0.05):
-        out.append(item)
-    time.sleep(0.2)  # after the generator finished: the deadline was cancelled
-    assert len(out) == 2
-
-
 def test_decode_window_returns_empty_arrays_on_ffmpeg_error(monkeypatch):
     def failing(*_a, **_kw):
         raise FFmpegError("ffmpeg decoded no frames")

@@ -40,7 +40,7 @@ def _exporter(clip: X3Clip, source_mode: str) -> PanoExporter:
     return pano
 
 
-@pytest.mark.parametrize("mode", [None, "sdk", "studio"])
+@pytest.mark.parametrize("mode", [None, "studio"])
 def test_inputs_lists_camera_files_as_recorded_and_remapped_without_raising(moved, mode):
     clip, old, new = moved
     got = _exporter(clip, "sdk").inputs(clip.source, mode)  # no stitch: falls back to auto

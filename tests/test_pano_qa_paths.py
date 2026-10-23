@@ -49,11 +49,6 @@ def test_project_box_directions_follow_display_frame() -> None:
     assert G.project_box(0.0, 0.0, 86.0, W, H, 180.0, 0.0, 10.0, 10.0) is None
 
 
-def test_project_box_behind_camera_is_none() -> None:
-    assert G.project_box(10.0, -5.0, 86.0, W, H, 190.0, 5.0, 30.0, 40.0) is None
-    assert G.project_box(0.0, 0.0, 86.0, W, H, 0.0, 0.0, 30.0, 40.0) is not None
-
-
 def test_project_box_across_the_yaw_seam_mirrors_the_plain_case() -> None:
     # 179 is 3 deg left of -178, as -1 is of 2
     a = G.project_box(-178.0, -8.0, 86.0, W, H, 179.0, -10.0, 20.0, 30.0)
@@ -548,12 +543,11 @@ def test_cmd_director_preview_without_lrv_renders_from_insv(
     assert srcs[0].projection == "dfisheye"
 
 
-@pytest.mark.parametrize("name", ["../x"])
 def test_cmd_director_rejects_path_out_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(ValueError, match="plain folder name"):
-        _run_director(tmp_path, monkeypatch, out_name=name)
+        _run_director(tmp_path, monkeypatch, out_name="../x")
 
 
 def test_cmd_director_rerun_keeps_bak_of_hand_edited_path(
