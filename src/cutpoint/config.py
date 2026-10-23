@@ -103,10 +103,11 @@ def load_config_data(path: Path | None = None) -> dict:
     if not path.is_file():
         return {}
     try:
-        # utf-8-sig: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a BOM. ValueError covers
-        # JSONDecodeError and UnicodeDecodeError (e.g. a UTF-16 file).
+        # utf-8-sig: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a BOM.
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as err:
+    except UnicodeDecodeError:  # e.g. a UTF-16 file
+        raise ValueError(f"Invalid config file {path}: not UTF-8 text (save it as UTF-8)") from None
+    except (OSError, ValueError) as err:  # ValueError: JSONDecodeError
         raise ValueError(f"Invalid config file {path}: {err}") from None
     if not isinstance(data, dict):
         raise ValueError(f"Invalid config file {path}: expected a JSON object")

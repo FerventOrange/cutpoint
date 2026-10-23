@@ -182,9 +182,17 @@ def test_wrongly_typed_config_value_is_one_error_not_a_traceback(home, caplog, k
     assert all(r.exc_info is None for r in caplog.records)
 
 
-def test_config_with_utf8_bom_loads(home):
-    """#140 follow-up: PowerShell 5.1 writes config.json with a BOM; it must still load."""
+def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):
+    """#140 follow-up: a BOM (PowerShell 5.1) loads; UTF-16 is one error saying to save as UTF-8."""
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.json").write_bytes(b'\xef\xbb\xbf{"player_tags": ["Me"]}')
+    path = home / "config.json"
+    path.write_bytes(b'\xef\xbb\xbf{"player_tags": ["Me"]}')
     config.get_config.cache_clear()
     assert config.player_tags() == ("Me",)
+    path.write_text('{"player_tags": ["Me"]}', encoding="utf-16")
+    config.get_config.cache_clear()
+    assert cli.main(["paths"]) == 1
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert str(path) in errors[0].getMessage()
+    assert "not UTF-8 text" in errors[0].getMessage()
