@@ -42,8 +42,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sys
 from collections.abc import Callable, Sequence
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from cutpoint import cache, mix, ski
@@ -63,6 +64,7 @@ CRASH_LEAD_S = 2.0  # a crash keeps this much approach: blocked spans are cut ba
 BLOCKED = ("occluded", "too_close", "dark")
 EPS = 0.05  # s: rendered this far past the segment is lead-in / tail
 REACH_S = 15.0  # s: the most a lead-in / tail adds (event tails reach 14 s)
+_WINDOWS = sys.platform == "win32"  # D:foo is drive-relative only here (elsewhere a file name)
 
 
 def _dt(frames: list[dict[str, Any]], dur: float) -> float:
@@ -136,7 +138,7 @@ def _match(
             seg = by_id.get(e.get("id"))
             ok = (
                 seg is not None
-                and ski._key(seg["source"]) == ski._key(e["source"])
+                and _identity(seg["source"]) == _identity(e["source"])
                 and seg["start"] - 0.01 <= e["pick"]["start"]
                 and e["original_end"] <= seg["end"] + 0.01
             )
@@ -159,6 +161,21 @@ def _match(
             continue
         out.append((clip, seg, first))
     return out, skipped
+
+
+def _identity(source: str) -> str:
+    """An absolute ``source`` as a lookup key, normalised as ``cutpoint clips`` records it
+    (:func:`~cutpoint.clips.segment_source`: resolved, so through a symlink too)."""
+    return path_key(segment_source(source, Path.cwd())[0])
+
+
+def _drive_relative(source: str) -> str:
+    """The drive of a drive-relative Windows ``source`` (``D:foo``, relative to drive D's
+    current folder) on Windows, else ``""``."""
+    if not _WINDOWS:
+        return ""
+    p = PureWindowsPath(source)
+    return p.drive if p.drive and not p.root else ""
 
 
 def plan(
@@ -241,6 +258,19 @@ def _merge(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[st
 
     seen = {key(e) for e in old}
     return old + [e for e in new if key(e) not in seen]
+
+
+def _absolute(excl: list[dict[str, Any]], base: Path) -> list[dict[str, Any]]:
+    """``excl`` with relative sources taken against ``base`` (the folder of the
+    ``mix_exclude.json`` holding them), as hand-picked sources are now recorded. Repair
+    used to write a hand-picked source as spelt in the segments file (relative to its
+    folder, next to which the file is written by default), and it never matched."""
+    return [
+        e
+        if is_absolute_any(str(e["source"])) or _drive_relative(str(e["source"]))
+        else {**e, "source": segment_source(str(e["source"]), base)[0]}
+        for e in excl
+    ]
 
 
 def _bound(segs: list[dict[str, Any]], bounds: dict[str, dict[str, float]]) -> None:
@@ -380,13 +410,15 @@ def repair(
         rendered lengths; both stay ``None`` for a file not written by ``cutpoint mix``.
 
     Raises:
-        IsADirectoryError: If ``segments_file`` or ``qa_file`` is a folder.
+        IsADirectoryError: If ``segments_file``, ``qa_file`` or ``out`` is a folder.
         FileNotFoundError: If ``segments_file`` or ``qa_file`` is missing.
     """
     if segments_file.is_dir():
         raise IsADirectoryError(f"{segments_file} is a folder, not a segments file")
     if not segments_file.is_file():
         raise FileNotFoundError(f"Segments file not found: {segments_file}")
+    if out is not None and out.is_dir():
+        raise IsADirectoryError(f"{out} is a folder, not a segments file")
     old = _read_json(segments_file)
     if not isinstance(old, list) or not old:
         raise ValueError(f"{segments_file}: not a segments list")
@@ -396,9 +428,17 @@ def repair(
             if not isinstance(s, dict) or "source" not in s:
                 raise KeyError("source")
             start, end = float(s["start"]), float(s["end"])
-            sources.append(segment_source(s["source"], segments_file.parent)[0])
+            drive = _drive_relative(s["source"])
+            if not drive:
+                sources.append(segment_source(s["source"], segments_file.parent)[0])
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"{segments_file}: segment {i} needs source, start and end") from None
+        if drive:  # joined to the folder, Windows takes it against drive's current folder
+            raise ValueError(
+                f"{segments_file}: segment {i} source {s['source']!r} is relative to the "
+                f"current folder of drive {drive}; give the full path ({drive}\\...) or one "
+                "relative to the segments file"
+            )
         old[i - 1] = {**s, "start": start, "end": end}  # "100.0" too, as clips.load_segments
     # run_mix writes id and category on every segment; anything else is the user's picks
     picked = not all("id" in s and s.get("category") for s in old)
@@ -446,9 +486,10 @@ def repair(
     }
     new = [dict(s) for s in old]
     if new_excl:
+        _make_parent(out)
         written = out.with_name(mix.EXCLUDE_FILE)
         have = written if written.is_file() else project / mix.EXCLUDE_FILE
-        excl = _merge(mix.load_exclusions(have), new_excl)
+        excl = _merge(_absolute(mix.load_exclusions(have), have.parent), new_excl)
         if picked:
             new = _cut(new, new_excl)
             cache.save_json(written, excl)
@@ -514,9 +555,23 @@ def repair(
             }
             for s in new
         ]
+    _make_parent(out)
     cache.save_json(out, new)
     rep["written"] = True
     return rep
+
+
+def _make_parent(out: Path) -> None:
+    """Create the folder of ``out`` (``--out`` into a new folder).
+
+    Raises:
+        NotADirectoryError: If a file is in the way.
+    """
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        blocker = next((p for p in out.parents if p.exists()), out.parent)  # the file in the way
+        raise NotADirectoryError(f"Cannot write {out}: {blocker} is not a folder") from None
 
 
 def _cut(segs: list[dict[str, Any]], excl: list[dict[str, Any]]) -> list[dict[str, Any]]:

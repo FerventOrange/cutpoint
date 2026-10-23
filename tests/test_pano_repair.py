@@ -492,3 +492,101 @@ def test_windows_source_matches_a_manifest_written_on_windows(tmp_path: Path, sp
     assert 102.5 <= out[1]["start"] < out[1]["end"] == 108.0
     excl = cache.load_json(tmp_path / mix.EXCLUDE_FILE)
     assert any(e["source"] == "D:\\Videos\\a.insv" for e in excl)
+
+
+def test_repair_out_into_a_new_folder_creates_it(tmp_path: Path) -> None:
+    """Issue #151: ``--out`` into a folder that does not exist creates it (exclusions too)."""
+    qa = _handwritten(tmp_path, False)
+    out = tmp_path / "new" / "deep" / "x.json"
+    rep = repair(tmp_path, tmp_path / "final_segments.json", qa, out=out, sheet=False)
+    assert rep["written"] is True
+    assert out.is_file() and (out.parent / mix.EXCLUDE_FILE).is_file()
+
+
+def test_repair_takes_a_relative_exclusion_against_its_own_folder(tmp_path: Path) -> None:
+    """Issue #151: a relative source in ``mix_exclude.json`` (written before #132) is taken
+    against that file's folder, so it matches and is written back absolute."""
+    qa = _handwritten(tmp_path, False)
+    cache.save_json(
+        tmp_path / mix.EXCLUDE_FILE, [{"source": "raw/b.insv", "start": 49.0, "end": 54.0}]
+    )
+    repair(tmp_path, tmp_path / "final_segments.json", qa, sheet=False)
+    sources = {e["source"] for e in cache.load_json(tmp_path / mix.EXCLUDE_FILE)}
+    assert str(tmp_path / "raw" / "b.insv") in sources
+    assert "raw/b.insv" not in sources
+
+
+def test_repair_matches_a_source_reached_through_a_symlinked_folder(tmp_path: Path) -> None:
+    """Issue #151: the manifest stores the resolved source; a ``cutpoint mix`` segment spelt
+    through a symlink still matches it instead of being skipped as stale."""
+    real = tmp_path / "real"
+    real.mkdir()
+    try:
+        (tmp_path / "link").symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    src = tmp_path / "clips"
+    src.mkdir()
+    (src / "001_x.mp4").write_bytes(b"")
+    seg = {"id": "m1", "category": "run", "start": 10.0, "end": 20.0}
+    seg["source"] = str(tmp_path / "link" / "a.insv")
+    entry = {"file": "001_x.mp4", "id": "m1", "source": str(real / "a.insv"), "start": 9.0}
+    cache.save_json(
+        src / "manifest.json",
+        {"clips": [entry | {"end": 21.0, "pick": {"start": 10.0}, "original_end": 20.0}]},
+    )
+    qa = {"clips": [{"file": "001_x.mp4", "duration": 12.0, "frames": []}]}
+    assert plan([seg], qa, src)[2] == 0  # skipped
+
+
+@pytest.mark.parametrize("case", ["out-is-folder", "out-parent-is-file", "drive-relative"])
+def test_cli_repair_reports_bad_out_and_drive_relative_source_as_one_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    """Issue #151: ``--out`` that is a folder, or inside a file, and (on Windows) a
+    drive-relative source are one ERROR line, exit 1, before anything is written."""
+    import cutpoint.pano.repair as repair_mod  # noqa: PLC0415
+    from cutpoint.cli import main  # noqa: PLC0415
+
+    qa = _handwritten(tmp_path, True)
+    segs = tmp_path / "final_segments.json"
+    argv = ["360", "repair", str(tmp_path), "--qa", str(qa)]
+    if case == "out-is-folder":
+        (tmp_path / "d").mkdir()
+        argv += ["--segments", str(segs), "--out", str(tmp_path / "d")]
+        phrase = f"{tmp_path / 'd'} is a folder, not a segments file"
+    elif case == "out-parent-is-file":
+        (tmp_path / "f").write_text("x", encoding="utf-8")
+        out = tmp_path / "f" / "o.json"
+        argv += ["--segments", str(segs), "--out", str(out)]
+        phrase = f"Cannot write {out}: "
+    else:
+        monkeypatch.setattr(repair_mod, "_WINDOWS", True)
+        segs = tmp_path / "drive.json"
+        cache.save_json(segs, [{"source": "D:foo.insv", "start": 1, "end": 3}])
+        argv += ["--segments", str(segs)]
+        phrase = "segment 1 source 'D:foo.insv'"
+    assert main(argv) == 1
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and phrase in errors[0]
+    if case == "out-parent-is-file":
+        assert errors[0].endswith(" is not a folder")
+    if case == "drive-relative":
+        assert str(segs) in errors[0] and "drive D:" in errors[0]
+    assert not (tmp_path / "final_segments.bak.json").exists()
+
+
+def test_drive_relative_source_is_a_plain_file_name_off_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #151: ``D:foo.insv`` is only drive-relative on Windows; elsewhere it is a name."""
+    import cutpoint.pano.repair as repair_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(repair_mod, "_WINDOWS", False)
+    qa = _handwritten(tmp_path, True)
+    segs = tmp_path / "drive.json"
+    cache.save_json(segs, [{"source": "D:foo.insv", "start": 1, "end": 3}])
+    repair(tmp_path, segs, qa, sheet=False)  # no ValueError
