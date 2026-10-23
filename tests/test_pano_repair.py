@@ -425,26 +425,23 @@ def test_relative_source_is_matched_to_the_manifest_and_written_back_as_spelt(
     assert any(e["source"] == str(tmp_path / "raw" / "a.insv") for e in excl)
 
 
-def test_repair_names_the_file_and_both_segments_of_a_duplicate_id(tmp_path: Path) -> None:
-    qa = _handwritten(tmp_path, True, ids=True)
-    segs = tmp_path / "final_segments.json"
-    data = cache.load_json(segs)
-    data[2]["id"] = "h001"
-    cache.save_json(segs, data)
-    with pytest.raises(ValueError, match=r"final_segments\.json: Segments 1 and 3 .*'h001'"):
-        repair(tmp_path, segs, qa, sheet=False)
-
-
-@pytest.mark.parametrize("bad_id", [["x"], {"k": "v"}], ids=["list", "dict"])
-def test_repair_names_the_file_and_segment_of_a_non_scalar_id(
-    tmp_path: Path, bad_id: object
+@pytest.mark.parametrize(
+    ("index", "bad_id", "match"),
+    [
+        (2, "h001", r"final_segments\.json: Segments 1 and 3 .*'h001'"),
+        (1, ["x"], r"final_segments\.json: Segment 2: id must be"),
+    ],
+    ids=["duplicate", "non-scalar"],
+)
+def test_repair_names_the_file_and_segment_of_a_bad_id(
+    tmp_path: Path, index: int, bad_id: object, match: str
 ) -> None:
     qa = _handwritten(tmp_path, True, ids=True)
     segs = tmp_path / "final_segments.json"
     data = cache.load_json(segs)
-    data[1]["id"] = bad_id
+    data[index]["id"] = bad_id
     cache.save_json(segs, data)
-    with pytest.raises(ValueError, match=r"final_segments\.json: Segment 2: id must be"):
+    with pytest.raises(ValueError, match=match):
         repair(tmp_path, segs, qa, sheet=False)
 
 
