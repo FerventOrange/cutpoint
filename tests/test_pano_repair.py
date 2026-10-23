@@ -297,13 +297,17 @@ def test_backup_failing_midway_leaves_no_partial_file_and_the_segments_intact(
     assert not [p for p in project.iterdir() if "bak" in p.name or p.name.endswith(".tmp")]
 
 
-def _handwritten(project: Path, previews: bool, ids: bool = False) -> Path:
+def _handwritten(project: Path, previews: bool, ids: bool = False, relative: bool = False) -> Path:
     """A category-less ``final_segments.json`` (user ids ``hNNN`` if ``ids``; intro clean, jump
     occluded for 3 s at the start then low-info for 2 s, short 3 s with its middle too close) plus the QA of its previews or rendered clips."""
+    # Real absolute paths (a "/v/a.insv" is not absolute on Windows); with ``relative`` the file
+    # spells them "raw/a.insv" (next to it) while the rendered manifest records the absolute one.
+    a, b = str(project / "raw" / "a.insv"), str(project / "raw" / "b.insv")
+    spell = {a: "raw/a.insv", b: "raw/b.insv"} if relative else {a: a, b: b}
     segs = [
-        {"source": "/v/a.insv", "start": 10.0, "end": 20.0, "label": "intro"},
-        {"source": "/v/a.insv", "start": 100.0, "end": 108.0, "label": "jump"},
-        {"source": "/v/b.insv", "start": 50.0, "end": 53.0, "label": "short"},
+        {"source": spell[a], "start": 10.0, "end": 20.0, "label": "intro"},
+        {"source": spell[a], "start": 100.0, "end": 108.0, "label": "jump"},
+        {"source": spell[b], "start": 50.0, "end": 53.0, "label": "short"},
     ]
     if ids:
         for i, s in enumerate(segs, 1):
@@ -324,7 +328,7 @@ def _handwritten(project: Path, previews: bool, ids: bool = False) -> Path:
                 {
                     "file": f"{stem}.mp4",
                     "id": segs[i - 1].get("id", f"s{i:03d}"),
-                    "source": s["source"],
+                    "source": str(project / s["source"]) if relative else s["source"],
                     "duration": dur,
                 }
                 | {"start": s["start"] - lead, "end": s["end"] + lead}
@@ -373,15 +377,15 @@ def test_handwritten_segments_are_trimmed_or_dropped(
     assert out[1]["start"] < 103.0 + 1.0
     excl = cache.load_json(tmp_path / mix.EXCLUDE_FILE)
     assert excl
-    assert all(e["end"] <= 103.1 or e["source"] == "/v/b.insv" for e in excl)
+    assert all(e["end"] <= 103.1 or e["source"] == str(tmp_path / "raw" / "b.insv") for e in excl)
     assert (tmp_path / "final_segments.bak.json").is_file()
 
 
 @pytest.mark.parametrize(
     "segment",
     [
-        pytest.param({"source": "/v/a.insv", "end": 3.0}, id="missing-start"),
-        pytest.param({"source": "/v/a.insv", "start": "x", "end": 3.0}, id="non-numeric-start"),
+        pytest.param({"source": "raw/a.insv", "end": 3.0}, id="missing-start"),
+        pytest.param({"source": "raw/a.insv", "start": "x", "end": 3.0}, id="non-numeric-start"),
     ],
 )
 def test_cli_repair_reports_a_malformed_segment_as_an_error(
@@ -395,3 +399,96 @@ def test_cli_repair_reports_a_malformed_segment_as_an_error(
     code = main(["360", "repair", str(tmp_path), "--segments", str(bad), "--qa", str(qa)])
     assert code == 1
     assert f"{bad}: segment 1 needs source, start and end" in caplog.text
+
+
+def test_relative_source_is_matched_to_the_manifest_and_written_back_as_spelt(
+    tmp_path: Path,
+) -> None:
+    """Issue #119: a hand-written "raw/a.insv" (next to the file) is the manifest's resolved
+    absolute source: the occluded clip is trimmed (not skipped as stale), the exclusion has
+    the absolute source and the file keeps its own spelling."""
+    qa = _handwritten(tmp_path, False, relative=True)
+    segs = tmp_path / "final_segments.json"
+    rep = repair(tmp_path, segs, qa, sheet=False)
+    assert rep["written"] is True
+    out = cache.load_json(segs)
+    assert [s["label"] for s in out] == ["intro", "jump"]
+    assert [s["source"] for s in out] == ["raw/a.insv", "raw/a.insv"]
+    assert 102.5 <= out[1]["start"] < out[1]["end"] == 108.0
+    assert all("id" not in s for s in out)
+    excl = cache.load_json(tmp_path / mix.EXCLUDE_FILE)
+    assert excl
+    assert {e["source"] for e in excl} <= {
+        str(tmp_path / "raw" / "a.insv"),
+        str(tmp_path / "raw" / "b.insv"),
+    }
+    assert any(e["source"] == str(tmp_path / "raw" / "a.insv") for e in excl)
+
+
+def test_repair_names_the_file_and_both_segments_of_a_duplicate_id(tmp_path: Path) -> None:
+    qa = _handwritten(tmp_path, True, ids=True)
+    segs = tmp_path / "final_segments.json"
+    data = cache.load_json(segs)
+    data[2]["id"] = "h001"
+    cache.save_json(segs, data)
+    with pytest.raises(ValueError, match=r"final_segments\.json: Segments 1 and 3 .*'h001'"):
+        repair(tmp_path, segs, qa, sheet=False)
+
+
+@pytest.mark.parametrize("bad_id", [["x"], {"k": "v"}], ids=["list", "dict"])
+def test_repair_names_the_file_and_segment_of_a_non_scalar_id(
+    tmp_path: Path, bad_id: object
+) -> None:
+    qa = _handwritten(tmp_path, True, ids=True)
+    segs = tmp_path / "final_segments.json"
+    data = cache.load_json(segs)
+    data[1]["id"] = bad_id
+    cache.save_json(segs, data)
+    with pytest.raises(ValueError, match=r"final_segments\.json: Segment 2: id must be"):
+        repair(tmp_path, segs, qa, sheet=False)
+
+
+def test_relative_source_written_to_another_folder_keeps_its_identity(tmp_path: Path) -> None:
+    """Review F1: a "raw/a.insv" is relative to the segments file, so an output in a different
+    folder must carry a source that still resolves to the same file."""
+    qa = _handwritten(tmp_path, False, relative=True)
+    segs = tmp_path / "final_segments.json"
+    out_path = tmp_path / "sub" / "x.json"
+    out_path.parent.mkdir()
+    rep = repair(tmp_path, segs, qa, out=out_path, sheet=False)
+    assert rep["written"] is True
+    out = cache.load_json(out_path)
+    assert [s["label"] for s in out] == ["intro", "jump"]
+    assert {(out_path.parent / s["source"]).resolve() for s in out} == {
+        (tmp_path / "raw" / "a.insv").resolve()
+    }
+
+
+@pytest.mark.parametrize(
+    "spelt", ["D:\\Videos\\a.insv", "D:/Videos/a.insv"], ids=["backslash", "forward-slash"]
+)
+def test_windows_source_matches_a_manifest_written_on_windows(tmp_path: Path, spelt: str) -> None:
+    """Review F3: a hand-written ``D:\\Videos\\a.insv`` with a manifest written on Windows
+    (it records that string) is matched on any OS, not joined to the segments folder and
+    skipped as stale: the occluded clip is trimmed, the file keeps its spelling."""
+    qa = _handwritten(tmp_path, False)
+    segs = tmp_path / "final_segments.json"
+    a = str(tmp_path / "raw" / "a.insv")
+    data = cache.load_json(segs)
+    for s in data:
+        s["source"] = spelt if s["source"] == a else s["source"]
+    cache.save_json(segs, data)
+    manifest = tmp_path / "clips_final" / "manifest.json"
+    entries = cache.load_json(manifest)
+    for e in entries["clips"]:
+        e["source"] = "D:\\Videos\\a.insv" if e["source"] == a else e["source"]
+    cache.save_json(manifest, entries)
+    rep = repair(tmp_path, segs, qa, sheet=False)
+    assert rep["skipped"] == 0
+    assert rep["written"] is True
+    out = cache.load_json(segs)
+    assert [s["label"] for s in out] == ["intro", "jump"]
+    assert [s["source"] for s in out] == [spelt, spelt]
+    assert 102.5 <= out[1]["start"] < out[1]["end"] == 108.0
+    excl = cache.load_json(tmp_path / mix.EXCLUDE_FILE)
+    assert any(e["source"] == "D:\\Videos\\a.insv" for e in excl)

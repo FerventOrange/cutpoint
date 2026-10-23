@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clips --segments` with a missing file now says what a relative path was resolved against (#127).
+- Segment ids: a generated `sNNN` id that a user id already uses gets a letter suffix (`s002b`),
+  and duplicate user ids are an error naming both segments, in `clips` and `360 repair` (#120).
+- `360 repair` resolves relative `source` paths in a hand-written segments file against the
+  file's folder, as `clips` does, and writes exclusions with the absolute path. A written-back
+  segments file in the same folder keeps the spelling you used; with `--out` in another folder
+  the path is absolute (#119).
 - Exports no longer leave a broken file under the real name (#109). Clips, `extend`, 360 renders
   and `final.mp4` are written to a hidden `.<name>.part.mp4` and renamed when complete. A failed
   or cancelled export (Ctrl+C, or the UI cancel on Linux and macOS) leaves no partial file and

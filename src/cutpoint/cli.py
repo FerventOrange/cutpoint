@@ -86,6 +86,15 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
 def _cmd_clips(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.project)
     segments = resolve_project_path(a.segments, bare_names=False) if a.segments else None
+    if segments is not None and not a.mix and not segments.is_file():
+        given = Path(a.segments)
+        if given.is_absolute() or given.drive:
+            where = ""
+        elif segments == given:
+            where = f" (relative to the current folder {Path.cwd()})"
+        else:  # projects/<name>/...
+            where = f" ({a.segments}, relative to the projects folder {projects_dir()})"
+        raise FileNotFoundError(f"Segments file not found: {segments}{where}")
     order = a.order
     if a.mix:  # cutpoint mix's selection, played in arc order
         segments, order = project / "mix_segments.json", a.order or "arc"
