@@ -95,6 +95,7 @@ FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 500  # stills kept per project; the least recently used go first
+SOFT_STOP_S = 5.0  # Windows cancel: wait this long after CTRL_BREAK before taskkill /F
 
 
 def bad(detail: str, status: int = 400) -> HTTPException:
@@ -123,8 +124,21 @@ def spawn(args: list[str]) -> subprocess.Popen[str]:
 
 
 def kill_tree(proc: subprocess.Popen[str]) -> None:
-    """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, then KILL."""
+    """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, then KILL.
+
+    Windows: CTRL_BREAK_EVENT to the job's process group first (cutpoint turns it into
+    KeyboardInterrupt: partial files removed, exit 130), then ``taskkill /T /F``. The event
+    needs a console shared with the job; without one (pythonw) only the hard kill runs.
+    GenerateConsoleCtrlEvent is called directly: when it fails, ``os.kill`` falls through to
+    TerminateProcess on the leader alone, which orphans its ffmpeg before taskkill can see it.
+    """
     if os.name == "nt":
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+        if k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(SOFT_STOP_S)
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
         )
@@ -1325,7 +1339,10 @@ def create_app(port: int) -> FastAPI:
 
         elif action == "assemble":
             exp = current_export(p)
-            if exp is None or not any((p / exp["dir"]).glob("*.mp4")):
+            # Dot files are temporaries (a killed export's ``.NNN_x.part.mp4``), not clips.
+            if exp is None or not any(
+                not f.name.startswith(".") for f in (p / exp["dir"]).glob("*.mp4")
+            ):
                 raise bad("export clips before assembling")
             transition = body.get("transition", "cut")
             if transition not in ("cut", "fade"):
