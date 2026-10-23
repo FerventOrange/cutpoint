@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -130,10 +131,31 @@ def _project(home: Path) -> tuple[Path, Path]:
 
 @pytest.mark.parametrize("preexisting", [False, True], ids=["created", "preexisting"])
 def test_failed_export_leaves_no_new_empty_clips_folder(monkeypatch, home, preexisting):
+    """#109: a failed fresh run leaves no folder it created and no partial clips (#160: the
+    clips are still staged, so the first clip is not left behind when the second fails)."""
     project, seg = _project(home)
     out = project / "clips"
     if preexisting:
         out.mkdir()
+
+    def leftovers() -> list[str]:
+        return sorted(p.name for p in out.iterdir()) if out.exists() else []
+
+    def second_clip_fails(src, info, start, end, dest, *_a, **_kw):
+        if dest.name.startswith("001"):
+            dest.write_bytes(b"new")
+        else:
+            raise FFmpegError("ffmpeg failed (exit 1)")
+
+    segments = json.loads(seg.read_text(encoding="utf-8"))
+    seg.write_text(json.dumps([*segments, {**segments[0], "label": "b"}]), encoding="utf-8")
+    monkeypatch.setattr(clips, "probe", _info)
+    monkeypatch.setattr(clips, "export_clip_checked", second_clip_fails)
+    with pytest.raises(FFmpegError):
+        clips.export_clips(project, segments=seg)
+    assert leftovers() == []
+    assert out.is_dir() is preexisting
+    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == []
 
     def broken_probe(_path):
         raise FFmpegError("ffprobe failed")
@@ -454,6 +476,98 @@ def test_extend_out_force_refuses_a_mount_point_or_root_before_exporting(
     assert kind in caplog.text
     assert _snapshot(out) == before
     assert sorted(p.name for p in project.iterdir()) == ["clips", "out", "seg.json", "src.mp4"]
+
+
+@pytest.mark.parametrize("cmd", ["clips", "extend"])
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("drive root", "is a drive root"),
+        ("mount point", "is a mount point"),
+        ("bind mount", "is on another file system than its parent folder"),
+    ],
+)
+def test_clips_force_and_in_place_extend_refuse_a_root_or_mount_before_exporting(
+    monkeypatch, home, caplog, cmd, kind, message
+):
+    """#160: the staging folder sits next to the clips folder, so a drive root (no name, crashed
+    with "empty name"), a mount point or a bind mount (a rename into it fails with EXDEV) is
+    refused with one ERROR line before any export, and nothing is left behind."""
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    (clips_dir / "notes.txt").write_text("keep me", encoding="utf-8")
+    before = _snapshot(clips_dir)
+    real_is_mount, real_resolve, real_rename = Path.is_mount, Path.resolve, Path.rename
+    if kind == "mount point":
+        monkeypatch.setattr(
+            Path,
+            "is_mount",
+            lambda self: self.resolve() == clips_dir.resolve() or real_is_mount(self),
+        )
+    elif kind == "drive root":
+        # A nameless path stands in for the root; nothing is ever opened at the real root.
+        monkeypatch.setattr(
+            Path,
+            "resolve",
+            lambda self, *a, **kw: (
+                Path(clips_dir.anchor) if self == clips_dir else real_resolve(self, *a, **kw)
+            ),
+        )
+    else:
+
+        def rename(self, target):
+            if self.name == ffmpeg_utils._SWAP_PROBE:
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", rename)
+
+    def export(*_a, **_kw):
+        raise AssertionError("exported before the folder was refused")
+
+    monkeypatch.setattr(clips, "export_clip_checked", export)
+    monkeypatch.setattr(extend, "export_clip_checked", export)
+    assert cli.main(_argv(cmd, project, "--force")) == 1
+    assert message in _errors(caplog)
+    assert _snapshot(clips_dir) == before
+    _only_original_folders(project)
+
+
+@pytest.mark.parametrize("kind", ["drive root", "mount point", "bind mount"])
+def test_clips_into_an_empty_root_or_mount_point_exports_directly(monkeypatch, home, caplog, kind):
+    """#160: nothing is replaced in an empty folder, so no staging folder is needed and
+    ``clips`` without --force works there as before."""
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    shutil.rmtree(clips_dir)
+    clips_dir.mkdir()
+    real_is_mount, real_resolve = Path.is_mount, Path.resolve
+    if kind == "mount point":
+        monkeypatch.setattr(
+            Path,
+            "is_mount",
+            lambda self: self.resolve() == clips_dir.resolve() or real_is_mount(self),
+        )
+    elif kind == "bind mount":
+        real_rename = Path.rename
+
+        def rename(self, target):
+            if self.name == ffmpeg_utils._SWAP_PROBE:
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", rename)
+    else:
+        monkeypatch.setattr(
+            Path,
+            "resolve",
+            lambda self, *a, **kw: (
+                Path(clips_dir.anchor) if self == clips_dir else real_resolve(self, *a, **kw)
+            ),
+        )
+    assert cli.main(_argv("clips", project)) == 0
+    assert all((clips_dir / n).read_bytes() == b"new" for n in NAMES)
+    _only_original_folders(project)
 
 
 def _killed_mid_swap(monkeypatch, project: Path, cmd: str, n: int) -> dict[str, bytes]:

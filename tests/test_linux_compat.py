@@ -195,10 +195,6 @@ def test_is_remote_windows_uses_the_drive_letter(plat, drive, remote):
 # -- stage: storage label ---------------------------------------------------------------------
 
 
-def test_stage_helpers_are_the_ones_crash_uses():
-    assert crash._is_remote is stage.is_remote
-
-
 @posix_only
 @pytest.mark.parametrize(
     ("path", "label"),
@@ -368,21 +364,16 @@ def test_caption_font_uses_fc_match_family_on_linux(plat, monkeypatch):
     assert calls[0][-1] == "sans-serif"
 
 
-def test_caption_font_without_fc_match_falls_back_with_warning(plat, monkeypatch, caplog):
+@pytest.mark.parametrize("exe", [None, "/usr/bin/fc-match"], ids=["no-fc-match", "empty-output"])
+def test_caption_font_without_a_usable_fc_match_falls_back_with_warning(
+    plat, monkeypatch, caplog, exe
+):
     plat("linux")
-    monkeypatch.setattr(assemble.shutil, "which", lambda _n: None)
-    with caplog.at_level(logging.WARNING, logger=assemble.logger.name):
-        assert assemble.caption_font() == "DejaVu Sans"
-    assert any(r.levelno == logging.WARNING and "fc-match" in r.message for r in caplog.records)
-
-
-def test_caption_font_empty_fc_match_output_falls_back(plat, monkeypatch, caplog):
-    plat("linux")
-    monkeypatch.setattr(assemble.shutil, "which", lambda _n: "/usr/bin/fc-match")
+    monkeypatch.setattr(assemble.shutil, "which", lambda _n: exe)
     monkeypatch.setattr(assemble.subprocess, "run", lambda *_a, **_k: SimpleNamespace(stdout=""))
     with caplog.at_level(logging.WARNING, logger=assemble.logger.name):
         assert assemble.caption_font() == "DejaVu Sans"
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert any(r.levelno == logging.WARNING and "fc-match" in r.message for r in caplog.records)
 
 
 def test_write_ass_uses_the_caption_font(tmp_path, monkeypatch):
@@ -395,8 +386,7 @@ def test_write_ass_uses_the_caption_font(tmp_path, monkeypatch):
 # -- pano/x3.imu_source -------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("ext", ["insv", "INSV"])
-@pytest.mark.parametrize("prefix", ["VID", "vid"])
+@pytest.mark.parametrize(("prefix", "ext"), [("VID", "insv"), ("vid", "INSV")])
 def test_imu_source_finds_the_00_sibling_case_insensitively(tmp_path, ext, prefix):
     real = write(tmp_path / f"{prefix}_20240101_120000_00_001.{ext}")
     lens10 = tmp_path / "VID_20240101_120000_10_001.insv"

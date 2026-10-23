@@ -61,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with their hex form, e.g. `-1073741819 (0xC0000005)`, like ffmpeg's. A failed `360 director`
   run, or a failed 360 `clips`/`extend` run, no longer leaves an empty `pano_paths/<name>` folder
   it created (#146).
+- `360 repair --out` into a folder that does not exist creates it instead of failing with
+  FileNotFoundError; a file in the way is an error naming it, and `--out` pointing at an existing
+  folder says `<path> is a folder, not a segments file` before any work. Exclusions written by
+  earlier versions with a relative source (as spelt in a hand-written segments file) are taken
+  against the folder of the `mix_exclude.json` holding them, and written back absolute with new
+  ones. A `cutpoint mix` segment whose source goes through a symlink now matches its rendered clip
+  instead of being skipped as stale. On Windows, a drive-relative source (`D:clip.insv`) is an
+  error asking for the full path (#151).
 - Windows: Ctrl+Break (or `CTRL_BREAK_EVENT` sent to the process group) now stops a command
   like Ctrl+C: partial files are removed and the exit code is 130 instead of `0xC000013A`.
   AGENTS.md notes which ways of stopping Cutpoint on Windows give 130 and which end it without
@@ -101,6 +109,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clips --force`: a failure or Ctrl+C leaves `DIR` unchanged. Files in `DIR` that the run does not
   write stay, and a WARNING names the `.mp4` clips left there that were not re-exported (`assemble`
   includes them). Same-named files are overwritten as before. `--out` pointing at a non-empty drive root or mount point with `--force` is refused before any export.
+- `clips --force` into a non-empty folder and in-place `extend`, where the clips folder is a
+  drive root, a mount point or a Linux bind mount, are now refused before any export with one
+  ERROR line naming the folder and saying to use `--out` with a folder on that drive. A drive
+  root crashed with an "empty name" error, and a mount point or bind mount failed with a
+  permission error or a cross-device rollback only after every clip was exported.
+  `extend --out DIR --force` into such a non-empty `DIR` gives the same message, and a
+  bind-mounted `DIR` is caught too. `clips` into an empty drive root or mount point exports
+  straight into it, as `extend --out` does (a failed run there may keep the finished clips);
+  every other folder is still staged (#160).
 - A `source_remap` key spelled the Windows way (for example `D:\Videos` -> `/mnt/d/Videos`) now
   applies on Linux and macOS (#149). It matches Windows-style sources case-insensitively with
   either slash, so a Windows project (or `clips --segments` with `D:\` sources) opened on Linux
