@@ -377,12 +377,14 @@ def extend_clips(
         names = [p.name for p in plans]
         check_not_sources(out_dir, names, source_keys(reads))
         # Like clips --force: never replace a clip or .srt that out_dir's manifest.json does
-        # not list; the .srt files it lists for the clips written here are replaced.
+        # not list; the .srt files it lists for the clips written here are replaced, and those
+        # of clips deleted during review removed (the new manifest.json no longer lists them).
         listed = srt.listed_files(out_dir)
         srt.check_unlisted_clips(out_dir, names, listed)
         subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed))
         ours = {path_key(n) for n in listed or []}
         old_srts = [s for n in names if path_key(s := Path(n).with_suffix(".srt").name) in ours]
+        old_srts += srt.orphaned_srts(out_dir)
         entries = []
         reused = 0
         for plan in plans:
@@ -484,7 +486,7 @@ def extend_clips(
                 "clips": entries,
             },
         )
-        if staged:  # all or nothing; only the clips written here and manifest.json are replaced
+        if staged:  # all or nothing; only the clips and .srt files named above are replaced
             swap_in(work, out_dir, old_srts)
     if staged and not in_place:
         written = {path_key(e["file"]) for e in entries}

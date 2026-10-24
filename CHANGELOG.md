@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frame (shorter fades are raised to one frame, INFO). `0` or a fade under one frame used to
   cut the video short: two 2 s clips at 25 fps gave 2.04 s of video. A clip too short for a
   one-frame crossfade makes the join use cuts (WARNING) (#238).
+- `extend` into a folder with a manifest (in place, or `--out` with `--force`) removes the `.srt`
+  the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
+  new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
+  replaced or removed by a later run. An `.srt` the old manifest does not list stays (#239).
 - `extend` writes each re-exported clip's `.srt` for its new range and records it in the
   manifest (`srt`), in place and with `--out`. In place, the `.srt` the old manifest lists is
   replaced (removed when the source has no cached transcript), so no subtitles with the old

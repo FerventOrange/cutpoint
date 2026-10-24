@@ -146,6 +146,38 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
     assert any(r.levelname == "WARNING" and "001_a.srt" in r.message for r in caplog.records)
 
 
+def test_orphaned_srts_are_the_listed_srts_of_clips_no_longer_in_the_folder(tmp_path):
+    out = tmp_path / "clips"
+    out.mkdir()
+    for n in ("001_a.mp4", "001_a.srt", "002_b.srt", "003_c.srt", "mine.srt"):
+        (out / n).write_text("x", encoding="utf-8")
+    entries = [
+        {"file": "001_a.mp4", "srt": "001_a.srt"},  # still there: kept
+        {"file": "002_b.mp4", "srt": "002_b.srt"},  # deleted during review
+        {"file": "003_c.mp4"},  # deleted, no .srt listed: 003_c.srt is not cutpoint's
+        {"file": "004_d.mp4", "srt": "../x.srt"},  # never a path out of the folder
+    ]
+    (out / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
+    assert srt.orphaned_srts(out) == ["002_b.srt"]
+    (out / "manifest.json").unlink()
+    assert srt.orphaned_srts(out) == []  # no manifest: nothing is cutpoint's
+
+
+def test_clips_force_removes_the_listed_srt_of_a_clip_deleted_during_review(home, monkeypatch):
+    """Like an in-place extend (#239): the new manifest no longer lists it."""
+    project, seg, out = _project(home)
+    monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
+    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    clips.export_clips(project, segments=seg)
+    (out / "001_a.mp4").unlink()  # rejected during review
+    pick = json.loads(seg.read_text(encoding="utf-8"))[0] | {"label": "b"}
+    seg.write_text(json.dumps([pick]), encoding="utf-8")
+    clips.export_clips(project, segments=seg, force=True)
+    assert not (out / "001_a.srt").exists()
+    assert (out / "001_b.srt").is_file()
+
+
 def test_renamed_clip_uses_its_own_srt_in_the_final(tmp_path):
     """Reordering by renaming (005_x -> 001b_x) loses the manifest entry: the clip's own
     .srt, renamed with it, is placed at its offset and clipped to it."""
