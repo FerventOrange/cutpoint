@@ -44,11 +44,11 @@ def test_concat_copy_trims_rebuilt_audio_to_the_cut_duration(tmp_path, monkeypat
     assert "atrim=end=2.000000[a1]" in graph
 
 
-def _clip(out: Path, video: float, audio: float) -> None:
-    """A 64x48, 25 fps clip of ``video`` s whose audio runs ``audio`` s."""
+def _clip(out: Path, video: float, audio: float, rate: str = "25") -> None:
+    """A 64x48 clip (``rate`` fps, default 25) of ``video`` s whose audio runs ``audio`` s."""
     subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
-         f"testsrc=size=64x48:rate=25:duration={video}", "-f", "lavfi", "-i",
+         f"testsrc=size=64x48:rate={rate}:duration={video}", "-f", "lavfi", "-i",
          f"sine=frequency=440:sample_rate=48000:duration={audio}", "-c:v", "libx264",
          "-pix_fmt", "yuv420p", "-c:a", "aac", str(out)],
         check=True,
@@ -90,16 +90,49 @@ def test_assemble_cut_audio_stays_on_video_when_clip_audio_runs_on(tmp_path, mon
 @pytest.mark.parametrize(
     ("fade", "fps", "expected"),
     [
-        (0.25, Fraction(25), 0.25),
+        (0.24, Fraction(25), 0.24),
         (0.02, Fraction(25), 0.04),  # under one frame: raised to one
         (0.0, Fraction(25), 0.04),
-        (0.01, Fraction(30000, 1001), 0.034),  # 33.37 ms rounded up to the millisecond
-        (5.0, Fraction(25), 0.9),  # at most 45% of the shortest clip
+        (0.01, Fraction(30000, 1001), 1001 / 30000),  # one whole frame, not a rounded ms
+        (5.0, Fraction(25), 0.88),  # at most 45% of the shortest clip (0.9 s): 22 frames
     ],
 )
 def test_crossfade_duration_is_at_least_one_frame(fade, fps, expected):
     infos = [replace(_info(2.0, 2.0), fps=fps), replace(_info(3.0, 3.0), fps=fps)]
     assert assemble.crossfade_duration(infos, fade) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("fade", "fps", "frames"),
+    [
+        (0.5, Fraction(30), 15),
+        (0.25, Fraction(25), 6),  # 6.25 frames
+        (0.26, Fraction(25), 7),  # 6.5 frames: rounded half up
+        (0.25, Fraction(30000, 1001), 7),  # 7.49 frames
+        (0.5, Fraction(30000, 1001), 15),  # 14.99 frames
+        (0.3, Fraction(24), 7),  # 7.2 frames
+        (0.33, Fraction(24), 8),  # 7.92 frames
+    ],
+)
+def test_crossfade_duration_is_whole_frames(fade, fps, frames):
+    """xfade works in whole frames; acrossfade and final.srt must use the same fade (#243)."""
+    infos = [replace(_info(2.0, 2.0), fps=fps), replace(_info(3.0, 3.0), fps=fps)]
+    used = assemble.crossfade_duration(infos, fade)
+    assert used == pytest.approx(frames / float(fps), abs=1e-12)
+
+
+def test_crossfade_passes_one_fade_to_xfade_acrossfade_and_offsets(tmp_path, monkeypatch):
+    graphs = []
+    monkeypatch.setattr(assemble, "_encode", lambda _files, graph, _out: graphs.append(graph))
+    fps = Fraction(24)
+    infos = [replace(_info(2.0, 2.0), fps=fps) for _ in range(3)]
+    files = [tmp_path / f"00{i}_x.mp4" for i in range(3)]
+    fade = assemble.crossfade_duration(infos, 1 / 3)  # 8 frames: 0.333333..., not 0.333
+    assert assemble.crossfade(files, infos, tmp_path / "final.mp4", fade) == fade
+    lead = [o - 1 / 48 for o in assemble.clip_offsets(infos, fade)]  # half a frame early
+    assert f"xfade=transition=fade:duration={fade:.6f}:offset={lead[1]:.6f}[vx1]" in graphs[0]
+    assert f"duration={fade:.6f}:offset={lead[2]:.6f}[v]" in graphs[0]
+    assert graphs[0].count(f"acrossfade=d={fade:.6f}[") == 2
 
 
 def test_crossfade_duration_is_zero_without_room_for_one_frame():
@@ -120,7 +153,7 @@ def test_fade_join_without_room_falls_back_to_cuts(tmp_path, monkeypatch, caplog
 
 
 @needs_ffmpeg
-@pytest.mark.parametrize(("fade", "video"), [(0.02, 3.96), (0.25, 3.75)])
+@pytest.mark.parametrize(("fade", "video"), [(0.02, 3.96), (0.25, 3.76)])
 def test_assemble_short_crossfade_keeps_the_whole_video(tmp_path, monkeypatch, fade, video):
     """xfade shorter than a frame (0.02 s at 25 fps) cut the video to 2.04 s of 3.96 s."""
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
@@ -133,3 +166,24 @@ def test_assemble_short_crossfade_keeps_the_whole_video(tmp_path, monkeypatch, f
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(video, abs=0.04)
     assert durations["audio"] == pytest.approx(video, abs=0.04)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("rate", ["30000/1001", "24"])
+def test_assemble_crossfade_length_matches_the_srt_offsets(tmp_path, monkeypatch, rate):
+    """0.25 s is 7.49 frames at 29.97 fps and 6 at 24: xfade used whole frames while
+    acrossfade and final.srt used 0.25 s, so the video ran longer than both (#243)."""
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    for name in ("001_a.mp4", "002_b.mp4", "003_c.mp4"):
+        _clip(clips_dir / name, 2.0, 2.0, rate)
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
+    infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
+    fade = assemble.crossfade_duration(infos, 0.25)
+    predicted = assemble.clip_offsets(infos, fade)[-1] + infos[-1].vduration
+    frame = 1 / float(Fraction(rate))
+    durations = _stream_durations(final)
+    assert durations["video"] == pytest.approx(predicted, abs=frame / 2)
+    assert durations["audio"] == pytest.approx(predicted, abs=frame)

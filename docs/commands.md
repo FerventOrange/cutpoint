@@ -363,9 +363,10 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
 
 - `cut` (default) uses stream copy when all clips share parameters, else normalises and
   re-encodes. `fade` crossfades video and audio over `--fade-dur` seconds (default 0.25,
-  greater than 0): at least one frame (shorter fades are raised to one frame) and at most 45%
-  of the shortest clip. When one frame is more than that, the clips are joined with cuts
-  (WARNING).
+  greater than 0), rounded to whole frames of the first clip's frame rate (0.25 s at 29.97 fps
+  is 7 frames, 0.2336 s) so video, audio and `final.srt` use the same length: at least one
+  frame and at most 45% of the shortest clip. When one frame is more than that, the clips are
+  joined with cuts (WARNING).
 - `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
   then measures the result and redoes the pass with a lower ceiling if the true peak is above
   -1.5 dBTP. Very peaky material can land up to about 1 LU below target.
