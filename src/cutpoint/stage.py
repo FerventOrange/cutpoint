@@ -355,7 +355,7 @@ def _subst_target(drive: str) -> str | None:
     """Folder the ``subst`` drive ``drive`` (``Q:``) maps to (``C:\\real``, or
     ``\\\\server\\share\\x`` for one on a share), or None for any other drive: a disk or a
     network-mapped drive (``\\Device\\LanmanRedirector\\...``, ``\\Device\\Mup\\...``).
-    Cached per drive letter until :func:`reload_stage_index`."""
+    Cached per drive letter until the stage index reloads."""
     if drive not in _SUBST:
         device = _query_dos_device(drive)
         target = device[4:] if device and device.startswith("\\??\\") else None
@@ -403,6 +403,7 @@ def _find_subst(index: dict[str, dict[str, Any]], key: str) -> str | None:
     cached = _EXPANDED.get(id(index))
     if cached is None or cached[0] is not index:
         forms: dict[str, str] = {}
+        _SUBST.clear()  # subst mappings live as long as the expanded forms built from them
         for slot, entry in index.items():
             forms.setdefault(norm_path(_expand_subst(_base_key(slot, entry))), slot)
         _EXPANDED.clear()

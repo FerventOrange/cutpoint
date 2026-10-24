@@ -316,6 +316,27 @@ def test_staged_path_matches_a_subst_spelling_of_the_staged_key(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="subst drives exist on Windows only")
+def test_staged_path_sees_a_remapped_subst_drive_after_the_index_reloads(
+    home, tmp_path, monkeypatch
+):
+    """#186: a subst drive mapped elsewhere later is picked up when the index reloads (a
+    running ``cutpoint ui``), not kept for the whole session."""
+    [drive] = _free_drives(1)
+    devices = {drive: "\\??\\" + str(tmp_path / "elsewhere")}
+    _dos_devices(monkeypatch, devices)
+    copy, index_file = _staged_under(home, tmp_path, monkeypatch, tmp_path / "real" / "Footage")
+    asked = str(Path(drive + "\\") / "Footage" / "a.mp4")
+    assert staged_path(asked) == asked
+
+    devices[drive] = "\\??\\" + str(tmp_path / "real")  # subst /D, then subst onto real
+    assert staged_path(asked) == asked  # the index did not change: mapping still cached
+    index = json.loads(index_file.read_text())
+    index["other"] = {"file": "other.mp4", "size": 1, "mtime_ns": 0, "source": "other"}
+    index_file.write_text(json.dumps(index))  # another process staged something
+    assert staged_path(asked) == copy
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="subst drives exist on Windows only")
 def test_staged_path_returns_the_source_when_the_drive_query_fails(home, tmp_path, monkeypatch):
     """#186: when ``QueryDosDeviceW`` cannot be called, the source is returned, as before."""
     import ctypes  # noqa: PLC0415 - Windows only
