@@ -198,3 +198,28 @@ def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_sr
     files = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"]
     assert [e["file"] for e in files] == ["001_a.mp4"]
     assert "009_mine.mp4" in caplog.text and "002_b" not in caplog.text
+
+
+def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
+    tmp_path, monkeypatch, reads, caplog
+):
+    """The manifest lists 002_Joke; review renamed it 002_joke. It has no entry, so it is not
+    re-exported, and the listed name must not remove it on a case-insensitive file system."""
+    clips = _srt_clips(tmp_path)
+    write(clips / "002_joke.mp4", "renamed")
+    write(clips / "002_joke.srt", "renamed subs")
+    if not (clips / "002_JOKE.mp4").exists():
+        pytest.skip("case-sensitive file system")
+    data = json.loads((clips / "manifest.json").read_text(encoding="utf-8"))
+    src = data["clips"][0]["source"]
+    data["clips"].append(
+        {"file": "002_Joke.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_Joke.srt"}
+    )
+    write(clips / "manifest.json", json.dumps(data))
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+
+    _run(clips, out_dir=clips, force=True)
+
+    assert (clips / "002_joke.mp4").read_text(encoding="utf-8") == "renamed"
+    assert (clips / "002_joke.srt").read_text(encoding="utf-8") == "renamed subs"
+    assert "002_joke.mp4: no manifest entry" in caplog.text

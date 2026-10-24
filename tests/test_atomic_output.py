@@ -1051,6 +1051,28 @@ def test_clips_force_keeps_an_old_clip_that_is_this_runs_source(monkeypatch, hom
     assert "003_c.mp4" in warned
 
 
+@pytest.mark.parametrize("kind", ["old-clip", "hard-link"])
+def test_extend_out_force_keeps_a_listed_clip_that_is_this_runs_source(monkeypatch, home, kind):
+    """DIR's manifest lists 003_c, which this run does not re-export but reads as a source:
+    it is kept, not removed as a listed clip the run does not write."""
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    out = project / "out"
+    shutil.copytree(clips_dir, out)
+    (clips_dir / "003_c.mp4").unlink()  # rejected during review: not re-exported
+    kept = out / "003_c.mp4"
+    if kind == "old-clip":
+        _point_manifest_at(clips_dir, "001_a.mp4", kept)
+    else:
+        kept.unlink()
+        hard_link(kept, project / "src.mp4")  # every clip's source
+    expected = kept.read_bytes()
+    argv = ["extend", str(clips_dir), "--seconds", "1", "--no-speech-aware", "--out", str(out)]
+    assert cli.main([*argv, "--force"]) == 0
+    assert kept.read_bytes() == expected
+    assert (out / "001_a.mp4").read_bytes() == b"new"
+
+
 def test_clips_force_keeps_a_clip_reached_through_source_remap(monkeypatch, home, caplog, tmp_path):
     project = _setup(home, monkeypatch)
     out = project / "clips"

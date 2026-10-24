@@ -383,14 +383,19 @@ def extend_clips(
         # Like clips --force: replace only the clips and .srt files out_dir's manifest.json
         # lists, never a file this run reads. Listed ones this run does not write (a clip not
         # re-exported, the .srt of a clip deleted during review) are removed, as the new
-        # manifest.json no longer lists them; unlisted ones are never replaced.
+        # manifest.json no longer lists them; unlisted ones are never replaced. Only a name
+        # spelled on disk as listed: a clip renamed in case only (skipped above as having no
+        # entry) still matches on a case-insensitive file system and must stay.
         listed = srt.listed_files(out_dir)
         srt.check_unlisted_clips(out_dir, names, listed)
         subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed))
+        present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
         old_files = [
             n
             for n in dict.fromkeys(listed or [])
-            if ((f := out_dir / n).is_file() or f.is_symlink()) and not same_file(f, sources)
+            if n in present
+            and ((f := out_dir / n).is_file() or f.is_symlink())
+            and not same_file(f, sources)
         ]
         entries = []
         reused = 0
