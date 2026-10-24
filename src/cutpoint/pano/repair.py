@@ -42,7 +42,6 @@ from __future__ import annotations
 import functools
 import logging
 import math
-import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -391,16 +390,8 @@ def repair(
         IsADirectoryError: If ``segments_file``, ``qa_file`` or ``out`` is a folder.
         FileNotFoundError: If ``segments_file`` or ``qa_file`` is missing.
     """
-    made: list[Path] = []  # folders this run created for ``out``, deepest first
-    try:
+    with cache.created_dirs() as made:  # folders this run created for ``out``, deepest first
         return _repair(project, segments_file, qa_file, out, sheet, made)
-    except BaseException:  # interrupted too: remove the folders it created while still empty
-        for folder in made:
-            try:
-                folder.rmdir()
-            except OSError:  # not empty (something was written into it): keep it
-                continue
-        raise
 
 
 def _repair(
@@ -563,23 +554,8 @@ def _make_parent(out: Path, made: list[Path]) -> None:
     Raises:
         NotADirectoryError: If a file is in the way.
     """
-    missing = []
-    for folder in (out.parent, *out.parent.parents):
-        if os.path.lexists(folder):
-            break
-        missing.append(folder)
-    # top down, recording only what this call's own mkdir created: a level that exists by
-    # then (another process, or ``x/..``, which is an existing folder) is never recorded
-    for folder in reversed(missing):
-        try:
-            folder.mkdir()
-        except FileExistsError:
-            continue
-        except OSError:  # a file in the way or no permission: the mkdir below decides
-            break
-        made.insert(0, folder)
     try:
-        out.parent.mkdir(parents=True, exist_ok=True)
+        cache.make_dirs(out.parent, made)
     except (FileExistsError, NotADirectoryError):
         blocker = next((p for p in out.parents if p.exists()), out.parent)  # the file in the way
         raise NotADirectoryError(f"Cannot write {out}: {blocker} is not a folder") from None

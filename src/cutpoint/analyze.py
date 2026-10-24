@@ -38,6 +38,7 @@ from cutpoint.ffmpeg_utils import (
     ProgressResult,
     extract_audio,
     momentary_loudness,
+    output_dir,
     probe,
     read_window_ok,
     run_progress,
@@ -964,220 +965,237 @@ def analyze(
             f"No video files found in {target} (exclude={list(exclude)}, recursive={recursive})"
         )
     logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    use_scenes = use_scenes and style.use_scenes
-    if vision is None and style.vision_default is False:
-        vision = False
-        logger.info("Style %s: Ollama vision off by default (pass --vision to use it)", style.name)
-    ski_ctx = None
-    if style.kind == "ski":
-        from cutpoint import ski  # noqa: PLC0415
-
-        t0 = time.perf_counter()
-        stale = out_dir / ski.FEATURES_DIR
-        if stale.is_dir():
-            for f in stale.glob("*.npz"):
-                f.unlink()
-        taste = (style.learned or {}).get("taste")
-        ski_ctx = ski.prepare(
-            sources,
-            {str(s): probe(remap_source(s)).duration for s in sources},
-            out_dir,
-            taste=Path(taste) if taste else None,
-        )
-        telemetry_s = round(time.perf_counter() - t0, 2)
-    tr = Transcriber(model=model, language=language)
-    timings: dict[str, float] = {}
-    if ski_ctx is not None:
-        timings["telemetry_s"] = telemetry_s
-    results: list[SourceResult] = []
-    part_of: dict[int, int] = {}  # id(candidate) -> index into results
-    cands: list[Candidate] = []
-    transcript_lines: list[str] = []
-    for src in sources:
-        offset, n_parts = 0.0, 0
-        while True:
+    with output_dir(out_dir):  # a failed run leaves no empty project folder behind
+        use_scenes = use_scenes and style.use_scenes
+        if vision is None and style.vision_default is False:
+            vision = False
             logger.info(
-                "Analyzing %s%s", src, f" from {clock(offset)} (recovered part)" if offset else ""
+                "Style %s: Ollama vision off by default (pass --vision to use it)", style.name
             )
-            res = analyze_source(
-                src,
-                style,
-                tr,
-                use_scenes,
-                max_candidates,
-                timings,
-                offset=offset,
-                recover=recover,
-                ski_ctx=ski_ctx,
-            )
-            results.append(res)
-            for c in res.candidates:
-                part_of[id(c)] = len(results) - 1
-            cands.extend(res.candidates)
-            name = f"{src.name}@{offset:.0f}" if offset else src.name
-            transcript_lines.append(f"# {src}" + (f" (from {clock(offset)})" if offset else ""))
-            transcript_lines.extend(transcript_text(name, res.segments) or ["(no speech)"])
-            transcript_lines.append("")
-            (out_dir / "transcript.txt").write_text("\n".join(transcript_lines), encoding="utf-8")
-            rec = res.read_error
-            if not (recover and rec) or n_parts >= MAX_RECOVERED_PARTS:
-                break
-            cdir = cache.source_dir(src, offset)
-            resume = rec.get("resumed_at") or find_resume_point(
-                remap_source(src), rec["failure_time"], res.info.duration
-            )
-            if resume is None or resume <= offset:
-                logger.warning(
-                    "%s: no readable point found after %s; rest of file skipped",
-                    src.name,
-                    clock(rec["failure_time"]),
-                )
-                break
-            rec["resumed_at"] = resume
-            rec["lost_s"] = round(resume - rec["failure_time"], 3)
-            cache.save_json(cdir / READ_ERRORS_FILE, rec)
-            logger.warning(
-                "%s: resuming at %s (skipping %.1f s of unreadable footage)",
-                src.name,
-                clock(resume),
-                rec["lost_s"],
-            )
-            offset, n_parts = resume, n_parts + 1
-    tr.close()
-    bad = [r for r in results if r.read_error]
-    if bad:
-        for r in bad:
-            rec = r.read_error or {}
-            logger.warning(
-                "READ ERROR SUMMARY: %s stopped at %s%s",
-                r.info.path.name,
-                clock(rec["failure_time"]),
-                f", resumed at {clock(rec['resumed_at'])}"
-                if rec.get("resumed_at")
-                else " (not recovered; use --recover)"
-                if not recover
-                else " (could not recover)",
-            )
-    cands.sort(key=lambda c: -c.score)
+        ski_ctx = None
+        if style.kind == "ski":
+            from cutpoint import ski  # noqa: PLC0415
 
-    vision_used = False
-    vision_stats: dict[str, int] | None = None
-    if vision is not False and cands:
-        rater = VisionRater(
-            **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
-        )
-        if rater.available():
             t0 = time.perf_counter()
-            if vision_top is None:
-                vision_top = auto_vision_top(sum(r.duration for r in results))
-            logger.info(
-                "Vision: rating top %d of %d candidates", min(vision_top, len(cands)), len(cands)
+            stale = out_dir / ski.FEATURES_DIR
+            if stale.is_dir():
+                for f in stale.glob("*.npz"):
+                    f.unlink()
+            taste = (style.learned or {}).get("taste")
+            ski_ctx = ski.prepare(
+                sources,
+                {str(s): probe(remap_source(s)).duration for s in sources},
+                out_dir,
+                taste=Path(taste) if taste else None,
             )
-            n_failed = 0
-            for c in cands[:vision_top]:
-                res = rater.rate(remap_source(c.source), c.start, c.end, style.base)
-                if res is None:
-                    n_failed += 1
-                    continue
-                vision_used = True
-                c.vision = {"score": res.score, "label": res.label}
-                c.score = round(
-                    (1 - style.vision_weight) * c.score + style.vision_weight * res.score * 10, 1
+            telemetry_s = round(time.perf_counter() - t0, 2)
+        tr = Transcriber(model=model, language=language)
+        timings: dict[str, float] = {}
+        if ski_ctx is not None:
+            timings["telemetry_s"] = telemetry_s
+        results: list[SourceResult] = []
+        part_of: dict[int, int] = {}  # id(candidate) -> index into results
+        cands: list[Candidate] = []
+        transcript_lines: list[str] = []
+        for src in sources:
+            offset, n_parts = 0.0, 0
+            while True:
+                logger.info(
+                    "Analyzing %s%s",
+                    src,
+                    f" from {clock(offset)} (recovered part)" if offset else "",
                 )
-                logger.info("vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c.start, c.end)
-            timings["vision_s"] = round(time.perf_counter() - t0, 2)
-            vision_stats = {"requested": min(vision_top, len(cands)), "failed": n_failed}
-            cands.sort(key=lambda c: -c.score)
-        elif vision:
-            logger.warning("--vision requested but Ollama/model unavailable; continuing without it")
+                res = analyze_source(
+                    src,
+                    style,
+                    tr,
+                    use_scenes,
+                    max_candidates,
+                    timings,
+                    offset=offset,
+                    recover=recover,
+                    ski_ctx=ski_ctx,
+                )
+                results.append(res)
+                for c in res.candidates:
+                    part_of[id(c)] = len(results) - 1
+                cands.extend(res.candidates)
+                name = f"{src.name}@{offset:.0f}" if offset else src.name
+                transcript_lines.append(f"# {src}" + (f" (from {clock(offset)})" if offset else ""))
+                transcript_lines.extend(transcript_text(name, res.segments) or ["(no speech)"])
+                transcript_lines.append("")
+                (out_dir / "transcript.txt").write_text(
+                    "\n".join(transcript_lines), encoding="utf-8"
+                )
+                rec = res.read_error
+                if not (recover and rec) or n_parts >= MAX_RECOVERED_PARTS:
+                    break
+                cdir = cache.source_dir(src, offset)
+                resume = rec.get("resumed_at") or find_resume_point(
+                    remap_source(src), rec["failure_time"], res.info.duration
+                )
+                if resume is None or resume <= offset:
+                    logger.warning(
+                        "%s: no readable point found after %s; rest of file skipped",
+                        src.name,
+                        clock(rec["failure_time"]),
+                    )
+                    break
+                rec["resumed_at"] = resume
+                rec["lost_s"] = round(resume - rec["failure_time"], 3)
+                cache.save_json(cdir / READ_ERRORS_FILE, rec)
+                logger.warning(
+                    "%s: resuming at %s (skipping %.1f s of unreadable footage)",
+                    src.name,
+                    clock(resume),
+                    rec["lost_s"],
+                )
+                offset, n_parts = resume, n_parts + 1
+        tr.close()
+        bad = [r for r in results if r.read_error]
+        if bad:
+            for r in bad:
+                rec = r.read_error or {}
+                logger.warning(
+                    "READ ERROR SUMMARY: %s stopped at %s%s",
+                    r.info.path.name,
+                    clock(rec["failure_time"]),
+                    f", resumed at {clock(rec['resumed_at'])}"
+                    if rec.get("resumed_at")
+                    else " (not recovered; use --recover)"
+                    if not recover
+                    else " (could not recover)",
+                )
+        cands.sort(key=lambda c: -c.score)
 
-    cands.sort(key=lambda c: (not c.must_include, -c.score))  # must-include first
-    total, suggested = 0.0, 0
-    for c in cands:
-        if total >= style.target_total and not c.must_include:
-            break
-        total += c.end - c.start
-        suggested += 1
+        vision_used = False
+        vision_stats: dict[str, int] | None = None
+        if vision is not False and cands:
+            rater = VisionRater(
+                **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
+            )
+            if rater.available():
+                t0 = time.perf_counter()
+                if vision_top is None:
+                    vision_top = auto_vision_top(sum(r.duration for r in results))
+                logger.info(
+                    "Vision: rating top %d of %d candidates",
+                    min(vision_top, len(cands)),
+                    len(cands),
+                )
+                n_failed = 0
+                for c in cands[:vision_top]:
+                    res = rater.rate(remap_source(c.source), c.start, c.end, style.base)
+                    if res is None:
+                        n_failed += 1
+                        continue
+                    vision_used = True
+                    c.vision = {"score": res.score, "label": res.label}
+                    c.score = round(
+                        (1 - style.vision_weight) * c.score + style.vision_weight * res.score * 10,
+                        1,
+                    )
+                    logger.info(
+                        "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c.start, c.end
+                    )
+                timings["vision_s"] = round(time.perf_counter() - t0, 2)
+                vision_stats = {"requested": min(vision_top, len(cands)), "failed": n_failed}
+                cands.sort(key=lambda c: -c.score)
+            elif vision:
+                logger.warning(
+                    "--vision requested but Ollama/model unavailable; continuing without it"
+                )
 
-    timings["total_s"] = round(time.perf_counter() - t_start, 2)
-    result = {
-        "version": 1,
-        "style": style.name,
-        "style_kind": style.kind,
-        "created": datetime.now().isoformat(timespec="seconds"),
-        "settings": {
-            **(
-                {"mask_friends": style.mask_friends, "must_include_crash": style.must_include_crash}
-                if style.kind == "ski"
-                else {}
-            ),
-            "whisper_model": tr.model_name,
-            "whisper_device": tr.device,
-            "scenes": use_scenes,
-            "vision_used": vision_used,
-            "vision": vision_stats,
-            "target_total": style.target_total,
-            "weights": style.weights,
-            # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
-            # Absolute (not resolved: keeps drive letters, symlinks and the user's spelling)
-            # so later commands find them from any working directory.
-            "inputs": [
-                str(Path(t).absolute()) for t in ([target] if isinstance(target, Path) else target)
-            ],
-            "exclude": list(exclude),
-            "recursive": recursive,
-            "language": language,
-            "max_candidates": max_candidates,
-            "recover": recover,
-        },
-        "timings": timings,
-        "suggested_top": suggested,
-        "sources": [
-            {
-                "path": str(r.source),
-                "duration": round(r.info.duration, 3),
-                "width": r.info.width,
-                "height": r.info.height,
-                "fps": float(r.info.fps),
+        cands.sort(key=lambda c: (not c.must_include, -c.score))  # must-include first
+        total, suggested = 0.0, 0
+        for c in cands:
+            if total >= style.target_total and not c.must_include:
+                break
+            total += c.end - c.start
+            suggested += 1
+
+        timings["total_s"] = round(time.perf_counter() - t_start, 2)
+        result = {
+            "version": 1,
+            "style": style.name,
+            "style_kind": style.kind,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "settings": {
                 **(
-                    {"offset": r.offset, "analyzed_s": round(r.duration, 3)}
-                    if r.offset or r.read_error
+                    {
+                        "mask_friends": style.mask_friends,
+                        "must_include_crash": style.must_include_crash,
+                    }
+                    if style.kind == "ski"
                     else {}
                 ),
-                **({"read_errors": [r.read_error]} if r.read_error else {}),
-            }
-            for r in results
-        ],
-        "candidates": [
-            {
-                "id": f"h{rank:03d}",
-                "source": str(c.source),
-                "source_index": part_of[id(c)],
-                "start": c.start,
-                "end": c.end,
-                "duration": round(c.end - c.start, 3),
-                "score": c.score,
-                "signals": {
-                    **c.signals,
-                    "keywords": c.keywords,
-                    "vision": c.vision["score"] if c.vision else None,
-                },
-                "label": _label(c, style),
-                **({"kind": c.kind} if c.kind else {}),
-                **({"must_include": True, "crash": c.event} if c.must_include else {}),
-                "transcript": c.transcript,
-            }
-            for rank, c in enumerate(cands, 1)
-        ],
-    }
-    out = out_dir / "highlights.json"
-    cache.save_json(out, result)
-    logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, timings["total_s"])
-    if (out_dir / "events.json").exists() and style.kind != "ski":  # earlier cutpoint events
-        (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)  # stale copy
-        rescore_highlights(out_dir)
-    return out
+                "whisper_model": tr.model_name,
+                "whisper_device": tr.device,
+                "scenes": use_scenes,
+                "vision_used": vision_used,
+                "vision": vision_stats,
+                "target_total": style.target_total,
+                "weights": style.weights,
+                # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
+                # Absolute (not resolved: keeps drive letters, symlinks and the user's spelling)
+                # so later commands find them from any working directory.
+                "inputs": [
+                    str(Path(t).absolute())
+                    for t in ([target] if isinstance(target, Path) else target)
+                ],
+                "exclude": list(exclude),
+                "recursive": recursive,
+                "language": language,
+                "max_candidates": max_candidates,
+                "recover": recover,
+            },
+            "timings": timings,
+            "suggested_top": suggested,
+            "sources": [
+                {
+                    "path": str(r.source),
+                    "duration": round(r.info.duration, 3),
+                    "width": r.info.width,
+                    "height": r.info.height,
+                    "fps": float(r.info.fps),
+                    **(
+                        {"offset": r.offset, "analyzed_s": round(r.duration, 3)}
+                        if r.offset or r.read_error
+                        else {}
+                    ),
+                    **({"read_errors": [r.read_error]} if r.read_error else {}),
+                }
+                for r in results
+            ],
+            "candidates": [
+                {
+                    "id": f"h{rank:03d}",
+                    "source": str(c.source),
+                    "source_index": part_of[id(c)],
+                    "start": c.start,
+                    "end": c.end,
+                    "duration": round(c.end - c.start, 3),
+                    "score": c.score,
+                    "signals": {
+                        **c.signals,
+                        "keywords": c.keywords,
+                        "vision": c.vision["score"] if c.vision else None,
+                    },
+                    "label": _label(c, style),
+                    **({"kind": c.kind} if c.kind else {}),
+                    **({"must_include": True, "crash": c.event} if c.must_include else {}),
+                    "transcript": c.transcript,
+                }
+                for rank, c in enumerate(cands, 1)
+            ],
+        }
+        out = out_dir / "highlights.json"
+        cache.save_json(out, result)
+        logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, timings["total_s"])
+        if (out_dir / "events.json").exists() and style.kind != "ski":  # earlier cutpoint events
+            (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)  # stale copy
+            rescore_highlights(out_dir)
+        return out
 
 
 def reanalyze(project: Path) -> Path:
