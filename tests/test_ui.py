@@ -24,7 +24,7 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from conftest import link_dir, link_file, media_info
+from conftest import link_dir, link_file, media_info, remap, write
 from cutpoint import cache, cli, config, ui
 
 PORT = 8765
@@ -173,6 +173,9 @@ def test_media_supports_range_and_only_serves_project_sources(
     monkeypatch.setattr(ui, "probe", lambda _path: info)
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"0123456789"})
     source = client.get(f"/api/projects/{pid}").json()["sources"][0]
+    assert source["status"] == "unknown"  # opening a project probes nothing
+    client.post(f"/api/projects/{pid}/sources/{source['id']}/prepare")
+    source = client.get(f"/api/projects/{pid}").json()["sources"][0]
     assert source["status"] == "ready"
     res = client.get(source["url"], headers={"Range": "bytes=2-5"})
     assert (res.status_code, res.content) == (206, b"2345")
@@ -209,7 +212,7 @@ def test_proxy_is_built_only_for_the_chosen_source_and_keeps_every_audio_track(
         return {s["name"]: s for s in client.get(f"/api/projects/{pid}").json()["sources"]}
 
     opened = sources()
-    assert (opened["a.mp4"]["status"], opened["b.mkv"]["status"]) == ("needs-proxy",) * 2
+    assert (opened["a.mp4"]["status"], opened["b.mkv"]["status"]) == ("unknown",) * 2
     assert not (ui.project_dir(pid) / ui.UI_DIR / "proxy").exists()  # nothing was queued
     assert client.get(opened["a.mp4"]["url"]).status_code == 409
 
@@ -218,7 +221,7 @@ def test_proxy_is_built_only_for_the_chosen_source_and_keeps_every_audio_track(
     while sources()["a.mp4"]["status"] == "preparing" and time.time() < deadline:
         time.sleep(0.3)
     after = sources()
-    assert (after["a.mp4"]["status"], after["b.mkv"]["status"]) == ("ready", "needs-proxy")
+    assert (after["a.mp4"]["status"], after["b.mkv"]["status"]) == ("ready", "unknown")
 
     url = after["a.mp4"]["url"]
     assert client.get(url, headers={"Range": "bytes=0-99"}).status_code == 206
@@ -1926,9 +1929,10 @@ def test_proxy_in_a_cache_folder_linked_outside_is_not_served_or_built(
     pid, sid, _, outside, key = media_link(client, hevc_project, "proxy")
     (outside / f"{key}.mp4").write_bytes(b"outside")
     src = client.get(f"/api/projects/{pid}").json()["sources"][0]
-    assert src["status"] == "needs-proxy"
-    assert client.get(src["url"]).status_code == 409
     assert client.post(f"/api/projects/{pid}/sources/{sid}/prepare").status_code == 409
+    src = client.get(f"/api/projects/{pid}").json()["sources"][0]
+    assert src["status"] == "needs-proxy"  # probed by the prepare request
+    assert client.get(src["url"]).status_code == 409
     assert [f.name for f in outside.iterdir()] == [f"{key}.mp4"]
 
 
@@ -2500,3 +2504,59 @@ def test_the_cache_keeps_at_most_max_projects_and_expires_after_its_ttl(
     monkeypatch.setattr(ui, "SOURCES_CACHE_S", 0)
     source_names(client, pid1)
     assert len(folder_listings) == 2
+
+
+# --- lazy probe and unreachable picked folder ---
+
+
+def test_opening_a_project_probes_nothing_until_a_source_is_prepared(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probes: list[object] = []
+
+    def counting(path):
+        probes.append(path)
+        return media_info(duration=10.0)
+
+    monkeypatch.setattr(ui, "probe", counting)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    source = client.get(f"/api/projects/{pid}").json()["sources"][0]
+    assert (probes, source["status"]) == ([], "unknown")
+    client.post(f"/api/projects/{pid}/sources/{source['id']}/prepare")
+    assert client.get(f"/api/projects/{pid}").json()["sources"][0]["status"] == "ready"
+    assert len(probes) == 1
+
+
+def test_a_picked_folder_that_cannot_be_listed_is_a_field_not_an_error(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    moved = tmp_path / "moved"
+    folder.rename(moved)
+    res = client.get(f"/api/projects/{pid}")
+    assert res.status_code == 200, res.text
+    assert str(folder) in res.json()["source_error"]
+    assert res.json()["sources"] == []
+    moved.rename(folder)
+    res = client.get(f"/api/projects/{pid}")
+    assert res.json()["source_error"] is None
+    assert source_names(client, pid) == ["a.mp4"]
+
+
+def test_an_unanalyzed_folder_missing_in_place_is_listed_at_its_source_remap_target(
+    client: TestClient, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"0123456789"})
+    copy = tmp_path / "copy"
+    write(copy / "a.mp4", b"0123456789")
+    write(copy / "skip_unverified.mp4", b"x")  # source_remap_exclude: would be read at the original
+    shutil.rmtree(folder)
+    monkeypatch.setattr(ui, "probe", lambda _path: media_info(duration=10.0))
+    remap(home, monkeypatch, folder, copy, exclude=["*unverified*"])
+    data = client.get(f"/api/projects/{pid}").json()
+    assert data["source_error"] is None
+    assert [s["path"] for s in data["sources"]] == [str(folder / "a.mp4")]
+    assert source_names(client, pid) == ["a.mp4"]
+    src = data["sources"][0]
+    client.post(f"/api/projects/{pid}/sources/{src['id']}/prepare")
+    assert client.get(src["url"]).content == b"0123456789"
