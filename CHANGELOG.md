@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint edit <video...> --kind highlights|montage|clips|funny-moments` runs `analyze`,
+  `clips` and `assemble` in one command and copies the result to `<video>-final.mp4` and
+  `<video>-final.srt` in the project folder. Each kind sets the style, selection, clip order,
+  transition, loudness normalisation and captions; `--style`, `--top`, `--max-total`,
+  `--vertical`, `--force` and `--events` override it (#2).
+- SRT subtitles: `clips` writes `001_<label>.srt` next to each clip and `assemble` writes
+  `final.srt` (`final_vertical.srt`, ...) next to the final video, from the cached transcripts
+  of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
+  No transcription runs for them; without a cached transcript there is no `.srt` and one INFO
+  line. `clips --force` replaces only the `.srt` files its old `manifest.json` lists (#5).
 - `cutpoint capabilities` reports torch (installed, version, CUDA or CPU-only build, whether it
   reaches the GPU). On a machine with a usable NVIDIA driver, a CPU-only torch gives a warning
   with the exact reinstall command for the install type (clone, tool install, pip), and a CUDA
