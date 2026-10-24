@@ -1,23 +1,15 @@
 """Per-game HUD regions for OCR, in 1920x1080 reference pixels.
 
-Built in, for the optional Rainbow Six Siege module (calibrated on full frames of a
-1080p stream):
-
-R6 Siege (2025 HUD):
-    * kill feed: right-aligned rows at x~1590-1830, newest row at y~296, older
-      rows stacking upward ~32 px apart. Blue name boxes = own team, orange =
-      enemy. "Reverse Friendly Fire has been activated for X" appears here too.
-    * "5 VS 1" counter: centre, x~880-1040, y~230-290.
-    * round banner ("WON ROUND 5", "VICTORY"): centre, x~650-1250, y~430-540.
-    * notices ("OPFOR last op standing."): centre, y~765-795.
-
-Other games use JSON presets, looked up in this order: the project's
+Games use JSON presets, looked up in this order: the project's
 ``<project>/hud_presets/<game>.json``, the user presets in
 ``<CUTPOINT_HOME>/presets`` (where region discovery writes by default), then
 the presets bundled with the package (``cutpoint/events/presets``). They are
 written by region discovery (:mod:`cutpoint.events.discover`) and calibrated
-by hand. War Thunder's bundled preset is ``presets/wt.json``. R6 stays built in, so its OCR cache keys and
-results are unchanged.
+by hand. War Thunder's bundled preset is ``presets/wt.json``.
+
+Rainbow Six Siege (the optional R6 module, 2025 HUD) is the bundled
+``presets/r6.json``, marked ``"builtin": true``: it keeps the original R6
+interpretation, so its OCR cache keys and results are unchanged.
 
 Preset JSON::
 
@@ -28,10 +20,18 @@ Preset JSON::
      "banner_phrases": ["TARGET DESTROYED", ...],
      "feed": {"kill_words": {"destroyed": "kill", ...}, "colors": {...}},
      "bigtext": true}
+
+Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
+...); missing ones use the defaults. ``"builtin": true`` selects the original R6
+interpretation: ``banner_phrases`` are used as listed, without
+:data:`GENERIC_BANNERS`, :meth:`HudPreset.key` adds no fields and the preset
+records no ``path``. It is honoured only in the bundled presets; a project or
+user preset that sets it is loaded as a normal JSON preset (with a warning).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field, fields
@@ -96,48 +96,26 @@ class Region:
 
 _OPTIONAL_KEY_FIELDS = ("gate", "every", "min_text_h", "det_scale")
 
-PRESETS: dict[str, tuple[Region, ...]] = {
-    "r6": (
-        # min_change is low: the grey "Reverse Friendly Fire" row changes the
-        # mask by only ~1.4% of the region (measured).
-        Region("killfeed", 1300, 150, 560, 185, "killfeed", min_change=0.008),
-        Region("counter", 760, 200, 400, 110, "counter"),
-        Region("banner", 520, 380, 880, 220, "banner", min_change=0.03, min_fill=0.012),
-        Region("notice", 600, 740, 720, 80, "notice", min_change=0.03, min_fill=0.006),
-    ),
+
+def _regions(data: dict[str, Any]) -> tuple[Region, ...]:
+    """Regions of preset JSON (unknown keys are ignored)."""
+    names = {f.name for f in fields(Region)}
+    return tuple(
+        Region(**{k: v for k, v in r.items() if k in names}) for r in data.get("regions", [])
+    )
+
+
+# Built-in presets ("builtin": true), read from the bundled JSON at import, so
+# they stay available when the bundled folder is not searched.
+_BUILTIN: dict[str, dict[str, Any]] = {
+    "r6": json.loads((paths.PRESETS_DIR / "r6.json").read_text(encoding="utf-8")),
 }
 
-# Substrings of the source path that identify a game (lower-case). JSON presets
-# add their own "match" hints.
+# Substrings of the source path that identify a game (lower-case), checked
+# before the "match" hints of JSON presets.
 GAME_HINTS: dict[str, tuple[str, ...]] = {
-    "r6": ("rainbow six", "r6", "siege"),
+    "r6": tuple(_BUILTIN["r6"]["match"]),
     "wt": ("war thunder", "warthunder"),
-}
-
-# Phrases looked for in banner/notice/killfeed text of the built-in presets,
-# mapped to an event type. Matching is fuzzy (see killfeed.fuzzy_contains).
-BANNER_PHRASES: dict[str, tuple[str, ...]] = {
-    "r6": (
-        "WON ROUND",
-        "ROUND WON",
-        "LOST ROUND",
-        "ROUND LOST",
-        "VICTORY",
-        "DEFEAT",
-        "REVERSE FRIENDLY FIRE",
-        "ACE",
-        "CLUTCH",
-        "OVERTIME",
-        "MATCH POINT",
-        "LAST OP STANDING",
-        "DEFUSER PLANTED",
-        "DEFUSER DISABLED",
-        "BOMB DEFUSED",
-        "ELIMINATED",
-        "TEAM KILL",
-        "TEAMKILL",
-        "DRAW",
-    ),
 }
 
 # Game-agnostic banner vocabulary for the generic big-text check, merged into
@@ -190,11 +168,12 @@ class HudPreset:
         regions: HUD rectangles to OCR.
         phrases: Banner phrases (built-in R6: its own list only; JSON presets:
             their list plus :data:`GENERIC_BANNERS`).
-        builtin: True for the built-in R6 preset (original interpretation).
+        builtin: True for ``"builtin": true`` presets (R6; original
+            interpretation).
         player_tags: Extra in-game names listed in the preset.
         feed: Feed parsing options (``kill_words``, ``colors``, ...).
         bigtext: Add the generic big-centred-text check.
-        path: JSON file the preset came from (None for built-in).
+        path: JSON file the preset came from (None for built-in ones).
         title: Human-readable game name (VLM prompt).
     """
 
@@ -257,21 +236,36 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return data
 
 
+_warned_builtin: set[Path] = set()
+
+
+def _is_builtin(data: dict[str, Any], path: Path | None) -> bool:
+    """``"builtin": true`` counts only for bundled presets (``path`` None: :data:`_BUILTIN`)."""
+    if not data.get("builtin"):
+        return False
+    if path is None or path.parent == paths.PRESETS_DIR:
+        return True
+    if path not in _warned_builtin:
+        _warned_builtin.add(path)
+        logger.warning('Ignoring "builtin" in HUD preset %s: only bundled presets can set it', path)
+    return False
+
+
 def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPreset:
     """Build a :class:`HudPreset` from preset JSON (unknown keys are ignored)."""
-    names = {f.name for f in fields(Region)}
-    regions = tuple(
-        Region(**{k: v for k, v in r.items() if k in names}) for r in data.get("regions", [])
-    )
-    phrases = tuple(dict.fromkeys([*map(str, data.get("banner_phrases", [])), *GENERIC_BANNERS]))
+    builtin = _is_builtin(data, path)
+    phrases = tuple(map(str, data.get("banner_phrases", [])))
+    if not builtin:
+        phrases = tuple(dict.fromkeys([*phrases, *GENERIC_BANNERS]))
     return HudPreset(
         game=str(data.get("game") or (path.stem if path else "game")),
-        regions=regions,
+        regions=_regions(data),
         phrases=phrases,
+        builtin=builtin,
         player_tags=tuple(data.get("player_tags", [])),
         feed=dict(data.get("feed") or {}),
         bigtext=bool(data.get("bigtext", True)),
-        path=path,
+        path=None if builtin else path,
         title=str(data.get("title", "")),
     )
 
@@ -279,7 +273,8 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
 def load_preset(game: str | None, project: Path | None = None) -> HudPreset | None:
     """The HUD preset for ``game``.
 
-    Lookup order: project, user (``<CUTPOINT_HOME>/presets``), bundled, then built-in.
+    Lookup order: project, user (``<CUTPOINT_HOME>/presets``), bundled, then
+    built-in (the bundled ``"builtin": true`` presets, read at import).
 
     Returns:
         The preset, or None when ``game`` has none (discovery can create one).
@@ -290,10 +285,8 @@ def load_preset(game: str | None, project: Path | None = None) -> HudPreset | No
         data = _read_json(path)
         if data and (data.get("game") or path.stem) == game:
             return preset_from_dict(data, path)
-    if game in PRESETS:
-        return HudPreset(
-            game, PRESETS[game], BANNER_PHRASES.get(game, ()), builtin=True, bigtext=False
-        )
+    if game in _BUILTIN:
+        return preset_from_dict(_BUILTIN[game])
     return None
 
 
