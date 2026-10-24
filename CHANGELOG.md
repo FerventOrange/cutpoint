@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui` preview player has a mute button and a volume slider next to Play, shared by
+  moments, clips and the final video and remembered per browser (default unmuted at 100%). `M`
+  toggles mute (#142).
 - `cutpoint ui` New Project "Choose video…" and "Choose folder…" buttons open the operating
   system's own file or folder dialog on the computer running the server (Windows: system dialog
   through tkinter; Linux, with a display: zenity, falling back to kdialog; macOS: osascript)
