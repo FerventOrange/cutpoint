@@ -167,6 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On Ctrl+C or Ctrl+Break, Cutpoint now waits for ffmpeg to exit (at most 5 s, then stops it and
   waits again) before removing a partial `.part` export or `.tmp.wav` file, so on Windows the file
   is no longer left behind while ffmpeg still holds it open (#199). The exit code stays 130.
+- `cutpoint 360 stitch` now stops MediaSDKTest like ffmpeg: on Ctrl+C or Ctrl+Break (or the UI's
+  cancel) it gets at most 5 s to exit before it is killed; on `pano.stitch_timeout_s` it is killed
+  at once. Either way Cutpoint then waits at most 5 s for it, instead of up to 30 s after the kill (#229).
 - On Windows, `cutpoint 360 repair` retries writing its segments backup (`<name>.bak.json`) for a
   moment while another program (a virus scanner) briefly holds the file, like its other writes.
 - `cutpoint ui` project metadata edge cases (#184): a preview proxy is not built or moved into
