@@ -169,6 +169,7 @@ select { max-width: 100%; }
 .fresh-art .wave { stroke-width: 1.5; opacity: 0.45; }
 .fresh-count { color: var(--glow); border: 1px solid var(--glow); border-radius: 999px; padding: 2px 12px; font-size: 13.5px; }
 .fresh-count.none { color: var(--bad); border-color: var(--bad); }
+.fresh-error { color: var(--bad); font-size: 13.5px; max-width: 46ch; overflow-wrap: anywhere; } /* long paths wrap */
 .empty.fresh h3 { font-size: 20px; font-weight: 700; color: var(--text); margin-top: 6px; }
 .empty.fresh .btn { justify-self: stretch; min-height: 44px; font-size: 15px; margin-top: 6px; }
 .empty.fresh #revealBtn { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 0; }
