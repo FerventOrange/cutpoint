@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clips` and `assemble` in one command and copies the result to `<video>-final.mp4` and
   `<video>-final.srt` in the project folder. Each kind sets the style, selection, clip order,
   transition, loudness normalisation and captions; `--style`, `--top`, `--max-total`,
-  `--vertical`, `--force` and `--events` override it (#2).
+  `--vertical`, `--force` and `--events` override it. `--vision` / `--no-vision` work as on
+  `analyze` (default: Ollama rating if reachable) (#2).
 - SRT subtitles: `clips` writes `001_<label>.srt` next to each clip and `assemble` writes
   `final.srt` (`final_vertical.srt`, ...) next to the final video, from the cached transcripts
   of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
@@ -77,6 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint analyze .` or a drive root (`analyze D:\`) without `--out` no longer gets a
+  project with an empty name, and a folder named with dots (`trip.2024`) is no longer cut at the
+  last dot: the default project is named as for `edit` (a file's name without extension, the
+  folder's full name, `project` for a drive root).
+- `clips --top` and `--max-total`, and `360 director --top` and `360 stitch --top` /
+  `--max-total`, reject 0 and negative values as usage errors (exit 2); `clips --top -1` used to
+  select all but one moment.
 - Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check (for
   example `360 analyze` with cached views but no cached event layers) no longer fails with
   `WinError 127` on `cudnn_cnn64_9.dll`. On Windows the GPU check imports torch first when it is

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
 import cutpoint
+import cutpoint.analyze
 from cutpoint import cli
 
 
@@ -56,6 +58,49 @@ def test_edit_bad_option_is_a_usage_error(capsys, option, value):
         cli.main(["edit", "video.mp4", option, value])
     assert exc.value.code == 2
     assert option in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["clips", "some-project", "--top", "0"],
+        ["clips", "some-project", "--top", "-1"],
+        ["clips", "some-project", "--max-total", "0"],
+        ["clips", "some-project", "--max-total", "-5"],
+        ["360", "director", "some-project", "--top", "0"],
+        ["360", "stitch", "some-project", "--top", "-1"],
+        ["360", "stitch", "some-project", "--max-total", "0"],
+    ],
+)
+def test_non_positive_top_or_max_total_is_a_usage_error(capsys, argv):
+    """`--top -1` used to select all but one moment."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(argv)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert argv[-2] in err and "must be greater than 0" in err
+
+
+@pytest.mark.parametrize(
+    ("make", "name"),
+    [
+        (lambda d: (d / "trip.2024", "."), "trip.2024"),  # "." resolved; dots kept
+        (lambda d: (d, "a.b.mp4"), "a.b"),  # a file: its stem
+        (lambda d: (d, d.anchor), "project"),  # a drive root has no name
+    ],
+)
+def test_analyze_default_project_name(home, tmp_path, monkeypatch, make, name):
+    cwd, arg = make(tmp_path / "videos")
+    cwd.mkdir(parents=True)
+    if arg.endswith(".mp4"):
+        (cwd / arg).write_bytes(b"x")
+    monkeypatch.chdir(cwd)
+    outs: list[Path] = []
+    monkeypatch.setattr(
+        cutpoint.analyze, "analyze", lambda targets, style, out, **kw: outs.append(out)
+    )
+    assert cli.main(["analyze", arg]) == 0
+    assert outs == [home / "projects" / name]
 
 
 def test_360_qa_bad_size_is_a_usage_error(capsys):
