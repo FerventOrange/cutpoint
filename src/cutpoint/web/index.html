@@ -45,9 +45,7 @@
     </section>
 
     <section class="col stage" id="stage" tabindex="-1" aria-labelledby="stageTitle">
-      <div class="col-head">
-        <h2 id="stageTitle">Preview</h2>
-      </div>
+      <h2 id="stageTitle" class="vh">Preview</h2>
       <div id="stageEmpty" class="empty"></div>
       <div id="stageBody" hidden>
         <div class="screen-bar">
@@ -84,7 +82,6 @@
         </div>
         <p id="trimMsg" class="trim-msg" role="status"></p>
         <p id="signals" class="muted tc"></p>
-        <p class="muted keys">Space plays, M mutes, [ sets start, ] sets end</p>
       </div>
     </section>
 
@@ -104,6 +101,11 @@
         <button type="button" id="seqClearSel" class="btn small">Clear</button>
       </div>
       <ol id="seqList" class="seq-list"></ol>
+      <section id="removedPanel" class="removed" aria-labelledby="removedTitle" hidden>
+        <h3 id="removedTitle">Removed clips</h3>
+        <p class="muted">Not ranked moments. Listed until the page reloads.</p>
+        <ol id="removedList" class="cand-list"></ol>
+      </section>
       <p id="seqLive" class="vh" role="status"></p>
 
       <fieldset class="panel" id="exportPanel">
