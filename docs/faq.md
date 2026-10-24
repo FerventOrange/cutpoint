@@ -45,8 +45,11 @@ Yes: `cutpoint clips <project> --vertical`, a fixed centre crop to 1080x1920.
 In `CUTPOINT_HOME` (run `cutpoint paths`). See [Configuration](configuration.md).
 
 **Is there a single command that does the whole edit?**
-Not yet. `cutpoint edit`, `cutpoint init`, JSON output,
-SRT transcripts and an agent skill are planned. Today an agent runs `analyze`, `clips` and `assemble` in sequence.
+Yes: `cutpoint edit <video> --kind highlights|montage|clips|funny-moments` runs `analyze`,
+`clips` and `assemble` in one go (see [commands](commands.md#edit)). `clips` and `assemble`
+write SRT subtitles next to the clips and the final video. `cutpoint skill install` adds a
+Claude Code skill so an agent finds Cutpoint on its own. JSON on stdout for every command is
+planned (#4).
 
 **Do I need the Insta360 SDK?**
 Only for high-quality stitching of Insta360 X3 `.insv` files. Everything else works without it,

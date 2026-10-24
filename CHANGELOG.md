@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint skill install [--dir DIR] [--force]` installs a Claude Code skill
+  (`~/.claude/skills/cutpoint/SKILL.md` by default) so an agent finds Cutpoint for requests such
+  as "edit this video" or "find the best moments" and runs the edit loop; it points to
+  `cutpoint guide` for details. A differing installed skill is kept unless `--force` is given.
+  `cutpoint skill print` prints the skill to stdout (#1).
 - `cutpoint edit <video...> --kind highlights|montage|clips|funny-moments` runs `analyze`,
   `clips` and `assemble` in one command and copies the result to `<video>-final.mp4` and
   `<video>-final.srt` in the project folder. Each kind sets the style, selection, clip order,
@@ -119,6 +124,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Re-analyzing a project (`cutpoint events`) keeps `vision_top` and the Ollama URL and model; the `cutpoint ui` Analyze action keeps them too.
   `analyze` now stores them in the `highlights.json` settings; an automatic `vision_top` stays
   automatic.
+- `cutpoint ui`: a clip removed from the Sequence and added back returns to its previous position
+  (clamped to the current length) instead of going to the end. Removed clips that are not ranked
+  moments are listed under "Removed clips" with an "Add back" button until the page reloads (#128).
 - `cutpoint ui`: the outputs panel also offers each final's `.srt` subtitles (`final.srt`,
   `final_ui_*.srt`, `<name>-final.srt`) for download, served as plain text.
 - A `highlights.json` without a `sources` list now gives an error naming the file and saying to
