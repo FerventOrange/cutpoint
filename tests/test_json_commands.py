@@ -9,12 +9,16 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import cutpoint.analyze
-from cutpoint import cli
+from cutpoint import cli, edit
+from cutpoint.analyze import report_highlights
+from cutpoint.events import cli as events_cli
+from cutpoint.events import pipeline
 from test_jsonout import _envelope
 
 needs_ffmpeg = pytest.mark.skipif(
@@ -356,3 +360,93 @@ def test_without_json_stdout_stays_empty(video, home, capsys):
         assert capsys.readouterr().out == "", args
     assert cli.main(["clips", "j", "--top", "2"]) == 1  # not empty: same exit code as before
     assert capsys.readouterr().out == ""
+
+
+# ------------------------------------------------------------------------------ follow-ups
+VISION_MSG = "--vision requested but Ollama/model unavailable; continuing without it"
+
+
+class _NoOllama:
+    """A VisionRater whose server or model is not there."""
+
+    def __init__(self, **_kw) -> None:
+        pass
+
+    def available(self) -> bool:
+        return False
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(
+    ("flags", "style_off", "message"),
+    [
+        ([], False, "Ollama/model unavailable; continuing without vision"),
+        (["--vision"], False, VISION_MSG),
+        (["--no-vision"], False, None),
+        ([], True, None),  # the style turns vision off by default (as ski does)
+    ],
+)
+def test_analyze_json_warns_when_vision_was_wanted_but_unavailable(
+    video, home, capsys, caplog, monkeypatch, flags, style_off, message
+):
+    monkeypatch.setattr(cutpoint.analyze, "VisionRater", _NoOllama)
+    if style_off:
+        funny = replace(cli.get_style("funny"), vision_default=False)
+        monkeypatch.setattr(cli, "get_style", lambda name: funny)
+    argv = ["analyze", str(video), "--style", "funny", "--out", "j", "--no-scenes", *flags]
+    code, doc, _ = _json(capsys, argv)
+    assert code == 0 and doc["ok"] is True and doc["outputs"]["candidates"] > 0
+    expected = [] if message is None else [("vision_unavailable", message, [])]
+    assert [(w["code"], w["message"], w["files"]) for w in doc["warnings"]] == expected
+    # The log line is as before: only for an explicit --vision.
+    assert (VISION_MSG in caplog.text) is (flags == ["--vision"])
+
+
+def test_clips_json_unknown_ids_is_bad_args(home, capsys, caplog):
+    project = home / "projects" / "j"
+    project.mkdir(parents=True)
+    cand = {"id": "h001", "source": "a.mp4", "start": 0, "end": 1, "score": 50}
+    hl = {"style": "funny", "candidates": [cand]}
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    code, doc, _ = _json(capsys, ["clips", "j", "--ids", "h001", "h009"])
+    assert code == 1 and doc["error"] == {"code": "bad_args", "message": "Unknown ids: h009"}
+    caplog.clear()
+    assert cli.main(["clips", "j", "--ids", "h009"]) == 1  # unchanged without --json
+    assert capsys.readouterr().out == "" and "Unknown ids: h009" in caplog.text
+
+
+def test_edit_events_json_reports_the_re_ranked_highlights(home, tmp_path, capsys, monkeypatch):
+    """events re-ranks highlights.json after analyze: the envelope has the later values."""
+    video = tmp_path / "videos" / "clip.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"source bytes")
+
+    def analyze(targets, style, out, **kw):
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "transcript.txt").write_text("", encoding="utf-8")
+        hl = {"style": style.name, "candidates": [{"id": "h001"}] * 3, "suggested_top": 3}
+        (out / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+        report_highlights(out, out / "highlights.json")
+
+    def events(a):
+        hl_file = Path(a.project) / "highlights.json"
+        hl = json.loads(hl_file.read_text(encoding="utf-8"))
+        hl["suggested_top"] = 1
+        hl_file.write_text(json.dumps(hl), encoding="utf-8")
+
+    def assemble(clips_dir, **kw):
+        final = clips_dir.parent / "final.mp4"
+        final.write_bytes(b"final")
+        return final
+
+    monkeypatch.setattr(cutpoint.analyze, "analyze", analyze)
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_args", events)
+    monkeypatch.setattr(edit, "export_clips", lambda project, **kw: project / "clips")
+    monkeypatch.setattr(edit, "assemble", assemble)
+    assert cli.main(["edit", str(video), "--events", "--no-vision", "--json"]) == 0
+    out = capsys.readouterr().out
+    doc = _envelope(out)
+    assert doc["ok"] is True and doc["command"] == "edit"
+    assert doc["outputs"]["suggested_top"] == 1 and doc["outputs"]["candidates"] == 3
+    assert out.count('"suggested_top"') == 1  # replaced, not added twice

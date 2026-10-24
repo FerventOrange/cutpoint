@@ -134,7 +134,7 @@ def run_edit(
         ModuleNotFoundError: With ``events``, if the events extra is missing (before any
             analysis).
     """
-    from cutpoint.analyze import analyze  # noqa: PLC0415
+    from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
 
     videos = find_videos(inputs)
     if any(file_keys(v.parent) & file_keys(project) for v in videos):
@@ -171,6 +171,7 @@ def run_edit(
         from cutpoint.events.cli import run_args  # noqa: PLC0415
 
         run_args(_events_namespace(project))
+        report_highlights(project, project / "highlights.json")  # events re-ranked it
     export_clips(
         project,
         top=kind.top,

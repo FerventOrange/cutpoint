@@ -1106,8 +1106,12 @@ def analyze(
                 vision_stats = {"requested": min(n_top, len(cands)), "failed": n_failed}
                 cands.sort(key=lambda c: -c.score)
             elif vision:
-                logger.warning(
-                    "--vision requested but Ollama/model unavailable; continuing without it"
+                message = "--vision requested but Ollama/model unavailable; continuing without it"
+                logger.warning("%s", message)
+                jsonout.warn("vision_unavailable", message)
+            else:  # the default: vision if reachable; only --json tells an agent it was not
+                jsonout.warn(
+                    "vision_unavailable", "Ollama/model unavailable; continuing without vision"
                 )
 
         cands.sort(key=lambda c: (not c.must_include, -c.score))  # must-include first
@@ -1202,12 +1206,13 @@ def analyze(
         if (out_dir / "events.json").exists() and style.kind != "ski":  # earlier cutpoint events
             (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)  # stale copy
             rescore_highlights(out_dir)
-        _report(out_dir, out)
+        report_highlights(out_dir, out)
         return out
 
 
-def _report(out_dir: Path, highlights: Path) -> None:
-    """``--json`` outputs of an analysis: the files written and what highlights.json holds."""
+def report_highlights(out_dir: Path, highlights: Path) -> None:
+    """``--json`` outputs of an analysis: the files written and what highlights.json holds
+    (``edit`` calls it again after ``events`` re-ranked it; the later values replace these)."""
     if not jsonout.active():
         return
     saved = cache.load_json(highlights)

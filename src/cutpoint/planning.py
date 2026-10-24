@@ -73,7 +73,7 @@ def select_moments(
         by_id = {c["id"]: c for c in cands}
         missing = [i for i in ids if i not in by_id]
         if missing:
-            raise ValueError(f"Unknown ids: {', '.join(missing)}")
+            raise jsonout.ArgumentError(f"Unknown ids: {', '.join(missing)}")
         chosen = [by_id[i] for i in ids]
     else:
         ranked = sorted(cands, key=lambda c: -c["score"])
