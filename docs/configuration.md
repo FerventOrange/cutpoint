@@ -190,6 +190,8 @@ Game-HUD OCR regions come from a preset, looked up in this order:
 
 A file named like a bundled preset in 1 or 2 overrides it. To change a bundled preset, copy it
 to one of those folders and edit the copy. The `"builtin"` key is only read in bundled presets;
-elsewhere it is ignored with a WARNING.
+elsewhere it is ignored with a WARNING. A copy of `r6.json` is therefore read as a generic JSON
+preset (generic kill-feed parsing, generic banners added, new OCR cache), not with the built-in R6
+interpretation.
 
 See [game streams](workflows/game-streams.md).

@@ -42,7 +42,9 @@ With `events.json` present, `clips` also applies event tails: if a payoff starts
 
 OCR regions come from a per-game preset (lookup order in
 [Configuration](../configuration.md#hud-presets)). Rainbow Six Siege and War Thunder
-ship as bundled presets (`r6.json`, `wt.json`) that you can copy and edit as a starting point. The game is picked from the file or folder name, or set with `--game KEY`.
+ship as bundled presets (`r6.json`, `wt.json`) that you can copy and edit as a starting point; a
+copy of `r6.json` is read as a generic preset, not with the built-in R6 interpretation. The game is
+picked from the file or folder name, or set with `--game KEY`.
 
 For a game without a preset, `events` runs region discovery automatically. It samples bursts of
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and

@@ -81,8 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The Rainbow Six Siege HUD preset is now the bundled JSON preset `r6.json`, next to `wt.json`, so
-  it can be copied and edited like any preset; a user or project `r6.json` still overrides it.
-  Detection and the OCR cache are unchanged (#8).
+  it can be copied and edited; a copy is read as a generic preset, not with the built-in R6
+  interpretation. A user or project `r6.json` still overrides it. Detection and the OCR cache of
+  the bundled preset are unchanged (#8).
 - `cutpoint edit` takes `analyze`'s `--vision-top`, `--ollama-url` and `--ollama-model` with the
   same defaults and checks (`--vision-top` must be greater than 0) and passes them to the analysis.
 - The UI's New Project Source field no longer has the in-browser "Browse" button and folder
