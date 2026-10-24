@@ -103,6 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` caches each project's source list, so preview and media requests no longer re-list
+  the source folder or re-read `highlights.json` on every request, which was slow on network
+  shares. Changes are picked up on the next request: the cache is checked against
+  `highlights.json`, `ui/meta.json` and the picked folder's modification time, with a 60 s
+  backstop (#129).
 - `highlights.json` errors now read "has no sources list" / "has no candidates list", and
   `{"candidates": null}` gives this error instead of a crash.
 - `extend --force` (and in-place `extend`) also replaces leftover `.part` files from a hard-killed
