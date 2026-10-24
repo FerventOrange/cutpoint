@@ -174,11 +174,15 @@ def concat_reencode(
 
 def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
     """Where each clip starts in the joined video: back to back, each crossfade
-    (``fade`` s, 0 for cuts) overlapping it with the previous clip."""
+    (``fade`` s, 0 for cuts) overlapping it with the previous clip.
+
+    Cuts (concat demuxer or filter) start a clip where the previous file ends: its
+    container ``duration``, longer than its video when the audio runs on. Crossfades
+    follow the video (``vduration``)."""
     offsets, t = [], 0.0
     for info in infos:
         offsets.append(t)
-        t += info.vduration - fade
+        t += info.vduration - fade if fade > 0 else info.duration
     return offsets
 
 

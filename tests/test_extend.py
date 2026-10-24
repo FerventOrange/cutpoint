@@ -1,4 +1,4 @@
-"""``cutpoint extend``: which file a manifest entry is read from."""
+"""``cutpoint extend``: which file a manifest entry is read from; subtitles of the new range."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info, remap, write
-from cutpoint import extend, planning
+from cutpoint import extend, planning, sources, srt
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 
@@ -86,3 +86,57 @@ def test_extend_reuse_copies_unchanged_clips_when_only_the_file_read_differs(tmp
 
     assert reads == []
     assert (out / "001_a.mp4").read_text(encoding="utf-8") == "earlier"
+
+
+WORDS = [{"start": 9.4, "end": 9.8, "word": "early."}, {"start": 20.2, "end": 20.6, "word": "late"}]
+
+
+def _srt_clips(tmp_path: Path, srt_file: str | None = "001_a.srt") -> Path:
+    """One clip (10-20 s of a.mp4) with an .srt of the old range, listed unless ``srt_file``
+    is None."""
+    clips = tmp_path / "proj" / "clips"
+    write(clips / "001_a.mp4")
+    write(clips / "001_a.srt", srt.format_srt([(0.0, 1.0, "stale")]))
+    e = {"file": "001_a.mp4", "source": str(write(tmp_path / "a.mp4")), "start": 10.0}
+    e |= {"end": 20.0} | ({"srt": srt_file} if srt_file else {})
+    write(clips / "manifest.json", json.dumps({"format": FMT, "clips": [e]}))
+    return clips
+
+
+def _manifest(folder: Path) -> dict:
+    return json.loads((folder / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
+
+
+@pytest.mark.parametrize("where", ["in-place", "other-out"])
+def test_extend_writes_each_clips_srt_for_its_new_range(tmp_path, monkeypatch, reads, where):
+    clips = _srt_clips(tmp_path)
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    out = clips if where == "in-place" else tmp_path / "proj" / "ext"
+    _run(clips, out_dir=out, force=True)
+    # padded by 1 s on each side (9-21 s): both words are in, timed from 9 s
+    want = srt.format_srt(srt.clip_cues(WORDS, 9.0, 21.0))
+    assert want.startswith("1\n00:00:00,400 --> ")
+    assert "late" in want
+    assert (out / "001_a.srt").read_text(encoding="utf-8") == want
+    assert _manifest(out)["srt"] == "001_a.srt"
+    if where == "other-out":  # the input folder is left as it was
+        assert "stale" in (clips / "001_a.srt").read_text(encoding="utf-8")
+
+
+def test_extend_in_place_without_a_transcript_removes_its_old_srt(tmp_path, monkeypatch, reads):
+    clips = _srt_clips(tmp_path)
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    _run(clips, out_dir=clips, force=True)
+    assert not (clips / "001_a.srt").exists()  # listed, so an earlier run's: stale timing
+    assert "srt" not in _manifest(clips)
+
+
+def test_extend_never_overwrites_an_srt_the_manifest_does_not_list(
+    tmp_path, monkeypatch, reads, caplog
+):
+    clips = _srt_clips(tmp_path, srt_file=None)  # 001_a.srt made by hand
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    _run(clips, out_dir=clips, force=True)
+    assert "stale" in (clips / "001_a.srt").read_text(encoding="utf-8")
+    assert "srt" not in _manifest(clips)
+    assert any(r.levelname == "WARNING" and "001_a.srt" in r.message for r in caplog.records)

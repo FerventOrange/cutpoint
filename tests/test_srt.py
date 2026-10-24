@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import subprocess
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -71,6 +72,16 @@ def test_final_cues_follow_cuts_and_crossfade_overlap(tmp_path, fade):
     assert cues[2][0] == pytest.approx(second + 2.0)
     assert cues[0][1] <= cues[1][0]  # never overlapping, also inside a crossfade
     assert assemble.clip_offsets(infos, fade) == [0.0, second]
+
+
+def test_cuts_start_a_clip_at_the_previous_files_end_crossfades_at_its_video_end(tmp_path):
+    """The concat demuxer starts each clip at the previous file's container duration, which
+    is longer than its video when the audio runs on; xfade works on the video."""
+    infos = [replace(_info(tmp_path / f"{i}.mp4", 2.1), vduration=2.0) for i in range(3)]
+    assert assemble.clip_offsets(infos) == pytest.approx([0.0, 2.1, 4.2])
+    assert assemble.clip_offsets(infos, 0.5) == pytest.approx([0.0, 1.5, 3.0])
+    plain = [_info(tmp_path / f"{i}.mp4", 2.0) for i in range(3)]  # duration == vduration
+    assert assemble.clip_offsets(plain) == pytest.approx([0.0, 2.0, 4.0])
 
 
 def test_missing_transcript_writes_no_srt_and_says_so_once(tmp_path, monkeypatch, caplog):
@@ -147,12 +158,13 @@ def test_renamed_clip_uses_its_own_srt_in_the_final(tmp_path):
     assert cues[-2:] == [(4.5, 5.5, "moved"), (6.5, 7.0, "long")]
 
 
-def _lavfi_clip(out: Path, seconds: float) -> None:
+def _lavfi_clip(out: Path, seconds: float, audio: float | None = None) -> None:
+    """A 64x48 clip of ``seconds``; its audio runs ``audio`` s (default: as long)."""
     subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
          f"testsrc=size=64x48:rate=10:duration={seconds}", "-f", "lavfi", "-i",
-         f"sine=frequency=440:sample_rate=48000:duration={seconds}", "-c:v", "libx264",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)],
+         f"sine=frequency=440:sample_rate=48000:duration={audio or seconds}", "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", *([] if audio else ["-shortest"]), str(out)],
         check=True,
     )  # fmt: skip
 
@@ -180,3 +192,32 @@ def test_assemble_writes_final_srt_on_the_crossfaded_timeline(tmp_path, monkeypa
     second = assemble.probe(clips_dir / "001_a.mp4").vduration - 0.5
     assert f"{srt.srt_time(second + 1.0)} --> " in text
     assert text.startswith("1\n00:00:00,200 --> ")
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("baked", [0.25, 0.0], ids=["stream-copy", "audio-faded"])
+def test_assemble_cut_srt_follows_where_concat_starts_each_clip(tmp_path, monkeypatch, baked):
+    """Clips whose audio runs 0.1 s past their 2 s of video: concat starts each next clip
+    2.1 s on, and final.srt follows it instead of drifting 0.1 s per clip."""
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    names = ["001_a.mp4", "002_b.mp4", "003_c.mp4"]
+    for name in names:
+        _lavfi_clip(clips_dir / name, 2.0, audio=2.1)
+    entries = [
+        {"file": n, "source": f"{n[4]}.mp4", "start": 0.0, "end": 2.0, "audio_fade": baked}
+        for n in names
+    ]
+    (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
+    words = _words((1.0, 1.4, "word"))
+    monkeypatch.setattr(sources, "source_words", lambda _src: words)
+    assemble.assemble(clips_dir)
+    keyframes = subprocess.run(
+        [shutil.which("ffprobe"), "-v", "error", "-select_streams", "v", "-skip_frame", "nokey",
+         "-show_entries", "frame=pts_time", "-of", "csv=p=0", str(tmp_path / "final.mp4")],
+        capture_output=True, text=True, check=True,
+    ).stdout.replace(",", " ").split()  # fmt: skip
+    starts = [float(k) - float(keyframes[0]) for k in keyframes]  # each clip opens on one
+    assert starts == pytest.approx([0.0, 2.1, 4.2], abs=0.03)
+    cues = srt.read_srt(tmp_path / "final.srt")
+    assert [c[0] for c in cues] == pytest.approx([s + 1.0 for s in starts], abs=0.01)

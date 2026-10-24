@@ -42,7 +42,8 @@ If the user asks for "edit this video and make it a montage" in one step, use
   `manifest.json` lists, once every new clip is exported (other files, sources included, stay;
   clips renamed or added by hand stay and are assembled; a WARNING names them, so tell the
   user, and move them out only if they are clips you exported, never delete a file you did not
-  export).
+  export). If such a clip has the name of a new clip, the run stops before exporting with an
+  `ERROR` naming it; tell the user to move or rename it.
 - Transcription, `events` and export can take minutes to hours. Run them in the background or
   with a long timeout.
 - Never modify or delete the user's source videos. You may delete or rename clips in a project's
@@ -138,7 +139,7 @@ Variants:
 | `transcript.txt` | `analyze` | Time-stamped transcript |
 | `events.json`, `events.txt` | `events` | Detected sounds, HUD events, model descriptions |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, srt |
-| `clips/001_<label>.srt`, ... | `clips` | Subtitles of each clip, from the cached transcript |
+| `clips/001_<label>.srt`, ... | `clips`, `extend` | Subtitles of each clip, from the cached transcript |
 | `final.mp4`, `final.fcpxml`, `final.otio`, `final.srt` | `assemble` | Result, timelines and subtitles |
 | `<name>-final.mp4`, `<name>-final.srt` | `edit` | Copy of the final video and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
 | `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands | See the action-cam page |

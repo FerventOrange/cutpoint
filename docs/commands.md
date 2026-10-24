@@ -237,8 +237,9 @@ files, the names this run writes and `manifest.json`. A file the run reads as a 
 replaced; if a new clip name is one, the run stops with an error before exporting. Every other
 file stays, including `.mp4` files the old manifest does not list (renamed or added by hand); a
 WARNING names them, since `assemble` includes every `.mp4` in the folder; move them out before
-re-running `clips --force` if they are not part of the edit. Without a readable
-old manifest, only the new names are replaced. Because the staging folder sits next to the output
+re-running `clips --force` if they are not part of the edit. If such a file has the name of a
+new clip, the run stops with an error naming it before exporting; move or rename it. Without a
+readable old manifest, every existing `.mp4` counts as such a file. Because the staging folder sits next to the output
 folder, `clips --force` refuses before any export a non-empty output folder that is a drive
 root, a mount point or a bind mount; use `--out` with a folder on that drive. An empty drive
 root or mount point is exported into directly, each clip under a temporary name until it is
@@ -339,9 +340,16 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   or a clip locked by another program, leaves the original clips as they were. The same holds for
   `--out DIR --force` into a non-empty `DIR`: `DIR` is unchanged unless every clip was exported.
   Files in `DIR` that the run does not write stay; a WARNING names `.mp4` clips left there that
-  were not re-exported, because `assemble` will include them. `--out DIR --force` is refused
+  were not re-exported, because `assemble` will include them. An `.mp4` in `DIR` that `DIR`'s
+  `manifest.json` does not list and that has the name of a clip to re-export stops the run
+  before any export, as with `clips --force`. `--out DIR --force` is refused
   before any export when a non-empty `DIR` is a drive root, a mount point or a bind mount, and
   so is in-place `extend` of such a clips folder; use `--out` with a folder on that drive.
+- **Subtitles.** Each re-exported clip gets its `.srt` for the new range, as `clips` writes it,
+  and the manifest records it (`srt`). An `.srt` the target folder's manifest lists for a
+  re-exported clip is replaced (removed if the source has no cached transcript); one it does
+  not list (made or renamed by hand) is never overwritten, and that clip gets no new `.srt`
+  (one WARNING).
 
 ## assemble
 
