@@ -93,9 +93,8 @@ install. With an NVIDIA GPU but no `gpu` extra, Cutpoint logs one line and uses 
 INFO NVIDIA GPU found, but the CUDA libraries for whisper are not installed (...); transcribing on the CPU. For GPU transcription add the 'gpu' extra: <command>
 ```
 
-- Add the extra with the command in that line: `uv sync --extra gpu` (plus every other extra you
-  use) from a clone, `uv tool install "cutpoint[gpu]" --reinstall` for a tool install (plus your
-  other extras), or `pip install "cutpoint[gpu]"`.
+- Add the `gpu` extra with the command in that line, listing every other extra you use
+  ([Optional extras](../getting-started.md#optional-extras)). With pip: `pip install "cutpoint[gpu]"`.
 - Update the NVIDIA driver. On Linux the pip-installed CUDA libraries are preloaded
   automatically; if Whisper still falls back to the CPU, check the driver with `nvidia-smi`.
 - AMD GPUs are not used for transcription: faster-whisper has no AMD GPU backend in Cutpoint, so
@@ -129,15 +128,8 @@ A PyPI or wheel tool install (`uv tool install cutpoint`) gets CPU-only torch on
 index in `pyproject.toml` also applies to tool installs and `uv pip install` from a clone directory
 or git URL, so those need no index flags (with `uv pip install`, an already-installed CPU torch also
 needs `--reinstall-package torch --reinstall-package torchvision`). `pip` does not apply it. For a
-PyPI or wheel install, reinstall with the PyTorch index:
-
-```powershell
-uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match --reinstall
-```
-
-Then check the tool's own Python:
-`& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
-On Linux: `"$(uv tool dir)/cutpoint/bin/python" -c "import torch; print(torch.cuda.is_available())"`.
+PyPI or wheel install, reinstall with the PyTorch index (add `--reinstall`) and check the tool's
+own Python: see [Install as a tool](../getting-started.md#install-as-a-tool-optional).
 
 ## Slow or odd video decoding
 

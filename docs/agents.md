@@ -11,17 +11,9 @@ repository root; `cutpoint guide` prints the same text, so an agent using a PyPI
 
 ## What exists today
 
-| Feature | Status |
-|---|---|
-| CLI (`cutpoint`) | Available |
-| Result files an agent can read (`highlights.json`, `manifest.json`, `events.json`, `transcript.txt`) | Available |
-| Python library (`import cutpoint`) | Available, no stable API promise yet |
-| `cutpoint edit` (video in, finished edit out) | Planned |
-| `cutpoint init` (first-run questions about data and output locations) | Planned |
-| JSON output on stdout for every command | Planned |
-| Agent skill | Planned |
-| Activity profiles for crash detection, detected or built from the footage (`cutpoint profile`, `--context` on `profile` and `crashes`) | Available |
-| Profiles for the other scoring layers, and per-game profiles | Planned |
+The list of what is available and what is planned is the "Status" table in
+[AGENTS.md](../AGENTS.md#status-what-you-can-rely-on). One item is not in that table: the Python
+library (`import cutpoint`) is available, with no stable API promise yet.
 
 ## Give the agent access
 
