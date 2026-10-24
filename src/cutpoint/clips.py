@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, sources
+from cutpoint import boundaries, cache, sources, srt
 from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
@@ -499,12 +499,14 @@ class RenderResult:
         end: Final out point (earlier than planned after a read error).
         read_error: Read-error record (manifest ``read_error``), or None.
         pano: 360 render record (manifest ``pano``), or None.
+        srt: Name of the subtitles written next to the clip (manifest ``srt``), or None.
     """
 
     out: Path
     end: float
     read_error: dict[str, Any] | None = None
     pano: dict[str, Any] | None = None
+    srt: str | None = None
 
 
 def plan_clips(
@@ -624,7 +626,9 @@ def render_clips(
     audio_fade: float,
     pano: PanoExporter | None = None,
 ) -> list[RenderResult]:
-    """Encode every planned clip into ``out_dir`` (360 clips through ``pano``).
+    """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
+    its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
+    for sources without one; see :mod:`cutpoint.srt`).
 
     Returns:
         One :class:`RenderResult` per plan, in order.
@@ -633,6 +637,8 @@ def render_clips(
         ValueError: If a 360 plan is given without ``pano``.
     """
     results: list[RenderResult] = []
+    words = srt.words_lookup()
+    no_words: list[str] = []
     for plan in plans:
         m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
         out = out_dir / plan.name
@@ -663,7 +669,15 @@ def render_clips(
             else "",
             f" crop {plan.crop}" if plan.crop else "",
         )
-        results.append(RenderResult(out, end, read_err, pano_rec))
+        sub = None
+        if (w := words(m["source"])) is not None:
+            sub = out.with_suffix(".srt").name
+            srt.write_srt(out_dir / sub, srt.clip_cues(w, start, end))
+        else:
+            no_words.append(m["source"])
+        results.append(RenderResult(out, end, read_err, pano_rec, sub))
+    if no_words:
+        srt.skipped_info(f"{len(no_words)} of {len(plans)} clips", no_words)
     return results
 
 
@@ -694,6 +708,7 @@ def _entry(plan: ClipPlan, res: RenderResult, audio_fade: float) -> dict[str, An
         **({"category": m["category"]} if m.get("category") else {}),
         **({"pano": res.pano} if res.pano else {}),
         **({"read_error": res.read_error} if res.read_error else {}),
+        **({"srt": res.srt} if res.srt else {}),
     }
 
 
@@ -763,9 +778,10 @@ def _replaced_files(
 ) -> tuple[list[str], list[str], list[str], bool]:
     """What ``--force`` replaces in ``out_dir`` besides the names ``new`` this run writes.
 
-    Only files an earlier run made are replaced: the clips listed in the old manifest.json
-    and leftover ``.<name>.part.mp4`` files. A file this run reads (``sources``, see
-    :func:`source_keys`) is never replaced; neither is any other ``.mp4``.
+    Only files an earlier run made are replaced: the clips and their ``.srt`` subtitles
+    listed in the old manifest.json and leftover ``.<name>.part.mp4`` files. A file this
+    run reads (``sources``, see :func:`source_keys`) is never replaced; neither is any
+    other ``.mp4`` or ``.srt``.
 
     Returns:
         ``(names to replace, .mp4 kept as sources of this run, other .mp4 kept, whether
@@ -782,10 +798,11 @@ def _replaced_files(
     listed: list[str] = []
     if isinstance(entries, list):
         for e in entries:
-            f = e.get("file") if isinstance(e, dict) else None
-            # a bare clip name only: never a path out of the folder or another kind of file
-            if isinstance(f, str) and f == Path(f).name and f.lower().endswith(".mp4"):
-                listed.append(f)
+            for key, ext in (("file", ".mp4"), ("srt", ".srt")):
+                f = e.get(key) if isinstance(e, dict) else None
+                # a bare clip name only: never a path out of the folder or another kind of file
+                if isinstance(f, str) and f == Path(f).name and f.lower().endswith(ext):
+                    listed.append(f)
     elif any(out_dir.iterdir()):
         logger.warning(
             "%s has no readable manifest.json: --force replaces only the clips this run "

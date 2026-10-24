@@ -1,0 +1,161 @@
+"""SRT subtitles next to exported clips and assembled videos (#5)."""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import subprocess
+from fractions import Fraction
+from pathlib import Path
+
+import pytest
+
+from cutpoint import assemble, clips, sources, srt
+from cutpoint.ffmpeg_utils import MediaInfo
+
+needs_ffmpeg = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
+)
+
+
+def _words(*items: tuple[float, float, str]) -> list[dict]:
+    return [{"start": s, "end": e, "word": w} for s, e, w in items]
+
+
+def _info(path: Path, duration: float) -> MediaInfo:
+    return MediaInfo(
+        path=path, duration=duration, vduration=duration, width=1920, height=1080,
+        fps=Fraction(30), pix_fmt="yuv420p", vcodec="h264", audio_streams=1,
+        acodec="aac", sample_rate=48000, channels=2,
+    )  # fmt: skip
+
+
+# Source "a.mp4": "hello there." at 101 s, "bye" at 104.5 s (past a 4 s clip from 100 s).
+WORDS = _words((101.0, 101.4, "hello"), (101.5, 101.9, "there."), (104.5, 104.9, "bye"))
+
+
+def test_single_clip_srt_is_timed_to_the_clip_start():
+    cues = srt.clip_cues(WORDS, 100.0, 104.0)
+    assert srt.format_srt(cues) == "1\n00:00:01,000 --> 00:00:02,050\nhello there.\n\n"
+    # cue times clipped to the clip; hours, carries and rounding
+    assert srt.srt_time(3723.4567) == "01:02:03,457"
+    assert srt.srt_time(59.9996) == "00:01:00,000"
+
+
+def test_extended_clip_shifts_by_its_padded_start():
+    """A clip padded (extend) by 1.5 s starts earlier in the source: its subtitles start later."""
+    plain = srt.clip_cues(WORDS, 100.0, 104.0)
+    padded = srt.clip_cues(WORDS, 98.5, 105.5)
+    assert padded[0][0] == pytest.approx(plain[0][0] + 1.5)
+    assert padded[-1][2] == "bye"  # the padded end now covers it
+
+
+@pytest.mark.parametrize("fade", [0.0, 0.5], ids=["cut", "fade"])
+def test_final_cues_follow_cuts_and_crossfade_overlap(tmp_path, fade):
+    files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
+    infos = [_info(files[0], 4.0), _info(files[1], 3.0)]
+    entries = {
+        "001_a.mp4": {"source": "a.mp4", "start": 100.0, "end": 104.0},
+        "002_b.mp4": {"source": "b.mp4", "start": 10.0, "end": 13.0},
+    }
+    by_source = {
+        "a.mp4": _words((103.5, 104.0, "late")),  # held past the clip end, into the overlap
+        "b.mp4": _words((10.2, 10.6, "first"), (12.0, 12.4, "second")),
+    }
+    cues, missing, _ = srt.final_cues(files, infos, entries, fade, by_source.get)
+    assert missing == []
+    second = 4.0 - fade  # where clip 2 starts in the final
+    assert [c[2] for c in cues] == ["late", "first", "second"]
+    assert cues[1][0] == pytest.approx(second + 0.2)
+    assert cues[2][0] == pytest.approx(second + 2.0)
+    assert cues[0][1] <= cues[1][0]  # never overlapping, also inside a crossfade
+    assert assemble.clip_offsets(infos, fade) == [0.0, second]
+
+
+def test_missing_transcript_writes_no_srt_and_says_so_once(tmp_path, monkeypatch, caplog):
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    files = [clips_dir / "001_a.mp4", clips_dir / "002_b.mp4"]  # hand-made: no manifest
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    caplog.set_level(logging.INFO)
+    out = tmp_path / "final.mp4"
+    infos = [_info(f, 2.0) for f in files]
+    assert srt.write_final_srt(clips_dir, files, infos, 0.0, out) is None
+    assert not out.with_suffix(".srt").exists()
+    assert len([r for r in caplog.records if "No subtitles" in r.message]) == 1
+
+
+def _project(home: Path) -> tuple[Path, Path, Path]:
+    project = home / "projects" / "p"
+    project.mkdir(parents=True)
+    src = project / "src.mp4"
+    src.write_bytes(b"x")
+    seg = project / "seg.json"
+    seg.write_text(
+        json.dumps([{"source": str(src), "start": 100.0, "end": 104.0, "label": "a",
+                     "speech_aware": False, "smart_tail": False}]),
+        encoding="utf-8",
+    )  # fmt: skip
+    return project, seg, project / "clips"
+
+
+def _fake_export(src, info, start, end, out, *_a, **_kw) -> None:
+    out.write_bytes(b"new")
+
+
+def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, caplog):
+    project, seg, out = _project(home)
+    monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
+    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    clips.export_clips(project, segments=seg)
+    assert (out / "001_a.srt").read_text(encoding="utf-8").startswith("1\n00:00:01,000 --> ")
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["clips"][0]["srt"] == "001_a.srt"
+
+    # --force: the old run's .srt goes even when the new run has no transcript for the
+    # clip; an .srt the old manifest does not list (made by hand) stays.
+    (out / "notes.srt").write_text("mine", encoding="utf-8")
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    caplog.set_level(logging.INFO)
+    clips.export_clips(project, segments=seg, force=True)
+    assert not (out / "001_a.srt").exists()
+    assert (out / "notes.srt").read_text(encoding="utf-8") == "mine"
+    assert "srt" not in json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
+    assert "No subtitles for 1 of 1 clips" in caplog.text
+
+
+def _lavfi_clip(out: Path, seconds: float) -> None:
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+         f"testsrc=size=64x48:rate=10:duration={seconds}", "-f", "lavfi", "-i",
+         f"sine=frequency=440:sample_rate=48000:duration={seconds}", "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)],
+        check=True,
+    )  # fmt: skip
+
+
+@needs_ffmpeg
+def test_assemble_writes_final_srt_on_the_crossfaded_timeline(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    for name in ("001_a.mp4", "002_b.mp4"):
+        _lavfi_clip(clips_dir / name, 2.0)
+    (clips_dir / "manifest.json").write_text(
+        json.dumps({"clips": [
+            {"file": "001_a.mp4", "source": "a.mp4", "start": 0.0, "end": 2.0},
+            {"file": "002_b.mp4", "source": "b.mp4", "start": 50.0, "end": 52.0},
+        ]}),
+        encoding="utf-8",
+    )  # fmt: skip
+    by_source = {"a.mp4": _words((0.2, 0.6, "one")), "b.mp4": _words((51.0, 51.4, "two"))}
+    monkeypatch.setattr(sources, "source_words", lambda src: by_source.get(src.name))
+    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.5)
+    text = (tmp_path / "final.srt").read_text(encoding="utf-8")
+    assert final == tmp_path / "final.mp4"
+    # clip 2 starts at its first clip's video length minus the 0.5 s crossfade
+    second = assemble.probe(clips_dir / "001_a.mp4").vduration - 0.5
+    assert f"{srt.srt_time(second + 1.0)} --> " in text
+    assert text.startswith("1\n00:00:00,200 --> ")
