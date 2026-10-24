@@ -73,7 +73,7 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_value,
 )
-from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, grab_images, probe
+from cutpoint.ffmpeg_utils import SOFT_STOP_S, FFmpegError, audio_mix_filter, grab_images, probe
 from cutpoint.styles import get_style, learned_styles, style_names
 from cutpoint.utils import VIDEO_EXTS, clip_files, find_videos, slugify
 
@@ -95,7 +95,6 @@ FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 500  # stills kept per project; the least recently used go first
-SOFT_STOP_S = 5.0  # Windows cancel: wait this long after CTRL_BREAK before taskkill /F
 
 
 def bad(detail: str, status: int = 400) -> HTTPException:
@@ -673,8 +672,7 @@ class Media:
         tmp = proxy.with_name(f"{key}.part.mp4")
         state = "failed"
         try:
-            _ui_folder(project)  # a ui that is a file: a clear refusal, not a traceback
-            proxy.parent.mkdir(exist_ok=True)
+            _ui_folder(project, "proxy")  # ui or ui/proxy a file: a clear refusal, not a traceback
             # a link made while this build was queued
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")
             proc = spawn(proxy_args(real, tmp, audio_streams))
@@ -733,7 +731,7 @@ class Media:
                         image = grab_images(
                             real, cs / 100, width=width, quality=5, timeout=FRAME_TIMEOUT_S
                         )[0]
-                    out.parent.mkdir(parents=True, exist_ok=True)
+                    _ui_folder(project, "frames")  # ui or ui/frames a file: a clear 409
                     tmp = _own(project, f"{UI_DIR}/frames/{out.stem}.{threading.get_ident()}.part")
                     try:
                         tmp.write_bytes(image)
@@ -993,13 +991,15 @@ def _own(p: Path, name: str) -> Path:
     return p / name
 
 
-def _ui_folder(p: Path) -> None:
-    """Create ``p/ui`` if missing; 409 when it is a file or a dangling link (never followed)."""
-    _own(p, UI_DIR)
-    try:
-        (p / UI_DIR).mkdir(exist_ok=True)
-    except (FileExistsError, NotADirectoryError):
-        raise bad(f"{p.name}/{UI_DIR} is not a folder; remove or rename it", 409) from None
+def _ui_folder(p: Path, sub: str = "") -> None:
+    """Create ``p/ui`` (and ``p/ui/<sub>``) if missing; 409 when one is a file or a dangling link
+    (never followed)."""
+    for name in (UI_DIR, f"{UI_DIR}/{sub}") if sub else (UI_DIR,):
+        _own(p, name)
+        try:
+            (p / name).mkdir(exist_ok=True)
+        except (FileExistsError, NotADirectoryError):
+            raise bad(f"{p.name}/{name} is not a folder; remove or rename it", 409) from None
 
 
 def _is_project(d: Path) -> bool:

@@ -55,9 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: when `<project>/ui/proxy` or `<project>/ui/frames` is a file instead of a folder,
+  preparing a preview fails with a WARNING "<project>/ui/proxy is not a folder; remove or rename
+  it" and a thumbnail request gives a 409 error with the same message for `ui/frames`, like
+  `<project>/ui` itself (#184), instead of a logged traceback or a 500 error; nothing is left
+  behind (#198).
+- Re-running the analysis recorded in `highlights.json` (as `crashes --reanalyze` and `events` on
+  a ski project do) reports an existing but empty `highlights.json` (`{}`), one without its style
+  and sources, or one that holds a list, text or a number instead of an object, as "records no
+  analysis; run 'cutpoint analyze' again" instead of "not found" or a `KeyError` or
+  `AttributeError` traceback (#200).
 - A failed or interrupted audio extraction (`analyze`, `assemble --captions`) now removes its
-  temporary `.tmp.wav` file in the cache folder or next to the final video. On Windows, removal
-  after Ctrl+C is best effort, like the `.part` files: ffmpeg may still hold the file.
+  temporary `.tmp.wav` file in the cache folder or next to the final video.
+- On Ctrl+C or Ctrl+Break, Cutpoint now waits for ffmpeg to exit (at most 5 s, then stops it and
+  waits again) before removing a partial `.part` export or `.tmp.wav` file, so on Windows the file
+  is no longer left behind while ffmpeg still holds it open (#199). The exit code stays 130.
 - On Windows, `cutpoint 360 repair` retries writing its segments backup (`<name>.bak.json`) for a
   moment while another program (a virus scanner) briefly holds the file, like its other writes.
 - `cutpoint ui` project metadata edge cases (#184): a preview proxy is not built or moved into
