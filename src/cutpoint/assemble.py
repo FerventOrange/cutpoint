@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 import subprocess
 import sys
@@ -196,10 +197,27 @@ def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
     return offsets
 
 
+def crossfade_duration(infos: list[MediaInfo], fade: float) -> float:
+    """The crossfade :func:`crossfade` uses for ``fade``: at most 45% of the shortest clip,
+    at least one output frame (the first clip's rate, as :func:`_normalize_inputs`), rounded
+    up to the millisecond of the filter strings. xfade shorter than a frame cuts the video
+    short. Returns 0 when one frame is more than 45% of the shortest clip: no room to fade.
+    """
+    room = 0.45 * min(i.vduration for i in infos)
+    fps = float(infos[0].fps)
+    frame = math.ceil(1000 / fps) / 1000 if fps > 0 else 0.0
+    if frame > room:
+        return 0.0
+    used = max(min(fade, room), frame)
+    if used > fade:
+        logger.info("Crossfade %.3fs is shorter than one frame; using %.3fs", fade, used)
+    return used
+
+
 def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float) -> float:
-    """Join clips with xfade/acrossfade. Returns the fade duration actually used."""
+    """Join clips with xfade/acrossfade over ``fade`` s, as returned by
+    :func:`crossfade_duration` (> 0). Returns ``fade``."""
     chains, *_ = _normalize_inputs(infos)
-    fade = min(fade, 0.45 * min(i.vduration for i in infos))
     vprev, aprev = "v0", "a0"
     offsets = clip_offsets(infos, fade)
     for i in range(1, len(files)):
@@ -465,6 +483,14 @@ def _join(
     Returns:
         The crossfade duration used (0 for cuts), for :func:`clip_offsets`.
     """
+    if transition == "fade" and len(files) > 1:
+        fade_dur = crossfade_duration(infos, fade_dur)
+        if fade_dur == 0:
+            logger.warning(
+                "One frame is more than 45%% of the shortest clip: no room for a crossfade; "
+                "joining with cuts"
+            )
+            transition = "cut"
     if len(files) == 1 or transition == "cut":
         baked = baked_fades(clips_dir, files)
         fades = [0.0 if b > 0 else max(0.0, audio_fade) for b in baked]

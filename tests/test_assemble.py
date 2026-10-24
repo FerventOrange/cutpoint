@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -84,3 +85,50 @@ def test_assemble_cut_audio_stays_on_video_when_clip_audio_runs_on(tmp_path, mon
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(6.6, abs=0.04)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
+
+
+@pytest.mark.parametrize(
+    ("fade", "fps", "expected"),
+    [
+        (0.25, Fraction(25), 0.25),
+        (0.02, Fraction(25), 0.04),  # under one frame: raised to one
+        (0.0, Fraction(25), 0.04),
+        (0.01, Fraction(30000, 1001), 0.034),  # 33.37 ms rounded up to the millisecond
+        (5.0, Fraction(25), 0.9),  # at most 45% of the shortest clip
+    ],
+)
+def test_crossfade_duration_is_at_least_one_frame(fade, fps, expected):
+    infos = [replace(_info(2.0, 2.0), fps=fps), replace(_info(3.0, 3.0), fps=fps)]
+    assert assemble.crossfade_duration(infos, fade) == pytest.approx(expected)
+
+
+def test_crossfade_duration_is_zero_without_room_for_one_frame():
+    infos = [_info(2.0, 2.0), _info(0.08, 0.08)]  # 2 frames at 25 fps: 45% is 0.036 s
+    assert assemble.crossfade_duration(infos, 0.25) == 0.0
+
+
+def test_fade_join_without_room_falls_back_to_cuts(tmp_path, monkeypatch, caplog):
+    joined = []
+    monkeypatch.setattr(assemble, "concat_copy", lambda *a, **_: joined.append("cut"))
+    monkeypatch.setattr(assemble, "crossfade", lambda *a, **_: joined.append("fade"))
+    files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
+    infos = [_info(2.0, 2.0), _info(0.08, 0.08)]
+    used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", "fade", 0.25, 0.25)
+    assert (used, joined) == (0.0, ["cut"])
+    assert "no room for a crossfade" in caplog.text
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(("fade", "video"), [(0.02, 3.96), (0.25, 3.75)])
+def test_assemble_short_crossfade_keeps_the_whole_video(tmp_path, monkeypatch, fade, video):
+    """xfade shorter than a frame (0.02 s at 25 fps) cut the video to 2.04 s of 3.96 s."""
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    for name in ("001_a.mp4", "002_b.mp4"):
+        _clip(clips_dir / name, 2.0, 2.0)
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    final = assemble.assemble(clips_dir, transition="fade", fade_dur=fade)
+    durations = _stream_durations(final)
+    assert durations["video"] == pytest.approx(video, abs=0.04)
+    assert durations["audio"] == pytest.approx(video, abs=0.04)
