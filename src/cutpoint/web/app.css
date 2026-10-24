@@ -299,6 +299,8 @@ select { max-width: 100%; }
   background: var(--deep); border: 1px solid var(--card-line); border-radius: 6px;
 }
 .seq-list { display: grid; gap: 6px; }
+.removed { display: grid; gap: 6px; }
+.removed > p { font-size: 13px; }
 .seq { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
 .seq-check { margin: 0; cursor: pointer; }
 .seq-card {

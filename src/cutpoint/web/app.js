@@ -25,7 +25,7 @@ const S = {
   project: null,
   segments: [], // working sequence (may hold unsaved edits)
   savedKey: '[]',
-  drafts: {}, // trims of moments not (yet) in the sequence; whole segments for removed non-moments
+  drafts: {}, // trims of moments not (yet) in the sequence; whole segments for removed non-moments; ``at``: index a removed clip had
   focus: null,
   filter: '',
   jobs: [],
@@ -321,7 +321,7 @@ async function revealFolder(btn, target = 'sources') {
 
 function focusMoment(id) {
   S.focus = id;
-  for (const li of [...$('#candList').children, ...$('#seqList').children]) {
+  for (const li of [...$('#candList').children, ...$('#seqList').children, ...$('#removedList').children]) {
     if (li.dataset.id === id) li.setAttribute('aria-current', 'true');
     else li.removeAttribute('aria-current');
   }
@@ -582,24 +582,28 @@ function addSeg(id) {
   const d = S.drafts[id];
   const c = cands().find((x) => x.id === id) ?? (d?.source && d);
   if (!c || S.segments.some((s) => s.id === id)) return;
-  S.segments.push({ id, source: c.source, start: d?.start ?? c.start, end: d?.end ?? c.end, label: d?.label ?? c.label ?? id });
+  // A removed clip goes back to the index it had, clamped to the current length; clips moved or
+  // removed since then shift it, which is simpler than tracking neighbours. New clips go last.
+  const at = Math.min(d?.at ?? S.segments.length, S.segments.length);
+  S.segments.splice(at, 0, { id, source: c.source, start: d?.start ?? c.start, end: d?.end ?? c.end, label: d?.label ?? c.label ?? id });
   delete S.drafts[id];
   renderAfterSeqChange();
+  return at;
 }
 
-/** Keep a removed clip's trim for re-adding; a clip that is no moment is kept whole, so the
- * stage can still show it (and offer "Add to sequence") after it leaves the sequence. */
-function keepDraft(seg) {
+/** Keep a removed clip's trim and index ``at`` for re-adding; a clip that is no moment is kept
+ * whole, so the stage and the Removed list can still offer it after it leaves the sequence. */
+function keepDraft(seg, at) {
   S.drafts[seg.id] = cands().some((c) => c.id === seg.id)
-    ? { start: seg.start, end: seg.end, label: seg.label }
-    : { source: seg.source, start: seg.start, end: seg.end, label: seg.label };
+    ? { start: seg.start, end: seg.end, label: seg.label, at }
+    : { source: seg.source, start: seg.start, end: seg.end, label: seg.label, at };
 }
 
 function removeSeg(id) {
-  const seg = S.segments.find((s) => s.id === id);
-  if (!seg) return;
-  keepDraft(seg);
-  S.segments = S.segments.filter((s) => s !== seg);
+  const at = S.segments.findIndex((s) => s.id === id);
+  if (at < 0) return;
+  keepDraft(S.segments[at], at);
+  S.segments.splice(at, 1);
   renderAfterSeqChange();
 }
 
@@ -869,7 +873,7 @@ async function removeSelected() {
   if (!n) return;
   const what = `${n} clip${n > 1 ? 's' : ''}`;
   if (!(await confirmAction(`Remove ${what} from the sequence?`, 'Only the sequence changes. No files are deleted.'))) return;
-  for (const s of S.segments) if (S.selected.has(s.id)) keepDraft(s); // as removeSeg
+  S.segments.forEach((s, i) => S.selected.has(s.id) && keepDraft(s, i)); // as removeSeg
   S.segments = S.segments.filter((s) => !S.selected.has(s.id));
   S.selected.clear();
   renderAfterSeqChange();
@@ -1025,6 +1029,34 @@ function renderSequence() {
     $('#seqList').replaceChildren(...segs.map((s, i) => seqRow(s, i, segs.length)));
   });
   renderBatch();
+  renderRemoved();
+}
+
+/** Removed clips that are no ranked moment: listed until reload, so they can be added back. */
+function renderRemoved() {
+  const ids = new Set(S.segments.map((s) => s.id));
+  const gone = Object.entries(S.drafts).filter(([id, d]) => d.source && !ids.has(id));
+  $('#removedPanel').hidden = !gone.length;
+  preserveFocus(() => {
+    $('#removedList').replaceChildren(
+      ...gone.map(([id, d]) => {
+        const name = d.label || id;
+        return h('li', { class: 'cand', 'data-id': id, 'aria-current': id === S.focus ? 'true' : null },
+          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', onclick: () => focusMoment(id) },
+            h('span', { class: 'cand-top' }, h('span', { class: 'cand-title', text: name })),
+            h('span', { class: 'cand-time tc' }, `${fmt(d.start)} to ${fmt(d.end)}, ${(d.end - d.start).toFixed(1)} s in ${baseName(d.source)}`)),
+          h('button', {
+            type: 'button', class: 'btn small', 'data-act': 'add', 'aria-label': `Add ${name} back to sequence`,
+            onclick: () => {
+              const at = addSeg(id);
+              $('#seqLive').textContent = `${name} added back to the sequence at position ${at + 1}`;
+              focusRow(at, 'focus'); // its row here is gone; follow the clip into the sequence
+            },
+          }, 'Add back'),
+        );
+      }),
+    );
+  });
 }
 
 // ---------- save, export, assemble ----------
@@ -1468,7 +1500,7 @@ function bind() {
         c.seg.start = c.cand.start;
         c.seg.end = c.cand.end;
         changed();
-      } else delete S.drafts[c.id];
+      } else S.drafts[c.id] = { at: S.drafts[c.id]?.at }; // keep where a removed moment goes back
       setTrimMsg('');
       renderTrim(true);
       seekTo(c.cand.start);
