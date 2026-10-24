@@ -83,9 +83,9 @@ Resolve Free has no Python API, so the hand-off is through files.
 2. Pick `final.fcpxml`. `final.otio` also works.
 3. Leave "Automatically import source clips into media pool" checked and click OK.
 
-The timeline places the clips back to back in filename order at their frame rate. It uses hard
-cuts even if the MP4 was built with `--transition fade`, so you can add transitions in Resolve.
-Audio fades are baked into the clip files. If you move the clips folder, relink the media in
+The timeline places the clips in filename order at their frame rate. With `--transition fade` it
+holds a cross-dissolve at each join, starting on the edit, matching `final.mp4`; with cuts the
+clips sit back to back. Audio fades are baked into the clip files. If you move the clips folder, relink the media in
 Resolve or run `assemble` again.
 
 ## Reading slow or network sources once

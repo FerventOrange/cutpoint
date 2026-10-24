@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored in the path JSON: a clip fails with more than 1 inside its span; clips without a `vl`
   record are judged as before and `qa` does not call Ollama. `qa.json` gets a per-clip `vl`
   field and the edit totals `vl_checked` and `vl_bad`, and the log table a `vl` column (#16).
+- `final.fcpxml` and `final.otio` hold a cross-dissolve at each join when `assemble` uses
+  `--transition fade` (and for `edit` kinds that crossfade). It starts on the edit, and the
+  clips and total length match `final.mp4`; with cuts the timelines are unchanged. On the OTIO
+  audio track a clip without audio now leaves a gap, so later audio stays in sync (#246).
 
 ### Changed
 
