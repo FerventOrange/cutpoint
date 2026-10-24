@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 import subprocess
 import sys
@@ -133,12 +134,13 @@ def concat_copy(
             args += ["-i", str(f)]
         chains = []
         for i, (info, fade) in enumerate(zip(infos, fades, strict=True)):
-            # Each clip's audio is padded/trimmed to its video length so the
-            # stream-copied video and the re-built audio cannot drift apart.
+            # Each clip's audio is padded/trimmed to where the demuxer starts the
+            # next clip (cut_duration) so the stream-copied video and the
+            # re-built audio cannot drift apart.
             chains.append(
                 _audio_chain(i + 1, info, fade, label=i).replace(
                     f"[a{i}]",
-                    f",apad,atrim=end={info.vduration:.6f}[a{i}]"
+                    f",apad,atrim=end={cut_duration(info):.6f}[a{i}]"
                     if info.audio_streams
                     else f"[a{i}]",
                 )
@@ -172,6 +174,15 @@ def concat_reencode(
     _encode(files, ";".join(chains) + f";{pairs}concat=n={len(files)}:v=1:a=1[v][a]", out)
 
 
+def cut_duration(info: MediaInfo) -> float:
+    """How long a clip lasts on a cut join: its container ``duration``.
+
+    The concat demuxer starts the next file there, longer than the video when the
+    audio runs on. The cut offsets (:func:`clip_offsets`, so final.srt) and the
+    audio rebuilt by :func:`concat_copy` use it, so they stay on the video."""
+    return info.duration
+
+
 def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
     """Where each clip starts in the joined video: back to back, each crossfade
     (``fade`` s, 0 for cuts) overlapping it with the previous clip.
@@ -182,14 +193,31 @@ def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
     offsets, t = [], 0.0
     for info in infos:
         offsets.append(t)
-        t += info.vduration - fade if fade > 0 else info.duration
+        t += info.vduration - fade if fade > 0 else cut_duration(info)
     return offsets
 
 
+def crossfade_duration(infos: list[MediaInfo], fade: float) -> float:
+    """The crossfade :func:`crossfade` uses for ``fade``: at most 45% of the shortest clip,
+    at least one output frame (the first clip's rate, as :func:`_normalize_inputs`), rounded
+    up to the millisecond of the filter strings. xfade shorter than a frame cuts the video
+    short. Returns 0 when one frame is more than 45% of the shortest clip: no room to fade.
+    """
+    room = 0.45 * min(i.vduration for i in infos)
+    fps = float(infos[0].fps)
+    frame = math.ceil(1000 / fps) / 1000 if fps > 0 else 0.0
+    if frame > room:
+        return 0.0
+    used = max(min(fade, room), frame)
+    if used > fade:
+        logger.info("Crossfade %.3fs is shorter than one frame; using %.3fs", fade, used)
+    return used
+
+
 def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float) -> float:
-    """Join clips with xfade/acrossfade. Returns the fade duration actually used."""
+    """Join clips with xfade/acrossfade over ``fade`` s, as returned by
+    :func:`crossfade_duration` (> 0). Returns ``fade``."""
     chains, *_ = _normalize_inputs(infos)
-    fade = min(fade, 0.45 * min(i.vduration for i in infos))
     vprev, aprev = "v0", "a0"
     offsets = clip_offsets(infos, fade)
     for i in range(1, len(files)):
@@ -455,6 +483,14 @@ def _join(
     Returns:
         The crossfade duration used (0 for cuts), for :func:`clip_offsets`.
     """
+    if transition == "fade" and len(files) > 1:
+        fade_dur = crossfade_duration(infos, fade_dur)
+        if fade_dur == 0:
+            logger.warning(
+                "One frame is more than 45% of the shortest clip: no room for a crossfade; "
+                "joining with cuts"
+            )
+            transition = "cut"
     if len(files) == 1 or transition == "cut":
         baked = baked_fades(clips_dir, files)
         fades = [0.0 if b > 0 else max(0.0, audio_fade) for b in baked]
@@ -496,7 +532,8 @@ def assemble(
 
     ``audio_fade``: audio fade in/out (s) added to each clip that has no fade
     baked in by ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored for
-    ``transition="fade"``, which crossfades the audio anyway.
+    ``transition="fade"``, which crossfades the audio anyway, unless the join falls back to
+    cuts (no room for a one-frame crossfade).
 
     Raises:
         FileNotFoundError: If the folder has no .mp4 clips.

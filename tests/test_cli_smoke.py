@@ -70,10 +70,12 @@ def test_edit_bad_option_is_a_usage_error(capsys, option, value):
         ["360", "director", "some-project", "--top", "0"],
         ["360", "stitch", "some-project", "--top", "-1"],
         ["360", "stitch", "some-project", "--max-total", "0"],
+        ["assemble", "some-clips", "--transition", "fade", "--fade-dur", "0"],
+        ["assemble", "some-clips", "--transition", "fade", "--fade-dur", "-0.5"],
     ],
 )
-def test_non_positive_top_or_max_total_is_a_usage_error(capsys, argv):
-    """`--top -1` used to select all but one moment."""
+def test_non_positive_top_max_total_or_fade_dur_is_a_usage_error(capsys, argv):
+    """`--top -1` used to select all but one moment; `--fade-dur 0` cut the video short."""
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
