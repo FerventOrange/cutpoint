@@ -31,7 +31,7 @@ def test_truncated_highlights_names_file_and_how_to_fix(tmp_path, reader):
 
 # reanalyze has its own non-object check (tests/test_analyze.py)
 @pytest.mark.parametrize("reader", ["select_moments", "load_highlights"])
-@pytest.mark.parametrize("content", ["null", "[]"])
+@pytest.mark.parametrize("content", ["null", "[]", "{}", '{"sources": null}'])
 def test_non_object_highlights_is_a_clear_error(tmp_path, reader, content):
     (tmp_path / "highlights.json").write_text(content, encoding="utf-8")
     with pytest.raises(ValueError, match="is not a JSON object") as err:

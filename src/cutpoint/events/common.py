@@ -203,15 +203,18 @@ def load_highlights(project: Path) -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: If it is missing.
-        ValueError: If it is unreadable, not valid JSON or not a JSON object.
+        ValueError: If it is unreadable, not valid JSON or not a JSON object with a
+            ``sources`` list.
     """
     path = project / "highlights.json"
     try:
         data = cache.read_json(path, hint="; re-run `cutpoint analyze` to rewrite it")
     except FileNotFoundError:
         raise FileNotFoundError(f"{path} not found; run `cutpoint analyze` first") from None
-    if not isinstance(data, dict):  # e.g. null or a list
-        raise ValueError(f"{path} is not a JSON object; re-run `cutpoint analyze` to rewrite it")
+    if not isinstance(data, dict) or not isinstance(data.get("sources"), list):  # e.g. null
+        raise ValueError(
+            f"{path} is not a JSON object with sources; re-run `cutpoint analyze` to rewrite it"
+        )
     return data
 
 
