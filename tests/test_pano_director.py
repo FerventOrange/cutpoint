@@ -558,3 +558,78 @@ def test_failed_path_for_removes_only_the_folder_it_created(
         ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None)
     assert ex.paths_dir.is_dir() is existed
     assert (tmp_path / "pano_paths").is_dir() is existed
+
+
+# ------------------------------------------------------------ evaluate: cubic interpolation
+def keys_path(yaw, pitch=None, fov=None, dt=0.5) -> dict:
+    n = len(yaw)
+    pitch = pitch if pitch is not None else [0.0] * n
+    fov = fov if fov is not None else [90.0] * n
+    return {
+        "keys": [
+            {"t": i * dt, "yaw": y, "pitch": p, "fov": f}
+            for i, (y, p, f) in enumerate(zip(yaw, pitch, fov, strict=True))
+        ]
+    }
+
+
+def test_evaluate_velocity_is_continuous_at_a_middle_key() -> None:
+    path = keys_path([0.0, 10.0, 30.0, 35.0])  # keys at 0, .5, 1, 1.5 s
+    e = 1e-4
+    t = np.array([1.0 - 2 * e, 1.0 - e, 1.0 + e, 1.0 + 2 * e])
+    yaw = D.evaluate(path, t)[0]
+    left = (yaw[1] - yaw[0]) / e
+    right = (yaw[3] - yaw[2]) / e
+    assert left == pytest.approx(right, rel=1e-2)
+    assert left > 0  # moving, not a degenerate flat tangent
+
+
+def test_evaluate_never_overshoots_the_neighbouring_keys() -> None:
+    # non-monotone pitch and fov: a spline would overshoot at the turns
+    path = keys_path(
+        [0.0, 5.0, 10.0, 15.0, 20.0],
+        pitch=[0.0, 20.0, 18.0, 30.0, 0.0],
+        fov=[90.0, 60.0, 62.0, 100.0, 95.0],
+    )
+    t = np.linspace(0.0, 2.0, 401)
+    _, pitch, fov = D.evaluate(path, t)
+    kt = np.array([k["t"] for k in path["keys"]])
+    for out, name in ((pitch, "pitch"), (fov, "fov")):
+        ky = np.array([k[name] for k in path["keys"]])
+        i = np.clip(np.searchsorted(kt, t, side="right") - 1, 0, len(kt) - 2)
+        lo, hi = np.minimum(ky[i], ky[i + 1]), np.maximum(ky[i], ky[i + 1])
+        assert np.all(out >= lo) and np.all(out <= hi), name
+
+
+def test_evaluate_yaw_across_the_antimeridian_is_smooth() -> None:
+    path = keys_path([170.0, -175.0, -160.0, -150.0])  # +15, +15, +10 deg: always eastward
+    t = np.linspace(0.0, 1.5, 301)
+    yaw = D.evaluate(path, t)[0]
+    assert yaw[0] == pytest.approx(170.0) and yaw[-1] == pytest.approx(210.0)
+    assert np.all(np.diff(yaw) >= 0)  # monotone, no 360 deg jump
+    assert np.abs(np.diff(yaw)).max() < 1.0
+    v = np.diff(yaw) / np.diff(t)
+    assert np.abs(np.diff(v)).max() < 1.0  # velocity has no steps either
+
+
+def test_evaluate_two_keys_are_linear() -> None:
+    path = keys_path([0.0, 20.0], pitch=[0.0, 10.0], fov=[90.0, 70.0])
+    t = np.linspace(-0.2, 0.7, 19)  # held outside [0, .5]
+    yaw, pitch, fov = D.evaluate(path, t)
+    s = np.clip(t / 0.5, 0.0, 1.0)
+    assert yaw == pytest.approx(20.0 * s)
+    assert pitch == pytest.approx(10.0 * s)
+    assert fov == pytest.approx(90.0 - 20.0 * s)
+
+
+@pytest.mark.parametrize(
+    "kx", [[0.0, 0.0, 1.0, 2.0], [0.0, 1.0, 1.0, 2.0]], ids=["start", "middle"]
+)
+def test_pchip_two_keys_at_one_time_step_without_nan(kx: list[float]) -> None:
+    # hand-edited path: a step at the shared time, no NaN, no numpy warning
+    kx_a, ky = np.array(kx), np.array([0.0, 10.0, 4.0, 8.0])
+    x = np.array([-0.5, 0.0, 1.0, 2.0, 2.5])  # outside, at the keys (incl. the step)
+    with np.errstate(all="raise"):
+        out = D._pchip(x, kx_a, ky)
+    assert np.all(np.isfinite(out))
+    assert out == pytest.approx(np.interp(x, kx_a, ky))
