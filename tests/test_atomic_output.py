@@ -11,6 +11,7 @@ import signal
 import subprocess
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -110,8 +111,8 @@ def test_ffmpeg_failure_shows_crash_codes_readably(monkeypatch, rc, shown):
     monkeypatch.setattr(ffmpeg_utils, "stage_inputs", lambda cmd: cmd)
     monkeypatch.setattr(
         ffmpeg_utils.subprocess,
-        "run",
-        lambda cmd, **_kw: subprocess.CompletedProcess(cmd, rc, "", "boom"),
+        "Popen",
+        lambda cmd, **_kw: SimpleNamespace(communicate=lambda timeout: ("", "boom"), returncode=rc),
     )
     with pytest.raises(FFmpegError, match=rf"\(exit {re.escape(shown)}\)"):
         ffmpeg_utils.run(["ffmpeg", "-i", "x"])
@@ -1121,3 +1122,154 @@ def test_extract_audio_leaves_no_temp_wav_when_it_fails_or_is_interrupted_midway
             ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, _info(tmp_path / "a.mp4"))
         assert err.value is exc
         assert list(dst.parent.iterdir()) == []
+
+
+# --- #199: an interrupted ffmpeg exits before its partial output is removed ---
+
+
+class _Child:
+    """Stand-in for the ffmpeg ``Popen`` of ``run`` and ``run_progress``; it never sleeps.
+
+    ``communicate`` or iterating ``stdout`` raises ``raises`` once (then it is running). The
+    child exits ``exits_after`` s into a ``wait`` (None: only when killed, never when
+    ``unkillable``); ``on_exit`` runs as it exits. ``calls`` records wait/kill/close.
+    """
+
+    def __init__(self, raises=None, exits_after=0.0, unkillable=False, on_exit=None) -> None:
+        self.raises, self.exits_after = raises, exits_after
+        self.unkillable, self.on_exit = unkillable, on_exit
+        self.returncode = None
+        self.calls: list[tuple] = []
+        self.stdout = self  # run_progress reads and closes it
+
+    def _raise_once(self) -> None:
+        if self.raises is not None:
+            err, self.raises = self.raises, None
+            raise err
+
+    def __iter__(self):
+        self._raise_once()
+        return iter(["out_time_us=1000000\n"])
+
+    def close(self) -> None:
+        self.calls.append(("close",))
+
+    def communicate(self, timeout=None):
+        self._raise_once()
+        self.wait()
+        return "", ""
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.calls.append(("wait", timeout))
+        if self.returncode is None:
+            if self.exits_after is None or (timeout is not None and timeout < self.exits_after):
+                raise subprocess.TimeoutExpired("ffmpeg", timeout)
+            self._exit(0)
+        return self.returncode
+
+    def kill(self) -> None:
+        self.calls.append(("kill",))
+        if not self.unkillable:
+            self._exit(-9)
+
+    def _exit(self, code: int) -> None:
+        self.returncode = code
+        if self.on_exit is not None:
+            self.on_exit()
+
+
+@pytest.fixture
+def child(monkeypatch):
+    """Every ffmpeg started is ``state.proc``; its argv is ``state.cmd``."""
+    state = SimpleNamespace(proc=_Child(), cmd=None)
+
+    def popen(cmd, **_kw):
+        state.cmd = cmd
+        return state.proc
+
+    monkeypatch.setattr(ffmpeg_utils, "find_tool", lambda name: name)
+    monkeypatch.setattr(ffmpeg_utils.subprocess, "Popen", popen)
+    return state
+
+
+_RUNNERS = {
+    "run": lambda: ffmpeg_utils.run(["ffmpeg", "-i", "x.mp4", "out.mp4"]),
+    "run_progress": lambda: ffmpeg_utils.run_progress(["ffmpeg", "-i", "x.mp4", "o.mp4"], 9, "t"),
+}
+_SOFT = ("wait", ffmpeg_utils.SOFT_STOP_S)
+
+
+def _waits_and_kills(proc: _Child) -> list[tuple]:
+    return [c for c in proc.calls if c[0] != "close"]
+
+
+@pytest.mark.parametrize("runner", _RUNNERS)
+def test_interrupted_ffmpeg_is_waited_for_and_the_interrupt_reraised(child, runner):
+    """It got the Ctrl+C too and exits within SOFT_STOP_S: no kill."""
+    exc = KeyboardInterrupt()
+    child.proc = _Child(raises=exc, exits_after=ffmpeg_utils.SOFT_STOP_S / 2)
+    with pytest.raises(KeyboardInterrupt) as err:
+        _RUNNERS[runner]()
+    assert err.value is exc
+    assert _waits_and_kills(child.proc) == [_SOFT]
+    assert child.proc.returncode == 0
+
+
+@pytest.mark.parametrize("runner", _RUNNERS)
+@pytest.mark.parametrize("unkillable", [False, True], ids=["killed", "unkillable"])
+def test_interrupted_ffmpeg_still_running_after_soft_stop_is_killed(child, runner, unkillable):
+    """Still running after SOFT_STOP_S: killed and waited for again, bounded both times."""
+    exc = KeyboardInterrupt()
+    child.proc = _Child(raises=exc, exits_after=None, unkillable=unkillable)
+    with pytest.raises(KeyboardInterrupt) as err:
+        _RUNNERS[runner]()
+    assert err.value is exc
+    assert _waits_and_kills(child.proc) == [_SOFT, ("kill",), _SOFT]
+    assert (child.proc.returncode is None) is unkillable
+
+
+@pytest.mark.parametrize("runner", _RUNNERS)
+def test_ffmpeg_is_killed_at_once_on_other_errors(child, runner):
+    """Not an interrupt: the child got no signal, so it is killed without the soft wait."""
+    exc = MemoryError()
+    child.proc = _Child(raises=exc, exits_after=None)
+    with pytest.raises(MemoryError) as err:
+        _RUNNERS[runner]()
+    assert err.value is exc
+    assert _waits_and_kills(child.proc) == [("kill",), _SOFT]
+
+
+def test_run_progress_stops_reading_progress_before_waiting(child):
+    child.proc = _Child(raises=KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _RUNNERS["run_progress"]()
+    assert child.proc.calls[0] == ("close",)
+
+
+def test_interrupted_extract_audio_removes_its_temp_wav_after_ffmpeg_exits(
+    monkeypatch, tmp_path, child
+):
+    """Like Windows: the .tmp.wav cannot be removed while ffmpeg is running."""
+    dst = tmp_path / "cache" / "a.wav"
+    child.proc = _Child(
+        raises=KeyboardInterrupt(),
+        exits_after=1.0,
+        on_exit=lambda: Path(child.cmd[-1]).write_bytes(b"finalized"),
+    )
+    unlink = Path.unlink
+
+    def locked_unlink(self, *a, **kw):
+        if child.proc.returncode is None:
+            raise PermissionError(errno.EACCES, "in use by ffmpeg", str(self))
+        unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    dst.parent.mkdir()
+    (dst.parent / "a.tmp.wav").write_bytes(b"partial")  # ffmpeg had started writing
+    with pytest.raises(KeyboardInterrupt):
+        ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, _info(tmp_path / "a.mp4"))
+    assert child.cmd[-1].endswith(".tmp.wav")
+    assert list(dst.parent.iterdir()) == []

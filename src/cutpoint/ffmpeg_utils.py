@@ -45,6 +45,8 @@ from cutpoint.config import get_config, path_key
 
 logger = logging.getLogger(__name__)
 
+SOFT_STOP_S = 5.0  # a stopped child (ffmpeg; a UI job after CTRL_BREAK) gets this long
+
 
 class FFmpegError(RuntimeError):
     """Raised when ffmpeg/ffprobe is missing or a command fails."""
@@ -119,6 +121,26 @@ def stage_inputs(cmd: list[str]) -> list[str]:
     return out
 
 
+def _stop_child(proc: subprocess.Popen, err: BaseException) -> None:
+    """Let ``proc`` exit before the caller removes its partial output (#199).
+
+    On Windows a running ffmpeg keeps its output open, so removing a ``.part`` or
+    ``.tmp.wav`` file right after Ctrl+C fails. After a KeyboardInterrupt (Ctrl+C,
+    Ctrl+Break, the UI's cancel) the child got the same event, so it is given
+    ``SOFT_STOP_S`` to exit; after any other error, or when it is still running then, it is
+    killed and waited for (again at most ``SOFT_STOP_S``). The caller re-raises ``err``.
+    """
+    try:
+        if isinstance(err, KeyboardInterrupt):
+            with suppress(subprocess.TimeoutExpired):
+                proc.wait(SOFT_STOP_S)
+    finally:  # a second Ctrl+C during the wait still kills it
+        if proc.poll() is None:
+            proc.kill()
+            with suppress(subprocess.TimeoutExpired):
+                proc.wait(SOFT_STOP_S)
+
+
 def run(
     args: list[str],
     *,
@@ -133,19 +155,20 @@ def run(
     """
     cmd = stage_inputs([find_tool(args[0]), *args[1:]])
     logger.debug("exec: %s", subprocess.list2cmdline(cmd))
+    pipe = subprocess.PIPE if capture else None
+    proc = subprocess.Popen(
+        cmd, stdout=pipe, stderr=pipe, text=True, encoding="utf-8", errors="replace", cwd=cwd
+    )
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=capture,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=cwd,
-            timeout=timeout,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as err:
+        proc.kill()
+        proc.communicate()
         raise FFmpegError(f"{args[0]} timed out after {timeout:g}s") from err
-    out = (proc.stdout or "") + (proc.stderr or "")
+    except BaseException as err:
+        _stop_child(proc, err)
+        raise
+    out = (stdout or "") + (stderr or "")
     if proc.returncode != 0:
         tail = "\n".join(out.strip().splitlines()[-15:])
         raise FFmpegError(f"{args[0]} failed (exit {exit_code(proc.returncode)}):\n{tail}")
@@ -196,18 +219,25 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
             cmd, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8", errors="replace"
         )
         assert proc.stdout is not None
-        for line in proc.stdout:
-            if not line.startswith("out_time_us="):
-                continue
-            try:
-                out_time = max(out_time, int(line.split("=", 1)[1]) / 1e6)
-            except ValueError:
-                continue
-            pct = out_time / total * 100 if total else 0
-            if total >= 600 and pct >= next_pct:
-                logger.info("  %s: %d%% (%.0fs elapsed)", label, int(pct), time.perf_counter() - t0)
-                next_pct = (int(pct) // 10 + 1) * 10
-        proc.wait()
+        try:
+            for line in proc.stdout:
+                if not line.startswith("out_time_us="):
+                    continue
+                try:
+                    out_time = max(out_time, int(line.split("=", 1)[1]) / 1e6)
+                except ValueError:
+                    continue
+                pct = out_time / total * 100 if total else 0
+                if total >= 600 and pct >= next_pct:
+                    elapsed = time.perf_counter() - t0
+                    logger.info("  %s: %d%% (%.0fs elapsed)", label, int(pct), elapsed)
+                    next_pct = (int(pct) // 10 + 1) * 10
+            proc.wait()
+        except BaseException as exc:
+            with suppress(OSError):  # unread progress must not block its exit
+                proc.stdout.close()
+            _stop_child(proc, exc)
+            raise
         err.seek(0)
         stderr = err.read().decode("utf-8", "replace")
         if proc.returncode != 0:
