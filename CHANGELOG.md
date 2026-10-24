@@ -78,6 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `extend` into a folder with a manifest (in place, or `--out` with `--force`) removes the `.srt`
+  the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
+  new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
+  replaced or removed by a later run. An `.srt` the old manifest does not list stays (#239).
 - `extend` writes each re-exported clip's `.srt` for its new range and records it in the
   manifest (`srt`), in place and with `--out`. In place, the `.srt` the old manifest lists is
   replaced (removed when the source has no cached transcript), so no subtitles with the old

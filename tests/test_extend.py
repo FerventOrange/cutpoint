@@ -140,3 +140,29 @@ def test_extend_never_overwrites_an_srt_the_manifest_does_not_list(
     assert "stale" in (clips / "001_a.srt").read_text(encoding="utf-8")
     assert "srt" not in _manifest(clips)
     assert any(r.levelname == "WARNING" and "001_a.srt" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize("where", ["in-place", "other-out"])
+def test_extend_removes_the_listed_srt_of_a_clip_deleted_during_review(
+    tmp_path, monkeypatch, reads, where
+):
+    clips = _srt_clips(tmp_path)
+    out = clips if where == "in-place" else tmp_path / "proj" / "ext"
+    src = _manifest(clips)["source"]
+    # out holds an earlier run's 001_a and 002_b; 002_b.mp4 was deleted during review
+    write(out / "002_b.srt", "old")
+    write(out / "notes.srt", "mine")  # not listed: made by hand
+    entries = [
+        {"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0, "srt": "001_a.srt"},
+        {"file": "002_b.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_b.srt"},
+    ]
+    write(out / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+
+    _run(clips, out_dir=out, force=True)
+
+    assert not (out / "002_b.srt").exists()  # listed by the old manifest, its clip gone
+    assert (out / "notes.srt").read_text(encoding="utf-8") == "mine"
+    files = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"]
+    assert [e["file"] for e in files] == ["001_a.mp4"]
+    assert "late" in (out / "001_a.srt").read_text(encoding="utf-8")
