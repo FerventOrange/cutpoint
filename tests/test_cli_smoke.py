@@ -46,6 +46,13 @@ def test_clips_bad_size_is_a_usage_error(capsys):
     assert "Traceback" not in err
 
 
+def test_360_qa_bad_size_is_a_usage_error(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["360", "qa", "x", "--paths", "--size", "abc"])
+    assert exc.value.code == 2
+    assert "--size" in capsys.readouterr().err
+
+
 def test_guide_prints_agents_md(capsys):
     assert cli.main(["guide"]) == 0
     assert capsys.readouterr().out.startswith("# Cutpoint for AI agents")
