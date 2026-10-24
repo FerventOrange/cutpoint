@@ -169,6 +169,35 @@ def test_analyze_failure_removes_only_folder_it_created(home, tmp_path, preexist
     assert project.exists() == bool(preexisting)
 
 
+@pytest.mark.parametrize(
+    ("out", "error", "code"),
+    [
+        ("proj", RuntimeError("bad video"), 1),
+        ("projects/new/nested", RuntimeError("bad video"), 1),
+        ("projects/new/nested", KeyboardInterrupt(), 130),
+    ],
+)
+def test_failed_analyze_leaves_no_new_project_folder(home, tmp_path, monkeypatch, out, error, code):
+    """analyze removes the folders it created (#217): the project and, for a new nested
+    --out, its new parents; on an error and on Ctrl+C."""
+    video = tmp_path / "videos" / "a.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cutpoint.analyze, "Transcriber", lambda **kw: None)
+    reached: list[Path] = []
+
+    def analyze_source(src, *a, **kw):
+        reached.append(src)  # inside analyze's project folder, which exists by now
+        raise error
+
+    monkeypatch.setattr(cutpoint.analyze, "analyze_source", analyze_source)
+    assert cli.main(["analyze", str(video), "--no-vision", "--out", out]) == code
+    assert reached == [video]
+    projects = home / "projects"
+    assert not projects.exists() or list(projects.iterdir()) == []
+
+
 def test_huggingface_warning_is_printed_once():
     pytest.importorskip("huggingface_hub.utils.logging")
     assert cli.main(["paths"]) == 0

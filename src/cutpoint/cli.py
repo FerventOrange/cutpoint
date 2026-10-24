@@ -58,31 +58,23 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
     style = get_style(a.style)
     if a.must_include_crash is not None:
         style = replace(style, must_include_crash=a.must_include_crash)
-    created = not out.exists()
-    try:
-        analyze(
-            targets,
-            style,
-            out,
-            vision=a.vision,
-            model=a.model,
-            language=a.language,
-            use_scenes=not a.no_scenes,
-            max_candidates=a.max_candidates,
-            vision_top=a.vision_top,
-            ollama_url=a.ollama_url,
-            ollama_model=a.ollama_model,
-            exclude=a.exclude or [],
-            recursive=a.recursive,
-            recover=a.recover,
-        )
-    except BaseException:
-        # Do not leave behind an empty project folder this run created; a failed cleanup must
-        # not replace the original exception (Ctrl+C has to stay exit 130).
-        with contextlib.suppress(OSError):
-            if created and out.is_dir() and not any(out.iterdir()):
-                out.rmdir()
-        raise
+    # A failed or interrupted analyze removes the (still empty) folders it created.
+    analyze(
+        targets,
+        style,
+        out,
+        vision=a.vision,
+        model=a.model,
+        language=a.language,
+        use_scenes=not a.no_scenes,
+        max_candidates=a.max_candidates,
+        vision_top=a.vision_top,
+        ollama_url=a.ollama_url,
+        ollama_model=a.ollama_model,
+        exclude=a.exclude or [],
+        recursive=a.recursive,
+        recover=a.recover,
+    )
 
 
 def _cmd_edit(a: argparse.Namespace) -> None:
