@@ -86,6 +86,8 @@ def import_order(monkeypatch):
     monkeypatch.delitem(sys.modules, "torch")
     monkeypatch.setattr(transcribe, "_torch_loaded", False)
     monkeypatch.setattr(transcribe, "_cpu_notice_logged", False)
+    monkeypatch.setattr(sys, "platform", "win32")  # the clash is Windows-only
+    monkeypatch.setattr(transcribe, "_dll_dirs_added", True)  # no real DLL dirs off Windows
     set_libs_loadable(monkeypatch, True)
     return calls
 
@@ -119,5 +121,12 @@ def test_missing_torch_is_not_imported(import_order, monkeypatch):
     finder = FakeTorchFinder(import_order)
     monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
     monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None)
+    assert transcribe.cuda_available() is True
+    assert import_order == ["ctranslate2"]
+
+
+def test_torch_is_not_imported_off_windows(import_order, monkeypatch):
+    install_torch(monkeypatch, import_order)
+    monkeypatch.setattr(sys, "platform", "linux")
     assert transcribe.cuda_available() is True
     assert import_order == ["ctranslate2"]

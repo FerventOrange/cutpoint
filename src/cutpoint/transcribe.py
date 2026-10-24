@@ -36,17 +36,18 @@ _CUDA_LIBS = {
 
 
 def _load_torch_first() -> None:
-    """Import torch, if installed, before ctranslate2 or the CUDA libraries load (once).
+    """Windows: import torch, if installed, before ctranslate2 or the CUDA libraries load (once).
 
-    On Windows, torch bundles its own cuDNN; once the gpu extra's newer cuDNN is loaded,
-    ``import torch`` fails with WinError 127 (#215). The other order works, and whisper
-    then runs on torch's cuDNN. A broken torch must not break transcription.
+    torch bundles its own cuDNN; once the gpu extra's newer cuDNN is loaded, ``import torch``
+    fails with WinError 127 (#215). The other order works, and whisper then runs on torch's
+    cuDNN. Other platforms skip it (no clash; importing torch is slow). A broken torch must
+    not break transcription.
     """
     global _torch_loaded
     if _torch_loaded:
         return
     _torch_loaded = True
-    if importlib.util.find_spec("torch") is None:
+    if sys.platform != "win32" or importlib.util.find_spec("torch") is None:
         return
     try:
         import torch  # noqa: F401, PLC0415 - optional and slow; only before the CUDA probe
