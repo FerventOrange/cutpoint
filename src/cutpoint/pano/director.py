@@ -1266,9 +1266,48 @@ def compute_path(
     return path
 
 
+def _pchip(x: np.ndarray, kx: np.ndarray, ky: np.ndarray) -> np.ndarray:
+    """Monotone cubic Hermite (Fritsch-Carlson / Fritsch-Butland tangents) of ``(kx, ky)``
+    at ``x``, held outside ``kx``.
+
+    C1 (continuous velocity) and shape-preserving: every value lies between its two
+    keys, so it never overshoots the keys (or any clamp they respect). Interior
+    tangents are the weighted harmonic mean of the neighbouring slopes (0 at a turn or
+    flat side); the ends use the one-sided slope. Fewer than 3 keys: ``np.interp``.
+    """
+    ky = np.asarray(ky, float)
+    if len(kx) < 3:
+        return np.interp(x, kx, ky)
+    h = np.diff(kx)
+    # two keys at one time (hand-edited path): a step there, as np.interp does
+    d = np.divide(np.diff(ky), h, out=np.zeros(len(h)), where=h > 0)
+    m = np.empty(len(kx))
+    m[0], m[-1] = d[0], d[-1]
+    d0, d1 = d[:-1], d[1:]
+    w1, w2 = 2 * h[1:] + h[:-1], h[1:] + 2 * h[:-1]
+    same = d0 * d1 > 0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        m[1:-1] = np.where(same, (w1 + w2) / (w1 / d0 + w2 / d1), 0.0)
+    xc = np.clip(x, kx[0], kx[-1])
+    i = np.clip(np.searchsorted(kx, xc, side="right") - 1, 0, len(kx) - 2)
+    s = np.divide(xc - kx[i], h[i], out=np.ones(len(xc)), where=h[i] > 0)
+    s2, s3 = s * s, s * s * s
+    out = (
+        (2 * s3 - 3 * s2 + 1) * ky[i]
+        + (s3 - 2 * s2 + s) * h[i] * m[i]
+        + (-2 * s3 + 3 * s2) * ky[i + 1]
+        + (s3 - s2) * h[i] * m[i + 1]
+    )
+    # rounding only: keep each value between its keys exactly
+    out = np.clip(out, np.minimum(ky[i], ky[i + 1]), np.maximum(ky[i], ky[i + 1]))
+    return np.where(x < kx[0], ky[0], out)  # held at the first key, as np.interp does
+
+
 def evaluate(path: dict[str, Any], times: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-frame ``(yaw, pitch, fov)`` from a path's keys (linear inside shots, held
-    outside the planned range, hard jumps at keys marked ``cut``)."""
+    """Per-frame ``(yaw, pitch, fov)`` from a path's keys (monotone cubic inside shots,
+    see :func:`_pchip`; linear in a shot of 2 keys; held outside the planned range,
+    hard jumps at keys marked ``cut``). Yaw is interpolated unwrapped (shortest arc
+    between consecutive keys) and returned unwrapped, continuous within a shot."""
     keys = path["keys"]
     kt = np.array([k["t"] for k in keys], float)
     cut_idx = [i for i, k in enumerate(keys) if k.get("cut")]
@@ -1285,9 +1324,9 @@ def evaluate(path: dict[str, Any], times: np.ndarray) -> tuple[np.ndarray, np.nd
         if not sel.any():
             continue
         ty = np.degrees(np.unwrap(np.radians([k["yaw"] for k in keys[a:b]])))
-        yaw[sel] = np.interp(times[sel], kt[a:b], ty)
-        pitch[sel] = np.interp(times[sel], kt[a:b], [k["pitch"] for k in keys[a:b]])
-        fov[sel] = np.interp(times[sel], kt[a:b], [k["fov"] for k in keys[a:b]])
+        yaw[sel] = _pchip(times[sel], kt[a:b], ty)
+        pitch[sel] = _pchip(times[sel], kt[a:b], [k["pitch"] for k in keys[a:b]])
+        fov[sel] = _pchip(times[sel], kt[a:b], [k["fov"] for k in keys[a:b]])
     return yaw, pitch, fov
 
 
