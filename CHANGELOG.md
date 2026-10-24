@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint edit <video...> --kind highlights|montage|clips|funny-moments` runs `analyze`,
+  `clips` and `assemble` in one command and copies the result to `<video>-final.mp4` and
+  `<video>-final.srt` in the project folder. Each kind sets the style, selection, clip order,
+  transition, loudness normalisation and captions; `--style`, `--top`, `--max-total`,
+  `--vertical`, `--force` and `--events` override it (#2).
+- SRT subtitles: `clips` writes `001_<label>.srt` next to each clip and `assemble` writes
+  `final.srt` (`final_vertical.srt`, ...) next to the final video, from the cached transcripts
+  of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
+  No transcription runs for them; without a cached transcript there is no `.srt` and one INFO
+  line. `clips --force` replaces only the `.srt` files its old `manifest.json` lists (#5).
+- `cutpoint capabilities` reports torch (installed, version, CUDA or CPU-only build, whether it
+  reaches the GPU). On a machine with a usable NVIDIA driver, a CPU-only torch gives a warning
+  with the exact reinstall command for the install type (clone, tool install, pip), and a CUDA
+  build that cannot reach the GPU gives driver advice. It also reports the Insta360 Media SDK
+  (found or not) and warns that the SDK needs an NVIDIA GPU when none is found; `360 stitch`
+  logs the same warning before it runs. New JSON keys: `torch` and `insta360_sdk` (#22).
 - `cutpoint ui` preview player has a mute button and a volume slider next to Play, shared by
   moments, clips and the final video and remembered per browser (default unmuted at 100%). `M`
   toggles mute (#142).
@@ -61,6 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check (for
+  example `360 analyze` with cached views but no cached event layers) no longer fails with
+  `WinError 127` on `cudnn_cnn64_9.dll`. On Windows the GPU check imports torch first when it is
+  installed, so torch loads its own cuDNN before the `gpu` extra's newer one (#215).
 - `cutpoint ui`: when `<project>/ui/proxy` or `<project>/ui/frames` is a file instead of a folder,
   preparing a preview fails with a WARNING "<project>/ui/proxy is not a folder; remove or rename
   it" and a thumbnail request gives a 409 error with the same message for `ui/frames`, like

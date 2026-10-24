@@ -14,7 +14,8 @@ prints tracebacks of errors.
 | Command | Purpose |
 |---|---|
 | [`ui`](#ui) | Open a local browser editing workspace for standard video |
-| [`capabilities`](#capabilities) | Report GPU vendors, working encoders and transcription support |
+| [`capabilities`](#capabilities) | Report GPU vendors, working encoders, transcription, torch and SDK support |
+| [`edit`](#edit) | Analyze, export clips and assemble in one command |
 | [`analyze`](#analyze) | Find and rank highlight candidates |
 | [`events`](#events) | Detect sounds, HUD events and describe windows with a model |
 | [`clips`](#clips) | Export moments as numbered clips |
@@ -89,6 +90,11 @@ cutpoint capabilities [--json]
 
 Reports GPU vendors present separately from usable video encoders, the selected encoder,
 faster-whisper's transcription device, and the backend order `setup` would use for llama.cpp.
+It also reports torch (installed, CUDA or CPU-only build, whether it reaches the GPU; with the
+reinstall command when it is CPU-only on a machine with a usable NVIDIA driver) and the Insta360
+Media SDK (found or not, and a warning when no NVIDIA GPU is found). `360 stitch` logs that
+warning before it runs. The JSON keys are `torch` and `insta360_sdk`; see
+[GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities).
 Encoder checks actually encode a short clip; an encoder listed by ffmpeg is not necessarily
 usable. This command downloads nothing. `--json` writes the report to stdout for other tools.
 
@@ -98,6 +104,39 @@ export once on the CPU if a GPU encode fails on real footage (one WARNING); an
 explicit unavailable GPU encoder fails rather than silently selecting another backend.
 AMD transcription remains CPU-only with the current faster-whisper runtime.
 See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device permissions.
+
+## edit
+
+```text
+cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [--out DIR]
+              [--top N] [--max-total S] [--vertical] [--force] [--events]
+```
+
+Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
+settings of a kind, then copies the final video and its subtitles to `<name>-final.mp4` and
+`.srt` in the project folder (a hard link where the file system allows it). `<name>` is the
+first input's name: a file's name without extension, or the folder's name. Nothing is written next to the source videos: a project folder that holds
+one of them is refused.
+
+| Kind | Style | Selection | Order | Transition | Other |
+|---|---|---|---|---|---|
+| `highlights` (default) | `action` | up to 180 s | chronological | fade | loudnorm |
+| `montage` | `action` | up to 60 s | by score | fade | loudnorm |
+| `clips` | `action` | top 10 | by score | cut | loudnorm; the clips are the deliverable |
+| `funny-moments` | `funny` | top 8 | chronological | cut | loudnorm, burned-in captions |
+
+| Option | Meaning |
+|---|---|
+| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s) |
+| `--out DIR` | Project folder. Default: `<projects>\<name>` (the first input's name, as above) |
+| `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
+| `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
+| `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
+
+Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
+files removed) and logs the final video, its subtitles and the clips folder last. To change the
+cut afterwards, delete or rename clips (rename a clip's `.srt` with it) and run `assemble`;
+that updates `final.mp4` and `final.srt`, not the `<name>-final` copies.
 
 ## analyze
 
@@ -263,6 +302,11 @@ Notes:
   sources mix, pass `--size 1920x1080` and a `crop` on the 8:7 segments.
 - `manifest.json` records each clip's source, start, end, score, label, tail, crop, padding and
   speech moves. `extend` and `assemble` read it.
+- **Subtitles.** Each clip gets `001_<label>.srt` next to it, from the source's cached
+  transcript (the one `analyze` made; no transcription runs), timed to the clip's padded start.
+  A source without a cached transcript gets no `.srt` (one INFO line); a transcript without
+  speech in the clip gives an empty one. The manifest records the file (`srt`), and `--force`
+  replaces only the `.srt` files the old manifest lists.
 - Each export is checked for silent truncation (an ffmpeg read error, or a clip more than
   0.3 s short). The read is retried once; a clip still short is re-encoded to end cleanly, with a
   `read_error` record in the manifest.
@@ -317,6 +361,12 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
 - Default output: `<project>\final.mp4`; `final_vertical.mp4` for `clips_vertical`;
   `final_<name>.mp4` for other folders. A `.fcpxml` and a `.otio` timeline are always written
   next to it (hard cuts; add transitions in your editor).
+- Subtitles `final.srt` (named after the output) are written next to it from the clips'
+  cached source transcripts, placed on the joined timeline (crossfades included) by each
+  clip's `manifest.json` start and end. A clip renamed during review has no manifest entry;
+  its own `.srt` (renamed with it) is used instead. Clips with neither, or whose source has no
+  cached transcript, get none; one INFO line names them, and with none at all no `.srt` is
+  written.
 
 ## stage
 

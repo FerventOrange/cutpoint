@@ -50,8 +50,9 @@ These work today:
 - "Find the crashes in the `bike-park` project. It's downhill mountain biking with a chest
   mount, and the lens gets muddy."
 
-A bare "edit this video and make it a montage" with no pointer to Cutpoint depends on the planned
-`cutpoint edit` and the skill.
+An agent pointed at Cutpoint can do "edit this video and make it a montage" in one step with
+`cutpoint edit <video> --kind montage`. A bare request with no pointer to Cutpoint depends on
+the planned skill.
 
 ## Limits to know
 

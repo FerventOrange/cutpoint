@@ -577,6 +577,10 @@ def cmd_stitch(a: argparse.Namespace) -> None:
             "No 360 clips selected (use --clips NNN ..., --from-clips DIR, --segments FILE or "
             "a project with highlights.json)"
         )
+    from cutpoint.capabilities import SDK_NEEDS_NVIDIA, nvidia_present  # noqa: PLC0415
+
+    if not nvidia_present():
+        logger.warning(SDK_NEEDS_NVIDIA)
     recs = stitch_clips(
         sorted(chosen.values(), key=lambda c: c.clip_id), force=a.force, dry_run=a.dry_run
     )

@@ -102,6 +102,47 @@ INFO NVIDIA GPU found, but the CUDA libraries for whisper are not installed (...
   normal, not an error.
 - To force a smaller model, pass `analyze --model small`.
 
+## torch and the Insta360 SDK in `capabilities`
+
+`cutpoint capabilities` also checks torch (the `events` extra) and the Insta360 Media SDK. Both
+checks download and change nothing. A usable NVIDIA driver means the Linux kernel driver is loaded
+or `nvidia-smi -L` lists a GPU (on Windows, the second test). The torch warning uses only this
+test; the SDK check (`nvidia_gpu_present`) also counts an NVIDIA display adapter.
+
+torch line and `torch` JSON keys:
+
+| Line or key | Meaning |
+|---|---|
+| `torch: not installed (...)` / `installed: false` | The `events` extra is missing; `fix` holds the install command |
+| `installed but does not load (...)` / `error` | torch is installed but importing it failed (for example a DLL); the error text is kept |
+| `version`, `cuda_build` | torch version and the CUDA version it was built for; `null` for a CPU-only build |
+| `cuda_available` | `true` when torch reaches the GPU (`uses the GPU`), `false` for `runs on the CPU` |
+| `warning` | Set only when a usable NVIDIA driver is present but torch runs on the CPU |
+| `fix` | The install command: set when torch is not installed, or with `warning` |
+
+What to do about the warning:
+
+- **CPU-only build on an NVIDIA machine** (the default PyPI install on Windows): `events`, crash
+  detection and 360 views run on the CPU, much slower. Run the command printed after `Fix:`. It
+  is chosen for your install type (tool install, `uv pip` or `pip`, clone) and keeps the extras in use.
+  See also [`events` is very slow](#events-is-very-slow).
+- **CUDA build that cannot use the GPU:** the driver is probably too old for that CUDA version.
+  Update the NVIDIA driver (check `nvidia-smi`); for a build other than CUDA 12.6 the fix also
+  offers the CUDA 12.6 reinstall command.
+
+SDK line and `insta360_sdk` JSON keys:
+
+| Key | Meaning |
+|---|---|
+| `found`, `path`, `origin`, `version` | Whether the SDK executable exists, where it was looked up, how it was configured and its version. `origin` is `none` when nothing is configured or installed |
+| `error` | The `pano` config section is malformed; the SDK was not checked |
+| `nvidia_gpu_present` | `true` when an NVIDIA display adapter or a usable driver was found |
+| `warning` | Set when `nvidia_gpu_present` is `false`: the SDK needs an NVIDIA GPU and stitching will likely fail |
+
+`cutpoint 360 stitch` logs the same warning before it runs. Without an NVIDIA GPU, use
+`--pano-source studio` (an Insta360 Studio export) or the dual-fisheye preview; see
+[360 and the Insta360 SDK](360.md). If the SDK is not found, see that page too.
+
 ## Captions fail on Linux
 
 `assemble --captions` needs fontconfig and a font; the font is chosen with `fc-match sans-serif`.
