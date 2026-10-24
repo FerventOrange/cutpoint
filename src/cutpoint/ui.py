@@ -50,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -109,7 +110,7 @@ def spawn(args: list[str]) -> subprocess.Popen[str]:
         if os.name == "nt"
         else {"start_new_session": True}
     )
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         args,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -120,13 +121,39 @@ def spawn(args: list[str]) -> subprocess.Popen[str]:
         env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
         **group,
     )
+    if os.name == "nt":
+        _join_tree_job(proc)
+    return proc
+
+
+def _join_tree_job(proc: subprocess.Popen[str]) -> None:
+    """Windows: put ``proc`` in a job object of its own, so its descendants join it too.
+
+    ``kill_tree`` ends the job, which reaches every descendant even when the leader is gone:
+    ``taskkill /T`` walks the tree from a live leader only, and a soft stop that worked has ended
+    the leader. A descendant can miss CTRL_BREAK: a venv's python.exe launcher ignores the event,
+    so an interpreter it starts just after the event keeps running and holds the job's stdout.
+    """
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    k32.CreateJobObjectW.restype = ctypes.c_void_p
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        return
+    if k32.AssignProcessToJobObject(ctypes.c_void_p(job), ctypes.c_void_p(int(proc._handle))):  # type: ignore[attr-defined]
+        proc.tree_job = job  # type: ignore[attr-defined]
+        weakref.finalize(proc, k32.CloseHandle, ctypes.c_void_p(job))
+    else:  # e.g. the leader already exited: taskkill alone, as before
+        k32.CloseHandle(ctypes.c_void_p(job))
 
 
 def kill_tree(proc: subprocess.Popen[str]) -> None:
     """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, then KILL.
 
     Windows: CTRL_BREAK_EVENT to the job's process group first (cutpoint turns it into
-    KeyboardInterrupt: partial files removed, exit 130), then ``taskkill /T /F``. The event
+    KeyboardInterrupt: partial files removed, exit 130), then the job object ``spawn`` made
+    and ``taskkill /T /F``. The event
     needs a console shared with the job; without one (pythonw) only the hard kill runs.
     GenerateConsoleCtrlEvent is called directly: when it fails, ``os.kill`` falls through to
     TerminateProcess on the leader alone, which orphans its ffmpeg before taskkill can see it.
@@ -138,6 +165,9 @@ def kill_tree(proc: subprocess.Popen[str]) -> None:
         if k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(SOFT_STOP_S)
+        job = getattr(proc, "tree_job", None)
+        if job:  # every descendant, including ones the leader's exit left out of /T
+            k32.TerminateJobObject(ctypes.c_void_p(job), 1)
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
         )

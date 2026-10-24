@@ -244,21 +244,46 @@ def write_final_srt(
 
 
 # ------------------------------------------------- what clips --force / extend may replace
-def listed_files(out_dir: Path) -> list[str] | None:
-    """The clip and ``.srt`` names the manifest.json in ``out_dir`` lists (files an earlier
-    run made), or None if there is no readable manifest.json."""
+def _listed_pairs(out_dir: Path) -> list[tuple[str | None, str | None]] | None:
+    """``(clip, .srt)`` names of each entry of the manifest.json in ``out_dir`` (None for a
+    missing or invalid one), or None if there is no readable manifest.json."""
     manifest = cache.load_json(out_dir / "manifest.json")
     entries = manifest.get("clips") if isinstance(manifest, dict) else None
     if not isinstance(entries, list):
         return None
-    listed: list[str] = []
+    pairs: list[tuple[str | None, str | None]] = []
     for e in entries:
+        names: list[str | None] = []
         for key, ext in (("file", ".mp4"), ("srt", ".srt")):
             f = e.get(key) if isinstance(e, dict) else None
             # a bare clip name only: never a path out of the folder or another kind of file
-            if isinstance(f, str) and f == Path(f).name and f.lower().endswith(ext):
-                listed.append(f)
-    return listed
+            ok = isinstance(f, str) and f == Path(f).name and f.lower().endswith(ext)
+            names.append(f if ok else None)
+        pairs.append((names[0], names[1]))
+    return pairs
+
+
+def listed_files(out_dir: Path) -> list[str] | None:
+    """The clip and ``.srt`` names the manifest.json in ``out_dir`` lists (files an earlier
+    run made), or None if there is no readable manifest.json."""
+    pairs = _listed_pairs(out_dir)
+    if pairs is None:
+        return None
+    return [f for pair in pairs for f in pair if f is not None]
+
+
+def orphaned_srts(out_dir: Path) -> list[str]:
+    """The ``.srt`` names the manifest.json in ``out_dir`` lists for clips no longer in the
+    folder (deleted during review). A run that rewrites that manifest.json without those
+    clips removes them, like ``clips --force`` does, so none is left behind unlisted (and so
+    protected from every later run)."""
+    out: list[str] = []
+    for clip, sub in _listed_pairs(out_dir) or []:
+        if sub is None:
+            continue
+        if clip is None or not ((f := out_dir / clip).is_file() or f.is_symlink()):
+            out.append(sub)
+    return list(dict.fromkeys(out))
 
 
 def unlisted_srts(out_dir: Path, listed: list[str] | None) -> set[str]:
