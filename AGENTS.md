@@ -12,12 +12,13 @@ everything into a project folder.
 
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
-| CLI `cutpoint` with the commands below | `cutpoint edit`, `cutpoint init` |
-| Result files in the project folder (JSON and text) | JSON on stdout for every command |
+| CLI `cutpoint` with the commands below | `cutpoint init` |
+| `cutpoint edit`: analyze, clips and assemble in one command | `--context` on `edit`, clip order chosen by a local model |
+| Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | JSON on stdout for every command |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | Agent skill, profiles for the other layers and for games |
 
-If the user asks for "edit this video and make it a montage" in one step, do it with the loop
-below.
+If the user asks for "edit this video and make it a montage" in one step, use
+[One command](#one-command); to choose the moments yourself, use the loop below it.
 
 ## Calling the CLI
 
@@ -49,6 +50,22 @@ below.
 - Use the real options: `cutpoint <command> --help` is authoritative;
   [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md)
   explains them.
+
+## One command
+
+```powershell
+uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
+```
+
+`--kind` is `highlights` (default; up to 3 min, chronological, crossfades), `montage` (up to
+60 s, best first, crossfades), `clips` (the 10 best; the clips are the deliverable) or
+`funny-moments` (funny style, 8 moments, chronological, burned-in captions). `--style`, `--top`,
+`--max-total`, `--vertical`, `--force` and `--events` override the kind. It writes the project
+`<projects>\clip` (`--out NAME` to change it) with the clips, `final.mp4` and
+`clip-final.mp4` plus `.srt` subtitles; the last log lines name the final video, its subtitles
+and the clips folder. A non-empty clips folder needs `--force` (ask the user first, as for
+`clips --force`). To change the cut, review and re-assemble as in steps 5-7 below; that
+updates `final.mp4` and `final.srt`, not the `clip-final` copies.
 
 ## The full edit
 
@@ -118,8 +135,10 @@ Variants:
 | `highlights.json` | `analyze`, `events` | Ranked candidates and settings |
 | `transcript.txt` | `analyze` | Time-stamped transcript |
 | `events.json`, `events.txt` | `events` | Detected sounds, HUD events, model descriptions |
-| `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop |
-| `final.mp4`, `final.fcpxml`, `final.otio` | `assemble` | Result and timelines |
+| `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, srt |
+| `clips/001_<label>.srt`, ... | `clips` | Subtitles of each clip, from the cached transcript |
+| `final.mp4`, `final.fcpxml`, `final.otio`, `final.srt` | `assemble` | Result, timelines and subtitles |
+| `<video>-final.mp4`, `<video>-final.srt` | `edit` | Copy of the final video and its subtitles, named after the first video |
 | `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands | See the action-cam page |
 | `activity.json` | `profile`, `crashes` | Activity profile in use: `name`, `source`, `profile` |
 

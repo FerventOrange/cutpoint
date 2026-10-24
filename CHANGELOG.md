@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint edit <video...> --kind highlights|montage|clips|funny-moments` runs `analyze`,
+  `clips` and `assemble` in one command and copies the result to `<video>-final.mp4` and
+  `<video>-final.srt` in the project folder. Each kind sets the style, selection, clip order,
+  transition, loudness normalisation and captions; `--style`, `--top`, `--max-total`,
+  `--vertical`, `--force` and `--events` override it (#2).
+- SRT subtitles: `clips` writes `001_<label>.srt` next to each clip and `assemble` writes
+  `final.srt` (`final_vertical.srt`, ...) next to the final video, from the cached transcripts
+  of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
+  No transcription runs for them; without a cached transcript there is no `.srt` and one INFO
+  line. `clips --force` replaces only the `.srt` files its old `manifest.json` lists (#5).
 - `cutpoint ui` New Project "Choose video…" and "Choose folder…" buttons open the operating
   system's own file or folder dialog on the computer running the server (Windows: system dialog
   through tkinter; Linux, with a display: zenity, falling back to kdialog; macOS: osascript)

@@ -9,7 +9,8 @@ from cutpoint import cli
 
 
 @pytest.mark.parametrize(
-    ("argv", "word"), [(["--help"], "paths"), (["events", "--help"], "events")]
+    ("argv", "word"),
+    [(["--help"], "paths"), (["events", "--help"], "events"), (["edit", "--help"], "--kind")],
 )
 def test_help_exits_zero(capsys, argv, word):
     with pytest.raises(SystemExit) as exc:
@@ -44,6 +45,13 @@ def test_clips_bad_size_is_a_usage_error(capsys):
     err = capsys.readouterr().err
     assert "--size" in err and "expected WxH" in err
     assert "Traceback" not in err
+
+
+def test_edit_bad_kind_is_a_usage_error(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["edit", "video.mp4", "--kind", "trailer"])
+    assert exc.value.code == 2
+    assert "--kind" in capsys.readouterr().err
 
 
 def test_360_qa_bad_size_is_a_usage_error(capsys):
