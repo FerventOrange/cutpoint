@@ -1204,12 +1204,20 @@ def reanalyze(project: Path) -> Path:
     Everything expensive is cached (audio, transcript, telemetry), so this is
     quick. ``cutpoint events`` calls it for ski projects, whose events feed the
     feature grid itself rather than a score boost.
+
+    Raises:
+        FileNotFoundError: If the project has no highlights.json.
+        ValueError: If highlights.json is unreadable, not valid JSON or records
+            no analysis.
     """
     from cutpoint.styles import get_style  # noqa: PLC0415
 
-    hl = cache.load_json(project / "highlights.json")
-    if hl is None:
-        raise FileNotFoundError(f"{project / 'highlights.json'} not found")
+    try:
+        hl = cache.read_json(
+            project / "highlights.json", hint="; re-run `cutpoint analyze` to rewrite it"
+        )
+    except FileNotFoundError:
+        raise FileNotFoundError(f"{project / 'highlights.json'} not found") from None
     # e.g. an empty {} or a list: a clear error, not a KeyError or AttributeError traceback
     if not isinstance(hl, dict) or "style" not in hl or "sources" not in hl:
         raise ValueError(
