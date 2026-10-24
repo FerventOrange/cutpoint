@@ -187,3 +187,32 @@ def test_assemble_crossfade_length_matches_the_srt_offsets(tmp_path, monkeypatch
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(predicted, abs=frame / 2)
     assert durations["audio"] == pytest.approx(predicted, abs=frame)
+
+
+def test_crossfade_trims_each_clip_audio_to_its_video(tmp_path, monkeypatch):
+    graphs = []
+    monkeypatch.setattr(assemble, "_encode", lambda _files, graph, _out: graphs.append(graph))
+    infos = [_info(2.14, 2.0), _info(2.0, 2.0)]  # the first clip's audio runs 3.5 frames on
+    files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
+    fade = assemble.crossfade_duration(infos, 0.25)
+    assemble.crossfade(files, infos, tmp_path / "final.mp4", fade)
+    graph = graphs[0]
+    assert "[a0]apad,atrim=end=2.000000,asetpts=PTS-STARTPTS[at0]" in graph
+    assert "[a1]apad,atrim=end=2.000000,asetpts=PTS-STARTPTS[at1]" in graph
+    assert f"[at0][at1]acrossfade=d={fade:.6f}[a]" in graph
+
+
+@needs_ffmpeg
+def test_assemble_crossfade_audio_stays_on_video_when_clip_audio_runs_on(tmp_path, monkeypatch):
+    """The first clip's audio runs 0.3 s past its 2 s of video. xfade follows the video
+    and acrossfade used the whole audio: 3.76 s of video against 4.06 s of audio."""
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    _clip(clips_dir / "001_a.mp4", 2.0, 2.3)
+    _clip(clips_dir / "002_b.mp4", 2.0, 2.0)
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
+    durations = _stream_durations(final)
+    assert durations["video"] == pytest.approx(3.76, abs=0.02)
+    assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
