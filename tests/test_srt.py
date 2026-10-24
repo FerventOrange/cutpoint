@@ -202,6 +202,26 @@ def test_clips_force_keeps_a_clip_renamed_in_case_only_and_its_srt(home, monkeyp
     )
 
 
+@pytest.mark.parametrize("renamed", [("001_a.mp4", "001_a.srt"), ("001_a.srt",)])
+def test_clips_force_replaces_the_listed_srt_of_a_replaced_clip_renamed_in_case(
+    home, monkeypatch, renamed
+):
+    """Review renamed 001_a (or only its .srt) to 001_A. The run writes 001_a again without
+    a transcript: the clip is replaced, so its old .srt goes too, not stays with stale cues."""
+    project, seg, out = _project(home)
+    monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
+    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    clips.export_clips(project, segments=seg)
+    if not (out / "001_A.mp4").exists():
+        pytest.skip("case-sensitive file system")
+    for n in renamed:
+        (out / n).rename(out / n.replace("_a", "_A"))
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    clips.export_clips(project, segments=seg, force=True)
+    assert sorted(p.name for p in out.iterdir()) == ["001_a.mp4", "manifest.json"]
+
+
 def test_renamed_clip_uses_its_own_srt_in_the_final(tmp_path):
     """Reordering by renaming (005_x -> 001b_x) loses the manifest entry: the clip's own
     .srt, renamed with it, is placed at its offset and clipped to it."""

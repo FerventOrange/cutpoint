@@ -807,13 +807,30 @@ def _replaced_files(
     parts = [p.name for p in out_dir.glob(".*.part.mp4")]
     # Only a name spelled on disk as listed: a clip renamed in case only still matches its
     # listed name on a case-insensitive file system and must stay (kept, with a warning).
+    # A listed name spelled otherwise on disk goes, under that spelling, only if this run
+    # writes or replaces its clip: an .srt beside it would keep the old cues, unlisted.
     present = {p.name for p in out_dir.iterdir()}
+    on_disk = {path_key(n): n for n in present}
+    names = list(dict.fromkeys([*(listed or []), *parts]))
     replace: list[str] = []
     kept_sources: list[str] = []
-    for n in dict.fromkeys([*(listed or []), *parts]):
+
+    def add(n: str) -> None:
         f = out_dir / n
-        if n in present and (f.is_file() or f.is_symlink()):
+        if f.is_file() or f.is_symlink():
             (kept_sources if same_file(f, sources) else replace).append(n)
+
+    for n in names:
+        if n in present:
+            add(n)
+    gone = {path_key(n) for n in (*new, *replace)}
+    for n in names:
+        if (
+            n not in present
+            and (d := on_disk.get(path_key(n))) is not None
+            and path_key(Path(n).with_suffix(".mp4").name) in gone
+        ):
+            add(d)
     done = {path_key(n) for n in (*new, *replace, *kept_sources)}
     kept: list[str] = []
     for p in sorted(clip_files(out_dir)):
