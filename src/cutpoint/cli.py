@@ -480,7 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
     ed.add_argument(
         "--out",
         help="project dir; a bare name or projects/<name> goes under the configured projects "
-        "folder. Default: <projects>/<first video's name>",
+        "folder. Default: <projects>/<first input's name> (a file's name without extension, "
+        "or the folder's name)",
     )
     ed.add_argument("--top", type=positive_int, help="top N by score (default: per kind)")
     ed.add_argument(

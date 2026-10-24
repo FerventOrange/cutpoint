@@ -139,7 +139,7 @@ Variants:
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, srt |
 | `clips/001_<label>.srt`, ... | `clips` | Subtitles of each clip, from the cached transcript |
 | `final.mp4`, `final.fcpxml`, `final.otio`, `final.srt` | `assemble` | Result, timelines and subtitles |
-| `<video>-final.mp4`, `<video>-final.srt` | `edit` | Copy of the final video and its subtitles, named after the first video |
+| `<name>-final.mp4`, `<name>-final.srt` | `edit` | Copy of the final video and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
 | `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands | See the action-cam page |
 | `activity.json` | `profile`, `crashes` | Activity profile in use: `name`, `source`, `profile` |
 

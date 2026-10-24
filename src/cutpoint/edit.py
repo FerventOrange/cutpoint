@@ -2,7 +2,8 @@
 
 Runs ``analyze`` -> (``events``) -> ``clips`` -> ``assemble`` in-process with the
 options of a :data:`KINDS` entry, then copies the final video and its subtitles
-to ``<video stem>-final.mp4`` / ``.srt`` in the project folder.
+to ``<name>-final.mp4`` / ``.srt`` in the project folder (``<name>``: see
+:func:`edit_name`).
 """
 
 from __future__ import annotations

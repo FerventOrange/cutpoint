@@ -108,9 +108,9 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
-settings of a kind, then copies the final video and its subtitles to
-`<first video's name>-final.mp4` and `.srt` in the project folder (a hard link where the file
-system allows it). Nothing is written next to the source videos: a project folder that holds
+settings of a kind, then copies the final video and its subtitles to `<name>-final.mp4` and
+`.srt` in the project folder (a hard link where the file system allows it). `<name>` is the
+first input's name: a file's name without extension, or the folder's name. Nothing is written next to the source videos: a project folder that holds
 one of them is refused.
 
 | Kind | Style | Selection | Order | Transition | Other |
@@ -123,7 +123,7 @@ one of them is refused.
 | Option | Meaning |
 |---|---|
 | `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s) |
-| `--out DIR` | Project folder. Default: `<projects>\<first video's name>` |
+| `--out DIR` | Project folder. Default: `<projects>\<name>` (the first input's name, as above) |
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
