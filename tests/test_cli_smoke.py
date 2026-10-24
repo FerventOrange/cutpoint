@@ -50,7 +50,8 @@ def test_clips_bad_size_is_a_usage_error(capsys):
 
 
 @pytest.mark.parametrize(
-    ("option", "value"), [("--kind", "trailer"), ("--top", "0"), ("--max-total", "-5")]
+    ("option", "value"),
+    [("--kind", "trailer"), ("--top", "0"), ("--max-total", "-5"), ("--vision-top", "0")],
 )
 def test_edit_bad_option_is_a_usage_error(capsys, option, value):
     """--top / --max-total are checked before the long analysis, not after it."""

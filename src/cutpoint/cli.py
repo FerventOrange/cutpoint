@@ -87,6 +87,9 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         force=a.force,
         events=a.events,
         vision=a.vision,
+        vision_top=a.vision_top,
+        ollama_url=a.ollama_url,
+        ollama_model=a.ollama_model,
     )
 
 
@@ -500,6 +503,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="rate top candidates with Ollama, as analyze --vision (default: if reachable)",
     )
+    ed.add_argument(
+        "--vision-top",
+        type=positive_int,
+        default=None,
+        metavar="N",
+        help="top candidates sent to vision (default: 1 per 2 min of footage, min 10, max 60)",
+    )
+    ed.add_argument(
+        "--ollama-url",
+        help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
+    )
+    ed.add_argument("--ollama-model", help="default: qwen3-vl:8b")
     ed.set_defaults(func=_cmd_edit)
 
     an = sub.add_parser("analyze", help="find and rank highlight candidates")

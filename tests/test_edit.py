@@ -127,7 +127,21 @@ def test_edit_name_of_a_drive_root_is_edit(tmp_path):
 def test_edit_passes_vision_to_analyze(pipeline, argv, vision):
     """No option: analyze's own default (the style's, else Ollama if reachable)."""
     assert cli.main(["edit", str(pipeline.video), *argv]) == 0
-    assert pipeline.calls[0][2] == {"vision": vision}
+    assert pipeline.calls[0][2] == {
+        "vision": vision, "vision_top": None, "ollama_url": None, "ollama_model": None,
+    }  # fmt: skip
+
+
+def test_edit_passes_the_vision_options_to_analyze(pipeline):
+    argv = ["--vision-top", "12", "--ollama-url", "http://ollama.example:11434"]
+    argv += ["--ollama-model", "llava:7b"]
+    assert cli.main(["edit", str(pipeline.video), "--vision", *argv]) == 0
+    assert pipeline.calls[0][2] == {
+        "vision": True,
+        "vision_top": 12,
+        "ollama_url": "http://ollama.example:11434",
+        "ollama_model": "llava:7b",
+    }
 
 
 def test_edit_of_a_dotted_folder_names_project_and_final_after_it(pipeline, home, monkeypatch):
