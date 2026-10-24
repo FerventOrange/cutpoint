@@ -199,11 +199,19 @@ def transcript_excerpt(
 
 
 def load_highlights(project: Path) -> dict[str, Any]:
-    """Read ``highlights.json`` of a project (raises if missing)."""
+    """Read ``highlights.json`` of a project.
+
+    Raises:
+        FileNotFoundError: If it is missing.
+        ValueError: If it is unreadable, not valid JSON or not a JSON object.
+    """
     path = project / "highlights.json"
-    data = cache.load_json(path)
-    if data is None:
-        raise FileNotFoundError(f"{path} not found; run `cutpoint analyze` first")
+    try:
+        data = cache.read_json(path, hint="; re-run `cutpoint analyze` to rewrite it")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"{path} not found; run `cutpoint analyze` first") from None
+    if not isinstance(data, dict):  # e.g. null or a list
+        raise ValueError(f"{path} is not a JSON object; re-run `cutpoint analyze` to rewrite it")
     return data
 
 

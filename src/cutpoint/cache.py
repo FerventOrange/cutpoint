@@ -59,6 +59,29 @@ def load_json(path: Path) -> Any | None:
         return None
 
 
+def read_json(path: Path, hint: str = "") -> Any:
+    """Load JSON from ``path`` like :func:`load_json`, but raise instead of returning None.
+
+    Args:
+        path: JSON file (a UTF-8 BOM is allowed).
+        hint: Appended to the unreadable-file message, e.g. how to rewrite the file.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        ValueError: If it exists but cannot be read or is not valid UTF-8 JSON; the
+            message names the path and the reason.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        raise
+    except OSError as err:  # e.g. permission denied, a directory
+        reason = err.strerror or str(err)
+        raise ValueError(f"{path} cannot be read: {reason}{hint}") from err
+    except ValueError as err:  # JSONDecodeError, UnicodeDecodeError
+        raise ValueError(f"{path} is not valid JSON: {err}{hint}") from err
+
+
 REPLACE_ATTEMPTS = 5
 
 
