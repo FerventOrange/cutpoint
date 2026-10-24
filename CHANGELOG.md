@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `missing_extra`, `output_not_empty`, `interrupted` or `error`. Logs, stray output and the
   output of child processes go to stderr; exit codes are unchanged. Other commands follow;
   the existing `--json` of `profile`, `capabilities` and `360 repair` is unchanged (#4).
+- `--json` on `analyze`, `clips`, `assemble`, `edit` and `extend`: `outputs` lists the files
+  written (absolute paths) and their key facts, such as the candidate count, each clip with its
+  subtitles, source and times, and the final video's duration. `edit` writes one envelope with
+  the outputs and warnings of all its steps. Clips kept in a clips folder give a `kept_clips`
+  warning, and a vision rating that could not run (Ollama or the model not available) gives a
+  `vision_unavailable` warning; a bad `--crop`, `--size` or `--clip-override`, unknown `--ids`,
+  or `extend` with nothing to do, is `bad_args` (still exit 1). `extend`'s "Kept" warning now names the folder by its absolute
+  path, and an in-place `extend` gives it for clips without a manifest entry instead of saying
+  they were skipped (#4).
 - `cutpoint skill install [--dir DIR] [--force]` installs a Claude Code skill
   (`~/.claude/skills/cutpoint/SKILL.md` by default) so an agent finds Cutpoint for requests such
   as "edit this video" or "find the best moments" and runs the edit loop; it points to
