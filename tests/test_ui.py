@@ -350,6 +350,102 @@ def test_windows_cancel_tries_ctrl_break_before_taskkill(
     assert runs == [["taskkill", "/PID", "4242", "/T", "/F"]]
 
 
+def test_windows_cancel_ends_the_job_object_between_ctrl_break_and_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def terminate(job: object, code: int) -> int:
+        calls.append(("terminate", (job, code)))
+        return 1
+
+    kernel32 = SimpleNamespace(
+        GenerateConsoleCtrlEvent=lambda event, pid: calls.append(("ctrl_break", pid)) or 1,
+        TerminateJobObject=terminate,
+    )
+    fake_ctypes = SimpleNamespace(WinDLL=lambda name: kernel32, c_void_p=lambda value: value)
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(ui, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(ui, "signal", SimpleNamespace(CTRL_BREAK_EVENT=1))
+    monkeypatch.setattr(
+        ui,
+        "subprocess",
+        SimpleNamespace(
+            run=lambda args, **kw: calls.append(("taskkill", args)),
+            TimeoutExpired=subprocess.TimeoutExpired,
+        ),
+    )
+
+    def wait(timeout: float) -> int:
+        calls.append(("wait", timeout))
+        raise subprocess.TimeoutExpired("job", timeout)
+
+    proc = SimpleNamespace(pid=4242, wait=wait, tree_job=777)
+    ui.kill_tree(proc)  # type: ignore[arg-type]
+    # the job object reaches descendants that outlive the leader, which taskkill /T cannot
+    assert [name for name, _ in calls] == ["ctrl_break", "wait", "terminate", "taskkill"]
+    assert dict(calls)["terminate"] == (777, 1)
+
+    calls.clear()  # no job object (assignment failed): taskkill alone, as before
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
+    assert [name for name, _ in calls] == ["ctrl_break", "wait", "taskkill"]
+
+
+def _pid_alive(pid: int) -> bool:
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    handle = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        return False
+    try:
+        return k32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == 0x102  # WAIT_TIMEOUT
+    finally:
+        k32.CloseHandle(ctypes.c_void_p(handle))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows job objects and CTRL_BREAK")
+def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
+    grandchild = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGBREAK, signal.SIG_IGN)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    leader = (
+        "import subprocess, sys, time\n"
+        f"c = subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+        "print('child', c.pid, flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    jobs = ui.Jobs()
+    job = jobs.start("p", "analyze", [sys.executable, "-c", leader])
+    child = 0
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline and not any(line == "ready" for line in list(job.logs)):
+            time.sleep(0.05)
+        logs = list(job.logs)
+        assert "ready" in logs
+        child = int(next(line for line in logs if line.startswith("child")).split()[1])
+        cancelled = jobs.cancel(job.id)
+        # SOFT_STOP_S for the event, then the hard kill; allow the watcher thread to see EOF
+        deadline = time.time() + ui.SOFT_STOP_S + 20
+        while cancelled.status != "cancelled" and time.time() < deadline:
+            time.sleep(0.05)
+        assert cancelled.status == "cancelled"
+        deadline = time.time() + 5
+        while _pid_alive(child) and time.time() < deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(child)
+    finally:
+        if child and _pid_alive(child):
+            subprocess.run(["taskkill", "/PID", str(child), "/T", "/F"], capture_output=True)
+        if job.proc is not None and job.proc.poll() is None:
+            ui.kill_tree(job.proc)
+
+
 def test_assemble_ignores_a_hidden_part_file_left_by_a_killed_export(
     client: TestClient, tmp_path: Path
 ) -> None:
