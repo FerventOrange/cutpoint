@@ -40,6 +40,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.ffmpeg_utils import output_dir
 from cutpoint.pano import geometry as G
 from cutpoint.pano import qa as Q
 from cutpoint.utils import natural_key
@@ -344,41 +345,41 @@ def run_paths_qa(
     if not items:
         raise FileNotFoundError(f"{qa_dir}: no director paths (manifest.json or *.json paths)")
     out_dir = qa_dir.with_name(qa_dir.name + "_paths_qa")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    t0 = time.perf_counter()
-    clips, skipped = [], []
-    views: dict[str, Any] = {}
-    for item in items:
-        path = item["path"]
-        if path is None:
-            skipped.append({"file": item["file"], "error": "no director path"})
-            continue
-        src = str(path.get("source") or "")
-        if src not in views:
-            views[src] = load_views(remap_source(src)) if src else None
-        pv = views[src]
-        if pv is None or not len(pv.t):
-            logger.warning("%s: no 360 view cache for %s; skipped", item["file"], src)
-            skipped.append({"file": item["file"], "error": "no 360 view cache"})
-            continue
-        try:
-            clips.append(qa_path_clip(item, pv, fps, th))
-        except (OSError, KeyError, ValueError) as err:
-            logger.warning("%s: skipped (%s)", item["file"], err)
-            skipped.append({"file": item["file"], "error": str(err)[:300]})
-    report = {
-        "version": Q.QA_VERSION,
-        "source_dir": str(qa_dir),
-        "mode": "paths",
-        "fps": fps,
-        "size": list(OUT_SIZE),
-        "thresholds": asdict(th),
-        "clips": clips,
-        "skipped": skipped,
-        "edit": Q.aggregate_edit(clips),
-    }
-    report["edit"]["elapsed_s"] = round(time.perf_counter() - t0, 2)
-    cache.save_json(out_dir / "qa.json", report, indent=1)
+    with output_dir(out_dir):  # a failed run leaves no empty folder behind
+        t0 = time.perf_counter()
+        clips, skipped = [], []
+        views: dict[str, Any] = {}
+        for item in items:
+            path = item["path"]
+            if path is None:
+                skipped.append({"file": item["file"], "error": "no director path"})
+                continue
+            src = str(path.get("source") or "")
+            if src not in views:
+                views[src] = load_views(remap_source(src)) if src else None
+            pv = views[src]
+            if pv is None or not len(pv.t):
+                logger.warning("%s: no 360 view cache for %s; skipped", item["file"], src)
+                skipped.append({"file": item["file"], "error": "no 360 view cache"})
+                continue
+            try:
+                clips.append(qa_path_clip(item, pv, fps, th))
+            except (OSError, KeyError, ValueError) as err:
+                logger.warning("%s: skipped (%s)", item["file"], err)
+                skipped.append({"file": item["file"], "error": str(err)[:300]})
+        report = {
+            "version": Q.QA_VERSION,
+            "source_dir": str(qa_dir),
+            "mode": "paths",
+            "fps": fps,
+            "size": list(OUT_SIZE),
+            "thresholds": asdict(th),
+            "clips": clips,
+            "skipped": skipped,
+            "edit": Q.aggregate_edit(clips),
+        }
+        report["edit"]["elapsed_s"] = round(time.perf_counter() - t0, 2)
+        cache.save_json(out_dir / "qa.json", report, indent=1)
     report["sheets"] = []
     report["out_dir"] = str(out_dir)
     return report

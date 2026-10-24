@@ -125,8 +125,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for `--out`, only while they are empty; existing folders and files are kept (#189).
 - A failed or interrupted (Ctrl+C) `analyze`, `stage`, refmatch check-frames run, `cutpoint ui`
   proxy build or `cutpoint ui` new-project request now removes the output folders that run
-  created, only while they are empty; pre-existing folders are never removed. Pano and `events`
-  follow in a later change (#194, part 1).
+  created, only while they are empty; pre-existing folders are never removed. The same holds for
+  `cutpoint 360 qa`, the 360 paths QA, `cutpoint 360 stitch` (before the first SDK run; a Ctrl+C
+  during the SDK keeps the stitched folder because it holds the clip's log) and `events` region
+  discovery (on a first run no `discovery/<game>/` folder or empty `ocr.jsonl` is left)
+  (#194).
 - A failed `--out` such as `a/new/../x` left the new empty folder `a/new` behind (`assemble`,
   `clips`, `extend` and the pano commands, through `output_dir`); it is now removed, and the
   existing `a` is kept (#194, #189).

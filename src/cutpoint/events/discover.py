@@ -33,6 +33,7 @@ import json
 import logging
 import re
 import time
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -43,7 +44,7 @@ import numpy as np
 from cutpoint import cache
 from cutpoint.events.common import Source
 from cutpoint.events.regions import GENERIC_BANNERS, Region
-from cutpoint.ffmpeg_utils import FFmpegError, grab_images, probe
+from cutpoint.ffmpeg_utils import FFmpegError, grab_images, output_dir, probe
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +130,10 @@ def _ocr_frames(
                 continue
     engine = None
     out: list[dict[str, Any]] = []
-    frame_dir.mkdir(parents=True, exist_ok=True)
-    with cache_path.open("a", encoding="utf-8") as fh:
+    fh = None
+    # failed before the first frame is saved: no empty frames/ (or empty ocr.jsonl) left
+    # behind; the cache is opened on the first record and closed before output_dir cleans up
+    with output_dir(frame_dir), ExitStack() as stack:
         for bi, (src, t) in enumerate(bursts):
             ids = [
                 f"{src.name}@{t + k * params.burst_step_s:.1f}" for k in range(params.burst_frames)
@@ -175,6 +178,8 @@ def _ocr_frames(
                     "frame": fname,
                     "boxes": boxes,
                 }
+                if fh is None:
+                    fh = stack.enter_context(cache_path.open("a", encoding="utf-8"))
                 fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 fh.flush()
                 out.append(rec)
