@@ -165,7 +165,7 @@ an analysed set processes only the new file.
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
-| `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence (0 disables) |
+| `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
 
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
 transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations

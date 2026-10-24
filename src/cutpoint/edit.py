@@ -9,7 +9,6 @@ to ``<name>-final.mp4`` / ``.srt`` in the project folder (``<name>``: see
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import os
 import shutil
@@ -154,15 +153,8 @@ def run_edit(
 
         preflight(SKI_LAYERS if style.kind == "ski" else DEFAULT_LAYERS)
 
-    created = not project.exists()
-    try:
-        analyze(inputs, style, project, vision=vision)
-    except BaseException:
-        # As `cutpoint analyze`: no empty project folder left behind by a failed run.
-        with contextlib.suppress(OSError):
-            if created and project.is_dir() and not any(project.iterdir()):
-                project.rmdir()
-        raise
+    # A failed or interrupted analyze removes the (still empty) folders it created.
+    analyze(inputs, style, project, vision=vision)
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415
 
