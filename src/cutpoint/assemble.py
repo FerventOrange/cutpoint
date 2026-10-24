@@ -584,7 +584,7 @@ def assemble(
                 if stage != part:
                     stage.unlink(missing_ok=True)
 
-    fcp, oti = write_timelines(infos, out)
+    fcp, oti = write_timelines(infos, out, used_fade)
     logger.info("Wrote %s (%.2fs), %s, %s", out, probe(out).duration, fcp.name, oti.name)
     from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
 
