@@ -306,8 +306,10 @@ EDIT_KEYS = {
 
 @needs_ffmpeg
 def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
-    video, home, capsys, caplog
+    video, home, capsys, caplog, monkeypatch
 ):
+    # No loudnorm: its limiter resamples with soxr, which some ffmpeg builds lack.
+    monkeypatch.setitem(edit.KINDS, "clips", replace(edit.KINDS["clips"], loudnorm=False))
     argv = ["edit", str(video), "--kind", "clips", "--top", "2", "--no-vision"]
     code, doc, _ = _json(capsys, argv)
     project = home / "projects" / "clip"
