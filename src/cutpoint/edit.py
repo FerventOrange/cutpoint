@@ -111,12 +111,16 @@ def run_edit(
     force: bool = False,
     events: bool = False,
     vision: bool | None = None,
+    vision_top: int | None = None,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
     Analysis is cached as with ``cutpoint analyze``. ``force`` has ``clips --force``
     semantics. ``events`` runs ``cutpoint events`` (default options) before the clips.
-    ``vision`` is ``analyze --vision`` (None: the style's default, else if Ollama is reachable).
+    ``vision`` is ``analyze --vision`` (None: the style's default, else if Ollama is reachable);
+    ``vision_top``, ``ollama_url`` and ``ollama_model`` are analyze's options of those names.
 
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
@@ -154,7 +158,15 @@ def run_edit(
         preflight(SKI_LAYERS if style.kind == "ski" else DEFAULT_LAYERS)
 
     # A failed or interrupted analyze removes the (still empty) folders it created.
-    analyze(inputs, style, project, vision=vision)
+    analyze(
+        inputs,
+        style,
+        project,
+        vision=vision,
+        vision_top=vision_top,
+        ollama_url=ollama_url,
+        ollama_model=ollama_model,
+    )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415
 

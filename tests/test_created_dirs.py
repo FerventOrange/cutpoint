@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from conftest import set_config, write
 from cutpoint import analyze, cache, refmatch, stage
+from cutpoint.events import discover, killfeed, visual
+from cutpoint.events.common import Source
 from cutpoint.ffmpeg_utils import output_dir
+from cutpoint.pano import qa, qa_paths, stitch, views
 from cutpoint.styles import get_style
+from pano_helpers import x3clip
 
 
 def interrupt(*_a: object, **_k: object) -> None:
@@ -81,3 +88,69 @@ def test_interrupted_check_frames_leaves_no_refmatch_check(
         refmatch.check_frames(result, out)
     assert not out.exists()
     assert not (tmp_path / "proj").exists()
+
+
+def make_qa_clips(root: Path) -> Path:
+    clips = root / "preview"
+    write(clips / "001_a.mp4", b"")
+    write(
+        clips / "001_a.json",
+        json.dumps(
+            {"keys": [[0.0, 0.0, 0.0, 90.0]], "segment": {"start": 0, "end": 3}, "source": "g.lrv"}
+        ),
+    )
+    return clips
+
+
+def test_interrupted_run_qa_leaves_no_qa_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clips = make_qa_clips(tmp_path)
+    monkeypatch.setattr(visual, "VisualModels", lambda: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(qa, "decode", interrupt)  # the ffmpeg frame decode
+    with pytest.raises(KeyboardInterrupt):
+        qa.run_qa(clips, json_only=True)
+    assert not (tmp_path / "preview_qa").exists()
+
+
+def test_interrupted_run_paths_qa_leaves_no_paths_qa_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clips = make_qa_clips(tmp_path)
+    pv = SimpleNamespace(t=np.arange(4.0))
+    monkeypatch.setattr(views, "load_views", lambda *_a, **_k: pv)
+    monkeypatch.setattr(qa_paths, "qa_path_clip", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        qa_paths.run_paths_qa(clips)
+    assert not (tmp_path / "preview_paths_qa").exists()
+
+
+def test_interrupted_stitch_leaves_no_new_stitched_folder(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "fast" / "stitched"
+    set_config(home, pano={"stitched_dir": str(out_dir)})
+    monkeypatch.setattr(stitch, "require_sdk", lambda: tmp_path / "MediaSDKTest")
+    monkeypatch.setattr(stitch, "MIN_FREE_GB", -1e9)  # no disk-space check on the CI disk
+    monkeypatch.setattr(stitch, "_stitch_one", interrupt)  # the SDK run
+    with pytest.raises(KeyboardInterrupt):
+        stitch.stitch_clips([x3clip()])
+    assert not out_dir.exists()
+    assert not (tmp_path / "fast").exists()
+
+
+def test_interrupted_discovery_ocr_leaves_no_discovery_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = Source(path=tmp_path / "a.mp4", duration=60.0, cdir=tmp_path / "cache", audio_parts=[])
+    frame_dir = tmp_path / "disc" / "game" / "frames"  # as pipeline._discover lays it out
+    monkeypatch.setattr(
+        discover, "_burst_frames", lambda *_a, **_k: [np.zeros((4, 4, 3), np.uint8)]
+    )
+    monkeypatch.setattr(killfeed, "OcrEngine", lambda **_k: interrupt)  # the OCR call
+    with pytest.raises(KeyboardInterrupt):
+        discover._ocr_frames(
+            [(src, 5.0)], discover.DiscoverParams(), frame_dir, frame_dir.parent / "ocr.jsonl"
+        )
+    assert not frame_dir.exists()
+    assert not (tmp_path / "disc").exists()
