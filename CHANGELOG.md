@@ -51,6 +51,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: when `<project>/ui/proxy` or `<project>/ui/frames` is a file instead of a folder,
+  preparing a preview fails with a WARNING "<project>/ui/proxy is not a folder; remove or rename
+  it" and a thumbnail request gives a 409 error with the same message for `ui/frames`, like
+  `<project>/ui` itself (#184), instead of a logged traceback or a 500 error; nothing is left
+  behind (#198).
+- Re-running the analysis recorded in `highlights.json` (as `crashes --reanalyze` and `events` on
+  a ski project do) reports an existing but empty `highlights.json` (`{}`), one without its style
+  and sources, or one that holds a list, text or a number instead of an object, as "records no
+  analysis; run 'cutpoint analyze' again" instead of "not found" or a `KeyError` or
+  `AttributeError` traceback (#200).
 - A failed or interrupted audio extraction (`analyze`, `assemble --captions`) now removes its
   temporary `.tmp.wav` file in the cache folder or next to the final video.
 - On Ctrl+C or Ctrl+Break, Cutpoint now waits for ffmpeg to exit (at most 5 s, then stops it and

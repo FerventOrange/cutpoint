@@ -124,6 +124,20 @@ def test_reanalyze_if_reachable_reanalyzes_when_every_recorded_path_exists(
     assert caplog.text == ""
 
 
+@pytest.mark.parametrize("content", ["{}", '["style", "sources"]', '"style sources"', "5"])
+def test_reanalyze_tells_a_missing_highlights_file_from_one_without_an_analysis(
+    tmp_path, monkeypatch, content
+):
+    monkeypatch.setattr(analyze, "analyze", lambda *a, **k: pytest.fail("must not analyze"))
+    with pytest.raises(FileNotFoundError, match="not found"):
+        analyze.reanalyze(tmp_path)
+    hl = write(tmp_path / "highlights.json", content)
+    for run in (analyze.reanalyze, analyze.reanalyze_if_reachable):
+        with pytest.raises(ValueError, match="records no analysis; run 'cutpoint analyze' again"):
+            run(tmp_path)
+    assert hl.read_text(encoding="utf-8") == content
+
+
 def _stub_probe_and_transcriber(monkeypatch) -> list[Path]:
     """Stub the media probe and the transcriber; return the list of probed paths."""
     probed: list[Path] = []
