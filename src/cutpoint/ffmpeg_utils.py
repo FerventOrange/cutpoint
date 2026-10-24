@@ -40,7 +40,7 @@ from typing import Any, Literal
 import numpy as np
 
 from cutpoint import paths, state
-from cutpoint.cache import REPLACE_ATTEMPTS, load_json, save_json
+from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import get_config, path_key
 
 logger = logging.getLogger(__name__)
@@ -774,19 +774,11 @@ def output_dir(path: Path) -> Iterator[Path]:
     created it and it is still empty, so a failed run leaves no empty folder behind.
 
     Missing parents are created too and removed the same way. A folder that existed before,
-    or that holds anything, is always kept.
+    or that holds anything, is always kept (:func:`cutpoint.cache.created_dirs`).
     """
-    created = [p for p in (path, *path.parents) if not p.exists()]
-    path.mkdir(parents=True, exist_ok=True)
-    try:
+    with created_dirs() as made:
+        make_dirs(path, made)
         yield path
-    except BaseException:
-        for p in created:  # innermost first; a non-empty folder stops the walk
-            try:
-                p.rmdir()
-            except OSError:
-                break
-        raise
 
 
 def part_path(out: Path) -> Path:

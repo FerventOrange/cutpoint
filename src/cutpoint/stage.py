@@ -489,74 +489,75 @@ def stage_sources(
         OSError: If the stage folder lacks space for a file.
     """
     stage_dir = get_config().stage_dir
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    index = _load_index(stage_dir)
-    files = _stage_files(targets, exclude, recursive)
-    total_b, total_s, copied, skipped = 0, 0.0, 0, 0
-    for src in files:
-        key, parts = _identity(src)
-        rel = _below_prefix(key, parts)
-        st = src.stat()
-        slot = _find(index, key, parts)
-        entry = index.get(slot) if slot else None
-        if entry:
-            dst = stage_dir / entry["file"]
-            if (
-                dst.is_file()
-                and dst.stat().st_size == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns
-            ):
-                logger.info("Already staged: %s", src.name)
-                skipped += 1
-                if rel is not None and "rel" not in entry:  # staged before #163: record it now
-                    entry["rel"] = list(rel)
-                    _save_index(stage_dir, index)
-                continue
-        if slot is None:  # a new file; a case-twin of a staged one gets its own key
-            slot = key
-            if key in index:
-                slot += _TWIN_SEP + "/".join(rel if rel is not None else parts)
-        free = shutil.disk_usage(stage_dir).free
-        if free - st.st_size < min_free_gb * 1e9:
-            raise OSError(
-                f"Not enough space in {stage_dir} for {src.name} "
-                f"({st.st_size / 1e9:.1f} GB, {free / 1e9:.1f} GB free)"
-            )
-        digest = hashlib.sha1(slot.encode("utf-8")).hexdigest()[:8]
-        dst = stage_dir / f"{digest}-{src.name}"
-        logger.info("Staging %s (%.2f GB) -> %s", src, st.st_size / 1e9, dst)
-        secs = copy_once(src, dst, src.name)
-        logger.info("  staged in %.0fs (%.0f MB/s)", secs, st.st_size / 1e6 / secs)
-        index[slot] = {
-            "file": dst.name,
-            "size": st.st_size,
-            "mtime_ns": st.st_mtime_ns,
-            "source": str(src),
-            "read_s": round(secs, 1),
+    with cache.created_dirs() as made:  # a failed run leaves no empty stage folder behind
+        cache.make_dirs(stage_dir, made)
+        index = _load_index(stage_dir)
+        files = _stage_files(targets, exclude, recursive)
+        total_b, total_s, copied, skipped = 0, 0.0, 0, 0
+        for src in files:
+            key, parts = _identity(src)
+            rel = _below_prefix(key, parts)
+            st = src.stat()
+            slot = _find(index, key, parts)
+            entry = index.get(slot) if slot else None
+            if entry:
+                dst = stage_dir / entry["file"]
+                if (
+                    dst.is_file()
+                    and dst.stat().st_size == st.st_size
+                    and entry.get("mtime_ns") == st.st_mtime_ns
+                ):
+                    logger.info("Already staged: %s", src.name)
+                    skipped += 1
+                    if rel is not None and "rel" not in entry:  # staged before #163: record it now
+                        entry["rel"] = list(rel)
+                        _save_index(stage_dir, index)
+                    continue
+            if slot is None:  # a new file; a case-twin of a staged one gets its own key
+                slot = key
+                if key in index:
+                    slot += _TWIN_SEP + "/".join(rel if rel is not None else parts)
+            free = shutil.disk_usage(stage_dir).free
+            if free - st.st_size < min_free_gb * 1e9:
+                raise OSError(
+                    f"Not enough space in {stage_dir} for {src.name} "
+                    f"({st.st_size / 1e9:.1f} GB, {free / 1e9:.1f} GB free)"
+                )
+            digest = hashlib.sha1(slot.encode("utf-8")).hexdigest()[:8]
+            dst = stage_dir / f"{digest}-{src.name}"
+            logger.info("Staging %s (%.2f GB) -> %s", src, st.st_size / 1e9, dst)
+            secs = copy_once(src, dst, src.name)
+            logger.info("  staged in %.0fs (%.0f MB/s)", secs, st.st_size / 1e6 / secs)
+            index[slot] = {
+                "file": dst.name,
+                "size": st.st_size,
+                "mtime_ns": st.st_mtime_ns,
+                "source": str(src),
+                "read_s": round(secs, 1),
+            }
+            if rel is not None:
+                index[slot]["rel"] = list(rel)
+            _save_index(stage_dir, index)
+            total_b += st.st_size
+            total_s += secs
+            copied += 1
+        reload_stage_index()
+        summary = {
+            "files": copied,
+            "skipped": skipped,
+            "bytes": total_b,
+            "read_s": round(total_s, 1),
+            "mb_per_s": round(total_b / 1e6 / total_s, 1) if total_s else None,
         }
-        if rel is not None:
-            index[slot]["rel"] = list(rel)
-        _save_index(stage_dir, index)
-        total_b += st.st_size
-        total_s += secs
-        copied += 1
-    reload_stage_index()
-    summary = {
-        "files": copied,
-        "skipped": skipped,
-        "bytes": total_b,
-        "read_s": round(total_s, 1),
-        "mb_per_s": round(total_b / 1e6 / total_s, 1) if total_s else None,
-    }
-    logger.info(
-        "Staged %d file(s), %.1f GB in %.0fs (%s MB/s); %d already staged",
-        copied,
-        total_b / 1e9,
-        total_s,
-        summary["mb_per_s"],
-        skipped,
-    )
-    return summary
+        logger.info(
+            "Staged %d file(s), %.1f GB in %.0fs (%s MB/s); %d already staged",
+            copied,
+            total_b / 1e9,
+            total_s,
+            summary["mb_per_s"],
+            skipped,
+        )
+        return summary
 
 
 def _recorded_under(
