@@ -100,6 +100,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   example `final_ui_1.srt`) already exists, so it no longer overwrites it (#224).
 - `cutpoint ui`: a cancelled job shows "stopping" (status `cancelling` in `/api/jobs`) until its
   process exits, and Cancel is disabled meanwhile (#225).
+- `cutpoint ui`: Cancel gives the job about 12 s (2 x the 5 s soft stop plus a margin) to remove
+  its partial files before ending the process tree. Before, it was 5 s, which could end the job
+  while it was still stopping ffmpeg or MediaSDKTest and leave a large partial file. The Cancel
+  request returns at once and the job shows "stopping" until it exits. Preview proxies are still
+  stopped after 5 s (#257).
 - `cutpoint ui` has a favicon (#226).
 - `cutpoint ui`: the outputs panel lists every final video in the project folder (`final.mp4`,
   `final_*.mp4`, `<name>-final.mp4`, ...), newest first with the export's own final first, each
