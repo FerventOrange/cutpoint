@@ -76,6 +76,13 @@ def positive_int(text: str) -> int:
     return value
 
 
+def input_name(target: Path, default: str) -> str:
+    """Name a project after an input: a file's stem, a folder's full name (``.`` and a drive
+    root resolved first), else ``default`` (a drive root has no name)."""
+    p = target.resolve()
+    return (p.stem if p.is_file() else p.name) or default
+
+
 def natural_key(path: Path) -> list[object]:
     """Sort key so that ``2_x`` < ``10_x`` (case-insensitive)."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", path.name)]

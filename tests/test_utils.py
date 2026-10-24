@@ -10,7 +10,7 @@ import pytest
 
 from cutpoint.events import regions
 from cutpoint.events.common import parse_clock
-from cutpoint.utils import clock, find_videos, matches_glob, slugify
+from cutpoint.utils import clock, find_videos, input_name, matches_glob, slugify
 
 
 @pytest.mark.parametrize(
@@ -47,6 +47,30 @@ def test_parse_clock_round_trips_clock(t):
 )
 def test_matches_glob(path, patterns, expected):
     assert matches_glob(path, patterns) is expected
+
+
+@pytest.mark.parametrize(
+    ("make", "name"),
+    [
+        (lambda d: d / "a.b.mp4", "a.b"),  # a file: its stem
+        (lambda d: d / "trip.2024", "trip.2024"),  # a folder: its whole name
+        (lambda d: Path(d.anchor), "fallback"),  # a drive root has no name
+    ],
+)
+def test_input_name(tmp_path, make, name):
+    target = make(tmp_path)
+    if target.suffix == ".mp4":
+        target.write_bytes(b"x")
+    else:
+        target.mkdir(exist_ok=True)
+    assert input_name(target, "fallback") == name
+
+
+def test_input_name_resolves_the_current_folder(tmp_path, monkeypatch):
+    folder = tmp_path / "trip.2024"
+    folder.mkdir()
+    monkeypatch.chdir(folder)
+    assert input_name(Path(), "fallback") == "trip.2024"
 
 
 def test_slugify():
