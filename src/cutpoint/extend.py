@@ -385,17 +385,29 @@ def extend_clips(
         # re-exported, the .srt of a clip deleted during review) are removed, as the new
         # manifest.json no longer lists them; unlisted ones are never replaced. Only a name
         # spelled on disk as listed: a clip renamed in case only (skipped above as having no
-        # entry) still matches on a case-insensitive file system and must stay.
+        # entry) still matches on a case-insensitive file system and must stay. A listed name
+        # spelled otherwise on disk goes, under that spelling, only if this run writes or
+        # replaces its clip: an .srt beside it would keep the old cues, unlisted.
         listed = srt.listed_files(out_dir)
         srt.check_unlisted_clips(out_dir, names, listed)
         subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed))
         present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
-        old_files = [
-            n
-            for n in dict.fromkeys(listed or [])
-            if n in present
-            and ((f := out_dir / n).is_file() or f.is_symlink())
-            and not same_file(f, sources)
+        on_disk = {path_key(n): n for n in present}
+        listed_names = list(dict.fromkeys(listed or []))
+
+        def replaceable(n: str) -> bool:
+            f = out_dir / n
+            return (f.is_file() or f.is_symlink()) and not same_file(f, sources)
+
+        old_files = [n for n in listed_names if n in present and replaceable(n)]
+        gone = {path_key(n) for n in (*names, *old_files)}
+        old_files += [
+            d
+            for n in listed_names
+            if n not in present
+            and (d := on_disk.get(path_key(n))) is not None
+            and path_key(Path(n).with_suffix(".mp4").name) in gone
+            and replaceable(d)
         ]
         entries = []
         reused = 0

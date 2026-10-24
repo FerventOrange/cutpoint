@@ -117,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does. Before, both stayed in `DIR` but not in the new manifest, so the clip was reported as
   added by hand, `assemble` included it, and no later run replaced or removed the `.srt`.
   Clips and `.srt` files the old manifest does not list still stay.
+- `clips --force` replaces only the clips and `.srt` files whose name is spelled on disk as
+  the old `manifest.json` lists it, as `extend` does. On a case-insensitive file system a clip
+  renamed in case only during review (listed `001_joke.mp4`, renamed `001_Joke.mp4`) and its
+  `.srt` were removed without a warning when the new run did not write that name; they now
+  stay, and the WARNING about kept clips names the clip. A listed `.srt` renamed in case only
+  still goes, under its new spelling, when `clips --force` or `extend` writes or replaces its
+  clip, so no `.srt` with the old cues stays unlisted when the new run has no transcript.
 - `assemble --transition fade` rounds the crossfade to whole frames (of the first clip's
   rate) and uses that length for the video, the audio and the cut offsets in `final.srt`.
   xfade used whole frames while the audio and subtitles used the exact fade: 0.25 s at
