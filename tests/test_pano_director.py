@@ -713,6 +713,28 @@ def test_evaluate_near_limit_path_does_not_pan_faster_than_linear(
     assert not _fails_pan_gate(cubic) or _fails_pan_gate(lin)  # no gate fails only for cubic
 
 
+def test_evaluate_fast_short_interval_does_not_push_neighbours_over_the_p95_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards the qa pan-limit fallback of `_linear_intervals` (rule b): a fast short
+    interval otherwise pushes its neighbours' cubic speed over the p95 gate."""
+    hs = np.array([0.5, 0.5, 0.5, 0.5, 0.15, 0.5, 0.5, 0.5, 0.5])
+    vs = np.array([33.0, 33.0, 33.0, 33.0, 52.0, 33.0, 33.0, 33.0, 33.0])
+    t = np.concatenate([[0.0], np.cumsum(hs)])
+    yaw = np.concatenate([[0.0], np.cumsum(vs * hs)])
+    path = {
+        "keys": [
+            {"t": float(a), "yaw": float(b), "pitch": 0.0, "fov": 90.0}
+            for a, b in zip(t, yaw, strict=True)
+        ]
+    }
+    lin = _pan_metrics(path, _linear_eval, monkeypatch)
+    cubic = _pan_metrics(path, _EVALUATE, monkeypatch)
+    assert lin["speed_p95"] <= 35
+    assert cubic["speed_p95"] <= lin["speed_p95"] + 0.1
+    assert not _fails_pan_gate(cubic)
+
+
 def _random_path(rng: np.random.Generator) -> dict:
     n = int(rng.integers(4, 13))
     h = rng.uniform(0.15, 1.2, n - 1)
