@@ -633,3 +633,22 @@ def test_pchip_two_keys_at_one_time_step_without_nan(kx: list[float]) -> None:
         out = D._pchip(x, kx_a, ky)
     assert np.all(np.isfinite(out))
     assert out == pytest.approx(np.interp(x, kx_a, ky))
+
+
+def test_evaluate_cubic_never_crosses_a_cut() -> None:
+    # two shots of 3 keys each; the cut key (t=2) starts the second shot
+    rows = [(0, 0), (1, 10), (2, 30), (2, 100), (3, 105), (4, 125)]
+    keys = [{"t": float(t), "yaw": float(y), "pitch": 0.0, "fov": 90.0} for t, y in rows]
+    keys[3]["cut"] = True
+    path = {"keys": keys}
+    t = np.array([1.99, 2.0, 5.0])
+    yaw = D.evaluate(path, t)[0]
+    assert 10.0 < yaw[0] < 30.0  # still in shot 1, no pull towards 100
+    assert yaw[1] == pytest.approx(100.0)
+    assert yaw[2] == pytest.approx(125.0)  # held after the last key
+    grid = np.linspace(0.0, 4.0, 161)
+    got = D.evaluate(path, grid)[0]
+    first = grid < 2.0
+    ky = np.array([y for _, y in rows], float)
+    assert got[first] == pytest.approx(D._pchip(grid[first], np.array([0.0, 1.0, 2.0]), ky[:3]))
+    assert got[~first] == pytest.approx(D._pchip(grid[~first], np.array([2.0, 3.0, 4.0]), ky[3:]))
