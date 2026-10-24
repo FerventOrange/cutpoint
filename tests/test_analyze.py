@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import write
+from conftest import remap, set_config, write
 from cutpoint import analyze, config
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import get_style
@@ -59,19 +59,15 @@ def test_reanalyze_if_reachable_leaves_highlights_when_a_source_is_offline(
     assert hl.read_bytes() == before
 
 
-def _remap(home, monkeypatch, old, new, exclude=()):
-    data = {"source_remap": {str(old): str(new)}, "source_remap_exclude": list(exclude)}
-    write(home / "config.json", json.dumps(data))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
-
-
 def _remapped_project(home, tmp_path, monkeypatch, recorded):
     """Footage moved from ``old`` to ``new``; ``source_remap`` makes the copy reachable."""
     old, new = tmp_path / "old", tmp_path / "new"
     write(new / "a.mp4")
     path = str(old / "a.mp4")
-    if recorded == "folder":
+    if recorded == "present":  # nothing moved: every recorded path exists as written
+        there = str(new / "a.mp4")
+        data = {"settings": {"inputs": [there]}, "sources": [{"path": there}]}
+    elif recorded == "folder":
         write(old / "b.mp4")  # the folder input exists; only a.mp4 moved out of it
         data = {"settings": {"inputs": [str(old)]}, "sources": [{"path": path}]}
     elif recorded == "inputs":  # an older project that recorded the copy it read
@@ -80,11 +76,11 @@ def _remapped_project(home, tmp_path, monkeypatch, recorded):
         data = {"settings": {"inputs": [str(old)]}, "sources": [{"path": path}]}
     else:  # moved-file
         data = {"settings": {"inputs": [path]}, "sources": [{"path": path}]}
-    _remap(home, monkeypatch, old, new)
+    remap(home, monkeypatch, old, new)
     return write(tmp_path / "highlights.json", json.dumps(data))
 
 
-@pytest.mark.parametrize("recorded", ["moved-file", "moved-folder"])
+@pytest.mark.parametrize("recorded", ["present", "moved-file", "moved-folder"])
 def test_reanalyze_if_reachable_reanalyzes_an_input_reachable_through_source_remap(
     home, tmp_path, monkeypatch, caplog, recorded
 ):
@@ -107,21 +103,6 @@ def test_reanalyze_if_reachable_leaves_highlights_when_reanalysis_would_rekey_or
         assert analyze.reanalyze_if_reachable(tmp_path) is None
     assert "not found where analyze recorded them, even through source_remap" in caplog.text
     assert hl.read_bytes() == before
-
-
-def test_reanalyze_if_reachable_reanalyzes_when_every_recorded_path_exists(
-    home, tmp_path, monkeypatch, caplog
-):
-    src = write(tmp_path / "a.mp4")
-    write(
-        tmp_path / "highlights.json",
-        json.dumps({"settings": {"inputs": [str(src)]}, "sources": [{"path": str(src)}]}),
-    )
-    sentinel = tmp_path / "result.json"
-    monkeypatch.setattr(analyze, "reanalyze", lambda project: sentinel)
-    with caplog.at_level("WARNING"):
-        assert analyze.reanalyze_if_reachable(tmp_path) is sentinel
-    assert caplog.text == ""
 
 
 @pytest.mark.parametrize("content", ["{}", '["style", "sources"]', '"style sources"', "5"])
@@ -167,7 +148,7 @@ def test_analyze_records_original_path_when_source_is_remapped(home, tmp_path, m
     old, new = tmp_path / "old", tmp_path / "new"
     write(old / "a.mp4")
     write(new / "a.mp4")
-    _remap(home, monkeypatch, old, new)
+    remap(home, monkeypatch, old, new)
     probed = _stub_probe_and_transcriber(monkeypatch)
     proj = tmp_path / "proj"
     target = [old / "a.mp4", new / "a.mp4"] if both else old / "a.mp4"
@@ -197,7 +178,7 @@ def test_analyze_reads_a_missing_input_through_source_remap_and_records_the_orig
     write(new / "a.mp4")
     write(new / "skip" / "b.mp4")
     write(new / "c_unverified.mp4")  # source_remap_exclude: would be read at old, missing
-    _remap(home, monkeypatch, old, new, exclude=["*unverified*"])
+    remap(home, monkeypatch, old, new, exclude=["*unverified*"])
     probed = _stub_probe_and_transcriber(monkeypatch)
     proj = tmp_path / "proj"
     target = old if folder else old / "a.mp4"
@@ -227,8 +208,7 @@ def test_analyze_records_a_missing_mapped_drive_input_in_unc_form(home, tmp_path
     monkeypatch.setattr(config, "_drive_remote", lambda d: r"\\nas\share" if d == drive else None)
     new = tmp_path / "new"
     write(new / "a.mp4")
-    write(home / "config.json", json.dumps({"source_remap": {drive + "\\Footage": str(new)}}))
-    config.get_config.cache_clear()
+    set_config(home, source_remap={drive + "\\Footage": str(new)})
     probed = _stub_probe_and_transcriber(monkeypatch)
     proj = tmp_path / "proj"
     analyze.analyze(

@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
-from fractions import Fraction
 from pathlib import Path
 
 import pytest
 
-from conftest import write
-from cutpoint import config, extend, planning
+from conftest import media_info, remap, write
+from cutpoint import extend, planning
 from cutpoint.boundaries import SpeechSettings
-from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.planning import Padding
 
 FMT = {"width": 1920, "height": 1080, "fps": 30, "vertical": False}
@@ -22,18 +20,11 @@ def reads(monkeypatch) -> list[Path]:
     """Stub probe and the encoder (no ffmpeg); returns the files clips were encoded from."""
     encoded: list[Path] = []
 
-    def fake_probe(path):
-        return MediaInfo(
-            path=path, duration=100.0, vduration=100.0, width=1920, height=1080,
-            fps=Fraction(30), pix_fmt="yuv420p", vcodec="h264", audio_streams=1,
-            acodec="aac", sample_rate=48000, channels=2,
-        )  # fmt: skip
-
     def fake_export(src, info, start, end, out, *args):
         encoded.append(src)
         write(out, "encoded")
 
-    monkeypatch.setattr(extend, "probe", fake_probe)
+    monkeypatch.setattr(extend, "probe", media_info)
     monkeypatch.setattr(extend, "export_clip_checked", fake_export)
     monkeypatch.setattr(planning.sources, "readable_range", lambda src, t, d: (0.0, d))
     return encoded
@@ -64,10 +55,7 @@ def test_extend_reads_the_source_through_remap_and_read_from_only_as_fallback(
     elif case == "remap-wins":  # source_remap reaches the moved footage
         write(copy)
         write(other)
-        data = {"source_remap": {str(orig.parent): str(copy.parent)}}
-        write(home / "config.json", json.dumps(data))
-        config.get_config.cache_clear()
-        monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+        remap(home, monkeypatch, orig.parent, copy.parent)
         entry = {"source": str(orig), "read_from": str(other)}
         want, recorded = copy, str(copy)
     else:  # neither the original nor a remap target exists; the copy it read does

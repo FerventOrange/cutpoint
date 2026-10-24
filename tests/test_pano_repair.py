@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cache, ffmpeg_utils, mix
+from conftest import link_file, messages
+from cutpoint import cache, mix
 from cutpoint.mix import Cand, apply_exclusions
 from cutpoint.pano import cli as pano_cli
 from cutpoint.pano.repair import _fit_budget, plan, repair
@@ -117,14 +118,20 @@ def test_crash_keeps_the_part_with_its_impact() -> None:
     assert apply_exclusions([crash], [{"source": "a.mp4", "start": 3, "end": 5}]) == []
 
 
-def test_plan_ignores_a_crash_tumble_and_stale_previews(tmp_path: Path) -> None:
+def _crash_plan(tmp_path: Path, occluded: tuple[int, ...] = (9,)) -> tuple[dict, dict]:
+    """A 12 s crash clip (10-22 s of a.mp4) with ``occluded`` frames (every 0.5 s): (segment, qa)."""
     cache.save_json(tmp_path / "001_crash.json", {"segment": {"start": 10.0}})
     (tmp_path / "001_crash.mp4").write_bytes(b"")
     seg = {"id": "m001", "source": "a.mp4", "start": 10, "end": 22, "category": "crash"}
     frames = [
-        {"t": i / 2, "flags": ["occluded"] if i == 9 else [], "subj": None} for i in range(24)
+        {"t": i / 2, "flags": ["occluded"] if i in occluded else [], "subj": None}
+        for i in range(24)
     ]
-    qa = {"clips": [{"file": "001_crash.mp4", "duration": 12.0, "frames": frames}]}
+    return seg, {"clips": [{"file": "001_crash.mp4", "duration": 12.0, "frames": frames}]}
+
+
+def test_plan_ignores_a_crash_tumble_and_stale_previews(tmp_path: Path) -> None:
+    seg, qa = _crash_plan(tmp_path)
     assert plan([seg], qa, tmp_path, impacts=[("a.mp4", 14.0)])[1] == []
     assert len(plan([seg], qa, tmp_path)[1]) == 1
     assert plan([seg], qa, tmp_path, qa_time=0.0)[1:3] == ([], 1)
@@ -133,13 +140,7 @@ def test_plan_ignores_a_crash_tumble_and_stale_previews(tmp_path: Path) -> None:
 def test_plan_matches_impact_sources_case_insensitively_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cache.save_json(tmp_path / "001_crash.json", {"segment": {"start": 10.0}})
-    (tmp_path / "001_crash.mp4").write_bytes(b"")
-    seg = {"id": "m001", "source": "a.mp4", "start": 10, "end": 22, "category": "crash"}
-    frames = [
-        {"t": i / 2, "flags": ["occluded"] if i == 9 else [], "subj": None} for i in range(24)
-    ]
-    qa = {"clips": [{"file": "001_crash.mp4", "duration": 12.0, "frames": frames}]}
+    seg, qa = _crash_plan(tmp_path)
     impacts = [("A.MP4", 14.0)]
     monkeypatch.setattr(sys, "platform", "win32")
     assert plan([seg], qa, tmp_path, impacts=impacts)[1] == []
@@ -150,14 +151,7 @@ def test_plan_matches_impact_sources_case_insensitively_on_windows(
 def test_crash_keeps_its_approach_before_the_impact(tmp_path: Path) -> None:
     """Impact at 16 (clip 6 s): occluded at 11 (excluded), 12.5-14 (cut back to end 2 s
     before the impact) and 15 (the camera knocked in the tumble: ignored)."""
-    cache.save_json(tmp_path / "001_crash.json", {"segment": {"start": 10.0}})
-    (tmp_path / "001_crash.mp4").write_bytes(b"")
-    seg = {"id": "m001", "source": "a.mp4", "start": 10, "end": 22, "category": "crash"}
-    frames = [
-        {"t": i / 2, "flags": ["occluded"] if i in (2, 5, 6, 7, 8, 10) else [], "subj": None}
-        for i in range(24)
-    ]
-    qa = {"clips": [{"file": "001_crash.mp4", "duration": 12.0, "frames": frames}]}
+    seg, qa = _crash_plan(tmp_path, (2, 5, 6, 7, 8, 10))
     excl = plan([seg], qa, tmp_path, impacts=[("a.mp4", 16.0)])[0]
     assert [(e["start"], e["end"]) for e in excl] == [(10.75, 11.25), (12.25, 14.0)]
 
@@ -278,7 +272,7 @@ def test_out_spelled_differently_from_segments_still_gets_a_backup(
 
 
 def test_backup_survives_a_transiently_locked_rename(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch, no_sleep
 ) -> None:
     import os  # noqa: PLC0415
 
@@ -295,7 +289,6 @@ def test_backup_survives_a_transiently_locked_rename(
     before = segs.read_bytes()
     qa = _qa(project, [["occluded"]] * 9 + [[]] * 9)
     monkeypatch.setattr(cache.os, "replace", flaky)
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     repair(project, segs, qa, sheet=False)
     assert calls == [1]
     assert (project / "mix_segments.bak.json").read_bytes() == before
@@ -567,12 +560,11 @@ def test_repair_matches_a_source_reached_through_a_symlinked_folder(tmp_path: Pa
 def test_cli_repair_reports_bad_out_and_drive_relative_source_as_one_error(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
+    windows,
     case: str,
 ) -> None:
     """Issue #151: ``--out`` that is a folder, or inside a file, and (on Windows) a
     drive-relative source are one ERROR line, exit 1, before anything is written."""
-    import cutpoint.clips as clips_mod  # noqa: PLC0415
     from cutpoint.cli import main  # noqa: PLC0415
 
     qa = _handwritten(tmp_path, True)
@@ -588,13 +580,13 @@ def test_cli_repair_reports_bad_out_and_drive_relative_source_as_one_error(
         argv += ["--segments", str(segs), "--out", str(out)]
         phrase = f"Cannot write {out}: "
     else:
-        monkeypatch.setattr(clips_mod, "_WINDOWS", True)
+        windows()
         segs = tmp_path / "drive.json"
         cache.save_json(segs, [{"source": "D:foo.insv", "start": 1, "end": 3}])
         argv += ["--segments", str(segs)]
         phrase = "segment 1 source 'D:foo.insv'"
     assert main(argv) == 1
-    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    errors = messages(caplog, "ERROR")
     assert len(errors) == 1 and phrase in errors[0]
     if case == "out-parent-is-file":
         assert errors[0].endswith(" is not a folder")
@@ -603,13 +595,9 @@ def test_cli_repair_reports_bad_out_and_drive_relative_source_as_one_error(
     assert not (tmp_path / "final_segments.bak.json").exists()
 
 
-def test_drive_relative_source_is_a_plain_file_name_off_windows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_drive_relative_source_is_a_plain_file_name_off_windows(tmp_path: Path, windows) -> None:
     """Issue #151: ``D:foo.insv`` is only drive-relative on Windows; elsewhere it is a name."""
-    import cutpoint.clips as clips_mod  # noqa: PLC0415
-
-    monkeypatch.setattr(clips_mod, "_WINDOWS", False)
+    windows(False)
     qa = _handwritten(tmp_path, True)
     segs = tmp_path / "drive.json"
     cache.save_json(segs, [{"source": "D:foo.insv", "start": 1, "end": 3}])
@@ -627,10 +615,7 @@ def test_repair_honours_an_exclusion_spelt_differently_from_the_segment_source(
     (tmp_path / "raw" / "a.insv").write_bytes(b"")
     if spelling == "symlink":
         alias = tmp_path / "alias.insv"
-        try:
-            alias.symlink_to(tmp_path / "raw" / "a.insv")
-        except (OSError, NotImplementedError):
-            pytest.skip("symlinks unavailable")
+        link_file(alias, tmp_path / "raw" / "a.insv")
     else:
         alias = tmp_path / "raw" / ".." / "raw" / "a.insv"
     cache.save_json(
@@ -651,10 +636,7 @@ def _spell(project: Path, spelling: str) -> str:
     if spelling == "dotdot":
         return str(project / "sub" / ".." / "a.mp4")
     alias = project / "alias.mp4"
-    try:
-        alias.symlink_to(real)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks unavailable")
+    link_file(alias, real)
     return str(alias)
 
 
@@ -694,18 +676,16 @@ def test_repair_stores_one_exclusion_for_a_span_spelt_two_ways(project: Path) ->
 
 @pytest.mark.parametrize("branch", ["picked", "mix"])
 def test_repair_keeps_a_drive_relative_exclusion_when_it_rewrites_the_file(
-    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, branch: str
+    request: pytest.FixtureRequest, tmp_path: Path, windows, branch: str
 ) -> None:
     """Issue #181: on Windows the ``mix_exclude.json`` entries mix cannot use (``D:a.insv``)
     are left out of the selection but stay, as written, in the file ``360 repair`` rewrites."""
-    import cutpoint.clips as clips_mod  # noqa: PLC0415
-
     if branch == "picked":
         qa, segs = _handwritten(tmp_path, False), tmp_path / "final_segments.json"
     else:  # the picked branch has no mix_segments.json: the project fixture writes one
         request.getfixturevalue("project")
         qa, segs = _qa(tmp_path, [["occluded"]] * 9 + [[]] * 9), tmp_path / "mix_segments.json"
-    monkeypatch.setattr(clips_mod, "_WINDOWS", True)
+    windows()
     drive = {"source": "D:a.insv", "start": 1, "end": 2, "reason": "mine"}
     other = {"source": str(tmp_path / "raw" / "b.insv"), "start": 0.0, "end": 1.0}
     cache.save_json(tmp_path / mix.EXCLUDE_FILE, [other, drive])

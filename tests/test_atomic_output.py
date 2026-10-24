@@ -9,22 +9,14 @@ import re
 import shutil
 import signal
 import subprocess
-from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from cutpoint import assemble, cli, clips, config, encode, extend, ffmpeg_utils, planning
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
-
-
-def _info(path: Path) -> MediaInfo:
-    return MediaInfo(
-        path=path, duration=100.0, vduration=100.0, width=1920, height=1080,
-        fps=Fraction(30), pix_fmt="yuv420p", vcodec="h264", audio_streams=1,
-        acodec="aac", sample_rate=48000, channels=2,
-    )  # fmt: skip
+from conftest import hard_link, link_file, media_info, messages, remap
+from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning
+from cutpoint.ffmpeg_utils import FFmpegError
 
 
 def _dies_midway(exc: BaseException):
@@ -47,7 +39,7 @@ def test_interrupted_clip_export_leaves_no_file(monkeypatch, tmp_path):
     with pytest.raises(type(exc)):
         encode.export_clip(
             src,
-            _info(src),
+            media_info(src),
             0.0,
             2.0,
             tmp_path / "001.mp4",
@@ -62,7 +54,7 @@ def test_interrupted_assemble_leaves_no_final_video(monkeypatch, tmp_path):
     clips = tmp_path / "clips"
     clips.mkdir()
     (clips / "001.mp4").write_bytes(b"x")
-    monkeypatch.setattr(assemble, "probe", _info)
+    monkeypatch.setattr(assemble, "probe", media_info)
     monkeypatch.setattr(assemble, "baked_fades", lambda d, files: [0.0] * len(files))
 
     def concat_copy(files, out, infos, fades):
@@ -151,7 +143,7 @@ def test_failed_export_leaves_no_new_empty_clips_folder(monkeypatch, home, preex
 
     segments = json.loads(seg.read_text(encoding="utf-8"))
     seg.write_text(json.dumps([*segments, {**segments[0], "label": "b"}]), encoding="utf-8")
-    monkeypatch.setattr(clips, "probe", _info)
+    monkeypatch.setattr(clips, "probe", media_info)
     monkeypatch.setattr(clips, "export_clip_checked", second_clip_fails)
     with pytest.raises(FFmpegError):
         clips.export_clips(project, segments=seg)
@@ -180,13 +172,13 @@ def _fake_export(monkeypatch):
     def export(src, info, start, end, out, *_a, **_kw):
         out.write_bytes(b"new")
 
-    monkeypatch.setattr(clips, "probe", _info)
+    monkeypatch.setattr(clips, "probe", media_info)
     monkeypatch.setattr(clips, "export_clip_checked", export)
 
 
 @pytest.mark.parametrize("winerror", [32, 5])
+@pytest.mark.usefixtures("no_sleep")
 def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, caplog, winerror):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     project, seg = _project(home)
     old = project / "clips" / "001_a.mp4"
     old.parent.mkdir()
@@ -206,8 +198,8 @@ def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, cap
     assert old.read_bytes() == b"x"
 
 
+@pytest.mark.usefixtures("no_sleep")
 def test_clips_force_retries_a_lock_that_clears(monkeypatch, home):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     project, seg = _project(home)
     old = project / "clips" / "001_a.mp4"
     old.parent.mkdir()
@@ -227,8 +219,8 @@ def test_clips_force_retries_a_lock_that_clears(monkeypatch, home):
     assert attempts and old.read_bytes() == b"new"
 
 
+@pytest.mark.usefixtures("no_sleep")
 def test_locked_final_video_names_the_file(monkeypatch, tmp_path):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     out = tmp_path / "final.mp4"
 
     def replace(self, target):
@@ -245,8 +237,8 @@ def test_locked_final_video_names_the_file(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("winerror", [None, 2])
+@pytest.mark.usefixtures("no_sleep")
 def test_non_lock_permission_error_is_reraised_unchanged(monkeypatch, tmp_path, winerror):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     out = tmp_path / "final.mp4"
 
     def replace(self, target):
@@ -276,6 +268,7 @@ class _HardKill(BaseException):
     """Stands in for taskkill /F: nothing after it runs, the folder stays as it is."""
 
 
+@pytest.mark.usefixtures("no_sleep")
 def _setup(home: Path, monkeypatch) -> Path:
     """Project with three old clips, a manifest, user notes and a stubbed encoder."""
     project = home / "projects" / "p"
@@ -297,9 +290,8 @@ def _setup(home: Path, monkeypatch) -> Path:
     (clips_dir / "manifest.json").write_text(
         json.dumps({"format": fmt, "clips": entries}), encoding="utf-8"
     )
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     _fake_export(monkeypatch)
-    monkeypatch.setattr(extend, "probe", _info)
+    monkeypatch.setattr(extend, "probe", media_info)
     monkeypatch.setattr(extend, "export_clip_checked", clips.export_clip_checked)
     monkeypatch.setattr(planning.sources, "readable_range", lambda src, t, d: (0.0, d))
     return project
@@ -764,11 +756,11 @@ def test_clips_force_with_dot_as_out_inside_the_clips_folder(monkeypatch, home):
 
 
 def _warnings(caplog) -> str:
-    return "\n".join(r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+    return "\n".join(messages(caplog))
 
 
 def _errors(caplog) -> str:
-    return "\n".join(r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+    return "\n".join(messages(caplog, "ERROR"))
 
 
 def _segments(path: Path, src: Path, labels: str = "a") -> None:
@@ -797,13 +789,6 @@ def test_clips_force_keeps_a_source_and_other_files_in_the_output_folder(monkeyp
     assert "source.mp4" in _warnings(caplog)
 
 
-def _symlink_to(link: Path, target: Path) -> None:
-    try:
-        link.symlink_to(target)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks are not available here")
-
-
 @pytest.mark.parametrize("kind", ["plain", "symlink"])
 def test_clips_force_refuses_a_new_clip_name_that_is_a_source(monkeypatch, home, caplog, kind):
     project, seg = _project(home)
@@ -815,7 +800,7 @@ def test_clips_force_refuses_a_new_clip_name_that_is_a_source(monkeypatch, home,
     else:
         src = project / "real.mp4"
         src.write_bytes(b"precious source")
-        _symlink_to(out / "001_a.mp4", src)
+        link_file(out / "001_a.mp4", src)
     _segments(seg, src)
     (out / "notes.txt").write_text("keep", encoding="utf-8")
     exported = []
@@ -938,13 +923,6 @@ def test_locked_leftover_folder_stops_the_run_until_it_is_released(
 # --- a manifest-listed clip that this run reads as a source is kept, however it is reached ---
 
 
-def _hard_link(link: Path, target: Path) -> None:
-    try:
-        os.link(target, link)
-    except (OSError, NotImplementedError, AttributeError) as err:
-        pytest.skip(f"hard links are not supported here: {err}")
-
-
 @pytest.mark.parametrize("kind", ["old-clip", "hard-link"])
 def test_clips_force_keeps_an_old_clip_that_is_this_runs_source(monkeypatch, home, caplog, kind):
     project = _setup(home, monkeypatch)
@@ -956,7 +934,7 @@ def test_clips_force_keeps_an_old_clip_that_is_this_runs_source(monkeypatch, hom
     else:
         kept.unlink()
         source = project / "src.mp4"
-        _hard_link(kept, source)
+        hard_link(kept, source)
         expected = source.read_bytes()
     _segments(project / "seg.json", source)
     assert cli.main(_argv("clips", project, "--force")) == 0
@@ -967,18 +945,11 @@ def test_clips_force_keeps_an_old_clip_that_is_this_runs_source(monkeypatch, hom
     assert "003_c.mp4" in warned
 
 
-def _remap_clips(home: Path, monkeypatch, old: Path, new: Path) -> None:
-    data = {"source_remap": {str(old): str(new)}}
-    (home / "config.json").write_text(json.dumps(data), encoding="utf-8")
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
-
-
 def test_clips_force_keeps_a_clip_reached_through_source_remap(monkeypatch, home, caplog, tmp_path):
     project = _setup(home, monkeypatch)
     out = project / "clips"
     gone = tmp_path / "gone"
-    _remap_clips(home, monkeypatch, gone, out)
+    remap(home, monkeypatch, gone, out)
     _segments(project / "seg.json", gone / "003_c.mp4")
     assert cli.main(_argv("clips", project, "--force")) == 0
     assert (out / "003_c.mp4").read_bytes() == b"old 003_c.mp4"
@@ -991,7 +962,7 @@ def test_clips_force_refuses_a_new_clip_name_reached_through_source_remap(
     project = _setup(home, monkeypatch)
     out = project / "clips"
     gone = tmp_path / "gone"
-    _remap_clips(home, monkeypatch, gone, out)
+    remap(home, monkeypatch, gone, out)
     _segments(project / "seg.json", gone / "001_a.mp4")
     before = _snapshot(out)
     assert cli.main(_argv("clips", project, "--force")) == 1
@@ -999,10 +970,10 @@ def test_clips_force_refuses_a_new_clip_name_reached_through_source_remap(
 
 
 @pytest.mark.parametrize(("winerror", "read_only_hint"), [(32, False), (5, True)])
+@pytest.mark.usefixtures("no_sleep")
 def test_lock_hint_mentions_read_only_only_for_access_denied(
     monkeypatch, tmp_path, winerror, read_only_hint
 ):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
 
     def op():
         raise _locked(winerror)
@@ -1048,10 +1019,10 @@ def test_failed_direct_export_into_an_empty_mount_keeps_the_clips_already_writte
     assert "Could not remove" not in caplog.text
 
 
+@pytest.mark.usefixtures("no_sleep")
 def test_retry_locked_predicate_picks_what_is_retried_and_reraises_the_last_unchanged(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     errs = [_locked(32) for _ in range(ffmpeg_utils.REPLACE_ATTEMPTS)]
     calls = []
 
@@ -1065,8 +1036,8 @@ def test_retry_locked_predicate_picks_what_is_retried_and_reraises_the_last_unch
     assert len(calls) == ffmpeg_utils.REPLACE_ATTEMPTS
 
 
+@pytest.mark.usefixtures("no_sleep")
 def test_retry_locked_predicate_rejecting_an_error_does_not_retry_it(monkeypatch, tmp_path):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     calls = []
 
     def op():
@@ -1093,8 +1064,8 @@ def test_retry_locked_predicate_rejecting_an_error_does_not_retry_it(monkeypatch
         ),
     ],
 )
+@pytest.mark.usefixtures("no_sleep")
 def test_remove_leftover_messages(monkeypatch, tmp_path, error, message):
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
 
     def rmtree(*_a, **_kw):
         raise error
@@ -1119,7 +1090,7 @@ def test_extract_audio_leaves_no_temp_wav_when_it_fails_or_is_interrupted_midway
 
         monkeypatch.setattr(ffmpeg_utils, "run_progress", run)
         with pytest.raises(type(exc)) as err:
-            ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, _info(tmp_path / "a.mp4"))
+            ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, media_info(tmp_path / "a.mp4"))
         assert err.value is exc
         assert list(dst.parent.iterdir()) == []
 
@@ -1270,6 +1241,6 @@ def test_interrupted_extract_audio_removes_its_temp_wav_after_ffmpeg_exits(
     dst.parent.mkdir()
     (dst.parent / "a.tmp.wav").write_bytes(b"partial")  # ffmpeg had started writing
     with pytest.raises(KeyboardInterrupt):
-        ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, _info(tmp_path / "a.mp4"))
+        ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, media_info(tmp_path / "a.mp4"))
     assert child.cmd[-1].endswith(".tmp.wav")
     assert list(dst.parent.iterdir()) == []

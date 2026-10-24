@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conftest import set_config
 from cutpoint import paths
 from cutpoint.pano import cli
 from cutpoint.pano import director as D
@@ -25,6 +26,7 @@ from cutpoint.pano import project as P
 from cutpoint.pano import qa_paths as QP
 from cutpoint.pano import views as VW
 from cutpoint.pano.qa import QAThresholds
+from pano_helpers import make_views
 
 W, H = 1920, 1080
 TH = QAThresholds()
@@ -112,25 +114,6 @@ def test_project_box_inverts_the_renderer_rays(u: float, v: float) -> None:
 
 
 # --------------------------------------------------------------------------- synthetic views
-def make_views(
-    boxes: dict[int, list[tuple]], n: int = 10, source: str = "fake.lrv"
-) -> VW.PanoViews:
-    """View layer with ``boxes[frame] = [(score, yaw, pitch, w, h, ray), ...]`` every 1.2 s."""
-    rows = []
-    for f, bs in boxes.items():
-        for sc, y, p, w, h, ray in bs:
-            rows.append([f, 1, sc, y, p, w, h, 0.0, *ray])
-    det = np.asarray(rows, np.float32).reshape(-1, len(VW.DET_COLS))
-    return VW.PanoViews(
-        t=(np.arange(n) * 1.2).astype(np.float32),
-        emb=np.zeros((n, 9, 4), np.float16),
-        det=det,
-        box_emb=np.zeros((0, 768), np.float16),
-        box_idx=np.zeros(0, np.int64),
-        meta={"source": source},
-    )
-
-
 def fixed_path(yaw: float = 0.0, pitch: float = -8.0, fov: float = 86.0, end: float = 12.0) -> dict:
     keys = [
         {"t": float(t), "yaw": yaw, "pitch": pitch, "fov": fov, "target": "friend"}
@@ -351,9 +334,7 @@ def test_param_validation(items: list[str], match: str) -> None:
 
 
 def _config(data: dict) -> None:
-    cfg = paths.config_file()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(json.dumps(data), encoding="utf-8")
+    set_config(paths.home(), **data)
 
 
 def test_director_params_config_then_cli() -> None:
