@@ -70,6 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The UI's New Project Source field no longer has the in-browser "Browse" button and folder
   browser; the `/api/browse` endpoint is removed.
 - The UI's "Remove from sequence" button moved above the video preview.
+- `cutpoint ui`: the preview is re-laid out: a centred title; the moment's name and source on
+  one row with "Add to sequence"; the video letterboxed in a full-width panel above one transport
+  bar (small clock on the left, a play/pause icon button in the middle, mute and volume on the
+  right); a full-width trim rail with tick divisions and a gold selection; then Clip Start, the
+  transcript in a rounded box and Clip End side by side, each field with "-0.5 s", "Use
+  playhead" and "+0.5 s" in one row. Score and signals and the keyboard hints are small lines
+  under them. In a narrow column Clip Start and Clip End go above the transcript, then stack.
 - The UI's Moments column header no longer shows the "Moments" title (kept for screen readers);
   after analysis it shows the moment count, "Analyze again" and "Show folder".
 - The `dev` extra is replaced by a `dev` dependency group that `uv sync` and `uv run` install by
@@ -97,6 +104,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   example `final_ui_1.srt`) already exists, so it no longer overwrites it (#224).
 - `cutpoint ui`: a cancelled job shows "stopping" (status `cancelling` in `/api/jobs`) until its
   process exits, and Cancel is disabled meanwhile (#225).
+- `cutpoint ui`: Cancel gives the job about 12 s (2 x the 5 s soft stop plus a margin) to remove
+  its partial files before ending the process tree. Before, it was 5 s, which could end the job
+  while it was still stopping ffmpeg or MediaSDKTest and leave a large partial file. The Cancel
+  request returns at once and the job shows "stopping" until it exits. Preview proxies are still
+  stopped after 5 s (#257).
 - `cutpoint ui` has a favicon (#226).
 - `cutpoint ui`: the outputs panel lists every final video in the project folder (`final.mp4`,
   `final_*.mp4`, `<name>-final.mp4`, ...), newest first with the export's own final first, each

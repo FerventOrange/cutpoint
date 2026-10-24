@@ -87,6 +87,10 @@ MAX_SEGMENTS = 500
 MAX_LOG_LINES = 300
 MAX_JOBS = 50
 MAX_EXTEND_S = 30.0
+# A stopped job gets this long before the hard kill: its own soft stop waits SOFT_STOP_S for
+# ffmpeg, then kills it and waits SOFT_STOP_S again, and only then removes the partial file;
+# the rest is for that removal and the interpreter's exit (#257).
+JOB_STOP_S = 2 * SOFT_STOP_S + 2.0
 BROWSER_CONTAINERS = {".mp4", ".m4v", ".mov", ".webm"}
 BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
 BROWSER_AUDIO = {None, "aac", "mp3", "opus", "vorbis"}
@@ -154,8 +158,10 @@ def _join_tree_job(proc: subprocess.Popen[str]) -> None:
         k32.CloseHandle(ctypes.c_void_p(job))
 
 
-def kill_tree(proc: subprocess.Popen[str]) -> None:
-    """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, then KILL.
+def kill_tree(proc: subprocess.Popen[str], wait: float = JOB_STOP_S, *, term: bool = True) -> None:
+    """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, wait ``wait``, then KILL.
+
+    ``term=False``: the KILL alone, for a job that was already sent its TERM.
 
     Windows: CTRL_BREAK_EVENT to the job's process group first (cutpoint turns it into
     KeyboardInterrupt: partial files removed, exit 130), then the job object ``spawn`` made
@@ -168,9 +174,9 @@ def kill_tree(proc: subprocess.Popen[str]) -> None:
         import ctypes  # noqa: PLC0415 - Windows only
 
         k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
-        if k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
+        if term and k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
             with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(SOFT_STOP_S)
+                proc.wait(wait)
         job = getattr(proc, "tree_job", None)
         if job:  # every descendant, including ones the leader's exit left out of /T
             k32.TerminateJobObject(ctypes.c_void_p(job), 1)
@@ -178,12 +184,13 @@ def kill_tree(proc: subprocess.Popen[str]) -> None:
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
         )
         return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        proc.wait(5)
+    if term:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(wait)
     with contextlib.suppress(ProcessLookupError):  # sweeps members that outlived the leader
         os.killpg(proc.pid, signal.SIGKILL)
 
@@ -601,18 +608,27 @@ class Jobs:
         return job
 
     def cancel(self, job_id: str) -> Job:
+        """Stop the job in the background and return at once; it reads "cancelling" until it exits."""
         job = self.get(job_id)
-        if job.status == "running" and job.proc is not None:
-            job.cancelled = True
-            kill_tree(job.proc)
-            job.done.wait(5)
+        with self.lock:  # one killer per job, however often Cancel is pressed
+            start = job.status == "running" and job.proc is not None and not job.cancelled
+            if start:
+                job.cancelled = True
+        if start:
+            threading.Thread(target=kill_tree, args=(job.proc,), daemon=True).start()
         return job
 
     def shutdown(self) -> None:
+        # One by one: at most one job runs at a time (``start``), so this waits JOB_STOP_S at most.
         for job in list(self.jobs.values()):
-            if job.status == "running" and job.proc is not None:
-                job.cancelled = True
+            if job.status != "running" or job.proc is None:
+                continue
+            with self.lock:  # as in ``cancel``: did a killer already send the TERM?
+                stopping, job.cancelled = job.cancelled, True
+            if not stopping:
                 kill_tree(job.proc)
+            elif not job.done.wait(JOB_STOP_S):  # a second TERM could cut short its cleanup
+                kill_tree(job.proc, term=False)
 
 
 def proxy_args(real: Path, out: Path, audio_streams: int) -> list[str]:
@@ -832,7 +848,7 @@ class Media:
         self.closing = True
         self.pool.shutdown(wait=False, cancel_futures=True)
         for proc in list(self.procs):
-            kill_tree(proc)
+            kill_tree(proc, SOFT_STOP_S)  # a bare ffmpeg: no soft stop of its own to wait for
 
 
 # --------------------------------------------------------------------------- projects
