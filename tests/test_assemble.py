@@ -116,6 +116,7 @@ def test_fade_join_without_room_falls_back_to_cuts(tmp_path, monkeypatch, caplog
     used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", "fade", 0.25, 0.25)
     assert (used, joined) == (0.0, ["cut"])
     assert "no room for a crossfade" in caplog.text
+    assert "45% of" in caplog.text
 
 
 @needs_ffmpeg

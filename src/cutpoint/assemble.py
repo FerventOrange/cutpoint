@@ -487,7 +487,7 @@ def _join(
         fade_dur = crossfade_duration(infos, fade_dur)
         if fade_dur == 0:
             logger.warning(
-                "One frame is more than 45%% of the shortest clip: no room for a crossfade; "
+                "One frame is more than 45% of the shortest clip: no room for a crossfade; "
                 "joining with cuts"
             )
             transition = "cut"
@@ -532,7 +532,8 @@ def assemble(
 
     ``audio_fade``: audio fade in/out (s) added to each clip that has no fade
     baked in by ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored for
-    ``transition="fade"``, which crossfades the audio anyway.
+    ``transition="fade"``, which crossfades the audio anyway, unless the join falls back to
+    cuts (no room for a one-frame crossfade).
 
     Raises:
         FileNotFoundError: If the folder has no .mp4 clips.
