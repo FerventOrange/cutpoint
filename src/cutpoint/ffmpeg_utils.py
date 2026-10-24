@@ -52,6 +52,10 @@ class FFmpegError(RuntimeError):
     """Raised when ffmpeg/ffprobe is missing or a command fails."""
 
 
+class FFmpegNotFoundError(FFmpegError):
+    """Raised when the ffmpeg or ffprobe executable cannot be found."""
+
+
 def exit_code(rc: int) -> str:
     """``rc`` as error messages show it.
 
@@ -74,7 +78,7 @@ def find_tool(name: str) -> str:
         name: Either ``"ffmpeg"`` or ``"ffprobe"``.
 
     Raises:
-        FFmpegError: If the executable cannot be found anywhere.
+        FFmpegNotFoundError: If the executable cannot be found anywhere.
     """
     env = paths.env(name.upper())
     if env and Path(env).is_file():
@@ -83,7 +87,7 @@ def find_tool(name: str) -> str:
     if on_path:
         return on_path
     if sys.platform != "win32":
-        raise FFmpegError(
+        raise FFmpegNotFoundError(
             f"{name} not found. Install ffmpeg with your package manager (e.g. "
             f"sudo apt install ffmpeg) or set CUTPOINT_{name.upper()}=/path/to/{name}."
         )
@@ -99,7 +103,7 @@ def find_tool(name: str) -> str:
         hits = sorted(root.glob(f"**/{name}.exe"), key=lambda p: len(str(p)))
         if hits:
             return str(hits[0])
-    raise FFmpegError(
+    raise FFmpegNotFoundError(
         f"{name} not found. Install it (winget install --id Gyan.FFmpeg -e) or set "
         f"the CUTPOINT_{name.upper()} environment variable to the full path of {name}.exe."
     )
