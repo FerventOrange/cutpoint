@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -128,6 +129,49 @@ def save_bytes(path: Path, data: bytes) -> None:
         retry_locked(partial(os.replace, tmp, path), path, "replace")
     except BaseException:
         tmp.unlink(missing_ok=True)
+        raise
+
+
+def make_dirs(folder: Path, made: list[Path]) -> None:
+    """Create ``folder`` and its missing parents (``mkdir(parents=True, exist_ok=True)``); the
+    levels this call's own mkdir created are added to ``made``, deepest first (see
+    :func:`created_dirs`).
+
+    Raises:
+        OSError: As ``mkdir``, e.g. FileExistsError or NotADirectoryError for a file in the way.
+    """
+    missing = []
+    for level in (folder, *folder.parents):
+        if os.path.lexists(level):
+            break
+        missing.append(level)
+    # top down, recording only what this call's own mkdir created: a level that exists by
+    # then (another process, or ``x/..``, which is an existing folder) is never recorded
+    for level in reversed(missing):
+        try:
+            level.mkdir()
+        except FileExistsError:
+            continue
+        except OSError:  # a file in the way or no permission: the mkdir below decides
+            break
+        made.insert(0, level)
+    folder.mkdir(parents=True, exist_ok=True)
+
+
+@contextlib.contextmanager
+def created_dirs() -> Iterator[list[Path]]:
+    """Yield a list for :func:`make_dirs` to record the folders a run creates; on failure (Ctrl+C
+    included) those still empty are removed, deepest first, so a failed run leaves no empty
+    folder behind. A folder that existed before, or that holds anything, is kept."""
+    made: list[Path] = []
+    try:
+        yield made
+    except BaseException:
+        for folder in made:
+            try:
+                folder.rmdir()
+            except OSError:  # not empty (something was written into it): keep it
+                continue
         raise
 
 

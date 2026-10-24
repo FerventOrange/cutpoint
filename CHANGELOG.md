@@ -136,6 +136,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays excluded; a drive whose mapping cannot be read is compared as before.
 - A failed or interrupted `cutpoint 360 repair --out <new folder>` removes the folders it created
   for `--out`, only while they are empty; existing folders and files are kept (#189).
+- A failed or interrupted (Ctrl+C) `analyze`, `stage`, refmatch check-frames run, `cutpoint ui`
+  proxy build or `cutpoint ui` new-project request now removes the output folders that run
+  created, only while they are empty; pre-existing folders are never removed. Pano and `events`
+  follow in a later change (#194, part 1).
+- A failed `--out` such as `a/new/../x` left the new empty folder `a/new` behind (`assemble`,
+  `clips`, `extend` and the pano commands, through `output_dir`); it is now removed, and the
+  existing `a` is kept (#194, #189).
 - On Windows, a staged copy is now used when its source is read through a `subst` drive letter
   and was staged under the folder that drive maps to, or the reverse (for example a
   `source_remap` prefix spelled `Q:\Footage` with `Q:` a `subst` of `D:\Footage`). Before, the
