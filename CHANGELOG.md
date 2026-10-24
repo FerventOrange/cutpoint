@@ -77,6 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check (for
+  example `360 analyze` with cached views but no cached event layers) no longer fails with
+  `WinError 127` on `cudnn_cnn64_9.dll`. On Windows the GPU check imports torch first when it is
+  installed, so torch loads its own cuDNN before the `gpu` extra's newer one (#215).
 - `cutpoint ui`: when `<project>/ui/proxy` or `<project>/ui/frames` is a file instead of a folder,
   preparing a preview fails with a WARNING "<project>/ui/proxy is not a folder; remove or rename
   it" and a thumbnail request gives a 409 error with the same message for `ui/frames`, like
