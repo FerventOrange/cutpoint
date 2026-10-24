@@ -198,35 +198,47 @@ def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
 
 
 def crossfade_duration(infos: list[MediaInfo], fade: float) -> float:
-    """The crossfade :func:`crossfade` uses for ``fade``: at most 45% of the shortest clip,
-    at least one output frame (the first clip's rate, as :func:`_normalize_inputs`), rounded
-    up to the millisecond of the filter strings. xfade shorter than a frame cuts the video
-    short. Returns 0 when one frame is more than 45% of the shortest clip: no room to fade.
+    """The crossfade :func:`crossfade` uses for ``fade``: rounded to whole output frames (the
+    first clip's rate, as :func:`_normalize_inputs`), at least one frame and at most 45% of
+    the shortest clip. xfade works in whole frames, so acrossfade and :func:`clip_offsets`
+    (final.srt) get the same rounded value; xfade shorter than a frame cuts the video short.
+    Returns 0 when one frame is more than 45% of the shortest clip: no room to fade.
     """
     room = 0.45 * min(i.vduration for i in infos)
-    fps = float(infos[0].fps)
-    frame = math.ceil(1000 / fps) / 1000 if fps > 0 else 0.0
-    if frame > room:
+    fps = infos[0].fps
+    if fps <= 0:
+        return min(fade, room)
+    most = math.floor(room * fps + 1e-9)
+    if most < 1:
         return 0.0
-    used = max(min(fade, room), frame)
-    if used > fade:
+    nearest = math.floor(fade * fps + 0.5)
+    frames = min(max(nearest, 1), most)
+    used = float(frames / fps)
+    if nearest < 1:
         logger.info("Crossfade %.3fs is shorter than one frame; using %.3fs", fade, used)
     return used
 
 
 def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float) -> float:
     """Join clips with xfade/acrossfade over ``fade`` s, as returned by
-    :func:`crossfade_duration` (> 0). Returns ``fade``."""
-    chains, *_ = _normalize_inputs(infos)
+    :func:`crossfade_duration` (> 0). Returns ``fade``.
+
+    Times are written to the microsecond, not the millisecond (8 frames at 24 fps are
+    0.333333 s), so acrossfade matches the frame-rounded fade. xfade starts at the first
+    frame at or after ``offset``, and the frames of a previous xfade can sit a microsecond
+    early (rounded timestamps add up), so each offset is passed half a frame early: the fade
+    still starts on the frame :func:`clip_offsets` puts it on."""
+    chains, *_, fps = _normalize_inputs(infos)
+    half_frame = 0.5 / float(fps) if fps > 0 else 0.0
     vprev, aprev = "v0", "a0"
     offsets = clip_offsets(infos, fade)
     for i in range(1, len(files)):
-        offset = offsets[i]
+        offset = max(offsets[i] - half_frame, 0.0)
         vout, aout = ("v", "a") if i == len(files) - 1 else (f"vx{i}", f"ax{i}")
         chains.append(
-            f"[{vprev}][v{i}]xfade=transition=fade:duration={fade:.3f}:offset={offset:.3f}[{vout}]"
+            f"[{vprev}][v{i}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}[{vout}]"
         )
-        chains.append(f"[{aprev}][a{i}]acrossfade=d={fade:.3f}[{aout}]")
+        chains.append(f"[{aprev}][a{i}]acrossfade=d={fade:.6f}[{aout}]")
         vprev, aprev = vout, aout
     _encode(files, ";".join(chains), out)
     return fade

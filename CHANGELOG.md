@@ -91,6 +91,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
   new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
   replaced or removed by a later run. An `.srt` the old manifest does not list stays (#239).
+- `assemble --transition fade` rounds the crossfade to whole frames (of the first clip's
+  rate) and uses that length for the video, the audio and the cut offsets in `final.srt`.
+  xfade used whole frames while the audio and subtitles used the exact fade: 0.25 s at
+  29.97 fps over 2 joins gave 6.039 s of video and 6.000 s of audio. Crossfade times are also
+  passed to ffmpeg to the microsecond instead of the millisecond, and each xfade offset half a
+  frame early (the fade starts on the same frame), so rounded timestamps of earlier joins no
+  longer add a frame from the third clip on (#243).
 - `extend` writes each re-exported clip's `.srt` for its new range and records it in the
   manifest (`srt`), in place and with `--out`. In place, the `.srt` the old manifest lists is
   replaced (removed when the source has no cached transcript), so no subtitles with the old
