@@ -384,7 +384,10 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
   chunks. The ASS file is kept next to the output. `--model` picks the Whisper model.
 - Default output: `<project>\final.mp4`; `final_vertical.mp4` for `clips_vertical`;
   `final_<name>.mp4` for other folders. A `.fcpxml` and a `.otio` timeline are always written
-  next to it (hard cuts; add transitions in your editor).
+  next to it. With `--transition fade` (and the `edit` kinds that crossfade) they hold a
+  cross-dissolve at each join, starting on the edit, with the clips and total length of
+  `final.mp4`; with cuts they are hard cuts. On the OTIO audio track a clip without audio
+  leaves a gap, so later audio stays in sync.
 - Subtitles `final.srt` (named after the output) are written next to it from the clips'
   cached source transcripts, placed on the joined timeline (crossfades included) by each
   clip's `manifest.json` start and end. A clip renamed during review has no manifest entry;

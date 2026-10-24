@@ -12,8 +12,9 @@ slip through. For a planned path and its low-res preview this module
    frame per request for strict JSON ``{"blocked", "where", "what", "low_info"}``
    (one retry with a short prompt when the reply does not parse).
 
-The flags are reported (path ``vl`` record, ``vl_check.json``); they do not
-drive the director. A closed loop (flags as grid penalties, then as safe-area
+The flags are stored (path ``vl`` record, ``vl_check.json``) and counted by
+``360 qa``, which fails a clip with more than 1 bad frame in its span; the
+director only reports them, they do not drive it. A closed loop (flags as grid penalties, then as safe-area
 obstacles, re-plan kept only if it checks better) was measured on 36 segments
 and fixed too few of the problem frames for its cost.
 

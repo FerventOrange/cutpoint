@@ -316,6 +316,34 @@ def test_single_flagged_frame_is_not_a_share_failure(flagged, ok: bool) -> None:
     assert a["pass"] is ok, a["fails"]
 
 
+VL = {"model": "m", "frames": 4, "flags": [{"t": 1.0}, {"t": 2.0}, {"t": 30.0}]}
+
+
+def test_vl_summary_counts_only_flags_in_the_span() -> None:
+    assert qa.vl_summary({"vl": VL}, 0.5, 2.0) == {
+        "model": "m",
+        "frames": 4,
+        "bad": 2,
+        "flags": [{"t": 1.0}, {"t": 2.0}],
+    }
+    assert qa.vl_summary({"vl": VL}, 10.0, 5.0)["bad"] == 0
+
+
+@pytest.mark.parametrize("path", [None, {}, {"vl": None}, {"vl": {"model": "m", "frames": 0}}])
+def test_vl_summary_is_none_without_a_usable_record(path) -> None:
+    assert qa.vl_summary(path, 0.0, 10.0) is None
+
+
+def test_vl_bad_frames_fail_a_clip_above_the_limit() -> None:
+    frames = [rec(i / 2, []) for i in range(40)]
+    ok = qa.aggregate_clip(frames, 2.0, PAN_OK, None, TH, {"frames": 4, "bad": 1})
+    assert ok["pass"] is True
+    bad = qa.aggregate_clip(frames, 2.0, PAN_OK, None, TH, {"frames": 4, "bad": 2})
+    assert bad["pass"] is False
+    assert bad["fails"] == ["vl 2/4 frames bad"]
+    assert qa.aggregate_clip(frames, 2.0, PAN_OK, None, TH)["pass"] is True
+
+
 def test_aggregate_edit_is_duration_weighted() -> None:
     clips = [
         {
@@ -391,7 +419,9 @@ def test_run_qa_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     d = tmp_path / "preview"
     d.mkdir()
     (d / "001_a.mp4").write_bytes(b"")
-    (d / "001_a.json").write_text(json.dumps({**make_path(t1=30.0), "segment": {"start": 2.0}}))
+    vl = {"model": "m", "frames": 3, "flags": [{"t": 3.0}, {"t": 9.0}]}  # 2nd is outside the clip
+    path = {**make_path(t1=30.0), "segment": {"start": 2.0}, "vl": vl}
+    (d / "001_a.json").write_text(json.dumps(path))
     n = 8
     ts = np.arange(n) / 2.0
     frames = np.full((n, 36, 64, 3), 128, np.uint8)
@@ -444,6 +474,8 @@ def test_run_qa_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert {"what": "too_close", "t0": 0.5, "t1": 1.0} in c["flags"]
     assert c["pan"]["speed_p95"] == pytest.approx(10.0, abs=0.2)
     assert data["edit"]["clips"] == 1
+    assert c["vl"] == {"model": "m", "frames": 3, "bad": 1, "flags": [{"t": 3.0}]}
+    assert (data["edit"]["vl_checked"], data["edit"]["vl_bad"]) == (1, 1)
     assert rep["sheets"] == []
 
 
