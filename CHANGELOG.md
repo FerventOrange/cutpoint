@@ -80,7 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint 360 director` paths are evaluated with a monotone cubic (PCHIP) between keys instead
   of linear interpolation: speed no longer jumps at each key and a value never overshoots its
   keys. Yaw across +-180 degrees stays smooth, shots with 2 keys are unchanged and repeated key
-  times still act as a step (#14).
+  times still act as a step. Existing `360 director --preview` videos are reused and keep the old
+  motion until deleted; paths are not re-planned (#14).
 
 ### Fixed
 
