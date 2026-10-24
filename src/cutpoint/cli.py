@@ -955,7 +955,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="output file (default: <project>/final.mp4, or final_vertical.mp4 for clips_vertical)",
     )
     asm.add_argument("--transition", choices=["cut", "fade"], default="cut")
-    asm.add_argument("--fade-dur", type=float, default=0.25)
+    asm.add_argument("--fade-dur", type=positive_float, default=0.25)
     asm.add_argument(
         "--loudnorm", action="store_true", help="normalise to -14 LUFS, true peak below -1.5 dBTP"
     )

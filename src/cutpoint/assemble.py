@@ -133,12 +133,13 @@ def concat_copy(
             args += ["-i", str(f)]
         chains = []
         for i, (info, fade) in enumerate(zip(infos, fades, strict=True)):
-            # Each clip's audio is padded/trimmed to its video length so the
-            # stream-copied video and the re-built audio cannot drift apart.
+            # Each clip's audio is padded/trimmed to where the demuxer starts the
+            # next clip (cut_duration) so the stream-copied video and the
+            # re-built audio cannot drift apart.
             chains.append(
                 _audio_chain(i + 1, info, fade, label=i).replace(
                     f"[a{i}]",
-                    f",apad,atrim=end={info.vduration:.6f}[a{i}]"
+                    f",apad,atrim=end={cut_duration(info):.6f}[a{i}]"
                     if info.audio_streams
                     else f"[a{i}]",
                 )
@@ -172,6 +173,15 @@ def concat_reencode(
     _encode(files, ";".join(chains) + f";{pairs}concat=n={len(files)}:v=1:a=1[v][a]", out)
 
 
+def cut_duration(info: MediaInfo) -> float:
+    """How long a clip lasts on a cut join: its container ``duration``.
+
+    The concat demuxer starts the next file there, longer than the video when the
+    audio runs on. The cut offsets (:func:`clip_offsets`, so final.srt) and the
+    audio rebuilt by :func:`concat_copy` use it, so they stay on the video."""
+    return info.duration
+
+
 def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
     """Where each clip starts in the joined video: back to back, each crossfade
     (``fade`` s, 0 for cuts) overlapping it with the previous clip.
@@ -182,7 +192,7 @@ def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
     offsets, t = [], 0.0
     for info in infos:
         offsets.append(t)
-        t += info.vduration - fade if fade > 0 else info.duration
+        t += info.vduration - fade if fade > 0 else cut_duration(info)
     return offsets
 
 

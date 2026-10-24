@@ -362,7 +362,8 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
 `10_x`).
 
 - `cut` (default) uses stream copy when all clips share parameters, else normalises and
-  re-encodes. `fade` crossfades video and audio.
+  re-encodes. `fade` crossfades video and audio over `--fade-dur` seconds (default 0.25,
+  greater than 0, at most 45% of the shortest clip).
 - `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
   then measures the result and redoes the pass with a lower ceiling if the true peak is above
   -1.5 dBTP. Very peaky material can land up to about 1 LU below target.
