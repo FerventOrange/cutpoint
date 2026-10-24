@@ -93,6 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays excluded; a drive whose mapping cannot be read is compared as before.
 - A failed or interrupted `cutpoint 360 repair --out <new folder>` removes the folders it created
   for `--out`, only while they are empty; existing folders and files are kept (#189).
+- On Windows, a staged copy is now used when its source is read through a `subst` drive letter
+  and was staged under the folder that drive maps to, or the reverse (for example a
+  `source_remap` prefix spelled `Q:\Footage` with `Q:` a `subst` of `D:\Footage`). Before, the
+  run read the slow source again. Index keys and copy names are unchanged, so nothing has to be
+  staged again (#186).
 - `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times
   and ordering to candidates, and `360 repair` matches crash impacts to segments, by the resolved,
   normalised source path (symlinks, `a/../b` spellings); `360 repair` reads a relative source in

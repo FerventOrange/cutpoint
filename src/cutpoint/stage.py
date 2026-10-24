@@ -262,6 +262,8 @@ def reload_stage_index() -> None:
     ``stage_dir``, ``source_remap`` or the index file changes)."""
     _stage_index.cache_clear()  # type: ignore[attr-defined]
     staged_path.cache_clear()  # type: ignore[attr-defined]
+    _EXPANDED.clear()
+    _SUBST.clear()
 
 
 def staged_path(path: str) -> str:
@@ -307,7 +309,10 @@ def _staged_path(path: str) -> tuple[str, int | None]:
     index = _stage_index()
     if not index:
         return path, None
-    slot = _find(index, *_identity(path))
+    key, parts = _identity(path)
+    slot = _find(index, key, parts)
+    if slot is None:
+        slot = _find_subst(index, key)
     if slot is None:
         return path, None
     entry = index[slot]
@@ -319,6 +324,91 @@ def _staged_path(path: str) -> tuple[str, int | None]:
         return path, None
     logger.debug("staged read %s -> %s", path, copy)
     return str(copy), entry["size"]
+
+
+def _query_dos_device(drive: str) -> str | None:
+    """Windows: what ``QueryDosDeviceW`` names drive ``drive`` (``Q:``): ``\\??\\C:\\real`` for
+    a ``subst`` drive, ``\\Device\\...`` for a disk or a network drive. A local kernel call (no
+    network access). Never raises; None on failure and on other platforms.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes  # noqa: PLC0415 - Windows only
+    except ImportError:
+        return None
+    try:
+        query = ctypes.WinDLL("kernel32").QueryDosDeviceW  # type: ignore[attr-defined]
+        buf = ctypes.create_unicode_buffer(1024)
+        if query(drive, buf, len(buf)):
+            return buf.value
+    except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+        pass
+    return None
+
+
+# _subst_target results by drive letter.
+_SUBST: dict[str, str | None] = state.register_container(__name__, "_SUBST", {})
+
+
+def _subst_target(drive: str) -> str | None:
+    """Folder the ``subst`` drive ``drive`` (``Q:``) maps to (``C:\\real``, or
+    ``\\\\server\\share\\x`` for one on a share), or None for any other drive: a disk or a
+    network-mapped drive (``\\Device\\LanmanRedirector\\...``, ``\\Device\\Mup\\...``).
+    Cached per drive letter until the stage index reloads."""
+    if drive not in _SUBST:
+        device = _query_dos_device(drive)
+        target = device[4:] if device and device.startswith("\\??\\") else None
+        if target is not None and target[:4].upper() == "UNC\\":
+            target = "\\\\" + target[4:]
+        _SUBST[drive] = target
+    return _SUBST[drive]
+
+
+# A subst drive may map into another one; follow at most this many.
+_SUBST_DEPTH = 8
+
+
+def _expand_subst(path: str) -> str:
+    """``path`` with a leading ``subst`` drive letter replaced by the folder it maps to, again
+    while that folder is on one. Lexical: the file system is not touched; any other path
+    (another drive, UNC) is returned unchanged."""
+    for _ in range(_SUBST_DEPTH):
+        drive = PureWindowsPath(path).drive
+        target = _subst_target(drive.upper()) if len(drive) == 2 and drive[1] == ":" else None
+        if target is None:
+            break
+        path = target.rstrip("\\") + "\\" + path[2:].lstrip("\\/")
+    return path
+
+
+# Subst-expanded forms of the last index's keys: id(index) -> (index, {form: index key}).
+_EXPANDED: dict[int, tuple[dict[str, dict], dict[str, str]]] = state.register_container(
+    __name__, "_EXPANDED", {}
+)
+
+
+def _find_subst(index: dict[str, dict[str, Any]], key: str) -> str | None:
+    """Windows: index key matching stage key ``key`` once ``subst`` drive letters are expanded
+    on both sides, or None (#186).
+
+    For a miss of the exact spelling: an index key keeps the canonical (pre-remap) spelling,
+    which may be on a ``subst`` drive (``Q:\\Footage``) while the file is asked for through the
+    folder it maps to (``D:\\Footage``), or the reverse. Network-free: keys are never resolved,
+    and network-mapped drives and UNC paths stay as they are. Keys are expanded once per loaded
+    index; stored keys and copy names stay as they are.
+    """
+    if sys.platform != "win32":
+        return None
+    cached = _EXPANDED.get(id(index))
+    if cached is None or cached[0] is not index:
+        forms: dict[str, str] = {}
+        _SUBST.clear()  # subst mappings live as long as the expanded forms built from them
+        for slot, entry in index.items():
+            forms.setdefault(norm_path(_expand_subst(_base_key(slot, entry))), slot)
+        _EXPANDED.clear()
+        cached = _EXPANDED[id(index)] = (index, forms)
+    return cached[1].get(norm_path(_expand_subst(key)))
 
 
 def _load_index(stage_dir: Path) -> dict[str, dict[str, Any]]:
