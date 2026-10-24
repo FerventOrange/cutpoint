@@ -58,14 +58,14 @@ The `events` model layer does not use Ollama for its main model. It starts its o
 - `Could not download Cnn14_DecisionLevelMax_mAP=0.385.pth from any mirror`: every source failed;
   the message lists the reason for each. Check the network, run `cutpoint setup --only panns`
   again (partial downloads resume), or set `CUTPOINT_PANNS_URL`.
-- Disk space: about 8 GB for everything. Move the data folder with `CUTPOINT_HOME` or
+- Disk space: see [Storage](storage.md#disk-space) for sizes. Move the data folder with `CUTPOINT_HOME` or
   `CUTPOINT_MODELS_DIR` if the system drive is small.
 
 ## Missing Python packages
 
 `events` needs the `events` extra; action-cam features and the 360 module need `ski`. A missing
-module produces an error with the exact install command. Remember to list every extra you use
-in one `uv sync` command.
+module produces an error with the exact install command. List every extra you use
+([Optional extras](../getting-started.md#optional-extras)).
 
 ## Whisper model download
 
