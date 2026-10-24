@@ -34,7 +34,7 @@ def test_truncated_highlights_names_file_and_how_to_fix(tmp_path, reader):
 @pytest.mark.parametrize("content", ["null", "[]", "{}", '{"sources": null}'])
 def test_non_object_highlights_is_a_clear_error(tmp_path, reader, content):
     (tmp_path / "highlights.json").write_text(content, encoding="utf-8")
-    with pytest.raises(ValueError, match="has no (candidates|sources) list") as err:
+    with pytest.raises(ValueError, match=r"has no (candidates|sources) list") as err:
         READERS[reader](tmp_path)
     assert str(tmp_path / "highlights.json") in str(err.value)
     assert HINT in str(err.value)
