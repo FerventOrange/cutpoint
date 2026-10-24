@@ -256,8 +256,9 @@ def extend_clips(
         out_dir: Output folder (default :func:`default_out_dir`, or
             ``<clips_dir>_speech`` without padding).
         force: Allow writing into a non-empty folder, including ``clips_dir``. Like
-            ``clips --force``, only the clips and ``.srt`` files its manifest.json lists are
-            replaced; listed ones this run does not write are removed.
+            ``clips --force``, only the clips and ``.srt`` files its manifest.json lists, and
+            leftover ``.part.mp4`` files of an interrupted run, are replaced; listed ones this
+            run does not write are removed.
         speech: Speech-aware boundary settings (default: on, 8 s / 5 s caps);
             entries with ``"speech_aware": false`` are left alone, and an
             entry's ``speech_max_extend`` / ``speech_max_lead`` replace the

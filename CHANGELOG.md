@@ -107,7 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{"candidates": null}` gives this error instead of a crash.
 - `extend --force` (and in-place `extend`) also replaces leftover `.part` files from a hard-killed
   run. Its "Kept" warning now matches `clips`, including the wording when there is no manifest.
-- Re-analyzing a project (`cutpoint events`) keeps `vision_top` and the Ollama URL and model.
+- Re-analyzing a project (`cutpoint events`) keeps `vision_top` and the Ollama URL and model; the `cutpoint ui` Analyze action keeps them too.
   `analyze` now stores them in the `highlights.json` settings; an automatic `vision_top` stays
   automatic.
 - `cutpoint ui`: the outputs panel also offers each final's `.srt` subtitles (`final.srt`,
