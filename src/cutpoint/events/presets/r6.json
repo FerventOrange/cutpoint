@@ -1,0 +1,82 @@
+{
+  "game": "r6",
+  "builtin": true,
+  "match": [
+    "rainbow six",
+    "r6",
+    "siege"
+  ],
+  "reference": [
+    1920,
+    1080
+  ],
+  "source": "built-in R6 Siege (2025 HUD) preset, calibrated on full frames of a 1080p stream; moved from regions.py unchanged",
+  "notes": [
+    "killfeed: right-aligned rows at x~1590-1830, newest row at y~296, older rows stacking upward ~32 px apart. Blue name boxes = own team, orange = enemy. 'Reverse Friendly Fire has been activated for X' appears here too. min_change is low: the grey 'Reverse Friendly Fire' row changes the mask by only ~1.4% of the region (measured).",
+    "counter: '5 VS 1', centre, x~880-1040, y~230-290.",
+    "banner: round banner ('WON ROUND 5', 'VICTORY'), centre, x~650-1250, y~430-540.",
+    "notice: 'OPFOR last op standing.', centre, y~765-795.",
+    "builtin: the original R6 interpretation (coloured name boxes, HUD-colour mask gate); banner_phrases are used as listed, without the generic banners, and the OCR cache key has no preset fields."
+  ],
+  "regions": [
+    {
+      "name": "killfeed",
+      "x": 1300,
+      "y": 150,
+      "w": 560,
+      "h": 185,
+      "kind": "killfeed",
+      "min_change": 0.008
+    },
+    {
+      "name": "counter",
+      "x": 760,
+      "y": 200,
+      "w": 400,
+      "h": 110,
+      "kind": "counter"
+    },
+    {
+      "name": "banner",
+      "x": 520,
+      "y": 380,
+      "w": 880,
+      "h": 220,
+      "kind": "banner",
+      "min_change": 0.03,
+      "min_fill": 0.012
+    },
+    {
+      "name": "notice",
+      "x": 600,
+      "y": 740,
+      "w": 720,
+      "h": 80,
+      "kind": "notice",
+      "min_change": 0.03,
+      "min_fill": 0.006
+    }
+  ],
+  "banner_phrases": [
+    "WON ROUND",
+    "ROUND WON",
+    "LOST ROUND",
+    "ROUND LOST",
+    "VICTORY",
+    "DEFEAT",
+    "REVERSE FRIENDLY FIRE",
+    "ACE",
+    "CLUTCH",
+    "OVERTIME",
+    "MATCH POINT",
+    "LAST OP STANDING",
+    "DEFUSER PLANTED",
+    "DEFUSER DISABLED",
+    "BOMB DEFUSED",
+    "ELIMINATED",
+    "TEAM KILL",
+    "TEAMKILL",
+    "DRAW"
+  ],
+  "bigtext": false
+}
