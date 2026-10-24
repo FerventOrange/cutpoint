@@ -158,8 +158,10 @@ def _join_tree_job(proc: subprocess.Popen[str]) -> None:
         k32.CloseHandle(ctypes.c_void_p(job))
 
 
-def kill_tree(proc: subprocess.Popen[str], wait: float = JOB_STOP_S) -> None:
+def kill_tree(proc: subprocess.Popen[str], wait: float = JOB_STOP_S, *, term: bool = True) -> None:
     """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, wait ``wait``, then KILL.
+
+    ``term=False``: the KILL alone, for a job that was already sent its TERM.
 
     Windows: CTRL_BREAK_EVENT to the job's process group first (cutpoint turns it into
     KeyboardInterrupt: partial files removed, exit 130), then the job object ``spawn`` made
@@ -172,7 +174,7 @@ def kill_tree(proc: subprocess.Popen[str], wait: float = JOB_STOP_S) -> None:
         import ctypes  # noqa: PLC0415 - Windows only
 
         k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
-        if k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
+        if term and k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(wait)
         job = getattr(proc, "tree_job", None)
@@ -182,12 +184,13 @@ def kill_tree(proc: subprocess.Popen[str], wait: float = JOB_STOP_S) -> None:
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
         )
         return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        proc.wait(wait)
+    if term:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(wait)
     with contextlib.suppress(ProcessLookupError):  # sweeps members that outlived the leader
         os.killpg(proc.pid, signal.SIGKILL)
 
@@ -618,9 +621,14 @@ class Jobs:
     def shutdown(self) -> None:
         # One by one: at most one job runs at a time (``start``), so this waits JOB_STOP_S at most.
         for job in list(self.jobs.values()):
-            if job.status == "running" and job.proc is not None:
-                job.cancelled = True
+            if job.status != "running" or job.proc is None:
+                continue
+            with self.lock:  # as in ``cancel``: did a killer already send the TERM?
+                stopping, job.cancelled = job.cancelled, True
+            if not stopping:
                 kill_tree(job.proc)
+            elif not job.done.wait(JOB_STOP_S):  # a second TERM could cut short its cleanup
+                kill_tree(job.proc, term=False)
 
 
 def proxy_args(real: Path, out: Path, audio_streams: int) -> list[str]:

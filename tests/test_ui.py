@@ -412,6 +412,52 @@ def test_posix_kill_tree_waits_job_stop_s_between_term_and_kill(
     assert signals == [signal.SIGTERM, signal.SIGKILL]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_posix_kill_tree_without_term_sends_only_sigkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[int] = []
+    monkeypatch.setattr(ui.os, "killpg", lambda pid, sig: signals.append(sig))
+
+    def wait(timeout: float | None = None) -> int:
+        raise AssertionError("no soft stop to wait for")
+
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait), term=False)  # type: ignore[arg-type]
+    assert signals == [signal.SIGKILL]
+
+    def gone(pid: int, sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(ui.os, "killpg", gone)  # the group already exited: nothing to report
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait), term=False)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("done", "cancelled", "expected"),
+    [
+        (True, True, []),  # exited by itself while stopping: no kill at all
+        (False, True, [False]),  # still stuck after JOB_STOP_S: KILL only, no second TERM
+        (False, False, [True]),  # not yet stopped: the full TERM then KILL, as before
+    ],
+)
+def test_jobs_shutdown_does_not_term_a_cancelling_job_twice(
+    monkeypatch: pytest.MonkeyPatch, done: bool, cancelled: bool, expected: list[bool]
+) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(ui, "kill_tree", lambda proc, wait=0, *, term=True: calls.append(term))
+    monkeypatch.setattr(ui, "JOB_STOP_S", 0.01)
+    jobs = ui.Jobs()
+    job = ui.Job("p", "analyze")
+    job.proc = SimpleNamespace(pid=4242)  # type: ignore[assignment]
+    job.cancelled = cancelled
+    if done:
+        job.done.set()
+    jobs.jobs[job.id] = job
+    jobs.shutdown()
+    assert calls == expected
+    assert job.cancelled
+
+
 def _pid_alive(pid: int) -> bool:
     import ctypes  # noqa: PLC0415 - Windows only
 
