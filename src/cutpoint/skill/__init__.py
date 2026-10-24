@@ -2,11 +2,12 @@
 
 ``SKILL.md`` in this package is the skill; it ships in the wheel as package data. ``install``
 copies it to ``<skills dir>/cutpoint/SKILL.md`` (default: the Claude Code user skills folder,
-``~/.claude/skills``).
+:func:`default_dir`).
 """
 
 from __future__ import annotations
 
+import os
 from importlib.resources import files
 from pathlib import Path
 
@@ -16,8 +17,11 @@ NAME = "cutpoint"
 
 
 def default_dir() -> Path:
-    """The Claude Code user skills folder, ``~/.claude/skills``."""
-    return Path.home() / ".claude" / "skills"
+    """The Claude Code user skills folder: ``$CLAUDE_CONFIG_DIR/skills`` when that variable is
+    set (Claude Code's config-folder override), else ``~/.claude/skills``."""
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(config).expanduser() if config else Path.home() / ".claude"
+    return base / "skills"
 
 
 def skill_bytes() -> bytes:

@@ -224,8 +224,7 @@ setx CUTPOINT_HOME D:\cutpoint-data       # new shells only
 export CUTPOINT_HOME=/data/cutpoint
 ```
 
-`cutpoint init`, which will ask for these locations on first run, is planned and does not
-exist yet. Until then, set the variable or edit `config.json` yourself. See
+Set the variable or edit `config.json` yourself. See
 [Configuration](configuration.md) for the full layout.
 
 Projects go to `<CUTPOINT_HOME>\projects` unless you set `projects_dir` in `config.json` or

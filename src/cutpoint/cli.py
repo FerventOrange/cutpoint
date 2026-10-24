@@ -1048,7 +1048,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--dir",
         metavar="DIR",
         help="skills folder, e.g. a project's .claude/skills or another agent's folder "
-        "(default: ~/.claude/skills, the Claude Code user skills folder)",
+        "(default: ~/.claude/skills, the Claude Code user skills folder, or "
+        "$CLAUDE_CONFIG_DIR/skills when CLAUDE_CONFIG_DIR is set)",
     )
     si.add_argument("--force", action="store_true", help="replace an installed skill that differs")
     si.set_defaults(func=_cmd_skill_install)

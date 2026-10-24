@@ -526,7 +526,7 @@ cutpoint skill print
 
 `skill install` copies the Claude Code skill for agents driving Cutpoint to
 `<DIR>/cutpoint/SKILL.md`. The default `DIR` is `~/.claude/skills`, the Claude Code user skills
-folder; use `--dir` for a project's `.claude/skills` or another agent's skills folder. An
+folder (`$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set); use `--dir` for a project's `.claude/skills` or another agent's skills folder. An
 installed skill with the same content is left as is. One with different content (an older
 version or your own edits) is an error naming the file; `--force` replaces it. The skill is short
 and points the agent to `cutpoint guide` for details.

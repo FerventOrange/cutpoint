@@ -9,6 +9,8 @@ import shlex
 import pytest
 
 from cutpoint import cli, skill
+from cutpoint.edit import KINDS
+from cutpoint.styles import STYLES
 
 
 def _skill_text() -> str:
@@ -25,11 +27,22 @@ def test_install_writes_skill_md(tmp_path, caplog):
 
 
 def test_install_default_dir_is_user_claude_skills(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "profile"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
     assert cli.main(["skill", "install"]) == 0
     target = tmp_path / "profile" / ".claude" / "skills" / "cutpoint" / "SKILL.md"
     assert target.read_bytes() == skill.skill_bytes()
+
+
+def test_install_default_dir_honours_claude_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "profile"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    assert cli.main(["skill", "install"]) == 0
+    target = tmp_path / "claude-config" / "skills" / "cutpoint" / "SKILL.md"
+    assert target.read_bytes() == skill.skill_bytes()
+    assert not (tmp_path / "profile" / ".claude").exists()
 
 
 def test_identical_reinstall_is_a_noop(tmp_path, monkeypatch):
@@ -114,7 +127,7 @@ def _commands(text: str) -> list[list[str]]:
         for line in span.splitlines():
             m = re.search(r"\bcutpoint\s+(.*)", line)
             if m and not line.lstrip().startswith(("name:", "description:")):
-                found.append(shlex.split(m.group(1).replace("|", " "), posix=False))
+                found.append(shlex.split(m.group(1), posix=False))
     return found
 
 
@@ -132,12 +145,37 @@ def test_skill_commands_and_options_exist_in_parser():
             assert tok in children, f"skill names unknown command: cutpoint {' '.join(path)} {tok}"
             parser = children[tok]
             path.append(tok)
-        for tok in tokens:
-            if tok.startswith("--"):
-                opt = tok.split("=", 1)[0]
-                assert opt in parser._option_string_actions or opt in root._option_string_actions, (
-                    f"skill names unknown option: cutpoint {' '.join(path)} {opt}"
-                )
+        for i, tok in enumerate(tokens):
+            if not tok.startswith("--"):
+                continue
+            opt = tok.split("=", 1)[0]
+            action = parser._option_string_actions.get(opt) or root._option_string_actions.get(opt)
+            assert action, f"skill names unknown option: cutpoint {' '.join(path)} {opt}"
+            # values of an option with choices: `--kind a|b` names each choice, `<x>` is a slot
+            value = tok.partition("=")[2] or (tokens[i + 1] if i + 1 < len(tokens) else "")
+            if action.choices and value and not value.startswith(("-", "<")):
+                for choice in value.split("|"):
+                    assert choice in action.choices, (
+                        f"skill names unknown value: cutpoint {' '.join(path)} {opt} {choice}"
+                    )
+
+
+def test_skill_lists_every_kind():
+    lists = [
+        tokens[tokens.index("--kind") + 1]
+        for tokens in _commands(_skill_text())
+        if tokens[:1] == ["edit"] and "--kind" in tokens[:-1]
+    ]
+    assert lists, "the skill shows no `cutpoint edit ... --kind a|b|...`"
+    for values in lists:
+        assert set(values.split("|")) == set(KINDS)
+
+
+def test_skill_style_list_matches_styles():
+    text = " ".join(_skill_text().split())
+    m = re.search(r"Style \(`--style`.*?Pick (.*?); anything else", text)
+    assert m, "the skill's style sentence is missing"
+    assert set(re.findall(r"`([^`]+)`", m.group(1))) == set(STYLES)
 
 
 def test_every_option_in_skill_exists_in_parser():

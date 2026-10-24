@@ -1,6 +1,6 @@
 ---
 name: cutpoint
-description: Edit videos locally with the Cutpoint CLI. Use when the user asks to edit this video, make highlights, a montage or funny moments, cut clips from this recording, find the best moments in footage, or assemble clips into a finished video.
+description: Edit videos locally with the Cutpoint CLI. Use when the user asks to edit this video, make highlights, a montage or funny moments, cut clips from this recording, find the best moments in footage, or assemble clips into a finished video. Not for converting, compressing or re-encoding a single video, or general questions about video formats, codecs or players.
 ---
 
 # Cutpoint
@@ -40,7 +40,7 @@ subtitles; the last log lines name them. `--out NAME` names the project.
 
 Choosing the moments yourself:
 
-1. `cutpoint analyze <video> --style funny --out <project>`.
+1. `cutpoint analyze <video> --style <style> --out <project>`.
 2. Read `highlights.json` (ranked `candidates` with `id`, `start`, `end`, `score`, `label`,
    `transcript`) and `transcript.txt` in the project folder.
 3. Export: `cutpoint clips <project> --top 8`, `cutpoint clips <project> --ids h001 h004` or

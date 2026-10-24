@@ -23,7 +23,8 @@ If the user asks for "edit this video and make it a montage" in one step, use
 
 To let Claude Code find Cutpoint on its own, install the skill with `cutpoint skill install`
 (writes `~/.claude/skills/cutpoint/SKILL.md`; `--dir DIR` for a project's `.claude/skills` or
-another agent's folder). `cutpoint skill print` prints it for agents without a skills folder.
+another agent's folder). Ask the user first: it writes to their Claude Code settings folder.
+`cutpoint skill print` prints it for agents without a skills folder.
 
 ## Calling the CLI
 
@@ -177,7 +178,8 @@ command for theirs:
 ## Rules
 
 - Ask the user before running `cutpoint setup` (about 8 GB of downloads), `cutpoint stage`
-  (copies footage to local disk) or `clips --force` over an existing folder.
+  (copies footage to local disk), `clips --force` over an existing folder or
+  `cutpoint skill install` (writes to their Claude Code settings folder).
 - Do not paste Insta360 SDK files, documentation or output into any file or message, other than
   `error:` lines.
 - Do not invent options. Check `--help`.
