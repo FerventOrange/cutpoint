@@ -381,7 +381,10 @@ function setRange(which, t) {
     c.seg.start = s;
     c.seg.end = e;
     changed();
-  } else S.drafts[c.id] = { ...S.drafts[c.id], start: s, end: e };
+  } else {
+    S.drafts[c.id] = { ...S.drafts[c.id], start: s, end: e };
+    renderRemoved();
+  }
   renderTrim(true);
   return true;
 }
