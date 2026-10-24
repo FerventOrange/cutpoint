@@ -665,47 +665,48 @@ def stitch_clips(
     timeout_s = stitch_timeout_s()
     _warn_system_drive(out_dir, [c for c in clips if force or not sdk_output(c).is_file()])
     records = []
-    if not dry_run:
-        out_dir.mkdir(parents=True, exist_ok=True)
-    for c in clips:
-        out = sdk_output(c)
-        if out.is_file() and not force:
-            flowstate = equirect_flowstate(out)
-            if flowstate is not False:
-                logger.warning(
-                    "clip %s: existing %s %s; its framing drifts with the camera's "
-                    "heading. Restitch: cutpoint 360 stitch <project> --clips %s --force",
-                    c.clip_id,
-                    out.name,
-                    "has no sidecar (assumed FlowState)"
-                    if flowstate is None
-                    else "was stitched with FlowState",
-                    c.clip_id,
-                )
-            records.append({"clip": c.clip_id, "output": str(out), "status": "exists"})
-            continue
-        need_gb = _need_gb(c)
+    with cache.created_dirs() as made:  # a failed run leaves no empty folder behind
         if not dry_run:
-            free = shutil.disk_usage(out_dir).free / 1e9
-            if free - need_gb < MIN_FREE_GB:
-                raise ValueError(
-                    f"{out_dir}: {free:.0f} GB free, clip {c.clip_id} needs ~{need_gb:.0f} GB"
+            cache.make_dirs(out_dir, made)
+        for c in clips:
+            out = sdk_output(c)
+            if out.is_file() and not force:
+                flowstate = equirect_flowstate(out)
+                if flowstate is not False:
+                    logger.warning(
+                        "clip %s: existing %s %s; its framing drifts with the camera's "
+                        "heading. Restitch: cutpoint 360 stitch <project> --clips %s --force",
+                        c.clip_id,
+                        out.name,
+                        "has no sidecar (assumed FlowState)"
+                        if flowstate is None
+                        else "was stitched with FlowState",
+                        c.clip_id,
+                    )
+                records.append({"clip": c.clip_id, "output": str(out), "status": "exists"})
+                continue
+            need_gb = _need_gb(c)
+            if not dry_run:
+                free = shutil.disk_usage(out_dir).free / 1e9
+                if free - need_gb < MIN_FREE_GB:
+                    raise ValueError(
+                        f"{out_dir}: {free:.0f} GB free, clip {c.clip_id} needs ~{need_gb:.0f} GB"
+                    )
+            part = out.with_name(out.name + ".partial.mp4")
+            cmd = stitch_command(exe or Path(SDK_EXE_NAME), c, part)
+            logger.info("clip %s: %s", c.clip_id, subprocess.list2cmdline(cmd))
+            if dry_run:
+                records.append(
+                    {
+                        "clip": c.clip_id,
+                        "output": str(out),
+                        "status": "dry-run",
+                        "command": cmd,
+                        "estimated_gb": round(need_gb, 1),
+                    }
                 )
-        part = out.with_name(out.name + ".partial.mp4")
-        cmd = stitch_command(exe or Path(SDK_EXE_NAME), c, part)
-        logger.info("clip %s: %s", c.clip_id, subprocess.list2cmdline(cmd))
-        if dry_run:
-            records.append(
-                {
-                    "clip": c.clip_id,
-                    "output": str(out),
-                    "status": "dry-run",
-                    "command": cmd,
-                    "estimated_gb": round(need_gb, 1),
-                }
-            )
-            continue
-        records.append(_stitch_one(c, cmd, part, out, out_dir, timeout_s))
+                continue
+            records.append(_stitch_one(c, cmd, part, out, out_dir, timeout_s))
     return records
 
 
