@@ -217,3 +217,31 @@ def test_analyze_records_a_missing_mapped_drive_input_in_unc_form(home, tmp_path
     hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     assert [s["path"] for s in hl["sources"]] == [r"\\nas\share\Footage\a.mp4"]
     assert [p.resolve() for p in probed] == [(new / "a.mp4").resolve()]
+
+
+@pytest.mark.parametrize(
+    ("top", "url", "model"), [(7, "http://ollama.example:11434", "m1"), (None, None, None)]
+)
+def test_analyze_stores_the_vision_options_and_reanalyze_passes_them_back(
+    home, tmp_path, monkeypatch, top, url, model
+):
+    write(tmp_path / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    proj = tmp_path / "proj"
+    analyze.analyze(
+        tmp_path / "a.mp4",
+        get_style("funny"),
+        proj,
+        vision=False,
+        vision_top=top,
+        ollama_url=url,
+        ollama_model=model,
+        use_scenes=False,
+    )
+    st = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))["settings"]
+    assert (st["vision_top"], st["ollama_url"], st["ollama_model"]) == (top, url, model)
+
+    seen: dict = {}
+    monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
+    analyze.reanalyze(proj)
+    assert (seen["vision_top"], seen["ollama_url"], seen["ollama_model"]) == (top, url, model)
