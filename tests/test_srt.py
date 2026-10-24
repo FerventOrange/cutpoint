@@ -176,6 +176,32 @@ def test_clips_force_removes_the_listed_srt_of_a_clip_deleted_during_review(home
     assert (out / "001_b.srt").is_file()
 
 
+def test_clips_force_keeps_a_clip_renamed_in_case_only_and_its_srt(home, monkeypatch, caplog):
+    """The manifest lists 001_Joke; review renamed it 001_joke. The listed name must not
+    remove it on a case-insensitive file system: it stays, with the Kept warning."""
+    project, seg, out = _project(home)
+    monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
+    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    clips.export_clips(project, segments=seg)
+    if not (out / "001_A.mp4").exists():
+        pytest.skip("case-sensitive file system")
+    data = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    data["clips"][0] |= {"file": "001_Joke.mp4", "srt": "001_Joke.srt"}
+    (out / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+    (out / "001_a.mp4").rename(out / "001_joke.mp4")
+    (out / "001_a.srt").rename(out / "001_joke.srt")
+    pick = json.loads(seg.read_text(encoding="utf-8"))[0] | {"label": "b"}
+    seg.write_text(json.dumps([pick]), encoding="utf-8")
+    clips.export_clips(project, segments=seg, force=True)
+    assert (out / "001_joke.mp4").read_bytes() == b"new"  # the first run's clip, kept
+    assert (out / "001_joke.srt").is_file()
+    assert (out / "001_b.mp4").is_file()
+    assert any(
+        r.levelname == "WARNING" and "Kept 001_joke.mp4" in r.message for r in caplog.records
+    )
+
+
 def test_renamed_clip_uses_its_own_srt_in_the_final(tmp_path):
     """Reordering by renaming (005_x -> 001b_x) loses the manifest entry: the clip's own
     .srt, renamed with it, is placed at its offset and clipped to it."""

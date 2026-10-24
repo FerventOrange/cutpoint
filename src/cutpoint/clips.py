@@ -805,11 +805,14 @@ def _replaced_files(
             out_dir,
         )
     parts = [p.name for p in out_dir.glob(".*.part.mp4")]
+    # Only a name spelled on disk as listed: a clip renamed in case only still matches its
+    # listed name on a case-insensitive file system and must stay (kept, with a warning).
+    present = {p.name for p in out_dir.iterdir()}
     replace: list[str] = []
     kept_sources: list[str] = []
     for n in dict.fromkeys([*(listed or []), *parts]):
         f = out_dir / n
-        if f.is_file() or f.is_symlink():
+        if n in present and (f.is_file() or f.is_symlink()):
             (kept_sources if same_file(f, sources) else replace).append(n)
     done = {path_key(n) for n in (*new, *replace, *kept_sources)}
     kept: list[str] = []
