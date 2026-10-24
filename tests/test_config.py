@@ -11,15 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import write
+from conftest import messages, set_config, write
 from cutpoint import cli, config
 from cutpoint.pano import project, stitch
-
-
-def set_config(home: Path, **data) -> None:
-    write(home / "config.json", json.dumps(data))
-    config.get_config.cache_clear()
-
 
 # -- player_tags ----------------------------------------------------------------------
 
@@ -53,41 +47,31 @@ def make_clips(n: int = 2) -> list:
     return [SimpleNamespace(duration=1800.0) for _ in range(n)]
 
 
-def stitch_warnings(caplog) -> list[logging.LogRecord]:
-    return [
-        r for r in caplog.records if r.name == stitch.logger.name and r.levelno == logging.WARNING
-    ]
-
-
 @windows_only
-def test_warns_when_unset_and_on_system_drive(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(stitch, "pano_config", dict)
-    monkeypatch.setenv("SystemDrive", tmp_path.resolve().drive)
+@pytest.mark.parametrize(
+    ("pano", "drive_is_tmp", "warns"),
+    [
+        ({}, True, True),
+        ({"stitched_dir": "configured"}, True, False),
+        ({}, False, False),
+    ],
+    ids=["unset-on-system-drive", "stitched-dir-configured", "output-on-another-drive"],
+)
+def test_warn_system_drive(tmp_path, monkeypatch, caplog, pano, drive_is_tmp, warns):
+    pano = {k: str(tmp_path) if v == "configured" else v for k, v in pano.items()}
+    monkeypatch.setattr(stitch, "pano_config", lambda: pano)
+    drive = tmp_path.resolve().drive
+    other = "Q:" if drive.upper() != "Q:" else "R:"
+    monkeypatch.setenv("SystemDrive", drive if drive_is_tmp else other)
     with caplog.at_level(logging.WARNING, logger=stitch.logger.name):
         stitch._warn_system_drive(tmp_path / "out", make_clips(2))
-    (rec,) = stitch_warnings(caplog)
-    msg = rec.getMessage()
+    got = messages(caplog, logger=stitch.logger.name)
+    if not warns:
+        assert got == []
+        return
+    (msg,) = got
     assert "system drive" in msg and "2 clip(s)" in msg and "stitched_dir" in msg
     assert f"{2 * 1800 / 3600 * 45 * 1.2:.0f} GB" in msg
-
-
-@windows_only
-def test_no_warning_when_stitched_dir_configured(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(stitch, "pano_config", lambda: {"stitched_dir": str(tmp_path)})
-    monkeypatch.setenv("SystemDrive", tmp_path.resolve().drive)
-    with caplog.at_level(logging.WARNING, logger=stitch.logger.name):
-        stitch._warn_system_drive(tmp_path / "out", make_clips())
-    assert stitch_warnings(caplog) == []
-
-
-@windows_only
-def test_no_warning_when_output_on_another_drive(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(stitch, "pano_config", dict)
-    other = "Q:" if tmp_path.resolve().drive.upper() != "Q:" else "R:"
-    monkeypatch.setenv("SystemDrive", other)
-    with caplog.at_level(logging.WARNING, logger=stitch.logger.name):
-        stitch._warn_system_drive(tmp_path / "out", make_clips())
-    assert stitch_warnings(caplog) == []
 
 
 # -- set_config_value -----------------------------------------------------------------

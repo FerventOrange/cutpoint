@@ -213,6 +213,10 @@ select { max-width: 100%; }
 .transport { display: flex; align-items: center; gap: 14px; margin: 10px 0 8px; flex-wrap: wrap; }
 .transport .btn { min-width: 76px; }
 .keys { font-size: 13px; }
+/* mute toggle and volume slider next to Play; the slider keeps the amber of the other controls */
+.vol { display: flex; align-items: center; gap: 6px; }
+.vol .icon-btn { min-width: 0; }
+.vol input[type=range] { width: 7em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber); }
 #clock { font-size: 15px; }
 
 /* the cut rail: the moment in its surrounding footage */

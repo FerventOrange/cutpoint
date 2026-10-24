@@ -8,13 +8,13 @@ import logging
 import subprocess
 import sys
 from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import cutpoint
+from conftest import media_info
 from cutpoint import boundaries, clips, extend, planning
 from cutpoint.encode import OutputFormat
 from cutpoint.events.tails import EventTailSettings
@@ -22,23 +22,6 @@ from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.planning import Padding, pad, select_moments, speech_pass
 from cutpoint.styles import get_style
 from cutpoint.tail import TailSettings
-
-
-def _info(duration: float = 100.0) -> MediaInfo:
-    return MediaInfo(
-        path=Path("v.mp4"),
-        duration=duration,
-        vduration=duration,
-        width=1920,
-        height=1080,
-        fps=Fraction(30),
-        pix_fmt="yuv420p",
-        vcodec="h264",
-        audio_streams=1,
-        acodec="aac",
-        sample_rate=48000,
-        channels=2,
-    )
 
 
 # -- select_moments ------------------------------------------------------------------
@@ -125,7 +108,7 @@ def readable(monkeypatch):
 
 
 def test_pad_applies_and_records(readable):
-    start, end, rec = pad(Path("v.mp4"), _info(), 10.0, 20.0, Padding(2.0, 3.0))
+    start, end, rec = pad(Path("v.mp4"), media_info(), 10.0, 20.0, Padding(2.0, 3.0))
     assert (start, end) == (8.0, 23.0)
     assert rec == {
         "requested": {"start": 2.0, "end": 3.0},
@@ -135,21 +118,21 @@ def test_pad_applies_and_records(readable):
 
 
 def test_pad_clamps_to_source_and_readable_part(readable):
-    start, end, rec = pad(Path("v.mp4"), _info(25.0), 1.0, 24.0, Padding(4.0, 4.0))
+    start, end, rec = pad(Path("v.mp4"), media_info(duration=25.0), 1.0, 24.0, Padding(4.0, 4.0))
     assert (start, end) == (0.0, 25.0)
     assert rec["clamped"] == ["start", "end"]
     readable[0] = (5.0, 21.0)  # recovered part starting at 5 s, read error at 21 s
-    start, end, rec = pad(Path("v.mp4"), _info(), 6.0, 20.0, Padding(4.0, 4.0))
+    start, end, rec = pad(Path("v.mp4"), media_info(), 6.0, 20.0, Padding(4.0, 4.0))
     assert (start, end) == (5.0, 21.0)
     assert rec["applied"] == {"start": 1.0, "end": 1.0}
     # never shorter than the clip, even past the readable end
-    start, end, _ = pad(Path("v.mp4"), _info(), 6.0, 22.0, Padding(0.0, 4.0))
+    start, end, _ = pad(Path("v.mp4"), media_info(), 6.0, 22.0, Padding(0.0, 4.0))
     assert end == 22.0
 
 
 def test_pad_past_last_readable_point_only_extends_forward(readable):
     readable[0] = (0.0, 30.0)
-    start, end, _ = pad(Path("v.mp4"), _info(), 40.0, 50.0, Padding(4.0, 4.0))
+    start, end, _ = pad(Path("v.mp4"), media_info(), 40.0, 50.0, Padding(4.0, 4.0))
     assert (start, end) == (40.0, 54.0)
 
 
@@ -186,7 +169,7 @@ def speech_env(monkeypatch, readable, tmp_path):
 
 def _plan(name: str, start: float, end: float, **entry: Any) -> _Plan:
     e = {"source": "D:\\v.mp4", **entry}
-    return _Plan(name, e, Path("v.mp4"), _info(), start, end, (start, end))
+    return _Plan(name, e, Path("v.mp4"), media_info(), start, end, (start, end))
 
 
 def test_speech_pass_moves_end_out_of_an_utterance(speech_env):
@@ -304,7 +287,7 @@ def plan_env(monkeypatch, speech_env):
             ordered,
             project,
             io_paths={SRC_A: Path("a.mp4"), SRC_B: Path("b.mp4")},
-            infos={SRC_A: _info(100.0), SRC_B: _info(50.0)},
+            infos={SRC_A: media_info(duration=100.0), SRC_B: media_info(duration=50.0)},
             events=None,
             event_settings=EventTailSettings(enabled=False),
             **kw,

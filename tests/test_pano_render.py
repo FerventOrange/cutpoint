@@ -17,26 +17,18 @@ import numpy as np
 import pytest
 
 from conftest import write
-from cutpoint import config, ffmpeg_utils, paths
+from cutpoint import ffmpeg_utils, paths
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, render
 from cutpoint.pano.x3 import X3Clip, imu_source
+from pano_helpers import LRV, orientation, x3clip
 
 FPS = 30.0
 
 
 @pytest.fixture
 def clip() -> X3Clip:
-    return X3Clip(
-        clip_id="001",
-        start_local="2026-01-01T10:00:00",
-        mode="5.7k",
-        lrv="LRV_20260101_100000_11_001.lrv",
-        insv=["VID_20260101_100000_00_001.insv", "VID_20260101_100000_10_001.insv"],
-        fps=FPS,
-        frames=300,
-        duration=10.0,
-    )
+    return x3clip(lrv=LRV, fps=FPS, frames=300, duration=10.0)
 
 
 @pytest.fixture(autouse=True)
@@ -129,15 +121,7 @@ MOUNT = _q((1, 0, 0), -90)
 def _orient(n: int, heading_deg: np.ndarray | None = None) -> G.Orientation:
     """Camera on the usual mount, turning about the vertical by ``heading_deg``."""
     hd = np.zeros(n) if heading_deg is None else heading_deg
-    q = np.array([_qmul(_q((0, 1, 0), h), MOUNT) for h in hd])
-    return G.Orientation(
-        t=np.arange(n) / FPS,
-        up=np.tile([0.0, 0.0, -1.0], (n, 1)),
-        heading=np.zeros(n),
-        heading_smooth=np.zeros(n),
-        meta={"fps": FPS},
-        q=q,
-    )
+    return orientation(n, FPS, np.array([_qmul(_q((0, 1, 0), h), MOUNT) for h in hd]))
 
 
 def _path(*keys: tuple[float, float, float]) -> dict:
@@ -284,24 +268,6 @@ class TestRenderSegmentSendcmd:
 
 
 # --------------------------------------------------------------------------- moved footage
-@pytest.fixture
-def moved(home, tmp_path, monkeypatch):
-    """A clip recorded under ``old/`` whose footage now lives in ``new/`` (``source_remap``)."""
-    old, new = tmp_path / "old", tmp_path / "new"
-    names = ["VID_20260101_100000_00_001.insv", "VID_20260101_100000_10_001.insv"]
-    lrv = "LRV_20260101_100000_11_001.lrv"
-    for name in (*names, lrv):
-        write(new / name)  # the old folder is gone
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    # Prefix forms depend on the real cwd / file system; keep just the typed form.
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
-    clip = X3Clip(
-        "001", "2026-01-01T10:00:00", "5.7k", str(old / lrv), [str(old / n) for n in names]
-    )
-    return clip, old, new
-
-
 def test_render_segment_reads_moved_footage_and_records_the_original_paths(
     moved, tmp_path, monkeypatch
 ):

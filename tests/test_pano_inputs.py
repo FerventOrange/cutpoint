@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,24 +12,7 @@ from cutpoint import config, ffmpeg_utils
 from cutpoint.pano import project
 from cutpoint.pano.render import PanoExporter
 from cutpoint.pano.x3 import X3Clip
-
-INSV = ["VID_20260101_100000_00_001.insv", "VID_20260101_100000_10_001.insv"]
-LRV = "LRV_20260101_100000_11_001.lrv"
-
-
-@pytest.fixture
-def moved(home, tmp_path, monkeypatch):
-    """A clip recorded under ``old/`` whose footage now lives in ``new/`` (``source_remap``)."""
-    old, new = tmp_path / "old", tmp_path / "new"
-    for name in (*INSV, LRV):
-        write(new / name)  # the old folder is gone; no stitched file anywhere
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
-    clip = X3Clip(
-        "001", "2026-01-01T10:00:00", "5.7k", str(old / LRV), [str(old / n) for n in INSV]
-    )
-    return clip, old, new
+from pano_helpers import INSV, LRV
 
 
 def _exporter(clip: X3Clip, source_mode: str) -> PanoExporter:
