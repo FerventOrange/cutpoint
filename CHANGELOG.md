@@ -103,6 +103,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `highlights.json` errors now read "has no sources list" / "has no candidates list", and
+  `{"candidates": null}` gives this error instead of a crash.
+- `extend --force` (and in-place `extend`) also replaces leftover `.part` files from a hard-killed
+  run. Its "Kept" warning now matches `clips`, including the wording when there is no manifest.
+- Re-analyzing a project (`cutpoint events`) keeps `vision_top` and the Ollama URL and model.
+  `analyze` now stores them in the `highlights.json` settings; an automatic `vision_top` stays
+  automatic.
 - `cutpoint ui`: the outputs panel also offers each final's `.srt` subtitles (`final.srt`,
   `final_ui_*.srt`, `<name>-final.srt`) for download, served as plain text.
 - A `highlights.json` without a `sources` list now gives an error naming the file and saying to
