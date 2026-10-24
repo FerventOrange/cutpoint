@@ -9,7 +9,7 @@
 | ffmpeg and ffprobe | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
 | Ollama (optional) | Only for `analyze --vision` and `events` VLM features that use it. |
-| Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are about 8 GB. Clips and finals are re-encoded, so budget for them in the project folder. |
+| Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are large (see [Download models](#download-models-only-for-cutpoint-events)). Clips and finals are re-encoded, so budget for them in the project folder. |
 
 Windows and Linux are tested (CI runs the tests on both). The base
 install transcribes on the CPU. For GPU Whisper on an NVIDIA GPU, add the `gpu` extra (the CUDA
@@ -87,6 +87,12 @@ uv sync --extra ski --extra events --extra gpu
 
 With an NVIDIA GPU, `uv sync --extra gpu` is the minimum for GPU Whisper.
 
+The same rule applies when you add a missing extra later: use the install form that matches how
+you installed Cutpoint, and list every extra you use. In a clone that is `uv sync --extra X`
+plus your other extras. For a tool install it is `uv tool install "cutpoint[X]" --reinstall`
+plus your other extras; for a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add
+the PyTorch index flags shown under [Install as a tool](#install-as-a-tool-optional).
+
 ### Install as a tool (optional)
 
 To get a global `cutpoint` command instead of `uv run cutpoint`, install it from PyPI:
@@ -116,6 +122,8 @@ index:
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
 ```
+
+On an existing tool install, add `--reinstall`.
 
 Check it with `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
 (`True` means the GPU is used). On Linux:
@@ -188,7 +196,7 @@ docker run --rm --mount source=cutpoint-data,target=/data cutpoint:events setup
 
 If you run with `--user` and a bind mount, pass the same `--user` and
 `--mount type=bind,source="$HOME/cutpoint-data",target=/data` flags to `setup`, so the models land
-in the directory you actually mount. This is about 8 GB of models, and the Python dependencies are large (they include CUDA libraries
+in the directory you actually mount. The models are a large download (see [Download models](#download-models-only-for-cutpoint-events)), and so are the Python dependencies (they include CUDA libraries
 even though the container runs on the CPU). Then run the UI as above with `cutpoint:events`.
 
 ## First run

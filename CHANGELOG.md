@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exclusions and carried segments match it (#181); older `Z:\...` entries still match. Clip
   manifests (`clips/manifest.json` `source`) now record `\\server\share\...` instead of
   `Z:\...` for a remapped mapped drive.
+- On Windows, a `source_remap_exclude` glob written for a mapped drive (`Z:\...`) now also
+  excludes the same file recorded in its network form (`\\server\share\...`), and the reverse, so
+  an excluded source is no longer read from its remap copy (#193). Everything excluded before
+  stays excluded; a drive whose mapping cannot be read is compared as before.
 - A failed or interrupted `cutpoint 360 repair --out <new folder>` removes the folders it created
   for `--out`, only while they are empty; existing folders and files are kept (#189).
 - On Windows, a staged copy is now used when its source is read through a `subst` drive letter
