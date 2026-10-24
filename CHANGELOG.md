@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--json` result envelope, starting with `cutpoint paths --json`: the command writes exactly one
+  JSON object to stdout, `{"ok", "command", "schema": 1, "project", "outputs", "warnings",
+  "error"}`, with `error.code` one of `bad_args`, `not_found`, `ffmpeg_missing`,
+  `missing_extra`, `output_not_empty`, `interrupted` or `error`. Logs, stray output and the
+  output of child processes go to stderr; exit codes are unchanged. Other commands follow;
+  the existing `--json` of `profile`, `capabilities` and `360 repair` is unchanged (#4).
 - `cutpoint skill install [--dir DIR] [--force]` installs a Claude Code skill
   (`~/.claude/skills/cutpoint/SKILL.md` by default) so an agent finds Cutpoint for requests such
   as "edit this video" or "find the best moments" and runs the edit loop; it points to
