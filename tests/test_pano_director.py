@@ -574,7 +574,7 @@ def keys_path(yaw, pitch=None, fov=None, dt=0.5) -> dict:
 
 
 def test_evaluate_velocity_is_continuous_at_a_middle_key() -> None:
-    path = keys_path([0.0, 10.0, 30.0, 35.0])  # keys at 0, .5, 1, 1.5 s
+    path = keys_path([0.0, 5.0, 15.0, 30.0, 50.0])  # speeds rise: the key at 1 s is cubic
     e = 1e-4
     t = np.array([1.0 - 2 * e, 1.0 - e, 1.0 + e, 1.0 + 2 * e])
     yaw = D.evaluate(path, t)[0]
@@ -602,14 +602,16 @@ def test_evaluate_never_overshoots_the_neighbouring_keys() -> None:
 
 
 def test_evaluate_yaw_across_the_antimeridian_is_smooth() -> None:
-    path = keys_path([170.0, -175.0, -160.0, -150.0])  # +15, +15, +10 deg: always eastward
-    t = np.linspace(0.0, 1.5, 301)
+    # +5, +10, +20, +30 deg: always eastward, rising speeds so the intervals stay cubic
+    path = keys_path([165.0, 170.0, -180.0, -160.0, -130.0])
+    t = np.linspace(0.0, 2.0, 401)
     yaw = D.evaluate(path, t)[0]
-    assert yaw[0] == pytest.approx(170.0) and yaw[-1] == pytest.approx(210.0)
+    assert yaw[0] == pytest.approx(165.0) and yaw[-1] == pytest.approx(230.0)
     assert np.all(np.diff(yaw) >= 0)  # monotone, no 360 deg jump
     assert np.abs(np.diff(yaw)).max() < 1.0
     v = np.diff(yaw) / np.diff(t)
-    assert np.abs(np.diff(v)).max() < 1.0  # velocity has no steps either
+    # the last interval (from 1.5 s) is linear, its velocity steps at its key: skip it
+    assert np.abs(np.diff(v[:295])).max() < 1.0  # velocity has no steps either
 
 
 def test_evaluate_two_keys_are_linear() -> None:
@@ -649,6 +651,111 @@ def test_evaluate_cubic_never_crosses_a_cut() -> None:
     grid = np.linspace(0.0, 4.0, 161)
     got = D.evaluate(path, grid)[0]
     first = grid < 2.0
-    ky = np.array([y for _, y in rows], float)
-    assert got[first] == pytest.approx(D._pchip(grid[first], np.array([0.0, 1.0, 2.0]), ky[:3]))
-    assert got[~first] == pytest.approx(D._pchip(grid[~first], np.array([2.0, 3.0, 4.0]), ky[3:]))
+    for sel, kx, ky in (
+        (first, np.array([0.0, 1.0, 2.0]), np.array([0.0, 10.0, 30.0])),
+        (~first, np.array([2.0, 3.0, 4.0]), np.array([100.0, 105.0, 125.0])),
+    ):
+        flat = np.zeros(3)
+        mask = D._linear_intervals(kx, ky, flat)
+        want = D._pchip(grid[sel], kx, np.stack([ky, flat], 1), mask)[:, 0]
+        assert got[sel] == pytest.approx(want)
+
+
+# ------------------------------------------------ evaluate: the cubic never pans faster than linear
+def _linear_eval(path: dict, times: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Reference: exact linear interpolation of the keys of a path without cuts."""
+    keys = path["keys"]
+    kt = [k["t"] for k in keys]
+    yaw = np.degrees(np.unwrap(np.radians([k["yaw"] for k in keys])))
+    return (
+        np.interp(times, kt, yaw),
+        np.interp(times, kt, [k["pitch"] for k in keys]),
+        np.interp(times, kt, [k["fov"] for k in keys]),
+    )
+
+
+_EVALUATE = D.evaluate  # D.evaluate is patched while measuring
+
+
+def _pan_metrics(path: dict, evaluate, monkeypatch: pytest.MonkeyPatch) -> dict:
+    from cutpoint.pano import qa as Q  # noqa: PLC0415
+
+    monkeypatch.setattr(D, "evaluate", evaluate)  # pan_metrics looks it up at call time
+    return Q.pan_metrics(path, 0.0, path["keys"][-1]["t"])
+
+
+def _fails_pan_gate(m: dict) -> bool:
+    from cutpoint.pano import qa as Q  # noqa: PLC0415
+
+    th = Q.QAThresholds()
+    return m["speed_p95"] > th.max_pan_p95 or m["speed_max"] > th.max_pan_max
+
+
+def test_evaluate_stop_go_keys_peak_at_the_linear_speed() -> None:
+    path = keys_path([0.0, 0.0, 30.0, 30.0])  # the moving interval is 60 deg/s linear
+    t = np.linspace(0.0, 1.5, 301)
+    yaw = D.evaluate(path, t)[0]
+    assert np.abs(np.diff(yaw) / np.diff(t)).max() == pytest.approx(60.0)  # a cubic hits 90
+
+
+def test_evaluate_near_limit_path_does_not_pan_faster_than_linear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 8 keys at 0.5 s (random, seed 4, yaw only): linear peaks at 38.2 deg/s and passes
+    # the pan gates; the plain cubic reached 56.8 and failed max_pan_max
+    yaw = [-117.2, -99.4, -99.0, -79.9, -96.7, -92.4, -97.4, -85.3]
+    path = keys_path(yaw)
+    lin = _pan_metrics(path, _linear_eval, monkeypatch)
+    cubic = _pan_metrics(path, _EVALUATE, monkeypatch)
+    assert lin["speed_max"] == pytest.approx(38.2, abs=0.2)
+    assert cubic["speed_max"] <= lin["speed_max"] + 0.1
+    assert cubic["speed_p95"] <= lin["speed_p95"] + 0.1
+    assert not _fails_pan_gate(cubic) or _fails_pan_gate(lin)  # no gate fails only for cubic
+
+
+def _random_path(rng: np.random.Generator) -> dict:
+    n = int(rng.integers(4, 13))
+    h = rng.uniform(0.15, 1.2, n - 1)
+    vmax = float(rng.choice([35.0, 45.0, 58.0]))
+    pattern = rng.choice(["random", "stopgo", "reversal", "nearmax"])
+    if pattern == "random":
+        v = rng.uniform(-vmax, vmax, n - 1)
+    elif pattern == "stopgo":
+        v = rng.uniform(0.3, 1.0, n - 1) * vmax * rng.choice([-1, 1])
+        v[rng.random(n - 1) < 0.5] = 0.0
+    elif pattern == "reversal":
+        v = rng.uniform(0.5, 1.0, n - 1) * vmax * np.where(np.arange(n - 1) % 2, 1, -1)
+    else:
+        v = rng.uniform(0.85, 1.0, n - 1) * vmax
+    ang = rng.uniform(0, 0.4, n - 1) * rng.choice([-1, 1], n - 1)  # yaw / pitch split
+    kt = np.concatenate([[0.0], np.cumsum(h)])
+    pitch = np.clip(
+        rng.uniform(-30, 5) + np.concatenate([[0], np.cumsum(v * np.sin(ang) * h)]), -60, 40
+    )
+    yaw = rng.uniform(-180, 180) + np.concatenate([[0], np.cumsum(v * np.cos(ang) * h)])
+    yaw = ((yaw + 180) % 360) - 180  # stored wrapped, as the director's keys are
+    keys = [
+        {
+            "t": round(float(t), 3),
+            "yaw": round(float(y), 2),
+            "pitch": round(float(p), 2),
+            "fov": 90.0,
+        }
+        for t, y, p in zip(kt, yaw, pitch, strict=True)
+    ]
+    return {"keys": keys}
+
+
+def test_evaluate_seeded_fuzz_never_pans_faster_or_fails_a_gate_linear_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad = []
+    for seed in range(100):
+        path = _random_path(np.random.default_rng(seed))
+        lin = _pan_metrics(path, _linear_eval, monkeypatch)
+        cubic = _pan_metrics(path, _EVALUATE, monkeypatch)
+        if cubic["speed_max"] > lin["speed_max"] + 0.1:
+            bad.append((seed, "speed_max", lin["speed_max"], cubic["speed_max"]))
+        if not _fails_pan_gate(lin) and _fails_pan_gate(cubic):
+            bad.append((seed, "gate", lin["speed_max"], cubic["speed_max"]))
+    assert not bad
