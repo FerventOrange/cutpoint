@@ -81,7 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint analyze .` or a drive root (`analyze D:\`) without `--out` no longer gets a
   project with an empty name, and a folder named with dots (`trip.2024`) is no longer cut at the
   last dot: the default project is named as for `edit` (a file's name without extension, the
-  folder's full name, `project` for a drive root).
+  folder's full name, `project` for a drive root). A project made from such a folder by an
+  earlier version keeps its old name (`trip`); pass `--out trip` to keep using it.
 - `clips --top` and `--max-total`, and `360 director --top` and `360 stitch --top` /
   `--max-total`, reject 0 and negative values as usage errors (exit 2); `clips --top -1` used to
   select all but one moment.
