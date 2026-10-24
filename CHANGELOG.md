@@ -85,10 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image and runs `--version`, `capabilities` and a non-root `paths`; a weekly workflow also
   builds the `INSTALL_EVENTS=true` image and imports `librosa` and `torch` (#121).
 - `cutpoint 360 director` paths are evaluated with a monotone cubic (PCHIP) between keys instead
-  of linear interpolation: speed no longer jumps at each key and a value never overshoots its
-  keys. Yaw across +-180 degrees stays smooth, shots with 2 keys are unchanged and repeated key
-  times still act as a step. Existing `360 director --preview` videos are reused and keep the old
-  motion until deleted; paths are not re-planned (#14).
+  of linear interpolation: speed no longer jumps at keys and a value never overshoots its keys.
+  A key interval falls back to exact linear where the cubic would pan faster than the nearby
+  linear speed, or go over a `360 qa` pan limit that linear stays under (for example a move
+  between two stops or the fastest stretch), so the peak pan speed never rises above linear and
+  qa pan gates are not made worse. Yaw across +-180 degrees stays smooth, shots with 2 keys are
+  unchanged and repeated key times still act as a step. Existing `360 director --preview` videos
+  are reused and keep the old motion until deleted; paths are not re-planned (#14).
 
 ### Fixed
 
