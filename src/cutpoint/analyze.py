@@ -1187,8 +1187,13 @@ def reanalyze(project: Path) -> Path:
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     hl = cache.load_json(project / "highlights.json")
-    if not hl:
+    if hl is None:
         raise FileNotFoundError(f"{project / 'highlights.json'} not found")
+    # e.g. an empty {} or a list: a clear error, not a KeyError or AttributeError traceback
+    if not isinstance(hl, dict) or "style" not in hl or "sources" not in hl:
+        raise ValueError(
+            f"{project / 'highlights.json'} records no analysis; run 'cutpoint analyze' again"
+        )
     st = hl.get("settings", {})
     inputs = st.get("inputs") or [s["path"] for s in hl["sources"]]
     style = get_style(hl["style"])
@@ -1221,7 +1226,9 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
     Returns:
         Path of highlights.json, or None if skipped.
     """
-    hl = cache.load_json(project / "highlights.json") or {}
+    hl = cache.load_json(project / "highlights.json")
+    if not isinstance(hl, dict):  # missing or not an object: reanalyze below reports it
+        hl = {}
     offline = 0
     for path in dict.fromkeys(s["path"] for s in hl.get("sources", [])):
         try:

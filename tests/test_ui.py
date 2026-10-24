@@ -507,6 +507,37 @@ def test_frame_failure_is_a_500_and_leaves_no_cache_file(
 
 
 @needs_ffmpeg
+@pytest.mark.parametrize("name", ["ui", "ui/frames"])
+def test_frame_when_ui_or_its_frames_folder_is_a_file_is_a_409_without_a_traceback(
+    client: TestClient,
+    still_source: tuple[str, str, Path, Path],
+    caplog: pytest.LogCaptureFixture,
+    name: str,
+) -> None:
+    pid, sid, source, _ = still_source
+    p = ui.project_dir(pid)
+    url = f"/api/projects/{pid}/sources/{sid}/frame?at=0.5&t={client.headers['X-Cutpoint-Token']}"
+    if name == "ui":
+        shutil.rmtree(p / "ui")
+    (p / name).write_bytes(b"x")
+    media = client.app.state.media
+    with caplog.at_level(logging.INFO):
+        if name == "ui":  # without ui/meta.json the folder is no project; ask Media directly
+            with pytest.raises(HTTPException) as err:
+                media.frame(p, str(source), 0.5, 160)
+            status, detail = err.value.status_code, err.value.detail
+        else:
+            res = client.get(url, headers={"X-Cutpoint-Token": ""})
+            status, detail = res.status_code, res.json()["detail"]
+    assert status == 409, detail
+    assert detail == f"{pid}/{name} is not a folder; remove or rename it"
+    assert (p / name).read_bytes() == b"x"
+    assert not [f for f in p.rglob("*") if f.suffix in (".jpg", ".part")]
+    assert not [r for r in caplog.records if r.exc_info]
+    assert media.frame_locks == {}
+
+
+@needs_ffmpeg
 def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
     still_source: tuple[str, str, Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1863,7 +1894,9 @@ def test_one_unreadable_entry_does_not_fail_the_project_list(
     assert [x["id"] for x in res.json()["projects"]] == ["good"]
 
 
-@pytest.mark.parametrize("fault", ["ui is a file", "proxy linked during the encode"])
+@pytest.mark.parametrize(
+    "fault", ["ui is a file", "ui/proxy is a file", "proxy linked during the encode"]
+)
 def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1882,6 +1915,8 @@ def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
     if fault == "ui is a file":
         shutil.rmtree(p / "ui")
         (p / "ui").write_bytes(b"x")
+    elif fault == "ui/proxy is a file":
+        (p / "ui" / "proxy").write_bytes(b"x")
     monkeypatch.setattr(ui, "proxy_args", lambda _real, tmp, _n: [str(tmp)])
 
     class Encoder:
@@ -1907,4 +1942,7 @@ def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
     assert [r.levelno for r in warnings] == [logging.WARNING] and not warnings[0].exc_info
     if fault == "ui is a file":
         assert "is not a folder" in warnings[0].getMessage()
+    elif fault == "ui/proxy is a file":
+        assert f"{pid}/ui/proxy is not a folder" in warnings[0].getMessage()
+        assert (p / "ui" / "proxy").read_bytes() == b"x"
     assert media.status(p, str(folder / "a.mp4"))[0] == "failed"
