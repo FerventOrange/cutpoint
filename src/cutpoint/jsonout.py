@@ -20,21 +20,19 @@ import os
 import sys
 import threading
 from collections.abc import Iterable, Iterator
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, TextIO
 
 SCHEMA = 1
 
 # Error codes (``error.code``).
-BAD_ARGS = "bad_args"  # argparse rejected the command line (exit 2)
+BAD_ARGS = "bad_args"  # argparse rejected the command line (exit 2); SystemExit("msg") (exit 1)
 NOT_FOUND = "not_found"  # FileNotFoundError: an input, project or file is missing
-FFMPEG_MISSING = "ffmpeg_missing"  # ffmpeg / ffprobe not found
+FFMPEG_MISSING = "ffmpeg_missing"  # FFmpegNotFoundError: ffmpeg / ffprobe not found
 MISSING_EXTRA = "missing_extra"  # an optional extra is not installed
 OUTPUT_NOT_EMPTY = "output_not_empty"  # FileExistsError: an output is in the way (--force)
 INTERRUPTED = "interrupted"  # Ctrl+C, Ctrl+Break, SIGTERM (exit 130)
 ERROR = "error"  # anything else
-
-_FFMPEG_MISSING_PREFIXES = ("ffmpeg not found", "ffprobe not found")  # find_tool's messages
 
 
 class Result:
@@ -64,12 +62,15 @@ _lock = threading.Lock()
 
 
 def _value(value: Any) -> Any:
-    """``value`` as JSON: paths absolute strings, inside lists and dicts too."""
+    """``value`` as JSON: paths absolute strings, tuples and sets lists, inside lists and dicts
+    too. Anything else that is not JSON is written as ``str(value)`` (see :func:`_write`)."""
     if isinstance(value, Path):
         return str(value.absolute())
+    if isinstance(value, PurePath):
+        return str(value)
     if isinstance(value, dict):
         return {str(k): _value(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
+    if isinstance(value, list | tuple | set | frozenset):
         return [_value(v) for v in value]
     return value
 
@@ -111,11 +112,11 @@ def fail(code: str, message: str) -> None:
 
 def error_code(err: BaseException) -> str:
     """The ``error.code`` for an exception the CLI turns into an exit code."""
-    from cutpoint.ffmpeg_utils import FFmpegError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import FFmpegNotFoundError  # noqa: PLC0415
 
     if isinstance(err, KeyboardInterrupt):
         return INTERRUPTED
-    if isinstance(err, FFmpegError) and str(err).startswith(_FFMPEG_MISSING_PREFIXES):
+    if isinstance(err, FFmpegNotFoundError):
         return FFMPEG_MISSING
     if isinstance(err, FileExistsError):
         return OUTPUT_NOT_EMPTY
@@ -124,9 +125,11 @@ def error_code(err: BaseException) -> str:
     return ERROR
 
 
-def _write(stream: TextIO, result: Result) -> None:
+def _write(stream: TextIO | None, result: Result) -> None:
+    if stream is None:  # no stdout at all (closed, or pythonw)
+        return
     # ASCII only, so no console encoding can fail on it.
-    stream.write(json.dumps(result.envelope()) + "\n")
+    stream.write(json.dumps(result.envelope(), default=str) + "\n")
     stream.flush()
 
 
@@ -137,35 +140,62 @@ def emit_error(command: str, code: str, message: str) -> None:
     _write(sys.stdout, result)
 
 
+def _stderr_usable() -> bool:
+    if sys.stderr is None:
+        return False
+    try:
+        os.fstat(2)
+    except OSError:
+        return False
+    return True
+
+
 @contextlib.contextmanager
 def _stdout_to_stderr() -> Iterator[None]:
     """Point ``sys.stdout`` and fd 1 at stderr until the block ends.
 
     The fd is redirected too, so child processes that inherit stdout write to stderr (on
     Windows ``dup2`` also sets the process's standard output handle, which subprocess
-    passes on). Without a usable fd 1 or 2 (e.g. pythonw) only ``sys.stdout`` is swapped.
+    passes on). Without a usable stderr (closed, or pythonw) both go to the null device;
+    without a usable fd 1 only ``sys.stdout`` is swapped.
     """
     real = sys.stdout
+    to_stderr = _stderr_usable()
+    sink = sys.stderr if to_stderr else Path(os.devnull).open("w", encoding="utf-8")  # noqa: SIM115
     saved = None
-    with contextlib.suppress(OSError, ValueError):
-        real.flush()
-        saved = os.dup(1)
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        if real is not None:
+            real.flush()
+    with contextlib.suppress(OSError):
+        target = 2 if to_stderr else os.open(os.devnull, os.O_WRONLY)
         try:
-            os.dup2(2, 1)
+            saved = os.dup(1)
+            os.dup2(target, 1)
         except OSError:
-            os.close(saved)
-            saved = None
-    sys.stdout = sys.stderr
+            if saved is not None:
+                os.close(saved)
+                saved = None
+        finally:
+            if target != 2:
+                os.close(target)
+    sys.stdout = sink
     try:
         yield
     finally:
-        with contextlib.suppress(OSError, ValueError):
-            sys.stderr.flush()
-            real.flush()  # writes made to it meanwhile still go to stderr
-        if saved is not None:
-            os.dup2(saved, 1)
-            os.close(saved)
-        sys.stdout = real
+        try:
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                sink.flush()
+                if real is not None:
+                    real.flush()  # writes made to it meanwhile still go to stderr
+        finally:
+            try:
+                if saved is not None:
+                    os.dup2(saved, 1)
+                    os.close(saved)
+            finally:
+                sys.stdout = real
+                if not to_stderr:
+                    sink.close()
 
 
 @contextlib.contextmanager
@@ -185,7 +215,9 @@ def run(command: str) -> Iterator[Result]:
         with _stdout_to_stderr():
             yield result
     except SystemExit as err:
-        if err.code not in (0, None):
+        if isinstance(err.code, str):  # sys.exit("message"): exit 1, the message on stderr
+            fail(BAD_ARGS, err.code)
+        elif err.code not in (0, None):
             fail(ERROR, f"exit code {err.code}")
         raise
     except BaseException as err:

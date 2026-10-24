@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import capabilities, cli, jsonout
-from cutpoint.ffmpeg_utils import FFmpegError
+from cutpoint import capabilities, cli, ffmpeg_utils, jsonout
+from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
 
 KEYS = {"ok", "command", "schema", "project", "outputs", "warnings", "error"}
 
@@ -100,8 +100,8 @@ def test_first_error_wins_and_exception_is_reraised(capsys):
     ("err", "code"),
     [
         (KeyboardInterrupt(), "interrupted"),
-        (FFmpegError("ffmpeg not found. Install it"), "ffmpeg_missing"),
-        (FFmpegError("ffprobe not found. Install it"), "ffmpeg_missing"),
+        (FFmpegNotFoundError("ffprobe not found. Install it"), "ffmpeg_missing"),
+        (FFmpegError("ffmpeg not found. Install it"), "error"),  # the class decides, not the text
         (FFmpegError("ffmpeg failed (exit 1)"), "error"),
         (FileExistsError("clips is not empty; use --force"), "output_not_empty"),
         (FileNotFoundError("no such file"), "not_found"),
@@ -110,6 +110,90 @@ def test_first_error_wins_and_exception_is_reraised(capsys):
 )
 def test_error_code(err, code):
     assert jsonout.error_code(err) == code
+
+
+def test_find_tool_raises_ffmpeg_not_found(monkeypatch):
+    monkeypatch.setattr(ffmpeg_utils.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ffmpeg_utils.sys, "platform", "linux")  # no WinGet folder search
+    ffmpeg_utils.find_tool.cache_clear()
+    try:
+        with pytest.raises(FFmpegNotFoundError, match=r"^ffprobe not found") as exc:
+            ffmpeg_utils.find_tool("ffprobe")
+    finally:
+        ffmpeg_utils.find_tool.cache_clear()
+    assert isinstance(exc.value, FFmpegError)  # existing `except FFmpegError` still catches it
+    assert jsonout.error_code(exc.value) == "ffmpeg_missing"
+
+
+def test_output_values_are_always_serializable(tmp_path, capsys):
+    """Sets, tuples and other objects never break the final write."""
+
+    class Odd:
+        def __str__(self) -> str:
+            return "odd"
+
+    with jsonout.run("x"):
+        jsonout.output("set", {tmp_path / "a"})
+        jsonout.output("tuple", (1, Path("b")))
+        jsonout.output("odd", Odd())
+        jsonout.output("nested", {"k": [frozenset({2})]})
+        jsonout.warn("w", "m", (tmp_path / "c",))
+    doc = _envelope(capsys.readouterr().out)
+    assert doc["outputs"] == {
+        "set": [str(tmp_path / "a")],
+        "tuple": [1, str(Path("b").absolute())],
+        "odd": "odd",
+        "nested": {"k": [[2]]},
+    }
+    assert doc["warnings"][0]["files"] == [str(tmp_path / "c")]
+
+
+def test_guard_without_stderr(monkeypatch, capsys):
+    """No sys.stderr (closed, pythonw): stray output is dropped, stdout gets the envelope."""
+    stdout = sys.stdout
+    monkeypatch.setattr(sys, "stderr", None)
+    with jsonout.run("x"):
+        print("dropped")
+        jsonout.output("x", 1)
+    assert sys.stdout is stdout
+    out = capsys.readouterr().out
+    assert _envelope(out)["outputs"] == {"x": 1} and "dropped" not in out
+
+
+def test_systemexit_message_is_bad_args(monkeypatch, capsys):
+    """sys.exit("bad --window-at ...") (cutpoint events) keeps its exit and message."""
+    _paths_raising(monkeypatch, SystemExit("bad --window-at 'x'; use GLOB@START-END"))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["paths", "--json"])
+    assert exc.value.code == "bad --window-at 'x'; use GLOB@START-END"  # exit 1, as before
+    error = _envelope(capsys.readouterr().out)["error"]
+    assert error == {"code": "bad_args", "message": "bad --window-at 'x'; use GLOB@START-END"}
+
+
+@pytest.mark.parametrize(
+    ("tokens", "wanted"),
+    [
+        (["paths", "--json"], True),
+        (["paths", "--js"], True),
+        (["paths", "--j"], True),
+        (["paths", "--json=1"], True),
+        (["paths", "--"], False),
+        (["paths", "--", "--json"], False),
+        (["paths", "--jsonx"], False),
+        (["paths", "-j"], False),
+    ],
+)
+def test_json_requested(tokens, wanted):
+    assert cli._json_requested(tokens) is wanted
+
+
+def test_abbreviated_json(home, capsys):
+    assert cli.main(["paths", "--js"]) == 0
+    assert _envelope(capsys.readouterr().out)["command"] == "paths"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["paths", "--jso", "--bogus"])
+    assert exc.value.code == 2
+    assert _envelope(capsys.readouterr().out)["error"]["code"] == "bad_args"
 
 
 def test_paths_json(home, capsys):
@@ -145,7 +229,7 @@ def _paths_raising(monkeypatch, err: BaseException) -> None:
     ("err", "code", "exit_code", "message"),
     [
         (FileNotFoundError("Segments file not found: x"), "not_found", 1, None),
-        (FFmpegError("ffmpeg not found. Install it"), "ffmpeg_missing", 1, None),
+        (FFmpegNotFoundError("ffmpeg not found. Install it"), "ffmpeg_missing", 1, None),
         (FileExistsError("clips is not empty; use --force"), "output_not_empty", 1, None),
         (RuntimeError("encoder failed"), "error", 1, None),
         (ModuleNotFoundError("x", name="telemetry_parser"), "missing_extra", 1, "'ski' extra"),
@@ -211,7 +295,7 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "_add_json_argument", with_number)
     with pytest.raises(SystemExit) as exc:
-        cli.main(["paths", "--json", "--n", "x"])
+        cli.main(["paths", "--js", "--n", "x"])
     assert exc.value.code == 2
     out, err = capsys.readouterr()
     doc = _envelope(out)
@@ -269,6 +353,67 @@ def test_json_subprocess_end_to_end(home, tmp_path):
     assert _envelope(proc.stdout)["outputs"] == {"x": 1}
     for text in ("stray print", "child output", "a warning"):
         assert text in proc.stderr
+
+
+@pytest.mark.parametrize("stderr", ["closed", "devnull"])
+def test_json_subprocess_without_stderr(home, tmp_path, stderr):
+    """With stderr closed (fd 2 invalid, sys.stderr None) or the null device: one envelope.
+
+    A child cannot be started with a closed fd 2 portably (Windows has no ``2>&-``), so the
+    "closed" case closes fd 2 inside the process before running the CLI.
+    """
+    script = tmp_path / "run.py"
+    script.write_text(
+        "import os, subprocess, sys\n"
+        "from cutpoint import cli\n"
+        f"if {stderr == 'closed'}:\n"
+        "    sys.stderr.flush()\n"
+        "    os.close(2)\n"
+        "    sys.stderr = None\n"
+        "def noisy(a):\n"
+        "    print('stray print')\n"
+        "    subprocess.run([sys.executable, '-c', 'print(\"child output\")'], check=True)\n"
+        "    cli.jsonout.output('x', 1)\n"
+        "real = sys.stdout\n"
+        "cli._cmd_paths = noisy\n"
+        "code = cli.main(['paths', '--json'])\n"
+        "assert sys.stdout is real\n"
+        "sys.exit(code)\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    doc = _envelope(proc.stdout)
+    assert doc["ok"] is True and doc["outputs"] == {"x": 1}
+
+
+@pytest.mark.parametrize("json_flag", [[], ["--json"]])
+def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
+    script = tmp_path / "run.py"
+    script.write_text(
+        "import sys\n"
+        "from cutpoint import cli\n"
+        "def bad(a):\n"
+        "    raise SystemExit('bad override')\n"
+        "cli._cmd_paths = bad\n"
+        f"sys.exit(cli.main(['paths', *{json_flag!r}]))\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 1
+    assert "bad override" in proc.stderr
+    if json_flag:
+        assert _envelope(proc.stdout)["error"] == {"code": "bad_args", "message": "bad override"}
+    else:
+        assert proc.stdout == ""
 
 
 def test_json_subprocess_bad_args(home):

@@ -1130,6 +1130,17 @@ def _stop_signal_as_interrupt() -> Iterator[None]:
         signal.signal(signum, previous)
 
 
+def _json_requested(tokens: list[str]) -> bool:
+    """``--json`` or an abbreviation argparse accepts for it (``--j``, ``--js``, ``--jso``)."""
+    for token in tokens:
+        if token == "--":
+            return False
+        option = token.partition("=")[0]
+        if len(option) > 2 and "--json".startswith(option):
+            return True
+    return False
+
+
 def _parse(parser: argparse.ArgumentParser, argv: Sequence[str] | None) -> argparse.Namespace:
     """``parser.parse_args(argv)``; with ``--json`` on a command that takes it, a usage error
     also writes an ``ok: false`` envelope (code ``bad_args``) before exiting 2."""
@@ -1137,7 +1148,7 @@ def _parse(parser: argparse.ArgumentParser, argv: Sequence[str] | None) -> argpa
     try:
         args, extra = parser.parse_known_args(tokens)
     except UsageError as err:  # from the subcommand's parser, which knows its json_command
-        if "--json" in tokens and (command := err.parser.get_default("json_command")):
+        if _json_requested(tokens) and (command := err.parser.get_default("json_command")):
             jsonout.emit_error(command, jsonout.BAD_ARGS, err.message)
         raise
     if extra:
