@@ -114,7 +114,8 @@ See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device 
 ```text
 cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [--out DIR]
               [--top N] [--max-total S] [--vertical] [--force] [--events]
-              [--vision | --no-vision]
+              [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
+              [--ollama-model MODEL]
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
@@ -138,6 +139,7 @@ one of them is refused.
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As `analyze --vision`: rate top candidates with Ollama. Default: used if the server and model are reachable (the `ski` style: only with `--vision`) |
+| `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
 
 Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
 files removed) and logs the final video, its subtitles and the clips folder last. To change the
@@ -343,8 +345,10 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
   or a clip locked by another program, leaves the original clips as they were. The same holds for
   `--out DIR --force` into a non-empty `DIR`: `DIR` is unchanged unless every clip was exported.
-  Files in `DIR` that the run does not write stay; a WARNING names `.mp4` clips left there that
-  were not re-exported, because `assemble` will include them. An `.mp4` in `DIR` that `DIR`'s
+  As with `clips --force`, only the clips and `.srt` files `DIR`'s `manifest.json` lists are
+  replaced, and listed ones this run does not re-export (deleted from the input folder during
+  review) are removed with their `.srt`. Other files in `DIR` stay; a WARNING names `.mp4`
+  clips left there, because `assemble` will include them. An `.mp4` in `DIR` that `DIR`'s
   `manifest.json` does not list and that has the name of a clip to re-export stops the run
   before any export, as with `clips --force`. `--out DIR --force` is refused
   before any export when a non-empty `DIR` is a drive root, a mount point or a bind mount, and

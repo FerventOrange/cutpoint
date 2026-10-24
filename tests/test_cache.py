@@ -91,6 +91,25 @@ def test_load_json_missing_or_corrupt(tmp_path):
     assert cache.load_json(bad) is None
 
 
+def test_read_json_raises_instead_of_returning_none(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        cache.read_json(tmp_path / "nope.json")
+    # a directory: IsADirectoryError on Linux, PermissionError on Windows (both OSError)
+    (tmp_path / "h.json").mkdir()
+    with pytest.raises(ValueError, match="cannot be read") as err:
+        cache.read_json(tmp_path / "h.json", hint="; re-run it")
+    assert str(tmp_path / "h.json") in str(err.value)
+    assert str(err.value).endswith("; re-run it")
+
+
+def test_read_json_rejects_bad_utf8(tmp_path):
+    # every reader shares this decode path, so it is covered here once
+    (tmp_path / "bad.json").write_bytes(b'{"a": "\xff\xfe"}')
+    with pytest.raises(ValueError, match="is not valid JSON") as err:
+        cache.read_json(tmp_path / "bad.json", hint="; re-run it")
+    assert str(err.value).endswith("; re-run it")
+
+
 def test_save_json_retries_permission_error_then_succeeds(tmp_path, monkeypatch, no_sleep):
     target = tmp_path / "d.json"
     real = os.replace

@@ -838,7 +838,7 @@ def run_qa(
 ) -> dict[str, Any]:
     """Rendered-frame QA of every clip in ``qa_dir``; writes ``<qa_dir>_qa/``."""
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
-    from cutpoint.ffmpeg_utils import FFmpegError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import FFmpegError, output_dir  # noqa: PLC0415
 
     # normalise "." / ".." (no name for <dir>_qa) without turning mapped drives into UNC
     qa_dir = Path(os.path.abspath(qa_dir))  # noqa: PTH100
@@ -847,40 +847,40 @@ def run_qa(
     if not items:
         raise FileNotFoundError(f"{qa_dir}: no rendered clips (manifest.json or NNN_x.mp4+.json)")
     out_dir = qa_dir.with_name(qa_dir.name + "_qa")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _clear_sheets(out_dir)
-    t0 = time.perf_counter()
-    models = VisualModels()
-    clips, skipped = [], []
-    try:
-        for item in items:
-            c0 = time.perf_counter()
-            try:
-                res = qa_clip(item, models, fps, size, th)
-            except (FFmpegError, OSError, KeyError, ValueError) as err:
-                logger.warning("%s: skipped (%s)", item["file"], err)
-                skipped.append({"file": item["file"], "error": str(err)[:300]})
-                continue
-            if res is None:
-                skipped.append({"file": item["file"], "error": "no frames decoded"})
-                continue
-            clips.append(res)
-            logger.debug("%s: %.1fs", item["file"], time.perf_counter() - c0)
-    finally:
-        models.close()
-    report = {
-        "version": QA_VERSION,
-        "source_dir": str(qa_dir),
-        "mode": "rendered",
-        "fps": fps,
-        "size": list(size),
-        "thresholds": asdict(th),
-        "clips": clips,
-        "skipped": skipped,
-        "edit": aggregate_edit(clips),
-    }
-    report["edit"]["elapsed_s"] = round(time.perf_counter() - t0, 1)
-    cache.save_json(out_dir / "qa.json", report, indent=1)
+    with output_dir(out_dir):  # a failed run leaves no empty folder behind
+        _clear_sheets(out_dir)
+        t0 = time.perf_counter()
+        models = VisualModels()
+        clips, skipped = [], []
+        try:
+            for item in items:
+                c0 = time.perf_counter()
+                try:
+                    res = qa_clip(item, models, fps, size, th)
+                except (FFmpegError, OSError, KeyError, ValueError) as err:
+                    logger.warning("%s: skipped (%s)", item["file"], err)
+                    skipped.append({"file": item["file"], "error": str(err)[:300]})
+                    continue
+                if res is None:
+                    skipped.append({"file": item["file"], "error": "no frames decoded"})
+                    continue
+                clips.append(res)
+                logger.debug("%s: %.1fs", item["file"], time.perf_counter() - c0)
+        finally:
+            models.close()
+        report = {
+            "version": QA_VERSION,
+            "source_dir": str(qa_dir),
+            "mode": "rendered",
+            "fps": fps,
+            "size": list(size),
+            "thresholds": asdict(th),
+            "clips": clips,
+            "skipped": skipped,
+            "edit": aggregate_edit(clips),
+        }
+        report["edit"]["elapsed_s"] = round(time.perf_counter() - t0, 1)
+        cache.save_json(out_dir / "qa.json", report, indent=1)
     report["sheets"] = [] if json_only else [str(p) for p in write_sheets(qa_dir, out_dir, clips)]
     report["out_dir"] = str(out_dir)
     return report

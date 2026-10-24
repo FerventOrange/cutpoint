@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info, remap, write
-from cutpoint import extend, ffmpeg_utils, planning, sources, srt
+from cutpoint import extend, planning, sources, srt
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 
@@ -168,53 +168,58 @@ def test_extend_removes_the_listed_srt_of_a_clip_deleted_during_review(
     assert "late" in (out / "001_a.srt").read_text(encoding="utf-8")
 
 
-def test_swap_in_moves_a_file_named_in_two_cases_once(tmp_path, monkeypatch):
-    """``001_A.SRT`` (a hand-edited manifest) and ``001_a.srt`` are one file on a
-    case-insensitive file system: it is moved to the backup once, not twice."""
-    dst = tmp_path / "clips"
-    write(dst / "001_a.srt", "old")
-    if not (dst / "001_A.SRT").exists():
-        pytest.skip("case-sensitive file system")
-    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
-    write(dst / "001_a.mp4", "old")
-    new = tmp_path / "staged"
-    write(new / "001_a.mp4", "new")
-
-    ffmpeg_utils.swap_in(new, dst, ["001_A.SRT", "001_a.srt"])
-
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging left
-    assert sorted(p.name for p in dst.iterdir()) == ["001_a.mp4"]
-    assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "new"
-
-
-def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacement(
-    tmp_path, monkeypatch
+def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_srt(
+    tmp_path, monkeypatch, reads, caplog
 ):
-    """Old ``001_A.mp4`` (a hand-edited manifest) and new ``001_a.mp4`` are one file on a
-    case-insensitive file system: undoing the swap puts the original back and does not then
-    delete it as a new-only file."""
-    dst = tmp_path / "clips"
-    write(dst / "001_a.mp4", "old")
-    if not (dst / "001_A.MP4").exists():
+    """Like clips --force: out's earlier 002_b (deleted from the input during review) is
+    listed by out's manifest, so it goes with its .srt instead of staying unlisted."""
+    clips = _srt_clips(tmp_path)
+    out = tmp_path / "proj" / "ext"
+    src = _manifest(clips)["source"]
+    for n in ("001_a.mp4", "001_a.srt", "002_b.mp4", "002_b.srt"):
+        write(out / n, "old")
+    write(out / "009_mine.mp4", "mine")  # not listed: added by hand
+    entries = [
+        {"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0, "srt": "001_a.srt"},
+        {"file": "002_b.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_b.srt"},
+    ]
+    write(out / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+
+    _run(clips, out_dir=out, force=True)
+
+    assert sorted(p.name for p in out.iterdir()) == [
+        "001_a.mp4",
+        "001_a.srt",
+        "009_mine.mp4",
+        "manifest.json",
+    ]
+    assert (out / "009_mine.mp4").read_text(encoding="utf-8") == "mine"
+    files = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"]
+    assert [e["file"] for e in files] == ["001_a.mp4"]
+    assert "009_mine.mp4" in caplog.text and "002_b" not in caplog.text
+
+
+def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
+    tmp_path, monkeypatch, reads, caplog
+):
+    """The manifest lists 002_Joke; review renamed it 002_joke. It has no entry, so it is not
+    re-exported, and the listed name must not remove it on a case-insensitive file system."""
+    clips = _srt_clips(tmp_path)
+    write(clips / "002_joke.mp4", "renamed")
+    write(clips / "002_joke.srt", "renamed subs")
+    if not (clips / "002_JOKE.mp4").exists():
         pytest.skip("case-sensitive file system")
-    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
-    write(dst / "manifest.json", "old manifest")
-    new = tmp_path / "staged"
-    write(new / "001_a.mp4", "new")
-    write(new / "manifest.json", "new manifest")
-    real = ffmpeg_utils.retry_locked
+    data = json.loads((clips / "manifest.json").read_text(encoding="utf-8"))
+    src = data["clips"][0]["source"]
+    data["clips"].append(
+        {"file": "002_Joke.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_Joke.srt"}
+    )
+    write(clips / "manifest.json", json.dumps(data))
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
 
-    def locked_manifest(op, path, action, locked=None):
-        moving_in = getattr(getattr(op, "func", None), "__self__", None) == new / path.name
-        if action == "replace" and path.name == "manifest.json" and moving_in:
-            raise PermissionError("locked")
-        return real(op, path, action, locked)
+    _run(clips, out_dir=clips, force=True)
 
-    monkeypatch.setattr(ffmpeg_utils, "retry_locked", locked_manifest)
-
-    with pytest.raises(PermissionError):
-        ffmpeg_utils.swap_in(new, dst, ["001_A.mp4", "manifest.json"])
-
-    assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "old"
-    assert (dst / "manifest.json").read_text(encoding="utf-8") == "old manifest"
-    assert sorted(p.name.lower() for p in dst.iterdir()) == ["001_a.mp4", "manifest.json"]
+    assert (clips / "002_joke.mp4").read_text(encoding="utf-8") == "renamed"
+    assert (clips / "002_joke.srt").read_text(encoding="utf-8") == "renamed subs"
+    assert "002_joke.mp4: no manifest entry" in caplog.text

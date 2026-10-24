@@ -30,7 +30,9 @@ If the user asks for "edit this video and make it a montage" in one step, use
 - Exit codes: `0` success, `1` error, `130` interrupted, `2` bad arguments.
   On Windows, Ctrl+C or Ctrl+Break gives `130` and removes partial files; from a program, start
   Cutpoint with `CREATE_NEW_PROCESS_GROUP` and send `CTRL_BREAK_EVENT` (`CTRL_C_EVENT` to a
-  process id is not delivered). `taskkill /F`, `Stop-Process` and `Popen.terminate()`/`kill()`
+  process id is not delivered). To get `130`, run `.venv\Scripts\cutpoint.exe` (or the
+  tool-installed `cutpoint`) directly: under `uv run`, Cutpoint still cleans up but uv exits
+  `0xC000013A`. `taskkill /F`, `Stop-Process` and `Popen.terminate()`/`kill()`
   stop it without cleanup (exit `1`; `-1` from `Stop-Process`).
 - Logs and errors go to stderr as `HH:MM:SS LEVEL message`; errors are `ERROR` lines. Use
   `cutpoint -v <command>` (flag before the command) for debug output and tracebacks.
@@ -62,7 +64,8 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 60 s, best first, crossfades), `clips` (the 10 best; the clips are the deliverable) or
 `funny-moments` (funny style, 8 moments, chronological, burned-in captions). `--style`, `--top`,
 `--max-total`, `--vertical`, `--force` and `--events` override the kind; `--no-vision` skips
-the Ollama rating that `analyze` otherwise uses when Ollama is reachable. It writes the project
+the Ollama rating that `analyze` otherwise uses when Ollama is reachable, and `--vision-top`,
+`--ollama-url` and `--ollama-model` work as on `analyze`. It writes the project
 `<projects>\clip` (`--out NAME` to change it) with the clips, `final.mp4` and
 `clip-final.mp4` plus `.srt` subtitles; the last log lines name the final video, its subtitles
 and the clips folder. A non-empty clips folder needs `--force` (ask the user first, as for

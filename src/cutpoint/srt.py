@@ -272,20 +272,6 @@ def listed_files(out_dir: Path) -> list[str] | None:
     return [f for pair in pairs for f in pair if f is not None]
 
 
-def orphaned_srts(out_dir: Path) -> list[str]:
-    """The ``.srt`` names the manifest.json in ``out_dir`` lists for clips no longer in the
-    folder (deleted during review). A run that rewrites that manifest.json without those
-    clips removes them, like ``clips --force`` does, so none is left behind unlisted (and so
-    protected from every later run)."""
-    out: list[str] = []
-    for clip, sub in _listed_pairs(out_dir) or []:
-        if sub is None:
-            continue
-        if clip is None or not ((f := out_dir / clip).is_file() or f.is_symlink()):
-            out.append(sub)
-    return list(dict.fromkeys(out))
-
-
 def unlisted_srts(out_dir: Path, listed: list[str] | None) -> set[str]:
     """:func:`~cutpoint.config.path_key` of the ``.srt`` files in ``out_dir`` that
     ``listed`` (:func:`listed_files`) does not name: no subtitles are written under them."""
