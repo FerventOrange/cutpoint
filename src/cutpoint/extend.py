@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import boundaries, cache, srt
+from cutpoint import boundaries, cache, jsonout, srt
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import OutputFormat, export_clip_checked
@@ -52,7 +52,7 @@ from cutpoint.ffmpeg_utils import (
     staged_dir,
     swap_in,
 )
-from cutpoint.planning import Padding, pad, speech_pass
+from cutpoint.planning import Padding, pad, report_clips, speech_pass
 from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ def default_out_dir(clips_dir: Path, padding: Padding) -> Path:
     return clips_dir.with_name(f"{clips_dir.name}_ext{tag}s")
 
 
-def _manifest_project(manifest: dict[str, Any], clips_dir: Path) -> Path:
+def manifest_project(manifest: dict[str, Any], clips_dir: Path) -> Path:
     """Project folder of a clips folder (manifest ``project``, else the parent)."""
     recorded = manifest.get("project")
     if recorded:
@@ -299,7 +299,7 @@ def extend_clips(
         )
     speech = speech or boundaries.SpeechSettings()
     if not padding.active and not speech.enabled:
-        raise ValueError(
+        raise jsonout.ArgumentError(
             "Nothing to do: give --seconds (or --start / --end) > 0, or leave --speech-aware on"
         )
     out_dir = out_dir or (
@@ -334,7 +334,8 @@ def extend_clips(
         for f in files:
             e = by_file.get(f.name)
             if e is None:
-                logger.warning("  %s: no manifest entry (added by hand?); skipped", f.name)
+                if not in_place:  # in place it stays: the Kept warning below names it
+                    logger.warning("  %s: no manifest entry (added by hand?); skipped", f.name)
                 skipped.append(f.name)
                 continue
             src = _read_path(e)
@@ -355,7 +356,7 @@ def extend_clips(
                 raise FileNotFoundError(f"No manifest.json in --reuse folder {reuse_dir}")
             reuse_by_file = {x["file"]: x for x in reuse_manifest.get("clips", [])}
             reuse_same_format = (reuse_manifest.get("format") or {}) == fmt_d
-        project = _manifest_project(manifest, clips_dir)
+        project = manifest_project(manifest, clips_dir)
         speech_recs = speech_pass(
             plans, speech, project, fit_end=lambda e: not _fixed_tail(e), hi_clamp=_hi_clamp
         )
@@ -515,19 +516,28 @@ def extend_clips(
         )
         if staged:  # all or nothing; only the clips and .srt files named above are replaced
             swap_in(work, out_dir, old_files)
-    if staged and not in_place:
+    if staged:
         written = {path_key(e["file"]) for e in entries}
         kept = [p for p in clip_files(out_dir) if path_key(p.name) not in written]
         if kept:
-            logger.warning(
-                "Kept %s in %s: %s; assemble includes them, so move them out if they are not "
-                "part of the edit",
-                ", ".join(p.name for p in kept),
-                out_dir,
+            why = (
                 "the old manifest.json does not list them (renamed during review or added by hand)"
                 if listed is not None
-                else "not replaced because there is no readable manifest.json",
+                else "not replaced because there is no readable manifest.json"
             )
+            message = (
+                f"Kept {', '.join(p.name for p in kept)} in {out_dir.absolute()}: {why}; "
+                "assemble includes them, so move them out if they are not part of the edit"
+            )
+            logger.warning("%s", message)
+            jsonout.warn("kept_clips", message, kept)
+    if skipped and not in_place:
+        jsonout.warn(
+            "skipped_clips",
+            f"Not re-exported from {clips_dir.absolute()}: {', '.join(skipped)} (no manifest "
+            "entry; added by hand?)",
+            [clips_dir / n for n in skipped],
+        )
     logger.info(
         "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",
         len(entries),
@@ -535,6 +545,8 @@ def extend_clips(
         padding.end,
         out_dir,
         f" ({reused} copied unchanged from {reuse_dir})" if reuse_dir else "",
-        f"; skipped {len(skipped)} without a manifest entry" if skipped else "",
+        f"; skipped {len(skipped)} without a manifest entry" if skipped and not in_place else "",
     )
+    report_clips(out_dir)
+    jsonout.output("seconds", {"start": padding.start, "end": padding.end})
     return out_dir

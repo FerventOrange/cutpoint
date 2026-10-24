@@ -4,7 +4,8 @@
 * :class:`Padding` / :func:`pad`: editor handles around a clip, clamped to the
   readable part of its source;
 * :func:`speech_pass`: the speech-aware boundary pass
-  (:mod:`cutpoint.boundaries`) over a list of planned clips.
+  (:mod:`cutpoint.boundaries`) over a list of planned clips;
+* :func:`report_clips`: the ``--json`` outputs of the clips folder written.
 
 Nothing here encodes or writes files (see :mod:`cutpoint.encode`).
 """
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cutpoint import boundaries, cache, sources
+from cutpoint import boundaries, cache, jsonout, sources
 from cutpoint.events.tails import load_events
 from cutpoint.ffmpeg_utils import MediaInfo
 
@@ -285,3 +286,28 @@ def speech_pass[P: SpeechPlan](
         if b is not None:
             plan.start, plan.end = b.start, b.end
     return {b.name: b.record for b in bounds}
+
+
+def report_clips(out_dir: Path) -> None:
+    """``--json`` outputs of a clips folder just written (``clips``, ``extend``): the folder,
+    its manifest.json and, from it, each clip with its subtitles, the count and total length."""
+    if not jsonout.active():
+        return
+    entries = (cache.load_json(out_dir / "manifest.json") or {}).get("clips", [])
+    clips = [
+        {
+            "file": out_dir / e["file"],
+            "srt": out_dir / e["srt"] if e.get("srt") else None,
+            "label": e.get("label", ""),
+            "source": e["source"],
+            "start": e["start"],
+            "end": e["end"],
+            "score": e.get("score"),
+        }
+        for e in entries
+    ]
+    jsonout.output("clips_dir", out_dir)
+    jsonout.output("manifest", out_dir / "manifest.json")
+    jsonout.output("clips", clips)
+    jsonout.output("count", len(clips))
+    jsonout.output("total_seconds", round(sum(c["end"] - c["start"] for c in clips), 3))

@@ -22,6 +22,7 @@ import sys
 from fractions import Fraction
 from pathlib import Path
 
+from cutpoint import jsonout
 from cutpoint.encode import audio_fade_filter
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
@@ -585,8 +586,15 @@ def assemble(
                     stage.unlink(missing_ok=True)
 
     fcp, oti = write_timelines(infos, out, used_fade)
-    logger.info("Wrote %s (%.2fs), %s, %s", out, probe(out).duration, fcp.name, oti.name)
+    duration = probe(out).duration
+    logger.info("Wrote %s (%.2fs), %s, %s", out, duration, fcp.name, oti.name)
     from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
 
-    write_final_srt(clips_dir, files, infos, used_fade, out)
+    srt_path = write_final_srt(clips_dir, files, infos, used_fade, out)
+    jsonout.output("final", out)
+    jsonout.output("fcpxml", fcp)
+    jsonout.output("otio", oti)
+    jsonout.output("srt", srt_path)
+    jsonout.output("duration", round(duration, 3))
+    jsonout.output("clip_count", len(files))
     return out

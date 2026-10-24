@@ -15,7 +15,7 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from cutpoint import cache
+from cutpoint import cache, jsonout
 from cutpoint.assemble import assemble
 from cutpoint.clips import export_clips
 from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
@@ -196,4 +196,7 @@ def run_edit(
     logger.info("Final video: %s", named)
     logger.info("Subtitles:   %s", named_srt if written else "none (no transcript)")
     logger.info("Clips:       %s", clips_dir)
+    # analyze, export_clips and assemble added their outputs and warnings to the same result.
+    jsonout.output("copy", named)
+    jsonout.output("copy_srt", named_srt if written else None)
     return named

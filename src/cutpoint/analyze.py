@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, jsonout
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.events.scoring import rescore_highlights
@@ -1202,7 +1202,22 @@ def analyze(
         if (out_dir / "events.json").exists() and style.kind != "ski":  # earlier cutpoint events
             (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)  # stale copy
             rescore_highlights(out_dir)
+        _report(out_dir, out)
         return out
+
+
+def _report(out_dir: Path, highlights: Path) -> None:
+    """``--json`` outputs of an analysis: the files written and what highlights.json holds."""
+    if not jsonout.active():
+        return
+    saved = cache.load_json(highlights)
+    saved = saved if isinstance(saved, dict) else {}
+    jsonout.output("highlights", highlights)
+    jsonout.output("transcript", out_dir / "transcript.txt")
+    jsonout.output("candidates", len(saved.get("candidates") or []))
+    if "suggested_top" in saved:
+        jsonout.output("suggested_top", saved["suggested_top"])
+    jsonout.output("style", saved.get("style"))
 
 
 def reanalyze(project: Path) -> Path:
