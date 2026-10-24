@@ -1266,9 +1266,119 @@ def compute_path(
     return path
 
 
+def _hermite_tangents(kx: np.ndarray, ky: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(h, d, m)`` of keys ``ky`` (one column per channel): interval lengths, secant
+    slopes and Fritsch-Butland tangents. Interior tangents are the weighted harmonic mean
+    of the two neighbouring secants (so ``|m|`` never exceeds the larger one; 0 at a turn
+    or a flat side); the ends use the one-sided secant."""
+    h = np.diff(kx)
+    # two keys at one time (hand-edited path): a step there, as np.interp does
+    d = np.divide(
+        np.diff(ky, axis=0), h[:, None], out=np.zeros((len(h), ky.shape[1])), where=h[:, None] > 0
+    )
+    m = np.empty_like(ky)
+    m[0], m[-1] = d[0], d[-1]
+    d0, d1 = d[:-1], d[1:]
+    w1, w2 = (2 * h[1:] + h[:-1])[:, None], (h[1:] + 2 * h[:-1])[:, None]
+    same = d0 * d1 > 0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        m[1:-1] = np.where(same, (w1 + w2) / (w1 / d0 + w2 / d1), 0.0)
+    return h, d, m
+
+
+def _hermite_basis(s: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Cubic Hermite basis ``(h00, h10, h01, h11)`` at ``s`` in [0, 1]."""
+    s2, s3 = s * s, s * s * s
+    return 2 * s3 - 3 * s2 + 1, s3 - 2 * s2 + s, -2 * s3 + 3 * s2, s3 - s2
+
+
+def _pchip(x: np.ndarray, kx: np.ndarray, ky: Any, linear: np.ndarray | None = None) -> np.ndarray:
+    """Monotone cubic Hermite (Fritsch-Butland tangents) of ``(kx, ky)`` at ``x``, held
+    outside ``kx``; ``ky`` is one channel or one column per channel.
+
+    C1 (continuous velocity) and shape-preserving: every value lies between its two
+    keys, so it never overshoots the keys (or any clamp they respect). Key intervals
+    flagged in ``linear`` are interpolated linearly instead (velocity steps at their
+    keys). Fewer than 3 keys: ``np.interp``.
+    """
+    ky = np.asarray(ky, float)
+    if len(kx) < 3:
+        if ky.ndim == 1:
+            return np.interp(x, kx, ky)
+        return np.stack([np.interp(x, kx, c) for c in ky.T], 1)
+    one = ky.ndim == 1
+    ky = ky[:, None] if one else ky
+    h, _, m = _hermite_tangents(kx, ky)
+    xc = np.clip(x, kx[0], kx[-1])
+    i = np.clip(np.searchsorted(kx, xc, side="right") - 1, 0, len(kx) - 2)
+    s = np.divide(xc - kx[i], h[i], out=np.ones(len(xc)), where=h[i] > 0)[:, None]
+    b00, b10, b01, b11 = _hermite_basis(s)
+    y0, y1, hi = ky[i], ky[i + 1], h[i][:, None]
+    out = b00 * y0 + b10 * hi * m[i] + b01 * y1 + b11 * hi * m[i + 1]
+    if linear is not None:
+        out = np.where(linear[i][:, None], y0 + s * (y1 - y0), out)
+    # rounding only: keep each value between its keys exactly
+    out = np.clip(out, np.minimum(y0, y1), np.maximum(y0, y1))
+    out = np.where((x < kx[0])[:, None], ky[0], out)  # held at the first key, as np.interp does
+    return out[:, 0] if one else out
+
+
+_PEAK_S = np.linspace(0.0, 1.0, 65)  # samples per key interval for the cubic's peak speed
+
+
+def _linear_intervals(kx: np.ndarray, yaw: np.ndarray, pitch: np.ndarray) -> np.ndarray | None:
+    """Per key interval of one shot: whether to interpolate it linearly rather than
+    cubic (``None`` below 3 keys).
+
+    Pan speed is measured as :func:`cutpoint.pano.qa.pan_metrics` does: yaw rate scaled
+    by cos pitch, combined with the pitch rate. An interval goes linear when its cubic
+    speed peaks above the linear speed of that interval and of both its neighbours (so
+    the path never pans faster than with linear keys; between two stops any C1 curve
+    peaks at 1.5x the linear speed), or above a QA pan limit (``max_pan_p95``,
+    ``max_pan_max``) that its linear speed does not exceed throughout (so in any window
+    the cubic is over a limit only where linear is too, and never fails a pan gate
+    linear passes).
+    """
+    if len(kx) < 3:
+        return None
+    from cutpoint.pano.qa import QAThresholds  # noqa: PLC0415
+
+    h, d, m = _hermite_tangents(kx, np.stack([yaw, pitch], 1))
+    s = _PEAK_S[None, :]
+    r00, r10, r01 = 6 * (s - s * s), 3 * s * s - 4 * s + 1, 3 * s * s - 2 * s
+
+    def rate(c: int) -> np.ndarray:  # d/dt of the cubic, per interval x sample
+        return r00 * d[:, c, None] + r10 * m[:-1, c, None] + r01 * m[1:, c, None]
+
+    b00, b10, b01, b11 = _hermite_basis(s)
+    hk = h[:, None]
+    pit = b00 * pitch[:-1, None] + b10 * hk * m[:-1, 1, None]
+    pit = pit + b01 * pitch[1:, None] + b11 * hk * m[1:, 1, None]
+    cubic = np.hypot(rate(0) * np.cos(np.radians(pit)), rate(1)).max(1)
+    # linear: constant rates; the yaw rate counts most at the pitch nearest the horizon
+    p0, p1 = pitch[:-1], pitch[1:]
+    near = np.where(p0 * p1 <= 0, 0.0, np.minimum(np.abs(p0), np.abs(p1)))
+    lin = np.hypot(d[:, 0] * np.cos(np.radians(near)), d[:, 1])
+    ref = lin.copy()
+    ref[1:] = np.maximum(ref[1:], lin[:-1])
+    ref[:-1] = np.maximum(ref[:-1], lin[1:])
+    out = cubic > ref * (1 + 1e-9) + 1e-9
+    # slowest linear speed: at the pitch farthest from the horizon. Kept cubic over a
+    # limit only where every linear sample fails it too (qa rounds to 0.1 deg/s)
+    slow = np.hypot(d[:, 0] * np.cos(np.radians(np.maximum(np.abs(p0), np.abs(p1)))), d[:, 1])
+    th = QAThresholds()
+    for limit in (th.max_pan_p95, th.max_pan_max):
+        out |= (cubic > limit) & (slow < limit + 0.05)
+    return out
+
+
 def evaluate(path: dict[str, Any], times: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-frame ``(yaw, pitch, fov)`` from a path's keys (linear inside shots, held
-    outside the planned range, hard jumps at keys marked ``cut``)."""
+    """Per-frame ``(yaw, pitch, fov)`` from a path's keys (monotone cubic inside shots,
+    see :func:`_pchip`, linear on key intervals where the cubic would pan faster than
+    linear nearby or over a QA pan limit, see :func:`_linear_intervals`; linear in a
+    shot of 2 keys; held outside the planned range, hard jumps at keys marked ``cut``).
+    Yaw is interpolated unwrapped (shortest arc between consecutive keys) and returned
+    unwrapped, continuous within a shot."""
     keys = path["keys"]
     kt = np.array([k["t"] for k in keys], float)
     cut_idx = [i for i, k in enumerate(keys) if k.get("cut")]
@@ -1285,9 +1395,10 @@ def evaluate(path: dict[str, Any], times: np.ndarray) -> tuple[np.ndarray, np.nd
         if not sel.any():
             continue
         ty = np.degrees(np.unwrap(np.radians([k["yaw"] for k in keys[a:b]])))
-        yaw[sel] = np.interp(times[sel], kt[a:b], ty)
-        pitch[sel] = np.interp(times[sel], kt[a:b], [k["pitch"] for k in keys[a:b]])
-        fov[sel] = np.interp(times[sel], kt[a:b], [k["fov"] for k in keys[a:b]])
+        tp = np.array([k["pitch"] for k in keys[a:b]], float)
+        ky = np.stack([ty, tp, [k["fov"] for k in keys[a:b]]], 1)
+        out = _pchip(times[sel], kt[a:b], ky, _linear_intervals(kt[a:b], ty, tp))
+        yaw[sel], pitch[sel], fov[sel] = out.T
     return yaw, pitch, fov
 
 

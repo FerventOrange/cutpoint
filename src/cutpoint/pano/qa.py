@@ -331,7 +331,8 @@ def pan_metrics(
     Speed is the angular rate of the view direction (yaw scaled by cos pitch,
     plus pitch) at ``fps`` samples, with differences across hard cuts dropped;
     acceleration and jerk use the yaw / pitch after a 5-sample moving average
-    (linear key interpolation makes raw second differences impulsive).
+    (key interpolation can step the velocity at keys, which makes raw second
+    differences impulsive).
     """
     from cutpoint.pano.director import evaluate  # noqa: PLC0415
 
