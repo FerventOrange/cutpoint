@@ -469,7 +469,14 @@ def _strip_prefix(path: str, prefix: str) -> str | None:
 
 
 def _remap_excluded(path: str) -> bool:
-    return matches_glob(norm_path(path), get_config().source_remap_exclude)
+    """``path`` matches ``source_remap_exclude``, comparing the mapped-drive and
+    UNC spellings (:func:`unc_path`) of both the path and the globs, so ``Z:\\...``
+    and ``\\\\server\\share\\...`` exclude each other."""
+    patterns = get_config().source_remap_exclude
+    if not patterns:
+        return False
+    globs = list(dict.fromkeys(g for pat in patterns for g in (pat, unc_path(pat))))
+    return any(matches_glob(norm_path(text), globs) for text in {path, unc_path(path)})
 
 
 def remap_source(path: str | Path) -> Path:

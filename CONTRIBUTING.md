@@ -14,8 +14,8 @@ uv sync
 ```
 
 The dev tools (pytest, ruff, pre-commit) are a default dependency group, so no flag is needed.
-Add `--extra ski --extra events` when working on those modules (list every extra you use;
-`uv sync` removes the others).
+Add `--extra ski --extra events` when working on those modules. `uv sync` removes the extras
+you leave out; see [Optional extras](docs/getting-started.md#optional-extras).
 
 ## Check your change
 
