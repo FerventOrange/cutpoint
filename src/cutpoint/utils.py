@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import errno
 import fnmatch
 import logging
@@ -42,6 +43,26 @@ def clock(t: float) -> str:
     h, rem = divmod(tenths, 36000)
     m, rem = divmod(rem, 600)
     return f"{sign}{h:02d}:{m:02d}:{rem // 10:02d}.{rem % 10}"
+
+
+def parse_size(text: str) -> tuple[int, int]:
+    """argparse type: ``WxH`` (e.g. ``1920x1080``) as ``(width, height)``."""
+    try:
+        w, h = (int(x) for x in text.lower().split("x"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected WxH, e.g. 1920x1080") from exc
+    return w, h
+
+
+def positive_float(text: str) -> float:
+    """argparse type: a number greater than 0."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a number") from exc
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be greater than 0")
+    return value
 
 
 def natural_key(path: Path) -> list[object]:

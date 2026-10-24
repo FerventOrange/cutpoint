@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from conftest import write
+from cutpoint import paths
 from cutpoint.events import paths as ev_paths
 from cutpoint.events import setup
 
@@ -127,7 +128,7 @@ def test_install_llama_bad_digest_aborts_and_leaves_nothing(release):
     with pytest.raises(RuntimeError, match="sha256 mismatch"):
         setup.install_llama(force=True)
     _assert_old_kept(llama, staging, old)
-    downloads = ev_paths.tools_dir() / "_downloads"
+    downloads = paths.tools_dir() / "_downloads"
     assert not [p for p in downloads.rglob("*") if p.is_file()]  # no archive, no .part
 
 
@@ -261,7 +262,7 @@ def test_install_llama_up_to_date_removes_leftover_old_without_downloading(relea
     assert "already installed" in caplog.text
     assert not old.exists()
     assert not staging.exists()
-    assert not (ev_paths.tools_dir() / "_downloads").exists()
+    assert not (paths.tools_dir() / "_downloads").exists()
     assert sorted(p.name for p in llama.iterdir()) == ["VERSION.txt", "keep.dll"]
     assert (llama / "keep.dll").read_text() == "old"
 

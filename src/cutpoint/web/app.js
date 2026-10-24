@@ -149,16 +149,21 @@ async function refreshProject() {
   }
 }
 
-/** Leave the open project (its folder is no longer listed): back to the empty workspace. */
-function closeProject() {
-  S.id = null;
-  S.project = null;
+/** Forget the per-project edit state; ``segments`` become the saved sequence. */
+function resetWorkspace(segments) {
   S.drafts = {};
   S.focus = null;
   S.selected.clear();
   S.renaming = null;
-  S.segments = [];
+  S.segments = segments;
   S.savedKey = key();
+}
+
+/** Leave the open project (its folder is no longer listed): back to the empty workspace. */
+function closeProject() {
+  S.id = null;
+  S.project = null;
+  resetWorkspace([]);
   clearTimeout(S.prepTimer);
   drop('');
   history.replaceState(null, '', location.pathname + location.search);
@@ -169,13 +174,8 @@ function adopt(p, switched) {
   S.project = p;
   if (switched) {
     S.id = p.id;
-    S.drafts = {};
-    S.focus = null;
-    S.selected.clear();
-    S.renaming = null;
     delete $('#momentsEmpty').dataset.refocus;
-    S.segments = structuredClone(p.review?.segments ?? []);
-    S.savedKey = key();
+    resetWorkspace(structuredClone(p.review?.segments ?? []));
     $('#projectSelect').value = p.id;
     history.replaceState(null, '', `#${encodeURIComponent(p.id)}`);
   } else if (!dirty()) {
@@ -483,11 +483,16 @@ function ensureVideo(seekC) {
   } else if (seekC) seekTo(seekC.start);
 }
 
+/** Stop a video element and release its file. */
+function unload(el) {
+  el.pause();
+  el.removeAttribute('src');
+  delete el.dataset.url;
+  el.load();
+}
+
 function drop(msg) {
-  v.pause();
-  v.removeAttribute('src');
-  delete v.dataset.url;
-  v.load();
+  unload(v);
   screenMsg(msg);
 }
 
@@ -879,9 +884,7 @@ const seqDur = (s, range) => h('span', { class: 'seq-dur tc', text: `${(s.end - 
   h('span', { class: 'vh', text: `, ${range}` }));
 
 /** A row's title button (``head``: its rank and thumbnail) and rename pencil, when not renaming. */
-function seqMain(s, head) {
-  const name = s.label || s.id;
-  const range = `${fmt(s.start)} to ${fmt(s.end)}`;
+function seqMain(s, head, name = s.label || s.id, range = `${fmt(s.start)} to ${fmt(s.end)}`) {
   const main = h('button', { type: 'button', class: 'seq-main', 'data-act': 'focus', title: range, onclick: () => focusMoment(s.id) },
     ...head,
     h('span', { class: 'seq-text' },
@@ -930,7 +933,7 @@ function seqRow(s, i, n) {
       h('span', { class: 'seq-text' }, input,
         h('span', { id: errId, class: 'seq-rename-err', role: 'alert', text: S.renameErr }), seqDur(s, range)));
   } else {
-    ({ main, pencil } = seqMain(s, head));
+    ({ main, pencil } = seqMain(s, head, name, range));
   }
   const li = h('li', {
     class: `seq${S.selected.has(s.id) ? ' selected' : ''}`, 'data-id': s.id, 'aria-current': s.id === S.focus ? 'true' : null,
@@ -1094,10 +1097,7 @@ function renderOutputs() {
     fv.dataset.url = final.url;
     fv.src = final.url;
   } else if (!final && fv.dataset.url) {
-    fv.pause();
-    fv.removeAttribute('src');
-    delete fv.dataset.url;
-    fv.load();
+    unload(fv);
   }
   const dl = (u) => `${u}${u.includes('?') ? '&' : '?'}download=1`;
   $('#outList').replaceChildren(

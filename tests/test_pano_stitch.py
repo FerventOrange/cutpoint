@@ -914,6 +914,18 @@ class TestCliCheck:
         assert self.seen == []
 
 
+class TestCliQa:
+    def test_missing_folder_is_a_clear_error(self, home):
+        from cutpoint.config import projects_dir  # noqa: PLC0415
+
+        (projects_dir() / "trip-360").mkdir(parents=True)
+        args = argparse.Namespace(
+            dir="projects/trip-360/nope", paths=False, fps=2.0, size=(640, 360), json_only=True
+        )
+        with pytest.raises(FileNotFoundError, match=r"clips folder not found: .*nope"):
+            pano_cli.cmd_qa(args)
+
+
 # --------------------------------------------------------------------------- sidecar
 class TestSidecar:
     def test_write_records_args_after_output_and_sdk_version(self, tmp_path):
