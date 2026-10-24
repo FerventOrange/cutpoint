@@ -21,7 +21,7 @@ from cutpoint.assemble import assemble
 from cutpoint.clips import export_clips
 from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
 from cutpoint.styles import get_style
-from cutpoint.utils import find_videos
+from cutpoint.utils import find_videos, input_name
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,7 @@ def resolve_kind(
 def edit_name(target: Path) -> str:
     """Name of an edit of ``target`` (project folder, ``<name>-final.mp4``): a file's stem,
     a folder's full name (``.`` and a drive root resolved), else ``edit``."""
-    p = target.resolve()
-    return (p.stem if p.is_file() else p.name) or "edit"
+    return input_name(target, "edit")
 
 
 def _identity(path: Path) -> tuple[int, int] | None:
@@ -112,11 +111,13 @@ def run_edit(
     vertical: bool = False,
     force: bool = False,
     events: bool = False,
+    vision: bool | None = None,
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
     Analysis is cached as with ``cutpoint analyze``. ``force`` has ``clips --force``
     semantics. ``events`` runs ``cutpoint events`` (default options) before the clips.
+    ``vision`` is ``analyze --vision`` (None: the style's default, else if Ollama is reachable).
 
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
@@ -155,7 +156,7 @@ def run_edit(
 
     created = not project.exists()
     try:
-        analyze(inputs, style, project)
+        analyze(inputs, style, project, vision=vision)
     except BaseException:
         # As `cutpoint analyze`: no empty project folder left behind by a failed run.
         with contextlib.suppress(OSError):

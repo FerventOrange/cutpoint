@@ -37,7 +37,7 @@ from cutpoint.mix import EXCLUDE_FILE, load_exclusions, parse_quotas, run_mix
 from cutpoint.planning import Padding
 from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_names
-from cutpoint.utils import parse_size, positive_float, positive_int
+from cutpoint.utils import input_name, parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
 
@@ -50,7 +50,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         out = resolve_project_path(a.out)
     else:  # one input: its name; several: their common parent folder's name
         name = (
-            targets[0].stem
+            input_name(targets[0], "project")
             if len(targets) == 1
             else (Path(os.path.commonpath([t.resolve() for t in targets])).name or "multi")
         )
@@ -94,6 +94,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         vertical=a.vertical,
         force=a.force,
         events=a.events,
+        vision=a.vision,
     )
 
 
@@ -501,6 +502,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run `cutpoint events` to re-rank the moments (needs the events extra and "
         "cutpoint setup)",
     )
+    ed.add_argument(
+        "--vision",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="rate top candidates with Ollama, as analyze --vision (default: if reachable)",
+    )
     ed.set_defaults(func=_cmd_edit)
 
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
@@ -529,8 +536,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         help="project dir; a bare name or projects/<name> (projects\\<name> on Windows) goes under "
         "the configured projects folder (CUTPOINT_PROJECTS_DIR / config.json). "
-        "Default: <projects>/<input name>, or the common parent folder's "
-        "name for several inputs",
+        "Default: <projects>/<input name> (a file's name without extension, or the folder's "
+        "name), or the common parent folder's name for several inputs",
     )
     an.add_argument(
         "--vision",
@@ -576,7 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
         "is looked up in the projects folder)",
     )
     sel = cl.add_mutually_exclusive_group()
-    sel.add_argument("--top", type=int, help="top N by score (default: fits style target)")
+    sel.add_argument("--top", type=positive_int, help="top N by score (default: fits style target)")
     sel.add_argument("--ids", nargs="+", help="explicit candidate ids, e.g. h001 h004")
     sel.add_argument(
         "--segments",
@@ -592,7 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cl.add_argument(
         "--max-total",
-        type=float,
+        type=positive_float,
         help="cap total duration (s): best-scoring moments that fit, e.g. 60",
     )
     cl.add_argument(

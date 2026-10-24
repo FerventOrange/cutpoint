@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
-from cutpoint.utils import parse_size, positive_float
+from cutpoint.utils import parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
 # Event layers ``cutpoint 360 analyze`` runs after the analysis.
@@ -683,7 +683,7 @@ def add_parser(sub: Any) -> None:
     )
     di.add_argument("project")
     g = di.add_mutually_exclusive_group()
-    g.add_argument("--top", type=int)
+    g.add_argument("--top", type=positive_int)
     g.add_argument("--ids", nargs="+")
     g.add_argument("--segments")
     di.add_argument("--vertical", action="store_true")
@@ -735,8 +735,8 @@ def add_parser(sub: Any) -> None:
     g2.add_argument(
         "--segments", metavar="FILE", help="segments JSON, e.g. mix_segments.json (its sources)"
     )
-    sti.add_argument("--top", type=int)
-    sti.add_argument("--max-total", type=float)
+    sti.add_argument("--top", type=positive_int)
+    sti.add_argument("--max-total", type=positive_float)
     sti.add_argument("--force", action="store_true")
     sti.add_argument("--dry-run", action="store_true", help="print the SDK commands only")
     sti.set_defaults(func=cmd_stitch)
