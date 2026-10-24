@@ -9,7 +9,8 @@ from cutpoint import cli
 
 
 @pytest.mark.parametrize(
-    ("argv", "word"), [(["--help"], "paths"), (["events", "--help"], "events")]
+    ("argv", "word"),
+    [(["--help"], "paths"), (["events", "--help"], "events"), (["edit", "--help"], "--kind")],
 )
 def test_help_exits_zero(capsys, argv, word):
     with pytest.raises(SystemExit) as exc:
@@ -44,6 +45,17 @@ def test_clips_bad_size_is_a_usage_error(capsys):
     err = capsys.readouterr().err
     assert "--size" in err and "expected WxH" in err
     assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    ("option", "value"), [("--kind", "trailer"), ("--top", "0"), ("--max-total", "-5")]
+)
+def test_edit_bad_option_is_a_usage_error(capsys, option, value):
+    """--top / --max-total are checked before the long analysis, not after it."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["edit", "video.mp4", option, value])
+    assert exc.value.code == 2
+    assert option in capsys.readouterr().err
 
 
 def test_360_qa_bad_size_is_a_usage_error(capsys):

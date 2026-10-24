@@ -38,8 +38,9 @@ are never changed.
 The agent runs Cutpoint, shows you the clips and writes the result into a project folder.
 Delete or rename clips to change the cut, then ask the agent to assemble again.
 
-One-command editing (`cutpoint edit`), a first-run setup wizard and an agent skill are
-planned. Today the agent runs the steps itself using [AGENTS.md](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md).
+Without an agent, `cutpoint edit D:\Videos\clip.mp4 --kind montage` does it in one command
+(see [commands](docs/commands.md#edit)). A first-run setup wizard and an agent skill are
+planned. The agent works from [AGENTS.md](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md).
 
 ### Local browser workspace
 
