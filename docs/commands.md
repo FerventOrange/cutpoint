@@ -74,8 +74,9 @@ fresh `final_ui_*` names, so earlier exports are not overwritten (a final name i
 when its `.srt` exists). The outputs panel lists every final video in the project folder, newest
 first with the export's own final first; until a new export is assembled, the preview of an
 earlier final is titled "Earlier final". A cancelled job shows "stopping" (status `cancelling`
-in `/api/jobs`) until its process exits; Cancel is disabled meanwhile. Assembly uses the latest
-successful UI export, not any subsequent unexported sequence changes. Failed/cancelled exports
+in `/api/jobs`) until its process exits; Cancel is disabled meanwhile. Cancel returns at once;
+the job has about 12 s to remove its partial files before its process tree is ended (preview
+proxies: 5 s). Assembly uses the latest successful UI export, not any subsequent unexported sequence changes. Failed/cancelled exports
 may leave partial output folders, which are not offered for assembly.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy

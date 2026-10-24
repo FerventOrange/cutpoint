@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -293,7 +294,9 @@ def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) ->
         jobs.start("p", "clips", [sys.executable, "-c", "pass"])
     assert busy.value.status_code == 409
     cancelled = jobs.cancel(job.id)
-    deadline = time.time() + 10  # cancel waits only 5 s for the watcher thread; Windows can lag
+    deadline = (
+        time.time() + 10
+    )  # cancel returns at once; the killer thread and the watcher finish in the background
     while cancelled.status != "cancelled" and time.time() < deadline:
         time.sleep(0.05)
     assert cancelled.status == "cancelled"
@@ -335,7 +338,6 @@ def test_windows_cancel_tries_ctrl_break_before_taskkill(
     monkeypatch.setitem(sys.modules, "ctypes", SimpleNamespace(WinDLL=lambda name: kernel32))
     monkeypatch.setattr(ui, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(ui, "signal", SimpleNamespace(CTRL_BREAK_EVENT=1))
-    monkeypatch.setattr(ui, "SOFT_STOP_S", 0.01)
     monkeypatch.setattr(
         ui,
         "subprocess",
@@ -343,7 +345,7 @@ def test_windows_cancel_tries_ctrl_break_before_taskkill(
             run=lambda args, **kw: runs.append(args), TimeoutExpired=subprocess.TimeoutExpired
         ),
     )
-    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait), 0.01)  # type: ignore[arg-type]
     assert sent == [(1, 4242)]
     assert waits == ([0.01] if event_sent else [])  # no event, nothing to wait for
     # taskkill /T /F always follows: it ends a job that ignored the event, with its ffmpeg
@@ -391,6 +393,25 @@ def test_windows_cancel_ends_the_job_object_between_ctrl_break_and_taskkill(
     assert [name for name, _ in calls] == ["ctrl_break", "wait", "taskkill"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_posix_kill_tree_waits_job_stop_s_between_term_and_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[int] = []
+    waits: list[float | None] = []
+    monkeypatch.setattr(ui.os, "killpg", lambda pid, sig: signals.append(sig))
+
+    def wait(timeout: float | None = None) -> int:
+        waits.append(timeout)
+        raise subprocess.TimeoutExpired("job", timeout or 0)
+
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
+    # a job's own soft stop (two ffmpeg waits plus cleanup) fits before the hard kill (#257)
+    assert waits == [ui.JOB_STOP_S]
+    assert ui.JOB_STOP_S > 2 * ui.SOFT_STOP_S
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
 def _pid_alive(pid: int) -> bool:
     import ctypes  # noqa: PLC0415 - Windows only
 
@@ -430,8 +451,9 @@ def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
         assert "ready" in logs
         child = int(next(line for line in logs if line.startswith("child")).split()[1])
         cancelled = jobs.cancel(job.id)
-        # SOFT_STOP_S for the event, then the hard kill; allow the watcher thread to see EOF
-        deadline = time.time() + ui.SOFT_STOP_S + 20
+        # the leader dies on the event at once (only the grandchild ignores it), so the job
+        # object kill follows promptly; JOB_STOP_S bounds the wait, +20 s for the watcher to see EOF
+        deadline = time.time() + ui.JOB_STOP_S + 20
         while cancelled.status != "cancelled" and time.time() < deadline:
             time.sleep(0.05)
         assert cancelled.status == "cancelled"
@@ -2113,6 +2135,41 @@ def test_a_cancelled_job_reads_cancelling_until_the_process_has_exited(
     while job.view()["status"] != "cancelled" and time.time() < deadline:
         time.sleep(0.01)
     assert job.view()["status"] == "cancelled"
+
+
+def test_cancel_returns_before_the_kill_finishes_and_a_second_cancel_adds_no_killer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = FakeProc()
+    started = threading.Event()
+    finish = threading.Event()
+    calls: list[object] = []
+
+    def slow_kill(p: object, *a: object) -> None:
+        calls.append(p)
+        started.set()
+        finish.wait(10)
+        proc.release.set()
+
+    monkeypatch.setattr(ui, "spawn", lambda args: proc)
+    monkeypatch.setattr(ui, "kill_tree", slow_kill)
+    jobs = ui.Jobs()
+    job = jobs.start("p", "analyze", ["x"])
+    try:
+        t0 = time.monotonic()
+        jobs.cancel(job.id)  # must not wait for the killer
+        assert time.monotonic() - t0 < 5
+        assert started.wait(10)
+        assert not finish.is_set()
+        assert job.view()["status"] == "cancelling"
+        jobs.cancel(job.id)
+        jobs.cancel(job.id)
+        assert calls == [proc]
+    finally:
+        finish.set()
+        proc.release.set()
+    assert job.done.wait(10)
+    assert len(calls) == 1
 
 
 def test_the_page_declares_an_icon(client: TestClient) -> None:
