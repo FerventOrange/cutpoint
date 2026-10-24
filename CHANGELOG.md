@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clips` and `assemble` in one command and copies the result to `<video>-final.mp4` and
   `<video>-final.srt` in the project folder. Each kind sets the style, selection, clip order,
   transition, loudness normalisation and captions; `--style`, `--top`, `--max-total`,
-  `--vertical`, `--force` and `--events` override it (#2).
+  `--vertical`, `--force` and `--events` override it. `--vision` / `--no-vision` work as on
+  `analyze` (default: Ollama rating if reachable) (#2).
 - SRT subtitles: `clips` writes `001_<label>.srt` next to each clip and `assemble` writes
   `final.srt` (`final_vertical.srt`, ...) next to the final video, from the cached transcripts
   of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
@@ -77,6 +78,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `assemble` with hard cuts and added audio fades (clips without a baked fade) trims each
+  clip's audio to where the next clip starts (its container duration), as the video and
+  `final.srt` already do. Clips whose audio ran past their video drifted: 3 such clips gave
+  6.6 s of video and 6.0 s of audio, now both 6.6 s. Clips cutpoint exports change by under
+  half a frame (#235).
+- `assemble --fade-dur` must be greater than 0 (exit 2), and a crossfade lasts at least one
+  frame (shorter fades are raised to one frame, INFO). `0` or a fade under one frame used to
+  cut the video short: two 2 s clips at 25 fps gave 2.04 s of video. A clip too short for a
+  one-frame crossfade makes the join use cuts (WARNING) (#238).
+- `extend` into a folder with a manifest (in place, or `--out` with `--force`) removes the `.srt`
+  the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
+  new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
+  replaced or removed by a later run. An `.srt` the old manifest does not list stays (#239).
+- `assemble --transition fade` rounds the crossfade to whole frames (of the first clip's
+  rate) and uses that length for the video, the audio and the cut offsets in `final.srt`.
+  xfade used whole frames while the audio and subtitles used the exact fade: 0.25 s at
+  29.97 fps over 2 joins gave 6.039 s of video and 6.000 s of audio. Crossfade times are also
+  passed to ffmpeg to the microsecond instead of the millisecond, and each xfade offset half a
+  frame early (the fade starts on the same frame), so rounded timestamps of earlier joins no
+  longer add a frame from the third clip on (#243).
+- `extend` writes each re-exported clip's `.srt` for its new range and records it in the
+  manifest (`srt`), in place and with `--out`. In place, the `.srt` the old manifest lists is
+  replaced (removed when the source has no cached transcript), so no subtitles with the old
+  timing stay beside the clip; an `.srt` the manifest does not list is never overwritten, as
+  with `clips --force` (follow-up to #213).
+- `clips --force` and `extend --out DIR --force` no longer replace a hand-added or renamed
+  `.mp4` that has the name of a new clip but is not in the old `manifest.json` (without a
+  readable manifest, any existing `.mp4` with a new clip's name). The run stops with exit 1
+  before exporting anything, and an ERROR names the files and says to move or rename them
+  (follow-up to #213).
+- `final.srt` with cut transitions no longer drifts when a clip's audio runs past its video.
+  Each clip is placed where the cut join really starts it: at the end of the previous file (its
+  container duration), not of its video. Crossfades are unchanged (follow-up to #213).
+- `cutpoint analyze .` or a drive root (`analyze D:\`) without `--out` no longer gets a
+  project with an empty name, and a folder named with dots (`trip.2024`) is no longer cut at the
+  last dot: the default project is named as for `edit` (a file's name without extension, the
+  folder's full name, `project` for a drive root). A project made from such a folder by an
+  earlier version keeps its old name (`trip`); pass `--out trip` to keep using it.
+- `clips --top` and `--max-total`, and `360 director --top` and `360 stitch --top` /
+  `--max-total`, reject 0 and negative values as usage errors (exit 2); `clips --top -1` used to
+  select all but one moment.
+- `analyze --vision-top` and `--max-candidates` reject 0 and negative values, and
+  `--must-include-crash` values outside 0 to 1 (0 still turns it off), as usage errors (exit 2);
+  `--vision-top -3` used to send all but the last 3 candidates to the vision model.
 - Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check (for
   example `360 analyze` with cached views but no cached event layers) no longer fails with
   `WinError 127` on `cudnn_cnn64_9.dll`. On Windows the GPU check imports torch first when it is

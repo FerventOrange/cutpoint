@@ -76,6 +76,24 @@ def positive_int(text: str) -> int:
     return value
 
 
+def unit_float(text: str) -> float:
+    """argparse type: a number from 0 to 1."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a number") from exc
+    if not 0 <= value <= 1:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be from 0 to 1")
+    return value
+
+
+def input_name(target: Path, default: str) -> str:
+    """Name a project after an input: a file's stem, a folder's full name (``.`` and a drive
+    root resolved first), else ``default`` (a drive root has no name)."""
+    p = target.resolve()
+    return (p.stem if p.is_file() else p.name) or default
+
+
 def natural_key(path: Path) -> list[object]:
     """Sort key so that ``2_x`` < ``10_x`` (case-insensitive)."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", path.name)]

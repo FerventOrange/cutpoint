@@ -110,6 +110,7 @@ See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device 
 ```text
 cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [--out DIR]
               [--top N] [--max-total S] [--vertical] [--force] [--events]
+              [--vision | --no-vision]
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
@@ -132,6 +133,7 @@ one of them is refused.
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
+| `--vision` / `--no-vision` | As `analyze --vision`: rate top candidates with Ollama. Default: used if the server and model are reachable (the `ski` style: only with `--vision`) |
 
 Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
 files removed) and logs the final video, its subtitles and the clips folder last. To change the
@@ -152,7 +154,7 @@ an analysed set processes only the new file.
 | Option | Meaning |
 |---|---|
 | `--style` | `gaming`, `action`, `sport`, `funny`, `commentary`, `ski`, or a learned preset |
-| `--out DIR` | Project folder. Default: `<projects>\<input name>` (the common parent folder's name for several inputs) |
+| `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
 | `--vision` / `--no-vision` | Rate top candidates with Ollama. Default: used if the server and model are reachable |
@@ -163,7 +165,7 @@ an analysed set processes only the new file.
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
-| `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence (0 disables) |
+| `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
 
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
 transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations
@@ -235,8 +237,9 @@ files, the names this run writes and `manifest.json`. A file the run reads as a 
 replaced; if a new clip name is one, the run stops with an error before exporting. Every other
 file stays, including `.mp4` files the old manifest does not list (renamed or added by hand); a
 WARNING names them, since `assemble` includes every `.mp4` in the folder; move them out before
-re-running `clips --force` if they are not part of the edit. Without a readable
-old manifest, only the new names are replaced. Because the staging folder sits next to the output
+re-running `clips --force` if they are not part of the edit. If such a file has the name of a
+new clip, the run stops with an error naming it before exporting; move or rename it. Without a
+readable old manifest, every existing `.mp4` counts as such a file. Because the staging folder sits next to the output
 folder, `clips --force` refuses before any export a non-empty output folder that is a drive
 root, a mount point or a bind mount; use `--out` with a folder on that drive. An empty drive
 root or mount point is exported into directly, each clip under a temporary name until it is
@@ -337,9 +340,17 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   or a clip locked by another program, leaves the original clips as they were. The same holds for
   `--out DIR --force` into a non-empty `DIR`: `DIR` is unchanged unless every clip was exported.
   Files in `DIR` that the run does not write stay; a WARNING names `.mp4` clips left there that
-  were not re-exported, because `assemble` will include them. `--out DIR --force` is refused
+  were not re-exported, because `assemble` will include them. An `.mp4` in `DIR` that `DIR`'s
+  `manifest.json` does not list and that has the name of a clip to re-export stops the run
+  before any export, as with `clips --force`. `--out DIR --force` is refused
   before any export when a non-empty `DIR` is a drive root, a mount point or a bind mount, and
   so is in-place `extend` of such a clips folder; use `--out` with a folder on that drive.
+- **Subtitles.** Each re-exported clip gets its `.srt` for the new range, as `clips` writes it,
+  and the manifest records it (`srt`). An `.srt` the target folder's manifest lists for a
+  re-exported clip is replaced (removed if the source has no cached transcript); one it does
+  not list (made or renamed by hand) is never overwritten, and that clip gets no new `.srt`
+  (one WARNING). The `.srt` it lists for a clip no longer in the folder (deleted during review)
+  is removed, as with `clips --force`.
 
 ## assemble
 
@@ -352,7 +363,11 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
 `10_x`).
 
 - `cut` (default) uses stream copy when all clips share parameters, else normalises and
-  re-encodes. `fade` crossfades video and audio.
+  re-encodes. `fade` crossfades video and audio over `--fade-dur` seconds (default 0.25,
+  greater than 0), rounded to whole frames of the first clip's frame rate (0.25 s at 29.97 fps
+  is 7 frames, 0.2336 s) so video, audio and `final.srt` use the same length: at least one
+  frame and at most 45% of the shortest clip. When one frame is more than that, the clips are
+  joined with cuts (WARNING).
 - `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
   then measures the result and redoes the pass with a lower ceiling if the true peak is above
   -1.5 dBTP. Very peaky material can land up to about 1 LU below target.

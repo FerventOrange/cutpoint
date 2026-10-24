@@ -37,7 +37,7 @@ from cutpoint.mix import EXCLUDE_FILE, load_exclusions, parse_quotas, run_mix
 from cutpoint.planning import Padding
 from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_names
-from cutpoint.utils import parse_size, positive_float, positive_int
+from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
 
 logger = logging.getLogger("cutpoint")
 
@@ -50,7 +50,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         out = resolve_project_path(a.out)
     else:  # one input: its name; several: their common parent folder's name
         name = (
-            targets[0].stem
+            input_name(targets[0], "project")
             if len(targets) == 1
             else (Path(os.path.commonpath([t.resolve() for t in targets])).name or "multi")
         )
@@ -58,31 +58,23 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
     style = get_style(a.style)
     if a.must_include_crash is not None:
         style = replace(style, must_include_crash=a.must_include_crash)
-    created = not out.exists()
-    try:
-        analyze(
-            targets,
-            style,
-            out,
-            vision=a.vision,
-            model=a.model,
-            language=a.language,
-            use_scenes=not a.no_scenes,
-            max_candidates=a.max_candidates,
-            vision_top=a.vision_top,
-            ollama_url=a.ollama_url,
-            ollama_model=a.ollama_model,
-            exclude=a.exclude or [],
-            recursive=a.recursive,
-            recover=a.recover,
-        )
-    except BaseException:
-        # Do not leave behind an empty project folder this run created; a failed cleanup must
-        # not replace the original exception (Ctrl+C has to stay exit 130).
-        with contextlib.suppress(OSError):
-            if created and out.is_dir() and not any(out.iterdir()):
-                out.rmdir()
-        raise
+    # A failed or interrupted analyze removes the (still empty) folders it created.
+    analyze(
+        targets,
+        style,
+        out,
+        vision=a.vision,
+        model=a.model,
+        language=a.language,
+        use_scenes=not a.no_scenes,
+        max_candidates=a.max_candidates,
+        vision_top=a.vision_top,
+        ollama_url=a.ollama_url,
+        ollama_model=a.ollama_model,
+        exclude=a.exclude or [],
+        recursive=a.recursive,
+        recover=a.recover,
+    )
 
 
 def _cmd_edit(a: argparse.Namespace) -> None:
@@ -94,6 +86,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         vertical=a.vertical,
         force=a.force,
         events=a.events,
+        vision=a.vision,
     )
 
 
@@ -501,6 +494,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run `cutpoint events` to re-rank the moments (needs the events extra and "
         "cutpoint setup)",
     )
+    ed.add_argument(
+        "--vision",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="rate top candidates with Ollama, as analyze --vision (default: if reachable)",
+    )
     ed.set_defaults(func=_cmd_edit)
 
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
@@ -529,8 +528,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         help="project dir; a bare name or projects/<name> (projects\\<name> on Windows) goes under "
         "the configured projects folder (CUTPOINT_PROJECTS_DIR / config.json). "
-        "Default: <projects>/<input name>, or the common parent folder's "
-        "name for several inputs",
+        "Default: <projects>/<input name> (a file's name without extension, or the folder's "
+        "name), or the common parent folder's name for several inputs",
     )
     an.add_argument(
         "--vision",
@@ -540,7 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an.add_argument(
         "--vision-top",
-        type=int,
+        type=positive_int,
         default=None,
         metavar="N",
         help="top candidates sent to vision (default: 1 per 2 min of footage, min 10, max 60)",
@@ -548,7 +547,9 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
     an.add_argument("--no-scenes", action="store_true", help="skip scene detection")
-    an.add_argument("--max-candidates", type=int, help="per source, pre-merge (default: auto)")
+    an.add_argument(
+        "--max-candidates", type=positive_int, help="per source, pre-merge (default: auto)"
+    )
     an.add_argument(
         "--ollama-url",
         help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
@@ -562,7 +563,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an.add_argument(
         "--must-include-crash",
-        type=float,
+        type=unit_float,
         metavar="CONF",
         help="ski: always clip crashes from crashes.json (cutpoint crashes) with at "
         "least this confidence, 0-1 (default: style, 0.6 for ski; 0 = off)",
@@ -576,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
         "is looked up in the projects folder)",
     )
     sel = cl.add_mutually_exclusive_group()
-    sel.add_argument("--top", type=int, help="top N by score (default: fits style target)")
+    sel.add_argument("--top", type=positive_int, help="top N by score (default: fits style target)")
     sel.add_argument("--ids", nargs="+", help="explicit candidate ids, e.g. h001 h004")
     sel.add_argument(
         "--segments",
@@ -592,7 +593,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cl.add_argument(
         "--max-total",
-        type=float,
+        type=positive_float,
         help="cap total duration (s): best-scoring moments that fit, e.g. 60",
     )
     cl.add_argument(
@@ -948,7 +949,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="output file (default: <project>/final.mp4, or final_vertical.mp4 for clips_vertical)",
     )
     asm.add_argument("--transition", choices=["cut", "fade"], default="cut")
-    asm.add_argument("--fade-dur", type=float, default=0.25)
+    asm.add_argument("--fade-dur", type=positive_float, default=0.25)
     asm.add_argument(
         "--loudnorm", action="store_true", help="normalise to -14 LUFS, true peak below -1.5 dBTP"
     )
