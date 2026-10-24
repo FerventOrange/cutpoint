@@ -2385,7 +2385,7 @@ def source_names(client: TestClient, pid: str) -> list[str]:
 def test_media_requests_list_an_unanalyzed_folder_once(
     client: TestClient, tmp_path: Path, folder_listings: list[int]
 ) -> None:
-    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
     folder_listings.clear()
     base = f"/api/projects/{pid}/sources/{sid}"
@@ -2418,6 +2418,29 @@ def test_writing_highlights_rebuilds_the_list_from_the_analysis(
     hl = {"sources": [{"path": str(folder / "b.mp4"), "duration": 3.0}], "candidates": []}
     (ui.project_dir(pid) / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     assert source_names(client, pid) == ["b.mp4"]
+    cache.save_json(
+        ui.project_dir(pid) / "highlights.json",
+        {"sources": [{"path": str(folder / "a.mp4"), "duration": 3.0}], "candidates": []},
+    )
+    assert source_names(client, pid) == ["a.mp4"]
+
+
+def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    real = ui.find_videos
+    calls: list[int] = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise FileNotFoundError("folder briefly unavailable")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ui, "find_videos", flaky)
+    client.get(f"/api/projects/{pid}")  # the failed listing; the response does not matter
+    assert source_names(client, pid) == ["a.mp4"]
 
 
 def test_the_cache_keeps_at_most_max_projects_and_expires_after_its_ttl(

@@ -901,10 +901,11 @@ def _under(path: str, roots: list[str]) -> bool:
 
 
 def source_entries(
-    p: Path, hl: dict[str, Any] | None, listed: list[Path] | None = None
+    p: Path, hl: dict[str, Any] | None, listed: list[Path | None] | None = None
 ) -> list[dict[str, Any]]:
     """The project's playable-in-principle sources: ``[{path, id, name, duration}]``. The source
-    it lists itself (a picked folder before its analysis) is added to ``listed``."""
+    it lists itself (a picked folder before its analysis) is added to ``listed``, followed by
+    None when that listing failed."""
     meta = read_meta(p)
     if meta.get("source"):
         roots = [str(meta["source"])]
@@ -918,8 +919,11 @@ def source_entries(
     if not paths and meta.get("source"):
         if listed is not None:
             listed.append(Path(meta["source"]))
-        with contextlib.suppress(FileNotFoundError):
+        try:
             paths = dict.fromkeys(map(str, find_videos([Path(meta["source"])])))
+        except FileNotFoundError:
+            if listed is not None:
+                listed.append(None)
     return [
         {
             "path": path,
@@ -977,11 +981,13 @@ class Sources:
         source = read_meta(p).get("source")
         files += [Path(str(source))] if source else []
         stamps += [_stamp(files[2])] if source else []
-        listed: list[Path] = []
+        listed: list[Path | None] = []
         entries = source_entries(p, _highlights(p), listed)
         n = 3 if listed else 2  # the picked source counts only while its folder is listed
         with self.lock:
             self.kept.pop(key, None)
+            if None in listed:  # the folder could not be listed: the next request lists again
+                return entries
             self.kept[key] = (at, files[:n], stamps[:n], entries)
             while len(self.kept) > SOURCES_CACHE_MAX:
                 del self.kept[next(iter(self.kept))]
