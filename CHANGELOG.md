@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crossfade, as the video and `final.srt` already follow the video. A clip whose audio ran past
   its video pushed the later audio late: a 2 s clip with 2.3 s of audio crossfaded with a 2 s
   clip gave 3.76 s of video and 4.06 s of audio, now both 3.76 s.
+  The fix also covers clips whose audio is shorter than the clip or missing: such audio no longer
+  pulls the later clips' audio early or leaves extra audio.
 - `extend` into a folder with a manifest (in place, or `--out` with `--force`) removes the `.srt`
   the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
   new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
