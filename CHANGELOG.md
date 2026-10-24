@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `?target=sources|clips|outputs` (default `sources`); the server resolves every path itself.
 - Resizable side column in the UI (drag, keyboard, double-click to reset); width is remembered per
   browser.
+- `final.fcpxml` and `final.otio` hold a cross-dissolve at each join when `assemble` uses
+  `--transition fade` (and for `edit` kinds that crossfade). It starts on the edit, and the
+  clips and total length match `final.mp4`; with cuts the timelines are unchanged. On the OTIO
+  audio track a clip without audio now leaves a gap, so later audio stays in sync (#246).
 
 ### Changed
 
