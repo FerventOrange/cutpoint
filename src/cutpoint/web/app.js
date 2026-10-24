@@ -1,5 +1,5 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
-import { api, startSession } from './api.js';
+import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
 import { $, baseName, fmt, fmtLen, h, parseTime, round2, svg } from './util.js';
 
@@ -37,6 +37,7 @@ const S = {
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
   renameErr: '',
+  expired: false, // the server rejected the session token: nothing polls or retries any more
 };
 
 const v = $('#video');
@@ -80,11 +81,22 @@ function validate(s, e, dur) {
 }
 
 const banner = (msg) => {
+  if (S.expired) return; // the expired-session message stays, announced once
   const b = $('#banner');
   b.textContent = msg || '';
   b.hidden = !msg;
 };
 const fail = (e) => banner(e.message || String(e));
+
+// A restarted server issues a new token: say so once and stop every timer, so the page neither
+// hammers the server nor waits on "Loading video…" forever.
+whenExpired((e) => {
+  banner(e.message);
+  S.expired = true;
+  clearTimeout(S.prepTimer);
+  clearTimeout(S.jobTimer);
+  drop('No preview: this session has ended.');
+});
 
 function preserveFocus(fn) {
   const a = document.activeElement;
@@ -475,6 +487,7 @@ async function prepareSource(src) {
 
 function ensureVideo(seekC) {
   clearTimeout(S.prepTimer);
+  if (S.expired) return;
   $('#retryBtn').hidden = true;
   const c = current();
   const src = c && srcOf(c.source);
@@ -575,7 +588,10 @@ v.addEventListener('canplay', () => screenMsg(''));
 v.addEventListener('playing', () => screenMsg(''));
 v.addEventListener('waiting', () => screenMsg('Buffering…'));
 v.addEventListener('error', () => {
-  if (v.dataset.url) screenMsg(`The browser could not play this video${v.error?.message ? `: ${v.error.message}` : ''}.`);
+  if (!v.dataset.url) return;
+  screenMsg(`The browser could not play this video${v.error?.message ? `: ${v.error.message}` : ''}.`);
+  // The element hides the status; one API call tells an expired token (banner) from a bad file.
+  startSession().catch(() => {});
 });
 /** The play button is an icon; its name and tooltip say what a click does. */
 function showPlaying(playing) {
@@ -1226,6 +1242,7 @@ async function pollJobs() {
     renderBusy();
     if (finished.some((j) => j.project_id === S.id)) refreshProject();
   } catch (e) {
+    if (S.expired) return; // the banner says why; polling stops
     $('#jobStatus').textContent = e.message;
     $('#jobStatus').dataset.status = 'failed';
   }

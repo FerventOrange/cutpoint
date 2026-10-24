@@ -975,13 +975,16 @@ class Sources:
     The list depends only on ``ui/meta.json``, ``highlights.json`` and, before an analysis, the
     entries directly inside the picked folder (``find_videos`` does not recurse); a folder's mtime
     changes when one is added, removed or renamed. So a hit costs two or three stats, and any
-    change to them rebuilds it. ``SOURCES_CACHE_S`` bounds what stats cannot see (a link under a
-    source retargeted, a filesystem with coarse mtimes). Callers must not change the entries."""
+    change to them rebuilds it, as does a change to ``source_remap`` or ``source_remap_exclude``
+    (``get_config`` rereads an edited ``config.json``). ``SOURCES_CACHE_S`` bounds what stats
+    cannot see (a link under a source retargeted, a filesystem with coarse mtimes). Callers must
+    not change the entries."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        # project folder -> (built at, files stamped, their stamps, entries); oldest use first
-        self.kept: dict[str, tuple[float, list[Path], list[Any], list[dict[str, Any]]]] = {}
+        # project folder -> (built at, files stamped, their stamps, remap settings, entries);
+        # oldest use first
+        self.kept: dict[str, tuple[float, list[Path], list[Any], Any, list[dict[str, Any]]]] = {}
 
     def entries(self, p: Path) -> list[dict[str, Any]]:
         return self.listing(p)[0]
@@ -991,15 +994,18 @@ class Sources:
         key = str(p)
         with self.lock:
             hit = self.kept.get(key)
+        cfg = get_config()
+        remap = (cfg.source_remap, cfg.source_remap_exclude)
         if (
             hit is not None
             and time.monotonic() - hit[0] < SOURCES_CACHE_S
+            and hit[3] == remap
             and [_stamp(f) for f in hit[1]] == hit[2]
         ):
             with self.lock:
                 if self.kept.get(key) is hit:
                     self.kept[key] = self.kept.pop(key)  # recently used: evicted last
-            return hit[3], None
+            return hit[4], None
         # Each file is stamped before it is read: a change made meanwhile shows on the next request.
         files = [p / f"{UI_DIR}/meta.json", p / "highlights.json"]
         at, stamps = time.monotonic(), [_stamp(f) for f in files]
@@ -1013,7 +1019,7 @@ class Sources:
             self.kept.pop(key, None)
             if len(listed) > 1:  # the folder could not be listed: the next request lists again
                 return entries, str(listed[1])
-            self.kept[key] = (at, files[:n], stamps[:n], entries)
+            self.kept[key] = (at, files[:n], stamps[:n], remap, entries)
             while len(self.kept) > SOURCES_CACHE_MAX:
                 del self.kept[next(iter(self.kept))]
         return entries, None

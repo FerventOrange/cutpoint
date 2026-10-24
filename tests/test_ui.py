@@ -24,7 +24,7 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from conftest import link_dir, link_file, media_info, remap, write
+from conftest import link_dir, link_file, media_info, remap, set_config, write
 from cutpoint import cache, cli, config, ui
 
 PORT = 8765
@@ -82,6 +82,27 @@ def test_requests_must_be_loopback_and_carry_the_token(
     framed = client.get("/api/session")
     assert framed.headers["x-frame-options"] == "DENY"
     assert client.get("/api/projects").json() == {"projects": []}
+
+
+def test_a_refused_request_says_whether_the_token_or_the_host_was_wrong(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Contract pin: web/api.js TOKEN_DETAIL must match the token detail below exactly; it shows
+    the "server restarted" banner and stops polling on it, and must not for the host detail."""
+    token_detail = {"detail": "missing or wrong session token"}
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    media = client.get(f"/api/projects/{pid}").json()["sources"][0]["url"]
+    wrong_t = media.split("?")[0] + "?t=stale"
+    for wrong in ("", "stale"):
+        bad = {"X-Cutpoint-Token": wrong}
+        for url in ("/api/session", f"/api/projects/{pid}", wrong_t):
+            res = client.get(url, headers=bad)
+            assert (res.status_code, res.json()) == (403, token_detail), url
+    host_detail = {"detail": "forbidden host or origin"}
+    res = client.get("/api/session", headers={"Host": "evil.example:8765"})
+    assert (res.status_code, res.json()) == (403, host_detail)
+    res = client.get("/api/session", headers={"Origin": "http://evil.example"})
+    assert (res.status_code, res.json()) == (403, host_detail)
 
 
 def test_project_ids_cannot_leave_the_projects_folder(client: TestClient, tmp_path: Path) -> None:
@@ -2560,3 +2581,33 @@ def test_an_unanalyzed_folder_missing_in_place_is_listed_at_its_source_remap_tar
     src = data["sources"][0]
     client.post(f"/api/projects/{pid}/sources/{src['id']}/prepare")
     assert client.get(src["url"]).content == b"0123456789"
+
+
+def test_a_source_remap_change_rebuilds_the_list_at_once_and_other_edits_keep_it(
+    client: TestClient, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builds: list[int] = []
+    real = ui.source_entries
+
+    def counting(*args, **kwargs):
+        builds.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ui, "source_entries", counting)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+
+    def after(**data) -> int:
+        """List sources once under this config.json; how many rebuilds that took."""
+        set_config(home, **data)
+        builds.clear()
+        source_names(client, pid)
+        return len(builds)
+
+    assert after() == 1  # first listing
+    assert after() == 0  # re-saved without a change
+    assert after(source_remap={"/old": "/new"}) == 1  # remap added
+    assert after(source_remap={"/old": "/new"}) == 0  # same values re-saved
+    assert after(source_remap={"/old": "/new"}, unrelated=1) == 0  # other key changed
+    assert after(source_remap={"/old": "/new"}, source_remap_exclude=["*skip*"]) == 1  # exclude
+    assert after(source_remap={"/old": "/new"}, source_remap_exclude=["*skip*"]) == 0
+    assert after(source_remap={"/old": "/other"}, source_remap_exclude=["*skip*"]) == 1  # retarget
