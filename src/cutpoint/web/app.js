@@ -478,9 +478,15 @@ function ensureVideo(seekC) {
     return;
   }
   if (src.status === 'unknown') {
-    // not probed yet (the project view never probes): preparing probes it and refreshes
-    if (!prepareRequested.has(`${S.id}:${src.path}`)) prepareSource(src);
-    else S.prepTimer = setTimeout(refreshProject, 2000);
+    // not probed yet (the project view never probes): preparing probes it and refreshes. Still
+    // unknown after an earlier prepare (the file changed, or the server restarted): prepare again.
+    const k = `${S.id}:${src.path}`;
+    if (!prepareRequested.has(k)) prepareSource(src);
+    else
+      S.prepTimer = setTimeout(() => {
+        prepareRequested.delete(k);
+        prepareSource(src);
+      }, 2000);
     return drop('Loading video…');
   }
   if (src.status === 'needs-proxy' || src.status === 'preparing') {
