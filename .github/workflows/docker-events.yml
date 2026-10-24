@@ -20,6 +20,4 @@ jobs:
           load: true
           tags: cutpoint:events
           build-args: INSTALL_EVENTS=true
-          cache-from: type=gha,scope=events
-          cache-to: type=gha,scope=events,mode=max
-      - run: docker run --rm --user 4242:4242 --entrypoint /app/.venv/bin/python cutpoint:events -c "import librosa, torch"
+      - run: docker run --rm --user 4242:4242 --entrypoint /app/.venv/bin/python cutpoint:events -c "import librosa.core, librosa.beat, torch"
