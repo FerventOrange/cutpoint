@@ -186,7 +186,10 @@ Game-HUD OCR regions come from a preset, looked up in this order:
 
 1. `<project>\hud_presets\<game>.json`
 2. `<CUTPOINT_HOME>\presets\<game>.json` (region discovery writes here)
-3. bundled presets in `src/cutpoint/events/presets/` (`wt.json`, War Thunder)
-4. built in: `r6` (Rainbow Six Siege)
+3. bundled presets in `src/cutpoint/events/presets/` (`r6.json`, Rainbow Six Siege; `wt.json`, War Thunder)
+
+A file named like a bundled preset in 1 or 2 overrides it. To change a bundled preset, copy it
+to one of those folders and edit the copy. The `"builtin"` key is only read in bundled presets;
+elsewhere it is ignored with a WARNING.
 
 See [game streams](workflows/game-streams.md).
