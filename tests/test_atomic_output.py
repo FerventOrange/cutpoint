@@ -268,9 +268,9 @@ class _HardKill(BaseException):
     """Stands in for taskkill /F: nothing after it runs, the folder stays as it is."""
 
 
-@pytest.mark.usefixtures("no_sleep")
 def _setup(home: Path, monkeypatch) -> Path:
     """Project with three old clips, a manifest, user notes and a stubbed encoder."""
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda _s: None)
     project = home / "projects" / "p"
     src = project / "src.mp4"
     clips_dir = project / "clips"
