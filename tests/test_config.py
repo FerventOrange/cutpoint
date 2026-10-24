@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,6 +144,71 @@ def test_resolve_projects_dir_prefers_env_then_data_then_default(tmp_path, monke
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(tmp_path / "env"))
     got = config.resolve_projects_dir({"projects_dir": str(tmp_path / "cfg")})
     assert got == tmp_path / "env"
+
+
+# -- source_remap_exclude with mapped drives (#193) -------------------------------------
+
+
+def _fake_unc(path: str) -> str:
+    """``config.unc_path`` with ``Q:`` mapped to ``\\\\nas\\share`` (no real drive, any OS)."""
+    if re.match(r"^[Qq]:(?:[\\/]|$)", path):
+        return r"\\nas\share" + path[2:].replace("/", "\\")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("exclude", "typed", "excluded"),
+    [
+        (r"Q:\Footage\skip\*", r"\\nas\share\Footage\skip\x.mp4", True),
+        (r"\\nas\share\Footage\skip\*", r"Q:\Footage\skip\x.mp4", True),
+        ("Q:/Footage/skip/*", r"\\nas\share\Footage\skip\x.mp4", True),
+        (r"q:\footage\SKIP\*", r"\\NAS\share\Footage\skip\x.mp4", True),
+        (r"Q:\Footage\skip\*", r"Q:\Footage\skip\x.mp4", True),
+        (r"\\nas\share\Footage\skip\*", r"\\nas\share\Footage\skip\x.mp4", True),
+        ("*skip*", r"\\nas\share\Footage\skip.mp4", True),
+        (r"Q:\Footage\skip\*", r"\\nas\share\Footage\keep\x.mp4", False),
+        (r"Q:\Footage\skip\*", r"\\other\share\Footage\skip\x.mp4", False),
+        (r"R:\Footage\skip\*", r"\\nas\share\Footage\skip\x.mp4", False),
+        (r"R:\Footage\skip\*", r"R:\Footage\skip\x.mp4", True),
+    ],
+    ids=[
+        "drive-glob-unc-source",
+        "unc-glob-drive-source",
+        "drive-glob-forward-slashes",
+        "other-case",
+        "drive-glob-drive-source",
+        "unc-glob-unc-source",
+        "name-glob",
+        "other-folder",
+        "other-share",
+        "unmapped-drive-not-converted",
+        "unmapped-drive-as-before",
+    ],
+)
+def test_remap_exclude_matches_mapped_drive_and_unc_spellings(
+    home, monkeypatch, exclude, typed, excluded
+):
+    """#193: a ``Q:`` exclude also excludes the ``\\\\server\\share`` spelling, and back."""
+    monkeypatch.setattr(config, "unc_path", _fake_unc)
+    set_config(home, source_remap_exclude=[exclude])
+    assert config._remap_excluded(typed) is excluded
+
+
+@pytest.mark.parametrize("exclude", [[], [r"Q:\Footage\skip\*"]], ids=["no-exclude", "drive-glob"])
+def test_remap_source_keeps_a_unc_source_excluded_by_a_drive_glob(
+    home, tmp_path, monkeypatch, exclude
+):
+    """#193: a UNC-recorded source excluded in drive form is read where it is, not remapped."""
+    monkeypatch.setattr(config, "unc_path", _fake_unc)
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.windows_norm(p),))
+    copy = write(tmp_path / "copy" / "skip" / "x.mp4")
+    set_config(
+        home,
+        source_remap={r"\\nas\share\Footage": str(tmp_path / "copy")},
+        source_remap_exclude=exclude,
+    )
+    typed = r"\\nas\share\Footage\skip\x.mp4"
+    assert config.remap_source(typed) == (Path(typed) if exclude else copy)
 
 
 # -- wrongly typed values and file encodings, through the CLI ---------------------------
