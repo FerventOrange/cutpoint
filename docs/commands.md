@@ -341,8 +341,10 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
   or a clip locked by another program, leaves the original clips as they were. The same holds for
   `--out DIR --force` into a non-empty `DIR`: `DIR` is unchanged unless every clip was exported.
-  Files in `DIR` that the run does not write stay; a WARNING names `.mp4` clips left there that
-  were not re-exported, because `assemble` will include them. An `.mp4` in `DIR` that `DIR`'s
+  As with `clips --force`, only the clips and `.srt` files `DIR`'s `manifest.json` lists are
+  replaced, and listed ones this run does not re-export (deleted from the input folder during
+  review) are removed with their `.srt`. Other files in `DIR` stay; a WARNING names `.mp4`
+  clips left there, because `assemble` will include them. An `.mp4` in `DIR` that `DIR`'s
   `manifest.json` does not list and that has the name of a clip to re-export stops the run
   before any export, as with `clips --force`. `--out DIR --force` is refused
   before any export when a non-empty `DIR` is a drive root, a mount point or a bind mount, and

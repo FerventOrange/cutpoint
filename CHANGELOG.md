@@ -99,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
   new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
   replaced or removed by a later run. An `.srt` the old manifest does not list stays (#239).
+- `extend --out DIR --force` removes a clip that `DIR`'s manifest lists but this run does not
+  re-export (deleted from the input folder during review), with its `.srt`, as `clips --force`
+  does. Before, both stayed in `DIR` but not in the new manifest, so the clip was reported as
+  added by hand, `assemble` included it, and no later run replaced or removed the `.srt`.
+  Clips and `.srt` files the old manifest does not list still stay.
 - `assemble --transition fade` rounds the crossfade to whole frames (of the first clip's
   rate) and uses that length for the video, the audio and the cut offsets in `final.srt`.
   xfade used whole frames while the audio and subtitles used the exact fade: 0.25 s at
