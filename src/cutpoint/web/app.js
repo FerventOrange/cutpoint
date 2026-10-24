@@ -349,7 +349,7 @@ function trimField(which, label) {
     h('div', { class: 'stepper' },
       h('button', { type: 'button', class: 'btn small', 'aria-label': `-0.5 s, ${label} earlier by half a second`, onclick: nudge(-0.5), text: '-0.5 s' }),
       h('button', {
-        type: 'button', class: 'btn small accent', 'aria-label': `Use playhead as ${label}`, title: `Use playhead as ${label} (${key})`,
+        type: 'button', class: 'btn small accent', 'aria-label': `Use playhead as ${label}`, title: `Use playhead as ${label} "${key}"`,
         'aria-keyshortcuts': key, onclick: () => setRange(which, v.currentTime), text: 'Use playhead',
       }),
       h('button', { type: 'button', class: 'btn small', 'aria-label': `+0.5 s, ${label} later by half a second`, onclick: nudge(0.5), text: '+0.5 s' })),
