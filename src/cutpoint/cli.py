@@ -37,7 +37,7 @@ from cutpoint.mix import EXCLUDE_FILE, load_exclusions, parse_quotas, run_mix
 from cutpoint.planning import Padding
 from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_names
-from cutpoint.utils import input_name, parse_size, positive_float, positive_int
+from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
 
 logger = logging.getLogger("cutpoint")
 
@@ -547,7 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an.add_argument(
         "--vision-top",
-        type=int,
+        type=positive_int,
         default=None,
         metavar="N",
         help="top candidates sent to vision (default: 1 per 2 min of footage, min 10, max 60)",
@@ -555,7 +555,9 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
     an.add_argument("--no-scenes", action="store_true", help="skip scene detection")
-    an.add_argument("--max-candidates", type=int, help="per source, pre-merge (default: auto)")
+    an.add_argument(
+        "--max-candidates", type=positive_int, help="per source, pre-merge (default: auto)"
+    )
     an.add_argument(
         "--ollama-url",
         help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
@@ -569,7 +571,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an.add_argument(
         "--must-include-crash",
-        type=float,
+        type=unit_float,
         metavar="CONF",
         help="ski: always clip crashes from crashes.json (cutpoint crashes) with at "
         "least this confidence, 0-1 (default: style, 0.6 for ski; 0 = off)",
