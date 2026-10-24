@@ -78,8 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `cutpoint ui`: the assemble job picks a fresh final name when `final.srt` already exists too,
-  so it no longer overwrites it (#224).
+- `cutpoint ui`: the assemble job also picks a fresh final name when that final's `.srt` (for
+  example `final_ui_1.srt`) already exists, so it no longer overwrites it (#224).
 - `cutpoint ui`: a cancelled job shows "stopping" (status `cancelling` in `/api/jobs`) until its
   process exits, and Cancel is disabled meanwhile (#225).
 - `cutpoint ui` has a favicon (#226).
