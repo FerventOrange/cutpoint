@@ -123,10 +123,11 @@ index:
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
 ```
 
+On an existing tool install, add `--reinstall`.
+
 Check it with `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
 (`True` means the GPU is used). On Linux:
 `"$(uv tool dir)/cutpoint/bin/python" -c "import torch; print(torch.cuda.is_available())"`. See [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md#events-is-very-slow).
-Add `--reinstall` when changing an existing tool install.
 
 The repository also has wrappers that use `.venv` without activating it: `.\cutpoint <command>`
 (PowerShell) and `cutpoint <command>` from cmd. If PowerShell blocks scripts, use
@@ -195,7 +196,7 @@ docker run --rm --mount source=cutpoint-data,target=/data cutpoint:events setup
 
 If you run with `--user` and a bind mount, pass the same `--user` and
 `--mount type=bind,source="$HOME/cutpoint-data",target=/data` flags to `setup`, so the models land
-in the directory you actually mount. The models are a large download (see [Download models](#download-models-only-for-cutpoint-events)), and the Python dependencies are large (they include CUDA libraries
+in the directory you actually mount. The models are a large download (see [Download models](#download-models-only-for-cutpoint-events)), and so are the Python dependencies (they include CUDA libraries
 even though the container runs on the CPU). Then run the UI as above with `cutpoint:events`.
 
 ## First run
