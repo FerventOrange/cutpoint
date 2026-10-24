@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import hard_link, link_file, media_info, messages, remap
+from conftest import hard_link, link_file, media_info, messages, remap, write
 from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning
 from cutpoint.ffmpeg_utils import FFmpegError
 
@@ -752,6 +752,58 @@ def test_rollback_with_one_stuck_original_restores_the_rest_and_finishes_next_ru
     _only_original_folders(project)
 
 
+def test_swap_in_moves_a_file_named_in_two_cases_once(tmp_path, monkeypatch):
+    """``001_A.SRT`` (a hand-edited manifest) and ``001_a.srt`` are one file on a
+    case-insensitive file system: it is moved to the backup once, not twice."""
+    dst = tmp_path / "clips"
+    write(dst / "001_a.srt", "old")
+    if not (dst / "001_A.SRT").exists():
+        pytest.skip("case-sensitive file system")
+    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
+    write(dst / "001_a.mp4", "old")
+    new = tmp_path / "staged"
+    write(new / "001_a.mp4", "new")
+
+    ffmpeg_utils.swap_in(new, dst, ["001_A.SRT", "001_a.srt"])
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging left
+    assert sorted(p.name for p in dst.iterdir()) == ["001_a.mp4"]
+    assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "new"
+
+
+def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacement(
+    tmp_path, monkeypatch
+):
+    """Old ``001_A.mp4`` (a hand-edited manifest) and new ``001_a.mp4`` are one file on a
+    case-insensitive file system: undoing the swap puts the original back and does not then
+    delete it as a new-only file."""
+    dst = tmp_path / "clips"
+    write(dst / "001_a.mp4", "old")
+    if not (dst / "001_A.MP4").exists():
+        pytest.skip("case-sensitive file system")
+    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
+    write(dst / "manifest.json", "old manifest")
+    new = tmp_path / "staged"
+    write(new / "001_a.mp4", "new")
+    write(new / "manifest.json", "new manifest")
+    real = ffmpeg_utils.retry_locked
+
+    def locked_manifest(op, path, action, locked=None):
+        moving_in = getattr(getattr(op, "func", None), "__self__", None) == new / path.name
+        if action == "replace" and path.name == "manifest.json" and moving_in:
+            raise PermissionError("locked")
+        return real(op, path, action, locked)
+
+    monkeypatch.setattr(ffmpeg_utils, "retry_locked", locked_manifest)
+
+    with pytest.raises(PermissionError):
+        ffmpeg_utils.swap_in(new, dst, ["001_A.mp4", "manifest.json"])
+
+    assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "old"
+    assert (dst / "manifest.json").read_text(encoding="utf-8") == "old manifest"
+    assert sorted(p.name.lower() for p in dst.iterdir()) == ["001_a.mp4", "manifest.json"]
+
+
 def test_clips_force_with_dot_as_out_inside_the_clips_folder(monkeypatch, home):
     project = _setup(home, monkeypatch)
     clips_dir = project / "clips"
@@ -997,6 +1049,28 @@ def test_clips_force_keeps_an_old_clip_that_is_this_runs_source(monkeypatch, hom
     warned = _warnings(caplog)
     assert "reads as a source" in warned
     assert "003_c.mp4" in warned
+
+
+@pytest.mark.parametrize("kind", ["old-clip", "hard-link"])
+def test_extend_out_force_keeps_a_listed_clip_that_is_this_runs_source(monkeypatch, home, kind):
+    """DIR's manifest lists 003_c, which this run does not re-export but reads as a source:
+    it is kept, not removed as a listed clip the run does not write."""
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    out = project / "out"
+    shutil.copytree(clips_dir, out)
+    (clips_dir / "003_c.mp4").unlink()  # rejected during review: not re-exported
+    kept = out / "003_c.mp4"
+    if kind == "old-clip":
+        _point_manifest_at(clips_dir, "001_a.mp4", kept)
+    else:
+        kept.unlink()
+        hard_link(kept, project / "src.mp4")  # every clip's source
+    expected = kept.read_bytes()
+    argv = ["extend", str(clips_dir), "--seconds", "1", "--no-speech-aware", "--out", str(out)]
+    assert cli.main([*argv, "--force"]) == 0
+    assert kept.read_bytes() == expected
+    assert (out / "001_a.mp4").read_bytes() == b"new"
 
 
 def test_clips_force_keeps_a_clip_reached_through_source_remap(monkeypatch, home, caplog, tmp_path):

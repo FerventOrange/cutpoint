@@ -47,6 +47,7 @@ from cutpoint.ffmpeg_utils import (
     output_dir,
     probe,
     recover_swap,
+    same_file,
     source_keys,
     staged_dir,
     swap_in,
@@ -254,7 +255,9 @@ def extend_clips(
         padding: Seconds to add before and after each clip.
         out_dir: Output folder (default :func:`default_out_dir`, or
             ``<clips_dir>_speech`` without padding).
-        force: Allow writing into a non-empty folder, including ``clips_dir``.
+        force: Allow writing into a non-empty folder, including ``clips_dir``. Like
+            ``clips --force``, only the clips and ``.srt`` files its manifest.json lists are
+            replaced; listed ones this run does not write are removed.
         speech: Speech-aware boundary settings (default: on, 8 s / 5 s caps);
             entries with ``"speech_aware": false`` are left alone, and an
             entry's ``speech_max_extend`` / ``speech_max_lead`` replace the
@@ -375,16 +378,25 @@ def extend_clips(
             pano_files = pano.inputs(e["source"], mode) if pano and e.get("pano") else []
             reads.append((e["source"], plan.src, pano_files))
         names = [p.name for p in plans]
-        check_not_sources(out_dir, names, source_keys(reads))
-        # Like clips --force: never replace a clip or .srt that out_dir's manifest.json does
-        # not list; the .srt files it lists for the clips written here are replaced, and those
-        # of clips deleted during review removed (the new manifest.json no longer lists them).
+        sources = source_keys(reads)
+        check_not_sources(out_dir, names, sources)
+        # Like clips --force: replace only the clips and .srt files out_dir's manifest.json
+        # lists, never a file this run reads. Listed ones this run does not write (a clip not
+        # re-exported, the .srt of a clip deleted during review) are removed, as the new
+        # manifest.json no longer lists them; unlisted ones are never replaced. Only a name
+        # spelled on disk as listed: a clip renamed in case only (skipped above as having no
+        # entry) still matches on a case-insensitive file system and must stay.
         listed = srt.listed_files(out_dir)
         srt.check_unlisted_clips(out_dir, names, listed)
         subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed))
-        ours = {path_key(n) for n in listed or []}
-        old_srts = [s for n in names if path_key(s := Path(n).with_suffix(".srt").name) in ours]
-        old_srts += srt.orphaned_srts(out_dir)
+        present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
+        old_files = [
+            n
+            for n in dict.fromkeys(listed or [])
+            if n in present
+            and ((f := out_dir / n).is_file() or f.is_symlink())
+            and not same_file(f, sources)
+        ]
         entries = []
         reused = 0
         for plan in plans:
@@ -487,7 +499,7 @@ def extend_clips(
             },
         )
         if staged:  # all or nothing; only the clips and .srt files named above are replaced
-            swap_in(work, out_dir, old_srts)
+            swap_in(work, out_dir, old_files)
     if staged and not in_place:
         written = {path_key(e["file"]) for e in entries}
         kept = [p for p in clip_files(out_dir) if path_key(p.name) not in written]
