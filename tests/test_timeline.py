@@ -101,6 +101,7 @@ def test_fcpxml_fade_has_cross_dissolves_at_the_cuts_and_matching_duration(tmp_p
 
 @pytest.mark.parametrize("fade", [0.0, FADE])
 def test_otio_clip_without_audio_is_a_gap_in_line_with_video(tmp_path, fade):
+    """A clip without audio was left out of A1, so later audio started early with cuts too (#246)."""
     clips = _clips("1011")
     tl = _read_otio(write_otio(clips, tmp_path / "a.otio", "a", fade))
     v1, a1 = tl.tracks
