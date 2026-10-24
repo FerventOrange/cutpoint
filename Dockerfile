@@ -1,11 +1,16 @@
-FROM ubuntu:24.04
+# uv, pinned by digest; a FROM line so Dependabot can propose updates.
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
+
+# ubuntu 24.04, pinned by multi-arch index digest so a rebuild at the same commit starts from the same base.
+# Dependabot (docker ecosystem) proposes updates.
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-# uv 0.13.5, pinned by digest so a rebuild at the same commit installs the same uv.
-COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /uvx /usr/local/bin/
+# uv from the first stage.
+COPY --from=uv /uv /uvx /usr/local/bin/
 # Managed Python lives outside /root so the non-root user can run the venv.
 ENV UV_LINK_MODE=copy UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
