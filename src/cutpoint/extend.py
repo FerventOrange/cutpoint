@@ -283,7 +283,8 @@ def extend_clips(
     Raises:
         FileNotFoundError: If ``clips_dir`` or its manifest is missing.
         FileExistsError: If ``out_dir`` is non-empty (or is ``clips_dir``)
-            and ``force`` is False.
+            and ``force`` is False, or a clip to re-export has the name of an ``.mp4``
+            that ``out_dir``'s manifest.json does not list (before any export).
         ValueError: If nothing could be re-exported.
     """
     recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
