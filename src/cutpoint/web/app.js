@@ -283,8 +283,10 @@ function renderUnanalyzed(el, n, error) {
   el.dataset.n = state;
   setEmpty(el,
     folderArt(),
-    h('p', { class: `fresh-count${n ? '' : ' none'}` },
-      error || (n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory')),
+    error
+      ? h('p', { class: 'fresh-error', text: error })
+      : h('p', { class: `fresh-count${n ? '' : ' none'}` },
+        n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory'),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', { text: 'Analyze footage to transcribe audio and rank the strongest moments.' }),
     h('button', {
@@ -493,7 +495,14 @@ function ensureVideo(seekC) {
     return drop('Loading video…');
   }
   if (src.status === 'needs-proxy' || src.status === 'preparing') {
-    if (src.status === 'needs-proxy' && !prepareRequested.has(`${S.id}:${src.path}`)) prepareSource(src);
+    const k = `${S.id}:${src.path}`;
+    if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src);
+    else if (src.status === 'needs-proxy')
+      // requested before, but not building (the server restarted): prepare again
+      S.prepTimer = setTimeout(() => {
+        prepareRequested.delete(k);
+        prepareSource(src);
+      }, 2000);
     else S.prepTimer = setTimeout(refreshProject, 2000);
     return drop('Preparing a browser-playable preview of this source. It will start when ready.');
   }
