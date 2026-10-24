@@ -27,19 +27,9 @@ CLIP_HF_REPO = "timm/vit_large_patch14_clip_224.openai"
 DETECTOR_CKPT = "fasterrcnn_resnet50_fpn_v2_coco-dd69338a.pth"
 
 
-def models_dir() -> Path:
-    """Model weights root (``CUTPOINT_HOME/models`` unless overridden)."""
-    return _paths.models_dir()
-
-
-def tools_dir() -> Path:
-    """External tools root (``CUTPOINT_HOME/tools`` unless overridden)."""
-    return _paths.tools_dir()
-
-
 def panns_dir() -> Path:
     """PANNs checkpoint and label CSV."""
-    return models_dir() / "panns"
+    return _paths.models_dir() / "panns"
 
 
 def panns_ckpt() -> Path:
@@ -54,7 +44,7 @@ def panns_labels() -> Path:
 
 def llm_dir() -> Path:
     """GGUF language models."""
-    return models_dir() / "llm"
+    return _paths.models_dir() / "llm"
 
 
 def omni_model() -> Path:
@@ -69,17 +59,17 @@ def omni_mmproj() -> Path:
 
 def llama_cache() -> Path:
     """``LLAMA_CACHE`` for ``-hf`` fallback loading."""
-    return models_dir() / "llama-cache"
+    return _paths.models_dir() / "llama-cache"
 
 
 def llama_dir() -> Path:
     """llama.cpp install folder."""
-    return tools_dir() / "llama.cpp"
+    return _paths.tools_dir() / "llama.cpp"
 
 
 def clip_dir() -> Path:
     """open_clip / Hugging Face download cache (CLIP ViT-L/14)."""
-    return models_dir() / "clip"
+    return _paths.models_dir() / "clip"
 
 
 def clip_weights() -> Path:
@@ -94,7 +84,7 @@ def clip_weights() -> Path:
 
 def torch_home() -> Path:
     """``TORCH_HOME`` for the torchvision detector weights."""
-    return models_dir() / "torch"
+    return _paths.models_dir() / "torch"
 
 
 # The TORCH_HOME value Cutpoint last set ({"value": path}); see apply_torch_home.
@@ -137,12 +127,12 @@ def detector_weights() -> Path:
 
 def aesthetic_head() -> Path:
     """LAION improved-aesthetic-predictor head."""
-    return models_dir() / "aesthetic" / "sac+logos+ava1-l14-linearMSE.pth"
+    return _paths.models_dir() / "aesthetic" / "sac+logos+ava1-l14-linearMSE.pth"
 
 
 def silero_vad() -> Path:
     """Silero VAD v5 ONNX model."""
-    return models_dir() / "silero" / "silero_vad.onnx"
+    return _paths.models_dir() / "silero" / "silero_vad.onnx"
 
 
 def llama_server_exe() -> Path:

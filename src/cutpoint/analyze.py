@@ -91,9 +91,14 @@ class Candidate:
 
 
 # --------------------------------------------------------------------------- signals
-def _gauss_smooth(x: np.ndarray, sigma_s: float) -> np.ndarray:
+def _gauss_kernel(sigma_s: float) -> tuple[int, np.ndarray]:
+    """Unnormalised Gaussian kernel over +-3 sigma at the analysis rate: ``(radius, k)``."""
     radius = int(3 * sigma_s / DT)
-    k = np.exp(-0.5 * (np.arange(-radius, radius + 1) * DT / sigma_s) ** 2)
+    return radius, np.exp(-0.5 * (np.arange(-radius, radius + 1) * DT / sigma_s) ** 2)
+
+
+def _gauss_smooth(x: np.ndarray, sigma_s: float) -> np.ndarray:
+    _, k = _gauss_kernel(sigma_s)
     return conv_same(x, k / k.sum())
 
 
@@ -104,8 +109,7 @@ def _impulse_signal(n: int, events: list[tuple[float, float]], sigma_s: float = 
         i = int(t / DT)
         if 0 <= i < n:
             x[i] += w
-    radius = int(3 * sigma_s / DT)
-    k = np.exp(-0.5 * (np.arange(-radius, radius + 1) * DT / sigma_s) ** 2)
+    _, k = _gauss_kernel(sigma_s)
     return 1.0 - np.exp(-conv_same(x, k))
 
 
@@ -165,8 +169,7 @@ def keyword_signal(
     """
     if cap is None:
         return _impulse_signal(n, [(t, w) for t, w, _ in hits], sigma_s)
-    radius = int(3 * sigma_s / DT)
-    k = np.exp(-0.5 * (np.arange(-radius, radius + 1) * DT / sigma_s) ** 2)
+    radius, k = _gauss_kernel(sigma_s)
     total, strongest = np.zeros(n), np.zeros(n)
     for t, w, _ in hits:
         i = int(t / DT)

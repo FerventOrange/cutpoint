@@ -434,26 +434,6 @@ def orientation(
 
 
 # --------------------------------------------------------------------------- projection
-def dfisheye_pixel(
-    d: np.ndarray, width: int, height: int, fov: float = DFISHEYE_FOV
-) -> tuple[np.ndarray, np.ndarray]:
-    """Pixel coordinates in a side-by-side dual fisheye for camera rays ``d`` (..., 3).
-
-    Mirrors ``v360``'s ``input=dfisheye`` (equidistant, ``ih_fov=iv_fov=fov``):
-    +z rays land in the right half, -z rays in the left half (x mirrored).
-    """
-    x, y, z = d[..., 0], d[..., 1], d[..., 2]
-    h = np.hypot(x, y)
-    h = np.where(h > 0, h, 1.0)
-    theta = np.arccos(np.clip(np.abs(z), 0, 1))
-    r = theta / math.radians(fov / 2)
-    ew = width / 2
-    uf = (r * x / h * 0.5 + 0.5) * ew
-    vf = (r * y / h * 0.5 + 0.5) * height
-    u = np.where(z >= 0, ew + uf, ew - uf)
-    return u, vf
-
-
 def flat_rays(width: int, height: int, h_fov: float, v_fov: float) -> np.ndarray:
     """Unit rays ``(H, W, 3)`` of a rectilinear view (x right, y down, z forward)."""
     tx, ty = math.tan(math.radians(h_fov) / 2), math.tan(math.radians(v_fov) / 2)
@@ -462,14 +442,6 @@ def flat_rays(width: int, height: int, h_fov: float, v_fov: float) -> np.ndarray
     x, y = np.meshgrid(xs, ys)
     d = np.stack([x, y, np.ones_like(x)], -1)
     return d / np.linalg.norm(d, axis=-1, keepdims=True)
-
-
-def equirect_rays(width: int, height: int, yaw0: float = 0.0) -> np.ndarray:
-    """Unit rays ``(H, W, 3)`` of an equirect (``v360`` layout; centre column = ``yaw0``)."""
-    lon = ((2 * np.arange(width) + 1) / width - 1) * math.pi + math.radians(yaw0)
-    lat = ((2 * np.arange(height) + 1) / height - 1) * math.pi / 2  # + = down
-    lo, la = np.meshgrid(lon, lat)
-    return np.stack([np.cos(la) * np.sin(lo), np.sin(la), np.cos(la) * np.cos(lo)], -1)
 
 
 def ray_yaw_pitch(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

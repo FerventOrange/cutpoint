@@ -36,6 +36,7 @@ from cutpoint.mix import EXCLUDE_FILE, load_exclusions, parse_quotas, run_mix
 from cutpoint.planning import Padding
 from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_names
+from cutpoint.utils import parse_size, positive_float
 
 logger = logging.getLogger("cutpoint")
 
@@ -136,26 +137,6 @@ def _cmd_clips(a: argparse.Namespace) -> None:
         pano_cmd_every=a.pano_cmd_every,
         size=a.size,
     )
-
-
-def _parse_size(text: str) -> tuple[int, int]:
-    """Parse ``WxH`` (e.g. ``1920x1080``) into ``(width, height)``."""
-    try:
-        w, h = (int(x) for x in text.lower().split("x"))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{text!r}: expected WxH, e.g. 1920x1080") from exc
-    return w, h
-
-
-def _positive_float(text: str) -> float:
-    """argparse type: a number greater than 0."""
-    try:
-        value = float(text)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{text!r}: expected a number") from exc
-    if not value > 0:
-        raise argparse.ArgumentTypeError(f"{text!r}: must be greater than 0")
-    return value
 
 
 def _cmd_extend(a: argparse.Namespace) -> None:
@@ -569,7 +550,7 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--vertical", action="store_true", help="9:16 1080x1920 center crop")
     cl.add_argument(
         "--size",
-        type=_parse_size,
+        type=parse_size,
         metavar="WxH",
         help="output resolution, e.g. 1920x1080 (default: the largest source's, "
         "capped at 1080p); ignored with --vertical",
@@ -874,7 +855,7 @@ def build_parser() -> argparse.ArgumentParser:
     mx.add_argument("project", help="ski-analysed project (bare name = projects folder)")
     mx.add_argument(
         "--target",
-        type=_positive_float,
+        type=positive_float,
         default=240.0,
         metavar="S",
         help="edit length (default 240)",

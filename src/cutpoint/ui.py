@@ -878,8 +878,7 @@ def source_folder(p: Path) -> Path | None:
             is_file = x.is_file() or (not x.exists() and x.suffix.lower() in VIDEO_EXTS)
             folders = [x.parent if is_file else x]
         else:
-            hl = _load(p, "highlights.json")
-            entries = source_entries(p, hl if isinstance(hl, dict) else None)
+            entries = source_entries(p, _highlights(p))
             folders = [remap_source(Path(s["path"])).parent for s in entries]
         try:
             folder = Path(os.path.commonpath(folders)) if folders else None
@@ -979,6 +978,12 @@ def _inside(p: Path, name: str) -> bool:
 def _load(p: Path, name: str) -> Any | None:
     """The project file ``p / name`` as JSON; None (as if missing) when a link takes it outside."""
     return cache.load_json(p / name) if _inside(p, name) else None
+
+
+def _highlights(p: Path) -> dict[str, Any] | None:
+    """The project's ``highlights.json``; None when missing, outside or not an object."""
+    hl = _load(p, "highlights.json")
+    return hl if isinstance(hl, dict) else None
 
 
 def _own(p: Path, name: str) -> Path:
@@ -1242,8 +1247,7 @@ def create_app(port: int) -> FastAPI:
     def get_project(pid: str):
         p = project_dir(pid)
         meta = read_meta(p)
-        hl = _load(p, "highlights.json")
-        hl = hl if isinstance(hl, dict) else None
+        hl = _highlights(p)
         review = _load(p, f"{UI_DIR}/review.json")
         exp = current_export(p)
         manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
@@ -1277,10 +1281,7 @@ def create_app(port: int) -> FastAPI:
     @owned.put("/projects/{pid}/review")
     def put_review(pid: str, body: dict[str, Any]):
         p = project_dir(pid)
-        hl = _load(p, "highlights.json")
-        segments = validate_segments(
-            body.get("segments"), source_entries(p, hl if isinstance(hl, dict) else None), media
-        )
+        segments = validate_segments(body.get("segments"), source_entries(p, _highlights(p)), media)
         review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
         file = _own(p, f"{UI_DIR}/review.json")
         _ui_folder(p)  # a command-line project has no ui folder yet
@@ -1323,8 +1324,7 @@ def create_app(port: int) -> FastAPI:
         p = project_dir(pid)
         action = body.get("action")
         meta = read_meta(p)
-        hl = _load(p, "highlights.json")
-        hl = hl if isinstance(hl, dict) else None
+        hl = _highlights(p)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         on_success: Callable[[], None] | None = None
         prepare: Callable[[], None] | None = None
@@ -1468,11 +1468,7 @@ def create_app(port: int) -> FastAPI:
 
     def find_source(pid: str, sid: str) -> tuple[Path, dict[str, Any]]:
         p = project_dir(pid)
-        hl = _load(p, "highlights.json")
-        entry = next(
-            (s for s in source_entries(p, hl if isinstance(hl, dict) else None) if s["id"] == sid),
-            None,
-        )
+        entry = next((s for s in source_entries(p, _highlights(p)) if s["id"] == sid), None)
         if entry is None:
             raise bad("unknown source", 404)
         return p, entry
@@ -1494,8 +1490,7 @@ def create_app(port: int) -> FastAPI:
             raise bad("the server is stopping", 503)
         p, entry = find_source(pid, sid)
         if p not in media.frames_pruned:
-            hl = _load(p, "highlights.json")
-            sources = source_entries(p, hl if isinstance(hl, dict) else None)
+            sources = source_entries(p, _highlights(p))
             media.prune_frames(p, [s["path"] for s in sources])
         try:
             file = media.frame(p, entry["path"], at, min(max(w, FRAME_MIN_W), FRAME_MAX_W))

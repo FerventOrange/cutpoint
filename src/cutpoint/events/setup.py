@@ -60,6 +60,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from cutpoint import paths as cutpoint_paths
 from cutpoint.events import paths
 from cutpoint.extras import install_hint
 
@@ -503,7 +504,7 @@ def install_llama(force: bool = False) -> None:
         logger.info("llama.cpp in %s is for another platform/backend (%s); replacing", llama, have)
     _clean_leftovers(llama, staging, old, strict=True)
     staging.mkdir(parents=True)
-    dl_root = paths.tools_dir() / "_downloads"
+    dl_root = cutpoint_paths.tools_dir() / "_downloads"
     try:
         for key, (url, size, sha256) in assets.items():
             name = url.rsplit("/", 1)[-1]
@@ -675,8 +676,8 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
 
 def run_args(args: argparse.Namespace) -> int:
     """Run the setup steps selected in ``args``; returns a process exit code."""
-    logger.info("models -> %s", paths.models_dir())
-    logger.info("tools  -> %s", paths.tools_dir())
+    logger.info("models -> %s", cutpoint_paths.models_dir())
+    logger.info("tools  -> %s", cutpoint_paths.tools_dir())
     steps = {
         "pip": check_python_packages,
         "panns": install_panns,

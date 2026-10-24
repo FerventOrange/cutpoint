@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after analysis it shows the moment count, "Analyze again" and "Show folder".
 - The `dev` extra is replaced by a `dev` dependency group that `uv sync` and `uv run` install by
   default, so `uv run pytest` works in a fresh clone; `--extra dev` is no longer accepted (#122).
+- `cutpoint 360 qa` on a missing folder says "clips folder not found", like `360 check` and
+  `360 stitch --from-clips` (#200).
+- `cutpoint 360 qa` checks `--size` when the command line is parsed: a bad value is a usage
+  error (exit 2, like `clips --size`), also with `--paths`.
 
 ### Fixed
 

@@ -471,43 +471,7 @@ def build_messages(
             ),
         }
     ]
-    step = dur / max(1, len(frames))
-    for i, jpg in enumerate(frames):
-        content.append({"type": "text", "text": f"Frame {i + 1} @ {i * step:.1f}s:"})
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()},
-            }
-        )
-    if params.audio:
-        samples = audio_slice(src, win.start, win.end)
-        if len(samples):
-            content.append({"type": "text", "text": "Audio of the whole window:"})
-            content.append(
-                {
-                    "type": "input_audio",
-                    "input_audio": {
-                        "data": base64.b64encode(wav_bytes(samples)).decode(),
-                        "format": "wav",
-                    },
-                }
-            )
-    if params.transcript:
-        ex = transcript_excerpt(transcript_lines, src.name, win.start, win.end)
-        content.append(
-            {
-                "type": "text",
-                "text": "Speech transcript (automatic, may contain "
-                "errors; seconds from window start):\n" + (ex or "(none)"),
-            }
-        )
-    if params.hints:
-        h = _hints(events, win.start, win.end)
-        if h:
-            content.append(
-                {"type": "text", "text": "Detector hints (automatic, may be wrong):\n" + h}
-            )
+    content += _media_content(src, win, frames, params, transcript_lines, events)
     content.append(
         {
             "type": "text",

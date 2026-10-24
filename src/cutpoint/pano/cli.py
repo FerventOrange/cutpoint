@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
+from cutpoint.utils import parse_size, positive_float
 
 logger = logging.getLogger("cutpoint")
 # Event layers ``cutpoint 360 analyze`` runs after the analysis.
@@ -35,10 +36,10 @@ def _project(arg: str) -> Path:
     return resolve_project_path(arg)
 
 
-def _clips_dir(project: Path, arg: str) -> Path:
-    """A ``--from-clips`` folder: resolved like other clip-folder arguments
+def _folder(arg: str, project: Path | None = None) -> Path:
+    """A clips folder argument: resolved like other clip-folder arguments
     (absolute, relative to the current folder, ``projects/...``), else
-    ``<project>/<arg>``.
+    ``<project>/<arg>`` when ``project`` is given (``--from-clips``).
 
     Raises:
         FileNotFoundError: If none of these is an existing folder.
@@ -48,7 +49,7 @@ def _clips_dir(project: Path, arg: str) -> Path:
     path = resolve_project_path(arg, bare_names=False)
     if path.is_dir():
         return path
-    if (project / arg).is_dir():
+    if project is not None and (project / arg).is_dir():
         return project / arg
     raise FileNotFoundError(f"clips folder not found: {path}")
 
@@ -556,7 +557,7 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     else:
         sources: list[str] = []
         if a.from_clips:
-            man = cache.load_json(_clips_dir(project, a.from_clips) / "manifest.json") or {}
+            man = cache.load_json(_folder(a.from_clips, project) / "manifest.json") or {}
             sources = [e["source"] for e in man.get("clips", [])]
         elif a.segments:
             from cutpoint.clips import load_segments  # noqa: PLC0415
@@ -585,34 +586,23 @@ def cmd_stitch(a: argparse.Namespace) -> None:
 
 def cmd_check(a: argparse.Namespace) -> None:
     """Contact sheets of rendered clips (seam, horizon, framing, pans) for review by eye."""
-    from cutpoint.config import resolve_project_path  # noqa: PLC0415
     from cutpoint.pano.check import clip_sheets  # noqa: PLC0415
 
-    clips_dir = resolve_project_path(a.clips_dir, bare_names=False)
-    if not clips_dir.is_dir():
-        raise FileNotFoundError(f"clips folder not found: {clips_dir}")
-    for p in clip_sheets(clips_dir, per_clip=a.per_clip):
+    for p in clip_sheets(_folder(a.clips_dir), per_clip=a.per_clip):
         logger.info("wrote %s", p)
 
 
 def cmd_qa(a: argparse.Namespace) -> None:
     """Rendered-frame direction QA (occlusion, close-ups, edge cuts, pans, horizon)."""
-    from cutpoint.config import resolve_project_path  # noqa: PLC0415
     from cutpoint.pano.qa import log_report, run_qa  # noqa: PLC0415
 
-    qa_dir = resolve_project_path(a.dir, bare_names=False)
-    if not qa_dir.is_dir():
-        raise FileNotFoundError(f"folder not found: {qa_dir}")
+    qa_dir = _folder(a.dir)
     if a.paths:
         from cutpoint.pano.qa_paths import run_paths_qa  # noqa: PLC0415
 
         log_report(run_paths_qa(qa_dir, fps=a.fps))
         return
-    try:
-        w, h = (int(v) for v in a.size.lower().split("x"))
-    except ValueError as err:
-        raise ValueError(f"--size must be WIDTHxHEIGHT, got {a.size!r}") from err
-    log_report(run_qa(qa_dir, fps=a.fps, size=(w, h), json_only=a.json_only))
+    log_report(run_qa(qa_dir, fps=a.fps, size=a.size, json_only=a.json_only))
 
 
 def cmd_repair(a: argparse.Namespace) -> None:
@@ -634,17 +624,6 @@ def cmd_repair(a: argparse.Namespace) -> None:
 
 
 # --------------------------------------------------------------------------- parser
-def _positive_float(text: str) -> float:
-    """argparse type: a number greater than 0."""
-    try:
-        value = float(text)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{text!r}: expected a number") from exc
-    if not value > 0:
-        raise argparse.ArgumentTypeError(f"{text!r}: must be greater than 0")
-    return value
-
-
 def add_parser(sub: Any) -> None:
     """Register ``cutpoint 360 ...`` on the main CLI's subparsers."""
     from cutpoint.styles import style_names  # noqa: PLC0415
@@ -727,7 +706,7 @@ def add_parser(sub: Any) -> None:
     )
     di.add_argument(
         "--vl-every",
-        type=_positive_float,
+        type=positive_float,
         default=3.0,
         metavar="S",
         help="seconds between baseline checked frames; suspect frames are added (--vl-check)",
@@ -777,7 +756,7 @@ def add_parser(sub: Any) -> None:
         help="geometric QA from the director paths and the 360 view layer, no rendering "
         "(also on pano_paths/<name>); writes <dir>_paths_qa/",
     )
-    qa.add_argument("--size", default="640x360", help="decode size WIDTHxHEIGHT")
+    qa.add_argument("--size", type=parse_size, default="640x360", help="decode size WIDTHxHEIGHT")
     qa.add_argument("--json-only", action="store_true", help="skip the contact sheets")
     qa.set_defaults(func=cmd_qa)
 
