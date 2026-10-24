@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `?target=sources|clips|outputs` (default `sources`); the server resolves every path itself.
 - Resizable side column in the UI (drag, keyboard, double-click to reset); width is remembered per
   browser.
+- `360 qa` counts the bad frames (blocked or low information) that `360 director --vl-check`
+  stored in the path JSON: a clip fails with more than 1 inside its span; clips without a `vl`
+  record are judged as before and `qa` does not call Ollama. `qa.json` gets a per-clip `vl`
+  field and the edit totals `vl_checked` and `vl_bad`, and the log table a `vl` column (#16).
 
 ### Changed
 
