@@ -103,6 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` caches each project's source list, so preview and media requests no longer re-list
+  the source folder or re-read `highlights.json` on every request, which was slow on network
+  shares. Changes are picked up on the next request: the cache is checked against
+  `highlights.json`, `ui/meta.json` and the picked folder's modification time, with a 60 s
+  backstop (#129).
 - `cutpoint ui`: the outputs panel also offers each final's `.srt` subtitles (`final.srt`,
   `final_ui_*.srt`, `<name>-final.srt`) for download, served as plain text.
 - A `highlights.json` without a `sources` list now gives an error naming the file and saying to
