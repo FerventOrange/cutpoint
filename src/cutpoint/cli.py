@@ -989,8 +989,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     cp = sub.add_parser(
         "capabilities",
-        help="report GPU vendors present, video encoders that really work and what "
-        "transcription and llama.cpp setup would use",
+        help="report GPU vendors present, video encoders that really work, what "
+        "transcription and llama.cpp setup would use, whether torch reaches CUDA "
+        "(with the reinstall fix if it is CPU-only on an NVIDIA machine) and the "
+        "Insta360 Media SDK (needs NVIDIA)",
     )
     cp.add_argument("--json", action="store_true", help="print the report as JSON")
     cp.set_defaults(func=_cmd_capabilities)

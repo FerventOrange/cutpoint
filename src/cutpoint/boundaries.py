@@ -71,7 +71,7 @@ LAUGH_THR = 0.5  # voice-layer laughter feature above which a bin is laughter
 PULLBACK_INTO_PICK_S = 1.0  # a pulled-back end may cut this far into the pick
 FORWARD_INTO_PICK_S = 0.5  # a start may move this far forward into the pick
 MAX_FORWARD_S = 2.0  # a start never moves forward more than this
-MIN_CLIP_S = 1.0  # boundaries never leave less than this
+MIN_BOUNDARY_CLIP_S = 1.0  # boundaries never leave less than this
 TEXT_CHARS = 80  # words quoted in manifest reasons
 # Per-clip overrides of SpeechSettings (segment / manifest key -> attribute).
 LIMIT_KEYS = {"speech_max_extend": "max_extend", "speech_max_lead": "max_lead"}
@@ -577,7 +577,9 @@ def separate(clips: list[ClipBounds]) -> None:
             else:
                 cut = (a.keep_end + b.keep_start) / 2
                 note = "picked moments overlap"
-            cut = round(min(max(cut, a.start + MIN_CLIP_S), b.end - MIN_CLIP_S), 3)
+            cut = round(
+                min(max(cut, a.start + MIN_BOUNDARY_CLIP_S), b.end - MIN_BOUNDARY_CLIP_S), 3
+            )
             a.record["neighbour_end"] = {
                 "from": round(a.end, 3),
                 "to": cut,
@@ -616,13 +618,17 @@ def fit_clips(clips: list[ClipBounds], settings: SpeechSettings) -> None:
                 c.record["limits"] = {"max_extend": own.max_extend, "max_lead": own.max_lead}
             if c.fit_start_on:
                 lo = max(c.lo, prev_end if prev_end is not None else c.lo)
-                hi = min(max(c.start, c.keep_start + FORWARD_INTO_PICK_S), c.end - MIN_CLIP_S)
+                hi = min(
+                    max(c.start, c.keep_start + FORWARD_INTO_PICK_S), c.end - MIN_BOUNDARY_CLIP_S
+                )
                 mv = fit_start(c.start, c.smap, own, lo=lo, hi=hi)
                 c.start = round(mv.new, 3)
                 c.record["start"] = mv.to_json()
             if c.fit_end_on:
                 hi = min(c.hi, nxt.start if nxt is not None else c.hi)
-                lo = max(c.start + MIN_CLIP_S, min(c.end, c.keep_end - PULLBACK_INTO_PICK_S))
+                lo = max(
+                    c.start + MIN_BOUNDARY_CLIP_S, min(c.end, c.keep_end - PULLBACK_INTO_PICK_S)
+                )
                 mv = fit_end(c.end, c.smap, own, lo=lo, hi=max(hi, c.end))
                 c.end = round(mv.new, 3)
                 c.record["end"] = mv.to_json()

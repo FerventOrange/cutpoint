@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
   No transcription runs for them; without a cached transcript there is no `.srt` and one INFO
   line. `clips --force` replaces only the `.srt` files its old `manifest.json` lists (#5).
+- `cutpoint capabilities` reports torch (installed, version, CUDA or CPU-only build, whether it
+  reaches the GPU). On a machine with a usable NVIDIA driver, a CPU-only torch gives a warning
+  with the exact reinstall command for the install type (clone, tool install, pip), and a CUDA
+  build that cannot reach the GPU gives driver advice. It also reports the Insta360 Media SDK
+  (found or not) and warns that the SDK needs an NVIDIA GPU when none is found; `360 stitch`
+  logs the same warning before it runs. New JSON keys: `torch` and `insta360_sdk` (#22).
 - `cutpoint ui` preview player has a mute button and a volume slider next to Play, shared by
   moments, clips and the final video and remembered per browser (default unmuted at 100%). `M`
   toggles mute (#142).
