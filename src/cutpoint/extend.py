@@ -256,8 +256,9 @@ def extend_clips(
         out_dir: Output folder (default :func:`default_out_dir`, or
             ``<clips_dir>_speech`` without padding).
         force: Allow writing into a non-empty folder, including ``clips_dir``. Like
-            ``clips --force``, only the clips and ``.srt`` files its manifest.json lists are
-            replaced; listed ones this run does not write are removed.
+            ``clips --force``, only the clips and ``.srt`` files its manifest.json lists, and
+            leftover ``.part.mp4`` files of an interrupted run, are replaced; listed ones this
+            run does not write are removed.
         speech: Speech-aware boundary settings (default: on, 8 s / 5 s caps);
             entries with ``"speech_aware": false`` are left alone, and an
             entry's ``speech_max_extend`` / ``speech_max_lead`` replace the
@@ -387,13 +388,15 @@ def extend_clips(
         # spelled on disk as listed: a clip renamed in case only (skipped above as having no
         # entry) still matches on a case-insensitive file system and must stay. A listed name
         # spelled otherwise on disk goes, under that spelling, only if this run writes or
-        # replaces its clip: an .srt beside it would keep the old cues, unlisted.
+        # replaces its clip: an .srt beside it would keep the old cues, unlisted. Leftover
+        # ``.<name>.part.mp4`` files of a hard-killed run go too, as with clips --force.
         listed = srt.listed_files(out_dir)
         srt.check_unlisted_clips(out_dir, names, listed)
         subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed))
         present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
         on_disk = {path_key(n): n for n in present}
-        listed_names = list(dict.fromkeys(listed or []))
+        parts = [p.name for p in out_dir.glob(".*.part.mp4")] if out_dir.is_dir() else []
+        listed_names = list(dict.fromkeys([*(listed or []), *parts]))
 
         def replaceable(n: str) -> bool:
             f = out_dir / n
@@ -517,10 +520,13 @@ def extend_clips(
         kept = [p for p in clip_files(out_dir) if path_key(p.name) not in written]
         if kept:
             logger.warning(
-                "Kept %s in %s: not re-exported by this run, so not in the new manifest.json; "
-                "assemble includes them, so move them out if they are not part of the edit",
+                "Kept %s in %s: %s; assemble includes them, so move them out if they are not "
+                "part of the edit",
                 ", ".join(p.name for p in kept),
                 out_dir,
+                "the old manifest.json does not list them (renamed during review or added by hand)"
+                if listed is not None
+                else "not replaced because there is no readable manifest.json",
             )
     logger.info(
         "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",

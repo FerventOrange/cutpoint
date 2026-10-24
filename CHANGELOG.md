@@ -103,6 +103,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` caches each project's source list, so preview and media requests no longer re-list
+  the source folder or re-read `highlights.json` on every request, which was slow on network
+  shares. Changes are picked up on the next request: the cache is checked against
+  `highlights.json`, `ui/meta.json` and the picked folder's modification time, with a 60 s
+  backstop (#129).
+- `highlights.json` errors now read "has no sources list" / "has no candidates list", and
+  `{"candidates": null}` gives this error instead of a crash.
+- `extend --force` (and in-place `extend`) also replaces leftover `.part` files from a hard-killed
+  run. Its "Kept" warning now matches `clips`, including the wording when there is no manifest.
+- Re-analyzing a project (`cutpoint events`) keeps `vision_top` and the Ollama URL and model; the `cutpoint ui` Analyze action keeps them too.
+  `analyze` now stores them in the `highlights.json` settings; an automatic `vision_top` stays
+  automatic.
 - `cutpoint ui`: a clip removed from the Sequence and added back returns to its previous position
   (clamped to the current length) instead of going to the end. Removed clips that are not ranked
   moments are listed under "Removed clips" with an "Add back" button until the page reloads (#128).

@@ -34,11 +34,18 @@ def test_truncated_highlights_names_file_and_how_to_fix(tmp_path, reader):
 @pytest.mark.parametrize("content", ["null", "[]", "{}", '{"sources": null}'])
 def test_non_object_highlights_is_a_clear_error(tmp_path, reader, content):
     (tmp_path / "highlights.json").write_text(content, encoding="utf-8")
-    with pytest.raises(ValueError, match="is not a JSON object") as err:
+    with pytest.raises(ValueError, match=r"has no (candidates|sources) list") as err:
         READERS[reader](tmp_path)
     assert str(tmp_path / "highlights.json") in str(err.value)
     assert HINT in str(err.value)
     assert "not found" not in str(err.value)
+
+
+@pytest.mark.parametrize("content", ['{"sources": []}', '{"candidates": null}'])
+def test_select_moments_without_a_candidates_list_is_a_clear_error(tmp_path, content):
+    (tmp_path / "highlights.json").write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match="has no candidates list"):
+        select_moments(tmp_path)
 
 
 def test_cli_clips_reports_corrupt_highlights(tmp_path: Path, caplog):

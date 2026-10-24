@@ -50,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import weakref
 from collections import deque
 from collections.abc import Callable
@@ -106,6 +107,8 @@ FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 500  # stills kept per project; the least recently used go first
+SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
+SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
 
 
 def bad(detail: str, status: int = 400) -> HTTPException:
@@ -897,8 +900,12 @@ def _under(path: str, roots: list[str]) -> bool:
     return False
 
 
-def source_entries(p: Path, hl: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """The project's playable-in-principle sources: ``[{path, id, name, duration}]``."""
+def source_entries(
+    p: Path, hl: dict[str, Any] | None, listed: list[Path | None] | None = None
+) -> list[dict[str, Any]]:
+    """The project's playable-in-principle sources: ``[{path, id, name, duration}]``. The source
+    it lists itself (a picked folder before its analysis) is added to ``listed``, followed by
+    None when that listing failed."""
     meta = read_meta(p)
     if meta.get("source"):
         roots = [str(meta["source"])]
@@ -910,8 +917,13 @@ def source_entries(p: Path, hl: dict[str, Any] | None) -> list[dict[str, Any]]:
             dur = s.get("duration")
             paths.setdefault(s["path"], dur if isinstance(dur, (int, float)) else None)
     if not paths and meta.get("source"):
-        with contextlib.suppress(FileNotFoundError):
+        if listed is not None:
+            listed.append(Path(meta["source"]))
+        try:
             paths = dict.fromkeys(map(str, find_videos([Path(meta["source"])])))
+        except FileNotFoundError:
+            if listed is not None:
+                listed.append(None)
     return [
         {
             "path": path,
@@ -924,6 +936,62 @@ def source_entries(p: Path, hl: dict[str, Any] | None) -> list[dict[str, Any]]:
         and Path(path).suffix.lower() in VIDEO_EXTS
         and _under(path, roots)
     ]
+
+
+def _stamp(path: Path) -> tuple[int, int, int] | None:
+    """``(mtime, size, inode)`` of ``path``, or None when it cannot be read."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
+class Sources:
+    """Each project's :func:`source_entries`, kept while its inputs are unchanged, so media
+    requests (each Range request, each still) do not reread and rescan a network share.
+
+    The list depends only on ``ui/meta.json``, ``highlights.json`` and, before an analysis, the
+    entries directly inside the picked folder (``find_videos`` does not recurse); a folder's mtime
+    changes when one is added, removed or renamed. So a hit costs two or three stats, and any
+    change to them rebuilds it. ``SOURCES_CACHE_S`` bounds what stats cannot see (a link under a
+    source retargeted, a filesystem with coarse mtimes). Callers must not change the entries."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        # project folder -> (built at, files stamped, their stamps, entries); oldest use first
+        self.kept: dict[str, tuple[float, list[Path], list[Any], list[dict[str, Any]]]] = {}
+
+    def entries(self, p: Path) -> list[dict[str, Any]]:
+        key = str(p)
+        with self.lock:
+            hit = self.kept.get(key)
+        if (
+            hit is not None
+            and time.monotonic() - hit[0] < SOURCES_CACHE_S
+            and [_stamp(f) for f in hit[1]] == hit[2]
+        ):
+            with self.lock:
+                if self.kept.get(key) is hit:
+                    self.kept[key] = self.kept.pop(key)  # recently used: evicted last
+            return hit[3]
+        # Each file is stamped before it is read: a change made meanwhile shows on the next request.
+        files = [p / f"{UI_DIR}/meta.json", p / "highlights.json"]
+        at, stamps = time.monotonic(), [_stamp(f) for f in files]
+        source = read_meta(p).get("source")
+        files += [Path(str(source))] if source else []
+        stamps += [_stamp(files[2])] if source else []
+        listed: list[Path | None] = []
+        entries = source_entries(p, _highlights(p), listed)
+        n = 3 if listed else 2  # the picked source counts only while its folder is listed
+        with self.lock:
+            self.kept.pop(key, None)
+            if None in listed:  # the folder could not be listed: the next request lists again
+                return entries
+            self.kept[key] = (at, files[:n], stamps[:n], entries)
+            while len(self.kept) > SOURCES_CACHE_MAX:
+                del self.kept[next(iter(self.kept))]
+        return entries
 
 
 def source_folder(p: Path) -> Path | None:
@@ -1185,7 +1253,7 @@ def _flag(body: dict[str, Any], key: str) -> bool:
 
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
-    jobs, media, picker = Jobs(), Media(), Picker()
+    jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -1199,7 +1267,7 @@ def create_app(port: int) -> FastAPI:
     )
 
     app.state.token, app.state.jobs, app.state.media = token, jobs, media
-    app.state.picker = picker
+    app.state.picker, app.state.sources = picker, sources
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -1336,10 +1404,10 @@ def create_app(port: int) -> FastAPI:
         exp = current_export(p)
         manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
         outputs = output_names(p)
-        sources = []
-        for s in source_entries(p, hl):
+        found = []
+        for s in sources.entries(p):
             status, _ = media.status(p, s["path"])
-            sources.append(
+            found.append(
                 {
                     "id": s["id"],
                     "name": s["name"],
@@ -1363,13 +1431,13 @@ def create_app(port: int) -> FastAPI:
             # The first listed final is the current export's own (or, with no export, the
             # newest); false while that export is not assembled yet and an earlier final leads.
             "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
-            "sources": sources,
+            "sources": found,
         }
 
     @owned.put("/projects/{pid}/review")
     def put_review(pid: str, body: dict[str, Any]):
         p = project_dir(pid)
-        segments = validate_segments(body.get("segments"), source_entries(p, _highlights(p)), media)
+        segments = validate_segments(body.get("segments"), sources.entries(p), media)
         review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
         file = _own(p, f"{UI_DIR}/review.json")
         _ui_folder(p)  # a command-line project has no ui folder yet
@@ -1436,11 +1504,17 @@ def create_app(port: int) -> FastAPI:
                 args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
             if st.get("recursive") is True:
                 args.append("--recursive")
+            vision_top = st.get("vision_top")
+            if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
+                args.append(f"--vision-top={vision_top}")
+            for key, opt in (("ollama_url", "--ollama-url"), ("ollama_model", "--ollama-model")):
+                if isinstance(st.get(key), str) and st[key]:
+                    args.append(f"{opt}={st[key]}")
         elif action == "clips":
             raw = _load(p, f"{UI_DIR}/review.json")
             segments = validate_segments(
                 (raw.get("segments") or []) if isinstance(raw, dict) else [],
-                source_entries(p, hl),
+                sources.entries(p),
                 media,
             )
             if not segments:
@@ -1558,7 +1632,7 @@ def create_app(port: int) -> FastAPI:
 
     def find_source(pid: str, sid: str) -> tuple[Path, dict[str, Any]]:
         p = project_dir(pid)
-        entry = next((s for s in source_entries(p, _highlights(p)) if s["id"] == sid), None)
+        entry = next((s for s in sources.entries(p) if s["id"] == sid), None)
         if entry is None:
             raise bad("unknown source", 404)
         return p, entry
@@ -1580,8 +1654,7 @@ def create_app(port: int) -> FastAPI:
             raise bad("the server is stopping", 503)
         p, entry = find_source(pid, sid)
         if p not in media.frames_pruned:
-            sources = source_entries(p, _highlights(p))
-            media.prune_frames(p, [s["path"] for s in sources])
+            media.prune_frames(p, [s["path"] for s in sources.entries(p)])
         try:
             file = media.frame(p, entry["path"], at, min(max(w, FRAME_MIN_W), FRAME_MAX_W))
         except (FFmpegError, OSError) as err:

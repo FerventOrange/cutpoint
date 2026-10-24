@@ -14,9 +14,9 @@ slip through. For a planned path and its low-res preview this module
 
 The flags are stored (path ``vl`` record, ``vl_check.json``) and counted by
 ``360 qa``, which fails a clip with more than 1 bad frame in its span; the
-director only reports them, they do not drive it. A closed loop (flags as grid penalties, then as safe-area
-obstacles, re-plan kept only if it checks better) was measured on 36 segments
-and fixed too few of the problem frames for its cost.
+director only reports them, they do not drive it. A closed loop (flags as grid
+penalties, then as safe-area obstacles, re-plan kept only if it checks better)
+was measured on 36 segments and fixed too few of the problem frames for its cost.
 
 One frame per request: the model (a thinking variant) reasons even with
 ``think=false``; a multi-image request used up its token budget before the

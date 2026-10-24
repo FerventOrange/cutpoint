@@ -277,6 +277,44 @@ def test_reanalyze_keeps_recorded_excludes_and_recursion(
     assert names == {"keep.mp4", "nested.mp4"}
 
 
+@pytest.mark.parametrize(
+    ("saved", "flags"),
+    [
+        (
+            {"vision_top": 5, "ollama_url": "http://h:1", "ollama_model": "m"},
+            ["--vision-top=5", "--ollama-url=http://h:1", "--ollama-model=m"],
+        ),
+        ({"vision_top": True, "ollama_url": "", "ollama_model": ""}, []),
+        ({"vision_top": 0}, []),
+    ],
+    ids=["kept", "invalid-true-and-empty", "zero"],
+)
+def test_reanalyze_passes_recorded_vision_and_ollama_options(
+    client: TestClient,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    saved: dict,
+    flags: list[str],
+) -> None:
+    p = ui.projects_dir() / "cli-made"
+    p.mkdir(parents=True)
+    footage = tmp_path / "clip.mp4"
+    footage.write_bytes(b"x")
+    settings = {"inputs": [str(footage)], **saved}
+    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
+    captured: list[list[str]] = []
+
+    def fake_start(self, project_id, action, args, *rest, **kw):
+        captured.append(args)
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    assert client.post("/api/projects/cli-made/jobs", json={"action": "analyze"}).status_code == 200
+    args = captured[0]
+    assert [a for a in args if a.startswith(("--vision-top", "--ollama"))] == flags
+
+
 def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) -> None:
     script = (
         "import subprocess, sys, time\n"
@@ -2357,3 +2395,108 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
     media.pool.submit(int).result(30)  # the one worker has finished the build
     assert media.status(p, str(src))[0] == "failed"
     assert not (p / "ui").exists()
+
+
+# --- source list cache (#129) ---
+
+
+@pytest.fixture
+def folder_listings(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """One entry per ``find_videos`` call made by the UI."""
+    calls: list[int] = []
+    real = ui.find_videos
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ui, "find_videos", counting)
+    return calls
+
+
+def source_names(client: TestClient, pid: str) -> list[str]:
+    res = client.get(f"/api/projects/{pid}")
+    assert res.status_code == 200, res.text
+    return sorted(s["name"] for s in res.json()["sources"])
+
+
+def test_media_requests_list_an_unanalyzed_folder_once(
+    client: TestClient, tmp_path: Path, folder_listings: list[int]
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    folder_listings.clear()
+    base = f"/api/projects/{pid}/sources/{sid}"
+    for _ in range(3):
+        client.head(base)
+        client.get(f"{base}/frame?at=0")
+        client.post(f"/api/projects/{pid}/sources/{sid}/prepare")
+    assert folder_listings == []
+
+
+def test_a_video_added_or_removed_in_the_picked_folder_shows_on_the_next_request(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    assert source_names(client, pid) == ["a.mp4"]
+    start = folder.stat().st_mtime_ns
+    (folder / "b.mp4").write_bytes(b"y")
+    os.utime(folder, ns=(start + 10**9, start + 10**9))
+    assert source_names(client, pid) == ["a.mp4", "b.mp4"]
+    (folder / "a.mp4").unlink()
+    os.utime(folder, ns=(start + 2 * 10**9, start + 2 * 10**9))
+    assert source_names(client, pid) == ["b.mp4"]
+
+
+def test_writing_highlights_rebuilds_the_list_from_the_analysis(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x", "b.mp4": b"y"})
+    assert source_names(client, pid) == ["a.mp4", "b.mp4"]
+    hl = {"sources": [{"path": str(folder / "b.mp4"), "duration": 3.0}], "candidates": []}
+    (ui.project_dir(pid) / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    assert source_names(client, pid) == ["b.mp4"]
+    cache.save_json(
+        ui.project_dir(pid) / "highlights.json",
+        {"sources": [{"path": str(folder / "a.mp4"), "duration": 3.0}], "candidates": []},
+    )
+    assert source_names(client, pid) == ["a.mp4"]
+
+
+def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    real = ui.find_videos
+    calls: list[int] = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise FileNotFoundError("folder briefly unavailable")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ui, "find_videos", flaky)
+    client.get(f"/api/projects/{pid}")  # the failed listing; the response does not matter
+    assert source_names(client, pid) == ["a.mp4"]
+
+
+def test_the_cache_keeps_at_most_max_projects_and_expires_after_its_ttl(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder_listings: list[int]
+) -> None:
+    monkeypatch.setattr(ui, "SOURCES_CACHE_MAX", 1)
+    pid1, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "c.mp4").write_bytes(b"z")
+    pid2 = client.post("/api/projects", json={"name": "Other", "source": str(other)}).json()["id"]
+    source_names(client, pid1)
+    source_names(client, pid2)  # evicts pid1
+    folder_listings.clear()
+    source_names(client, pid2)
+    assert len(folder_listings) == 0
+    source_names(client, pid1)
+    assert len(folder_listings) == 1
+    monkeypatch.setattr(ui, "SOURCES_CACHE_S", 0)
+    source_names(client, pid1)
+    assert len(folder_listings) == 2
