@@ -90,6 +90,8 @@ def test_a_refused_request_says_whether_the_token_or_the_host_was_wrong(
     """Contract pin: web/api.js TOKEN_DETAIL must match the token detail below exactly; it shows
     the "server restarted" banner and stops polling on it, and must not for the host detail."""
     token_detail = {"detail": "missing or wrong session token"}
+    api_js = (ui.WEB_DIR / "api.js").read_text(encoding="utf-8")
+    assert f"const TOKEN_DETAIL = '{token_detail['detail']}';" in api_js
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     media = client.get(f"/api/projects/{pid}").json()["sources"][0]["url"]
     wrong_t = media.split("?")[0] + "?t=stale"

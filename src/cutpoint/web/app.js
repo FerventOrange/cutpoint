@@ -95,7 +95,7 @@ whenExpired((e) => {
   S.expired = true;
   clearTimeout(S.prepTimer);
   clearTimeout(S.jobTimer);
-  drop('No preview: this session has ended.');
+  drop(''); // the banner already says why; a second status line would be announced too
 });
 
 function preserveFocus(fn) {
@@ -589,9 +589,14 @@ v.addEventListener('playing', () => screenMsg(''));
 v.addEventListener('waiting', () => screenMsg('Buffering…'));
 v.addEventListener('error', () => {
   if (!v.dataset.url) return;
-  screenMsg(`The browser could not play this video${v.error?.message ? `: ${v.error.message}` : ''}.`);
-  // The element hides the status; one API call tells an expired token (banner) from a bad file.
-  startSession().catch(() => {});
+  const url = v.dataset.url;
+  const msg = `The browser could not play this video${v.error?.message ? `: ${v.error.message}` : ''}.`;
+  // The element hides the status; one API call tells an expired token (banner only) from a bad
+  // file, so the message is shown, and announced, only when the session is still valid.
+  const show = () => {
+    if (!S.expired && v.dataset.url === url) screenMsg(msg);
+  };
+  startSession().then(show, show);
 });
 /** The play button is an icon; its name and tooltip say what a click does. */
 function showPlaying(playing) {
