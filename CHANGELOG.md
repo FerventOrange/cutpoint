@@ -78,6 +78,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `assemble` with hard cuts and added audio fades (clips without a baked fade) trims each
+  clip's audio to where the next clip starts (its container duration), as the video and
+  `final.srt` already do. Clips whose audio ran past their video drifted: 3 such clips gave
+  6.6 s of video and 6.0 s of audio, now both 6.6 s. Clips cutpoint exports change by under
+  half a frame (#235).
+- `assemble --fade-dur` must be greater than 0 (exit 2), and a crossfade lasts at least one
+  frame (shorter fades are raised to one frame, INFO). `0` or a fade under one frame used to
+  cut the video short: two 2 s clips at 25 fps gave 2.04 s of video. A clip too short for a
+  one-frame crossfade makes the join use cuts (WARNING) (#238).
 - `extend` into a folder with a manifest (in place, or `--out` with `--force`) removes the `.srt`
   the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
   new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
