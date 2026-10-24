@@ -706,8 +706,8 @@ def add_parser(sub: Any) -> None:
         "--vl-check",
         action="store_true",
         help="a local vision model (Ollama) checks a few frames of each path's preview for "
-        "blocked or low-information views and reports them; 360 qa fails a clip above 1 bad "
-        "frame (about 30 s a segment)",
+        "blocked or low-information views and reports them (about 30 s a segment); 360 qa "
+        "fails a clip with more than 1 bad frame",
     )
     di.add_argument(
         "--vl-every",
