@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import gc
+import importlib.util
 import logging
 import os
 import re
@@ -23,6 +24,7 @@ Segment = dict[str, Any]  # {"start", "end", "text", "words": [{"start","end","w
 
 _dll_dirs_added = False
 _cpu_notice_logged = False
+_torch_loaded = False
 
 # Libraries ctranslate2 needs for CUDA inference (the 'gpu' extra's wheels or a CUDA
 # 12 / cuDNN 9 install). cuDNN's front library alone is not enough: it loads the
@@ -31,6 +33,25 @@ _CUDA_LIBS = {
     "win32": ("cublas64_12.dll", "cublasLt64_12.dll", "cudnn_ops64_9.dll", "cudnn_cnn64_9.dll"),
     "linux": ("libcublas.so.12", "libcublasLt.so.12", "libcudnn_ops.so.9", "libcudnn_cnn.so.9"),
 }
+
+
+def _load_torch_first() -> None:
+    """Import torch, if installed, before ctranslate2 or the CUDA libraries load (once).
+
+    On Windows, torch bundles its own cuDNN; once the gpu extra's newer cuDNN is loaded,
+    ``import torch`` fails with WinError 127 (#215). The other order works, and whisper
+    then runs on torch's cuDNN. A broken torch must not break transcription.
+    """
+    global _torch_loaded
+    if _torch_loaded:
+        return
+    _torch_loaded = True
+    if importlib.util.find_spec("torch") is None:
+        return
+    try:
+        import torch  # noqa: F401, PLC0415 - optional and slow; only before the CUDA probe
+    except Exception as err:  # noqa: BLE001 - any torch failure: transcribe without it
+        logger.debug("Importing torch before ctranslate2 failed: %s", err)
 
 
 def _add_cuda_dll_dirs() -> None:
@@ -96,6 +117,7 @@ def _missing_cuda_libs() -> list[str]:
 def cuda_available() -> bool:
     """True if ctranslate2 sees a CUDA device and the CUDA libraries for it load."""
     global _cpu_notice_logged
+    _load_torch_first()
     _add_cuda_dll_dirs()
     try:
         import ctranslate2  # noqa: PLC0415 - after the DLL dirs are added
