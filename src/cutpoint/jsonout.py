@@ -176,7 +176,7 @@ def _stdout_to_stderr() -> Iterator[None]:
                 os.close(saved)
                 saved = None
         finally:
-            if target != 2:
+            if not to_stderr:
                 os.close(target)
     sys.stdout = sink
     try:

@@ -427,6 +427,30 @@ def test_json_subprocess_bad_args(home):
     assert _envelope(proc.stdout)["error"]["code"] == "bad_args"
 
 
+def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
+    """With stderr closed, argparse's usage does not fall back to stdout."""
+    script = tmp_path / "run.py"
+    script.write_text(
+        "import os, sys\n"
+        "from cutpoint import cli\n"
+        "sys.stderr.flush()\n"
+        "os.close(2)\n"
+        "sys.stderr = None\n"
+        "sys.exit(cli.main(['paths', '--json', '--bogus']))\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 2
+    error = _envelope(proc.stdout)["error"]
+    assert error == {"code": "bad_args", "message": "unrecognized arguments: --bogus"}
+
+
 # The commands with their own --json keep it until they move to the envelope (phase 3).
 
 

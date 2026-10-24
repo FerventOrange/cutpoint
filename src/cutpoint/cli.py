@@ -485,6 +485,8 @@ class _Parser(argparse.ArgumentParser):
     """ArgumentParser whose errors (usage and message on stderr, exit 2) raise UsageError."""
 
     def error(self, message: str) -> NoReturn:
+        if sys.stderr is None:  # argparse would print the usage to stdout instead
+            raise UsageError(self, message, 2)
         try:
             super().error(message)
         except SystemExit as exc:
