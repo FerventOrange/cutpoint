@@ -200,6 +200,32 @@ def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_sr
     assert "009_mine.mp4" in caplog.text and "002_b" not in caplog.text
 
 
+@pytest.mark.parametrize("where", ["in-place", "other-out"])
+def test_extend_without_a_transcript_removes_the_listed_srt_renamed_in_case(
+    tmp_path, monkeypatch, reads, where
+):
+    """The listed 001_a.srt (in place) or 001_a.mp4 and .srt (in out) were renamed to 001_A
+    during review. 001_a.mp4 is written again with no transcript: its old .srt must go, not
+    stay unlisted with the old timing."""
+    clips = _srt_clips(tmp_path)
+    if not (clips / "001_A.mp4").exists():
+        pytest.skip("case-sensitive file system")
+    if where == "in-place":
+        out = clips
+        (clips / "001_a.srt").rename(clips / "001_A.srt")
+    else:
+        out = tmp_path / "proj" / "ext"
+        write(out / "001_A.mp4", "old")
+        write(out / "001_A.srt", "old")
+        write(out / "manifest.json", (clips / "manifest.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+
+    _run(clips, out_dir=out, force=True)
+
+    assert sorted(p.name for p in out.iterdir()) == ["001_a.mp4", "manifest.json"]
+    assert (out / "001_a.mp4").read_text(encoding="utf-8") == "encoded"
+
+
 def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
     tmp_path, monkeypatch, reads, caplog
 ):

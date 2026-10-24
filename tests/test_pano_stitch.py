@@ -10,6 +10,7 @@ is monkeypatched so no ffmpeg is required.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import subprocess
@@ -326,13 +327,88 @@ def gated(monkeypatch: pytest.MonkeyPatch, fake):
 
 
 class TestRunSdk:
-    def test_interrupt_raises_with_captured_output(self, fake, tmp_path, gated):
+    def test_interrupt_raises_with_captured_output(self, fake, tmp_path, gated, monkeypatch):
+        monkeypatch.setattr(stitch, "SOFT_STOP_S", 0.2)  # the hung child is killed after this
         gated.interrupt = True
         with pytest.raises(stitch.SdkInterrupted) as ei:
             stitch.run_sdk(fake("hang", tmp_path / "o.mp4"))
         assert isinstance(ei.value, KeyboardInterrupt)
         assert ei.value.run.returncode is None
         assert "SYNTHETIC-CAPTURED-LINE" in ei.value.run.stdout
+
+
+class _StopChild:
+    """Popen stand-in for the stop policy (#229); never sleeps. ``calls`` records wait/kill.
+
+    The poll loop's first ``wait`` raises each of ``interrupts`` in turn; after that the
+    child exits ``exits_after`` s into a ``wait`` (None: only when killed).
+    """
+
+    pid = 1
+
+    def __init__(self, interrupts=(), exits_after=None) -> None:
+        self.interrupts, self.exits_after = list(interrupts), exits_after
+        self.returncode = None
+        self.calls: list[tuple] = []
+        self.stdout, self.stderr = io.StringIO("SYNTHETIC-CAPTURED-LINE\n"), io.StringIO("")
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.calls.append(("wait", timeout))
+        if self.interrupts:
+            raise self.interrupts.pop(0)
+        if self.returncode is None:
+            if self.exits_after is None or timeout < self.exits_after:
+                raise subprocess.TimeoutExpired("sdk", timeout)
+            self.returncode = 0
+        return self.returncode
+
+    def kill(self) -> None:
+        self.calls.append(("kill",))
+        self.returncode = -9
+
+
+@pytest.fixture
+def stop_child(monkeypatch):
+    def use(**kw) -> _StopChild:
+        proc = _StopChild(**kw)
+        monkeypatch.setattr(stitch.subprocess, "Popen", lambda *a, **k: proc)
+        monkeypatch.setattr(stitch, "sdk_env", lambda exe: None)
+        return proc
+
+    return use
+
+
+class TestStopPolicy:
+    SOFT = ("wait", stitch.SOFT_STOP_S)
+
+    def test_interrupt_waits_for_the_child_to_exit_without_killing(self, stop_child):
+        proc = stop_child(interrupts=[KeyboardInterrupt()], exits_after=stitch.SOFT_STOP_S / 2)
+        with pytest.raises(stitch.SdkInterrupted):
+            stitch.run_sdk(["sdk"])
+        assert proc.calls[1:] == [self.SOFT]  # [0] is the poll loop's wait
+        assert proc.returncode == 0
+
+    def test_interrupt_kills_a_child_still_running_after_the_soft_wait(self, stop_child):
+        proc = stop_child(interrupts=[KeyboardInterrupt()])
+        with pytest.raises(stitch.SdkInterrupted):
+            stitch.run_sdk(["sdk"])
+        assert proc.calls[1:] == [self.SOFT, ("kill",), self.SOFT]
+
+    def test_second_interrupt_during_the_soft_wait_kills_and_still_raises(self, stop_child):
+        proc = stop_child(interrupts=[KeyboardInterrupt(), KeyboardInterrupt()])
+        with pytest.raises(stitch.SdkInterrupted) as ei:
+            stitch.run_sdk(["sdk"])
+        assert proc.calls[1:] == [self.SOFT, ("kill",), self.SOFT]
+        assert "SYNTHETIC-CAPTURED-LINE" in ei.value.run.stdout
+
+    def test_timeout_kills_at_once_and_waits_the_short_bound(self, stop_child):
+        proc = stop_child()
+        run = stitch.run_sdk(["sdk"], timeout_s=-1)
+        assert run.timed_out
+        assert proc.calls == [("kill",), self.SOFT]
 
 
 @pytest.fixture
@@ -463,7 +539,10 @@ class TestStitchOne:
         assert "TIMED OUT" in text
         assert "SYNTHETIC-CAPTURED-LINE é" in text
 
-    def test_interrupt_removes_partial_logs_output_and_reraises(self, fake, clip, paths_, gated):
+    def test_interrupt_removes_partial_logs_output_and_reraises(
+        self, fake, clip, paths_, gated, monkeypatch
+    ):
+        monkeypatch.setattr(stitch, "SOFT_STOP_S", 0.2)
         out_dir, out, part = paths_
         gated.interrupt = True
         with pytest.raises(stitch.SdkInterrupted):
