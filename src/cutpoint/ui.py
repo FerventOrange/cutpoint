@@ -90,6 +90,12 @@ BROWSER_CONTAINERS = {".mp4", ".m4v", ".mov", ".webm"}
 BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
 BROWSER_AUDIO = {None, "aac", "mp3", "opus", "vorbis"}
 SAFE_NAME = re.compile(r"\w[\w.-]*")  # a name inside the project: no ".", ".." or ".x"
+# What ``assemble`` writes next to ``<stem>.mp4`` (.ass: the --captions subtitles it burns in).
+FINAL_EXTS = (".mp4", ".fcpxml", ".otio", ".srt", ".ass")
+# A final in the project folder: ``assemble``'s final.mp4 / final_<x>.mp4 (UI exports included)
+# and ``edit``'s <name>-final.mp4 / <name>-final_vertical.mp4. Partial and staging files start
+# with "." and never match.
+FINAL_VIDEO = re.compile(r"(?:[^.].*-)?final(?:_.*)?\.mp4")
 FRAME_WIDTH = 160  # default still width (px) for sequence thumbnails
 FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
@@ -480,7 +486,8 @@ class Job:
             "id": self.id,
             "project_id": self.project_id,
             "action": self.action,
-            "status": self.status,
+            # Cancelled but the watcher has not seen the exit yet (Windows can lag a poll or two).
+            "status": "cancelling" if self.cancelled and self.status == "running" else self.status,
             "logs": list(self.logs),
             "started": self.started,
         }
@@ -1023,23 +1030,36 @@ def current_export(p: Path) -> dict[str, Any] | None:
     )
 
 
-def output_names(p: Path) -> list[str]:
-    """Files of the current final (video first, then timelines) that exist inside the project."""
+def _final_names(p: Path) -> list[str]:
+    """Finals in the project folder: the current export's first, then the newest first."""
     exp = current_export(p)
     final = (exp or {}).get("final")
-    if not isinstance(final, str) or not SAFE_NAME.fullmatch(final):
-        return []
-    if not (p / final).is_file() or not _inside(p, final):
-        return []
-    stem = Path(final).stem
-    return [
-        final,
-        *(
-            f"{stem}{e}"
-            for e in (".fcpxml", ".otio")
-            if (p / f"{stem}{e}").is_file() and _inside(p, f"{stem}{e}")
-        ),
-    ]
+    first = [final] if isinstance(final, str) and SAFE_NAME.fullmatch(final) else []
+    found: list[tuple[int, str]] = []
+    with contextlib.suppress(OSError), os.scandir(p) as it:
+        for e in it:
+            if FINAL_VIDEO.fullmatch(e.name):
+                with contextlib.suppress(OSError):
+                    found.append((e.stat().st_mtime_ns, e.name))
+    found.sort(reverse=True)
+    names = dict.fromkeys([*first, *(n for _, n in found)])  # in order, no duplicates
+    return [n for n in names if (p / n).is_file() and _inside(p, n)]
+
+
+def output_names(p: Path) -> list[str]:
+    """Files of the finals (each video, then its timelines) that exist inside the project."""
+    out: list[str] = []
+    for final in _final_names(p):
+        stem = Path(final).stem
+        out += [
+            final,
+            *(
+                f"{stem}{e}"
+                for e in (".fcpxml", ".otio")
+                if (p / f"{stem}{e}").is_file() and _inside(p, f"{stem}{e}")
+            ),
+        ]
+    return out
 
 
 def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
@@ -1251,6 +1271,7 @@ def create_app(port: int) -> FastAPI:
         review = _load(p, f"{UI_DIR}/review.json")
         exp = current_export(p)
         manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
+        outputs = output_names(p)
         sources = []
         for s in source_entries(p, hl):
             status, _ = media.status(p, s["path"])
@@ -1274,7 +1295,10 @@ def create_app(port: int) -> FastAPI:
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp
             else None,
-            "outputs": [{"name": n, "url": url(pid, "outputs", n)} for n in output_names(p)],
+            "outputs": [{"name": n, "url": url(pid, "outputs", n)} for n in outputs],
+            # The first listed final is the current export's own (or, with no export, the
+            # newest); false while that export is not assembled yet and an earlier final leads.
+            "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
             "sources": sources,
         }
 
@@ -1405,7 +1429,7 @@ def create_app(port: int) -> FastAPI:
             stem = fresh_name(
                 p,
                 "final" + exp_dir[5:] if exp_dir.startswith("clips") else f"final_{exp_dir}",
-                (".mp4", ".fcpxml", ".otio", ".ass"),
+                FINAL_EXTS,
             )
             args = cutpoint_cmd(
                 "assemble",
