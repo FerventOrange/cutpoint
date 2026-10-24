@@ -38,6 +38,10 @@ Pan metrics come from the director path (30 fps samples of
 :func:`cutpoint.pano.director.evaluate`, hard cuts excluded). Per clip:
 flag shares, longest runs, flagged spans, a 0-100 score and a pass/fail by
 the rule in :class:`QAThresholds`; per edit the duration-weighted summary.
+When ``360 director --vl-check`` ran, the bad frames its vision model found in
+the clip (the path's ``vl`` record, :func:`vl_summary`) count toward the pass
+too (``max_vl_bad``); a path without that record (check skipped or the model
+unavailable) is judged without it.
 
 Inputs: a clips folder (``manifest.json`` entries with ``pano.path_file`` and
 ``start``) or a director preview folder (``NNN_x.mp4`` + ``NNN_x.json``; the
@@ -165,6 +169,7 @@ class QAThresholds:
     max_pan_max: float = 55.0
     min_shot_s: float = 2.0
     max_horizon_p95: float = 12.0  # display tilt, see tilt_deg; any dark frame fails a clip too
+    max_vl_bad: int = 1  # bad VL check frames (blocked / low info) a clip may have
 
 
 def dark_frames(gray: np.ndarray, th: QAThresholds) -> np.ndarray:
@@ -431,13 +436,15 @@ def aggregate_clip(
     pan: dict[str, Any] | None,
     horizon: dict[str, float] | None,
     th: QAThresholds,
+    vl: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shares, longest runs (s), flagged spans, score and pass for one clip.
 
     ``frames`` need ``t``, ``target`` and the :func:`frame_flags` fields. Shares
     of the problem flags are over all frames; ``subject_present`` /
     ``size_ok`` over ``friend`` frames; ``safe_area`` over frames with a subject.
-    Each frame stands for ``1 / fps`` seconds.
+    Each frame stands for ``1 / fps`` seconds. ``vl`` is the clip's
+    :func:`vl_summary` (None: no VL check, no say in the pass).
     """
     n = len(frames)
     has = {f: np.array([f in fr["flags"] for fr in frames], bool) for f in PROBLEM_FLAGS}
@@ -499,6 +506,9 @@ def aggregate_clip(
         fails.append(f"dark {count['dark'] / fps:.1f}s")
     if horizon is not None and horizon["p95"] > th.max_horizon_p95:
         fails.append(f"horizon p95 {horizon['p95']:.1f} deg")
+    # like the shares above, a single bad frame is noise (the check samples few frames)
+    if vl is not None and vl["bad"] > th.max_vl_bad:
+        fails.append(f"vl {vl['bad']}/{vl['frames']} frames bad")
     return {
         "share": share,
         "runs": runs,
@@ -526,6 +536,7 @@ def aggregate_edit(clips: list[dict[str, Any]]) -> dict[str, Any]:
 
     pans = [c["pan"] for c in clips if c.get("pan")]
     hor = [c["horizon"] for c in clips if c.get("horizon")]
+    vls = [c["vl"] for c in clips if c.get("vl")]
     return {
         "clips": len(clips),
         "passed": sum(bool(c["pass"]) for c in clips),
@@ -543,6 +554,8 @@ def aggregate_edit(clips: list[dict[str, Any]]) -> dict[str, Any]:
         "min_shot_s": min((p["min_shot_s"] for p in pans), default=None),
         "horizon_p95_max": max((h["p95"] for h in hor), default=None),
         "horizon_max": max((h["max"] for h in hor), default=None),
+        "vl_checked": len(vls),
+        "vl_bad": sum(v["bad"] for v in vls),
     }
 
 
@@ -738,6 +751,21 @@ FRAME_KEYS = (
 )
 
 
+def vl_summary(path: dict[str, Any] | None, offset: float, dur: float) -> dict[str, Any] | None:
+    """The director's VL check of a clip's span ``[offset, offset + dur]`` (source s).
+
+    Returns:
+        ``{"model", "frames", "bad", "flags"}`` from the path's ``vl`` record, ``bad``
+        and ``flags`` limited to the span (``frames`` counts the whole checked segment),
+        or None when the check did not run or no frame was answered.
+    """
+    vl = (path or {}).get("vl")
+    if not isinstance(vl, dict) or not vl.get("frames"):
+        return None
+    flags = [f for f in vl.get("flags", []) if offset <= float(f["t"]) <= offset + dur]
+    return {"model": vl.get("model"), "frames": vl["frames"], "bad": len(flags), "flags": flags}
+
+
 def clip_record(
     item: dict[str, Any],
     dur: float,
@@ -749,7 +777,8 @@ def clip_record(
     beauty: float | None = None,
 ) -> dict[str, Any]:
     """The ``qa.json`` record of one clip (rendered or geometric QA)."""
-    agg = aggregate_clip(recs, fps, pan, hor, th)
+    vl = vl_summary(item.get("path"), float(item["offset"]), dur)
+    agg = aggregate_clip(recs, fps, pan, hor, th, vl)
     return {
         "file": item["file"],
         "kind": item["kind"],
@@ -761,6 +790,7 @@ def clip_record(
         "horizon": hor,
         "centre_dev_p90": agg["centre_dev_p90"],
         "beauty_mean": beauty,
+        "vl": vl,
         "score": agg["score"],
         "pass": agg["pass"],
         "fails": agg["fails"],
@@ -889,7 +919,7 @@ def run_qa(
 def log_report(report: dict[str, Any]) -> None:
     """Per-clip summary table plus the edit summary."""
     logger.info(
-        "%-22s %6s %5s %4s %5s %5s %5s %5s %5s %5s %5s %5s  %s",
+        "%-22s %6s %5s %4s %5s %5s %5s %5s %5s %5s %5s %5s %5s  %s",
         "clip",
         "dur",
         "score",
@@ -902,6 +932,7 @@ def log_report(report: dict[str, Any]) -> None:
         "pan95",
         "shot",
         "hor95",
+        "vl",
         "fails",
     )
 
@@ -909,9 +940,9 @@ def log_report(report: dict[str, Any]) -> None:
         return "-" if v is None else f"{100 * v:.0f}%"
 
     for c in report["clips"]:
-        s, pan, hor = c["share"], c["pan"] or {}, c["horizon"] or {}
+        s, pan, hor, vl = c["share"], c["pan"] or {}, c["horizon"] or {}, c.get("vl")
         logger.info(
-            "%-22s %5.1fs %5.1f %4s %5s %5s %5s %5s %5s %5s %5s %5s  %s",
+            "%-22s %5.1fs %5.1f %4s %5s %5s %5s %5s %5s %5s %5s %5s %5s  %s",
             c["file"][:22],
             c["duration"],
             c["score"],
@@ -924,6 +955,7 @@ def log_report(report: dict[str, Any]) -> None:
             f"{pan['speed_p95']:.0f}" if pan else "-",
             f"{pan['min_shot_s']:.1f}" if pan else "-",
             f"{hor['p95']:.1f}" if hor else "-",
+            f"{vl['bad']}/{vl['frames']}" if vl else "-",
             "; ".join(c["fails"]),
         )
     e = report["edit"]
@@ -949,6 +981,13 @@ def log_report(report: dict[str, Any]) -> None:
         e.get("horizon_p95_max"),
         e.get("elapsed_s", 0.0),
     )
+    if e.get("vl_checked"):
+        logger.info(
+            "vl check: %d bad frame(s) in %d checked clip(s); a clip fails above %d",
+            e["vl_bad"],
+            e["vl_checked"],
+            report["thresholds"]["max_vl_bad"],
+        )
     logger.info("wrote %s", Path(report["out_dir"]) / "qa.json")
     for p in report.get("sheets", []):
         logger.info("wrote %s", p)

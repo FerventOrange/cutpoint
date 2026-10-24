@@ -191,7 +191,8 @@ def test_frames_far_from_any_view_frame_have_no_detections() -> None:
 def test_run_paths_qa_on_a_paths_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     d = tmp_path / "pano_paths" / "trial"
     d.mkdir(parents=True)
-    good = {**fixed_path(), "source": "g.lrv", "kind": "laughter"}
+    vl = {"model": "m", "frames": 2, "flags": [{"t": 5.0}]}
+    good = {**fixed_path(), "source": "g.lrv", "kind": "laughter", "vl": vl}
     bad = {**fixed_path(yaw=43.0), "source": "g.lrv"}
     (d / "001_a.json").write_text(json.dumps(good))
     (d / "002_b.json").write_text(json.dumps(bad))
@@ -216,6 +217,9 @@ def test_run_paths_qa_on_a_paths_folder(tmp_path: Path, monkeypatch: pytest.Monk
     assert b["pass"] is False and b["share"]["edge_cut"] > 0.5
     assert a["pan"]["speed_max"] == 0.0
     assert saved["edit"]["clips"] == 2
+    assert a["vl"] == {"model": "m", "frames": 2, "bad": 1, "flags": [{"t": 5.0}]}
+    assert b["vl"] is None
+    assert saved["edit"]["vl_checked"] == 1
 
 
 def test_find_path_inputs_from_a_manifest(tmp_path: Path) -> None:
