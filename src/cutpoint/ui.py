@@ -711,6 +711,13 @@ class Media:
             self.proxies.get(key, ""), "needs-proxy"
         ), None
 
+    def cached_status(self, project: Path, path: str) -> str:
+        """As :meth:`status`, or "unknown" while ``path`` is not probed yet; never runs ffprobe."""
+        key = self.key(remap_source(path))
+        if key is not None and key not in self.probed:
+            return "unknown"
+        return self.status(project, path)[0]
+
     def prepare(self, project: Path, path: str) -> str:
         """Queue the proxy build of one source (also retries a failed build); returns its status."""
         real = remap_source(path)
@@ -900,12 +907,18 @@ def _under(path: str, roots: list[str]) -> bool:
     return False
 
 
+def _listed_folder(folder: Path) -> Path:
+    """Where a picked folder is listed: in place, else at its ``source_remap`` target, as
+    ``analyze`` lists it."""
+    return folder if os.path.exists(folder) else remap_source(folder)  # noqa: PTH110 - any OSError: missing
+
+
 def source_entries(
-    p: Path, hl: dict[str, Any] | None, listed: list[Path | None] | None = None
+    p: Path, hl: dict[str, Any] | None, listed: list[Path | str] | None = None
 ) -> list[dict[str, Any]]:
     """The project's playable-in-principle sources: ``[{path, id, name, duration}]``. The source
     it lists itself (a picked folder before its analysis) is added to ``listed``, followed by
-    None when that listing failed."""
+    the error message when that listing failed."""
     meta = read_meta(p)
     if meta.get("source"):
         roots = [str(meta["source"])]
@@ -917,13 +930,21 @@ def source_entries(
             dur = s.get("duration")
             paths.setdefault(s["path"], dur if isinstance(dur, (int, float)) else None)
     if not paths and meta.get("source"):
+        folder = Path(str(meta["source"]))
         if listed is not None:
-            listed.append(Path(meta["source"]))
+            listed.append(folder)
         try:
-            paths = dict.fromkeys(map(str, find_videos([Path(meta["source"])])))
-        except FileNotFoundError:
+            io = _listed_folder(folder)
+            found = find_videos([io])
+            if io != folder:  # read at its remap target: videos keep the original spelling
+                base, orig = io.resolve(), folder.resolve()
+                found = [orig / f.relative_to(base) if f.is_relative_to(base) else f for f in found]
+                # source_remap_exclude: they would be read at the missing original
+                found = [f for f in found if remap_source(f) != f]
+            paths = dict.fromkeys(map(str, found))
+        except OSError as err:  # find_videos: missing, unreadable, stale mount
             if listed is not None:
-                listed.append(None)
+                listed.append(str(err))
     return [
         {
             "path": path,
@@ -963,6 +984,10 @@ class Sources:
         self.kept: dict[str, tuple[float, list[Path], list[Any], list[dict[str, Any]]]] = {}
 
     def entries(self, p: Path) -> list[dict[str, Any]]:
+        return self.listing(p)[0]
+
+    def listing(self, p: Path) -> tuple[list[dict[str, Any]], str | None]:
+        """``(entries, why the picked folder could not be listed or None)``."""
         key = str(p)
         with self.lock:
             hit = self.kept.get(key)
@@ -974,24 +999,24 @@ class Sources:
             with self.lock:
                 if self.kept.get(key) is hit:
                     self.kept[key] = self.kept.pop(key)  # recently used: evicted last
-            return hit[3]
+            return hit[3], None
         # Each file is stamped before it is read: a change made meanwhile shows on the next request.
         files = [p / f"{UI_DIR}/meta.json", p / "highlights.json"]
         at, stamps = time.monotonic(), [_stamp(f) for f in files]
         source = read_meta(p).get("source")
-        files += [Path(str(source))] if source else []
+        files += [_listed_folder(Path(str(source)))] if source else []
         stamps += [_stamp(files[2])] if source else []
-        listed: list[Path | None] = []
+        listed: list[Path | str] = []
         entries = source_entries(p, _highlights(p), listed)
         n = 3 if listed else 2  # the picked source counts only while its folder is listed
         with self.lock:
             self.kept.pop(key, None)
-            if None in listed:  # the folder could not be listed: the next request lists again
-                return entries
+            if len(listed) > 1:  # the folder could not be listed: the next request lists again
+                return entries, str(listed[1])
             self.kept[key] = (at, files[:n], stamps[:n], entries)
             while len(self.kept) > SOURCES_CACHE_MAX:
                 del self.kept[next(iter(self.kept))]
-        return entries
+        return entries, None
 
 
 def source_folder(p: Path) -> Path | None:
@@ -1405,8 +1430,10 @@ def create_app(port: int) -> FastAPI:
         manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
         outputs = output_names(p)
         found = []
-        for s in sources.entries(p):
-            status, _ = media.status(p, s["path"])
+        listing, source_error = sources.listing(p)
+        for s in listing:
+            # Never probes: 200 sources took 11 s of ffprobe. The page prepares the one it plays.
+            status = media.cached_status(p, s["path"])
             found.append(
                 {
                     "id": s["id"],
@@ -1432,6 +1459,9 @@ def create_app(port: int) -> FastAPI:
             # newest); false while that export is not assembled yet and an earlier final leads.
             "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
             "sources": found,
+            # The picked folder could not be listed (gone, unreadable): a field, so Settings
+            # (source remap), Reveal and Delete still work.
+            "source_error": source_error,
         }
 
     @owned.put("/projects/{pid}/review")

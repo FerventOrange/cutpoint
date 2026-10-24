@@ -118,6 +118,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` no longer probes every source with ffprobe when a project opens (200 sources took
+  about 12 s, now about 0.1 s). Each source is probed when the player first loads it.
+- `cutpoint ui` shows the real error for an unanalyzed project whose source folder is missing or
+  unreadable, with how to fix it (reconnect the drive or set a source remap), instead of "No
+  videos found".
+- `cutpoint ui` lists an unanalyzed project's sources from the `source_remap` target when the
+  source folder has moved.
 - `cutpoint ui` caches each project's source list, so preview and media requests no longer re-list
   the source folder or re-read `highlights.json` on every request, which was slow on network
   shares. Changes are picked up on the next request: the cache is checked against

@@ -207,7 +207,7 @@ function renderMoments() {
   const hadFocus = empty.contains(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
   empty.classList.toggle('fresh', !!p && !hl);
   if (!p) setEmpty(empty);
-  else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0);
+  else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0, p.source_error ? sourceErrorText(p) : '');
   else if (!list.length)
     setEmpty(empty, h('p', {}, 'Analysis found no moments. Try another style, or add footage and analyze again.'));
   else setEmpty(empty);
@@ -272,14 +272,21 @@ function folderArt() {
   return el;
 }
 
-/** Project open but not analyzed: source count and the one button that starts analysis. */
-function renderUnanalyzed(el, n) {
-  if (el.dataset.n === String(n)) return; // polling re-renders; keep the button (and its focus)
-  el.dataset.n = n;
+/** Why the picked source folder lists no videos: it could not be read (``source_error``). */
+const sourceErrorText = (p) =>
+  `The source folder cannot be found or read (${p.source_error}). Reconnect the drive, or set a source remap in Settings.`;
+
+/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis. */
+function renderUnanalyzed(el, n, error) {
+  const state = `${n}|${error}`;
+  if (el.dataset.n === state) return; // polling re-renders; keep the button (and its focus)
+  el.dataset.n = state;
   setEmpty(el,
     folderArt(),
-    h('p', { class: `fresh-count${n ? '' : ' none'}` },
-      n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory'),
+    error
+      ? h('p', { class: 'fresh-error', text: error })
+      : h('p', { class: `fresh-count${n ? '' : ' none'}` },
+        n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory'),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', { text: 'Analyze footage to transcribe audio and rank the strongest moments.' }),
     h('button', {
@@ -475,8 +482,27 @@ function ensureVideo(seekC) {
     drop('This source file is not part of the project, so it cannot be previewed. You can still trim by timecode.');
     return;
   }
+  if (src.status === 'unknown') {
+    // not probed yet (the project view never probes): preparing probes it and refreshes. Still
+    // unknown after an earlier prepare (the file changed, or the server restarted): prepare again.
+    const k = `${S.id}:${src.path}`;
+    if (!prepareRequested.has(k)) prepareSource(src);
+    else
+      S.prepTimer = setTimeout(() => {
+        prepareRequested.delete(k);
+        prepareSource(src);
+      }, 2000);
+    return drop('Loading video…');
+  }
   if (src.status === 'needs-proxy' || src.status === 'preparing') {
-    if (src.status === 'needs-proxy' && !prepareRequested.has(`${S.id}:${src.path}`)) prepareSource(src);
+    const k = `${S.id}:${src.path}`;
+    if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src);
+    else if (src.status === 'needs-proxy')
+      // requested before, but not building (the server restarted): prepare again
+      S.prepTimer = setTimeout(() => {
+        prepareRequested.delete(k);
+        prepareSource(src);
+      }, 2000);
     else S.prepTimer = setTimeout(refreshProject, 2000);
     return drop('Preparing a browser-playable preview of this source. It will start when ready.');
   }
@@ -484,6 +510,7 @@ function ensureVideo(seekC) {
     $('#retryBtn').hidden = false;
     return drop('The browser-playable preview could not be built for this source. Retry it, or trim by timecode.');
   }
+  prepareRequested.delete(`${S.id}:${src.path}`); // ready: a later change to the file prepares again
   if (v.dataset.url !== src.url) {
     v.dataset.url = src.url;
     pendingSeek = seekC ? seekC.start : (c?.start ?? 0);
@@ -1123,7 +1150,8 @@ function renderBusy() {
   const big = $('#analyzeBig');
   if (big) {
     const own = S.active?.project_id === S.id && S.active?.action === 'analyze';
-    const reason = own ? 'Analyzing… progress is in Jobs.' : busy ? why : 'Add videos to the source folder first.';
+    const reason = own ? 'Analyzing… progress is in Jobs.' : busy ? why
+      : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
     set('#analyzeBig', !p || busy || !p.sources?.length, reason);
     const label = own ? 'Analyzing…' : 'Analyze footage';
     if (big.textContent !== label) big.textContent = label;
