@@ -1076,15 +1076,19 @@ def analyze(
             )
             if rater.available():
                 t0 = time.perf_counter()
-                if vision_top is None:
-                    vision_top = auto_vision_top(sum(r.duration for r in results))
+                # vision_top itself stays None (auto) in the saved settings, for reanalyze
+                n_top = (
+                    auto_vision_top(sum(r.duration for r in results))
+                    if vision_top is None
+                    else vision_top
+                )
                 logger.info(
                     "Vision: rating top %d of %d candidates",
-                    min(vision_top, len(cands)),
+                    min(n_top, len(cands)),
                     len(cands),
                 )
                 n_failed = 0
-                for c in cands[:vision_top]:
+                for c in cands[:n_top]:
                     res = rater.rate(remap_source(c.source), c.start, c.end, style.base)
                     if res is None:
                         n_failed += 1
@@ -1099,7 +1103,7 @@ def analyze(
                         "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c.start, c.end
                     )
                 timings["vision_s"] = round(time.perf_counter() - t0, 2)
-                vision_stats = {"requested": min(vision_top, len(cands)), "failed": n_failed}
+                vision_stats = {"requested": min(n_top, len(cands)), "failed": n_failed}
                 cands.sort(key=lambda c: -c.score)
             elif vision:
                 logger.warning(
@@ -1134,6 +1138,9 @@ def analyze(
                 "scenes": use_scenes,
                 "vision_used": vision_used,
                 "vision": vision_stats,
+                "vision_top": vision_top,
+                "ollama_url": ollama_url,
+                "ollama_model": ollama_model,
                 "target_total": style.target_total,
                 "weights": style.weights,
                 # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
@@ -1233,6 +1240,9 @@ def reanalyze(project: Path) -> Path:
         style,
         project,
         vision=None if st.get("vision_used") else False,
+        vision_top=st.get("vision_top"),
+        ollama_url=st.get("ollama_url"),
+        ollama_model=st.get("ollama_model"),
         model=st.get("whisper_model"),
         language=st.get("language"),
         use_scenes=bool(st.get("scenes", True)),

@@ -51,8 +51,8 @@ def select_moments(
 
     Raises:
         FileNotFoundError: If the project has no highlights.json.
-        ValueError: If highlights.json is unreadable, not valid JSON or not an
-            object with candidates, an id is unknown or nothing is selected.
+        ValueError: If highlights.json is unreadable, not valid JSON or has no
+            candidates list, an id is unknown or nothing is selected.
     """
     try:
         data = cache.read_json(
@@ -62,9 +62,9 @@ def select_moments(
         raise FileNotFoundError(
             f"No highlights.json in {project}; run 'cutpoint analyze' first"
         ) from None
-    if not isinstance(data, dict) or "candidates" not in data:  # e.g. null or a list
+    if not isinstance(data, dict) or not isinstance(data.get("candidates"), list):  # e.g. null
         raise ValueError(
-            f"{project / 'highlights.json'} is not a JSON object with candidates; "
+            f"{project / 'highlights.json'} has no candidates list; "
             "re-run `cutpoint analyze` to rewrite it"
         )
     cands: list[dict[str, Any]] = data["candidates"]
