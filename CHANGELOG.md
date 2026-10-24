@@ -77,6 +77,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `extend` writes each re-exported clip's `.srt` for its new range and records it in the
+  manifest (`srt`), in place and with `--out`. In place, the `.srt` the old manifest lists is
+  replaced (removed when the source has no cached transcript), so no subtitles with the old
+  timing stay beside the clip; an `.srt` the manifest does not list is never overwritten, as
+  with `clips --force` (follow-up to #213).
+- `clips --force` and `extend --out DIR --force` no longer replace a hand-added or renamed
+  `.mp4` that has the name of a new clip but is not in the old `manifest.json` (without a
+  readable manifest, any existing `.mp4` with a new clip's name). The run stops with exit 1
+  before exporting anything, and an ERROR names the files and says to move or rename them
+  (follow-up to #213).
+- `final.srt` with cut transitions no longer drifts when a clip's audio runs past its video.
+  Each clip is placed where the cut join really starts it: at the end of the previous file (its
+  container duration), not of its video. Crossfades are unchanged (follow-up to #213).
 - Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check (for
   example `360 analyze` with cached views but no cached event layers) no longer fails with
   `WinError 127` on `cudnn_cnn64_9.dll`. On Windows the GPU check imports torch first when it is

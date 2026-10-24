@@ -42,7 +42,8 @@ If the user asks for "edit this video and make it a montage" in one step, use
   `manifest.json` lists, once every new clip is exported (other files, sources included, stay;
   clips renamed or added by hand stay and are assembled; a WARNING names them, so tell the
   user, and move them out only if they are clips you exported, never delete a file you did not
-  export).
+  export). If such a clip has the name of a new clip, the run stops before exporting with an
+  `ERROR` naming it; tell the user to move or rename it.
 - Transcription, `events` and export can take minutes to hours. Run them in the background or
   with a long timeout.
 - Never modify or delete the user's source videos. You may delete or rename clips in a project's
