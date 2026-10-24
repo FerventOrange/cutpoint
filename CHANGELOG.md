@@ -80,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A corrupt, unreadable or non-object `highlights.json` now gives an error naming the file and
+  saying to re-run `cutpoint analyze`, in `clips`, `events`, the commands that read highlights
+  through them, and re-analysis. Before, it was reported as missing or crashed with a traceback;
+  a missing file still gives the old message (#228).
 - `assemble` with hard cuts and added audio fades (clips without a baked fade) trims each
   clip's audio to where the next clip starts (its container duration), as the video and
   `final.srt` already do. Clips whose audio ran past their video drifted: 3 such clips gave
