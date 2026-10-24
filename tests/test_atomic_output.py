@@ -548,8 +548,10 @@ def test_clips_force_and_in_place_extend_refuse_a_root_or_mount_before_exporting
 def test_swap_target_that_resolves_to_a_nameless_root(
     monkeypatch, tmp_path, folder, is_mount, message
 ):
-    """#185: only a folder that is a mount point itself is called one; a real root or a link
-    that lands on a root keeps the drive-root message. The error names the folder as given."""
+    """#185: a folder that is already a root before resolving (a drive root, or a UNC share
+    root on Windows) is refused as a drive root although ``is_mount()`` is True for it; a
+    volume mounted into a named folder is a mount point instead (the ``volume mount`` case
+    above). The error names the folder as given."""
     dst = {
         "root": Path(tmp_path.anchor),
         "unc": Path(r"\\srv\share"),

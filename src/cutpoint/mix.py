@@ -84,7 +84,7 @@ LENGTHS = {
     "scenery": (3.0, 5.0),
     "social": (5.0, 9.0),
 }
-MIN_CLIP_S = 2.5  # shortest clip left after cutting out excluded spans
+MIN_MIX_PIECE_S = 2.5  # shortest clip left after cutting out excluded spans
 TRIM_FRAC = 0.75  # ... and at least this share of the category's LENGTHS minimum
 EXCLUDE_FILE = "mix_exclude.json"
 CRASH_MAX_S = 12.0  # crash clip (approach, impact, aftermath) cap
@@ -477,8 +477,8 @@ def _run_of(
 # --------------------------------------------------------------------------- exclusions
 def min_length(category: str) -> float:
     """Shortest clip of ``category`` left after a cut: :data:`TRIM_FRAC` of its
-    :data:`LENGTHS` minimum, at least :data:`MIN_CLIP_S`."""
-    return max(TRIM_FRAC * LENGTHS.get(category, (0.0,))[0], MIN_CLIP_S)
+    :data:`LENGTHS` minimum, at least :data:`MIN_MIX_PIECE_S`."""
+    return max(TRIM_FRAC * LENGTHS.get(category, (0.0,))[0], MIN_MIX_PIECE_S)
 
 
 def load_exclusions(path: Path) -> list[dict[str, Any]]:
@@ -551,7 +551,7 @@ def apply_exclusions(
 
     A cut candidate keeps its longest remaining part (a crash the part holding its
     peak) when that is at least :func:`min_length`, else it is dropped; a crash
-    reaction is cut the same way on its own (at least :data:`MIN_CLIP_S`).
+    reaction is cut the same way on its own (at least :data:`MIN_MIX_PIECE_S`).
     """
     out = []
     key = key or functools.cache(source_key)  # resolving reads the disk: once per call
@@ -571,7 +571,7 @@ def apply_exclusions(
         extra = [
             replace(e, start=p[0], end=p[1])
             for e in c.extra
-            if (p := _piece(e.start, e.end, holes, MIN_CLIP_S, None))
+            if (p := _piece(e.start, e.end, holes, MIN_MIX_PIECE_S, None))
         ]
         out.append(replace(c, start=main[0], end=main[1], extra=extra))
     return out
