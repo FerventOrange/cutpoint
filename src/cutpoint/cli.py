@@ -17,12 +17,13 @@ import subprocess
 import sys
 import threading
 import urllib.error
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path, PurePath
+from typing import NoReturn
 
-from cutpoint import __version__, paths, stage
+from cutpoint import __version__, jsonout, paths, stage
 from cutpoint.activity import resolve as resolve_activity
 from cutpoint.assemble import assemble
 from cutpoint.boundaries import SpeechSettings
@@ -342,6 +343,11 @@ def _cmd_paths(a: argparse.Namespace) -> None:
         ("projects", cfg.projects_dir),
         ("bundled", paths.PRESETS_DIR),
     ]
+    if jsonout.active():
+        for key, path in rows:
+            jsonout.output(key, path)
+        jsonout.output("missing", [key for key, path in rows if not path.exists()])
+        return
     width = max(len(k) for k, _ in rows)
     for key, path in rows:
         state = "" if path.exists() else "  (missing)"
@@ -455,9 +461,41 @@ def _add_pano_arguments(p: argparse.ArgumentParser, default: str | None) -> None
     )
 
 
+def _add_json_argument(p: argparse.ArgumentParser) -> None:
+    """``--json``: the command's result as one JSON object on stdout (see cutpoint.jsonout)."""
+    p.add_argument(
+        "--json",
+        dest="json_result",
+        action="store_true",
+        help="print the result as one JSON object on stdout (logs stay on stderr)",
+    )
+    p.set_defaults(json_command=p.prog.split(" ", 1)[1])
+
+
+class UsageError(SystemExit):
+    """argparse's exit 2, with the parser and message (for the --json envelope)."""
+
+    def __init__(self, parser: argparse.ArgumentParser, message: str, code: object) -> None:
+        super().__init__(code)
+        self.parser = parser
+        self.message = message
+
+
+class _Parser(argparse.ArgumentParser):
+    """ArgumentParser whose errors (usage and message on stderr, exit 2) raise UsageError."""
+
+    def error(self, message: str) -> NoReturn:
+        if sys.stderr is None:  # argparse would print the usage to stdout instead
+            raise UsageError(self, message, 2)
+        try:
+            super().error(message)
+        except SystemExit as exc:
+            raise UsageError(self, message, exc.code) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser."""
-    p = argparse.ArgumentParser(
+    p = _Parser(
         prog="cutpoint",
         description="Cutpoint: local AI highlight finding, clipping and assembly",
     )
@@ -1021,6 +1059,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the resolved data folders (CUTPOINT_HOME, "
         "config, cache, models, tools, stage, styles, projects)",
     )
+    _add_json_argument(pa)
     pa.set_defaults(func=_cmd_paths)
 
     cp = sub.add_parser(
@@ -1093,9 +1132,40 @@ def _stop_signal_as_interrupt() -> Iterator[None]:
         signal.signal(signum, previous)
 
 
+def _json_requested(tokens: list[str]) -> bool:
+    """``--json`` or an abbreviation argparse accepts for it (``--j``, ``--js``, ``--jso``)."""
+    for token in tokens:
+        if token == "--":
+            return False
+        option = token.partition("=")[0]
+        if len(option) > 2 and "--json".startswith(option):
+            return True
+    return False
+
+
+def _parse(parser: argparse.ArgumentParser, argv: Sequence[str] | None) -> argparse.Namespace:
+    """``parser.parse_args(argv)``; with ``--json`` on a command that takes it, a usage error
+    also writes an ``ok: false`` envelope (code ``bad_args``) before exiting 2."""
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    try:
+        args, extra = parser.parse_known_args(tokens)
+    except UsageError as err:  # from the subcommand's parser, which knows its json_command
+        if _json_requested(tokens) and (command := err.parser.get_default("json_command")):
+            jsonout.emit_error(command, jsonout.BAD_ARGS, err.message)
+        raise
+    if extra:
+        try:
+            parser.error(f"unrecognized arguments: {' '.join(extra)}")
+        except UsageError as err:
+            if getattr(args, "json_result", False):
+                jsonout.emit_error(args.json_command, jsonout.BAD_ARGS, err.message)
+            raise
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
-    args = build_parser().parse_args(argv)
+    args = _parse(build_parser(), argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",
@@ -1124,6 +1194,17 @@ def main(argv: list[str] | None = None) -> int:
             hf_logger.removeHandler(handler)
     except ImportError:
         pass
+    if not getattr(args, "json_result", False):
+        return _run(args)
+    with jsonout.run(args.json_command):
+        code = _run(args)
+        if code:
+            jsonout.fail(jsonout.ERROR, f"exit code {code}")
+    return code
+
+
+def _run(args: argparse.Namespace) -> int:
+    """Run the command; errors are logged (and recorded for --json) as an exit code."""
     try:
         with _stop_signal_as_interrupt():
             code = args.func(args)
@@ -1135,6 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
             raise
         logger.debug("missing module", exc_info=True)
         logger.error("%s", message)
+        jsonout.fail(jsonout.MISSING_EXTRA, message)
         return 1
     except (
         FFmpegError,
@@ -1151,9 +1233,11 @@ def main(argv: list[str] | None = None) -> int:
         # for a wrongly typed setting that get_config does not check.
         logger.debug("command failed", exc_info=True)
         logger.error("%s", err)
+        jsonout.fail(jsonout.error_code(err), str(err))
         return 1
     except KeyboardInterrupt:
         logger.error("interrupted")
+        jsonout.fail(jsonout.INTERRUPTED, "interrupted")
         return 130
     return code if isinstance(code, int) else 0
 
