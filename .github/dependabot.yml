@@ -10,3 +10,12 @@ updates:
         update-types:
           - version-update:semver-major
           - version-update:semver-minor
+  # Actions are pinned by SHA with a "# vX.Y.Z" comment, which Dependabot keeps current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
