@@ -1504,6 +1504,12 @@ def create_app(port: int) -> FastAPI:
                 args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
             if st.get("recursive") is True:
                 args.append("--recursive")
+            vision_top = st.get("vision_top")
+            if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
+                args.append(f"--vision-top={vision_top}")
+            for key, opt in (("ollama_url", "--ollama-url"), ("ollama_model", "--ollama-model")):
+                if isinstance(st.get(key), str) and st[key]:
+                    args.append(f"{opt}={st[key]}")
         elif action == "clips":
             raw = _load(p, f"{UI_DIR}/review.json")
             segments = validate_segments(

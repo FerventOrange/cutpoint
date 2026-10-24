@@ -277,6 +277,44 @@ def test_reanalyze_keeps_recorded_excludes_and_recursion(
     assert names == {"keep.mp4", "nested.mp4"}
 
 
+@pytest.mark.parametrize(
+    ("saved", "flags"),
+    [
+        (
+            {"vision_top": 5, "ollama_url": "http://h:1", "ollama_model": "m"},
+            ["--vision-top=5", "--ollama-url=http://h:1", "--ollama-model=m"],
+        ),
+        ({"vision_top": True, "ollama_url": "", "ollama_model": ""}, []),
+        ({"vision_top": 0}, []),
+    ],
+    ids=["kept", "invalid-true-and-empty", "zero"],
+)
+def test_reanalyze_passes_recorded_vision_and_ollama_options(
+    client: TestClient,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    saved: dict,
+    flags: list[str],
+) -> None:
+    p = ui.projects_dir() / "cli-made"
+    p.mkdir(parents=True)
+    footage = tmp_path / "clip.mp4"
+    footage.write_bytes(b"x")
+    settings = {"inputs": [str(footage)], **saved}
+    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
+    captured: list[list[str]] = []
+
+    def fake_start(self, project_id, action, args, *rest, **kw):
+        captured.append(args)
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    assert client.post("/api/projects/cli-made/jobs", json={"action": "analyze"}).status_code == 200
+    args = captured[0]
+    assert [a for a in args if a.startswith(("--vision-top", "--ollama"))] == flags
+
+
 def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) -> None:
     script = (
         "import subprocess, sys, time\n"
