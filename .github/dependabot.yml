@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    # 24.04 is the release, not a version to bump: only refresh its digest.
+    ignore:
+      - dependency-name: ubuntu
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

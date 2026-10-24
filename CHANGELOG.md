@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
   No transcription runs for them; without a cached transcript there is no `.srt` and one INFO
   line. `clips --force` replaces only the `.srt` files its old `manifest.json` lists (#5).
+- `cutpoint ui` preview player has a mute button and a volume slider next to Play, shared by
+  moments, clips and the final video and remembered per browser (default unmuted at 100%). `M`
+  toggles mute (#142).
 - `cutpoint ui` New Project "Choose video…" and "Choose folder…" buttons open the operating
   system's own file or folder dialog on the computer running the server (Windows: system dialog
   through tkinter; Linux, with a display: zenity, falling back to kdialog; macOS: osascript)
@@ -62,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `360 stitch --from-clips` (#200).
 - `cutpoint 360 qa` checks `--size` when the command line is parsed: a bad value is a usage
   error (exit 2, like `clips --size`), also with `--paths`.
+- The Docker base image is pinned by digest (Dependabot proposes updates), and CI builds the
+  image and runs `--version`, `capabilities` and a non-root `paths`; a weekly workflow also
+  builds the `INSTALL_EVENTS=true` image and imports `librosa` and `torch` (#121).
 
 ### Fixed
 

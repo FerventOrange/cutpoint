@@ -23,6 +23,7 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from conftest import link_dir, link_file, media_info
 from cutpoint import cache, cli, config, ui
 
 PORT = 8765
@@ -291,7 +292,11 @@ def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) ->
     with pytest.raises(HTTPException) as busy:
         jobs.start("p", "clips", [sys.executable, "-c", "pass"])
     assert busy.value.status_code == 409
-    assert jobs.cancel(job.id).status == "cancelled"
+    cancelled = jobs.cancel(job.id)
+    deadline = time.time() + 10  # cancel waits only 5 s for the watcher thread; Windows can lag
+    while cancelled.status != "cancelled" and time.time() < deadline:
+        time.sleep(0.05)
+    assert cancelled.status == "cancelled"
     assert job.proc is not None and job.proc.poll() is not None
     if sys.platform.startswith("linux"):  # a reaped-or-zombie child counts as dead
         time.sleep(0.2)
@@ -767,15 +772,28 @@ def test_show_folder_is_404_when_the_picked_folder_is_gone_or_unreadable(
     assert opened == []
 
 
-def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
+@pytest.fixture
+def reveal_env(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``target`` picks one of the project's folders; the path still never comes from the client."""
+) -> tuple[list[Path], str, Path, Path, str]:
+    """A project whose folder opener records what it opens.
+
+    Returns (opened folders, project id, source folder, project folder, reveal URL).
+    """
     opened: list[Path] = []
     monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
     pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
-    p = ui.project_dir(pid)
-    reveal = f"/api/projects/{pid}/reveal"
+    return opened, pid, folder, ui.project_dir(pid), f"/api/projects/{pid}/reveal"
+
+
+def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reveal_env: tuple[list[Path], str, Path, Path, str],
+) -> None:
+    """``target`` picks one of the project's folders; the path still never comes from the client."""
+    opened, _pid, folder, p, reveal = reveal_env
 
     assert (
         client.post(
@@ -827,13 +845,9 @@ def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
 
 @pytest.mark.parametrize("bad", ["..", ".", ".hidden"])
 def test_exports_json_cannot_point_outside_the_project(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+    client: TestClient, reveal_env: tuple[list[Path], str, Path, Path, str], bad: str
 ) -> None:
-    opened: list[Path] = []
-    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
-    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
-    p = ui.project_dir(pid)
-    reveal = f"/api/projects/{pid}/reveal"
+    opened, _pid, _folder, p, reveal = reveal_env
     # Manifests and videos where a "." / ".." / dot-leading name would resolve to.
     for folder in (p, p.parent, p / ".hidden"):
         folder.mkdir(exist_ok=True)
@@ -858,21 +872,6 @@ def test_exports_json_cannot_point_outside_the_project(
     assert client.post(reveal, params={"target": "clips"}).json() == {"path": str(p / "clips_ui_1")}
     assert client.post(reveal, params={"target": "outputs"}).json() == {"path": str(p)}
     assert opened == [p / "clips_ui_1", p]
-
-
-def link_dir(link: Path, target: Path) -> None:
-    """Make ``link`` a directory link to ``target``: a symlink, or a junction on Windows."""
-    try:
-        link.symlink_to(target, target_is_directory=True)
-        return
-    except (OSError, NotImplementedError):
-        if sys.platform != "win32":
-            pytest.skip("cannot create a directory symlink here")
-    done = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False
-    )
-    if done.returncode != 0:
-        pytest.skip("cannot create a symlink or junction here")
 
 
 @pytest.mark.parametrize("kind", ["dir", "final"])
@@ -1589,14 +1588,6 @@ def test_a_job_is_refused_when_the_projects_folder_changed_after_the_project_was
             jobs.cancel(job.id)
 
 
-def link_file(link: Path, target: Path) -> None:
-    """Make ``link`` a file symlink to ``target`` (skip where files cannot be linked)."""
-    try:
-        link.symlink_to(target)
-    except (OSError, NotImplementedError):
-        pytest.skip("cannot create a file symlink here")
-
-
 def project_with_link(
     client: TestClient, tmp_path: Path, what: str, data: object = None
 ) -> tuple[str, Path, Path]:
@@ -1689,21 +1680,30 @@ def test_metadata_written_through_a_link_outside_the_project_is_refused(
     assert not list((p / "ui").glob("segments-*.json"))  # no half-made export either
 
 
+@pytest.fixture
+def hevc_project(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, Path, Path, Path]:
+    """A project with an HEVC source (a browser cannot play it) and an empty ``outside`` folder.
+
+    Returns (project id, source folder, project folder, the outside folder).
+    """
+    probed = media_info(vcodec="hevc", duration=10.0)
+    monkeypatch.setattr(ui, "probe", lambda _path: probed)
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    return pid, folder, ui.project_dir(pid), outside
+
+
 def media_link(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sub: str
+    client: TestClient, hevc_project: tuple[str, Path, Path, Path], sub: str
 ) -> tuple[str, str, Path, Path, str]:
     """A project with a source the browser cannot play, ``ui/<sub>`` linked to a folder outside.
 
     Returns (project id, source id, project folder, the outside folder, the source's key).
     """
-    fake = SimpleNamespace(
-        vcodec="hevc", pix_fmt="yuv420p", acodec="aac", audio_streams=1, duration=10.0
-    )
-    monkeypatch.setattr(ui, "probe", lambda _path: fake)
-    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
-    p = ui.project_dir(pid)
-    outside = tmp_path / "outside"
-    outside.mkdir()
+    pid, folder, p, outside = hevc_project
     (p / "ui").mkdir(exist_ok=True)
     link_dir(p / "ui" / sub, outside)
     sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
@@ -1711,9 +1711,9 @@ def media_link(
 
 
 def test_proxy_in_a_cache_folder_linked_outside_is_not_served_or_built(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, hevc_project: tuple[str, Path, Path, Path]
 ) -> None:
-    pid, sid, _, outside, key = media_link(client, tmp_path, monkeypatch, "proxy")
+    pid, sid, _, outside, key = media_link(client, hevc_project, "proxy")
     (outside / f"{key}.mp4").write_bytes(b"outside")
     src = client.get(f"/api/projects/{pid}").json()["sources"][0]
     assert src["status"] == "needs-proxy"
@@ -1723,9 +1723,11 @@ def test_proxy_in_a_cache_folder_linked_outside_is_not_served_or_built(
 
 
 def test_frames_folder_linked_outside_is_not_used_and_nothing_there_is_deleted(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pid, sid, _, outside, key = media_link(client, tmp_path, monkeypatch, "frames")
+    pid, sid, _, outside, key = media_link(client, hevc_project, "frames")
     stale = [outside / f"{'0' * 16}-20-160.jpg", outside / f"{key}-30-160.123.part"]
     for f in stale:
         f.write_bytes(b"x")
@@ -1900,18 +1902,11 @@ def test_one_unreadable_entry_does_not_fail_the_project_list(
 def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    hevc_project: tuple[str, Path, Path, Path],
     caplog: pytest.LogCaptureFixture,
     fault: str,
 ) -> None:
-    fake = SimpleNamespace(
-        vcodec="hevc", pix_fmt="yuv420p", acodec="aac", audio_streams=1, duration=10.0
-    )
-    monkeypatch.setattr(ui, "probe", lambda _path: fake)
-    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
-    p = ui.project_dir(pid)
-    outside = tmp_path / "outside"
-    outside.mkdir()
+    pid, folder, p, outside = hevc_project
     if fault == "ui is a file":
         shutil.rmtree(p / "ui")
         (p / "ui").write_bytes(b"x")

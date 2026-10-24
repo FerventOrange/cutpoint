@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import write
+from conftest import remap, set_config, write
 from cutpoint import config, stage
 from cutpoint.config import remap_source
 from cutpoint.stage import clear_stage, reload_stage_index, stage_sources, staged_path
@@ -27,9 +27,7 @@ def test_stage_sources_matches_exclude_against_the_original_spelling(
     old, new = tmp_path / "old", tmp_path / "new"  # old is gone; its footage lives in new
     write(new / "keep.mp4", "keep")
     write(new / "skip.mp4", "skip")
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    remap(home, monkeypatch, old, new)
 
     result = stage_sources([old], exclude=[pattern], min_free_gb=0)
 
@@ -54,9 +52,7 @@ def test_clear_stage_selects_the_files_stage_copies(
     old, new = tmp_path / "old", tmp_path / "new"  # old is gone; its footage lives in new
     write(new / "a.mp4", "aa")
     write(new / "sub" / "b.mp4", "bbb")
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    remap(home, monkeypatch, old, new)
     assert stage_sources([old], recursive=True, min_free_gb=0)["files"] == 2
 
     assert clear_stage([old], recursive=recursive, exclude=exclude) == removed
@@ -71,9 +67,7 @@ def test_clear_stage_finds_a_file_only_the_original_folder_has(home, tmp_path, m
     write(old / "a.mp4", "aa")
     write(old / "c.mp4", "cc")
     write(new / "a.mp4", "aa")
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    remap(home, monkeypatch, old, new)
     assert stage_sources([old], min_free_gb=0)["files"] == 2
 
     assert clear_stage([old]) == 2
@@ -92,9 +86,7 @@ def test_clear_stage_falls_back_to_the_index_for_inputs_that_cannot_be_listed(
     write(new / "sub" / "b.mp4", "bbb")
     write(other / "c.mp4", "cc")
     write(older / "x.mp4", "xx")  # a sibling named like old's prefix; never selected
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+    remap(home, monkeypatch, old, new)
     assert stage_sources([old, other, older], recursive=True, min_free_gb=0)["files"] == 4
     names = {"old/a.mp4": old / "a.mp4", "old/sub/b.mp4": old / "sub" / "b.mp4"}
     names |= {"other/c.mp4": other / "c.mp4", "older/x.mp4": older / "x.mp4"}
@@ -119,8 +111,7 @@ def test_clear_stage_finds_copies_recorded_under_a_windows_form_key(home, tmp_pa
     new = tmp_path / "copy"
     write(new / "T" / "x.mp4", "xx")
     write(new / "Tx" / "z.mp4", "zz")  # a sibling named like T's prefix; never selected
-    write(home / "config.json", json.dumps({"source_remap": {r"D:\Videos": str(new)}}))
-    config.get_config.cache_clear()
+    set_config(home, source_remap={r"D:\Videos": str(new)})
     assert stage_sources([new / "T", new / "Tx"], min_free_gb=0)["files"] == 2
     copies = {n: Path(staged_path(str(new / n))) for n in ("T/x.mp4", "Tx/z.mp4")}
     twin = new / "T" / "X.mp4"  # a different file on a case-sensitive file system
@@ -139,11 +130,6 @@ def test_clear_stage_finds_copies_recorded_under_a_windows_form_key(home, tmp_pa
     assert [c.exists() for c in copies.values()] == [False, True]
 
 
-def _windows_remap(home, new):
-    write(home / "config.json", json.dumps({"source_remap": {r"D:\Videos": str(new)}}))
-    config.get_config.cache_clear()
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="a Windows-form key is foreign only on POSIX")
 def test_case_twins_below_a_windows_form_remap_are_staged_separately(home, tmp_path, caplog):
     """#163: ``T/x.mp4`` and ``T/X.MP4`` share a stage key but get their own copy and entry."""
@@ -151,7 +137,7 @@ def test_case_twins_below_a_windows_form_remap_are_staged_separately(home, tmp_p
     low, up = write(new / "T" / "x.mp4", "low"), write(new / "T" / "X.MP4", "UPPER")
     if len(list((new / "T").iterdir())) < 2:
         pytest.skip("case-insensitive file system")
-    _windows_remap(home, new)
+    set_config(home, source_remap={r"D:\Videos": str(new)})
     caplog.set_level("INFO", logger="cutpoint.stage")
 
     assert stage_sources([new / "T"], min_free_gb=0)["files"] == 2
@@ -172,7 +158,7 @@ def test_index_entries_without_rel_still_match_and_get_it(home, tmp_path, caplog
     """#163: an index written before ``rel`` existed is used without a new copy."""
     new = tmp_path / "copy"
     src = write(new / "T" / "x.mp4", "xx")
-    _windows_remap(home, new)
+    set_config(home, source_remap={r"D:\Videos": str(new)})
     stage_sources([src], min_free_gb=0)
     copy = staged_path(str(src))
     index_file = config.get_config().stage_dir / "index.json"
@@ -270,18 +256,12 @@ def test_expand_subst_follows_subst_drives_only(monkeypatch):
     assert all(len(d) == 2 for d in asked)
 
 
-def _remap(home, monkeypatch, old: Path, new: Path) -> None:
-    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-    config.get_config.cache_clear()
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
-
-
 def _staged_under(home, tmp_path, monkeypatch, old: Path) -> tuple[str, Path]:
     """Stage ``<nas>/a.mp4`` recorded as ``old/a.mp4`` (through ``source_remap``); returns the
     copy and the index file."""
     nas = tmp_path / "nas"
     src = write(nas / "a.mp4", "aa")
-    _remap(home, monkeypatch, old, nas)
+    remap(home, monkeypatch, old, nas)
     stage_sources([src], min_free_gb=0)
     copy = staged_path(str(src))
     assert copy != str(src)

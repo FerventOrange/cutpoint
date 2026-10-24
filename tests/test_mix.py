@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import link_file, messages
 from cutpoint import cache, mix
 from cutpoint.clips import REACTION_LABEL, order_moments
 from cutpoint.mix import (
@@ -265,10 +266,7 @@ def _alias(real: Path, spelling: str) -> Path:
     if spelling == "dotdot":
         return real.parent / ".." / real.parent.name / real.name
     alias = real.with_name(f"alias_{real.name}")
-    try:
-        alias.symlink_to(real)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks unavailable")
+    link_file(alias, real)
     return alias
 
 
@@ -324,7 +322,7 @@ def test_run_mix_rerun_reads_relative_sources_of_the_segments_file_against_its_f
 
 
 @pytest.mark.parametrize(
-    "windows",
+    "on_windows",
     [
         True,
         pytest.param(
@@ -337,22 +335,20 @@ def test_run_mix_rerun_reads_relative_sources_of_the_segments_file_against_its_f
     ids=["windows", "elsewhere"],
 )
 def test_load_exclusions_drops_a_drive_relative_source_only_on_windows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog, windows: bool
+    tmp_path: Path, windows, caplog, on_windows: bool
 ) -> None:
     """Issue #181: ``D:a.insv`` is relative to drive D's current folder on Windows, so it
     never matches: dropped with a WARNING, the other entries kept. Elsewhere it is a file
     name next to the exclusions file."""
-    import cutpoint.clips as clips_mod  # noqa: PLC0415
-
-    monkeypatch.setattr(clips_mod, "_WINDOWS", windows)
+    windows(on_windows)
     path = tmp_path / mix.EXCLUDE_FILE
     other = {"source": "b.insv", "start": 0, "end": 5}
     cache.save_json(path, [other, {"source": "D:a.insv", "start": 1, "end": 2}, other])
     with caplog.at_level("WARNING", logger="cutpoint.mix"):
         got = mix.load_exclusions(path)
-    if windows:
+    if on_windows:
         assert [e["source"] for e in got] == [str(tmp_path / "b.insv")] * 2
-        (msg,) = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        (msg,) = messages(caplog)
         assert str(path) in msg
     else:
         assert [e["source"] for e in got][1] == str(tmp_path / "D:a.insv")

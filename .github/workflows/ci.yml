@@ -38,3 +38,21 @@ jobs:
       # The tests are CPU-only; only the default dev group is synced (no gpu/events extras).
       - run: uv sync --locked
       - run: uv run --no-sync pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: cutpoint:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The image's ENTRYPOINT is the cutpoint CLI.
+      - run: docker run --rm cutpoint:ci --version
+      - run: docker run --rm cutpoint:ci capabilities
+      # Non-root with an arbitrary uid, as users run it with --user.
+      - run: docker run --rm --user 4242:4242 cutpoint:ci paths

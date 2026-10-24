@@ -76,6 +76,9 @@ may leave partial output folders, which are not offered for assembly.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
 under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matching clip export.
+The preview transport has a mute button and a volume slider next to Play. One setting covers every
+preview (moments, clips and final) and is remembered per browser; the default is unmuted at 100%.
+`M` toggles mute, and Space plays or pauses even when the volume controls have focus.
 Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
 remote access is not supported.
 

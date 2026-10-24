@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import write
+from conftest import messages, remap, set_config, write
 from cutpoint import assemble, cache, config, crash, ffmpeg_utils, stage, telemetry, transcribe
 from cutpoint.events import llama_server, setup
 from cutpoint.events import paths as ev_paths
@@ -91,23 +91,16 @@ def test_resolve_project_path_keeps_a_sub_folder_with_backslashes(home, tmp_path
     assert got == config.projects_dir() / "foo" / "clips"
 
 
-def _remap(home: Path, monkeypatch: pytest.MonkeyPatch, old: str, new: str) -> None:
-    write(home / "config.json", json.dumps({"source_remap": {old: new}}))
-    config.get_config.cache_clear()
-    # The prefix forms depend on the real cwd / file system; keep just the typed form.
-    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
-
-
 def test_canonical_source_windows_is_case_insensitive_with_backslashes(home, plat, monkeypatch):
     plat("win32")
-    _remap(home, monkeypatch, "D:\\Footage", "E:\\Footage-copy")
+    remap(home, monkeypatch, "D:\\Footage", "E:\\Footage-copy")
     assert config.canonical_source("e:/FOOTAGE-copy/Sub/x.mp4") == "D:\\Footage\\Sub\\x.mp4"
     assert config.canonical_source("D:\\Other\\x.mp4") == "D:\\Other\\x.mp4"
 
 
 def test_canonical_source_posix_is_case_sensitive(home, plat, monkeypatch):
     plat("linux")
-    _remap(home, monkeypatch, "/data/Footage", "/mnt/copy")
+    remap(home, monkeypatch, "/data/Footage", "/mnt/copy")
     assert config.canonical_source("/mnt/copy/Sub/x.mp4") == "/data/Footage/Sub/x.mp4"
     assert config.canonical_source("/mnt/COPY/Sub/x.mp4") == "/mnt/COPY/Sub/x.mp4"
     assert config.canonical_source("/mnt/copy2/x.mp4") == "/mnt/copy2/x.mp4"  # not a prefix
@@ -122,7 +115,7 @@ def test_remap_source_uses_the_original_when_the_target_cannot_be_checked(
 ):
     vault = tmp_path / "vault"
     vault.mkdir()
-    _remap(home, monkeypatch, "/data/Footage", str(vault / "copy"))
+    remap(home, monkeypatch, "/data/Footage", str(vault / "copy"))
     vault.chmod(0)
     try:
         assert config.remap_source("/data/Footage/x.mp4") == Path("/data/Footage/x.mp4")
@@ -271,10 +264,8 @@ def extract_env(tmp_path, monkeypatch, plat):
     return src
 
 
-def _not_staged(caplog) -> list[logging.LogRecord]:
-    return [
-        r for r in caplog.records if r.levelno == logging.WARNING and "is not staged" in r.message
-    ]
+def _not_staged(caplog) -> list[str]:
+    return [m for m in messages(caplog) if "is not staged" in m]
 
 
 def test_extract_local_source_does_not_warn_about_staging(extract_env, monkeypatch, caplog):
@@ -290,8 +281,8 @@ def test_extract_remote_source_warns_with_the_storage_label(extract_env, monkeyp
         assert telemetry.extract(extract_env, 10.0) is None
     warned = _not_staged(caplog)
     assert len(warned) == 1
-    assert "ride.mp4" in warned[0].message
-    assert "/mnt/nas (nfs4)" in warned[0].message
+    assert "ride.mp4" in warned[0]
+    assert "/mnt/nas (nfs4)" in warned[0]
 
 
 # -- "no readable GoPro telemetry" is logged once -------------------------------------------------------
@@ -802,8 +793,7 @@ def test_remap_source_matches_a_disconnected_mapped_drive_in_either_form(
     """Q: is mapped to a NAS share but not connected here, so it cannot be resolved."""
     monkeypatch.setattr(config, "_drive_remote", lambda d: r"\\nas\share" if d == "Q:" else None)
     copy = write(tmp_path / "copy" / "x.mp4")
-    write(home / "config.json", json.dumps({"source_remap": {key: str(tmp_path / "copy")}}))
-    config.get_config.cache_clear()
+    set_config(home, source_remap={key: str(tmp_path / "copy")})
     assert config.remap_source(typed) == copy
 
 
@@ -814,10 +804,7 @@ def test_stage_key_of_a_copy_matches_the_unc_original_of_a_mapped_drive(
     """A staged copy of a Q: file is found by the UNC path find_videos returns."""
     monkeypatch.setattr(config, "_drive_remote", lambda d: r"\\nas\share" if d == "Q:" else None)
     copy = write(tmp_path / "copy" / "x.mp4")
-    write(
-        home / "config.json", json.dumps({"source_remap": {"Q:/Footage": str(tmp_path / "copy")}})
-    )
-    config.get_config.cache_clear()
+    set_config(home, source_remap={"Q:/Footage": str(tmp_path / "copy")})
     assert stage.stage_key(copy) == stage.stage_key("//nas/share/Footage/x.mp4")
 
 
@@ -835,10 +822,7 @@ def test_stage_key_of_a_copy_matches_the_unc_original_of_a_mapped_drive(
 def test_remap_source_matches_a_windows_key_on_posix(home, tmp_path, typed, rest):
     """#149: a ``D:\\Videos`` key was made absolute onto the cwd, so it never matched."""
     copy = write(tmp_path / "copy" / "Trip" / "x.mp4")
-    write(
-        home / "config.json", json.dumps({"source_remap": {r"D:\Videos": str(tmp_path / "copy")}})
-    )
-    config.get_config.cache_clear()
+    set_config(home, source_remap={r"D:\Videos": str(tmp_path / "copy")})
     if rest is None:
         assert config.remap_source(typed) == Path(typed)
         return
