@@ -85,6 +85,22 @@ def test_torch_no_warning(torch_stub, nvidia, build, available):
     assert info["installed"] and info["warning"] is None and info["fix"] is None
 
 
+def test_report_probes_torch_before_transcription(monkeypatch):
+    # On Windows the gpu extra's cuDNN, once loaded by the transcription probe, breaks `import torch`.
+    calls = []
+    for name in ("_torch", "_transcription", "_llama", "_insta360_sdk"):
+        monkeypatch.setattr(capabilities, name, lambda *a, n=name: calls.append(n) or {})
+    monkeypatch.setattr(capabilities, "_compiled_encoders", lambda: set())
+    monkeypatch.setattr(capabilities, "find_encoder", lambda kind: (None, []))
+    monkeypatch.setattr(
+        capabilities, "video_encoder", lambda: SimpleNamespace(kind="cpu", codec="x", device=None)
+    )
+    monkeypatch.setattr(capabilities, "gpu_vendors", lambda: {"nvidia": False, "amd": False})
+    monkeypatch.setattr(capabilities, "_nvidia_driver_usable", lambda: False)
+    capabilities.report()
+    assert calls.index("_torch") < calls.index("_transcription")
+
+
 # --------------------------------------------------------------------------- Insta360 SDK
 
 

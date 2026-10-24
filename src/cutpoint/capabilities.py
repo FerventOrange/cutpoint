@@ -213,6 +213,9 @@ def report() -> dict[str, Any]:
         active |= {"kind": None, "codec": None, "device": None, "error": str(err)}
     vendors = gpu_vendors()
     nvidia_driver = _nvidia_driver_usable()
+    # torch must load its own CUDA/cuDNN DLLs before _transcription() loads ctranslate2's (the
+    # gpu extra's newer cuDNN): on Windows, the other order makes `import torch` fail.
+    torch_info = _torch(nvidia_driver)
     return {
         "platform": sys.platform,
         "gpu_vendors_present": vendors,
@@ -220,7 +223,7 @@ def report() -> dict[str, Any]:
         "active_video_encoder": active,
         "transcription": _transcription(),
         "llama_cpp": _llama(nvidia_driver),
-        "torch": _torch(nvidia_driver),
+        "torch": torch_info,
         "insta360_sdk": _insta360_sdk(vendors["nvidia"] or nvidia_driver),
     }
 
