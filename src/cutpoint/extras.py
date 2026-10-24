@@ -10,6 +10,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import re
 import sys
 import tomllib
 import urllib.parse
@@ -329,3 +330,102 @@ def missing_module_message(module: str) -> str | None:
     if extra is None:
         return None
     return f"{top} is not installed; it comes with the '{extra}' extra: {install_hint(extra)}"
+
+
+_EXTRA_MARKER = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
+_PLATFORM_MARKER = re.compile(r"""sys_platform\s*==\s*["']([^"']+)["']""")
+_REQ_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _installed(name: str) -> bool:
+    try:
+        importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
+def extras_in_use() -> list[str]:
+    """cutpoint's extras whose requirements for this platform are all installed.
+
+    ``all`` is left out (it is the others together); empty when cutpoint is not installed.
+    """
+    try:
+        dist = importlib.metadata.distribution("cutpoint")
+    except importlib.metadata.PackageNotFoundError:
+        return []
+    needs: dict[str, list[str]] = {
+        e: [] for e in dist.metadata.get_all("Provides-Extra") or [] if e != "all"
+    }
+    for req in dist.requires or []:
+        extra = _EXTRA_MARKER.search(req)
+        platform = _PLATFORM_MARKER.search(req)
+        name = _REQ_NAME.match(req)
+        if extra is None or extra.group(1) not in needs or name is None:
+            continue
+        if platform is not None and platform.group(1) != sys.platform:
+            continue
+        needs[extra.group(1)].append(name.group(0))
+    return sorted(e for e, names in needs.items() if names and all(map(_installed, names)))
+
+
+def _with_torch_index(receipt: dict[str, Any]) -> dict[str, Any]:
+    """``receipt`` with the CUDA torch index and ``unsafe-best-match`` added, unless its source
+    (directory, editable, git: cutpoint's own [tool.uv.sources]) or a PyTorch CUDA index
+    already gives CUDA torch."""
+    try:
+        tool = receipt.get("tool", {})
+        for req in tool.get("requirements", []):
+            if str(req.get("name", "")).lower() == "cutpoint" and any(
+                req.get(k) for k in ("editable", "directory", "git")
+            ):
+                return receipt
+        options = tool.get("options", {})
+        indexes = list(options.get("index", []))
+        for i in indexes:
+            url = str(i.get("url") or "")
+            if not i.get("explicit") and "download.pytorch.org/whl/" in url and "/cu" in url:
+                return receipt
+    except (AttributeError, TypeError):
+        return receipt
+    options = {
+        **options,
+        "index": [*indexes, {"url": TORCH_INDEX}],
+        "index-strategy": "unsafe-best-match",
+    }
+    return {**receipt, "tool": {**tool, "options": options}}
+
+
+def torch_cuda_hint() -> str:
+    """The command that replaces an installed torch that cannot use CUDA with the CUDA 12.6
+    build, for this install type, keeping the extras in use."""
+    receipt = _tool_receipt()
+    if receipt is not None:
+        return _tool_hint(_with_torch_index(receipt), "events")
+    in_use = sorted({"events", *extras_in_use()})
+    extras = ",".join(in_use)
+    uv = uv_managed()
+    uv_flags = f"--index {TORCH_INDEX} --index-strategy unsafe-best-match {_REINSTALL_TORCH}"
+    pip_flags = f"--extra-index-url {TORCH_INDEX} --force-reinstall"
+    info = _direct_url()
+    if not _editable(info):
+        source = _pip_source(info or {}, extras)
+        if uv:
+            return f'uv pip install --python "{sys.executable}" {source} {uv_flags}'
+        if not (info or {}).get("url"):
+            # --force-reinstall would pick the newest cutpoint from PyPI; keep this version.
+            source = f'"cutpoint[{extras}]=={importlib.metadata.version("cutpoint")}"'
+        exe, note = _python()
+        return f"{exe} -m pip install {source} {pip_flags}{_notes(note)}"
+    if uv:
+        clone = _file_path(info.get("url")) if info else None
+        if clone is not None and Path(sys.prefix).resolve() != (clone / ".venv").resolve():
+            # uv pip applies the clone's [tool.uv.sources] (cu126 torch).
+            return (
+                f'uv pip install --python "{sys.executable}" '
+                f'-e "{clone.as_posix()}[{extras}]" {_REINSTALL_TORCH}'
+            )
+        # uv sync installs the locked +cu126 build, replacing a +cpu one.
+        return "uv sync " + " ".join(f"--extra {e}" for e in in_use)
+    exe, note = _python()
+    return f'{exe} -m pip install -e ".[{extras}]" {pip_flags}{_notes("from the repository", note)}'

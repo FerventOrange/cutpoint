@@ -14,7 +14,7 @@ prints tracebacks of errors.
 | Command | Purpose |
 |---|---|
 | [`ui`](#ui) | Open a local browser editing workspace for standard video |
-| [`capabilities`](#capabilities) | Report GPU vendors, working encoders and transcription support |
+| [`capabilities`](#capabilities) | Report GPU vendors, working encoders, transcription, torch and SDK support |
 | [`analyze`](#analyze) | Find and rank highlight candidates |
 | [`events`](#events) | Detect sounds, HUD events and describe windows with a model |
 | [`clips`](#clips) | Export moments as numbered clips |
@@ -89,6 +89,11 @@ cutpoint capabilities [--json]
 
 Reports GPU vendors present separately from usable video encoders, the selected encoder,
 faster-whisper's transcription device, and the backend order `setup` would use for llama.cpp.
+It also reports torch (installed, CUDA or CPU-only build, whether it reaches the GPU; with the
+reinstall command when it is CPU-only on a machine with a usable NVIDIA driver) and the Insta360
+Media SDK (found or not, and a warning when no NVIDIA GPU is found). `360 stitch` logs that
+warning before it runs. The JSON keys are `torch` and `insta360_sdk`; see
+[GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities).
 Encoder checks actually encode a short clip; an encoder listed by ffmpeg is not necessarily
 usable. This command downloads nothing. `--json` writes the report to stdout for other tools.
 
