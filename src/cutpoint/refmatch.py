@@ -45,7 +45,7 @@ import numpy as np
 
 from cutpoint import cache, paths, state
 from cutpoint.config import path_key, source_path
-from cutpoint.ffmpeg_utils import FFmpegError, decode_pcm, decode_raw, probe, run
+from cutpoint.ffmpeg_utils import FFmpegError, decode_pcm, decode_raw, output_dir, probe, run
 
 logger = logging.getLogger(__name__)
 
@@ -393,46 +393,46 @@ def _merge_spans(spans: list[tuple[str, float, float]]) -> list[tuple[str, float
 
 def check_frames(result: dict[str, Any], out_dir: Path, n: int = 6) -> list[Path]:
     """Side-by-side JPEGs (reference | matched source) for ``n`` spread-out matches."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    matched = [s for s in result["shots"] if s["matched"]]
-    picks = (
-        [matched[i] for i in np.linspace(0, len(matched) - 1, min(n, len(matched)), dtype=int)]
-        if matched
-        else []
-    )
-    frames = []
-    for s in picks:
-        tr = (s["ref_start"] + s["ref_end"]) / 2
-        ts = s["src_start"] + (tr - s["ref_start"]) / (s.get("speed") or 1)
-        out = (
-            out_dir / f"shot{s['shot']:03d}{chr(97 + s.get('part', 0))}_"
-            f"{source_path(s['source']).stem}_{ts:.1f}s.jpg"
+    with output_dir(out_dir):  # interrupted: no empty folder left behind
+        matched = [s for s in result["shots"] if s["matched"]]
+        picks = (
+            [matched[i] for i in np.linspace(0, len(matched) - 1, min(n, len(matched)), dtype=int)]
+            if matched
+            else []
         )
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-v",
-            "error",
-            "-y",
-            "-ss",
-            f"{tr:.2f}",
-            "-i",
-            result["reference"],
-            "-ss",
-            f"{ts:.2f}",
-            "-i",
-            s["source"],
-            "-filter_complex",
-            "[0:v]scale=640:360[a];[1:v]scale=640:360[b];[a][b]hstack",
-            "-frames:v",
-            "1",
-            str(out),
-        ]
-        with contextlib.suppress(FFmpegError):
-            run(cmd)
-        if out.exists():
-            frames.append(out)
-    return frames
+        frames = []
+        for s in picks:
+            tr = (s["ref_start"] + s["ref_end"]) / 2
+            ts = s["src_start"] + (tr - s["ref_start"]) / (s.get("speed") or 1)
+            out = (
+                out_dir / f"shot{s['shot']:03d}{chr(97 + s.get('part', 0))}_"
+                f"{source_path(s['source']).stem}_{ts:.1f}s.jpg"
+            )
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-v",
+                "error",
+                "-y",
+                "-ss",
+                f"{tr:.2f}",
+                "-i",
+                result["reference"],
+                "-ss",
+                f"{ts:.2f}",
+                "-i",
+                s["source"],
+                "-filter_complex",
+                "[0:v]scale=640:360[a];[1:v]scale=640:360[b];[a][b]hstack",
+                "-frames:v",
+                "1",
+                str(out),
+            ]
+            with contextlib.suppress(FFmpegError):
+                run(cmd)
+            if out.exists():
+                frames.append(out)
+        return frames
 
 
 # --------------------------------------------------------------------------- fitting (ski)

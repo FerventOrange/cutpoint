@@ -671,8 +671,10 @@ class Media:
     def _build(self, project: Path, real: Path, proxy: Path, key: str, audio_streams: int) -> None:
         tmp = proxy.with_name(f"{key}.part.mp4")
         state = "failed"
+        made: list[Path] = []  # ui folders this build created
         try:
-            _ui_folder(project, "proxy")  # ui or ui/proxy a file: a clear refusal, not a traceback
+            # ui or ui/proxy a file: a clear refusal, not a traceback
+            _ui_folder(project, "proxy", made)
             # a link made while this build was queued
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")
             proc = spawn(proxy_args(real, tmp, audio_streams))
@@ -699,6 +701,12 @@ class Media:
                     self.proxies[key] = state
                 else:
                     self.proxies.pop(key, None)
+                # Accepted narrow race: a request writing into a just-made ui/ right now gets one
+                # retryable error. Queued builds (one worker) recreate the folders themselves.
+                if state:
+                    for folder in made:  # failed: the folders it created, while still empty
+                        with contextlib.suppress(OSError):
+                            folder.rmdir()
 
     def frame(self, project: Path, path: str, at: float, width: int) -> Path | None:
         """A JPEG still of ``path`` at ``at`` s (clamped into the source), ``width`` px wide.
@@ -991,15 +999,22 @@ def _own(p: Path, name: str) -> Path:
     return p / name
 
 
-def _ui_folder(p: Path, sub: str = "") -> None:
+def _ui_folder(p: Path, sub: str = "", made: list[Path] | None = None) -> None:
     """Create ``p/ui`` (and ``p/ui/<sub>``) if missing; 409 when one is a file or a dangling link
-    (never followed)."""
+    (never followed). The levels created here are added to ``made``, deepest first."""
     for name in (UI_DIR, f"{UI_DIR}/{sub}") if sub else (UI_DIR,):
         _own(p, name)
+        folder = p / name
         try:
-            (p / name).mkdir(exist_ok=True)
-        except (FileExistsError, NotADirectoryError):
-            raise bad(f"{p.name}/{name} is not a folder; remove or rename it", 409) from None
+            folder.mkdir()
+        except OSError as err:
+            if folder.is_dir():  # already there (as mkdir(exist_ok=True))
+                continue
+            if isinstance(err, (FileExistsError, NotADirectoryError)):
+                raise bad(f"{p.name}/{name} is not a folder; remove or rename it", 409) from None
+            raise
+        if made is not None:
+            made.insert(0, folder)
 
 
 def _is_project(d: Path) -> bool:
@@ -1056,20 +1071,23 @@ def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
 
 def new_project(name: str, source: str, style: str) -> dict[str, str]:
     root = projects_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    base, n = slugify(name, 60, "project"), 1
-    while True:
-        pid = base if n == 1 else f"{base}-{n}"
-        try:
-            (root / pid).mkdir()
-            break
-        except FileExistsError:
-            n += 1
-    (root / pid / UI_DIR).mkdir()
-    cache.save_json(
-        root / pid / UI_DIR / "meta.json",
-        {"name": name, "source": source, "style": style, "created": datetime.now().isoformat()},
-    )
+    with cache.created_dirs() as made:  # a failed request leaves no empty folder behind
+        cache.make_dirs(root, made)
+        base, n = slugify(name, 60, "project"), 1
+        while True:
+            pid = base if n == 1 else f"{base}-{n}"
+            try:
+                (root / pid).mkdir()
+                break
+            except FileExistsError:
+                n += 1
+        made.insert(0, root / pid)
+        (root / pid / UI_DIR).mkdir()
+        made.insert(0, root / pid / UI_DIR)
+        cache.save_json(
+            root / pid / UI_DIR / "meta.json",
+            {"name": name, "source": source, "style": style, "created": datetime.now().isoformat()},
+        )
     return {"id": pid, "name": name}
 
 

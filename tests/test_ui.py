@@ -1941,3 +1941,54 @@ def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
         assert f"{pid}/ui/proxy is not a folder" in warnings[0].getMessage()
         assert (p / "ui" / "proxy").read_bytes() == b"x"
     assert media.status(p, str(folder / "a.mp4"))[0] == "failed"
+
+
+def test_new_project_that_cannot_save_its_meta_leaves_no_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #194: the failed request removes the project and ``ui/`` (and the projects folder
+    only when this call made it)."""
+    root = ui.projects_dir()
+
+    def full_disk(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cache, "save_json", full_disk)
+    for pre_existing in (False, True):
+        if pre_existing:
+            root.mkdir(parents=True)
+        with pytest.raises(OSError, match="disk full"):
+            ui.new_project("Trip", str(tmp_path), "funny")
+        assert root.is_dir() is pre_existing
+        if pre_existing:
+            assert list(root.iterdir()) == []
+
+
+def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_made(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #194: a CLI project has no ``ui/``; a failed build removes ``ui/proxy`` and ``ui/``
+    it created."""
+    monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=10.0))
+    src = tmp_path / "footage" / "a.mp4"
+    src.parent.mkdir()
+    src.write_bytes(b"x")
+    p = ui.projects_dir() / "cli-proj"
+    p.mkdir(parents=True)
+    cache.save_json(p / "highlights.json", {"settings": {"inputs": [str(src.parent)]}})
+
+    class Failing:
+        returncode = 1
+
+        def __init__(self, _args: list[str]) -> None:
+            pass
+
+        def communicate(self) -> tuple[str, None]:
+            return "encoder failed", None
+
+    monkeypatch.setattr(ui, "spawn", Failing)
+    media = client.app.state.media
+    media.prepare(p, str(src))
+    media.pool.submit(int).result(30)  # the one worker has finished the build
+    assert media.status(p, str(src))[0] == "failed"
+    assert not (p / "ui").exists()
