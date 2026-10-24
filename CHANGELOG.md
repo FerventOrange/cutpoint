@@ -84,6 +84,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saying to re-run `cutpoint analyze`, in `clips`, `events`, the commands that read highlights
   through them, and re-analysis. Before, it was reported as missing or crashed with a traceback;
   a missing file still gives the old message (#228).
+- `cutpoint ui`: the assemble job also picks a fresh final name when that final's `.srt` (for
+  example `final_ui_1.srt`) already exists, so it no longer overwrites it (#224).
+- `cutpoint ui`: a cancelled job shows "stopping" (status `cancelling` in `/api/jobs`) until its
+  process exits, and Cancel is disabled meanwhile (#225).
+- `cutpoint ui` has a favicon (#226).
+- `cutpoint ui`: the outputs panel lists every final video in the project folder (`final.mp4`,
+  `final_*.mp4`, `<name>-final.mp4`, ...), newest first with the export's own final first, each
+  with its `.fcpxml` and `.otio`. Until a new export is assembled, the preview of an earlier
+  final is titled "Earlier final" (#227).
 - `assemble` with hard cuts and added audio fades (clips without a baked fade) trims each
   clip's audio to where the next clip starts (its container duration), as the video and
   `final.srt` already do. Clips whose audio ran past their video drifted: 3 such clips gave

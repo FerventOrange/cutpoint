@@ -502,12 +502,17 @@ def test_export_keeps_saved_order_and_each_assembly_is_kept(
     assert first[0]["name"] != f"{taken.stem}.mp4"
     second = run({"action": "assemble", "transition": "cut"})["outputs"]
     assert first[0]["name"].endswith(".mp4") and first[0]["name"] != second[0]["name"]
-    assert {o["name"].rsplit(".", 1)[1] for o in second} == {"mp4", "fcpxml", "otio"}
+    assert [o["name"].rsplit(".", 1)[1] for o in second[:3]] == ["mp4", "fcpxml", "otio"]
+    assert [o["name"] for o in second[3:]][:1] == [
+        first[0]["name"]
+    ]  # the earlier final stays listed
     assert (ui.project_dir(pid) / first[0]["name"]).is_file()  # the earlier final survives
     assert client.get(second[0]["url"]).status_code == 200
 
     again = run({"action": "clips"})  # fresh folder; the earlier export stays untouched
-    assert again["clips"]["dir"] != first_dir and again["outputs"] == []
+    assert again["clips"]["dir"] != first_dir
+    # Every final stays listed (newest first), but none is the new export's own yet.
+    assert again["outputs"] == second and again["final_current"] is False
     assert (ui.project_dir(pid) / first_dir / "manifest.json").is_file()
 
 
@@ -1003,10 +1008,12 @@ def test_exports_json_cannot_point_through_a_link_outside_the_project(
             pytest.skip("cannot create a file symlink here")
         bad = {"dir": "clips_ui_1", "final": "final_link.mp4"}
         write(bad)
-        assert client.post(reveal, params={"target": "outputs"}).status_code == 404
 
-    # dir: an earlier legitimate export takes over; final: the latest export stays current
-    # and its linked final is hidden until it is replaced.
+    def listed() -> list[str]:
+        return [o["name"] for o in client.get(f"/api/projects/{pid}").json()["outputs"]]
+
+    # dir: an earlier legitimate export takes over; final: the latest export stays current,
+    # its linked final is never listed or served (the project's own final.mp4 still is).
     write(good, bad)
     if kind == "dir":
         assert client.post(reveal, params={"target": "clips"}).json() == {
@@ -1014,16 +1021,16 @@ def test_exports_json_cannot_point_through_a_link_outside_the_project(
         }
         assert opened == [p / "clips_ui_1"]
     else:
-        assert client.post(reveal, params={"target": "outputs"}).status_code == 404
-        assert opened == []
+        assert listed() == ["final.mp4"]
+        assert client.get(f"/api/projects/{pid}/outputs/final_link.mp4").status_code == 404
         write(good)
+        assert listed() == ["final.mp4"]
         assert client.post(reveal, params={"target": "outputs"}).json() == {"path": str(p)}
         # Timelines next to the final are served only when they stay inside the project.
         (outside / "final.fcpxml").write_text("x")
         (p / "final.fcpxml").symlink_to(outside / "final.fcpxml")
         assert client.get(f"/api/projects/{pid}/outputs/final.fcpxml").status_code == 404
-        names = [o["name"] for o in client.get(f"/api/projects/{pid}").json()["outputs"]]
-        assert names == ["final.mp4"]
+        assert listed() == ["final.mp4"]  # the linked timeline stays excluded
 
 
 def test_export_manifest_symlinked_outside_the_project_is_not_served(
@@ -1734,7 +1741,8 @@ def test_metadata_read_through_a_link_outside_the_project_is_ignored(
         cache.save_json(target, {"exports": [{"dir": "clips_ui_1", "final": "final.mp4"}]})
         got = client.get(f"/api/projects/{pid}").json()
         assert got["clips"] is None
-        assert got["outputs"] == []
+        assert [o["name"] for o in got["outputs"]] == ["final.mp4"]  # listed by its name alone
+        assert got["final_current"] is True  # no usable export record: nothing is pending
 
 
 @pytest.mark.parametrize("what", ["review", "clips", "analyze", "looping review"])
@@ -2037,6 +2045,157 @@ def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
         assert f"{pid}/ui/proxy is not a folder" in warnings[0].getMessage()
         assert (p / "ui" / "proxy").read_bytes() == b"x"
     assert media.status(p, str(folder / "a.mp4"))[0] == "failed"
+
+
+def test_assemble_picks_a_fresh_name_when_only_a_caption_file_is_left(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leftover ``final_ui_<stamp>.srt`` (no video) is a taken name: nothing may overwrite it."""
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    (p / "clips_ui_1" / "001_a.mp4").write_bytes(b"x")
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    (p / "final_ui_1.srt").write_text("keep me", encoding="utf-8")
+    seen: list[tuple[str, ...]] = []
+
+    def cmd(*args: str) -> list[str]:
+        seen.append(args)
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(ui, "cutpoint_cmd", cmd)
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "assemble"})
+    assert res.status_code == 200, res.text
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(20)
+    assert seen[0][seen[0].index("--out") + 1] == str(p / "final_ui_1-2.mp4")
+    assert (p / "final_ui_1.srt").read_text(encoding="utf-8") == "keep me"
+
+
+class FakeProc:
+    """A job process that stays alive until ``release`` is set, then exits 0."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.stdout = self
+
+    def __iter__(self):
+        self.release.wait(10)
+        return iter(())
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def test_a_cancelled_job_reads_cancelling_until_the_process_has_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = FakeProc()
+    killed = threading.Event()
+    monkeypatch.setattr(ui, "spawn", lambda args: proc)
+    monkeypatch.setattr(ui, "kill_tree", lambda _p: killed.set())  # the exit comes later
+    jobs = ui.Jobs()
+    job = jobs.start("p", "analyze", ["x"])
+    assert job.view()["status"] == "running"
+    canceller = threading.Thread(target=jobs.cancel, args=(job.id,), daemon=True)
+    canceller.start()
+    try:
+        assert killed.wait(10)
+        assert job.view()["status"] == "cancelling"
+        with pytest.raises(HTTPException) as busy:  # it still holds the server
+            jobs.start("p", "clips", ["x"])
+        assert busy.value.status_code == 409
+    finally:
+        proc.release.set()
+        canceller.join(10)
+    assert job.done.wait(10)
+    deadline = time.time() + 10
+    while job.view()["status"] != "cancelled" and time.time() < deadline:
+        time.sleep(0.01)
+    assert job.view()["status"] == "cancelled"
+
+
+def test_the_page_declares_an_icon(client: TestClient) -> None:
+    assert 'rel="icon"' in client.get("/").text
+
+
+def record_export(p: Path, final: str | None) -> None:
+    """An export record for ``p`` with a clips folder, whose final is ``final`` (None: not yet)."""
+    (p / "clips_ui_1").mkdir(exist_ok=True)
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1", "final": final}]})
+
+
+def touch(path: Path, age: int) -> None:
+    """Create ``path`` as a file last modified ``age`` seconds ago."""
+    path.write_bytes(b"x")
+    then = time.time() - age
+    os.utime(path, (then, then))
+
+
+def listed_outputs(client: TestClient, pid: str) -> list[str]:
+    return [o["name"] for o in client.get(f"/api/projects/{pid}").json()["outputs"]]
+
+
+def test_every_final_in_the_project_folder_is_listed_newest_first(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    touch(p / "final.mp4", 300)  # from the command line: no export record
+    touch(p / "clip-final.mp4", 100)  # from ``edit``, with timelines
+    touch(p / "clip-final.fcpxml", 100)
+    touch(p / "clip-final.otio", 100)
+    touch(p / "x-final_vertical.mp4", 200)
+    touch(p / "x-final_vertical.otio", 200)
+    for hidden in (".final.part.mp4", ".final.stage.mp4"):  # a run in progress or killed
+        touch(p / hidden, 1)
+    (p / "final_dir.mp4").mkdir()
+    outside = tmp_path / "outside.mp4"
+    touch(outside, 1)
+    link_file(p / "final_out.mp4", outside)
+    assert listed_outputs(client, pid) == [
+        "clip-final.mp4", "clip-final.fcpxml", "clip-final.otio",
+        "x-final_vertical.mp4", "x-final_vertical.otio",
+        "final.mp4",
+    ]  # fmt: skip
+
+
+def test_a_command_line_final_can_be_downloaded_and_revealed(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    touch(p / "final.mp4", 10)
+    out = client.get(f"/api/projects/{pid}").json()["outputs"]
+    assert client.get(out[0]["url"]).status_code == 200
+    res = client.post(f"/api/projects/{pid}/reveal", params={"target": "outputs"})
+    assert res.status_code == 200 and opened == [p]
+
+
+@pytest.mark.parametrize(
+    ("final", "listed", "current"),
+    [
+        ("none", ["final.mp4", "final_ui_1.mp4"], True),  # no export record
+        ("final_ui_1.mp4", ["final_ui_1.mp4", "final.mp4"], True),  # its own, though older
+        (None, ["final.mp4", "final_ui_1.mp4"], False),  # not assembled yet: the earlier leads
+    ],
+    ids=["no-record", "own-final-first", "pending-export"],
+)
+def test_final_current_says_whether_the_leading_final_is_the_exports_own(
+    client: TestClient, tmp_path: Path, final: str | None, listed: list[str], current: bool
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    touch(p / "final_ui_1.mp4", 500)
+    touch(p / "final.mp4", 5)
+    if final != "none":
+        record_export(p, final)
+    got = client.get(f"/api/projects/{pid}").json()
+    assert [o["name"] for o in got["outputs"]] == listed  # no duplicates either
+    assert got["final_current"] is current
 
 
 def test_new_project_that_cannot_save_its_meta_leaves_no_folders(

@@ -352,7 +352,7 @@ select { max-width: 100%; }
 .jobs-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .jobs h2 { font-size: 14px; }
 .job-status { overflow-wrap: anywhere; flex: 1 1 20ch; min-width: 0; }
-.job-status[data-status=running] { color: var(--amber); }
+.job-status[data-status=running], .job-status[data-status=cancelling] { color: var(--amber); }
 .job-status[data-status=completed] { color: var(--ok); }
 .job-status[data-status=failed] { color: var(--bad); }
 .job-status[data-status=cancelled] { color: var(--muted); }

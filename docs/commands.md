@@ -58,8 +58,8 @@ Before a project is analyzed, the Moments column offers "Analyze footage" and "S
 opens the folder with the project's videos in the system file manager (hidden where that is not
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
 in the column header. "Show folder" also appears next to "Export clips" (the latest export
-folder, `clips_ui_*`) and next to "Assemble" (the project folder with the latest final video and
-its `.fcpxml` and `.otio` timelines), once that folder exists.
+folder, `clips_ui_*`) and next to "Assemble" (the project folder, which holds the final videos and
+their `.fcpxml` and `.otio` timelines), once that folder exists.
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
@@ -70,7 +70,11 @@ pass another `--port`.
 
 Jobs run one at a time with logs and cancellation. Results remain the usual Cutpoint files;
 review choices live under `<project>/ui/`. Exports use fresh `clips_ui_*` folders and finals use
-fresh `final_ui_*` names, so earlier exports are not overwritten. Assembly uses the latest
+fresh `final_ui_*` names, so earlier exports are not overwritten (a final name is also skipped
+when its `.srt` exists). The outputs panel lists every final video in the project folder, newest
+first with the export's own final first; until a new export is assembled, the preview of an
+earlier final is titled "Earlier final". A cancelled job shows "stopping" (status `cancelling`
+in `/api/jobs`) until its process exits; Cancel is disabled meanwhile. Assembly uses the latest
 successful UI export, not any subsequent unexported sequence changes. Failed/cancelled exports
 may leave partial output folders, which are not offered for assembly.
 
