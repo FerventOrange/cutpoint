@@ -227,10 +227,15 @@ def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float)
     0.333333 s), so acrossfade matches the frame-rounded fade. xfade starts at the first
     frame at or after ``offset``, and the frames of a previous xfade can sit a microsecond
     early (rounded timestamps add up), so each offset is passed half a frame early: the fade
-    still starts on the frame :func:`clip_offsets` puts it on."""
+    still starts on the frame :func:`clip_offsets` puts it on.
+
+    Each clip's audio is padded/trimmed to its video (``vduration``), which xfade and
+    :func:`clip_offsets` follow, so audio that runs on cannot push the later clips late."""
     chains, *_, fps = _normalize_inputs(infos)
+    for i, info in enumerate(infos):
+        chains.append(f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS[at{i}]")
     half_frame = 0.5 / float(fps) if fps > 0 else 0.0
-    vprev, aprev = "v0", "a0"
+    vprev, aprev = "v0", "at0"
     offsets = clip_offsets(infos, fade)
     for i in range(1, len(files)):
         offset = max(offsets[i] - half_frame, 0.0)
@@ -238,7 +243,7 @@ def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float)
         chains.append(
             f"[{vprev}][v{i}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}[{vout}]"
         )
-        chains.append(f"[{aprev}][a{i}]acrossfade=d={fade:.6f}[{aout}]")
+        chains.append(f"[{aprev}][at{i}]acrossfade=d={fade:.6f}[{aout}]")
         vprev, aprev = vout, aout
     _encode(files, ";".join(chains), out)
     return fade
