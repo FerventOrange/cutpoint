@@ -8,6 +8,7 @@ const MARGIN = 10; // seconds of rail context around a moment; trims may use the
 const LABEL_MAX = 200; // characters; ui.py validate_segments rejects longer labels
 const THUMB_W = 160; // pixels requested for sequence thumbnails
 const JOB_NAMES = { analyze: 'Analysis', clips: 'Clip export', assemble: 'Assembly' };
+const live = (status) => status === 'running' || status === 'cancelling'; // the job still holds the server
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
 const SIDE_MIN = 290; // pixels; the column's CSS default is 290-380
 const SIDE_MAX = 640;
@@ -292,7 +293,7 @@ function renderUnanalyzed(el, n) {
         document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
         document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
         await startJob('analyze');
-        if (![...S.tracked.values()].includes('running')) renderBusy(); // it failed: enable again
+        if (![...S.tracked.values()].some(live)) renderBusy(); // it failed: enable again
       },
     }, 'Analyze footage'),
     h('button', {
@@ -1091,9 +1092,10 @@ function renderBusy() {
 
 function renderOutputs() {
   const outs = S.project?.outputs ?? [];
-  const final = outs.find((o) => /^final.*\.mp4$/i.test(o.name));
+  const final = outs.find((o) => /\.mp4$/i.test(o.name)); // the latest export's, else the newest
   $('#outputs').hidden = !outs.length;
-  $('#outTitle').textContent = final ? 'Final video' : 'Outputs';
+  const current = S.project?.final_current ?? true; // false: the current export is not assembled yet
+  $('#outTitle').textContent = !final ? 'Outputs' : current ? 'Final video' : 'Earlier final';
   const fv = $('#finalVideo');
   fv.hidden = !final;
   if (final && fv.dataset.url !== final.url) {
@@ -1134,11 +1136,11 @@ async function pollJobs() {
   clearTimeout(S.jobTimer);
   try {
     const { jobs } = await api('/api/jobs');
-    const finished = jobs.filter((j) => S.tracked.get(j.id) === 'running' && j.status !== 'running');
-    const fresh = jobs.some((j) => j.status === 'running' && !S.tracked.has(j.id));
+    const finished = jobs.filter((j) => live(S.tracked.get(j.id)) && !live(j.status));
+    const fresh = jobs.some((j) => live(j.status) && !S.tracked.has(j.id));
     for (const j of jobs) S.tracked.set(j.id, j.status);
     S.jobs = jobs;
-    S.active = jobs.find((j) => j.status === 'running') ?? null;
+    S.active = jobs.find((j) => live(j.status)) ?? null;
     if (fresh) S.logOpen = true;
     if (finished.some((j) => j.status === 'failed')) S.logOpen = true;
     renderJobs();
@@ -1155,6 +1157,7 @@ function jobLine(j) {
   const name = S.projects.find((p) => p.id === j.project_id)?.name ?? j.project_id;
   const n = JOB_NAMES[j.action] ?? j.action;
   if (j.status === 'running') return `${n} running for ${name}`;
+  if (j.status === 'cancelling') return `${n} stopping for ${name}`;
   if (j.status === 'completed') return `${n} finished for ${name}`;
   if (j.status === 'cancelled') return `${n} cancelled for ${name}`;
   return `${n} failed for ${name}${j.error ? `: ${j.error}` : ''}`;
@@ -1168,7 +1171,7 @@ function renderJobs() {
   $('#running').hidden = !S.active;
   const cancel = $('#cancelBtn');
   cancel.hidden = !S.active;
-  cancel.disabled = false;
+  cancel.disabled = S.active?.status === 'cancelling';
   const log = $('#log');
   const lines = j?.logs ?? [];
   const open = S.logOpen && (lines.length > 0 || !!S.active);
