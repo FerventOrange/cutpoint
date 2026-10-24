@@ -349,7 +349,8 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   and the manifest records it (`srt`). An `.srt` the target folder's manifest lists for a
   re-exported clip is replaced (removed if the source has no cached transcript); one it does
   not list (made or renamed by hand) is never overwritten, and that clip gets no new `.srt`
-  (one WARNING).
+  (one WARNING). The `.srt` it lists for a clip no longer in the folder (deleted during review)
+  is removed, as with `clips --force`.
 
 ## assemble
 

@@ -1115,14 +1115,13 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     created = not dst.exists()
     # manifest.json last in, first out: it never lists a clip that is not there
     names = sorted((p.name for p in new.iterdir()), key=lambda n: (n == "manifest.json", n))
-    olds = (
-        []
-        if created
-        else sorted(
-            {n for n in [*old, *names] if (dst / n).exists() or (dst / n).is_symlink()},
-            key=lambda n: (n != "manifest.json", n),
-        )
-    )
+    # one file per path_key (the first spelling): a case variant would move it twice
+    present = {
+        path_key(n): n
+        for n in reversed([*old, *names])
+        if (dst / n).exists() or (dst / n).is_symlink()
+    }
+    olds = [] if created else sorted(present.values(), key=lambda n: (n != "manifest.json", n))
     journal = {"old": olds, "new": names, "created": created}
     bak = backup_path(dst)
     bak.mkdir()

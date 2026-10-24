@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info, remap, write
-from cutpoint import extend, planning, sources, srt
+from cutpoint import extend, ffmpeg_utils, planning, sources, srt
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 
@@ -166,3 +166,22 @@ def test_extend_removes_the_listed_srt_of_a_clip_deleted_during_review(
     files = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"]
     assert [e["file"] for e in files] == ["001_a.mp4"]
     assert "late" in (out / "001_a.srt").read_text(encoding="utf-8")
+
+
+def test_swap_in_moves_a_file_named_in_two_cases_once(tmp_path, monkeypatch):
+    """``001_A.SRT`` (a hand-edited manifest) and ``001_a.srt`` are one file on a
+    case-insensitive file system: it is moved to the backup once, not twice."""
+    dst = tmp_path / "clips"
+    write(dst / "001_a.srt", "old")
+    if not (dst / "001_A.SRT").exists():
+        pytest.skip("case-sensitive file system")
+    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
+    write(dst / "001_a.mp4", "old")
+    new = tmp_path / "staged"
+    write(new / "001_a.mp4", "new")
+
+    ffmpeg_utils.swap_in(new, dst, ["001_A.SRT", "001_a.srt"])
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging left
+    assert sorted(p.name for p in dst.iterdir()) == ["001_a.mp4"]
+    assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "new"
