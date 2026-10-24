@@ -18,6 +18,7 @@ import cutpoint.ffmpeg_utils as F
 from cutpoint.events.visual import VisualData
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, qa
+from pano_helpers import orientation
 
 TH = qa.QAThresholds()
 
@@ -195,9 +196,7 @@ def _rolling(roll_deg: np.ndarray) -> G.Orientation:
     m = np.sqrt(0.5)
     # (cos h, 0, 0, sin h) * (m, -m, 0, 0)
     q = np.stack([np.cos(h) * m, -np.cos(h) * m, -np.sin(h) * m, np.sin(h) * m], 1)
-    n = len(roll_deg)
-    z = np.zeros(n)
-    return G.Orientation(np.arange(n) / 30.0, z, z, z, {"fps": 30.0}, q=q)
+    return orientation(len(roll_deg), q=q)
 
 
 def test_horizon_roll_ignores_shake_and_shows_followed_lean() -> None:

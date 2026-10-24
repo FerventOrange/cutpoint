@@ -175,7 +175,7 @@ def test_missing_segments_file_rooted_or_drive_path_has_no_suffix(given: str) ->
 
 
 @pytest.mark.parametrize(
-    "windows",
+    "on_windows",
     [
         True,
         pytest.param(
@@ -188,16 +188,14 @@ def test_missing_segments_file_rooted_or_drive_path_has_no_suffix(given: str) ->
     ids=["windows", "elsewhere"],
 )
 def test_load_segments_refuses_a_drive_relative_source_only_on_windows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
+    tmp_path: Path, windows, on_windows: bool
 ) -> None:
     """Issue #175: ``D:foo.mp4`` is relative to drive D's current folder on Windows (refused,
     as ``360 repair`` does); on other systems it is a file name next to the segments file."""
-    import cutpoint.clips as clips_mod  # noqa: PLC0415
-
-    monkeypatch.setattr(clips_mod, "_WINDOWS", windows)
+    windows(on_windows)
     f = tmp_path / "segs.json"
     f.write_text(json.dumps([{"source": "D:foo.mp4", "start": 1, "end": 3}]), encoding="utf-8")
-    if windows:
+    if on_windows:
         with pytest.raises(ValueError, match=r"Segment 1: source 'D:foo.mp4' is relative to the "):
             load_segments(f)
     else:

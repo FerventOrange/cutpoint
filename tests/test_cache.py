@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cache, crash, ffmpeg_utils, telemetry
+from cutpoint import cache, crash, telemetry
 from cutpoint.events import common
 
 
@@ -33,20 +33,25 @@ def test_params_hash_matches_legacy_formula(params):
     assert cache.params_hash({"v": 1}) == hashlib.sha1(b'{"v": 1}').hexdigest()[:10]
 
 
-def test_crash_keys_match_legacy():
+@pytest.mark.parametrize(
+    ("params", "version", "default"),
+    [
+        (crash.CrashParams(), crash.CRASH_VERSION, str),
+        (telemetry.TelemetryParams(), telemetry.TELEMETRY_VERSION, None),
+    ],
+    ids=["crash", "telemetry"],
+)
+def test_param_keys_match_legacy(params, version, default):
+    blob = json.dumps({**asdict(params), "v": version}, sort_keys=True, default=default)
+    assert params.key() == hashlib.sha1(blob.encode()).hexdigest()[:10]
+
+
+def test_crash_dense_key_matches_legacy():
     p = crash.CrashParams()
-    blob = json.dumps({**asdict(p), "v": crash.CRASH_VERSION}, sort_keys=True, default=str)
-    assert p.key() == hashlib.sha1(blob.encode()).hexdigest()[:10]
     blob = json.dumps(
         {"fps": p.dense_fps, "pos": p.pos, "neg": p.neg, "v": crash.CRASH_VERSION}, sort_keys=True
     )
     assert p.dense_key() == hashlib.sha1(blob.encode()).hexdigest()[:10]
-
-
-def test_telemetry_key_matches_legacy():
-    p = telemetry.TelemetryParams()
-    blob = json.dumps({**asdict(p), "v": telemetry.TELEMETRY_VERSION}, sort_keys=True)
-    assert p.key() == hashlib.sha1(blob.encode()).hexdigest()[:10]
 
 
 def test_events_params_key_matches_legacy():
@@ -86,7 +91,7 @@ def test_load_json_missing_or_corrupt(tmp_path):
     assert cache.load_json(bad) is None
 
 
-def test_save_json_retries_permission_error_then_succeeds(tmp_path, monkeypatch):
+def test_save_json_retries_permission_error_then_succeeds(tmp_path, monkeypatch, no_sleep):
     target = tmp_path / "d.json"
     real = os.replace
     calls = []
@@ -97,16 +102,15 @@ def test_save_json_retries_permission_error_then_succeeds(tmp_path, monkeypatch)
             raise PermissionError("locked")
         return real(src, dst)
 
-    sleeps = []
     monkeypatch.setattr(cache.os, "replace", flaky)
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", sleeps.append)
     cache.save_json(target, {"ok": True})
     assert len(calls) == 4
-    assert len(sleeps) == 3 and all(0 < s <= 0.5 for s in sleeps)
+    assert len(no_sleep) == 3 and all(0 < s <= 0.5 for s in no_sleep)
     assert cache.load_json(target) == {"ok": True}
     assert [p.name for p in tmp_path.iterdir()] == ["d.json"]
 
 
+@pytest.mark.usefixtures("no_sleep")
 def test_save_json_always_locked_raises_and_cleans_up(tmp_path, monkeypatch):
     target = tmp_path / "d.json"
     target.write_text('{"old": 1}', encoding="utf-8")
@@ -117,7 +121,6 @@ def test_save_json_always_locked_raises_and_cleans_up(tmp_path, monkeypatch):
         raise PermissionError("locked")
 
     monkeypatch.setattr(cache.os, "replace", locked)
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda s: None)
     with pytest.raises(PermissionError):
         cache.save_json(target, {"new": 2})
     assert len(calls) == cache.REPLACE_ATTEMPTS
@@ -155,6 +158,7 @@ def test_load_json_handles_the_encoding_a_file_was_saved_with(tmp_path, encoding
     assert cache.load_json(target) == expected
 
 
+@pytest.mark.usefixtures("no_sleep")
 @pytest.mark.parametrize("winerror", [32, 5])
 def test_save_json_locked_file_gets_the_open_in_another_program_hint(
     tmp_path, monkeypatch, winerror
@@ -167,7 +171,6 @@ def test_save_json_locked_file_gets_the_open_in_another_program_hint(
         raise err
 
     monkeypatch.setattr(cache.os, "replace", locked)
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda s: None)
     with pytest.raises(PermissionError, match="open in another program") as exc:
         cache.save_json(target, {"new": 2})
     assert str(target) in str(exc.value)

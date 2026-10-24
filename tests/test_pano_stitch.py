@@ -20,11 +20,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import write
-from cutpoint import config, paths
+from conftest import remap, set_config, write
+from cutpoint import paths
 from cutpoint.pano import cli as pano_cli
 from cutpoint.pano import project, stitch
 from cutpoint.pano.x3 import X3Clip
+from pano_helpers import x3clip
 
 # --------------------------------------------------------------------------- synthetic output
 P = stitch.PROGRESS_KEY
@@ -372,15 +373,7 @@ class TestProbeSdk:
 # --------------------------------------------------------------------------- _stitch_one
 @pytest.fixture
 def clip() -> X3Clip:
-    return X3Clip(
-        clip_id="001",
-        start_local="2026-01-01T10:00:00",
-        mode="5.7k",
-        lrv=None,
-        insv=["VID_20260101_100000_00_001.insv", "VID_20260101_100000_10_001.insv"],
-        frames=30,
-        duration=1.0,
-    )
+    return x3clip(frames=30, duration=1.0)
 
 
 @pytest.fixture
@@ -594,15 +587,13 @@ class TestHelpers:
         names = ["a_00_.insv", "a_10_.insv"]
         for n in names:
             write(new / n)
-        write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
-        config.get_config.cache_clear()
-        monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
-        clip = X3Clip("001", "t", "5.7k", None, [str(old / n) for n in names])
+        remap(home, monkeypatch, old, new)
+        clip = x3clip(start_local="t", insv=[str(old / n) for n in names])
         cmd = stitch.stitch_command(tmp_path / "sdk", clip, tmp_path / "o.mp4")
         assert cmd[1:4] == ["-inputs", *(str(new / n) for n in names)]
 
     def test_stitch_command_validates_extra_args(self, tmp_path):
-        clip = X3Clip("001", "t", "5.7k", None, ["a_00_.insv", "a_10_.insv"])
+        clip = x3clip(start_local="t", insv=["a_00_.insv", "a_10_.insv"])
         cmd = stitch.stitch_command(tmp_path / "sdk", clip, tmp_path / "o.mp4", ["-enable_denoise"])
         assert cmd[1:4] == ["-inputs", "a_00_.insv", "a_10_.insv"]
         assert cmd[-1] == "-enable_denoise"
@@ -612,9 +603,7 @@ class TestHelpers:
 
 # --------------------------------------------------------------------------- args (project.py)
 def _config(**pano) -> None:
-    cfg = paths.config_file()
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(json.dumps({"pano": pano}), encoding="utf-8")
+    set_config(paths.home(), pano=pano)
 
 
 class TestValidateStitchArgs:
@@ -976,7 +965,7 @@ class TestSidecarOnRestitch:
         out_dir.mkdir()
         _config(stitched_dir=str(out_dir))
         clips = [
-            X3Clip(n, "t", "5.7k", None, [f"VID_20260101_100000_00_{n}.insv"])
+            x3clip(clip_id=n, start_local="t", insv=[f"VID_20260101_100000_00_{n}.insv"])
             for n in ("001", "002", "003")
         ]
         sidecars = {"001": None, "002": ["-enable_flowstate"], "003": ["-enable_stitchfusion"]}

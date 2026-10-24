@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import write
+from conftest import messages, write
 from cutpoint import paths
 from cutpoint.events import paths as ev_paths
 from cutpoint.events import setup
@@ -23,17 +23,26 @@ OLD_STAMP = "b1 cuda-12.4\n"
 
 
 @pytest.fixture(autouse=True)
-def sleeps(monkeypatch):
+def sleeps(no_sleep):
     """Record instead of sleeping while renames are retried."""
-    rec: list[float] = []
-    monkeypatch.setattr(setup.time, "sleep", rec.append)
-    return rec
+    return no_sleep
 
 
 def write_bytes(path: Path, data: bytes) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return path.as_uri()
+    return write(path, data).as_uri()
+
+
+def _panns_env(monkeypatch, tmp_path: Path, good: bytes, mirrors: tuple[str, ...]) -> Path:
+    """Point the PANNs download at ``mirrors`` serving ``good``; returns the checkpoint path."""
+    ckpt = tmp_path / "models" / "panns" / "ckpt.pth"
+    monkeypatch.setattr(setup, "PANNS_CKPT_MIRRORS", mirrors)
+    monkeypatch.setattr(setup, "PANNS_CKPT_SIZE", len(good))
+    monkeypatch.setattr(setup, "PANNS_CKPT_SHA256", hashlib.sha256(good).hexdigest())
+    labels = write_bytes(tmp_path / "srv" / "labels.csv", b"a,b\n")
+    monkeypatch.setattr(setup, "PANNS_LABELS_URL", labels)
+    monkeypatch.setattr(ev_paths, "panns_ckpt", lambda: ckpt)
+    monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
+    return ckpt
 
 
 def _zip(path: Path, files: dict[str, str]) -> tuple[str, int, str]:
@@ -284,13 +293,7 @@ def test_install_panns_falls_back_to_next_mirror(tmp_path, monkeypatch, caplog, 
         monkeypatch.setattr(setup, "SLOW_START_WINDOW", 0.0)
         monkeypatch.setattr(setup, "PANNS_MIN_RATE", float("inf"))
     good_url = write_bytes(srv / "good.pth", good)
-    ckpt = tmp_path / "models" / "panns" / "ckpt.pth"
-    monkeypatch.setattr(setup, "PANNS_CKPT_MIRRORS", (bad_url, good_url))
-    monkeypatch.setattr(setup, "PANNS_CKPT_SIZE", len(good))
-    monkeypatch.setattr(setup, "PANNS_CKPT_SHA256", hashlib.sha256(good).hexdigest())
-    monkeypatch.setattr(setup, "PANNS_LABELS_URL", write_bytes(srv / "labels.csv", b"a,b\n"))
-    monkeypatch.setattr(ev_paths, "panns_ckpt", lambda: ckpt)
-    monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
+    ckpt = _panns_env(monkeypatch, tmp_path, good, (bad_url, good_url))
     monkeypatch.delenv("CUTPOINT_PANNS_URL", raising=False)
 
     with caplog.at_level("INFO"):
@@ -300,7 +303,7 @@ def test_install_panns_falls_back_to_next_mirror(tmp_path, monkeypatch, caplog, 
     # the user can see which mirror the checkpoint finally came from (#52); slow keeps its .part
     verb = "resuming" if first == "slow" else "downloading"
     assert f"{verb} {ckpt.name} from {good_url}" in caplog.text
-    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    warnings = messages(caplog)
     assert len(warnings) == 1
     assert bad_url in warnings[0]
     assert good_url not in warnings[0]
@@ -335,20 +338,14 @@ def test_install_panns_malformed_env_url_is_a_failed_mirror(
     good = b"good-checkpoint" * 20
     srv = tmp_path / "srv"
     good_url = write_bytes(srv / "good.pth", good)
-    ckpt = tmp_path / "models" / "panns" / "ckpt.pth"
-    monkeypatch.setattr(setup, "PANNS_CKPT_MIRRORS", (good_url,))
-    monkeypatch.setattr(setup, "PANNS_CKPT_SIZE", len(good))
-    monkeypatch.setattr(setup, "PANNS_CKPT_SHA256", hashlib.sha256(good).hexdigest())
-    monkeypatch.setattr(setup, "PANNS_LABELS_URL", write_bytes(srv / "labels.csv", b"a,b\n"))
-    monkeypatch.setattr(ev_paths, "panns_ckpt", lambda: ckpt)
-    monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
+    ckpt = _panns_env(monkeypatch, tmp_path, good, (good_url,))
     monkeypatch.setenv("CUTPOINT_PANNS_URL", bad)
 
     with caplog.at_level("INFO"):
         setup.install_panns()
 
     assert ckpt.read_bytes() == good  # the next mirror served it
-    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    warnings = messages(caplog)
     assert len(warnings) == 1
     assert shown in warnings[0]
     assert "token" not in caplog.text.lower()  # urllib lowercases the scheme in its text

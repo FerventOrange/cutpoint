@@ -17,38 +17,19 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import pano_helpers as helpers
 from cutpoint.events import visual as V
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
+from pano_helpers import orientation
 
 FWD_V = [0.0, -1.0, 0.0]  # camera ray far from the wearer cone
 N = 12  # view frames, every 1.2 s
 
 
 def make_views(boxes: dict[int, list[tuple]], source: str) -> VW.PanoViews:
-    """``boxes[frame] = [(score, yaw, pitch, w, h, ray), ...]`` (label person)."""
-    rows = [
-        [f, 1, sc, y, p, w, h, 0.0, *ray] for f, bs in boxes.items() for sc, y, p, w, h, ray in bs
-    ]
-    return VW.PanoViews(
-        t=(np.arange(N) * 1.2).astype(np.float32),
-        emb=np.zeros((N, 9, 4), np.float16),
-        det=np.asarray(rows, np.float32).reshape(-1, len(VW.DET_COLS)),
-        box_emb=np.zeros((0, 768), np.float16),
-        box_idx=np.zeros(0, np.int64),
-        meta={"source": source},
-    )
-
-
-def orientation(n: int = 600) -> G.Orientation:
-    return G.Orientation(
-        t=np.arange(n) / 30.0,
-        up=np.tile([0.0, 0.0, -1.0], (n, 1)),
-        heading=np.zeros(n),
-        heading_smooth=np.zeros(n),
-        meta={"fps": 30.0},
-    )
+    return helpers.make_views(boxes, source, n=N)
 
 
 @pytest.fixture
