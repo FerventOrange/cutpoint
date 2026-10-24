@@ -185,3 +185,36 @@ def test_swap_in_moves_a_file_named_in_two_cases_once(tmp_path, monkeypatch):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging left
     assert sorted(p.name for p in dst.iterdir()) == ["001_a.mp4"]
     assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "new"
+
+
+def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacement(
+    tmp_path, monkeypatch
+):
+    """Old ``001_A.mp4`` (a hand-edited manifest) and new ``001_a.mp4`` are one file on a
+    case-insensitive file system: undoing the swap puts the original back and does not then
+    delete it as a new-only file."""
+    dst = tmp_path / "clips"
+    write(dst / "001_a.mp4", "old")
+    if not (dst / "001_A.MP4").exists():
+        pytest.skip("case-sensitive file system")
+    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
+    write(dst / "manifest.json", "old manifest")
+    new = tmp_path / "staged"
+    write(new / "001_a.mp4", "new")
+    write(new / "manifest.json", "new manifest")
+    real = ffmpeg_utils.retry_locked
+
+    def locked_manifest(op, path, action, locked=None):
+        moving_in = getattr(getattr(op, "func", None), "__self__", None) == new / path.name
+        if action == "replace" and path.name == "manifest.json" and moving_in:
+            raise PermissionError("locked")
+        return real(op, path, action, locked)
+
+    monkeypatch.setattr(ffmpeg_utils, "retry_locked", locked_manifest)
+
+    with pytest.raises(PermissionError):
+        ffmpeg_utils.swap_in(new, dst, ["001_A.mp4", "manifest.json"])
+
+    assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "old"
+    assert (dst / "manifest.json").read_text(encoding="utf-8") == "old manifest"
+    assert sorted(p.name.lower() for p in dst.iterdir()) == ["001_a.mp4", "manifest.json"]

@@ -912,7 +912,7 @@ def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
         OSError: The first error, after every file was tried.
     """
     errors: list[OSError] = []
-    old = set(journal["old"])
+    old = {path_key(n) for n in journal["old"]}
     for name in journal["old"]:
         src = bak / name
         if src.exists() or src.is_symlink():  # else it never left dst
@@ -921,7 +921,9 @@ def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
             except OSError as err:
                 errors.append(err)
     for name in journal["new"]:
-        if name not in old:  # never a user file: swap_in records every existing name as old
+        # never a user file: swap_in records every existing name as old (once per path_key,
+        # so a case variant of a new name is the same file and is not deleted)
+        if path_key(name) not in old:
             f = dst / name
             try:
                 retry_locked(partial(f.unlink, missing_ok=True), f, "delete")
