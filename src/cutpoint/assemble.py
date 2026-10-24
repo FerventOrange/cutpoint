@@ -29,6 +29,7 @@ from cutpoint.ffmpeg_utils import (
     atomic_output,
     encode_with_fallback,
     extract_audio,
+    has_soxr,
     measure_loudness,
     output_dir,
     probe,
@@ -396,11 +397,15 @@ def loudnorm_filter(src: Path) -> str:
 
 
 def limiter_filter(limit_db: float) -> str:
-    """Oversampled (192 kHz) lookahead limiter, back to 48 kHz afterwards."""
+    """Oversampled (192 kHz) lookahead limiter, back to 48 kHz afterwards.
+
+    The downsampling uses soxr when the ffmpeg build has it, else ffmpeg's default (swr).
+    """
     lin = max(0.0625, 10 ** (limit_db / 20))
+    resampler = ":resampler=soxr" if has_soxr() else ""
     return (
         f"aresample=192000,alimiter=limit={lin:.4f}:attack=1:release=60:level=0:"
-        f"latency=1,aresample=48000:resampler=soxr"
+        f"latency=1,aresample=48000{resampler}"
     )
 
 
