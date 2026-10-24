@@ -120,6 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Re-analyzing a project (`cutpoint events`) keeps `vision_top` and the Ollama URL and model; the `cutpoint ui` Analyze action keeps them too.
   `analyze` now stores them in the `highlights.json` settings; an automatic `vision_top` stays
   automatic.
+- `cutpoint ui`: a clip removed from the Sequence and added back returns to its previous position
+  (clamped to the current length) instead of going to the end. Removed clips that are not ranked
+  moments are listed under "Removed clips" with an "Add back" button until the page reloads (#128).
 - `cutpoint ui`: the outputs panel also offers each final's `.srt` subtitles (`final.srt`,
   `final_ui_*.srt`, `<name>-final.srt`) for download, served as plain text.
 - A `highlights.json` without a `sources` list now gives an error naming the file and saying to
