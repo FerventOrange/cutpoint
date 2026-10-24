@@ -367,7 +367,12 @@ def _stop(proc: subprocess.Popen[str], *, soft: bool) -> None:
     ``soft`` (after a KeyboardInterrupt: Ctrl+C, Ctrl+Break, the UI's cancel; the SDK got
     the same event): give it ``SOFT_STOP_S`` to exit first. When it is still running then
     (or a second Ctrl+C interrupts that wait), or at once without ``soft`` (timeout), kill
-    it and wait at most ``SOFT_STOP_S`` again.
+    it and wait at most ``SOFT_STOP_S`` again. Further Ctrl+C during either wait are
+    ignored by the caller, so the stop stays bounded.
+
+    The UI's cancel also gives this process ``SOFT_STOP_S`` before ending its job, the same
+    window as ffmpeg's soft stop (#199): an SDK that is slow to exit can use it up before the
+    partial file is removed.
     """
     try:
         if soft:
