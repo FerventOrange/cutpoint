@@ -12,13 +12,18 @@ everything into a project folder.
 
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
-| CLI `cutpoint` with the commands below | `cutpoint init` |
-| `cutpoint edit`: analyze, clips and assemble in one command | `--context` on `edit`, clip order chosen by a local model |
-| Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | JSON on stdout for every command |
-| Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | Agent skill, profiles for the other layers and for games |
+| CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
+| `cutpoint edit`: analyze, clips and assemble in one command | JSON on stdout for every command |
+| Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
+| Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
+| Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 
 If the user asks for "edit this video and make it a montage" in one step, use
 [One command](#one-command); to choose the moments yourself, use the loop below it.
+
+To let Claude Code find Cutpoint on its own, install the skill with `cutpoint skill install`
+(writes `~/.claude/skills/cutpoint/SKILL.md`; `--dir DIR` for a project's `.claude/skills` or
+another agent's folder). `cutpoint skill print` prints it for agents without a skills folder.
 
 ## Calling the CLI
 

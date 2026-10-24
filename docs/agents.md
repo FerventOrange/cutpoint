@@ -34,8 +34,28 @@ Video editing: use the Cutpoint CLI (`cutpoint ...`). Run `cutpoint guide` and f
 Never edit source videos.
 ```
 
-Cutpoint is driven through the CLI. When the planned agent skill ships, this page will describe
-how to install it for each agent.
+## Install the skill (Claude Code)
+
+Claude Code can find Cutpoint on its own, without a note in its instructions, once the
+Cutpoint skill is installed:
+
+```text
+cutpoint skill install
+```
+
+This writes `~/.claude/skills/cutpoint/SKILL.md`, the Claude Code user skills folder, so every
+project sees it. Use `--dir` for another folder: a project's `.claude/skills`
+(`cutpoint skill install --dir .claude/skills`) or another agent's skills folder. If an
+installed skill differs (an older version or your own edits), the command stops with an error
+naming the file; add `--force` to replace it. Re-run it after upgrading Cutpoint. See
+[commands](commands.md#skill).
+
+The skill is short: it covers the first run, the edit loop and the rules, and tells the agent to
+run `cutpoint guide` for everything else.
+
+Other CLIs (Codex, Grok CLI, scripts) do not use this skill folder; they work from AGENTS.md,
+through the repository file or `cutpoint guide`, as set up above. To give such an agent the
+skill text anyway, `cutpoint skill print` prints it to stdout.
 
 ## Example requests
 
@@ -51,8 +71,9 @@ These work today:
   mount, and the lens gets muddy."
 
 An agent pointed at Cutpoint can do "edit this video and make it a montage" in one step with
-`cutpoint edit <video> --kind montage`. A bare request with no pointer to Cutpoint depends on
-the planned skill.
+`cutpoint edit <video> --kind montage`. With the skill installed, Claude Code also picks up a
+bare request such as "edit this video" with no pointer to Cutpoint; other agents need the
+pointer above.
 
 ## Limits to know
 
