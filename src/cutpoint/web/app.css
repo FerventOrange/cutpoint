@@ -15,6 +15,13 @@
   --danger-btn: #c42f2f; /* white text stays above 4.5:1 */
   --card-line: #2f425b;
   --picked: #22385a; /* ticked sequence rows */
+  --bar: #435b7a; /* preview transport bar; text and --amber focus rings stay readable on it */
+  --gold: #e0b450; /* trim rail selection and accent button border */
+  --gold-fill: rgba(224, 180, 80, 0.3);
+  --gold-edge: #fff1c9; /* the selection's bright start edge */
+  --gold-btn: #6e561f; /* --gold-ink on it is 5.5:1 */
+  --gold-btn-hover: #7a5f22; /* 4.8:1 */
+  --gold-ink: #ffe2a0;
   --ease: 0.2s ease;
   color-scheme: dark;
 }
@@ -65,7 +72,6 @@ h3 { font-size: 13px; font-weight: 650; }
 .btn.danger:hover:not(:disabled) { background: #d23a3a; }
 .btn.outline { background: none; border-color: var(--muted); }
 .btn.outline:hover:not(:disabled) { background: var(--raise); }
-.btn.linkish { background: none; border-color: transparent; color: var(--amber); text-decoration: underline; padding-inline: 2px; }
 
 input, select {
   font: inherit; color: var(--text); background: var(--deep); border: 1px solid var(--line);
@@ -150,7 +156,6 @@ select { max-width: 100%; }
   .moments .col-head:has(#revealHeadBtn:not([hidden])) #momentsCount { grid-area: auto; }
   .moments .col-head:has(#revealHeadBtn:not([hidden])) .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; margin-top: 6px; }
 }
-.stage { background: var(--slate); }
 .stage:focus { outline: none; }
 .empty { color: var(--muted); display: grid; gap: 10px; justify-items: start; max-width: 52ch; padding: 4px 0 8px; }
 .empty .btn { justify-self: start; }
@@ -199,33 +204,48 @@ select { max-width: 100%; }
   -webkit-box-orient: vertical; overflow: hidden;
 }
 
-/* preview */
+/* preview: centred title; meta and add/remove on one row; video, transport bar, rail and the trim row all full width */
+.stage { background: var(--slate); container: stage / inline-size; }
+.stage > .col-head { justify-content: center; }
+.screen-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 8px; }
+#stageMeta { flex: 1 1 14em; min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
+/* min-width stops the label swap from jumping */
+.screen-bar .btn { margin-left: auto; min-width: 13.5em; }
+/* the panel fills the column; the video keeps its aspect ratio, letterboxed on the panel */
 .screen {
-  position: relative; background: #0d1622; aspect-ratio: 16 / 9; max-height: 58dvh;
-  width: min(100%, calc(58dvh * 16 / 9)); border-radius: 4px; overflow: hidden;
+  position: relative; background: var(--deep); aspect-ratio: 16 / 9; max-height: 58dvh;
+  width: 100%; border: 1px solid var(--card-line); border-bottom: 0; border-radius: 4px 4px 0 0; overflow: hidden;
 }
 .screen video { width: 100%; height: 100%; object-fit: contain; display: block; cursor: pointer; }
 .screen-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--muted); pointer-events: none; }
 .screen-msg:empty { display: none; }
-/* add/remove sits just above the video's top-right corner, not by the splitter; min-width stops the label swap from jumping */
-.screen-bar { display: flex; justify-content: flex-end; width: min(100%, calc(58dvh * 16 / 9)); margin-bottom: 8px; }
-.screen-bar .btn { min-width: 13.5em; }
-.transport { display: flex; align-items: center; gap: 14px; margin: 10px 0 8px; flex-wrap: wrap; }
-.transport .btn { min-width: 76px; }
-.keys { font-size: 13px; }
-/* mute toggle and volume slider next to Play; the slider keeps the amber of the other controls */
-.vol { display: flex; align-items: center; gap: 6px; }
-.vol .icon-btn { min-width: 0; }
-.vol input[type=range] { width: 7em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber); }
-#clock { font-size: 15px; }
+/* one bar: clock (and Retry) left, play centred, sound right */
+.transport {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px;
+  margin-bottom: 10px; padding: 2px 8px; background: var(--bar); border-radius: 0 0 4px 4px;
+}
+.transport-start { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.transport-end { display: flex; justify-content: flex-end; min-width: 0; }
+.transport .btn.icon-btn { background: none; border-color: transparent; min-height: 32px; width: 32px; }
+.transport .icon-btn:hover:not(:disabled) { background: var(--raise); }
+.transport .play .icon { width: 24px; height: 24px; }
+#clock { font-size: 12.5px; overflow-wrap: anywhere; }
+.keys { font-size: 12.5px; text-align: center; margin-top: 2px; }
+/* mute toggle and volume slider; the slider keeps the amber of the other controls */
+.vol { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.vol .icon-btn { min-width: 0; flex: none; }
+.vol input[type=range] { width: 7em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber); }
 
-/* the cut rail: the moment in its surrounding footage */
+/* the cut rail: the moment in its surrounding footage; the ticks hold the place of a future filmstrip */
 .rail {
   position: relative; height: 46px; background: var(--deep); border: 1px solid var(--line);
-  border-radius: 4px; width: min(100%, calc(58dvh * 16 / 9));
-  background-image: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(179, 194, 210, 0.16) calc(10% - 1px) 10%);
+  border-radius: 4px; width: 100%;
+  background-image: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(179, 194, 210, 0.2) calc(10% - 1px) 10%);
 }
-.rail-sel { position: absolute; top: 0; bottom: 0; background: rgba(243, 189, 96, 0.34); border-inline: 2px solid var(--amber); }
+.rail-sel {
+  position: absolute; top: 0; bottom: 0; background: var(--gold-fill);
+  border: 1px solid var(--gold); border-left: 3px solid var(--gold-edge);
+}
 .rail-orig { position: absolute; top: 4px; bottom: 4px; border: 1px dashed var(--muted); border-radius: 2px; pointer-events: none; }
 .rail input[type=range] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
@@ -235,19 +255,42 @@ select { max-width: 100%; }
 .rail input[type=range]::-moz-range-track { background: transparent; height: 100%; }
 .rail input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 44px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
 .rail input[type=range]::-moz-range-thumb { width: 4px; height: 44px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
-.rail-ends { display: flex; justify-content: space-between; width: min(100%, calc(58dvh * 16 / 9)); color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+.rail-ends { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 
-.trim { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; margin-top: 14px; max-width: 640px; }
-.trim-field { display: grid; gap: 4px; align-content: start; justify-items: start; }
-.trim-field > label { color: var(--muted); }
+/* Clip Start | Transcript | Clip End. The trim group spans the row as a subgrid with the
+   transcript laid over its middle column, so reading order stays Start, End, Transcript. */
+.trim-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px 18px; margin-top: 8px; }
+.trim { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: subgrid; row-gap: 12px; }
+#startField { grid-column: 1; }
+#endField { grid-column: -2; }
+.trim-field { display: grid; gap: 6px; align-content: start; min-width: 0; }
+.trim-field > label { color: var(--muted); text-align: center; }
+.trim-field > input { width: 100%; text-align: center; font-size: 15px; }
 .stepper { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px; width: 100%; }
-.stepper input { text-align: center; font-size: 15px; }
-.trim-msg { margin: 8px 0 6px; color: var(--muted); min-height: 1.45em; }
+.stepper .btn { white-space: nowrap; }
+.btn.accent { background: var(--gold-btn); border-color: var(--gold); color: var(--gold-ink); white-space: normal; }
+.btn.accent:hover:not(:disabled) { background: var(--gold-btn-hover); }
+.trim-msg { margin: 8px 0 4px; color: var(--muted); min-height: 1.45em; text-align: center; }
 .trim-msg.error { color: var(--bad); }
-.transcript { margin-top: 16px; max-width: 70ch; }
-.transcript h3 { color: var(--muted); margin-bottom: 4px; }
-#transcript { font-size: 15.5px; line-height: 1.6; }
-#signals { margin-top: 8px; font-size: 13px; }
+#resetBtn { display: block; margin: 0 auto 6px; }
+.transcript { grid-column: 2; grid-row: 1; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.transcript h3 { font-size: 14.5px; text-align: center; }
+#transcript {
+  font-size: 15px; line-height: 1.6; min-height: 5.5em; padding: 10px 14px; overflow-wrap: anywhere;
+  background: var(--deep); border: 1px solid var(--line); border-radius: 14px;
+}
+#signals { margin-top: 2px; font-size: 12.5px; text-align: center; }
+/* narrower: Start and End side by side above the transcript, then all stacked */
+@container stage (width < 760px) {
+  .trim-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #endField { grid-column: 2; }
+  .transcript { grid-column: 1 / -1; grid-row: 2; }
+}
+@container stage (width < 440px) {
+  .trim-row { grid-template-columns: minmax(0, 1fr); }
+  #endField { grid-column: 1; }
+  .vol input[type=range] { width: 4.5em; }
+}
 
 /* sequence: one compact card per clip */
 .seq-batch {
@@ -389,9 +432,7 @@ dialog form { display: grid; gap: 14px; }
   .top { flex-wrap: wrap; }
   .proj-pick select { max-width: 60vw; }
   .keys { display: none; }
-  .screen, .screen-bar, .rail, .rail-ends { width: 100%; }
   .screen { max-height: none; }
-  .trim { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
