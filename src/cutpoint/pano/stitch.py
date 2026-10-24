@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
+from cutpoint.ffmpeg_utils import SOFT_STOP_S
 from cutpoint.pano.project import (
     EQUIRECT_META_VERSION,
     SDK_EXE_NAME,
@@ -360,13 +361,25 @@ class SdkInterrupted(KeyboardInterrupt):
         self.run = run
 
 
-def _kill(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is None:
-        proc.kill()
+def _stop(proc: subprocess.Popen[str], *, soft: bool) -> None:
+    """Stop ``proc`` with ffmpeg_utils' policy (``SOFT_STOP_S``, #229).
+
+    ``soft`` (after a KeyboardInterrupt: Ctrl+C, Ctrl+Break, the UI's cancel; the SDK got
+    the same event): give it ``SOFT_STOP_S`` to exit first. When it is still running then
+    (or a second Ctrl+C interrupts that wait), or at once without ``soft`` (timeout), kill
+    it and wait at most ``SOFT_STOP_S`` again.
+    """
     try:
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        logger.warning("MediaSDKTest (pid %s) did not exit after kill", proc.pid)
+        if soft:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=SOFT_STOP_S)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=SOFT_STOP_S)
+            except subprocess.TimeoutExpired:
+                logger.warning("MediaSDKTest (pid %s) did not exit after kill", proc.pid)
 
 
 def sdk_env(exe: str | Path) -> dict[str, str] | None:
@@ -389,7 +402,7 @@ def sdk_env(exe: str | Path) -> dict[str, str] | None:
 
 
 def run_sdk(cmd: list[str], label: str = "", timeout_s: float | None = None) -> SdkRun:
-    """Run ``MediaSDKTest``, logging throttled progress; kill it on timeout or Ctrl-C.
+    """Run ``MediaSDKTest``, logging throttled progress; stop it on timeout or Ctrl-C.
 
     Args:
         cmd: Full command line.
@@ -397,8 +410,8 @@ def run_sdk(cmd: list[str], label: str = "", timeout_s: float | None = None) -> 
         timeout_s: Kill the process after this many seconds (None = no limit).
 
     Raises:
-        SdkInterrupted: (a ``KeyboardInterrupt``) after killing the process on
-            Ctrl-C, carrying the output captured so far.
+        SdkInterrupted: (a ``KeyboardInterrupt``) after stopping the process on
+            Ctrl-C (see :func:`_stop`), carrying the output captured so far.
     """
     t0 = time.perf_counter()
     proc = subprocess.Popen(
@@ -438,13 +451,15 @@ def run_sdk(cmd: list[str], label: str = "", timeout_s: float | None = None) -> 
         while proc.poll() is None:
             if timeout_s is not None and time.perf_counter() - t0 > timeout_s:
                 timed_out = True
-                _kill(proc)
+                _stop(proc, soft=False)
                 break
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=0.5)
     except KeyboardInterrupt:
         interrupted = True
-        _kill(proc)
+        # a second Ctrl+C during the soft wait kills it; SdkInterrupted is still raised
+        with contextlib.suppress(KeyboardInterrupt):
+            _stop(proc, soft=True)
     finally:
         for th in readers:
             th.join(timeout=READER_JOIN_S)
