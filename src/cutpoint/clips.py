@@ -642,9 +642,7 @@ def render_clips(
         ValueError: If a 360 plan is given without ``pano``.
     """
     results: list[RenderResult] = []
-    words = srt.words_lookup()
-    no_words: list[str] = []
-    not_written: list[str] = []
+    subs = srt.ClipSubtitles(protected_srts)
     for plan in plans:
         m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
         out = out_dir / plan.name
@@ -675,23 +673,9 @@ def render_clips(
             else "",
             f" crop {plan.crop}" if plan.crop else "",
         )
-        sub = None
-        if (w := words(m["source"])) is None:
-            no_words.append(m["source"])
-        elif path_key(name := out.with_suffix(".srt").name) in (protected_srts or set()):
-            not_written.append(name)
-        else:
-            sub = name
-            srt.write_srt(out_dir / sub, srt.clip_cues(w, start, end))
+        sub = subs.write(out, m["source"], start, end)
         results.append(RenderResult(out, end, read_err, pano_rec, sub))
-    if no_words:
-        srt.skipped_info(f"{len(no_words)} of {len(plans)} clips", no_words)
-    if not_written:
-        logger.warning(
-            "Kept %s: an earlier run's manifest.json does not list them (made by hand?), so "
-            "they are not replaced and these clips get no new subtitles",
-            ", ".join(not_written),
-        )
+    subs.report(len(plans))
     return results
 
 
@@ -795,8 +779,10 @@ def _replaced_files(
     Only files an earlier run made are replaced: the clips and their ``.srt`` subtitles
     listed in the old manifest.json and leftover ``.<name>.part.mp4`` files. A file this
     run reads (``sources``, see :func:`source_keys`) is never replaced; neither is any
-    other ``.mp4``. Every other ``.srt`` (all of them without a readable manifest.json) is
-    protected: :func:`render_clips` writes no subtitles under its name.
+    other ``.mp4``, so a name in ``new`` that is such a file stops the run
+    (:func:`~cutpoint.srt.check_unlisted_clips`). Every other ``.srt`` (all of them without
+    a readable manifest.json) is protected: :func:`render_clips` writes no subtitles under
+    its name.
 
     Returns:
         ``(names to replace, .mp4 kept as sources of this run, other .mp4 kept, whether
@@ -804,30 +790,24 @@ def _replaced_files(
 
     Raises:
         ValueError: If a name in ``new`` is a source of this run (before any export).
+        FileExistsError: If a name in ``new`` is another ``.mp4`` the old manifest.json
+            does not list (before any export).
     """
     check_not_sources(out_dir, new, sources)
     if not out_dir.is_dir():
         return [], [], [], True, set()
-    manifest = cache.load_json(out_dir / "manifest.json")
-    entries = manifest.get("clips") if isinstance(manifest, dict) else None
-    listed: list[str] = []
-    if isinstance(entries, list):
-        for e in entries:
-            for key, ext in (("file", ".mp4"), ("srt", ".srt")):
-                f = e.get(key) if isinstance(e, dict) else None
-                # a bare clip name only: never a path out of the folder or another kind of file
-                if isinstance(f, str) and f == Path(f).name and f.lower().endswith(ext):
-                    listed.append(f)
-    elif any(out_dir.iterdir()):
+    listed = srt.listed_files(out_dir)
+    srt.check_unlisted_clips(out_dir, new, listed)
+    if listed is None and any(out_dir.iterdir()):
         logger.warning(
-            "%s has no readable manifest.json: --force replaces only the clips this run "
-            "writes and keeps every other file",
+            "%s has no readable manifest.json: --force adds the clips this run writes and "
+            "keeps every other file",
             out_dir,
         )
     parts = [p.name for p in out_dir.glob(".*.part.mp4")]
     replace: list[str] = []
     kept_sources: list[str] = []
-    for n in dict.fromkeys([*listed, *parts]):
+    for n in dict.fromkeys([*(listed or []), *parts]):
         f = out_dir / n
         if f.is_file() or f.is_symlink():
             (kept_sources if same_file(f, sources) else replace).append(n)
@@ -836,11 +816,7 @@ def _replaced_files(
     for p in sorted(clip_files(out_dir)):
         if path_key(p.name) not in done:
             (kept_sources if same_file(p, sources) else kept).append(p.name)
-    ours = {path_key(n) for n in listed}
-    protected = {
-        k for f in out_dir.glob("*.srt") if f.is_file() and (k := path_key(f.name)) not in ours
-    }
-    return replace, kept_sources, kept, isinstance(entries, list), protected
+    return replace, kept_sources, kept, listed is not None, srt.unlisted_srts(out_dir, listed)
 
 
 def export_clips(

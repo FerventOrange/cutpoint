@@ -78,6 +78,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `extend` writes each re-exported clip's `.srt` for its new range and records it in the
+  manifest (`srt`), in place and with `--out`. In place, the `.srt` the old manifest lists is
+  replaced (removed when the source has no cached transcript), so no subtitles with the old
+  timing stay beside the clip; an `.srt` the manifest does not list is never overwritten, as
+  with `clips --force` (follow-up to #213).
+- `clips --force` and `extend --out DIR --force` no longer replace a hand-added or renamed
+  `.mp4` that has the name of a new clip but is not in the old `manifest.json` (without a
+  readable manifest, any existing `.mp4` with a new clip's name). The run stops with exit 1
+  before exporting anything, and an ERROR names the files and says to move or rename them
+  (follow-up to #213).
+- `final.srt` with cut transitions no longer drifts when a clip's audio runs past its video.
+  Each clip is placed where the cut join really starts it: at the end of the previous file (its
+  container duration), not of its video. Crossfades are unchanged (follow-up to #213).
 - `cutpoint analyze .` or a drive root (`analyze D:\`) without `--out` no longer gets a
   project with an empty name, and a folder named with dots (`trip.2024`) is no longer cut at the
   last dot: the default project is named as for `edit` (a file's name without extension, the
