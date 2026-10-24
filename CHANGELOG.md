@@ -99,6 +99,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clips --top` and `--max-total`, and `360 director --top` and `360 stitch --top` /
   `--max-total`, reject 0 and negative values as usage errors (exit 2); `clips --top -1` used to
   select all but one moment.
+- `analyze --vision-top` and `--max-candidates` reject 0 and negative values, and
+  `--must-include-crash` values outside 0 to 1 (0 still turns it off), as usage errors (exit 2);
+  `--vision-top -3` used to send all but the last 3 candidates to the vision model.
 - Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check (for
   example `360 analyze` with cached views but no cached event layers) no longer fails with
   `WinError 127` on `cudnn_cnn64_9.dll`. On Windows the GPU check imports torch first when it is
