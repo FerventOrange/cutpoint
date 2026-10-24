@@ -93,6 +93,42 @@ def run(monkeypatch, fake_tools):
     return state
 
 
+class _Ran:
+    """Stand-in for the ``subprocess.Popen`` of :func:`fu.run`.
+
+    ``communicate`` raises ``first`` once if given, then calls ``finish(cmd)`` (if any) and
+    returns ``(stdout, stderr)``.
+    """
+
+    def __init__(self, cmd, first=None, finish=None, out=("", ""), returncode=0) -> None:
+        self.cmd, self.first, self.finish, self.out = cmd, first, finish, out
+        self.returncode, self.killed = returncode, False
+
+    def communicate(self, timeout=None):
+        if self.first is not None:
+            err, self.first = self.first, None
+            raise err
+        if self.finish is not None:
+            self.finish(self.cmd)
+        return self.out
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+@pytest.fixture
+def ran(monkeypatch, fake_tools):
+    """Fake :func:`fu.run` processes: ``.make(cmd)`` builds one; every one is in ``.procs``."""
+    state = SimpleNamespace(make=_Ran, procs=[])
+
+    def fake(cmd, **_kw):
+        state.procs.append(state.make(cmd))
+        return state.procs[-1]
+
+    monkeypatch.setattr(fu.subprocess, "Popen", fake)
+    return state
+
+
 # --------------------------------------------------------------------------- _split_jpegs
 def test_split_jpegs_splits_concatenated_images():
     a, b = _jpeg(b"one"), _jpeg(b"two")
@@ -174,18 +210,17 @@ def test_ffprobe_json_raises_with_stderr_tail(run):
         fu.ffprobe_json("bad.mp4", show_streams=True)
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda: fu.ffprobe_json("x.mp4", timeout=5),
-        lambda: fu.run(["ffmpeg", "-i", "x.mp4", "out.mp4"], timeout=3),
-    ],
-    ids=["ffprobe_json", "run"],
-)
-def test_timeout_becomes_ffmpeg_error(run, call):
+def test_timeout_becomes_ffmpeg_error(run):
     run.results = [subprocess.TimeoutExpired("ffmpeg", 3)]
     with pytest.raises(FFmpegError, match="timed out"):
-        call()
+        fu.ffprobe_json("x.mp4", timeout=5)
+
+
+def test_run_timeout_kills_and_becomes_ffmpeg_error(ran):
+    ran.make = lambda cmd: _Ran(cmd, first=subprocess.TimeoutExpired("ffmpeg", 3))
+    with pytest.raises(FFmpegError, match="timed out"):
+        fu.run(["ffmpeg", "-i", "x.mp4", "out.mp4"], timeout=3)
+    assert ran.procs[0].killed
 
 
 def test_grab_images_raises_when_no_image(run):
@@ -282,19 +317,15 @@ def test_x3_probe_reads_staged_copy(staged, run):
     assert "/stage/clip.mp4" in run.cmds[0]
 
 
-def test_gpmf_copy_reads_staged_copy(staged, run, tmp_path):
+def test_gpmf_copy_reads_staged_copy(staged, run, ran, tmp_path):
     """Regression: the GoPro telemetry remux bypassed ``stage_inputs``."""
-
-    def remux(cmd):
-        Path(cmd[-1]).write_bytes(b"gpmf")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
+    ran.make = lambda cmd: _Ran(cmd, finish=lambda c: Path(c[-1]).write_bytes(b"gpmf"))
     streams = b'{"streams": [{"index": 0, "codec_tag_string": "hvc1"}, '
     streams += b'{"index": 3, "codec_tag_string": "gpmd"}]}'
-    run.results = [(streams, b"", 0), remux]
+    run.results = [(streams, b"", 0)]
     out = crash._gpmf_copy(Path("/nas/GX010001.mp4"), tmp_path)
     assert out == tmp_path / "GX010001.gpmf.mp4"
-    probe_cmd, remux_cmd = run.cmds
+    (probe_cmd,), (remux_cmd,) = run.cmds, [p.cmd for p in ran.procs]
     assert probe_cmd[0] == "ffprobe" and "/stage/GX010001.mp4" in probe_cmd
     assert remux_cmd[0] == "ffmpeg" and "/stage/GX010001.mp4" in remux_cmd
     assert remux_cmd[remux_cmd.index("-map") + 1] == "0:3"

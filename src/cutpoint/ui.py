@@ -73,7 +73,7 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_value,
 )
-from cutpoint.ffmpeg_utils import FFmpegError, audio_mix_filter, grab_images, probe
+from cutpoint.ffmpeg_utils import SOFT_STOP_S, FFmpegError, audio_mix_filter, grab_images, probe
 from cutpoint.styles import get_style, learned_styles, style_names
 from cutpoint.utils import VIDEO_EXTS, clip_files, find_videos, slugify
 
@@ -95,7 +95,6 @@ FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 500  # stills kept per project; the least recently used go first
-SOFT_STOP_S = 5.0  # Windows cancel: wait this long after CTRL_BREAK before taskkill /F
 
 
 def bad(detail: str, status: int = 400) -> HTTPException:
