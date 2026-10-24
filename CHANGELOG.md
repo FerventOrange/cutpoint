@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `360 stitch --from-clips` (#200).
 - `cutpoint 360 qa` checks `--size` when the command line is parsed: a bad value is a usage
   error (exit 2, like `clips --size`), also with `--paths`.
+- The Docker base image is pinned by digest (Dependabot proposes updates), and CI builds the
+  image and runs `--version`, `capabilities` and a non-root `paths`; a weekly workflow also
+  builds the `INSTALL_EVENTS=true` image and imports `librosa` and `torch` (#121).
 
 ### Fixed
 
