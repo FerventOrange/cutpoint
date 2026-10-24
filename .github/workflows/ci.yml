@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           enable-cache: true
       - run: uvx ruff@0.17.1 check src tests
@@ -31,13 +31,40 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           enable-cache: true
           python-version: "3.12"
+      # The real-ffmpeg tests skip when ffmpeg/ffprobe are not on PATH, so install them.
+      # Ubuntu 24.04 apt ships ffmpeg 6.1 (libx264, xfade, acrossfade, loudnorm; -fps_mode needs 5.1+).
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      # Windows has no ffmpeg: pinned gyan.dev 9.0.2 essentials build (the version the pano code was
+      # measured on), downloaded from the GyanD/codexffmpeg release and verified by SHA256.
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          FFMPEG_VERSION: "9.0.2"
+          FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/$env:FFMPEG_VERSION/ffmpeg-$env:FFMPEG_VERSION-essentials_build.zip" -OutFile $zip
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash
+          if ($hash -ne $env:FFMPEG_SHA256.ToUpper()) { throw "ffmpeg checksum mismatch: $hash" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ffmpeg")
+          $bin = Join-Path $env:RUNNER_TEMP "ffmpeg/ffmpeg-$env:FFMPEG_VERSION-essentials_build/bin"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+      - name: Show ffmpeg
+        run: |
+          ffmpeg -version
+          ffprobe -version
       # The tests are CPU-only; only the default dev group is synced (no gpu/events extras).
       - run: uv sync --locked
-      - run: uv run --no-sync pytest -q
+      - run: uv run --no-sync pytest -q -rs
 
   docker:
     runs-on: ubuntu-latest

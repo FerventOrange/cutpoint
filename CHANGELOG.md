@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint edit` takes `analyze`'s `--vision-top`, `--ollama-url` and `--ollama-model` with the
+  same defaults and checks (`--vision-top` must be greater than 0) and passes them to the analysis.
 - The UI's New Project Source field no longer has the in-browser "Browse" button and folder
   browser; the `/api/browse` endpoint is removed.
 - The UI's "Remove from sequence" button moved above the video preview.
