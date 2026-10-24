@@ -65,6 +65,17 @@ def positive_float(text: str) -> float:
     return value
 
 
+def positive_int(text: str) -> int:
+    """argparse type: a whole number greater than 0."""
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a whole number") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be greater than 0")
+    return value
+
+
 def natural_key(path: Path) -> list[object]:
     """Sort key so that ``2_x`` < ``10_x`` (case-insensitive)."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", path.name)]

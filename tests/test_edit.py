@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,11 +29,13 @@ def test_kind_table_and_overrides(kind, overrides, expected):
 
 @pytest.fixture
 def pipeline(home, tmp_path, monkeypatch):
-    """A source video and the heavy steps replaced by fakes that record their calls."""
+    """A source video and the heavy steps replaced by fakes that record their calls
+    (``write_srt``: whether the fake assemble writes the final's .srt)."""
     video = tmp_path / "videos" / "My Clip.mp4"
     video.parent.mkdir()
     video.write_bytes(b"source bytes")
     calls: list[tuple[str, tuple, dict]] = []
+    state = SimpleNamespace(video=video, calls=calls, write_srt=True)
 
     def analyze(targets, style, out, **kw):
         calls.append(("analyze", (targets, style.name, out), kw))
@@ -46,19 +51,21 @@ def pipeline(home, tmp_path, monkeypatch):
 
     def assemble(clips_dir, **kw):
         calls.append(("assemble", (clips_dir,), kw))
-        final = clips_dir.parent / "final.mp4"
+        final = clips_dir.parent / ("final" + clips_dir.name[5:] + ".mp4")
         final.write_bytes(b"final video")
-        final.with_suffix(".srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n\n")
+        if state.write_srt:
+            text = "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n"
+            final.with_suffix(".srt").write_text(text, encoding="utf-8")
         return final
 
     monkeypatch.setattr(cutpoint.analyze, "analyze", analyze)
     monkeypatch.setattr(edit, "export_clips", export_clips)
     monkeypatch.setattr(edit, "assemble", assemble)
-    return video, calls
+    return state
 
 
 def test_edit_runs_the_steps_in_order_and_names_the_final(pipeline, home):
-    video, calls = pipeline
+    video, calls = pipeline.video, pipeline.calls
     before = (video.read_bytes(), video.stat().st_mtime_ns)
     assert cli.main(["edit", str(video), "--kind", "funny-moments"]) == 0
     project = home / "projects" / "My Clip"
@@ -78,7 +85,7 @@ def test_edit_runs_the_steps_in_order_and_names_the_final(pipeline, home):
 
 
 def test_edit_refuses_a_non_empty_clips_folder_before_analyzing(pipeline, home, caplog):
-    video, calls = pipeline
+    video, calls = pipeline.video, pipeline.calls
     clips_dir = home / "projects" / "My Clip" / "clips"
     clips_dir.mkdir(parents=True)
     (clips_dir / "001_old.mp4").write_bytes(b"old")
@@ -90,8 +97,62 @@ def test_edit_refuses_a_non_empty_clips_folder_before_analyzing(pipeline, home, 
 
 
 def test_edit_refuses_the_source_folder_as_project(pipeline, caplog):
-    video, calls = pipeline
+    video, calls = pipeline.video, pipeline.calls
     caplog.set_level(logging.ERROR)
     assert cli.main(["edit", str(video), "--out", str(video.parent)]) == 1
     assert calls == []
     assert sorted(p.name for p in video.parent.iterdir()) == ["My Clip.mp4"]
+
+
+def test_edit_without_new_subtitles_does_not_copy_a_stale_final_srt(pipeline, home, caplog):
+    video = pipeline.video
+    project = home / "projects" / "My Clip"
+    project.mkdir(parents=True)
+    (project / "final.srt").write_text("from an earlier run", encoding="utf-8")
+    pipeline.write_srt = False  # no transcript this run: assemble writes no final.srt
+    caplog.set_level(logging.INFO)
+    assert cli.main(["edit", str(video)]) == 0
+    assert not (project / "My Clip-final.srt").exists()
+    assert "none (no transcript)" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("make", "name"),
+    [
+        (lambda d: d / "a.b.mp4", "a.b"),  # a file: its stem
+        (lambda d: d / "trip.2024", "trip.2024"),  # a folder: its whole name
+        (lambda d: Path(d.anchor), "edit"),  # a drive root has no name
+    ],
+)
+def test_edit_name(tmp_path, make, name):
+    target = make(tmp_path)
+    if target.suffix == ".mp4":
+        target.write_bytes(b"x")
+    else:
+        target.mkdir(exist_ok=True)
+    assert edit.edit_name(target) == name
+
+
+def test_edit_of_a_dotted_folder_names_project_and_final_after_it(pipeline, home, monkeypatch):
+    folder = pipeline.video.parent.rename(pipeline.video.parent.with_name("trip.2024"))
+    monkeypatch.chdir(folder)
+    assert cli.main(["edit", "."]) == 0
+    assert (home / "projects" / "trip.2024" / "trip.2024-final.mp4").is_file()
+
+
+def test_edit_events_without_the_extra_fails_before_analyzing(pipeline, monkeypatch, caplog):
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a)
+    )
+    assert cli.main(["edit", str(pipeline.video), "--events"]) == 1
+    assert pipeline.calls == []
+    assert "'events' extra" in caplog.text
+
+
+def test_edit_vertical_names_its_outputs(pipeline, home):
+    assert cli.main(["edit", str(pipeline.video), "--vertical"]) == 0
+    project = home / "projects" / "My Clip"
+    assert pipeline.calls[2][1] == (project / "clips_vertical",)
+    assert (project / "My Clip-final_vertical.mp4").read_bytes() == b"final video"
+    assert (project / "My Clip-final_vertical.srt").is_file()

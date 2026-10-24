@@ -130,8 +130,8 @@ one of them is refused.
 
 Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
 files removed) and logs the final video, its subtitles and the clips folder last. To change the
-cut afterwards, delete or rename clips and run `assemble`; that updates `final.mp4` and
-`final.srt`, not the `<name>-final` copies.
+cut afterwards, delete or rename clips (rename a clip's `.srt` with it) and run `assemble`;
+that updates `final.mp4` and `final.srt`, not the `<name>-final` copies.
 
 ## analyze
 
@@ -358,9 +358,10 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
   next to it (hard cuts; add transitions in your editor).
 - Subtitles `final.srt` (named after the output) are written next to it from the clips'
   cached source transcripts, placed on the joined timeline (crossfades included) by each
-  clip's `manifest.json` start and end. Clips without a manifest entry (added by hand) or
-  whose source has no cached transcript get none; one INFO line names them, and with none at
-  all no `.srt` is written.
+  clip's `manifest.json` start and end. A clip renamed during review has no manifest entry;
+  its own `.srt` (renamed with it) is used instead. Clips with neither, or whose source has no
+  cached transcript, get none; one INFO line names them, and with none at all no `.srt` is
+  written.
 
 ## stage
 

@@ -105,7 +105,8 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
      `uv run cutpoint clips clip-edit --segments segments.json`
 5. **Review.** Clips are `clips\001_<label>.mp4`, `002_...`, and `clips\manifest.json` maps each
    to its source and times. Tell the user what was exported. Delete clips the user rejects and
-   rename to reorder (for example `005_x.mp4` to `001b_x.mp4`).
+   rename to reorder (for example `005_x.mp4` to `001b_x.mp4`, and its `005_x.srt` to
+   `001b_x.srt`, so `final.srt` keeps its subtitles).
 6. **Assemble.**
 
    ```powershell

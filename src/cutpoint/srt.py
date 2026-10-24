@@ -6,12 +6,14 @@ transcription runs for them. Words are grouped into cues by the burned-in
 captions' :func:`~cutpoint.assemble.caption_chunks` and placed with the joined
 video's :func:`~cutpoint.assemble.clip_offsets`. A clip's source range is its
 manifest ``start`` / ``end``: the in/out points after tails, padding
-(``extend``) and speech moves.
+(``extend``) and speech moves. A clip renamed during review has no manifest
+entry; its own ``.srt``, renamed with it, is used instead.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ Cue = tuple[float, float, str]  # (start s, end s, text)
 
 SRT_MAX_WORDS = 8  # words per cue; subtitles read longer lines than the 4-word burned-in captions
 MIN_CUE_S = 0.1  # a cue cut shorter than this at a clip edge is dropped
+_TIMES = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{3})\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d{3})")
 
 
 def srt_time(t: float) -> str:
@@ -44,6 +47,25 @@ def format_srt(cues: list[Cue]) -> str:
         f"{i}\n{srt_time(s)} --> {srt_time(e)}\n{text}\n\n"
         for i, (s, e, text) in enumerate(cues, 1)
     )
+
+
+def read_srt(path: Path) -> list[Cue] | None:
+    """The cues of the SubRip file ``path``, or None if it is missing or not UTF-8 text."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return None
+    cues = []
+    for block in re.split(r"\n[ \t]*\n", text.strip()):  # text mode: CRLF read as \n
+        lines = block.split("\n")
+        for i, line in enumerate(lines):
+            if m := _TIMES.search(line):
+                h1, m1, s1, ms1, h2, m2, s2, ms2 = (int(g) for g in m.groups())
+                start = h1 * 3600 + m1 * 60 + s1 + ms1 / 1000
+                end = h2 * 3600 + m2 * 60 + s2 + ms2 / 1000
+                cues.append((start, end, "\n".join(lines[i + 1 :]).strip()))
+                break
+    return cues
 
 
 def write_srt(path: Path, cues: list[Cue]) -> None:
@@ -109,9 +131,10 @@ def final_cues(
 ) -> tuple[list[Cue], list[str], list[str]]:
     """Cues of the joined video of ``files`` (crossfade ``fade``, 0 for cuts).
 
-    ``entries`` maps file names to their manifest entries. Each clip's cues are shifted
-    to its :func:`~cutpoint.assemble.clip_offsets` start; where a crossfade overlaps two
-    clips, a cue ends when the next one starts.
+    ``entries`` maps file names to their manifest entries. A clip without one (renamed
+    during review) uses its sibling ``<clip>.srt``, if any. Each clip's cues are clipped
+    to the clip and shifted to its :func:`~cutpoint.assemble.clip_offsets` start; where a
+    crossfade overlaps two clips, a cue ends when the next one starts.
 
     Returns:
         ``(cues, clips without subtitles, their recorded sources)``; a clip without a
@@ -122,6 +145,12 @@ def final_cues(
     missing_sources: list[str] = []
     for f, info, offset in zip(files, infos, clip_offsets(infos, fade), strict=True):
         e = entries.get(f.name)
+        if e is None and (own := read_srt(f.with_suffix(".srt"))) is not None:
+            for s, t, text in own:
+                s, t = max(s, 0.0), min(t, info.vduration)
+                if t - s >= MIN_CUE_S:
+                    cues.append((s + offset, t + offset, text))
+            continue
         w = words(e["source"]) if e else None
         if w is None:
             missing.append(f.name)
@@ -147,8 +176,8 @@ def write_final_srt(
     """Write ``<video>.srt`` for the video :func:`cutpoint.assemble.assemble` joined from
     ``files`` (crossfade ``fade``, 0 for cuts), using ``clips_dir``'s manifest.json.
 
-    Clips without a manifest entry or a cached transcript get no cues (one INFO line);
-    when no clip has any, no file is written.
+    Clips without a manifest entry (and no ``.srt`` of their own) or a cached transcript
+    get no cues (one INFO line); when no clip has any, no file is written.
 
     Returns:
         The .srt path, or None if none was written.

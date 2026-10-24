@@ -125,6 +125,27 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
     assert "srt" not in json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
     assert "No subtitles for 1 of 1 clips" in caplog.text
 
+    # an .srt under the new clip's name that the old manifest does not list is not overwritten
+    (out / "001_a.srt").write_text("mine too", encoding="utf-8")
+    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    caplog.clear()
+    clips.export_clips(project, segments=seg, force=True)
+    assert (out / "001_a.srt").read_text(encoding="utf-8") == "mine too"
+    assert "srt" not in json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
+    assert any(r.levelname == "WARNING" and "001_a.srt" in r.message for r in caplog.records)
+
+
+def test_renamed_clip_uses_its_own_srt_in_the_final(tmp_path):
+    """Reordering by renaming (005_x -> 001b_x) loses the manifest entry: the clip's own
+    .srt, renamed with it, is placed at its offset and clipped to it."""
+    files = [tmp_path / "001_a.mp4", tmp_path / "001b_x.mp4"]
+    infos = [_info(files[0], 4.0), _info(files[1], 3.0)]
+    srt.write_srt(tmp_path / "001b_x.srt", [(0.5, 1.5, "moved"), (2.5, 9.0, "long")])
+    entries = {"001_a.mp4": {"source": "a.mp4", "start": 100.0, "end": 104.0}}
+    cues, missing, _ = srt.final_cues(files, infos, entries, 0.0, {"a.mp4": WORDS}.get)
+    assert missing == []
+    assert cues[-2:] == [(4.5, 5.5, "moved"), (6.5, 7.0, "long")]
+
 
 def _lavfi_clip(out: Path, seconds: float) -> None:
     subprocess.run(

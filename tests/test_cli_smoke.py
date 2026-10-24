@@ -47,11 +47,15 @@ def test_clips_bad_size_is_a_usage_error(capsys):
     assert "Traceback" not in err
 
 
-def test_edit_bad_kind_is_a_usage_error(capsys):
+@pytest.mark.parametrize(
+    ("option", "value"), [("--kind", "trailer"), ("--top", "0"), ("--max-total", "-5")]
+)
+def test_edit_bad_option_is_a_usage_error(capsys, option, value):
+    """--top / --max-total are checked before the long analysis, not after it."""
     with pytest.raises(SystemExit) as exc:
-        cli.main(["edit", "video.mp4", "--kind", "trailer"])
+        cli.main(["edit", "video.mp4", option, value])
     assert exc.value.code == 2
-    assert "--kind" in capsys.readouterr().err
+    assert option in capsys.readouterr().err
 
 
 def test_360_qa_bad_size_is_a_usage_error(capsys):

@@ -29,7 +29,7 @@ from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import export_clips
 from cutpoint.config import get_config, projects_dir, resolve_project_path
 from cutpoint.crash import CrashParams, detect_project
-from cutpoint.edit import KINDS, resolve_kind, run_edit
+from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips
 from cutpoint.ffmpeg_utils import FFmpegError
@@ -37,7 +37,7 @@ from cutpoint.mix import EXCLUDE_FILE, load_exclusions, parse_quotas, run_mix
 from cutpoint.planning import Padding
 from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_names
-from cutpoint.utils import parse_size, positive_float
+from cutpoint.utils import parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
 
@@ -89,7 +89,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
     targets = [Path(t) for t in a.inputs]
     run_edit(
         targets,
-        resolve_project_path(a.out) if a.out else projects_dir() / targets[0].stem,
+        resolve_project_path(a.out) if a.out else projects_dir() / edit_name(targets[0]),
         resolve_kind(a.kind, style=a.style, top=a.top, max_total=a.max_total),
         vertical=a.vertical,
         force=a.force,
@@ -482,10 +482,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="project dir; a bare name or projects/<name> goes under the configured projects "
         "folder. Default: <projects>/<first video's name>",
     )
-    ed.add_argument("--top", type=int, help="top N by score (default: per kind)")
+    ed.add_argument("--top", type=positive_int, help="top N by score (default: per kind)")
     ed.add_argument(
         "--max-total",
-        type=float,
+        type=positive_float,
         help="cap total duration (s): best-scoring moments that fit (default: per kind)",
     )
     ed.add_argument("--vertical", action="store_true", help="9:16 1080x1920 center crop")

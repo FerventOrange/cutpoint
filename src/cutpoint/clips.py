@@ -625,10 +625,15 @@ def render_clips(
     vertical: bool,
     audio_fade: float,
     pano: PanoExporter | None = None,
+    protected_srts: set[str] | None = None,
 ) -> list[RenderResult]:
     """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
     its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
     for sources without one; see :mod:`cutpoint.srt`).
+
+    ``protected_srts``: :func:`~cutpoint.config.path_key` of ``.srt`` names in the clips
+    folder that an earlier run did not write; a clip with such a name gets no ``.srt``
+    (one WARNING names them).
 
     Returns:
         One :class:`RenderResult` per plan, in order.
@@ -639,6 +644,7 @@ def render_clips(
     results: list[RenderResult] = []
     words = srt.words_lookup()
     no_words: list[str] = []
+    not_written: list[str] = []
     for plan in plans:
         m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
         out = out_dir / plan.name
@@ -670,14 +676,22 @@ def render_clips(
             f" crop {plan.crop}" if plan.crop else "",
         )
         sub = None
-        if (w := words(m["source"])) is not None:
-            sub = out.with_suffix(".srt").name
-            srt.write_srt(out_dir / sub, srt.clip_cues(w, start, end))
-        else:
+        if (w := words(m["source"])) is None:
             no_words.append(m["source"])
+        elif path_key(name := out.with_suffix(".srt").name) in (protected_srts or set()):
+            not_written.append(name)
+        else:
+            sub = name
+            srt.write_srt(out_dir / sub, srt.clip_cues(w, start, end))
         results.append(RenderResult(out, end, read_err, pano_rec, sub))
     if no_words:
         srt.skipped_info(f"{len(no_words)} of {len(plans)} clips", no_words)
+    if not_written:
+        logger.warning(
+            "Kept %s: an earlier run's manifest.json does not list them (made by hand?), so "
+            "they are not replaced and these clips get no new subtitles",
+            ", ".join(not_written),
+        )
     return results
 
 
@@ -775,24 +789,25 @@ def write_manifest(
 
 def _replaced_files(
     out_dir: Path, new: list[str], sources: set[Any]
-) -> tuple[list[str], list[str], list[str], bool]:
-    """What ``--force`` replaces in ``out_dir`` besides the names ``new`` this run writes.
+) -> tuple[list[str], list[str], list[str], bool, set[str]]:
+    """What ``--force`` replaces in ``out_dir`` besides the clip names ``new`` this run writes.
 
     Only files an earlier run made are replaced: the clips and their ``.srt`` subtitles
     listed in the old manifest.json and leftover ``.<name>.part.mp4`` files. A file this
     run reads (``sources``, see :func:`source_keys`) is never replaced; neither is any
-    other ``.mp4`` or ``.srt``.
+    other ``.mp4``. Every other ``.srt`` (all of them without a readable manifest.json) is
+    protected: :func:`render_clips` writes no subtitles under its name.
 
     Returns:
         ``(names to replace, .mp4 kept as sources of this run, other .mp4 kept, whether
-        the old manifest.json was readable)``.
+        the old manifest.json was readable, path_key of the protected .srt names)``.
 
     Raises:
         ValueError: If a name in ``new`` is a source of this run (before any export).
     """
     check_not_sources(out_dir, new, sources)
     if not out_dir.is_dir():
-        return [], [], [], True
+        return [], [], [], True, set()
     manifest = cache.load_json(out_dir / "manifest.json")
     entries = manifest.get("clips") if isinstance(manifest, dict) else None
     listed: list[str] = []
@@ -821,7 +836,11 @@ def _replaced_files(
     for p in sorted(clip_files(out_dir)):
         if path_key(p.name) not in done:
             (kept_sources if same_file(p, sources) else kept).append(p.name)
-    return replace, kept_sources, kept, isinstance(entries, list)
+    ours = {path_key(n) for n in listed}
+    protected = {
+        k for f in out_dir.glob("*.srt") if f.is_file() and (k := path_key(f.name)) not in ours
+    }
+    return replace, kept_sources, kept, isinstance(entries, list), protected
 
 
 def export_clips(
@@ -1006,13 +1025,19 @@ def export_clips(
             pano=pano,
         )
         # --force replaces only what an earlier run made, never a file this run reads.
-        replace, kept_sources, kept, had_manifest = _replaced_files(
+        replace, kept_sources, kept, had_manifest, protected_srts = _replaced_files(
             out_dir,
             [p.name for p in plans],
             source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
         )
         results = render_clips(
-            plans, work, fmt=fmt, vertical=vertical, audio_fade=audio_fade, pano=pano
+            plans,
+            work,
+            fmt=fmt,
+            vertical=vertical,
+            audio_fade=audio_fade,
+            pano=pano,
+            protected_srts=protected_srts,
         )
         write_manifest(
             work,

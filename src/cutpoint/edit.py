@@ -68,6 +68,22 @@ def resolve_kind(
     return replace(KINDS[kind], **{k: v for k, v in given.items() if v is not None})
 
 
+def edit_name(target: Path) -> str:
+    """Name of an edit of ``target`` (project folder, ``<name>-final.mp4``): a file's stem,
+    a folder's full name (``.`` and a drive root resolved), else ``edit``."""
+    p = target.resolve()
+    return (p.stem if p.is_file() else p.name) or "edit"
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    """``(inode, mtime ns)`` of ``path``, None if missing: did a step rewrite it?"""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_ino, st.st_mtime_ns
+
+
 def _events_namespace(project: Path) -> argparse.Namespace:
     """``cutpoint events <project>`` arguments with every default, as the CLI parses them."""
     from cutpoint.events.cli import add_arguments  # noqa: PLC0415
@@ -102,7 +118,7 @@ def run_edit(
     semantics. ``events`` runs ``cutpoint events`` (default options) before the clips.
 
     Returns:
-        ``<project>/<first input's stem>-final.mp4`` (``-final_vertical.mp4`` with
+        ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
         ``vertical``), a hard link or copy of the assembled video.
 
     Raises:
@@ -123,7 +139,7 @@ def run_edit(
         )
     clips_dir = project / ("clips_vertical" if vertical else "clips")
     final_name = "final_vertical.mp4" if vertical else "final.mp4"
-    named = project / f"{inputs[0].stem}-{final_name}"
+    named = project / f"{edit_name(inputs[0])}-{final_name}"
     named_srt = named.with_suffix(".srt")
     keys = set().union(*(file_keys(v) for v in videos))
     check_not_sources(project, [named.name, named_srt.name], keys)
@@ -157,6 +173,8 @@ def run_edit(
         vertical=vertical,
         force=force,
     )
+    srt = (project / final_name).with_suffix(".srt")
+    before = _identity(srt)  # an earlier run's final.srt is not this run's subtitles
     final = assemble(
         clips_dir,
         transition=kind.transition,
@@ -164,12 +182,12 @@ def run_edit(
         captions=kind.captions,
     )
     _link_or_copy(final, named)
-    srt = final.with_suffix(".srt")
-    if srt.is_file():
+    written = (now := _identity(srt)) is not None and now != before
+    if written:
         cache.save_bytes(named_srt, srt.read_bytes())
     elif named_srt.exists():
         logger.warning("%s is from an earlier run and does not match %s", named_srt, named.name)
     logger.info("Final video: %s", named)
-    logger.info("Subtitles:   %s", named_srt if srt.is_file() else "none (no transcript)")
+    logger.info("Subtitles:   %s", named_srt if written else "none (no transcript)")
     logger.info("Clips:       %s", clips_dir)
     return named
