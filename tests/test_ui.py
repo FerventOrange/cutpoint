@@ -2203,6 +2203,7 @@ def test_every_final_in_the_project_folder_is_listed_newest_first(
     touch(p / "clip-final.mp4", 100)  # from ``edit``, with timelines
     touch(p / "clip-final.fcpxml", 100)
     touch(p / "clip-final.otio", 100)
+    touch(p / "clip-final.srt", 100)
     touch(p / "x-final_vertical.mp4", 200)
     touch(p / "x-final_vertical.otio", 200)
     for hidden in (".final.part.mp4", ".final.stage.mp4"):  # a run in progress or killed
@@ -2212,10 +2213,16 @@ def test_every_final_in_the_project_folder_is_listed_newest_first(
     touch(outside, 1)
     link_file(p / "final_out.mp4", outside)
     assert listed_outputs(client, pid) == [
-        "clip-final.mp4", "clip-final.fcpxml", "clip-final.otio",
+        "clip-final.mp4", "clip-final.fcpxml", "clip-final.otio", "clip-final.srt",
         "x-final_vertical.mp4", "x-final_vertical.otio",
         "final.mp4",
     ]  # fmt: skip
+    out = client.get(f"/api/projects/{pid}").json()["outputs"]
+    srt = next(o for o in out if o["name"] == "clip-final.srt")
+    res = client.get(f"{srt['url']}&download=1")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/plain")
+    assert "attachment" in res.headers["content-disposition"]
 
 
 def test_a_command_line_final_can_be_downloaded_and_revealed(

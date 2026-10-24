@@ -1100,7 +1100,7 @@ def _final_names(p: Path) -> list[str]:
 
 
 def output_names(p: Path) -> list[str]:
-    """Files of the finals (each video, then its timelines) that exist inside the project."""
+    """Files of the finals (each video, then its timelines and subtitles) inside the project."""
     out: list[str] = []
     for final in _final_names(p):
         stem = Path(final).stem
@@ -1108,7 +1108,7 @@ def output_names(p: Path) -> list[str]:
             final,
             *(
                 f"{stem}{e}"
-                for e in (".fcpxml", ".otio")
+                for e in (".fcpxml", ".otio", ".srt")
                 if (p / f"{stem}{e}").is_file() and _inside(p, f"{stem}{e}")
             ),
         ]
@@ -1539,9 +1539,11 @@ def create_app(port: int) -> FastAPI:
     def send(file: Path, request: Request, name: str | None = None) -> FileResponse:
         """Range-capable file response; ``?download=1`` makes the browser save it."""
         download = request.query_params.get("download") == "1"
+        # mimetypes knows .srt only where the OS registry or mime.types lists it
+        kind = "text/plain" if file.suffix.lower() == ".srt" else mimetypes.guess_type(file.name)[0]
         return FileResponse(
             file,
-            media_type=mimetypes.guess_type(file.name)[0] or "application/octet-stream",
+            media_type=kind or "application/octet-stream",
             filename=name or file.name if download else None,
             content_disposition_type="attachment" if download else "inline",
         )

@@ -59,7 +59,7 @@ opens the folder with the project's videos in the system file manager (hidden wh
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
 in the column header. "Show folder" also appears next to "Export clips" (the latest export
 folder, `clips_ui_*`) and next to "Assemble" (the project folder, which holds the final videos and
-their `.fcpxml` and `.otio` timelines), once that folder exists.
+their `.srt` subtitles and `.fcpxml` and `.otio` timelines), once that folder exists.
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
