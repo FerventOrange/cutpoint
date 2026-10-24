@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -10,9 +11,9 @@ from pathlib import Path
 import pytest
 
 from conftest import write
-from cutpoint import config
+from cutpoint import config, stage
 from cutpoint.config import remap_source
-from cutpoint.stage import clear_stage, stage_sources, staged_path
+from cutpoint.stage import clear_stage, reload_stage_index, stage_sources, staged_path
 
 
 @pytest.mark.parametrize(
@@ -220,3 +221,139 @@ def test_staged_path_follows_stage_dir_and_index_changes_without_reload(home, tm
     other = tmp_path / "other-stage"
     write(home / "config.json", json.dumps({"stage_dir": str(other)}))
     assert staged_path(str(src)) == str(src)
+
+
+_LANMAN = r"\Device\LanmanRedirector\;N:0000000000012345\server\share"
+_MUP = r"\Device\Mup\;M:0000000000012345\server\share"
+
+
+def _dos_devices(monkeypatch, devices: dict[str, str]) -> list[str]:
+    """Fake ``QueryDosDeviceW``: ``devices`` by drive, a local disk for any other; returns the
+    drives asked for."""
+    asked: list[str] = []
+
+    def query(drive: str) -> str:
+        asked.append(drive)
+        return devices.get(drive, r"\Device\HarddiskVolume3")
+
+    monkeypatch.setattr(stage, "_query_dos_device", query)
+    stage._SUBST.clear()
+    return asked
+
+
+def _free_drives(n: int) -> list[str]:
+    """``n`` drive letters with nothing on them here (never ``Z:``)."""
+    return [f"{c}:" for c in "QRSTUVWXY" if not Path(f"{c}:\\").exists()][:n]
+
+
+def test_expand_subst_follows_subst_drives_only(monkeypatch):
+    """#186: only ``subst`` drives are expanded, lexically; network drives and UNC stay."""
+    asked = _dos_devices(
+        monkeypatch,
+        {
+            "Q:": r"\??\C:\real",
+            "R:": r"\??\Q:\inner",  # a subst drive into another one
+            "S:": r"\??\UNC\server\share\x",  # a subst drive onto a share
+            "L:": r"\??\L:\loop",
+            "N:": _LANMAN,
+            "M:": _MUP,
+        },
+    )
+    expand = stage._expand_subst
+    assert expand(r"q:\Footage\a.mp4") == r"C:\real\Footage\a.mp4"
+    assert expand(r"R:\a.mp4") == r"C:\real\inner\a.mp4"
+    assert expand(r"S:\a.mp4") == r"\\server\share\x\a.mp4"
+    assert expand(r"L:\a.mp4").startswith("L:\\loop\\")  # stops at the depth cap
+    for path in (r"N:\a.mp4", r"M:\a.mp4", r"C:\a.mp4", r"\\server\share\a.mp4", "/srv/a.mp4"):
+        assert expand(path) == path
+    assert "C:" in asked  # a local disk is asked about, never a UNC path or a POSIX one
+    assert all(len(d) == 2 for d in asked)
+
+
+def _remap(home, monkeypatch, old: Path, new: Path) -> None:
+    write(home / "config.json", json.dumps({"source_remap": {str(old): str(new)}}))
+    config.get_config.cache_clear()
+    monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+
+
+def _staged_under(home, tmp_path, monkeypatch, old: Path) -> tuple[str, Path]:
+    """Stage ``<nas>/a.mp4`` recorded as ``old/a.mp4`` (through ``source_remap``); returns the
+    copy and the index file."""
+    nas = tmp_path / "nas"
+    src = write(nas / "a.mp4", "aa")
+    _remap(home, monkeypatch, old, nas)
+    stage_sources([src], min_free_gb=0)
+    copy = staged_path(str(src))
+    assert copy != str(src)
+    index_file = Path(copy).parent / "index.json"
+    assert list(json.loads(index_file.read_text())) == [config.norm_path(str(old / "a.mp4"))]
+    return copy, index_file
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="subst drives exist on Windows only")
+@pytest.mark.parametrize("recorded", ["subst", "folder"])
+def test_staged_path_matches_a_subst_spelling_of_the_staged_key(
+    home, tmp_path, monkeypatch, recorded
+):
+    """#186: a file asked for through a ``subst`` drive or the folder it maps to finds the copy
+    staged under the other spelling; the stored key and copy name stay as they are."""
+    [drive] = _free_drives(1)
+    real = tmp_path / "real"
+    _dos_devices(monkeypatch, {drive: "\\??\\" + str(real)})
+    alias = Path(drive + "\\") / "Footage"
+    old = alias if recorded == "subst" else real / "Footage"  # the spelling recorded
+    copy, index_file = _staged_under(home, tmp_path, monkeypatch, old)
+    saved = index_file.read_text()
+
+    for asked in (alias / "a.mp4", real / "Footage" / "a.mp4"):
+        assert staged_path(str(asked)) == copy
+    assert index_file.read_text() == saved
+    assert sorted(p.name for p in index_file.parent.iterdir()) == [Path(copy).name, "index.json"]
+
+    Path(copy).write_text("")  # a truncated copy is not returned through the fallback either
+    for asked in (alias / "a.mp4", real / "Footage" / "a.mp4"):
+        assert staged_path(str(asked)) == str(asked)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="subst drives exist on Windows only")
+def test_staged_path_returns_the_source_when_the_drive_query_fails(home, tmp_path, monkeypatch):
+    """#186: when ``QueryDosDeviceW`` cannot be called, the source is returned, as before."""
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    [drive] = _free_drives(1)
+    _staged_under(home, tmp_path, monkeypatch, tmp_path / "real" / "Footage")
+    calls: list[str] = []
+
+    def broken(name: str, *args, **kwargs):
+        calls.append(name)
+        raise OSError("no kernel32")
+
+    monkeypatch.setattr(ctypes, "WinDLL", broken)
+    reload_stage_index()
+    asked = str(Path(drive + "\\") / "Footage" / "a.mp4")
+    assert staged_path(asked) == asked
+    assert "kernel32" in calls
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="subst drives exist on Windows only")
+@pytest.mark.parametrize("device", [_LANMAN, _MUP], ids=["lanman", "mup"])
+def test_staged_path_never_resolves_or_expands_a_network_drive_key(
+    home, tmp_path, monkeypatch, device
+):
+    """#186: a key on a network-mapped drive is left as it is: no resolve, no expansion."""
+    net, sub = _free_drives(2)
+    real = tmp_path / "real"
+    _dos_devices(monkeypatch, {net: device, sub: "\\??\\" + str(real)})
+    _staged_under(home, tmp_path, monkeypatch, Path(net + "\\") / "Footage")
+    resolved: list[str] = []
+    realpath = os.path.realpath
+
+    def spy(path, *args, **kwargs):
+        resolved.append(os.fspath(path))
+        return realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", spy)
+    for asked in (real / "Footage" / "a.mp4", Path(sub + "\\") / "Footage" / "a.mp4"):
+        assert staged_path(str(asked)) == str(asked)
+    assert not [p for p in resolved if p.upper().startswith(net)]
+    assert stage._expand_subst(net + r"\Footage\a.mp4") == net + r"\Footage\a.mp4"
