@@ -24,7 +24,7 @@ prints tracebacks of errors.
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
 | [`crashes`](#crashes), [`mix`](#mix), [`refmatch`](#refmatch), [`fit`](#fit) | Action-cam module |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
-| [`setup`](#setup), [`paths`](#paths), [`guide`](#guide) | Setup, data and the agent guide |
+| [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
 
 ## ui
 
@@ -516,3 +516,19 @@ cutpoint guide
 
 Prints the guide for AI agents driving Cutpoint ([AGENTS.md](../AGENTS.md)) to stdout. Use it
 when Cutpoint is installed from PyPI and there is no repository to read.
+
+## skill
+
+```text
+cutpoint skill install [--dir DIR] [--force]
+cutpoint skill print
+```
+
+`skill install` copies the Claude Code skill for agents driving Cutpoint to
+`<DIR>/cutpoint/SKILL.md`. The default `DIR` is `~/.claude/skills`, the Claude Code user skills
+folder (`$CLAUDE_CONFIG_DIR/skills` when `CLAUDE_CONFIG_DIR` is set); use `--dir` for a project's `.claude/skills` or another agent's skills folder. An
+installed skill with the same content is left as is. One with different content (an older
+version or your own edits) is an error naming the file; `--force` replaces it. The skill is short
+and points the agent to `cutpoint guide` for details.
+
+`skill print` prints the skill to stdout, for agents that do not use a skills folder.

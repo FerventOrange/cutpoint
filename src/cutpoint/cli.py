@@ -1,5 +1,5 @@
 """Command-line interface: ``cutpoint edit | analyze | events | crashes | profile | refmatch | fit |
-clips | extend | assemble | stage | 360 | setup | paths | capabilities | guide | ui``.
+clips | extend | assemble | stage | 360 | setup | paths | capabilities | guide | skill | ui``.
 
 Installed as the ``cutpoint`` console script.
 """
@@ -365,6 +365,26 @@ def _cmd_guide(a: argparse.Namespace) -> None:
     # Bytes as-is, so a non-UTF-8 console encoding cannot fail on non-ASCII text.
     sys.stdout.flush()
     sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+
+
+def _cmd_skill_install(a: argparse.Namespace) -> None:
+    from cutpoint import skill  # noqa: PLC0415
+
+    skills_dir = Path(a.dir).expanduser() if a.dir else skill.default_dir()
+    target, written = skill.install(skills_dir, force=a.force)
+    if written:
+        logger.info("installed the Cutpoint skill: %s", target)
+    else:
+        logger.info("the Cutpoint skill is already installed: %s", target)
+
+
+def _cmd_skill_print(a: argparse.Namespace) -> None:
+    from cutpoint import skill  # noqa: PLC0415
+
+    # Bytes as-is, as for guide.
+    sys.stdout.flush()
+    sys.stdout.buffer.write(skill.skill_bytes())
     sys.stdout.buffer.flush()
 
 
@@ -1015,6 +1035,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     gd = sub.add_parser("guide", help="print the guide for AI agents driving Cutpoint")
     gd.set_defaults(func=_cmd_guide)
+
+    sk = sub.add_parser(
+        "skill", help="install or print the Claude Code skill for AI agents driving Cutpoint"
+    )
+    sks = sk.add_subparsers(dest="skill_command", required=True)
+    si = sks.add_parser(
+        "install",
+        help="copy the skill to <dir>/cutpoint/SKILL.md (an identical file is left as is)",
+    )
+    si.add_argument(
+        "--dir",
+        metavar="DIR",
+        help="skills folder, e.g. a project's .claude/skills or another agent's folder "
+        "(default: ~/.claude/skills, the Claude Code user skills folder, or "
+        "$CLAUDE_CONFIG_DIR/skills when CLAUDE_CONFIG_DIR is set)",
+    )
+    si.add_argument("--force", action="store_true", help="replace an installed skill that differs")
+    si.set_defaults(func=_cmd_skill_install)
+    sp = sks.add_parser("print", help="print the skill (SKILL.md) to stdout")
+    sp.set_defaults(func=_cmd_skill_print)
 
     ui = sub.add_parser(
         "ui",
