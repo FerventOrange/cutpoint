@@ -40,7 +40,7 @@ from typing import Any, Literal
 import numpy as np
 
 from cutpoint import paths, state
-from cutpoint.cache import REPLACE_ATTEMPTS, load_json, save_json
+from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import get_config, path_key
 
 logger = logging.getLogger(__name__)
@@ -774,19 +774,11 @@ def output_dir(path: Path) -> Iterator[Path]:
     created it and it is still empty, so a failed run leaves no empty folder behind.
 
     Missing parents are created too and removed the same way. A folder that existed before,
-    or that holds anything, is always kept.
+    or that holds anything, is always kept (:func:`cutpoint.cache.created_dirs`).
     """
-    created = [p for p in (path, *path.parents) if not p.exists()]
-    path.mkdir(parents=True, exist_ok=True)
-    try:
+    with created_dirs() as made:
+        make_dirs(path, made)
         yield path
-    except BaseException:
-        for p in created:  # innermost first; a non-empty folder stops the walk
-            try:
-                p.rmdir()
-            except OSError:
-                break
-        raise
 
 
 def part_path(out: Path) -> Path:
@@ -920,7 +912,7 @@ def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
         OSError: The first error, after every file was tried.
     """
     errors: list[OSError] = []
-    old = set(journal["old"])
+    old = {path_key(n) for n in journal["old"]}
     for name in journal["old"]:
         src = bak / name
         if src.exists() or src.is_symlink():  # else it never left dst
@@ -929,7 +921,9 @@ def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
             except OSError as err:
                 errors.append(err)
     for name in journal["new"]:
-        if name not in old:  # never a user file: swap_in records every existing name as old
+        # never a user file: swap_in records every existing name as old (once per path_key,
+        # so a case variant of a new name is the same file and is not deleted)
+        if path_key(name) not in old:
             f = dst / name
             try:
                 retry_locked(partial(f.unlink, missing_ok=True), f, "delete")
@@ -1123,14 +1117,13 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     created = not dst.exists()
     # manifest.json last in, first out: it never lists a clip that is not there
     names = sorted((p.name for p in new.iterdir()), key=lambda n: (n == "manifest.json", n))
-    olds = (
-        []
-        if created
-        else sorted(
-            {n for n in [*old, *names] if (dst / n).exists() or (dst / n).is_symlink()},
-            key=lambda n: (n != "manifest.json", n),
-        )
-    )
+    # one file per path_key (the first spelling): a case variant would move it twice
+    present = {
+        path_key(n): n
+        for n in reversed([*old, *names])
+        if (dst / n).exists() or (dst / n).is_symlink()
+    }
+    olds = [] if created else sorted(present.values(), key=lambda n: (n != "manifest.json", n))
     journal = {"old": olds, "new": names, "created": created}
     bak = backup_path(dst)
     bak.mkdir()

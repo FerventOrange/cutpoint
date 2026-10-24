@@ -116,21 +116,18 @@ def test_edit_without_new_subtitles_does_not_copy_a_stale_final_srt(pipeline, ho
     assert "none (no transcript)" in caplog.text
 
 
+def test_edit_name_of_a_drive_root_is_edit(tmp_path):
+    """The rule itself is utils.input_name (tests/test_utils.py); edit's fallback is "edit"."""
+    assert edit.edit_name(Path(tmp_path.anchor)) == "edit"
+
+
 @pytest.mark.parametrize(
-    ("make", "name"),
-    [
-        (lambda d: d / "a.b.mp4", "a.b"),  # a file: its stem
-        (lambda d: d / "trip.2024", "trip.2024"),  # a folder: its whole name
-        (lambda d: Path(d.anchor), "edit"),  # a drive root has no name
-    ],
+    ("argv", "vision"), [([], None), (["--no-vision"], False), (["--vision"], True)]
 )
-def test_edit_name(tmp_path, make, name):
-    target = make(tmp_path)
-    if target.suffix == ".mp4":
-        target.write_bytes(b"x")
-    else:
-        target.mkdir(exist_ok=True)
-    assert edit.edit_name(target) == name
+def test_edit_passes_vision_to_analyze(pipeline, argv, vision):
+    """No option: analyze's own default (the style's, else Ollama if reachable)."""
+    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
+    assert pipeline.calls[0][2] == {"vision": vision}
 
 
 def test_edit_of_a_dotted_folder_names_project_and_final_after_it(pipeline, home, monkeypatch):
@@ -156,3 +153,36 @@ def test_edit_vertical_names_its_outputs(pipeline, home):
     assert pipeline.calls[2][1] == (project / "clips_vertical",)
     assert (project / "My Clip-final_vertical.mp4").read_bytes() == b"final video"
     assert (project / "My Clip-final_vertical.srt").is_file()
+
+
+@pytest.mark.parametrize(
+    ("out", "error", "code"),
+    [
+        (None, RuntimeError("bad video"), 1),
+        ("projects/new/nested", RuntimeError("bad video"), 1),
+        ("projects/new/nested", KeyboardInterrupt(), 130),
+    ],
+)
+def test_edit_failed_analyze_leaves_no_new_project_folder(
+    home, tmp_path, monkeypatch, out, error, code
+):
+    """analyze removes the folders it created (#217): the project and, for a new nested
+    --out, its new parents; on an error and on Ctrl+C."""
+    video = tmp_path / "videos" / "My Clip.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"source bytes")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cutpoint.analyze, "Transcriber", lambda **kw: None)
+
+    reached: list[Path] = []
+
+    def analyze_source(src, *a, **kw):
+        reached.append(src)  # inside analyze's project folder, which exists by now
+        raise error
+
+    monkeypatch.setattr(cutpoint.analyze, "analyze_source", analyze_source)
+    argv = ["edit", str(video), "--no-vision"] + (["--out", out] if out else [])
+    assert cli.main(argv) == code
+    assert reached == [video]
+    projects = home / "projects"
+    assert not projects.exists() or list(projects.iterdir()) == []

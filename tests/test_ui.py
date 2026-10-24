@@ -350,6 +350,102 @@ def test_windows_cancel_tries_ctrl_break_before_taskkill(
     assert runs == [["taskkill", "/PID", "4242", "/T", "/F"]]
 
 
+def test_windows_cancel_ends_the_job_object_between_ctrl_break_and_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def terminate(job: object, code: int) -> int:
+        calls.append(("terminate", (job, code)))
+        return 1
+
+    kernel32 = SimpleNamespace(
+        GenerateConsoleCtrlEvent=lambda event, pid: calls.append(("ctrl_break", pid)) or 1,
+        TerminateJobObject=terminate,
+    )
+    fake_ctypes = SimpleNamespace(WinDLL=lambda name: kernel32, c_void_p=lambda value: value)
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(ui, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(ui, "signal", SimpleNamespace(CTRL_BREAK_EVENT=1))
+    monkeypatch.setattr(
+        ui,
+        "subprocess",
+        SimpleNamespace(
+            run=lambda args, **kw: calls.append(("taskkill", args)),
+            TimeoutExpired=subprocess.TimeoutExpired,
+        ),
+    )
+
+    def wait(timeout: float) -> int:
+        calls.append(("wait", timeout))
+        raise subprocess.TimeoutExpired("job", timeout)
+
+    proc = SimpleNamespace(pid=4242, wait=wait, tree_job=777)
+    ui.kill_tree(proc)  # type: ignore[arg-type]
+    # the job object reaches descendants that outlive the leader, which taskkill /T cannot
+    assert [name for name, _ in calls] == ["ctrl_break", "wait", "terminate", "taskkill"]
+    assert dict(calls)["terminate"] == (777, 1)
+
+    calls.clear()  # no job object (assignment failed): taskkill alone, as before
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
+    assert [name for name, _ in calls] == ["ctrl_break", "wait", "taskkill"]
+
+
+def _pid_alive(pid: int) -> bool:
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    handle = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        return False
+    try:
+        return k32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == 0x102  # WAIT_TIMEOUT
+    finally:
+        k32.CloseHandle(ctypes.c_void_p(handle))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows job objects and CTRL_BREAK")
+def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
+    grandchild = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGBREAK, signal.SIG_IGN)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    leader = (
+        "import subprocess, sys, time\n"
+        f"c = subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+        "print('child', c.pid, flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    jobs = ui.Jobs()
+    job = jobs.start("p", "analyze", [sys.executable, "-c", leader])
+    child = 0
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline and not any(line == "ready" for line in list(job.logs)):
+            time.sleep(0.05)
+        logs = list(job.logs)
+        assert "ready" in logs
+        child = int(next(line for line in logs if line.startswith("child")).split()[1])
+        cancelled = jobs.cancel(job.id)
+        # SOFT_STOP_S for the event, then the hard kill; allow the watcher thread to see EOF
+        deadline = time.time() + ui.SOFT_STOP_S + 20
+        while cancelled.status != "cancelled" and time.time() < deadline:
+            time.sleep(0.05)
+        assert cancelled.status == "cancelled"
+        deadline = time.time() + 5
+        while _pid_alive(child) and time.time() < deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(child)
+    finally:
+        if child and _pid_alive(child):
+            subprocess.run(["taskkill", "/PID", str(child), "/T", "/F"], capture_output=True)
+        if job.proc is not None and job.proc.poll() is None:
+            ui.kill_tree(job.proc)
+
+
 def test_assemble_ignores_a_hidden_part_file_left_by_a_killed_export(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -2100,3 +2196,54 @@ def test_final_current_says_whether_the_leading_final_is_the_exports_own(
     got = client.get(f"/api/projects/{pid}").json()
     assert [o["name"] for o in got["outputs"]] == listed  # no duplicates either
     assert got["final_current"] is current
+
+
+def test_new_project_that_cannot_save_its_meta_leaves_no_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #194: the failed request removes the project and ``ui/`` (and the projects folder
+    only when this call made it)."""
+    root = ui.projects_dir()
+
+    def full_disk(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cache, "save_json", full_disk)
+    for pre_existing in (False, True):
+        if pre_existing:
+            root.mkdir(parents=True)
+        with pytest.raises(OSError, match="disk full"):
+            ui.new_project("Trip", str(tmp_path), "funny")
+        assert root.is_dir() is pre_existing
+        if pre_existing:
+            assert list(root.iterdir()) == []
+
+
+def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_made(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #194: a CLI project has no ``ui/``; a failed build removes ``ui/proxy`` and ``ui/``
+    it created."""
+    monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=10.0))
+    src = tmp_path / "footage" / "a.mp4"
+    src.parent.mkdir()
+    src.write_bytes(b"x")
+    p = ui.projects_dir() / "cli-proj"
+    p.mkdir(parents=True)
+    cache.save_json(p / "highlights.json", {"settings": {"inputs": [str(src.parent)]}})
+
+    class Failing:
+        returncode = 1
+
+        def __init__(self, _args: list[str]) -> None:
+            pass
+
+        def communicate(self) -> tuple[str, None]:
+            return "encoder failed", None
+
+    monkeypatch.setattr(ui, "spawn", Failing)
+    media = client.app.state.media
+    media.prepare(p, str(src))
+    media.pool.submit(int).result(30)  # the one worker has finished the build
+    assert media.status(p, str(src))[0] == "failed"
+    assert not (p / "ui").exists()

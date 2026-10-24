@@ -12,7 +12,8 @@ after smart tails and event tails, to the final in/out points:
   start/end, and clips of the same source are kept apart (overlapping padded
   ranges are split in a pause between the picks, so no footage is shown
   twice). With ``--no-speech-aware`` padded clips may overlap, as before;
-* every re-exported clip gets a short audio fade in/out (``--audio-fade``).
+* every re-exported clip gets a short audio fade in/out (``--audio-fade``) and its
+  ``.srt`` subtitles for the new range (see :mod:`cutpoint.srt`).
 
 ``cutpoint extend`` re-exports an existing clips folder from its ``manifest.json``
 (source, in and out points, crop, format), keeping the exact file names and
@@ -35,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import boundaries, cache
+from cutpoint import boundaries, cache, srt
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import OutputFormat, export_clip_checked
@@ -282,7 +283,8 @@ def extend_clips(
     Raises:
         FileNotFoundError: If ``clips_dir`` or its manifest is missing.
         FileExistsError: If ``out_dir`` is non-empty (or is ``clips_dir``)
-            and ``force`` is False.
+            and ``force`` is False, or a clip to re-export has the name of an ``.mp4``
+            that ``out_dir``'s manifest.json does not list (before any export).
         ValueError: If nothing could be re-exported.
     """
     recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
@@ -372,7 +374,17 @@ def extend_clips(
             mode = None if pano_source else (e.get("pano") or {}).get("mode")
             pano_files = pano.inputs(e["source"], mode) if pano and e.get("pano") else []
             reads.append((e["source"], plan.src, pano_files))
-        check_not_sources(out_dir, [p.name for p in plans], source_keys(reads))
+        names = [p.name for p in plans]
+        check_not_sources(out_dir, names, source_keys(reads))
+        # Like clips --force: never replace a clip or .srt that out_dir's manifest.json does
+        # not list; the .srt files it lists for the clips written here are replaced, and those
+        # of clips deleted during review removed (the new manifest.json no longer lists them).
+        listed = srt.listed_files(out_dir)
+        srt.check_unlisted_clips(out_dir, names, listed)
+        subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed))
+        ours = {path_key(n) for n in listed or []}
+        old_srts = [s for n in names if path_key(s := Path(n).with_suffix(".srt").name) in ours]
+        old_srts += srt.orphaned_srts(out_dir)
         entries = []
         reused = 0
         for plan in plans:
@@ -419,6 +431,7 @@ def extend_clips(
                 )
             if read_err and read_err["end"] < end:
                 end = read_err["end"]
+            sub = subs.write(work / name, e["source"], start, end)
             moved = any(
                 (speech_recs.get(name) or {}).get(k, {}).get("moved") for k in ("start", "end")
             )
@@ -436,7 +449,7 @@ def extend_clips(
             )
             p0, p1 = plan.keep
             entries.append(
-                {k: v for k, v in e.items() if k != "read_from"}
+                {k: v for k, v in e.items() if k not in ("read_from", "srt")}
                 | {
                     **({"read_from": str(src)} if str(src) != e["source"] else {}),
                     "start": start,
@@ -448,8 +461,10 @@ def extend_clips(
                     "audio_fade": audio_fade,
                     **({"pano": pano_rec} if pano_rec else {}),
                     **({"read_error": read_err} if read_err else {}),
+                    **({"srt": sub} if sub else {}),
                 }
             )
+        subs.report(len(plans))
         if not entries:
             raise ValueError(f"No clips with manifest entries in {clips_dir}")
         cache.save_json(
@@ -471,8 +486,8 @@ def extend_clips(
                 "clips": entries,
             },
         )
-        if staged:  # all or nothing; only the clips written here and manifest.json are replaced
-            swap_in(work, out_dir)
+        if staged:  # all or nothing; only the clips and .srt files named above are replaced
+            swap_in(work, out_dir, old_srts)
     if staged and not in_place:
         written = {path_key(e["file"]) for e in entries}
         kept = [p for p in clip_files(out_dir) if path_key(p.name) not in written]

@@ -50,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -115,7 +116,7 @@ def spawn(args: list[str]) -> subprocess.Popen[str]:
         if os.name == "nt"
         else {"start_new_session": True}
     )
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         args,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -126,13 +127,39 @@ def spawn(args: list[str]) -> subprocess.Popen[str]:
         env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
         **group,
     )
+    if os.name == "nt":
+        _join_tree_job(proc)
+    return proc
+
+
+def _join_tree_job(proc: subprocess.Popen[str]) -> None:
+    """Windows: put ``proc`` in a job object of its own, so its descendants join it too.
+
+    ``kill_tree`` ends the job, which reaches every descendant even when the leader is gone:
+    ``taskkill /T`` walks the tree from a live leader only, and a soft stop that worked has ended
+    the leader. A descendant can miss CTRL_BREAK: a venv's python.exe launcher ignores the event,
+    so an interpreter it starts just after the event keeps running and holds the job's stdout.
+    """
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    k32.CreateJobObjectW.restype = ctypes.c_void_p
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        return
+    if k32.AssignProcessToJobObject(ctypes.c_void_p(job), ctypes.c_void_p(int(proc._handle))):  # type: ignore[attr-defined]
+        proc.tree_job = job  # type: ignore[attr-defined]
+        weakref.finalize(proc, k32.CloseHandle, ctypes.c_void_p(job))
+    else:  # e.g. the leader already exited: taskkill alone, as before
+        k32.CloseHandle(ctypes.c_void_p(job))
 
 
 def kill_tree(proc: subprocess.Popen[str]) -> None:
     """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, then KILL.
 
     Windows: CTRL_BREAK_EVENT to the job's process group first (cutpoint turns it into
-    KeyboardInterrupt: partial files removed, exit 130), then ``taskkill /T /F``. The event
+    KeyboardInterrupt: partial files removed, exit 130), then the job object ``spawn`` made
+    and ``taskkill /T /F``. The event
     needs a console shared with the job; without one (pythonw) only the hard kill runs.
     GenerateConsoleCtrlEvent is called directly: when it fails, ``os.kill`` falls through to
     TerminateProcess on the leader alone, which orphans its ffmpeg before taskkill can see it.
@@ -144,6 +171,9 @@ def kill_tree(proc: subprocess.Popen[str]) -> None:
         if k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(SOFT_STOP_S)
+        job = getattr(proc, "tree_job", None)
+        if job:  # every descendant, including ones the leader's exit left out of /T
+            k32.TerminateJobObject(ctypes.c_void_p(job), 1)
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
         )
@@ -678,8 +708,10 @@ class Media:
     def _build(self, project: Path, real: Path, proxy: Path, key: str, audio_streams: int) -> None:
         tmp = proxy.with_name(f"{key}.part.mp4")
         state = "failed"
+        made: list[Path] = []  # ui folders this build created
         try:
-            _ui_folder(project, "proxy")  # ui or ui/proxy a file: a clear refusal, not a traceback
+            # ui or ui/proxy a file: a clear refusal, not a traceback
+            _ui_folder(project, "proxy", made)
             # a link made while this build was queued
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")
             proc = spawn(proxy_args(real, tmp, audio_streams))
@@ -706,6 +738,12 @@ class Media:
                     self.proxies[key] = state
                 else:
                     self.proxies.pop(key, None)
+                # Accepted narrow race: a request writing into a just-made ui/ right now gets one
+                # retryable error. Queued builds (one worker) recreate the folders themselves.
+                if state:
+                    for folder in made:  # failed: the folders it created, while still empty
+                        with contextlib.suppress(OSError):
+                            folder.rmdir()
 
     def frame(self, project: Path, path: str, at: float, width: int) -> Path | None:
         """A JPEG still of ``path`` at ``at`` s (clamped into the source), ``width`` px wide.
@@ -998,15 +1036,22 @@ def _own(p: Path, name: str) -> Path:
     return p / name
 
 
-def _ui_folder(p: Path, sub: str = "") -> None:
+def _ui_folder(p: Path, sub: str = "", made: list[Path] | None = None) -> None:
     """Create ``p/ui`` (and ``p/ui/<sub>``) if missing; 409 when one is a file or a dangling link
-    (never followed)."""
+    (never followed). The levels created here are added to ``made``, deepest first."""
     for name in (UI_DIR, f"{UI_DIR}/{sub}") if sub else (UI_DIR,):
         _own(p, name)
+        folder = p / name
         try:
-            (p / name).mkdir(exist_ok=True)
-        except (FileExistsError, NotADirectoryError):
-            raise bad(f"{p.name}/{name} is not a folder; remove or rename it", 409) from None
+            folder.mkdir()
+        except OSError as err:
+            if folder.is_dir():  # already there (as mkdir(exist_ok=True))
+                continue
+            if isinstance(err, (FileExistsError, NotADirectoryError)):
+                raise bad(f"{p.name}/{name} is not a folder; remove or rename it", 409) from None
+            raise
+        if made is not None:
+            made.insert(0, folder)
 
 
 def _is_project(d: Path) -> bool:
@@ -1076,20 +1121,23 @@ def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
 
 def new_project(name: str, source: str, style: str) -> dict[str, str]:
     root = projects_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    base, n = slugify(name, 60, "project"), 1
-    while True:
-        pid = base if n == 1 else f"{base}-{n}"
-        try:
-            (root / pid).mkdir()
-            break
-        except FileExistsError:
-            n += 1
-    (root / pid / UI_DIR).mkdir()
-    cache.save_json(
-        root / pid / UI_DIR / "meta.json",
-        {"name": name, "source": source, "style": style, "created": datetime.now().isoformat()},
-    )
+    with cache.created_dirs() as made:  # a failed request leaves no empty folder behind
+        cache.make_dirs(root, made)
+        base, n = slugify(name, 60, "project"), 1
+        while True:
+            pid = base if n == 1 else f"{base}-{n}"
+            try:
+                (root / pid).mkdir()
+                break
+            except FileExistsError:
+                n += 1
+        made.insert(0, root / pid)
+        (root / pid / UI_DIR).mkdir()
+        made.insert(0, root / pid / UI_DIR)
+        cache.save_json(
+            root / pid / UI_DIR / "meta.json",
+            {"name": name, "source": source, "style": style, "created": datetime.now().isoformat()},
+        )
     return {"id": pid, "name": name}
 
 

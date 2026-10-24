@@ -166,6 +166,17 @@ def _locked(winerror: int) -> PermissionError:
     return err
 
 
+def _old_clip(project: Path) -> Path:
+    """``clips/001_a.mp4`` of an earlier run (its manifest.json lists it)."""
+    old = project / "clips" / "001_a.mp4"
+    old.parent.mkdir()
+    old.write_bytes(b"x")
+    (old.parent / "manifest.json").write_text(
+        json.dumps({"clips": [{"file": old.name}]}), encoding="utf-8"
+    )
+    return old
+
+
 def _fake_export(monkeypatch):
     """Export without ffmpeg: every clip is the bytes b"new"."""
 
@@ -180,9 +191,7 @@ def _fake_export(monkeypatch):
 @pytest.mark.usefixtures("no_sleep")
 def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, caplog, winerror):
     project, seg = _project(home)
-    old = project / "clips" / "001_a.mp4"
-    old.parent.mkdir()
-    old.write_bytes(b"x")
+    old = _old_clip(project)
     _fake_export(monkeypatch)
     real_replace = Path.replace
 
@@ -201,9 +210,7 @@ def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, cap
 @pytest.mark.usefixtures("no_sleep")
 def test_clips_force_retries_a_lock_that_clears(monkeypatch, home):
     project, seg = _project(home)
-    old = project / "clips" / "001_a.mp4"
-    old.parent.mkdir()
-    old.write_bytes(b"x")
+    old = _old_clip(project)
     _fake_export(monkeypatch)
     real_replace = Path.replace
     attempts = []
@@ -844,17 +851,62 @@ def test_clips_force_replaces_only_clips_of_the_old_manifest(monkeypatch, home, 
 
 
 @pytest.mark.parametrize("manifest", [None, "{not json"], ids=["missing", "unreadable"])
-def test_clips_force_without_a_readable_manifest_replaces_only_the_new_names(
+def test_clips_force_without_a_readable_manifest_replaces_no_clip(
     monkeypatch, home, caplog, manifest
 ):
     project = _setup(home, monkeypatch)
     _segments(project / "seg.json", project / "src.mp4")
     out = _write_old_set(project, manifest)
+    before = _snapshot(out)
+    exported = []
+    monkeypatch.setattr(clips, "export_clip_checked", lambda *a, **_kw: exported.append(a))
+    assert cli.main(_argv("clips", project, "--force")) == 1
+    assert "001_a.mp4" in _errors(caplog)
+    assert "no readable manifest.json" in _errors(caplog)
+    assert not exported
+    assert _snapshot(out) == before
+    # moved out of the way: the new clip is written and every other file stays
+    (out / "001_a.mp4").rename(out / "001_mine.mp4")
+    _fake_export(monkeypatch)
     assert cli.main(_argv("clips", project, "--force")) == 0
     assert (out / "001_a.mp4").read_bytes() == b"new"
-    for n in ("002_b.mp4", "003_c.mp4", "009_user.mp4"):
+    for n in ("001_mine.mp4", "002_b.mp4", "003_c.mp4", "009_user.mp4"):
         assert (out / n).read_bytes() == b"old"
     assert "manifest.json" in _warnings(caplog)
+
+
+@pytest.mark.parametrize("cmd", ["clips", "extend-out"])
+def test_force_refuses_a_hand_added_clip_under_a_new_clips_name_before_exporting(
+    monkeypatch, home, caplog, cmd
+):
+    """A clip the old manifest.json does not list is never replaced, even when the new run
+    writes its name: the run stops before any export and names it."""
+    project = _setup(home, monkeypatch)
+    out = project / "clips"
+    if cmd == "clips":
+        _segments(project / "seg.json", project / "src.mp4", "ad")  # 001_a.mp4, 002_d.mp4
+        (out / "002_d.mp4").write_bytes(b"mine")
+        name, argv, module = "002_d.mp4", _argv("clips", project, "--force"), clips
+    else:  # out lists 001 and 003 only; extend writes 002_b.mp4 there too
+        out = project / "out"
+        shutil.copytree(project / "clips", out)
+        data = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        data["clips"] = [e for e in data["clips"] if e["file"] != "002_b.mp4"]
+        (out / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+        name, module = "002_b.mp4", extend
+        argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
+        argv += ["--out", str(out), "--force"]
+    before = _snapshot(out)
+    exported = []
+    monkeypatch.setattr(module, "export_clip_checked", lambda *a, **_kw: exported.append(a))
+    assert cli.main(argv) == 1
+    errors = _errors(caplog)
+    assert name in errors
+    assert "does not list" in errors
+    assert "Move or rename" in errors
+    assert not exported
+    assert _snapshot(out) == before
+    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == []
 
 
 def _point_manifest_at(clips_dir: Path, name: str, source: Path) -> None:
