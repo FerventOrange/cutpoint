@@ -862,13 +862,27 @@ def _train(
     return {**best, "search": search, "taste": taste_model, "fmap": fmap}
 
 
+def mask_modes(thresholds: tuple[float, ...], default: float) -> tuple[float, ...]:
+    """``mask_friends`` candidates reduced to the two masks they can give: soft and hard.
+
+    Friends no longer lift the lift/stop mask, so every value above 0 is the
+    same hard mask; an older list such as ``(0, 5, 6, 7, 8, 11)`` fits each mask
+    once. The hard mask takes ``default`` (the base style's value), or
+    :data:`cutpoint.ski.FRIENDS_STRONG` when that is the soft mask.
+    """
+    from cutpoint.ski import FRIENDS_STRONG  # noqa: PLC0415
+
+    hard = default if default > 0 else float(FRIENDS_STRONG)
+    return tuple(dict.fromkeys(0.0 if t <= 0 else hard for t in thresholds))
+
+
 def fit_weights(
     project: Path | list[FitData],
     result: dict[str, Any] | None = None,
     base: str = "ski",
     name: str | None = None,
     folds: int = 4,
-    thresholds: tuple[float, ...] = (0, 5, 6, 7, 8, 11),
+    thresholds: tuple[float, ...] = (0, 7),
     features: list[str] | None = None,
     taste: bool = False,
     taste_c: float = TASTE_C,
@@ -878,13 +892,12 @@ def fit_weights(
 ) -> dict[str, Any]:
     """Fit ski weights to one or more reference edits and save a learned preset.
 
-    For each candidate ``mask_friends`` threshold (friends score that lifts the
-    lift/stop mask; 11 = never; 0 = soft mask, the ``stopped`` feature
-    weight decides) the weights are fitted on the bins that threshold leaves
-    eligible, and the pair with the best in-sample precision + recall at the
-    edits' durations is kept. Cross-validation (whole clips held out, across
-    all projects) then re-fits the weights for that threshold on each
-    training fold. With ``taste`` the taste head is cross-fitted too: weights
+    For each ``mask_friends`` mode (above 0 = hard lift/stop mask; 0 = soft
+    mask, the ``stopped`` feature weight decides; see :func:`mask_modes`) the
+    weights are fitted on the bins that mode leaves eligible, and the pair
+    with the best in-sample precision + recall at the edits' durations is
+    kept. Cross-validation (whole clips held out, across all projects) then
+    re-fits the weights for that mode on each training fold. With ``taste`` the taste head is cross-fitted too: weights
     are fitted on out-of-fold taste scores, and held-out clips are scored by a
     head that never saw them. With two or more projects, each project is also
     predicted by a model trained on the others alone (cross-project).
@@ -895,14 +908,16 @@ def fit_weights(
         base: Built-in preset whose weights / feature names are fitted.
         name: Preset name (``<CUTPOINT_HOME>/styles/<name>.json``).
         folds: Cross-validation folds.
-        thresholds: ``mask_friends`` candidates.
+        thresholds: ``mask_friends`` candidates (older numeric lists are
+            accepted; values above 0 collapse into one hard-mask fit).
         features: Feature subset (default: every feature of ``base``).
         taste: Fit and use the taste head.
         taste_c: Inverse L2 strength of the taste head.
         save: Write the preset (False for ablations).
         cross: Run the cross-project evaluation.
-        vlm_friends_only: Lift the mask on VLM friends tags only (the behaviour
-            before the visual layer; for ablations).
+        vlm_friends_only: Use the VLM friends tags alone as the ``friends``
+            grid (for ablations). Friends no longer lift the mask, so this
+            only changes the friends numbers of the mask report.
 
     Returns:
         The fit report (also written into the preset JSON).
@@ -916,6 +931,7 @@ def fit_weights(
         keys_w.append("taste")
     default = base_style.weights
     th_default = base_style.mask_friends
+    thresholds = mask_modes(thresholds, th_default)
     fmap: dict[Key, dict[str, Any]] = {}
     groups: dict[Key, int] = {}
     gid: dict[tuple[int, str], int] = {}
@@ -1093,12 +1109,12 @@ def ablate(
     datasets: list[FitData],
     base: str = "ski",
     sets: dict[str, Any] | None = None,
-    thresholds: tuple[float, ...] = (0, 7, 11),
+    thresholds: tuple[float, ...] = (0, 7),
 ) -> list[dict[str, Any]]:
     """Refit (without saving) on feature subsets; held-out P/R per subset.
 
-    VLM tags enter through ``vlm`` / ``scenic`` and the friends mask; "no_vlm"
-    drops those features (the mask still sees VLM friends tags if present).
+    VLM tags enter through ``vlm`` / ``scenic``; "no_vlm" drops those
+    features. ``thresholds`` are ``mask_friends`` modes, as for :func:`fit_weights`.
     """
     from cutpoint.ski import FEATURES, NEW_FEATURES  # noqa: PLC0415
 
