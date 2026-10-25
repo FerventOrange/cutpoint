@@ -39,7 +39,7 @@ def has_reaction(
 ) -> bool:
     """Whether a reaction follows an event at ``t`` (seconds, source time).
 
-    A reaction is a Laughter or Scream audio event overlapping
+    A reaction is a Laughter or Scream audio event starting in
     ``(t, t + REACTION_WINDOW_S]`` (speech or not), or a transcript segment
     starting in that window while none overlaps ``[t - REACTION_PAUSE_S, t]``:
     a pause, then speech, so ongoing banter does not count. Without
@@ -47,12 +47,7 @@ def has_reaction(
     """
     end = t + REACTION_WINDOW_S
     for e in events:
-        if (
-            e.get("kind") == "audio"
-            and e.get("label") in REACTION_SOUNDS
-            and e["end"] > t
-            and e["start"] <= end
-        ):
+        if e.get("kind") == "audio" and e.get("label") in REACTION_SOUNDS and t < e["start"] <= end:
             return True
     if not segments:
         return False

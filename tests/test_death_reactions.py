@@ -58,7 +58,10 @@ def seg(start: float, end: float) -> dict[str, Any]:
         ([], [seg(2, 3), seg(12, 13)], True),  # ended well before: a pause
         ([audio("Laughter", 12, 14)], None, True),
         ([audio("Scream", 11, 12)], None, True),
-        ([audio("Laughter", 9, 12)], None, True),  # overlapping the event's start
+        ([audio("Laughter", 9, 12)], None, False),  # already running at the event
+        ([audio("Laughter", 2.0, 10.5)], None, False),  # running before the death
+        ([audio("Laughter", 10.0, 12)], None, False),  # starting exactly at t
+        ([audio("Laughter", 16.0, 18)], None, True),  # starting exactly at t + 6
         ([audio("Cheering", 12, 14)], [], False),  # not a reaction sound
         ([], [seg(17, 18)], False),  # speech after 6 s
         ([audio("Laughter", 17, 18)], None, False),

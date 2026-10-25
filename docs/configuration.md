@@ -241,9 +241,10 @@ before.
   `player_deaths` matches the player's own deaths (not a self-kill) and adds no per-event boost, so a death
   does not count as a kill; it stays a tail payoff and a VLM seed. Its default is `reaction` 8 with
   `styles` `["funny"]`: with `--style funny`, a candidate where the player dies and someone
-  reacts gets +8, once. A reaction is laughter or a scream within 6 s after the death, or speech
-  starting within 6 s after a 1.5 s pause before the death; continuous banter does not count. It
-  is rescored from the cache without re-running `events`. Other styles are unchanged. It needs the player's name in
+  reacts gets +8, once. A reaction is laughter, a scream or speech that starts within 6 s after
+  the death; speech counts only after a 1.5 s pause before the death, so continuous banter and
+  laughter already running do not count. It is rescored from the cache without re-running
+  `events`. Other styles are unchanged. It needs the player's name in
   [`player_tags`](#player_tags) or `--player`; without it no event is a player event.
 - Scored types add to the highlight boost, which stays capped, and show up as evidence in
   `signals.events`. The `prefix` phrases of `banner` matchers are also added to the OCR phrases of
