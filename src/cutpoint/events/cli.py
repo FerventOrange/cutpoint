@@ -251,7 +251,8 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
             if reanalyze_if_reachable(args.project) is None:
                 jsonout.warn(
                     "highlights_not_updated",
-                    "footage not reachable; highlights.json left unchanged, rerun once it is back",
+                    "a source could not be found or reached; highlights.json left unchanged, "
+                    "rerun once it is back",
                     [highlights],
                 )
             else:
