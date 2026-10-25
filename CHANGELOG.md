@@ -17,9 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#4).
 - A default for the Ollama vision rating: "Rate frames with a local vision model (Ollama)" in
   the UI's Settings saves `"vision": true` or `false` in `config.json` (default false, so nothing
-  changes unless you turn it on). The UI's vision checkboxes start from it ("Analyze again" on an
-  analyzed project still starts from what the last analysis asked) and can change it per run;
-  the UI passes `--vision` or `--no-vision` explicitly. `cutpoint analyze` and `cutpoint edit`
+  changes unless you turn it on). Every analysis the UI starts follows it and passes `--vision`
+  or `--no-vision` explicitly. `cutpoint analyze` and `cutpoint edit`
   use it when neither `--vision` nor `--no-vision` is given, so `--no-vision` now skips vision
   that the setting turns on. A `vision` that is not true or false is rejected.
   `GET`/`PUT /api/settings` carry `vision` (and `vision_model`, read-only); `PUT` may send
@@ -145,9 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gets one only when its prompt differs from the user (or bundled) preset of the same game key.
   After adding a user preset with `title`, `view` or `hype`, or editing those fields in one, run `cutpoint events <project> --force vlm`.
 - The Ollama vision rating is opt-in for every style: `analyze` and `edit` use it only with
-  `--vision`, and `cutpoint ui` only when "Rate frames with a local vision model (Ollama)" is
-  ticked next to "Analyze footage" or in the dialog "Analyze again" now opens (there it starts as
-  the previous analysis asked). Before, it ran whenever Ollama was reachable (except for `ski`),
+  `--vision`, and `cutpoint ui` only when vision is turned on in Settings. Before, it ran whenever Ollama was reachable (except for `ski`),
   loading about 7 GB into GPU memory unasked. `--no-vision` is still accepted and changes
   nothing. The `vision_unavailable` warning now only comes with `--vision`. `highlights.json`
   records the request as `settings.vision_requested`; re-analyzing (`cutpoint events`) uses

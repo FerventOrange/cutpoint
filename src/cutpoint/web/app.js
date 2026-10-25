@@ -304,10 +304,6 @@ function renderUnanalyzed(el, n, error) {
         n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory'),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', { text: 'Analyze footage to transcribe audio and rank the strongest moments.' }),
-    h('label', { class: 'check' },
-      h('input', { type: 'checkbox', id: 'optVision', 'aria-describedby': 'optVisionHint', checked: S.project?.vision_default === true }),
-      'Rate frames with a local vision model (Ollama)'),
-    h('p', { id: 'optVisionHint', class: 'hint', text: visionHint(S.project?.vision_model) }),
     h('button', {
       type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
       onclick: async (e) => {
@@ -318,7 +314,7 @@ function renderUnanalyzed(el, n, error) {
         const drop = () => { delete el.dataset.refocus; stop.abort(); };
         document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
         document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
-        await startJob('analyze', { vision: $('#optVision').checked });
+        await startJob('analyze'); // vision: the server applies the Settings value
         if (![...S.tracked.values()].some(live)) renderBusy(); // it failed: enable again
       },
     }, 'Analyze footage'),
@@ -846,26 +842,16 @@ function confirmAction(title, text, ok = 'Remove') {
   });
 }
 
-/** The vision boxes' hint, naming the Ollama model a run would use. */
-function visionHint(model) {
-  return `Optional. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${model || 'qwen3-vl:8b'}.`;
-}
-
-/** "Analyze again": confirm in a dialog whose vision box starts as the last analysis asked
- * (before a first analysis: the Settings default). */
+/** "Analyze again": confirm in a dialog; vision follows Settings, as for a first analysis. */
 function analyzeAgain() {
   const d = $('#analyzeDialog');
   const back = document.activeElement;
-  const p = S.project;
-  $('#againVision').checked = p?.highlights ? !!p.vision_requested : !!p?.vision_default;
-  // a re-run uses the model the last analysis recorded
-  $('#againVisionHint').textContent = visionHint(p?.highlights?.settings?.ollama_model || p?.vision_model);
   d.returnValue = '';
   d.showModal();
   $('#againCancel').focus();
   d.addEventListener('close', () => {
     if (back?.isConnected) back.focus();
-    if (d.returnValue === 'ok') startJob('analyze', { vision: $('#againVision').checked });
+    if (d.returnValue === 'ok') startJob('analyze');
   }, { once: true });
 }
 
@@ -1345,7 +1331,7 @@ async function openSettings() {
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
   box.checked = st.vision === true;
   box.dataset.saved = String(box.checked);
-  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. New analyses start with this choice and can still change it per run. Saved in ${st.config_file}.`;
+  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.`;
   d.showModal();
   // a locked folder cannot be edited: start on the first control that can
   (st.projects_dir_locked ? box : input).focus();
@@ -1378,12 +1364,6 @@ async function saveSettings() {
   input.value = input.dataset.saved = st.projects_dir;
   box.dataset.saved = String(st.vision === true);
   $('#settingsDialog').close();
-  if ('vision' in body) {
-    // the open project's boxes start from the new default; a first analysis's box changes now
-    if (S.project) S.project.vision_default = st.vision === true;
-    const opt = $('#optVision');
-    if (opt) opt.checked = st.vision === true;
-  }
   if (!body.projects_dir) return;
   // A project of the same id in the new folder is another project: start afresh either way.
   try {

@@ -136,8 +136,8 @@ it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Wi
 local Ollama vision model ([getting started](getting-started.md#optional-ollama-vision)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
 Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
-the UI's vision checkboxes start from it; every analysis the UI starts passes its checkbox as
-`--vision` or `--no-vision`. Other values are rejected.
+every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
+moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
 
 ### video_encoder
 
