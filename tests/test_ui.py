@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -39,6 +40,12 @@ def client() -> TestClient:
     c = TestClient(app, base_url=f"http://127.0.0.1:{PORT}")
     c.headers["X-Cutpoint-Token"] = app.state.token
     return c
+
+
+@pytest.fixture(autouse=True)
+def no_nvenc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proxies encode with libx264 unless a test says otherwise: no GPU probe in tests."""
+    monkeypatch.setattr(ui, "find_encoder", lambda kind: (None, [f"{kind}: not probed"]))
 
 
 def make_project(client: TestClient, tmp_path: Path, files: dict[str, bytes]) -> tuple[str, Path]:
@@ -2149,7 +2156,7 @@ def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
         (p / "ui").write_bytes(b"x")
     elif fault == "ui/proxy is a file":
         (p / "ui" / "proxy").write_bytes(b"x")
-    monkeypatch.setattr(ui, "proxy_args", lambda _real, tmp, _n: [str(tmp)])
+    monkeypatch.setattr(ui, "proxy_args", lambda _real, tmp, _n, **_kw: [str(tmp)])
 
     class Encoder:
         returncode = 0
@@ -2422,6 +2429,194 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
     media.pool.submit(int).result(30)  # the one worker has finished the build
     assert media.status(p, str(src))[0] == "failed"
     assert not (p / "ui").exists()
+
+
+# --- strain: priority, connection resets, proxy encoder ---
+
+
+def test_spawn_runs_children_below_normal_priority() -> None:
+    """Jobs and proxy encodes (and what they start) yield the CPU to the desktop."""
+    if os.name == "nt":
+        code = (
+            "import ctypes; k = ctypes.windll.kernel32; "
+            "k.GetCurrentProcess.restype = ctypes.c_void_p; "
+            "k.GetPriorityClass.argtypes = [ctypes.c_void_p]; "
+            "print(k.GetPriorityClass(k.GetCurrentProcess()))"
+        )
+        want = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    else:
+        code = "import os; print(os.nice(0))"
+        want = min(os.nice(0) + 10, 19)
+    proc = ui.spawn([sys.executable, "-c", code])
+    out = proc.communicate(timeout=30)[0]
+    assert proc.returncode == 0, out
+    assert int(out.split()[-1]) == want
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows creation flags")
+def test_spawn_keeps_its_own_process_group_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl+Break reaches a job only in its own process group: the priority flag is added to it."""
+    seen: dict = {}
+
+    def popen(args: list[str], **kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(pid=1)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(ui, "_join_tree_job", lambda _proc: None)
+    ui.spawn(["x"])
+    flags = seen["creationflags"]
+    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert flags & subprocess.BELOW_NORMAL_PRIORITY_CLASS
+
+
+@pytest.mark.parametrize(
+    ("exc", "passed_on"),
+    [
+        (ConnectionResetError(10054, "reset"), False),
+        (ConnectionAbortedError(10053, "aborted"), False),
+        (BrokenPipeError(32, "broken pipe"), True),
+        (OSError(5, "other"), True),
+        (RuntimeError("bug"), True),
+        (None, True),
+    ],
+)
+def test_connection_resets_are_not_logged_but_other_loop_errors_are(
+    exc: BaseException | None, passed_on: bool
+) -> None:
+    """A browser cancelling a range request (seek, source switch) is not an error."""
+    seen: list[dict] = []
+    loop = SimpleNamespace(default_exception_handler=seen.append)
+    context = {"message": "Exception in callback", "exception": exc}
+    if exc is None:
+        del context["exception"]
+    ui.quiet_resets(loop, context)  # type: ignore[arg-type]
+    assert seen == ([context] if passed_on else [])
+
+
+def test_the_server_loop_uses_the_quiet_reset_handler() -> None:
+    app = ui.create_app(PORT)
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+
+        async def handler() -> object:
+            return asyncio.get_running_loop().get_exception_handler()
+
+        assert c.portal.call(handler) is ui.quiet_resets
+
+
+@pytest.mark.parametrize("nvenc", [False, True])
+def test_proxy_has_short_keyframe_interval_and_at_most_30_fps(nvenc: bool) -> None:
+    args = ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1, nvenc=nvenc)
+    assert args[args.index("-g") + 1] == "30"
+    assert args[args.index("-fpsmax") + 1] == "30"
+    codec = args[args.index("-c:v") + 1]
+    assert codec == ("h264_nvenc" if nvenc else "libx264")
+    assert ("-maxrate" in args) is nvenc  # NVENC's size is capped near libx264's
+    assert args[-1] == "out.mp4"
+
+
+class ProxyEncoder:
+    """A fake proxy ffmpeg: records its command; fails when it is NVENC and ``nvenc_fails``."""
+
+    calls: list[list[str]]
+    nvenc_fails = False
+
+    def __init__(self, args: list[str]) -> None:
+        self.calls.append(args)
+        self.returncode = 1 if self.nvenc_fails and "h264_nvenc" in args else 0
+        if self.returncode == 0:
+            Path(args[-1]).write_bytes(b"proxy")
+
+    def communicate(self) -> tuple[str, None]:
+        return ("" if self.returncode == 0 else "nvenc: driver error"), None
+
+
+@pytest.fixture
+def proxy_encoder(monkeypatch: pytest.MonkeyPatch) -> type[ProxyEncoder]:
+    monkeypatch.setattr(ProxyEncoder, "calls", [], raising=False)
+    monkeypatch.setattr(ui, "spawn", ProxyEncoder)
+    return ProxyEncoder
+
+
+def build_proxy(client: TestClient, p: Path, src: Path) -> str:
+    media = client.app.state.media
+    media.prepare(p, str(src))
+    media.pool.submit(int).result(30)  # the one worker has finished the build
+    return media.status(p, str(src))[0]
+
+
+@pytest.mark.parametrize(
+    ("probed", "setting", "codec"),
+    [
+        (True, None, "h264_nvenc"),
+        (True, "nvenc", "h264_nvenc"),
+        (False, None, "libx264"),
+        (True, "cpu", "libx264"),  # the user chose the CPU for every encode
+        (True, "amf", "libx264"),
+    ],
+)
+def test_proxy_uses_nvenc_when_it_works_here_else_libx264(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    hevc_project: tuple[str, Path, Path, Path],
+    proxy_encoder: type[ProxyEncoder],
+    probed: bool,
+    setting: str | None,
+    codec: str,
+) -> None:
+    if setting:
+        set_config(home, video_encoder=setting)
+    enc = ui.VideoEncoder("nvenc") if probed else None
+    monkeypatch.setattr(ui, "find_encoder", lambda kind: (enc if kind == "nvenc" else None, []))
+    _, folder, p, _ = hevc_project
+    assert build_proxy(client, p, folder / "a.mp4") == "ready"
+    [args] = proxy_encoder.calls
+    assert args[args.index("-c:v") + 1] == codec
+
+
+def test_a_failed_nvenc_proxy_is_built_again_with_libx264(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+    proxy_encoder: type[ProxyEncoder],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The probe encodes 0.2 s of black; a driver can still fail on the real file."""
+    monkeypatch.setattr(ui, "find_encoder", lambda kind: (ui.VideoEncoder("nvenc"), []))
+    monkeypatch.setattr(proxy_encoder, "nvenc_fails", True)
+    _, folder, p, _ = hevc_project
+    (folder / "b.mp4").write_bytes(b"y")
+    with caplog.at_level(logging.WARNING):
+        assert build_proxy(client, p, folder / "a.mp4") == "ready"
+    codecs = [args[args.index("-c:v") + 1] for args in proxy_encoder.calls]
+    assert codecs == ["h264_nvenc", "libx264"]
+    assert "retrying with libx264" in caplog.text
+    assert not list(p.rglob("*.part.mp4"))
+    # libx264 worked where NVENC failed: the next proxy goes straight to libx264
+    assert build_proxy(client, p, folder / "b.mp4") == "ready"
+    assert [args[args.index("-c:v") + 1] for args in proxy_encoder.calls[2:]] == ["libx264"]
+
+
+def test_a_proxy_failing_with_nvenc_and_libx264_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+    proxy_encoder: type[ProxyEncoder],
+) -> None:
+    monkeypatch.setattr(ui, "find_encoder", lambda kind: (ui.VideoEncoder("nvenc"), []))
+
+    class Failing(ProxyEncoder):
+        def __init__(self, args: list[str]) -> None:
+            self.calls.append(args)
+            self.returncode = 1
+
+    monkeypatch.setattr(ui, "spawn", Failing)
+    _, folder, p, _ = hevc_project
+    assert build_proxy(client, p, folder / "a.mp4") == "failed"
+    assert len(proxy_encoder.calls) == 2
+    assert not client.app.state.media.nvenc_failed  # libx264 did not work either
+    assert not list(p.rglob("*.part.mp4"))
 
 
 # --- source list cache (#129) ---
