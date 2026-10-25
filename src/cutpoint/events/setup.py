@@ -641,11 +641,10 @@ def install_omni() -> None:
 def install_visual() -> None:
     """Download the aesthetic head; load CLIP + Faster R-CNN once so their weights download."""
     download(paths.AESTHETIC_URL, paths.aesthetic_head())
-    if any(importlib.util.find_spec(m) is None for m in ("torch", "open_clip")):
-        raise RuntimeError(
-            "torch / open_clip_torch are not installed; install the events "
-            f"extra first: {install_hint('events')}"
-        )
+    for m in ("torch", "open_clip"):
+        if importlib.util.find_spec(m) is None:
+            # The CLI turns this into "<m> is not installed; it comes with the 'events' extra"
+            raise ModuleNotFoundError(f"No module named {m!r}", name=m)
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
 
     VisualModels().close()

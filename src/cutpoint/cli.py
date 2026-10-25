@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import logging
 import os
@@ -34,7 +35,7 @@ from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.ffmpeg_utils import FFmpegError
-from cutpoint.mix import EXCLUDE_FILE, load_exclusions, parse_quotas, run_mix
+from cutpoint.mix import EXCLUDE_FILE, parse_quotas, read_exclusions, run_mix
 from cutpoint.planning import Padding
 from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_names
@@ -207,8 +208,15 @@ def _cmd_events(a: argparse.Namespace) -> None:
 
 
 def _cmd_stage(a: argparse.Namespace) -> None:
+    if not (a.inputs or a.list or a.clear):
+        raise jsonout.ArgumentError(
+            "cutpoint stage: give files/folders to stage (or --list / --clear)"
+        )
+    stage_dir = get_config().stage_dir
+    jsonout.output("stage_dir", stage_dir)
     if a.list:
-        for e in stage.list_stage():
+        entries = stage.list_stage()
+        for e in entries:
             logger.info(
                 "%s  %.2f GB  read %ss  <- %s",
                 e["file"],
@@ -216,15 +224,32 @@ def _cmd_stage(a: argparse.Namespace) -> None:
                 e.get("read_s"),
                 e.get("source"),
             )
-        return
-    if a.clear:
-        stage.clear_stage(
-            [Path(t) for t in a.inputs], exclude=a.exclude or [], recursive=a.recursive
+        jsonout.output(
+            "files",
+            [
+                {
+                    "source": e.get("source"),
+                    "staged": stage_dir / e["file"],
+                    "bytes": e["size"],
+                    "read_s": e.get("read_s"),
+                }
+                for e in entries
+            ],
         )
         return
-    if not a.inputs:
-        raise ValueError("cutpoint stage: give files/folders to stage (or --list / --clear)")
-    stage.stage_sources([Path(t) for t in a.inputs], exclude=a.exclude or [], recursive=a.recursive)
+    if a.clear:
+        removed = stage.clear_stage(
+            [Path(t) for t in a.inputs], exclude=a.exclude or [], recursive=a.recursive
+        )
+        jsonout.output("removed", removed)
+        return
+    summary = stage.stage_sources(
+        [Path(t) for t in a.inputs], exclude=a.exclude or [], recursive=a.recursive
+    )
+    jsonout.output("files", summary["items"])
+    jsonout.output("copied", summary["files"])
+    for key in ("skipped", "bytes", "read_s", "mb_per_s"):
+        jsonout.output(key, summary[key])
 
 
 def _cmd_refmatch(a: argparse.Namespace) -> None:
@@ -314,14 +339,56 @@ def _add_activity_arguments(p: argparse.ArgumentParser) -> None:
 
 def _cmd_mix(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.project)
+    jsonout.set_project(project)
     out, excl = Path(a.out), Path(a.exclude_file)
-    run_mix(
-        project,
-        target_s=a.target,
-        quotas=parse_quotas(a.quotas),
-        out=out if out.is_absolute() else project / out,
-        exclude=load_exclusions(excl if excl.is_absolute() else project / excl),
+    out = out if out.is_absolute() else project / out
+    excl = excl if excl.is_absolute() else project / excl
+    quotas = parse_quotas(a.quotas)
+    exclude, ignored = read_exclusions(excl)
+    if ignored:
+        jsonout.warn(
+            "exclusions_ignored",
+            f"{len(ignored)} exclusion(s) in {excl} ignored: their source is relative to the "
+            "current folder of a drive",
+            [excl],
+        )
+    report = run_mix(project, target_s=a.target, quotas=quotas, out=out, exclude=exclude)
+    if jsonout.active():
+        _report_mix(out, report)
+
+
+def _report_mix(out: Path, report: dict) -> None:
+    """``--json`` outputs of ``mix``: the files written, the moments and their durations."""
+    segs = cache.load_json(out) or []
+    jsonout.output("segments", out)
+    jsonout.output("report", out.with_name("mix_report.json"))
+    jsonout.output("sheet", report.get("sheet"))  # only one this run wrote
+    jsonout.output(
+        "moments",
+        [
+            {
+                "id": s.get("id"),
+                "source": s["source"],
+                "start": s["start"],
+                "end": s["end"],
+                "duration": round(s["end"] - s["start"], 3),
+                "category": s.get("category"),
+            }
+            for s in segs
+        ],
     )
+    jsonout.output("count", len(segs))
+    jsonout.output("total_seconds", report.get("total_s"))
+    jsonout.output("target_seconds", report.get("target_s"))
+    jsonout.output(
+        "categories",
+        {k: {"n": v["n"], "seconds": v["seconds"]} for k, v in report["categories"].items()},
+    )
+    qa = report.get("content_qa") or {}
+    jsonout.output("content_qa_pass", qa.get("pass"))
+    failed = [k for k, v in (qa.get("checks") or {}).items() if not v.get("ok")]
+    if failed:
+        jsonout.warn("content_qa_failed", f"mix content QA failed: {', '.join(failed)}", [out])
 
 
 def _cmd_assemble(a: argparse.Namespace) -> None:
@@ -342,7 +409,72 @@ def _cmd_assemble(a: argparse.Namespace) -> None:
 def _cmd_setup(a: argparse.Namespace) -> int:
     from cutpoint.events.setup import run_args as run_setup  # noqa: PLC0415
 
-    return run_setup(a)
+    if not jsonout.active():
+        return run_setup(a)
+    before = {name: _setup_state(_setup_files(name)) for name in a.only}
+    try:
+        return run_setup(a)
+    finally:  # also after a failed step: what is there by then
+        _report_setup(a.only, before)
+
+
+def _setup_files(component: str) -> list[Path]:
+    """The files ``cutpoint setup --only <component>`` installs (none for ``pip``)."""
+    files = {
+        "panns": lambda: [event_paths.panns_labels(), event_paths.panns_ckpt()],
+        "llama": lambda: [event_paths.llama_dir() / "VERSION.txt", event_paths.llama_server_exe()],
+        "omni": lambda: [event_paths.omni_mmproj(), event_paths.omni_model()],
+        "visual": lambda: [
+            event_paths.aesthetic_head(),
+            event_paths.clip_weights(),
+            event_paths.detector_weights(),
+        ],
+        "voice": lambda: [event_paths.silero_vad()],
+    }.get(component)
+    return files() if files else []
+
+
+def _setup_state(files: list[Path]) -> dict[Path, tuple[int, int] | None]:
+    """``{file: (size, mtime_ns), or None when it is not a file}``."""
+    state: dict[Path, tuple[int, int] | None] = {}
+    for f in files:
+        try:
+            st = f.stat()
+            state[f] = (st.st_size, st.st_mtime_ns) if f.is_file() else None
+        except OSError:
+            state[f] = None
+    return state
+
+
+def _report_setup(components: list[str], before: dict[str, dict]) -> None:
+    """``--json`` outputs of ``setup``: per component the files downloaded or found."""
+    from cutpoint.events.setup import EVENTS_MODULES  # noqa: PLC0415
+    from cutpoint.extras import install_hint  # noqa: PLC0415
+
+    report: dict[str, dict] = {}
+    for name in dict.fromkeys(components):
+        if name == "pip":
+            missing = [m for m in EVENTS_MODULES if importlib.util.find_spec(m) is None]
+            report[name] = {"installed": not missing, "missing": missing}
+            if missing:
+                jsonout.warn(
+                    "events_extra_missing",
+                    f"Missing Python packages for cutpoint events: {', '.join(missing)}. "
+                    f"Install the events extra: {install_hint('events')}",
+                )
+            continue
+        files = []
+        for path, now in _setup_state(_setup_files(name)).items():
+            old = before.get(name, {}).get(path)
+            status = "missing" if now is None else "found" if now == old else "downloaded"
+            files.append({"path": path, "bytes": now[0] if now else None, "status": status})
+        report[name] = {"files": files}
+        if name == "llama":
+            stamp = event_paths.llama_dir() / "VERSION.txt"
+            report[name]["version"] = (
+                stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else None
+            )
+    jsonout.output("components", report)
 
 
 def _cmd_paths(a: argparse.Namespace) -> None:
@@ -376,7 +508,17 @@ def _cmd_capabilities(a: argparse.Namespace) -> None:
     from cutpoint import capabilities  # noqa: PLC0415 - probes ffmpeg, only when asked
 
     data = capabilities.report()
-    print(json.dumps(data, indent=2) if a.json else capabilities.format_report(data))
+    if not jsonout.active():
+        print(capabilities.format_report(data))
+        return
+    for key, value in data.items():  # the report's own keys, as the old --json printed them
+        jsonout.output(key, value)
+    torch_info = data.get("torch") or {}
+    if torch_info.get("warning"):
+        jsonout.warn("torch_no_cuda", f"{torch_info['warning']} Fix: {torch_info['fix']}")
+    sdk = data.get("insta360_sdk") or {}
+    if sdk.get("warning"):
+        jsonout.warn("sdk_needs_nvidia", sdk["warning"])
 
 
 def _cmd_guide(a: argparse.Namespace) -> None:
@@ -850,6 +992,7 @@ def build_parser() -> argparse.ArgumentParser:
         "would (with --exclude and --recursive); a missing input falls back to the "
         "copies recorded under it",
     )
+    _add_json_argument(st)
     st.set_defaults(func=_cmd_stage)
 
     rm = sub.add_parser(
@@ -1035,6 +1178,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="source spans to leave out, [{source, start, end, category?}, ...] (relative = "
         f"inside the project; default {EXCLUDE_FILE}, written by `cutpoint 360 repair`)",
     )
+    _add_json_argument(mx)
     mx.set_defaults(func=_cmd_mix)
 
     asm = sub.add_parser("assemble", help="join clips (filename order) into one video")
@@ -1075,6 +1219,7 @@ def build_parser() -> argparse.ArgumentParser:
     from cutpoint.events.setup import add_arguments as add_setup_arguments  # noqa: PLC0415
 
     add_setup_arguments(su)
+    _add_json_argument(su)
     su.set_defaults(func=_cmd_setup)
 
     pa = sub.add_parser(
@@ -1092,7 +1237,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(with the reinstall fix if it is CPU-only on an NVIDIA machine) and the "
         "Insta360 Media SDK (needs NVIDIA)",
     )
-    cp.add_argument("--json", action="store_true", help="print the report as JSON")
+    _add_json_argument(cp)
     cp.set_defaults(func=_cmd_capabilities)
 
     gd = sub.add_parser("guide", help="print the guide for AI agents driving Cutpoint")
