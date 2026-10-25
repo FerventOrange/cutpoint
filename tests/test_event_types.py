@@ -1,8 +1,8 @@
 """Golden tests for event types (scoring, tails, VLM prompt, cache keys).
 
 They pin the behaviour before event types moved into the HUD preset data, so
-the preset-driven defaults reproduce the original values, except that deaths in
-generic feeds no longer count as player kills.
+the preset-driven defaults reproduce the original values, except that the
+player's own deaths (generic and built-in feeds alike) no longer count as player kills.
 """
 
 from __future__ import annotations
@@ -139,21 +139,17 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("names", "boost", "evidence"),
     [
-        # boxfeed: 2 kills (own kill and death), teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
-        (list(BOXFEED), 30.0, _ev(kills=2, tk=2, banners=2)),
+        # boxfeed: 1 kill (the own death does not count), teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
+        (list(BOXFEED), 30.0, _ev(kills=1, tk=2, banners=2)),
         # verbfeed: only the player's kill counts (6), not the death; TARGET DESTROYED (6); logs do not count
         (list(VERBFEED), 12.0, _ev(kills=1, banners=1)),
         # no preset: laughter min(12, 30), scream min(6, 4)
         (list(NONE), 16.0, _ev(laugh=0.5, scream=0.1)),
-        (list(LAYER), 30.0, _ev(0.5, 0.1, 3, 2, 3)),
+        (list(LAYER), 30.0, _ev(0.5, 0.1, 2, 2, 3)),
         (["boxfeed_kill", "boxfeed_double"], 12.0, _ev(kills=1, banners=1)),
         (["boxfeed_rff"], 12.0, _ev(tk=1)),
         (["boxfeed_match_point", "boxfeed_other_kill"], 0.0, _ev()),
-        (
-            ["boxfeed_death"],
-            6.0,
-            _ev(kills=1),
-        ),  # builtin-preset kills count with the player on either side
+        (["boxfeed_death"], 0.0, _ev()),  # the player's own death in a built-in feed is no kill
         (["verbfeed_death", "verbfeed_log"], 0.0, _ev()),
     ],
 )
@@ -169,6 +165,9 @@ def test_event_boost(names, boost, evidence):
         ("player !verb", {"verb": "kill"}, False),  # AND, first flag missing
         ("player_kill", {"player_kill": True, "player": True}, True),  # single flag
         ("player_kill", {"player": True}, False),
+        ("player_death !player_kill", {"player_death": True}, True),
+        ("player_death !player_kill", {"player_death": True, "player_kill": True}, False),
+        ("player_death !player_kill", {"player_kill": True}, False),
         ("", {}, True),  # empty flag matches any event of the type
     ],
 )
@@ -177,6 +176,20 @@ def test_matcher_multi_flag(flag, fields, expected):
     assert eventtypes.Matcher("kill", flag=flag).matches(ev) is expected
     # events.json keeps the layer fields under "details"
     assert eventtypes.Matcher("kill", flag=flag).matches({**ev, "details": fields}) is expected
+
+
+@pytest.mark.parametrize(
+    ("fields", "boost", "evidence"),
+    [
+        # a self-kill (player is killer and victim) still counts as a kill
+        ({"player_kill": True, "player_death": True}, 6.0, _ev(kills=1)),
+        # a teamkill that kills the player is still a teamkill
+        ({"player_death": True, "teamkill": True}, 12.0, _ev(tk=1)),
+    ],
+)
+def test_builtin_kill_flag_combinations(fields, boost, evidence):
+    ev = normalize("a.mp4", _ocr("e", "kill", "zed > zed", 1.0, player=True, **fields)[1])
+    assert scoring.event_boost(CAND, [ev]) == (boost, evidence)
 
 
 @pytest.mark.parametrize(
@@ -345,6 +358,17 @@ def test_prompt(tmp_path, home, game, intro, hype, bare):
 @pytest.mark.parametrize("name", list(LAYER))
 def test_seed_priority(name):
     assert vw._seed_priority(LAYER[name]) == pytest.approx(SEED[name])
+    # the default event types must not change a seed (own deaths keep the built-in rule)
+    got = vw._seed_priority(LAYER[name], eventtypes.DEFAULT_EVENT_TYPES)
+    assert got == pytest.approx(SEED[name])
+
+
+@pytest.mark.parametrize("name", ["boxfeed_death", "verbfeed_death"])
+def test_default_own_death_type_sets_nothing(name):
+    t = eventtypes.first_match(eventtypes.DEFAULT_EVENT_TYPES, LAYER[name])
+    assert t is not None
+    assert t.name == "player_deaths"
+    assert (t.payoff, t.tail_s, t.seed) == (None, None, None)
 
 
 def test_vlm_key():

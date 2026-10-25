@@ -230,8 +230,11 @@ before.
   (true or non-empty), such as `player`, `teamkill` or `player_kill`; a field written `!name` must be
   unset or false, for example `"flag": "player !verb"`). A lone `!` or `!!` is invalid: the type is
   skipped with a warning.
-- Preset types are checked before the built-in ones (`teamkills`, `player_kills`, `banners`); the
-  first matching type wins, and a type with a built-in's name replaces it.
+- Preset types are checked before the built-in ones (`teamkills`, `player_deaths`, `player_kills`,
+  `banners`); the first matching type wins, and a type with a built-in's name replaces it.
+  `player_deaths` matches the player's own deaths (not a self-kill) and adds no boost, so a death
+  does not count as a kill; it stays a tail payoff and a VLM seed. It needs the player's name in
+  [`player_tags`](#player_tags) or `--player`; without it no event is a player event.
 - Scored types add to the highlight boost, which stays capped, and show up as evidence in
   `signals.events`. The `prefix` phrases of `banner` matchers are also added to the OCR phrases of
   generic presets, after the generic banners.

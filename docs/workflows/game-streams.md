@@ -13,7 +13,8 @@ cutpoint assemble projects/match-night/clips --transition fade --loudnorm
 ```
 
 Set `player_tags` in [`config.json`](../configuration.md#player_tags) once instead of passing
-`--player` every time.
+`--player` every time. Your own deaths are told apart from your kills only when your name is set
+this way; without it no event counts as yours.
 
 ## What `events` adds
 

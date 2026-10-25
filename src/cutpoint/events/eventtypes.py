@@ -20,7 +20,8 @@ must be false). Preset types are checked before
 :data:`DEFAULT_EVENT_TYPES` and replace a default with the same name; the
 first matching type wins. Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
 built-in rules, so the defaults reproduce the original behaviour exactly,
-except that deaths in generic (verb-style) feeds no longer count as player kills.
+except that the player's own deaths (generic verb-style feeds and built-in R6
+feeds alike) no longer count as player kills.
 """
 
 from __future__ import annotations
@@ -123,9 +124,12 @@ class EventType:
 # Order reproduces the original scoring chain: a teamkill (or an RFF banner)
 # before the player's kills, then payoff banners and multikills. Banners are
 # matched with startswith: their label is the matched phrase ("WON ROUND 5"),
-# as in killfeed.link_teamkills. Player kills: generic feed kills (``verb``)
-# by the player only, not the player's deaths; built-in R6 kills with the
-# player on either side, as before.
+# as in killfeed.link_teamkills. The player's own deaths (victim, not also
+# killer) match "player_deaths" first: no boost and no evidence key, and the
+# unset payoff / seed keep the built-in rules (a tail payoff, seed 1.2 in R6
+# feeds, where ``player`` is set for either side). Player kills: kills by the
+# player, a self-kill included; ``player !verb`` still counts built-in rows
+# that carry neither ``player_kill`` nor ``player_death``.
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     EventType(
         "teamkills",
@@ -133,6 +137,7 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
         score=12.0,
         max=1,
     ),
+    EventType("player_deaths", (Matcher("kill", flag="player_death !player_kill"),)),
     EventType(
         "player_kills",
         (Matcher("kill", flag="player_kill"), Matcher("kill", flag="player !verb")),
