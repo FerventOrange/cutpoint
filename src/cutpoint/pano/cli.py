@@ -17,12 +17,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache
+from cutpoint import cache, jsonout
 from cutpoint.utils import parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
@@ -78,6 +79,20 @@ def _clips(project: Path) -> list[Any]:
     return sorted(clips, key=lambda c: (c.start_local, c.clip_id))
 
 
+def _set_folder_project(folder: Path) -> None:
+    """For --json: the project of a clips folder or of a director folder
+    (``<project>/pano_paths/<name>``)."""
+    if not jsonout.active():
+        return
+    full = Path(os.path.abspath(folder))  # noqa: PTH100 - resolve() turns a mapped drive into UNC
+    if full.parent.name == "pano_paths":
+        jsonout.set_project(full.parent.parent)
+        return
+    from cutpoint.cli import _set_clips_project  # noqa: PLC0415 - cli imports this module
+
+    _set_clips_project(folder)
+
+
 def _timing(project: Path, key: str, value: Any) -> None:
     path = project / "pano_timings.json"
     data = cache.load_json(path) or {}
@@ -93,6 +108,7 @@ def cmd_scan(a: argparse.Namespace) -> None:
     from cutpoint.pano.x3 import imu_source, scan  # noqa: PLC0415
 
     project = _project(a.out)
+    jsonout.set_project(project)
     t0 = time.perf_counter()
     clips, dirs = [], []
     for d in a.folders:
@@ -134,6 +150,25 @@ def cmd_scan(a: argparse.Namespace) -> None:
             Path(c.lrv).name if c.lrv else "(none)",
         )
     total = sum(c.duration for c in clips)
+    jsonout.output("pano", path)
+    jsonout.output("timings", project / "pano_timings.json")
+    jsonout.output(
+        "clips",
+        [
+            {
+                "id": c.clip_id,
+                "mode": c.mode,
+                "duration": round(c.duration, 3),
+                "frames": c.frames,
+                "insv": [Path(f) for f in c.insv],
+                "insv_bytes": c.bytes_insv,
+                "lrv": Path(c.lrv) if c.lrv else None,
+            }
+            for c in clips
+        ],
+    )
+    jsonout.output("count", len(clips))
+    jsonout.output("total_seconds", round(total, 3))
     logger.info(
         "%d clips, %.1f min, %.1f GB of .insv; wrote %s in %.1fs",
         len(clips),
@@ -146,11 +181,16 @@ def cmd_scan(a: argparse.Namespace) -> None:
 
 def cmd_analyze(a: argparse.Namespace) -> None:
     """Proxy views, then the normal ski analysis + events on the .lrv files."""
-    from cutpoint.analyze import analyze, reanalyze_if_reachable  # noqa: PLC0415
+    from cutpoint.analyze import (  # noqa: PLC0415
+        analyze,
+        reanalyze_if_reachable,
+        report_highlights,
+    )
     from cutpoint.pano import views  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     project = _project(a.project)
+    jsonout.set_project(project)
     clips = [c for c in _clips(project) if c.lrv]
     if a.only:
         clips = [c for c in clips if c.clip_id in a.only]
@@ -161,6 +201,8 @@ def cmd_analyze(a: argparse.Namespace) -> None:
     t0 = time.perf_counter()
     st = views.run_layer(clips, force=a.force_views)
     _timing(project, "views", {**st, "total_s": round(time.perf_counter() - t0, 1)})
+    jsonout.output("timings", project / "pano_timings.json")
+    jsonout.output("views", {k: st.get(k) for k in ("cached", "computed")})
     if a.views_only:
         return
     t1 = time.perf_counter()
@@ -185,7 +227,14 @@ def cmd_analyze(a: argparse.Namespace) -> None:
     rescored = reanalyze_if_reachable(project)
     _timing(project, "events_s", round(time.perf_counter() - t2, 1))
     _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
+    jsonout.output("events", project / "events.json")
     if rescored is None:  # footage went offline: highlights.json lacks the events
+        jsonout.warn(
+            "events_not_in_highlights",
+            "a source is not reachable: highlights.json lacks the events; rerun "
+            f"cutpoint 360 analyze {a.project} once the footage is back",
+            [project / "highlights.json"],
+        )
         logger.info(
             "360 analysis done in %.0fs without the events in highlights.json; "
             "rerun cutpoint 360 analyze %s once the footage is back",
@@ -193,12 +242,14 @@ def cmd_analyze(a: argparse.Namespace) -> None:
             a.project,
         )
         return
+    report_highlights(project, rescored)  # re-ranked with the events
     logger.info(
         "360 analysis done in %.0fs; next: cutpoint clips %s", time.perf_counter() - t0, a.project
     )
 
 
-def _log_sdk_status() -> None:
+def _log_sdk_status() -> dict[str, Any]:
+    """Log the SDK status; returns it (:func:`~cutpoint.pano.stitch.sdk_status`)."""
     from cutpoint.pano.stitch import sdk_status  # noqa: PLC0415
 
     s = sdk_status()
@@ -224,6 +275,7 @@ def _log_sdk_status() -> None:
             if s["runs"]
             else f"does NOT run: {s['error']}",
         )
+    return s
 
 
 def cmd_status(a: argparse.Namespace) -> None:
@@ -231,15 +283,28 @@ def cmd_status(a: argparse.Namespace) -> None:
     from cutpoint.pano.project import find_studio_export, sdk_output  # noqa: PLC0415
     from cutpoint.pano.views import load_views  # noqa: PLC0415
 
-    _log_sdk_status()
+    s = _log_sdk_status()
+    jsonout.output("sdk", {k: s.get(k) for k in ("exe", "origin", "found", "runs", "version")})
     if not a.project:
         return
     project = _project(a.project)
+    jsonout.set_project(project)
+    report = []
     for c in _clips(project):
         sdk = sdk_output(c)
         studio, why = find_studio_export(c)
         mode = "sdk" if sdk.is_file() else "studio" if studio else "dfisheye (preview)"
         pv = load_views(Path(c.source)) if c.lrv else None
+        report.append(
+            {
+                "id": c.clip_id,
+                "mode": c.mode,
+                "duration": round(c.duration, 3),
+                "views": pv is not None,
+                "render": mode.split(" ")[0],
+                "render_file": Path(studio) if studio else sdk if sdk.is_file() else None,
+            }
+        )
         logger.info(
             "%s %-5s %7.1fs views:%-4s render: %-18s %s",
             c.clip_id,
@@ -249,6 +314,7 @@ def cmd_status(a: argparse.Namespace) -> None:
             mode,
             studio or (sdk if sdk.is_file() else why),
         )
+    jsonout.output("clips", report)
 
 
 def _selected_segments(project: Path, a: argparse.Namespace) -> list[dict[str, Any]]:
@@ -378,16 +444,31 @@ def cmd_director(a: argparse.Namespace) -> None:
     from cutpoint.pano.project import load  # noqa: PLC0415
 
     project = _project(a.project)
+    jsonout.set_project(project)
     clips = load(project)
     if not clips:  # before any folder is created
         raise _no_pano(project)
     overrides = director_params(a.param)
     name = a.out_name or ("director_vertical" if a.vertical else "director")
     if not name or Path(name).name != name or name in (".", ".."):
-        raise ValueError(f"--out-name must be a plain folder name, got {name!r}")
+        raise jsonout.ArgumentError(f"--out-name must be a plain folder name, got {name!r}")
     out_dir = project / "pano_paths" / name
     with output_dir(out_dir):  # a failed run leaves no empty folder behind
-        _direct(a, project, clips, overrides, out_dir)
+        stems, vl_saved = _direct(a, project, clips, overrides, out_dir)
+    if jsonout.active():
+        jsonout.output("paths_dir", out_dir)
+        jsonout.output(
+            "paths",
+            [
+                {
+                    "path": out_dir / f"{stem}.json",
+                    "preview": preview if (preview := out_dir / f"{stem}.mp4").is_file() else None,
+                }
+                for stem in stems
+            ],
+        )
+        jsonout.output("count", len(stems))
+        jsonout.output("vl_check", out_dir / "vl_check.json" if vl_saved else None)
 
 
 def _direct(
@@ -396,8 +477,9 @@ def _direct(
     clips: dict[str, Any],
     overrides: dict[str, Any] | None,
     out_dir: Path,
-) -> None:
-    """The body of :func:`cmd_director`, writing into the existing ``out_dir``."""
+) -> tuple[list[str], bool]:
+    """The body of :func:`cmd_director`, writing into the existing ``out_dir``; returns the
+    stems of the paths written, in order, and whether this run saved ``vl_check.json``."""
     from cutpoint.pano import director as D  # noqa: PLC0415
     from cutpoint.pano.project import (  # noqa: PLC0415
         RenderSource,
@@ -414,6 +496,9 @@ def _direct(
         checker = VLChecker()
         if not checker.available():
             logger.warning("--vl-check: local vision model unavailable; skipping the check")
+            jsonout.warn(
+                "vl_check_unavailable", "--vl-check: local vision model unavailable; not checked"
+            )
             checker = None
     vl_report: list[dict[str, Any]] = []
     reuse = {} if checker is not None or getattr(a, "force", True) else _reusable(out_dir)
@@ -422,6 +507,7 @@ def _direct(
         clip = clip_for(clips, m["source"])
         if clip is None:
             logger.info("%s: not a 360 clip; skipped", m.get("id"))
+            jsonout.warn("not_a_360_clip", f"{m.get('id')}: not a 360 clip; skipped")
             continue
         p = D.params_for(m.get("kind"))
         p = asdict(D.with_params(p, overrides) if overrides else p)
@@ -502,6 +588,11 @@ def _direct(
                     preview.unlink(missing_ok=True)
             if checker.dead:
                 logger.warning("--vl-check: the vision model stopped answering; skipping the rest")
+                jsonout.warn(
+                    "vl_check_unavailable",
+                    f"--vl-check: the vision model stopped answering after {stem}; the rest "
+                    "is not checked",
+                )
                 checker = None
         bak = _save_path(out_dir, stem, path, rendering=a.preview, carried=carried)
         if bak is not None and stem in carried:
@@ -540,6 +631,7 @@ def _direct(
             sum(secs) / len(secs),
             max(secs),
         )
+    return [stem for stem, *_ in segs], bool(vl_report)
 
 
 def cmd_stitch(a: argparse.Namespace) -> None:
@@ -548,6 +640,7 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     from cutpoint.pano.stitch import stitch_clips  # noqa: PLC0415
 
     project = _project(a.project)
+    jsonout.set_project(project)
     clips = load(project)
     chosen: dict[str, Any] = {}
     if a.clips:
@@ -581,19 +674,39 @@ def cmd_stitch(a: argparse.Namespace) -> None:
 
     if not nvidia_present():
         logger.warning(SDK_NEEDS_NVIDIA)
+        jsonout.warn("sdk_needs_nvidia", SDK_NEEDS_NVIDIA)
     recs = stitch_clips(
         sorted(chosen.values(), key=lambda c: c.clip_id), force=a.force, dry_run=a.dry_run
     )
     for r in recs:
         logger.info("clip %s: %s %s", r["clip"], r["status"], r["output"])
+        if r["status"] == "failed":
+            jsonout.warn(
+                "stitch_failed",
+                f"clip {r['clip']}: the stitch failed; see its log file",
+                [Path(r["log_file"])] if r.get("log_file") else [],
+            )
+    # Never the SDK's own output (``sdk``, ``log``, ``error``) or command line.
+    keys = ("clip", "output", "status", "seconds", "log_file", "estimated_gb")
+    path_keys = ("output", "log_file")  # Path, so the envelope has them absolute
+    jsonout.output(
+        "clips",
+        [{k: Path(r[k]) if k in path_keys else r[k] for k in keys if k in r} for r in recs],
+    )
+    jsonout.output("dry_run", a.dry_run)
 
 
 def cmd_check(a: argparse.Namespace) -> None:
     """Contact sheets of rendered clips (seam, horizon, framing, pans) for review by eye."""
     from cutpoint.pano.check import clip_sheets  # noqa: PLC0415
 
-    for p in clip_sheets(_folder(a.clips_dir), per_clip=a.per_clip):
+    clips_dir = _folder(a.clips_dir)
+    _set_folder_project(clips_dir)
+    sheets = clip_sheets(clips_dir, per_clip=a.per_clip)
+    for p in sheets:
         logger.info("wrote %s", p)
+    jsonout.output("check_dir", clips_dir.with_name(clips_dir.name + "_check"))
+    jsonout.output("sheets", sheets)
 
 
 def cmd_qa(a: argparse.Namespace) -> None:
@@ -601,19 +714,57 @@ def cmd_qa(a: argparse.Namespace) -> None:
     from cutpoint.pano.qa import log_report, run_qa  # noqa: PLC0415
 
     qa_dir = _folder(a.dir)
+    _set_folder_project(qa_dir)
     if a.paths:
         from cutpoint.pano.qa_paths import run_paths_qa  # noqa: PLC0415
 
-        log_report(run_paths_qa(qa_dir, fps=a.fps))
-        return
-    log_report(run_qa(qa_dir, fps=a.fps, size=a.size, json_only=a.json_only))
+        report = run_paths_qa(qa_dir, fps=a.fps)
+    else:
+        report = run_qa(qa_dir, fps=a.fps, size=a.size, json_only=a.json_only)
+    log_report(report)
+    if jsonout.active():
+        _report_qa(qa_dir, report)
+
+
+def _report_qa(qa_dir: Path, report: dict[str, Any]) -> None:
+    """``--json`` outputs of ``360 qa``: qa.json, the sheets and each clip's verdict."""
+    out_dir = Path(report["out_dir"])
+    clips = report["clips"]
+    jsonout.output("qa_dir", out_dir)
+    jsonout.output("report", out_dir / "qa.json")
+    jsonout.output("mode", report["mode"])
+    jsonout.output("sheets", [Path(p) for p in report.get("sheets", [])])
+    jsonout.output(
+        "clips",
+        [
+            {
+                "file": qa_dir / c["file"],
+                "score": c["score"],
+                "pass": c["pass"],
+                "fails": c["fails"],
+            }
+            for c in clips
+        ],
+    )
+    jsonout.output("count", len(clips))
+    jsonout.output("passed", sum(1 for c in clips if c["pass"]))
+    jsonout.output("score", report["edit"].get("score"))
+    if report["skipped"]:
+        jsonout.warn(
+            "qa_clips_skipped",
+            f"{len(report['skipped'])} clip(s) not checked: "
+            + "; ".join(f"{s['file']}: {s['error']}" for s in report["skipped"]),
+            [qa_dir / s["file"] for s in report["skipped"]],
+        )
 
 
 def cmd_repair(a: argparse.Namespace) -> None:
     """Trim, drop or replace clips with blocking direction-QA problems."""
+    from cutpoint.mix import EXCLUDE_FILE  # noqa: PLC0415
     from cutpoint.pano.repair import log_repair, repair  # noqa: PLC0415
 
     project = _project(a.project)
+    jsonout.set_project(project)
     out = Path(a.out) if a.out else None
     rep = repair(
         project,
@@ -621,15 +772,23 @@ def cmd_repair(a: argparse.Namespace) -> None:
         _segments_file(project, a.qa),
         out=None if out is None else out if out.is_absolute() else project / out,
     )
-    if a.json:
-        print(json.dumps(rep, indent=1))
-    else:
-        log_repair(rep)
+    log_repair(rep)
+    for key, value in rep.items():  # the report's own keys, as the old --json printed them
+        jsonout.output(key, value)
+    excl = Path(rep["segments"]).with_name(EXCLUDE_FILE)
+    jsonout.output("exclude_file", excl if rep["exclusions"] else None)
+    if rep["skipped"]:
+        jsonout.warn(
+            "qa_clips_stale",
+            f"{rep['skipped']} QA clip(s) skipped: no matching segment, missing or newer "
+            "than the QA; re-run 360 qa",
+        )
 
 
 # --------------------------------------------------------------------------- parser
 def add_parser(sub: Any) -> None:
     """Register ``cutpoint 360 ...`` on the main CLI's subparsers."""
+    from cutpoint.cli import _add_json_argument  # noqa: PLC0415 - cli imports this module
     from cutpoint.styles import style_names  # noqa: PLC0415
 
     p = sub.add_parser(
@@ -645,6 +804,7 @@ def add_parser(sub: Any) -> None:
     sc.add_argument("folders", nargs="+", metavar="folder", help="camera folder(s), read-only")
     sc.add_argument("--out", required=True, help="project (bare name = projects folder)")
     sc.add_argument("--force", action="store_true", help="recompute the IMU orientation")
+    _add_json_argument(sc)
     sc.set_defaults(func=cmd_scan)
 
     an = s3.add_parser(
@@ -666,6 +826,7 @@ def add_parser(sub: Any) -> None:
     an.add_argument("--views-only", action="store_true", help="only the 360 view layer")
     an.add_argument("--no-events", action="store_true", help="skip cutpoint events")
     an.add_argument("--force-views", action="store_true", help="recompute the view layer")
+    _add_json_argument(an)
     an.set_defaults(func=cmd_analyze)
 
     stt = s3.add_parser(
@@ -674,6 +835,7 @@ def add_parser(sub: Any) -> None:
         "cached layers and render source",
     )
     stt.add_argument("project", nargs="?", help="optional: also report its clips")
+    _add_json_argument(stt)
     stt.set_defaults(func=cmd_status)
 
     di = s3.add_parser(
@@ -722,6 +884,7 @@ def add_parser(sub: Any) -> None:
         help="recompute every path (default: reuse a path JSON in the folder planned for the "
         "same segment, kind and settings; with --preview only if its preview is in place)",
     )
+    _add_json_argument(di)
     di.set_defaults(func=cmd_director)
 
     sti = s3.add_parser(
@@ -740,11 +903,13 @@ def add_parser(sub: Any) -> None:
     sti.add_argument("--max-total", type=positive_float)
     sti.add_argument("--force", action="store_true")
     sti.add_argument("--dry-run", action="store_true", help="print the SDK commands only")
+    _add_json_argument(sti)
     sti.set_defaults(func=cmd_stitch)
 
     ck = s3.add_parser("check", help="contact sheets of rendered 360 clips")
     ck.add_argument("clips_dir")
     ck.add_argument("--per-clip", type=int, default=6)
+    _add_json_argument(ck)
     ck.set_defaults(func=cmd_check)
 
     qa = s3.add_parser(
@@ -763,6 +928,7 @@ def add_parser(sub: Any) -> None:
     )
     qa.add_argument("--size", type=parse_size, default="640x360", help="decode size WIDTHxHEIGHT")
     qa.add_argument("--json-only", action="store_true", help="skip the contact sheets")
+    _add_json_argument(qa)
     qa.set_defaults(func=cmd_qa)
 
     rp = s3.add_parser(
@@ -791,5 +957,5 @@ def add_parser(sub: Any) -> None:
         help="write the repaired list here (relative = inside the project; default: over "
         "--segments, the old one kept as the first free <name>.bak.json, <name>.1.bak.json, ...)",
     )
-    rp.add_argument("--json", action="store_true", help="print the report as JSON")
+    _add_json_argument(rp)
     rp.set_defaults(func=cmd_repair)
