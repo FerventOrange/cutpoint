@@ -92,8 +92,15 @@ class _Engine:
 
 
 def _run(
-    tmp_path: Path, monkeypatch, engine: _Engine | None, preset: dict[str, Any] | None = None
+    tmp_path: Path,
+    monkeypatch,
+    engine: _Engine | None,
+    preset: dict[str, Any] | None = None,
+    still=lambda t: False,
+    on_progress=None,
 ) -> tuple[list[dict], dict]:
+    """Detect the OCR events of a 60 s source. Its frames are moving gameplay (a new
+    grey level every frame) except where ``still(t)`` (one grey level)."""
     data = preset or _preset()
     monkeypatch.setattr(killfeed, "load_preset", lambda *_a, **_k: preset_from_dict(data))
     monkeypatch.setattr(
@@ -106,11 +113,13 @@ def _run(
             t = n / fps
             if engine:
                 engine.t = t
-            yield t, np.zeros((h, w, 3), np.uint8)
+            yield t, np.full((h, w, 3), 90 if still(t) else n * 53 % 256, np.uint8)
 
     monkeypatch.setattr(killfeed, "iter_frames", frames)
     src = Source(tmp_path / "rec.mp4", 60.0, tmp_path, [])
-    return detect_ocr_events(src, OcrParams(game="zonewar", fps=FPS), engine)
+    return detect_ocr_events(
+        src, OcrParams(game="zonewar", fps=FPS), engine, on_progress=on_progress
+    )
 
 
 def test_menu_frames_give_no_events(tmp_path: Path, monkeypatch) -> None:
@@ -130,8 +139,9 @@ def test_menu_and_event_frames_are_logged_at_debug(tmp_path: Path, monkeypatch, 
     menus = [x for x in lines if not x.endswith("-> none")]
     assert len(menus) == 30  # the menu frames, 20-30 s at 3 fps
     assert re.fullmatch(
-        r"rec\.mp4 menu test 20\.0s: \d+ boxes \(min 24\), centre cover 0\.\d\d \(>= 0\.25\), "
-        r"median 1\.0, jump off, \d+ OCR events -> cover",
+        r"rec\.mp4 menu test 20\.0s: \d+ boxes \(min 24\), centre cover 0\.\d\d "
+        r"\(cover >= 0\.50, list >= 0\.25\), median 1\.0, jump off, "
+        r"still 0\.0s \(static >= 5\.0s\), \d+ OCR events -> cover",
         menus[0],
     )
     events = [x for x in lines if x.endswith("-> none")]
@@ -153,12 +163,20 @@ def test_menu_rules_name_the_rule() -> None:
     frames = [frame(n, 30, False) for n in range(10)] + [frame(10, 30, True), frame(11, 70, False)]
     rules, info = menu_rules(frames)
     assert [rules[n] for n in range(12)] == ["none"] * 10 + ["cover", "jump"]
-    assert info == {"median": 30.0, "min_boxes": 24, "cover": 0.5, "jump": 60.0}
+    assert info == {
+        "median": 30.0,
+        "min_boxes": 24,
+        "cover": 0.5,
+        "list": float("inf"),
+        "jump": 60.0,
+        "static_s": float("inf"),  # no feed times given: the static rule is off
+        "static_diff": killfeed.STATIC_MAX_DIFF,
+    }
 
 
 def test_menu_rule_changes_the_cache_key() -> None:
     preset = preset_from_dict(_preset())
-    assert GENERIC_VERSION >= 7
+    assert GENERIC_VERSION >= 8
     assert OcrParams().key("zonewar", preset)["preset"]["interp"] == GENERIC_VERSION
 
 
@@ -262,3 +280,167 @@ def test_kill_words_match_whole_words() -> None:
         [([[0, 0], [300, 0], [300, 24], [0, 24]], "Kiphas crashed", 0.9)],
     )
     assert [(e["type"], e["victim"]) for e in crash] == [("crash", "Kip")]
+
+
+# --------------------------------------------------------------------------- static screens
+
+
+def _quiet_menu(t: float) -> list[tuple[str, float, float]]:
+    """Gameplay, and at 20-30 s a menu of 8 lines (far below the 24 boxes every box
+    rule needs) with a banner phrase on it."""
+    if not 20 <= t < 30:
+        return [("Hold", 900, 820)]
+    out = [("Hull breached", 320, 220)]
+    out += [(f"Tab {chr(65 + i)}", 320 + 180 * i, 860) for i in range(7)]
+    return out
+
+
+def _dirs(tmp_path: Path, *names: str) -> list[Path]:
+    """One folder (and so one OCR cache) per run."""
+    out = [tmp_path / n for n in names]
+    for d in out:
+        d.mkdir()
+    return out
+
+
+def test_still_menu_with_few_boxes_gives_no_events(tmp_path: Path, monkeypatch) -> None:
+    moving, still = _dirs(tmp_path, "moving", "still")
+    # moving frames: the box rules let the quiet menu through
+    events, stats = _run(moving, monkeypatch, _Engine(_quiet_menu))
+    assert [e["t"] for e in events if e["type"] == "banner"] == [20.0]
+    assert stats["menu_frames"] == stats["static_frames"] == 0
+    # the menu holds still: a static screen
+    events, stats = _run(still, monkeypatch, _Engine(_quiet_menu), still=lambda t: 20 <= t < 30)
+    assert not [e for e in events if 20 <= e["t"] < 30]
+    assert stats["static_area"] == 0.45  # the notice region: 1320 x 700 of 1920 x 1080
+    assert stats["menu_frames"] == stats["static_frames"] == 30  # 10 s at 3 fps
+
+
+def test_still_menu_is_logged_with_the_static_rule(tmp_path: Path, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.killfeed")
+    _run(tmp_path, monkeypatch, _Engine(_quiet_menu), still=lambda t: 20 <= t < 30)
+    lines = [r.getMessage() for r in caplog.records if " menu test " in r.getMessage()]
+    static = [x for x in lines if x.endswith("-> static")]
+    assert len(static) == 30
+    assert re.fullmatch(
+        r"rec\.mp4 menu test 20\.0s: 8 boxes \(min 24\), centre cover 0\.\d\d "
+        r"\(cover >= 0\.50, list >= 0\.25\), median 1\.0, jump off, "
+        r"still 9\.7s \(static >= 5\.0s\), \d+ OCR events -> static",
+        static[0],
+    )
+    assert not [x for x in lines if any(t in x for t in ("Hull", "Tab", "Hold"))]  # no OCR text
+
+
+def _feed_screen(t: float) -> list[tuple[str, float, float]]:
+    """Still gameplay at 20-35 s: a kill in the feed from 24 s, a banner beside it at
+    24-26 s and one far from it at 32-34 s."""
+    out = [("Hold", 900, 820)]
+    if t >= 24:
+        out += [("Orrin", 1410, 60), ("destroyed", 1500, 60), ("Pell", 1640, 60)]
+    if 24 <= t < 26:
+        out.append(("Squad wiped", 860, 400))
+    if 32 <= t < 34:
+        out.append(("Hull breached", 860, 400))
+    return out
+
+
+def _feed_preset() -> dict[str, Any]:
+    fx, fy, fw, fh = FEED
+    preset = _preset()
+    preset["regions"] = [
+        *preset["regions"],
+        {"name": "feed", "x": fx, "y": fy, "w": fw, "h": fh, "kind": "feed", "gate": "det"},
+    ]
+    return preset
+
+
+def test_still_gameplay_keeps_feed_kills(tmp_path: Path, monkeypatch) -> None:
+    moving, still = _dirs(tmp_path, "moving", "still")
+    engine = _Engine(_feed_screen, (NOTICE, FEED))
+    ref, _ = _run(moving, monkeypatch, engine, _feed_preset())
+    events, stats = _run(still, monkeypatch, engine, _feed_preset(), still=lambda t: 20 <= t < 35)
+    kills = [(e["t"], e["killer"], e["victim"]) for e in events if e["type"] == "kill"]
+    assert kills == [(e["t"], e["killer"], e["victim"]) for e in ref if e["type"] == "kill"]
+    assert kills == [(24.0, "Orrin", "Pell")]
+    banners = [(e["text"], e["t"]) for e in events if e["type"] == "banner"]
+    # beside the kill the banner stays; the still stretch far from it is a static screen
+    assert banners == [("Squad wiped", 24.0)]
+    assert {e["text"] for e in ref if e["type"] == "banner"} == {"Squad wiped", "Hull breached"}
+    # 20-21.7 s is too short; 26.3-34.7 s (> 2 s from the kill) is static
+    assert stats["static_frames"] == 26
+
+
+def test_moving_gameplay_is_no_static_screen(tmp_path: Path, monkeypatch) -> None:
+    events, stats = _run(
+        tmp_path, monkeypatch, _Engine(_feed_screen, (NOTICE, FEED)), _feed_preset()
+    )
+    assert {e["text"] for e in events if e["type"] == "banner"} == {"Squad wiped", "Hull breached"}
+    assert stats["static_frames"] == 0
+
+
+def _still_records(times: list[float], grey: list[float]) -> list[dict[str, Any]]:
+    """Frame records at ``times`` whose thumbnails are one grey level each, with
+    their still run ids (:class:`StillRuns` at 3 fps)."""
+    runs = killfeed.StillRuns(FPS)
+    shape = killfeed.STATIC_THUMB[::-1]
+    return [
+        {"id": n, "t": t, "source": "rec.mp4", "boxes": [], "still": runs.add(t, np.full(shape, g))}
+        for n, (t, g) in enumerate(zip(times, grey, strict=True))
+    ]
+
+
+def test_static_rule_needs_still_runs_and_feed_times() -> None:
+    times = [n / 3 for n in range(40)]  # 13 s still
+    still = _still_records(times, [90.0] * 40)
+    assert set(menu_rules(still, feed_times=set())[0].values()) == {"static"}
+    assert set(menu_rules(still)[0].values()) == {"none"}  # no feed times: off
+    # records without a still run (made before still runs existed): never static
+    old = [{k: v for k, v in f.items() if k != "still"} for f in still]
+    assert set(menu_rules(old, feed_times=set())[0].values()) == {"none"}
+    # a small change (a cursor) stays still; a larger one starts a new run
+    diff = killfeed.STATIC_MAX_DIFF
+    grey = [90.0] * 10 + [90 + 2 * diff] * 10 + [90 + 2.5 * diff] * 5 + [90 + 2 * diff] * 15
+    rules = menu_rules(_still_records(times, grey), feed_times=set())[0]
+    # 0-3 s is too short; 3.3-13 s holds still with the cursor
+    assert [rules[n] for n in (0, 9, 10, 22, 39)] == ["none", "none", "static", "static", "static"]
+
+
+def test_static_runs_end_at_gaps() -> None:
+    # equal thumbnails across a 30 s gap (a skipped range): no still run over it
+    times = [0.0, 1 / 3, 2 / 3, 1.0, 9.0, 9 + 1 / 3, 9 + 2 / 3, 40.0, 40 + 1 / 3]
+    records = _still_records(times, [90.0] * len(times))
+    assert len({f["still"] for f in records}) == 3
+    assert killfeed.static_frames(records, set()) == set()
+    # long enough but too few frames (a very low OCR rate): no static screen
+    sparse = [dict(f, still=0) for f in _still_records([0.0, 6.0], [90.0, 90.0])]
+    assert killfeed.static_frames(sparse, set()) == set()
+
+
+def test_small_hud_area_has_no_static_rule(tmp_path: Path, monkeypatch) -> None:
+    corner = {"name": "notice", "x": 20, "y": 20, "w": 400, "h": 200, "kind": "notice"}
+    preset = _preset() | {"regions": [corner | {"gate": "det"}]}
+
+    def screen(t: float) -> list[tuple[str, float, float]]:
+        return [("Hull breached", 40, 40)] if 20 <= t < 30 else []
+
+    events, stats = _run(
+        tmp_path, monkeypatch, _Engine(screen, ((20, 20, 400, 200),)), preset, lambda t: True
+    )
+    assert stats["static_area"] == 0.04  # 400 x 200 of 1920 x 1080
+    assert stats["static_frames"] == 0
+    assert [e["t"] for e in events if e["type"] == "banner"] == [20.0]
+
+
+def test_old_cache_is_read_again(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(killfeed, "GENERIC_VERSION", 7)  # a result cached before static screens
+    _run(tmp_path, monkeypatch, _Engine())
+    assert _run(tmp_path, monkeypatch, None)[1].get("skipped") is None  # cached
+    monkeypatch.setattr(killfeed, "GENERIC_VERSION", 8)
+    assert _run(tmp_path, monkeypatch, None) == ([], {"skipped": "not cached"})
+
+
+def test_progress_within_a_source(tmp_path: Path, monkeypatch) -> None:
+    shares: list[float] = []
+    _run(tmp_path, monkeypatch, _Engine(), on_progress=shares.append)
+    assert shares == sorted(set(shares))  # rising, once per percent
+    assert len(shares) == 100 and shares[0] == 0.0 and shares[-1] == 0.99
