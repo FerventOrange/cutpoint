@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+import pytest
 
 from cutpoint.events.discover import FEED_GROW_MAX, DiscoverParams, cluster_regions
 
@@ -93,3 +96,25 @@ def test_split_rows_count_frames_not_boxes() -> None:
                 ]
     feed = _feed(frames)
     assert feed["evidence"]["grown_rows"] == 0
+
+
+def test_a_stray_box_at_the_feed_edge_does_not_stop_growth() -> None:
+    # one small box (an icon read as text) a few px above the common top row, in one
+    # frame: the top row is still the supported one, so the rare rows above are added
+    frames = _frames(6, 3, {0, 13, 26})
+    frames[50]["boxes"].append(_box("zz", 1550, 40 + 3 * PITCH - 8, w=40, h=12))
+    feed = _feed(frames)
+    assert feed["evidence"]["grown_rows"] == 3
+    assert feed["y"] <= 40
+
+
+def test_growth_logs_why_it_stopped(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
+    _feed(_frames(6, 3, set()))
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Feed growth")]
+    assert len(lines) == 1
+    line = lines[0]
+    assert "pitch 30.0 px, 3 rows, full in 160/160 frames" in line
+    assert "above: row at y 110: 0 frames, 0 bursts, variety 0.00, stop: frames" in line
+    assert "below: row at y 230: 0 frames" in line and line.endswith("; 0 rows added")
+    assert not any(n in line for n in NAMES)  # no OCR text in the log

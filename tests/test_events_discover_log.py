@@ -17,7 +17,7 @@ NOTICE = "No HUD preset matches"
 
 
 def _run(home: Path, monkeypatch: pytest.MonkeyPatch, game: str, force: bool | None) -> None:
-    def fake_discover(srcs, out, game, params):
+    def fake_discover(srcs, out, game, params, on_frame=None):
         return {"regions": []}
 
     monkeypatch.setattr(discover, "discover_regions", fake_discover)

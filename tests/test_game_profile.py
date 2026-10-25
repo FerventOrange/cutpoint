@@ -12,6 +12,8 @@ import pytest
 
 from cutpoint.events import discover
 from cutpoint.events.game_profile import (
+    HINT_MIN_BURSTS,
+    HINT_SHARE,
     MIN_GAP_S,
     VERSION,
     build_profile,
@@ -528,3 +530,53 @@ def test_heavy_log_cost() -> None:
     got = mine_phrases(_proposal(), frames)
     assert time.perf_counter() - t0 < 10  # ~1 s; a generous bound against blow-ups
     assert got == ["Squad wiped"]
+
+
+HINT = "Tap Lever Twice"  # an invented tutorial line
+BANNER_TEXT = "ZONE SECURED"
+
+
+def _match(hint_bursts: set[int], hint_frames: int = 4, bursts: int = 40) -> list[dict]:
+    """``bursts`` bursts x 4 frames of one match: the hint line in the banner region on the
+    first ``hint_frames`` frames of ``hint_bursts``; the banner on the first 2 frames of
+    5 bursts spread over the match (several seconds apart from one event to the next)."""
+    events = {3, 11, 19, 27, 35}
+    out = []
+    for b in range(bursts):
+        for k in range(4):
+            boxes = []
+            if b in hint_bursts and k < hint_frames:
+                boxes.append(_box(HINT, y=380, h=40))
+            if b in events and k < 2:
+                boxes.append(_box(BANNER_TEXT))
+            out.append(
+                {"id": f"rec.mp4@{b * 15 + k * 1.5:.1f}", "t": b * 15 + k * 1.5}
+                | {"source": "rec.mp4", "burst": b, "k": k, "boxes": boxes}
+            )
+    return out
+
+
+def test_static_hint_line_is_dropped_and_the_banner_stays() -> None:
+    # the hint in 12 of 40 bursts all match long: 30% of the frames (below STATIC_SHARE)
+    frames = _match(set(range(1, 40, 3)) - {37})
+    share = sum(any(b["text"] == HINT for b in f["boxes"]) for f in frames) / len(frames)
+    assert HINT_SHARE <= share < 0.5
+    assert mine_phrases(_proposal(), frames) == [BANNER_TEXT]
+
+
+def test_a_hint_seen_in_one_phase_only_is_kept() -> None:
+    # 30% of the frames, all in the first third of the match: not spread over it
+    frames = _match(set(range(12)))
+    assert mine_phrases(_proposal(), frames) == [HINT, BANNER_TEXT]
+
+
+def test_a_rarer_line_is_no_hint() -> None:
+    # in 1 frame of 12 bursts spread over the match: 7.5% of the frames
+    frames = _match(set(range(1, 40, 3)) - {37}, hint_frames=1)
+    assert mine_phrases(_proposal(), frames) == [HINT, BANNER_TEXT]
+
+
+def test_a_short_source_is_not_tested_for_hints() -> None:
+    # 3 of 7 bursts spread over the source: 43% of its frames, too few bursts to tell
+    frames = _match({0, 3, 6}, bursts=HINT_MIN_BURSTS - 1)
+    assert HINT in mine_phrases(_proposal(), frames)

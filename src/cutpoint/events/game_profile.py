@@ -31,8 +31,10 @@ dependency (the ``ocr`` backend):
   is ignored for counting and matching, as the OCR layer does; a candidate must have one casing in at least
   :data:`CASE_SHARE` of the bursts it shows in and keeps that casing ("Shield
   Saver"). A sentence repeated whole (a hint) gives nothing, as no part shows
-  without the rest; static labels (fuzzy-found in most gameplay frames) and
-  phrases close to one of
+  without the rest; static labels (fuzzy-found in most gameplay frames), static
+  hint lines (:func:`_static_hint`: in at least :data:`HINT_SHARE` of a
+  source's gameplay frames, spread over at least :data:`HINT_SPREAD` of its
+  sampled time) and phrases close to one of
   :data:`~cutpoint.events.regions.GENERIC_BANNERS` are left out; at most
   :data:`MAX_PHRASES`.
 * ``title`` and ``match`` from the game key. ``title`` is the name the VLM
@@ -42,7 +44,7 @@ dependency (the ``ocr`` backend):
 Regions are kept exactly as discovery proposed them, and ``feed`` colours,
 ``view`` and ``hype`` are not set: the OCR text alone does not say what they
 should be. The result keeps ``"source": "discovered"`` and records its
-provenance as ``"profile": {"backend": "ocr", "version": 4}``.
+provenance as ``"profile": {"backend": "ocr", "version": 5}``.
 
 Cache keys: ``source``, ``profile``, ``title``, ``match``, ``notes`` and
 ``candidate_phrases`` are not part of the OCR cache key
@@ -70,7 +72,7 @@ from cutpoint.events.killfeed import fuzzy_contains, is_player, norm, similar
 from cutpoint.events.regions import GENERIC_BANNERS, bigtext_region
 
 BACKEND = "ocr"
-VERSION = 4  # bump when the OCR backend's output changes
+VERSION = 5  # bump when the OCR backend's output changes
 MAX_PHRASES = 12
 # a phrase must occur in this many gameplay frames, each at least MIN_GAP_S after the
 # previous one counted in its source: a banner held 3 s counts twice, one reading of a
@@ -79,6 +81,18 @@ MIN_OCCURRENCES = 2
 MIN_GAP_S = 2.0
 MINED_KINDS = ("banner", "bigtext", "notice")  # regions whose text is mined
 STATIC_SHARE = 0.5  # texts in at least this share of gameplay frames are static labels
+# Static hint lines (tutorial tips, control hints) recur at a fixed place for much of a match
+# with no event near them. A candidate fuzzy-found in at least HINT_SHARE of one source's
+# gameplay frames, whose occurrences span at least HINT_SPREAD of the time between that
+# source's first and last gameplay frame, is a hint (sources with fewer than HINT_MIN_BURSTS
+# gameplay bursts are too few samples to tell). An event banner stays a few seconds per event:
+# to be in a quarter of frames sampled 1.5 s apart all match long it would have to be on screen
+# a quarter of the match. The spread keeps a banner that is on screen a lot, but only in one
+# phase (a warm-up countdown), and HINT_SHARE stays below STATIC_SHARE, which drops labels
+# shown most of the time.
+HINT_SHARE = 0.25
+HINT_SPREAD = 0.5
+HINT_MIN_BURSTS = 8
 FUZZY = 0.8  # same threshold as the OCR layer's phrase matching
 MAX_WORDS = 5  # longer texts are sentences (hints, chat), not banners
 MAX_CANDIDATES = 100  # most frequent candidates compared fuzzily (bounds the cost)
@@ -248,6 +262,12 @@ def mine_phrases(
         ids = set(map(str, run_ids))
         ocr_samples = [f for f in ocr_samples if str(f.get("id")) in ids]
     frames = gameplay_frames(ocr_samples, params)
+    # per source: the times and bursts of its gameplay frames (the static hint test)
+    src_times: dict[str, list[float]] = {}
+    src_bursts: dict[str, set[int]] = {}
+    for f in frames:
+        src_times.setdefault(str(f["source"]), []).append(float(f["t"]))
+        src_bursts.setdefault(str(f["source"]), set()).add(int(f["burst"]))
     rects = [
         (r["x"], r["y"], r["w"], r["h"], int(r.get("min_text_h", 0)))
         for r in preset.get("regions", [])
@@ -392,7 +412,11 @@ def mine_phrases(
             return False
 
         occ = _occurrences(timed, occurs)
-        if occ >= MIN_OCCURRENCES and _count(frame_sets, occurs, static) < static:
+        if (
+            occ >= MIN_OCCURRENCES
+            and _count(frame_sets, occurs, static) < static
+            and not _static_hint(timed, occurs, src_times, src_bursts)
+        ):
             kept.append((c, occ))
             names[c] = name
     kept = [
@@ -434,6 +458,28 @@ def _occurrences(
             n += 1
             last[src] = t
     return n
+
+
+def _static_hint(
+    timed: list[tuple[str, float, set[str]]],
+    occurs: Callable[[set[str]], bool],
+    src_times: dict[str, list[float]],
+    src_bursts: dict[str, set[int]],
+) -> bool:
+    """Whether a candidate is a static hint line in some source: fuzzy-found in at least
+    :data:`HINT_SHARE` of its gameplay frames (``src_times``), with the occurrences
+    spanning at least :data:`HINT_SPREAD` of its sampled time; sources with fewer than
+    :data:`HINT_MIN_BURSTS` gameplay bursts are not tested."""
+    hits: dict[str, list[float]] = {}
+    for src, t, texts in timed:
+        if len(src_bursts.get(src, ())) >= HINT_MIN_BURSTS and occurs(texts):
+            hits.setdefault(src, []).append(t)
+    for src, ts in hits.items():
+        times = src_times[src]
+        span = max(times) - min(times)
+        if len(ts) >= HINT_SHARE * len(times) and span > 0 and ts[-1] - ts[0] >= HINT_SPREAD * span:
+            return True
+    return False
 
 
 def _casing(forms: dict[str, set[tuple[str, int]]]) -> str | None:

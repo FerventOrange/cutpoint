@@ -60,6 +60,12 @@ and installs it as a preset. Check `overlay.jpg`, then edit the preset JSON to c
 A discovered kill feed grows by the oldest rows that show only when the feed is full (up to
 twice its height). With such a preset, menu and scoreboard frames produce no OCR events;
 `stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out.
+With `cutpoint -v`, the OCR layer logs one line per frame that is a menu or has an OCR event:
+the time, the box count of the regions other than feeds, the centre cover, the recording's
+median box count, the thresholds and the rule that decided (`cover`, `jump`, `list` or
+`none`). Discovery logs why a kill feed stopped growing (`Feed growth ...`: the row pitch, the
+frames with a full feed, and the frames, bursts and label variety of the next row above and
+below). These lines hold no OCR text, so they can be shared when tuning a preset.
 Force or skip it with `--discover-regions` and `--no-discover`.
 
 A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`; optional `gate`: `mask` (default, a HUD colour mask) or `det` (text detection, works for any game); optional `every`),

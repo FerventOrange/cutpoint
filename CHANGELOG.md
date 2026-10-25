@@ -290,6 +290,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sentences. A discovered kill feed grows by the rows above or below it that show only when the
   feed is full, up to twice its height. Built-in presets keep their OCR cache: run
   `cutpoint events <project> --force ocr` for the new matching.
+- HUD discovery follow-ups. The `keyframes` step reports a percentage while discovery runs:
+  discovery takes the first half of the bar ("discovering HUD: n/N frames"), the per-source OCR
+  the rest ("reading HUD text: source i/N"), so the bar no longer sits still for minutes on a
+  first run. A discovered kill feed's top and bottom rows are now the outermost rows seen in
+  enough frames, not the outermost box: one stray box near the feed's edge (an icon read as
+  text) no longer stops the feed from growing. Mined `candidate_phrases` (profile version 5)
+  leave out static hint lines: a phrase in at least 25% of a recording's gameplay frames whose
+  sightings span at least half of it (recordings with 8 or more sampled bursts). With `-v`,
+  the OCR layer logs one line per menu frame and per frame with an OCR event (box count,
+  centre cover, median, thresholds and the rule: cover, jump, list or none), and discovery logs
+  why a feed stopped growing; neither line holds OCR text.
 - `events` with the crash layer logs each unreachable source once, not twice: the crash layer
   logs it at debug level, since `events` already warned.
 - `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines
