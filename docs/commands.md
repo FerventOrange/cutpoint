@@ -26,6 +26,91 @@ prints tracebacks of errors.
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
 
+## JSON output
+
+`--json` makes a command write its result as exactly one JSON object on stdout. It is available
+on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
+`setup` and every `360` subcommand (`scan`, `analyze`, `status`, `director`, `stitch`, `check`,
+`qa`, `repair`). Not yet on `events`, `crashes` and the other commands; `profile --json` is older and prints the
+`activity.json` record instead (see [profile](#profile)). Logs and errors stay on stderr, and
+output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
+codes are unchanged.
+
+```json
+{"ok": true, "command": "clips", "schema": 1, "project": "D:\\cutpoint\\projects\\clip",
+ "outputs": {"clips_dir": "D:\\cutpoint\\projects\\clip\\clips", "count": 8, "...": "..."},
+ "warnings": [{"code": "kept_clips", "message": "Kept 005_x.mp4 in ...", "files": ["..."]}],
+ "error": null}
+```
+
+| Key | Content |
+|---|---|
+| `ok` | `true` unless the command failed |
+| `command` | The command as typed, such as `analyze` or `360 qa` |
+| `schema` | `1` |
+| `project` | Absolute path of the project folder, or `null` when the command has none (`paths`, `capabilities`, `setup`, `stage`) |
+| `outputs` | Object: the files written (absolute path strings) and key facts. The keys per command are below |
+| `warnings` | List of `{"code", "message", "files"}`; `files` is a list of absolute paths and may be empty |
+| `error` | `null`, or `{"code", "message"}`. `message` is the `ERROR` line printed on stderr |
+
+With a failure, `ok` is `false` and `outputs` holds whatever was recorded before it. An
+argument error (`bad_args` from the parser) also writes an envelope, then exits 2. A command that
+checks an option itself (a bad `--crop`, `--size`, `--clip-override`, `--ids`, `mix --quotas`,
+`360 director --out-name`, `stage` with no inputs) reports `bad_args` and exits 1.
+
+| `error.code` | Exit | Cause |
+|---|---|---|
+| `bad_args` | 2 (1 for the checks above) | The command line or an option value is invalid |
+| `not_found` | 1 | An input, project or file is missing |
+| `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
+| `missing_extra` | 1 | An optional extra is not installed |
+| `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
+| `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
+| `error` | 1 | Anything else |
+
+| `warnings[].code` | Command | Meaning |
+|---|---|---|
+| `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder; `assemble` includes them |
+| `kept_sources` | `clips` | A file the run reads as a source was not replaced |
+| `skipped_clips` | `extend` | Clips without a manifest entry were not re-exported |
+| `vision_unavailable` | `analyze` | Ollama or the model is not available, so no vision rating ran |
+| `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
+| `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
+| `content_qa_failed` | `mix` | The content checks of the mix failed |
+| `nothing_staged_under_input` | `stage --clear` | An input that no longer exists has no staged copy recorded |
+| `events_extra_missing` | `setup` | The `pip` component found modules for `events` missing |
+| `events_not_in_highlights` | `360 analyze` | A source was not reachable, so `highlights.json` lacks the events |
+| `not_a_360_clip` | `360 director` | A selected moment is not a 360 clip and was skipped |
+| `vl_check_unavailable` | `360 director` | `--vl-check` could not run or stopped answering |
+| `stitch_failed` | `360 stitch` | A clip's stitch failed; `files` names its log |
+| `qa_clips_skipped` | `360 qa` | Clips that could not be checked |
+| `qa_clips_stale` | `360 repair` | QA clips with no matching segment, or newer than the QA |
+
+`outputs` keys per command (`project` as in the table above):
+
+| Command | `outputs` |
+|---|---|
+| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `llama.cpp`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
+| `analyze` | `highlights`, `transcript`, `candidates` (count), `suggested_top` (when set), `style` |
+| `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
+| `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
+| `assemble` | `final`, `fcpxml`, `otio`, `srt`, `duration`, `clip_count` |
+| `edit` | `kind`, the outputs of `analyze`, `clips` and `assemble`, and `copy` and `copy_srt` (the `<name>-final` files; `copy_srt` is `null` if none was written). One envelope holds the warnings of all steps |
+| `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `torch` and `insta360_sdk`) |
+| `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
+| `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
+| `setup` | `components`: per component given to `--only`, `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`; `version` also for `llama`); for `pip`, `installed` and `missing` |
+| `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
+| `360 analyze` | `timings`, `views` (`cached`, `computed`); unless `--views-only` or `--no-events` also `events`. Highlights are in the project's `highlights.json` |
+| `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
+| `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
+| `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
+| `360 check` | `check_dir`, `sheets` |
+| `360 qa` | `qa_dir`, `report`, `mode`, `sheets`, `clips` (each `file`, `score`, `pass`, `fails`), `count`, `passed`, `score` |
+| `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
+
+`360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
+
 ## ui
 
 ```text
@@ -101,7 +186,8 @@ Media SDK (found or not, and a warning when no NVIDIA GPU is found). `360 stitch
 warning before it runs. The JSON keys are `torch` and `insta360_sdk`; see
 [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities).
 Encoder checks actually encode a short clip; an encoder listed by ffmpeg is not necessarily
-usable. This command downloads nothing. `--json` writes the report to stdout for other tools.
+usable. This command downloads nothing. `--json` writes the report, one key per section, in the
+[result envelope](#json-output) under `outputs`.
 
 Use `video_encoder` in `config.json` or `CUTPOINT_VIDEO_ENCODER` to select `auto`, `nvenc`,
 `amf`, `vaapi` or `cpu`. Auto falls back to software when no hardware probe succeeds, and redoes an
@@ -116,7 +202,7 @@ See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device 
 cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [--out DIR]
               [--top N] [--max-total S] [--vertical] [--force] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
-              [--ollama-model MODEL]
+              [--ollama-model MODEL] [--json]
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
@@ -141,6 +227,7 @@ one of them is refused.
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As `analyze --vision`: rate top candidates with Ollama. Default: used if the server and model are reachable (the `ski` style: only with `--vision`) |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
+| `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
 files removed) and logs the final video, its subtitles and the clips folder last. To change the
@@ -150,7 +237,7 @@ that updates `final.mp4` and `final.srt`, not the `<name>-final` copies.
 ## analyze
 
 ```text
-cutpoint analyze <file|folder> [<file|folder> ...] --style STYLE [--out DIR] [options]
+cutpoint analyze <file|folder> [<file|folder> ...] --style STYLE [--out DIR] [--json] [options]
 ```
 
 Transcribes the audio, scores it on a 0.1 s grid, and writes `highlights.json` and
@@ -173,6 +260,7 @@ an analysed set processes only the new file.
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
 | `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
+| `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
 transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations
@@ -270,6 +358,7 @@ complete; a failed run there may keep the finished clips.
 | `--out DIR`, `--force` | Output folder; replace the clips an earlier run made in a non-empty folder |
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
+| `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 Segments file (`--segments`). Relative `source` paths resolve against the JSON file's folder
 (on Windows, a drive-relative path such as `D:foo.mp4` is an error; give the full path):
@@ -324,7 +413,7 @@ Notes:
 ## extend
 
 ```text
-cutpoint extend <clips_dir> [--seconds S] [--start S] [--end S] [--out DIR] [--reuse DIR] [options]
+cutpoint extend <clips_dir> [--seconds S] [--start S] [--end S] [--out DIR] [--reuse DIR] [--json] [options]
 ```
 
 Re-exports an existing clips folder with more padding, for when you are trimming in an editor
@@ -340,6 +429,7 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
 - `--clip-override GLOB KEY=S` (repeatable) sets per-clip `speech_max_extend`, `speech_max_lead`,
   `extend`, `extend_start` or `extend_end` for matching file names, for example
   `--clip-override 005_* speech_max_extend=45`.
+- `--json` writes the result as one [JSON envelope](#json-output) on stdout.
 - `--reuse DIR` copies a clip from an earlier output instead of re-encoding when source, in/out
   points, crop, format and fade are identical.
 - The original folder is never overwritten unless you pass `--out <clips_dir> --force`. Then
@@ -365,7 +455,7 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
 
 ```text
 cutpoint assemble <clips_dir> [--out final.mp4] [--transition cut|fade] [--fade-dur 0.25]
-                  [--audio-fade S] [--loudnorm] [--captions] [--model MODEL]
+                  [--audio-fade S] [--loudnorm] [--captions] [--model MODEL] [--json]
 ```
 
 Joins the `.mp4` files currently in the folder, in natural filename order (`2_x` before
@@ -382,6 +472,7 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
   -1.5 dBTP. Very peaky material can land up to about 1 LU below target.
 - `--captions` transcribes the result and burns in bold lower-third captions in 2-4 word
   chunks. The ASS file is kept next to the output. `--model` picks the Whisper model.
+- `--json` writes the result as one [JSON envelope](#json-output) on stdout.
 - Default output: `<project>\final.mp4`; `final_vertical.mp4` for `clips_vertical`;
   `final_<name>.mp4` for other folders. A `.fcpxml` and a `.otio` timeline are always written
   next to it. With `--transition fade` (and the `edit` kinds that crossfade) they hold a
@@ -398,7 +489,7 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
 ## stage
 
 ```text
-cutpoint stage [inputs ...] [--exclude GLOB] [--recursive] [--list] [--clear]
+cutpoint stage [inputs ...] [--exclude GLOB] [--recursive] [--list] [--clear] [--json]
 ```
 
 Copies sources on slow or network storage to a local folder once; every later ffmpeg or ffprobe
@@ -453,12 +544,13 @@ nearest library profile or `generic`, and tries again on the next run.
 ## mix
 
 ```text
-cutpoint mix <project> [--target S] [--quotas CAT=SHARE,...] [--out FILE] [--exclude-file FILE]
+cutpoint mix <project> [--target S] [--quotas CAT=SHARE,...] [--out FILE] [--exclude-file FILE] [--json]
 ```
 
 Action-cam module. Picks a varied set of moments (runs, jumps, crashes with reactions, lift
 rides, views, social) under per-category quotas, and writes `mix_segments.json`,
-`mix_report.json` and `mix_sheet.jpg`. Default target 240 s.
+`mix_report.json` and `mix_sheet.jpg`. Default target 240 s. `--json` writes the result as one
+[JSON envelope](#json-output) on stdout.
 
 If nothing is selected (no candidate fits `--target`, or every candidate is excluded), `mix`
 fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes no files. Raise
@@ -488,7 +580,7 @@ Fits one learned style on several projects that already have `refmatch.json` (ru
 ## setup
 
 ```text
-cutpoint setup [--only pip panns llama omni visual voice] [--force]
+cutpoint setup [--only pip panns llama omni visual voice] [--force] [--json]
 ```
 
 Downloads the models and tools for `events`. On Windows and Linux, auto selection prefers CUDA
@@ -497,16 +589,16 @@ release assets. Windows CUDA uses the CUDA 12.4 distribution; Linux uses the old
 distribution with cudart in the newest matching release. Set `CUTPOINT_LLAMA_BACKEND` to
 `auto`, `cuda`, `vulkan` or `cpu` to control selection; an explicit backend does not silently
 fall back. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled build, then
-`PATH`. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
+`PATH`. `--json` writes the result as one [JSON envelope](#json-output) on stdout. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
 
 ## paths
 
 ```text
-cutpoint paths
+cutpoint paths [--json]
 ```
 
 Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools, stage, styles,
-activity profiles and projects.
+activity profiles and projects. `--json` writes them as one [JSON envelope](#json-output).
 
 ## guide
 
