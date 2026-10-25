@@ -209,6 +209,9 @@ as a generic JSON preset (generic kill-feed parsing, generic banners added, new 
 A builtin preset's `banner_phrases` are not part of the OCR cache key. After editing them, run
 `cutpoint events <project> --force ocr` to read the footage again.
 
+A preset may list `candidate_phrases`: banner texts mined from the discovery OCR. They are inactive
+and not part of any cache key; to have OCR look for one, move it into `banner_phrases`.
+
 ### Event types and prompt keys
 
 A preset may add these optional keys. Without them, scoring, clip tails and VLM windows behave as

@@ -74,12 +74,56 @@ def test_phrases_capped_and_ordered() -> None:
 
 def test_rejects_gamertags_chat_static_and_generic() -> None:
     rejects = ["xX_Ash99 ELIMINATED", "[ALL] Ash: GG EZ", "Ash Was Here", "ROUND WON"]
-    rejects += ["NOVA7 DOWNED", "XANTHOS", "HOLD THE LINE UNTIL THE CONVOY ARRIVES"]
+    rejects += ["N0VA HAS FLAG", "XX_ASH99 DOWNED", "A1B2 TOOK THE LEAD", "XANTHOS"]
+    rejects += ["HOLD THE LINE UNTIL THE CONVOY ARRIVES", "SECTOR 5"]
     texts = {b: ["OBJECTIVE ZONE"] for b in range(10)}  # static label: every frame
     for b in (0, 4):
         texts[b] += [*rejects, "ZONE SECURED"]
     frames = _frames(texts, frames_per_burst=1)
     assert mine_phrases(_proposal(), frames) == ["ZONE SECURED"]
+
+
+def test_joined_numbers_split_off() -> None:
+    # OCR joined the sector number; another burst shows the phrase inside a longer text
+    texts = {0: ["HELD SECTOR5"], 3: ["HELD SECTOR7"], 6: ["WE HELD SECTOR12 AGAIN"]}
+    texts |= {1: ["ALARM RAISED"], 2: ["ALARM RAISED"]}
+    # the longer text counts as a third burst of "HELD SECTOR", so it ranks first
+    assert mine_phrases(_proposal(), _frames(texts)) == ["HELD SECTOR", "ALARM RAISED"]
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["SPARKS LIT 2/3", "SPARKS LIT 3/3"],  # digits only
+        ["3SPARKS LIT", "2SPARKS LIT"],  # digits first
+        ["SPARKS LIT 2024", "SPARKS LIT 1999"],  # letter share ignores digits
+    ],
+)
+def test_number_forms(texts: list[str]) -> None:
+    assert mine_phrases(_proposal(), _frames({0: texts[:1], 5: texts[1:]})) == ["SPARKS LIT"]
+
+
+def test_ordinals_dropped() -> None:
+    frames = _frames({0: ["YOU PLACED 3RD"], 4: ["YOU PLACED 5TH"]})
+    assert mine_phrases(_proposal(), frames) == ["YOU PLACED"]
+
+
+def test_bursts_count_only_ocr_matches() -> None:
+    # split, the second text contains "WAVE CLEARED"; OCR (digits kept) would not match it
+    frames = _frames({0: ["WAVE CLEARED"], 3: ["WAVE 123 CLEARED BY THE SQUAD OF SIX"]})
+    assert mine_phrases(_proposal(), frames) == []
+
+
+def test_static_share_uses_split_texts() -> None:
+    texts = {b: ["ZONE 1234 HELB"] for b in range(2, 10)}  # static label with a number
+    texts |= {0: ["ZONE HELD"], 1: ["ZONE HELD"]}
+    assert mine_phrases(_proposal(), _frames(texts, frames_per_burst=1)) == []
+
+
+def test_player_tag_with_digits() -> None:
+    frames = _frames({0: ["DOWNED ASH99"], 3: ["DOWNED ASH99"]})
+    assert mine_phrases(_proposal(), frames) == ["DOWNED ASH"]
+    assert mine_phrases(_proposal(), frames, ["Ash99"]) == []
 
 
 def test_occurrence_sharing_only_bigrams() -> None:
@@ -103,7 +147,7 @@ def test_player_tags() -> None:
     frames = _frames({b: ["BOXER HAS THE FLAG", "ZONE SECURED"] for b in (0, 2)})
     assert mine_phrases(_proposal(), frames) == ["BOXER HAS THE FLAG", "ZONE SECURED"]
     prof = build_profile(_proposal(), frames, "zonewar", player_tags=["Boxer"])
-    assert prof["banner_phrases"] == ["ZONE SECURED"]
+    assert prof["candidate_phrases"] == ["ZONE SECURED"]
 
 
 def test_bigtext_region_used_with_min_height() -> None:
@@ -130,6 +174,13 @@ def test_bigtext_region_used_with_min_height() -> None:
         ("zonewar-videos", ""),
         ("recording", ""),
         ("2024-11-14", ""),
+        ("footage8", ""),
+        ("footage2", ""),
+        ("clips2025", ""),
+        ("Videos_2024", ""),
+        ("new-folder-3", ""),
+        ("zonewar2", "zonewar2"),
+        ("zone-war-videos2", ""),
     ],
 )
 def test_match_hint(game: str, hint: str) -> None:
@@ -142,14 +193,17 @@ def test_round_trip_and_superset() -> None:
     frames = _frames({0: ["ZONE SECURED"], 2: ["ZONE SECURED"]})
     prof = build_profile(proposal, frames, "zone-war")
     assert json.dumps(proposal, sort_keys=True) == before  # input untouched
-    assert all(prof[k] == v for k, v in proposal.items() if k not in ("game", "banner_phrases"))
+    assert all(prof[k] == v for k, v in proposal.items() if k != "game")
+    assert prof["banner_phrases"] == []  # mined phrases are inactive candidates
+    assert prof["candidate_phrases"] == ["ZONE SECURED"]
+    assert "banner_phrases" in prof["notes"] and "candidate_phrases" in prof["notes"]
     assert prof["source"] == "discovered"
-    assert prof["profile"] == {"backend": "ocr", "version": 1}
+    assert prof["profile"] == {"backend": "ocr", "version": 2}
     assert prof["title"] == "Zone War"
     assert prof["match"] == ["zone war"]
     preset = preset_from_dict(json.loads(json.dumps(prof)))
     assert preset.title == "Zone War"
-    assert preset.phrases[0] == "ZONE SECURED"
+    assert preset.phrases == preset_from_dict(proposal).phrases
     assert preset.regions == preset_from_dict(proposal).regions
 
 
@@ -158,22 +212,18 @@ def test_deterministic() -> None:
     a = build_profile(_proposal(), frames, "zonewar")
     b = build_profile(_proposal(), list(reversed(frames)), "zonewar")
     assert json.dumps(a) == json.dumps(b)
-    assert a["banner_phrases"] == ["BRIDGE FALLEN", "ZONE SECURED"]
+    assert a["candidate_phrases"] == ["BRIDGE FALLEN", "ZONE SECURED"]
 
 
-def test_cache_keys_unchanged_without_phrases() -> None:
+def test_cache_keys_unchanged_with_candidates() -> None:
     proposal = _proposal()
-    prof = build_profile(proposal, _frames({0: ["ZONE SECURED"]}), "zonewar")
-    assert prof["banner_phrases"] == []
+    prof = build_profile(proposal, _frames({0: ["ZONE SECURED"], 1: ["ZONE SECURED"]}), "zonewar")
+    assert prof["candidate_phrases"] == ["ZONE SECURED"]
     plain, synth = preset_from_dict(proposal), preset_from_dict(prof)
     assert OcrParams().key("zonewar", plain) == OcrParams().key("zonewar", synth)
     assert game_prompt("zonewar", plain).key() == game_prompt("zonewar", synth).key()
-    with_phrase = build_profile(
-        proposal, _frames({0: ["ZONE SECURED"], 1: ["ZONE SECURED"]}), "zonewar"
-    )
-    assert OcrParams().key("zonewar", preset_from_dict(with_phrase)) != OcrParams().key(
-        "zonewar", plain
-    )
+    prof["banner_phrases"] = prof["candidate_phrases"]  # promoted by hand
+    assert OcrParams().key("zonewar", preset_from_dict(prof)) != OcrParams().key("zonewar", plain)
 
 
 def test_read_ocr_samples(tmp_path: Path) -> None:
