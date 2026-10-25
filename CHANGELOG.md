@@ -185,6 +185,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines
+  at debug level instead of info.
+- `events` loads CLIP once per run: the crash dense check reuses the visual layer's model.
+- `crashes` and the `events` crash layer no longer miss a rider who fell from a high speed to a
+  stop. A candidate below the 0.2 prefilter still gets the dense check when the speed dropped
+  from at least 40 km/h to 4 km/h or less within 10 s, not on a lift, at most 5 such extra
+  checks per project. A 71 to 0.4 km/h stop scored below the prefilter and was dropped.
+- `analyze --style ski` without the `events` extra (no torch) can score a cached visual layer:
+  the aesthetic head is read with numpy.
 - `cutpoint ui` no longer logs a `ConnectionResetError` (`[WinError 10054]`) ERROR traceback each
   time the browser cancels a video request, such as on a seek or when switching sources.
 - `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with
