@@ -185,6 +185,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In generic (verb-style) kill feeds such as War Thunder, the player's own deaths no longer count
+  as player kills in the highlight boost, so moments with deaths rank lower; R6 is unchanged. The
+  teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff
+  banners.
 - `--style ski`: a stretch of footage at one score (a 15-30 s `cutpoint events` VLM window, a
   long fast section) gives one clip instead of several back-to-back clips that filled the top
   10. Each pick takes the run around its peak that stays above 70% of it, and a lower peak with
