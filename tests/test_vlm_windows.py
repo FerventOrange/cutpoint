@@ -7,8 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
+from cutpoint import paths
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import WAV_SR, AudioPart, Source
+from cutpoint.events.regions import load_preset
+from hud_fixtures import verbfeed, write_preset
 
 
 def _source(tmp_path: Path) -> Source:
@@ -34,3 +37,33 @@ def test_build_messages_uses_media_content(tmp_path: Path):
     assert "input_audio" in {c["type"] for c in media}
     assert "nice shot" in text and "Laughter" in text
     assert content[1:-1] == media
+
+
+# -- game_prompt: user presets are installed (trusted), project ones are custom --
+def _gp(game: str, preset) -> dict:
+    return vw.VlmParams().key(vw.game_prompt(game, preset))
+
+
+def test_gp_user_preset_never_custom(tmp_path, home):
+    write_preset(paths.presets_dir(), verbfeed())
+    assert "gp" not in _gp("verbfeed", load_preset("verbfeed"))
+
+
+def test_gp_project_copy_compared_to_user_preset(tmp_path, home):
+    write_preset(paths.presets_dir(), verbfeed())
+    proj = tmp_path / "proj"
+    same = write_preset(proj / "hud_presets", verbfeed())
+    assert "gp" not in _gp("verbfeed", load_preset("verbfeed", proj))
+    same.unlink()
+    write_preset(proj / "hud_presets", {k: v for k, v in verbfeed().items() if k != "hype"})
+    assert "gp" in _gp("verbfeed", load_preset("verbfeed", proj))
+
+
+def test_gp_reference_is_bundled_without_user_preset(tmp_path, home, monkeypatch):
+    monkeypatch.setattr(paths, "PRESETS_DIR", tmp_path / "bundled")
+    write_preset(paths.PRESETS_DIR, verbfeed())
+    proj = tmp_path / "proj"
+    write_preset(proj / "hud_presets", verbfeed())
+    assert "gp" not in _gp("verbfeed", load_preset("verbfeed", proj))
+    write_preset(proj / "hud_presets", verbfeed(view="side-on"))
+    assert "gp" in _gp("verbfeed", load_preset("verbfeed", proj))
