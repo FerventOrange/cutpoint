@@ -119,6 +119,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The HUD presets folder in `CUTPOINT_HOME` (`cutpoint paths`) is now trusted like the bundled
+  folder: `"builtin": true` is honoured there, and only project `hud_presets` folders ignore it
+  (with a WARNING). User and bundled presets never get a separate VLM cache key; a project preset
+  gets one only when its prompt differs from the user (or bundled) preset of the same game key.
+  After adding a user preset with `title`, `view` or `hype`, or editing those fields in one, run `cutpoint events <project> --force vlm`.
 - The Ollama vision rating is opt-in for every style: `analyze` and `edit` use it only with
   `--vision`, and `cutpoint ui` only when "Rate frames with a local vision model (Ollama)" is
   ticked next to "Analyze footage" or in the dialog "Analyze again" now opens (there it starts as
@@ -216,9 +221,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The vision retry for the `ski` style now asks about skiing (jumps, crashes, chairlifts) like
   the first attempt, not about menus and scoreboards.
 - In generic (verb-style) kill feeds such as War Thunder, the player's own deaths no longer count
-  as player kills in the highlight boost, so moments with deaths rank lower; R6 is unchanged. The
+  as player kills in the highlight boost, so moments with deaths rank lower (R6: see below). The
   teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff
   banners.
+- The player's own death in the built-in coloured-box kill feed (R6) no longer adds the kill boost:
+  a new default event type `player_deaths` is checked after `teamkills` and before `player_kills`.
+  The death is still a tail payoff and a VLM seed, so the reaction after it stays; a self-kill
+  still counts as a kill. This needs the player's name in `player_tags` or `--player`. The VLM
+  hint now says "the PLAYER died" or "the PLAYER's kill" for built-in feed kills too.
+- `--style ski`: a stretch of footage at one score (a 15-30 s `cutpoint events` VLM window, a
+  long fast section) gives one clip instead of several back-to-back clips that filled the top
+  10. Each pick takes the run around its peak that stays above 70% of it, centred on a flat top,
+  and a lower peak with no dip between it and an earlier pick counts as part of that moment;
+  peaks separated by a dip, such as two jumps on one run, are still picked. On the Day-1 test
+  footage without events the top 10 went from 6 to 10 distinct moments. `cutpoint mix` picks
+  its ski candidates the same way, so a long stretch now gives it fewer candidates (#282).
+- `--style ski`: friends in view no longer lift the lift/stop mask, and the VLM `friends_faces`
+  tag counts less as action: scaled by 1 - idle/10, so not at all in a window the VLM tags as
+  fully `chairlift`, `standing_talking` or `lodge`, nor on a lift or while stopped. Standing and
+  chatting at the top or unloading from a chairlift no longer gets the top VLM score; friends
+  while riding still raise a moment. A learned preset's `mask_friends` above 0 now means a hard
+  mask (0 is still the soft mask), and `cutpoint fit` and `cutpoint refmatch` fit the soft and
+  the hard mask once each instead of six thresholds that now give the same result. Saved
+  features still count friends in `vlm` until `analyze --style ski` is re-run; refit learned
+  presets after that (#283).
 - `cutpoint ui` no longer logs a `ConnectionResetError` (`[WinError 10054]`) ERROR traceback each
   time the browser cancels a video request, such as on a seek or when switching sources.
 - `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with

@@ -11,17 +11,22 @@ Rainbow Six Siege (the optional R6 module, 2025 HUD) is the bundled
 ``presets/r6.json``, marked ``"builtin": true``: it keeps the original R6
 interpretation, so its OCR cache keys and results are unchanged.
 
+The user and bundled folders are the installed, trusted tiers: a preset copied
+into ``<CUTPOINT_HOME>/presets`` behaves exactly like the same file bundled with
+the package (same ``"builtin"`` handling, same OCR and VLM cache keys). Project
+presets are per-project overrides and are never trusted.
+
 Preset JSON::
 
-    {"game": "wt", "title": "War Thunder", "match": ["war thunder"],
+    {"game": "my-game", "title": "My Game", "match": ["my game"],
      "player_tags": [],
-     "regions": [{"name": "killfeed", "x": 1380, "y": 560, "w": 540, "h": 130,
+     "regions": [{"name": "killfeed", "x": 1400, "y": 40, "w": 500, "h": 160,
                   "kind": "feed", "gate": "det", "every": 1}, ...],
-     "banner_phrases": ["TARGET DESTROYED", ...],
-     "feed": {"kill_words": {"destroyed": "kill", ...}, "colors": {...}},
+     "banner_phrases": ["ROUND WON", ...],
+     "feed": {"kill_words": {"eliminated": "kill", ...}, "colors": {...}},
      "bigtext": true,
      "view": "first-person", "hype": "  hype: 0-1 ...\\n",
-     "events": [{"name": "defuser", "when": [...], "score": 6}, ...]}
+     "events": [{"name": "objective", "when": [...], "score": 6}, ...]}
 
 ``view`` and ``hype`` adjust the VLM prompt; ``events`` defines event types
 (:mod:`cutpoint.events.eventtypes`), whose banner ``prefix`` phrases are
@@ -31,8 +36,9 @@ Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
 ...); missing ones use the defaults. ``"builtin": true`` selects the original R6
 interpretation: ``banner_phrases`` are used as listed, without
 :data:`GENERIC_BANNERS`, :meth:`HudPreset.key` adds no fields and the preset
-records no ``path``. It is honoured only in the bundled presets; a project or
-user preset that sets it is loaded as a normal JSON preset (with a warning).
+records no ``path``. It is honoured only in installed presets (user or
+bundled); a project preset that sets it is loaded as a normal JSON preset
+(with a warning).
 """
 
 from __future__ import annotations
@@ -257,15 +263,26 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 _warned_builtin: set[Path] = set()
 
 
+def is_installed_path(path: Path | None) -> bool:
+    """Whether a preset at ``path`` is installed: bundled (``path`` None, or in
+    :data:`~cutpoint.paths.PRESETS_DIR`) or a user preset (in
+    :func:`~cutpoint.paths.presets_dir`), not a project one."""
+    return path is None or path.parent in (paths.PRESETS_DIR, paths.presets_dir())
+
+
 def _is_builtin(data: dict[str, Any], path: Path | None) -> bool:
-    """``"builtin": true`` counts only for bundled presets (``path`` None: :data:`_BUILTIN`)."""
+    """``"builtin": true`` counts only for installed presets: bundled (``path`` None:
+    :data:`_BUILTIN`, or in :data:`~cutpoint.paths.PRESETS_DIR`) or user presets
+    (in :func:`~cutpoint.paths.presets_dir`)."""
     if not data.get("builtin"):
         return False
-    if path is None or path.parent == paths.PRESETS_DIR:
+    if is_installed_path(path):
         return True
     if path not in _warned_builtin:
         _warned_builtin.add(path)
-        logger.warning('Ignoring "builtin" in HUD preset %s: only bundled presets can set it', path)
+        logger.warning(
+            'Ignoring "builtin" in HUD preset %s: only user or bundled presets can set it', path
+        )
     return False
 
 
