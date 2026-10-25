@@ -142,3 +142,19 @@ def test_ocr_frames_report_cached_short_and_new_bursts(tmp_path, monkeypatch):
     assert done == sorted(done)
     assert {t for _, t in calls} == {12}
     assert calls[-1] == (12, 12)
+
+
+def test_pct_rises_within_each_source(ocr_run, monkeypatch, capsys):
+    def fake_ocr(*a, on_progress=None, **k):
+        for share in (0.0, 0.25, 0.5, 0.5, 1.0):  # a repeat is no new line
+            on_progress(share)
+        return [], {}
+
+    monkeypatch.setattr(pipeline, "detect_ocr_events", fake_ocr)
+    ocr_run.run()
+    got = [(g["pct"], g["detail"]) for g in _lines(capsys) if g["state"] == "running"]
+    pcts = [p for p, _ in got if p is not None]
+    assert pcts == sorted(pcts)  # never backwards
+    first = got.index((pipeline.DISCOVERY_PCT, "reading HUD text: source 1/2"))
+    # discovery took the first half: each source a quarter, in quarters of that
+    assert [p for p, _ in got[first:]] == [50, 56, 62, 75, 75, 81, 87, 100]

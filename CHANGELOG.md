@@ -301,6 +301,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the OCR layer logs one line per menu frame and per frame with an OCR event (box count,
   centre cover, median, thresholds and the rule: cover, jump, list or none), and discovery logs
   why a feed stopped growing; neither line holds OCR text.
+- Menus with little text (hangar, crew and loadout screens: as few text boxes as a busy HUD)
+  no longer produce OCR events. The OCR layer (JSON presets) also counts a frame as a menu when
+  the screen holds still: a 32x18 grey thumbnail of the HUD area it already decodes (no extra
+  decode) stays within 3 grey levels of the stretch's first frame for at least 5 s. Feed
+  activity always wins: frames within 2 s of a feed sighting or a kill are never static, so
+  kills in still gameplay (scoped, spectating) stay. A missing stretch of frames (a skipped bad
+  range) ends a still run, and a static screen needs at least 3 frames. The test runs only when
+  the preset's regions cover at least a quarter of the frame (`stats.ocr.<source>.static_area`),
+  so a few small corner regions over still sky are no menu. Such frames count in
+  `stats.ocr.<source>.menu_frames` and, on their own, in `static_frames`; the `-v` menu line
+  shows the still time and the rule `static`. The first run re-reads the footage (new OCR
+  cache). The `keyframes` step's percentage now also rises while each source is read, instead of
+  once per source, and the menu line prints both the cover (0.5) and the list (0.25) thresholds.
 - `events` with the crash layer logs each unreachable source once, not twice: the crash layer
   logs it at debug level, since `events` already warned.
 - `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines
