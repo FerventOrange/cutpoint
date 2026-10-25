@@ -422,9 +422,10 @@ def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) ->
     )
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", [sys.executable, "-c", script])
-    deadline = time.time() + 20
-    while not job.logs and time.time() < deadline:
+    deadline = time.time() + 60  # two interpreter starts can be slow under a loaded suite
+    while not job.logs and job.status == "running" and time.time() < deadline:
         time.sleep(0.05)
+    assert job.logs, (job.status, job.error)
     child = int(job.logs[0].split()[1])
     with pytest.raises(HTTPException) as busy:
         jobs.start("p", "clips", [sys.executable, "-c", "pass"])
@@ -626,11 +627,15 @@ def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
     job = jobs.start("p", "analyze", [sys.executable, "-c", leader])
     child = 0
     try:
-        deadline = time.time() + 30
-        while time.time() < deadline and not any(line == "ready" for line in list(job.logs)):
+        deadline = time.time() + 60  # two interpreter starts can be slow under a loaded suite
+        while (
+            job.status == "running"
+            and time.time() < deadline
+            and not any(line == "ready" for line in list(job.logs))
+        ):
             time.sleep(0.05)
         logs = list(job.logs)
-        assert "ready" in logs
+        assert "ready" in logs, (job.status, job.error, logs)
         child = int(next(line for line in logs if line.startswith("child")).split()[1])
         cancelled = jobs.cancel(job.id)
         # the leader dies on the event at once (only the grandchild ignores it), so the job
