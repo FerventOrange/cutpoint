@@ -300,7 +300,7 @@ Optional; needs the `events` extra and `cutpoint setup`. Run it after `analyze`.
 layers, one GPU model at a time, and writes `events.json` and `events.txt`, then re-ranks
 `highlights.json` (the original is kept as `highlights.pre-events.json`).
 
-Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events the ski re-rank is skipped, and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
+Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the ski re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
 
 | Layer | What |
 |---|---|
