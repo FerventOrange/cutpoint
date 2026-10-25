@@ -30,7 +30,7 @@ from collections.abc import Sequence
 from pathlib import Path, PureWindowsPath
 from typing import Any, NamedTuple
 
-from cutpoint import cache, state
+from cutpoint import cache, jsonout, state
 from cutpoint.config import (
     canonical_source,
     get_config,
@@ -483,7 +483,9 @@ def stage_sources(
         min_free_gb: Refuse to start a copy that would leave less free space.
 
     Returns:
-        ``{"files", "bytes", "read_s", "mb_per_s", "skipped"}``.
+        ``{"files", "bytes", "read_s", "mb_per_s", "skipped", "items"}``: ``files`` and
+        ``skipped`` count the copies made and the ones already staged, ``items`` lists every
+        file as ``{"source", "staged", "bytes", "status"}`` (status ``copied`` or ``skipped``).
 
     Raises:
         OSError: If the stage folder lacks space for a file.
@@ -494,6 +496,7 @@ def stage_sources(
         index = _load_index(stage_dir)
         files = _stage_files(targets, exclude, recursive)
         total_b, total_s, copied, skipped = 0, 0.0, 0, 0
+        items: list[dict[str, Any]] = []
         for src in files:
             key, parts = _identity(src)
             rel = _below_prefix(key, parts)
@@ -509,6 +512,7 @@ def stage_sources(
                 ):
                     logger.info("Already staged: %s", src.name)
                     skipped += 1
+                    items.append(_item(src, dst, st.st_size, "skipped"))
                     if rel is not None and "rel" not in entry:  # staged before #163: record it now
                         entry["rel"] = list(rel)
                         _save_index(stage_dir, index)
@@ -541,6 +545,7 @@ def stage_sources(
             total_b += st.st_size
             total_s += secs
             copied += 1
+            items.append(_item(src, dst, st.st_size, "copied"))
         reload_stage_index()
         summary = {
             "files": copied,
@@ -548,6 +553,7 @@ def stage_sources(
             "bytes": total_b,
             "read_s": round(total_s, 1),
             "mb_per_s": round(total_b / 1e6 / total_s, 1) if total_s else None,
+            "items": items,
         }
         logger.info(
             "Staged %d file(s), %.1f GB in %.0fs (%s MB/s); %d already staged",
@@ -558,6 +564,11 @@ def stage_sources(
             skipped,
         )
         return summary
+
+
+def _item(src: Path, dst: Path, size: int, status: str) -> dict[str, Any]:
+    """One staged file for :func:`stage_sources`' ``items``."""
+    return {"source": str(src), "staged": str(dst.absolute()), "bytes": size, "status": status}
 
 
 def _recorded_under(
@@ -623,6 +634,11 @@ def clear_stage(
                     )
                 else:
                     logger.warning("%s; no staged copy recorded under it", err)
+                    jsonout.warn(
+                        "nothing_staged_under_input",
+                        f"{err}; no staged copy recorded under it",
+                        [target],
+                    )
                 wanted |= recorded
                 continue
             found = (_find(index, *_identity(p)) for p in files)

@@ -45,7 +45,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, ski
+from cutpoint import cache, jsonout, ski
 from cutpoint.clips import (
     REACTION_LABEL,
     drive_relative,
@@ -137,22 +137,28 @@ class Cand:
 
 # --------------------------------------------------------------------------- quotas
 def parse_quotas(spec: str | None) -> dict[str, float]:
-    """``run=.35,social=.2`` over :data:`DEFAULT_QUOTAS`, normalised to sum 1."""
+    """``run=.35,social=.2`` over :data:`DEFAULT_QUOTAS`, normalised to sum 1.
+
+    Raises:
+        jsonout.ArgumentError: A malformed ``--quotas`` (a ValueError).
+    """
     q = dict(DEFAULT_QUOTAS)
     for item in filter(None, (s.strip() for s in (spec or "").split(","))):
         key, sep, value = item.partition("=")
         key = key.strip()
         if not sep or key not in q:
-            raise ValueError(f"--quotas {item!r}: expected CATEGORY=SHARE, one of {', '.join(q)}")
+            raise jsonout.ArgumentError(
+                f"--quotas {item!r}: expected CATEGORY=SHARE, one of {', '.join(q)}"
+            )
         try:
             q[key] = float(value)
         except ValueError:
-            raise ValueError(f"--quotas {item!r}: {value!r} is not a number") from None
+            raise jsonout.ArgumentError(f"--quotas {item!r}: {value!r} is not a number") from None
         if q[key] < 0:
-            raise ValueError(f"--quotas {item!r}: share must not be negative")
+            raise jsonout.ArgumentError(f"--quotas {item!r}: share must not be negative")
     total = sum(q.values())
     if total <= 0:
-        raise ValueError("--quotas: shares sum to 0")
+        raise jsonout.ArgumentError("--quotas: shares sum to 0")
     return {k: v / total for k, v in q.items()}
 
 
