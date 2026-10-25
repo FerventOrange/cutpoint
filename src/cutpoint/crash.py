@@ -1130,6 +1130,7 @@ def detect_project(
     context: str | None = None,
     refresh_profile: bool = False,
     encoder: ClipEncoder | None = None,
+    warn_unreachable: bool = True,
 ) -> Path:
     """Find crashes in every source of a project and write ``crashes.json``.
 
@@ -1153,6 +1154,8 @@ def detect_project(
         encoder: An already loaded CLIP model for the dense confirm (else it is
             loaded when needed); closed after the dense step, the caller closes
             it if this raises before.
+        warn_unreachable: Add a ``footage_unreachable`` JSON warning per
+            unreachable source (False when the caller already warned).
 
     Returns:
         Path of crashes.json.
@@ -1163,9 +1166,10 @@ def detect_project(
             cache.source_dir(src)  # every cached layer is keyed by the file's size and mtime
         except OSError as err:
             logger.warning("%s: footage not reachable (%s); skipped", src, err)
-            jsonout.warn(
-                "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
-            )
+            if warn_unreachable:
+                jsonout.warn(
+                    "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
+                )
             continue
         sources.append((src, dur))
     if not sources:

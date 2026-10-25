@@ -15,6 +15,7 @@ import dataclasses
 import logging
 from pathlib import Path
 
+from cutpoint import cache, jsonout
 from cutpoint.events.audio_events import DEFAULT_GROUPS, AudioParams
 from cutpoint.events.killfeed import OcrParams
 from cutpoint.events.pipeline import DEFAULT_LAYERS, LAYERS, SKI_LAYERS, run_events
@@ -190,6 +191,7 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
     from cutpoint.config import player_tags, resolve_project_path  # noqa: PLC0415
 
     args.project = resolve_project_path(args.project)
+    jsonout.set_project(args.project)
     audio = AudioParams(groups=_group_overrides(args.audio_thr, args.audio_floor))
     ocr = OcrParams(
         fps=args.ocr_fps,
@@ -234,16 +236,63 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
     )
     log = logging.getLogger(__name__)
     log.info("Wrote %s and %s", jpath, tpath)
+    if jsonout.active():  # recorded before the rescore, so a failure there still reports them
+        _report_events(args, jpath, tpath)
     if not args.no_rescore:
         from cutpoint.events.common import load_highlights  # noqa: PLC0415
 
+        highlights = args.project / "highlights.json"
+        backup = args.project / "highlights.pre-events.json"
+        had_backup = backup.exists()
         if load_highlights(args.project).get("style_kind") == "ski":
             # Ski: events are features of the scorer, so re-run the (cached) analysis.
             from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
 
-            reanalyze_if_reachable(args.project)
+            if reanalyze_if_reachable(args.project) is None:
+                jsonout.warn(
+                    "highlights_not_updated",
+                    "footage not reachable; highlights.json left unchanged, rerun once it is back",
+                    [highlights],
+                )
+            else:
+                jsonout.output("highlights", highlights)
         else:
             from cutpoint.events.scoring import rescore_highlights  # noqa: PLC0415
 
             rescore_highlights(args.project)
+            jsonout.output("highlights", highlights)
+        if not had_backup and backup.exists():
+            jsonout.output("highlights_backup", backup)
     return jpath, tpath
+
+
+def _report_events(args: argparse.Namespace, jpath: Path, tpath: Path) -> None:
+    """``--json`` outputs of ``events``: the files written and what events.json holds."""
+    data = cache.load_json(jpath) or {}
+    stats = data.get("stats") or {}
+    layers = (data.get("settings") or {}).get("layers") or []
+    jsonout.output("events", jpath)
+    jsonout.output("events_txt", tpath)
+    jsonout.output("layers", layers)
+    jsonout.output("count", len(data.get("events") or []))
+    jsonout.output("windows", len(data.get("windows") or []))
+    jsonout.output("highlights", None)  # set below once the rescore wrote it
+    if "crash" in layers and not args.only:  # the crash layer ranks all sources
+        jsonout.output("crashes", args.project / "crashes.json")
+    if stats.get("sheets"):
+        jsonout.output("sheets", [Path(p) for p in stats["sheets"]])
+    if stats.get("discovery"):
+        jsonout.output(
+            "discovery",
+            {
+                game: {
+                    "proposal": Path(rec["proposal"]),
+                    "overlay": Path(rec["overlay"]),
+                    "preset": rec.get("preset")
+                    if rec.get("preset") in (None, "built-in")
+                    else Path(rec["preset"]),
+                    "installed": rec.get("installed"),
+                }
+                for game, rec in stats["discovery"].items()
+            },
+        )

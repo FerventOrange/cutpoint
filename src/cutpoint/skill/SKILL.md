@@ -67,8 +67,8 @@ Choosing the moments yourself:
 - `--json` prints the result as one JSON object on stdout (logs stay on stderr): `ok`, `command`,
   `schema`, `project`, `outputs` (absolute paths and key facts), `warnings` (`code`, `message`,
   `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `clips`,
-  `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`
-  and every `360` subcommand. `events` does not have it yet.
+  `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
+  `profile` and every `360` subcommand.
 - Check `cutpoint <command> --help`; never invent options.
 - When done, report the absolute paths of `final.mp4` (and the `<name>-final.mp4` copy after
   `cutpoint edit`), its `.srt` and the clips folder, exactly as the last log lines print them;
