@@ -2619,6 +2619,40 @@ def test_a_proxy_failing_with_nvenc_and_libx264_fails(
     assert not list(p.rglob("*.part.mp4"))
 
 
+def test_no_proxy_ffmpeg_starts_after_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(ui, "spawn", spawned.append)
+    media = ui.Media()
+    media.shutdown()
+    code, _ = media._encode(["ffmpeg"])  # e.g. the libx264 retry after a failed NVENC encode
+    assert code != 0
+    assert not spawned
+
+
+def test_a_proxy_ffmpeg_is_registered_as_it_starts_so_shutdown_kills_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    media = ui.Media()
+    killed: list[object] = []
+    monkeypatch.setattr(ui, "kill_tree", lambda proc, wait=0, *, term=True: killed.append(proc))
+
+    class Encode:
+        def __init__(self, args: list[str]) -> None:
+            assert media.lock.locked()  # started in the same step as the closing check
+            self.returncode = 1
+
+        def communicate(self) -> tuple[str, None]:
+            assert media.procs == {self}
+            media.shutdown()  # the server stops during the encode
+            return "", None
+
+    monkeypatch.setattr(ui, "spawn", Encode)
+    media._encode(["ffmpeg"])
+    assert len(killed) == 1
+    assert isinstance(killed[0], Encode)
+    assert not media.procs
+
+
 # --- source list cache (#129) ---
 
 

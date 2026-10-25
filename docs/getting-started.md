@@ -6,7 +6,7 @@
 |---|---|
 | Python 3.12 | `pyproject.toml` pins `>=3.12,<3.13`. uv installs it for you. |
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
-| ffmpeg and ffprobe | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
+| ffmpeg and ffprobe 5.1 or newer | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
 | Ollama (optional) | Only for `analyze --vision` and `events` VLM features that use it. |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are large (see [Download models](#download-models-only-for-cutpoint-events)). Clips and finals are re-encoded, so budget for them in the project folder. |

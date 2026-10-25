@@ -655,8 +655,8 @@ class Jobs:
 PROXY_GOP = 30
 PROXY_FPS_MAX = 30
 # NVENC at CQ 28 alone was up to four times libx264's size at CRF 27. At CQ 32 with this cap, a
-# 1080p60 recording's proxy was about 1.2 times libx264's (scoring a higher SSIM) and needed a
-# third less CPU time.
+# 1080p60 recording's proxy was about 1.2 times libx264's (scoring a higher SSIM) and needed
+# about half the CPU time of libx264.
 PROXY_NVENC_CQ = 32
 PROXY_NVENC_RATE = ["-maxrate", "1500k", "-bufsize", "3000k"]
 
@@ -823,9 +823,16 @@ class Media:
         return choice in {"auto", "nvenc"} and find_encoder("nvenc")[0] is not None
 
     def _encode(self, args: list[str]) -> tuple[int, str]:
-        """Run one proxy encode; ``(exit code, end of its output)``."""
-        proc = spawn(args)
-        self.procs.add(proc)
+        """Run one proxy encode; ``(exit code, end of its output)``.
+
+        Spawned and registered under ``self.lock`` once ``closing`` is checked, so ``shutdown``
+        either kills it or it never starts.
+        """
+        with self.lock:
+            if self.closing:
+                return 1, "the server is shutting down"
+            proc = spawn(args)
+            self.procs.add(proc)
         try:
             tail = (proc.communicate()[0] or "").strip()[-500:]
         finally:
@@ -916,9 +923,11 @@ class Media:
             self._drop_frames([*stale, *folder.glob("*.part")])
 
     def shutdown(self) -> None:
-        self.closing = True
+        with self.lock:  # as in ``_encode``: no proxy ffmpeg starts after this
+            self.closing = True
+            procs = list(self.procs)
         self.pool.shutdown(wait=False, cancel_futures=True)
-        for proc in list(self.procs):
+        for proc in procs:
             kill_tree(proc, SOFT_STOP_S)  # a bare ffmpeg: no soft stop of its own to wait for
 
 

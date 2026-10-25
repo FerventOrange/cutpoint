@@ -123,8 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui` encodes preview proxies with NVENC (`h264_nvenc`) when it works on the machine and
   `video_encoder` is `auto` or `nvenc`, with a bitrate cap that keeps the file near libx264's
   size; otherwise, and when an NVENC encode fails (it is retried with libx264, which is then used
-  for the rest of the run), with libx264 as before. On a 1080p60 recording this took about a third
-  less CPU time.
+  for the rest of the run), with libx264 as before. On a 1080p60 recording this took about half
+  the CPU time of libx264.
 - The Rainbow Six Siege HUD preset is now the bundled JSON preset `r6.json`, next to `wt.json`, so
   it can be copied and edited; a copy is read as a generic preset, not with the built-in R6
   interpretation. A user or project `r6.json` still overrides it. Detection and the OCR cache of
