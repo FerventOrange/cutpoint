@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import assemble, sources
-from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint import assemble, ffmpeg_utils, sources
+from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
 
 needs_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
@@ -216,3 +216,64 @@ def test_assemble_crossfade_audio_stays_on_video_when_clip_audio_runs_on(tmp_pat
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(3.76, abs=0.02)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
+
+
+_BUILDCONF = """configuration:
+    --enable-gpl
+    --enable-libsoxr
+    --enable-libx264
+"""
+
+
+def test_buildconf_parser_finds_libsoxr():
+    assert ffmpeg_utils.buildconf_has_soxr(_BUILDCONF)
+    without = _BUILDCONF.replace("    --enable-libsoxr\n", "")
+    assert not ffmpeg_utils.buildconf_has_soxr(without)
+    assert not ffmpeg_utils.buildconf_has_soxr("    --disable-libsoxr\n")
+
+
+def test_has_soxr_reads_buildconf_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ffmpeg_utils, "run", lambda args, **_: calls.append(args) or _BUILDCONF)
+    assert ffmpeg_utils.has_soxr()
+    assert ffmpeg_utils.has_soxr()
+    assert calls == [["ffmpeg", "-hide_banner", "-buildconf"]]
+
+
+def test_has_soxr_is_false_when_ffmpeg_fails(monkeypatch):
+    def fail(_args, **_):
+        raise FFmpegError("ffmpeg failed (exit 1):")
+
+    monkeypatch.setattr(ffmpeg_utils, "run", fail)
+    assert not ffmpeg_utils.has_soxr()
+
+
+@pytest.mark.parametrize("soxr", [True, False])
+def test_limiter_filter_uses_soxr_only_when_ffmpeg_has_it(monkeypatch, soxr):
+    monkeypatch.setattr(assemble, "has_soxr", lambda: soxr)
+    graph = assemble.limiter_filter(-1.0)
+    assert graph.startswith("aresample=192000,alimiter=limit=0.8913:")
+    assert graph.endswith(",aresample=48000:resampler=soxr" if soxr else ",aresample=48000")
+    assert ("soxr" in graph) is soxr
+
+
+@needs_ffmpeg
+def test_limiter_filter_runs_on_this_ffmpeg():
+    """Builds without libsoxr (gyan.dev essentials) failed: resampling engine unavailable."""
+    graph = f"{assemble.LOUDNORM},{assemble.limiter_filter(-1.0)}"
+    ffmpeg_utils.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=d=0.5",
+            "-af",
+            graph,
+            "-f",
+            "null",
+            "-",
+        ]
+    )

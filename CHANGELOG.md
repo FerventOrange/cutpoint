@@ -131,6 +131,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with
+  "Requested resampling engine is unavailable" on ffmpeg builds without libsoxr (such as the
+  gyan.dev "essentials" build). The limiter uses soxr only when the build has it, else ffmpeg's
+  default resampler.
 - `cutpoint ui` no longer probes every source with ffprobe when a project opens (200 sources took
   about 12 s, now about 0.1 s). Each source is probed when the player first loads it.
 - `cutpoint ui` shows the real error for an unanalyzed project whose source folder is missing or
