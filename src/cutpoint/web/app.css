@@ -383,6 +383,7 @@ select { max-width: 100%; }
 .seq-pop h2 { font-size: 14px; }
 .seq-pop p { font-size: 13px; overflow-wrap: anywhere; }
 .confirm form { gap: 10px; }
+.confirm .check + .hint { margin-top: -6px; } /* the box's hint sits under its label */
 .panel { border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px 12px; display: grid; gap: 10px; min-width: 0; }
 .panel legend, .panel > h3 { padding: 0 6px; font-weight: 650; font-size: 13px; }
 .panel > h3 { padding: 0; }

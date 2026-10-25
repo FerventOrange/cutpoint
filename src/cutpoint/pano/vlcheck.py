@@ -148,6 +148,10 @@ class VLChecker:
     def available(self) -> bool:
         return self.rater.available()
 
+    def unload(self) -> None:
+        """Free the model's VRAM after the last check (:meth:`VisionRater.unload`)."""
+        self.rater.unload()
+
     def _post(self, prompt: str, image: str, num_predict: int) -> dict[str, Any] | None:
         import requests  # noqa: PLC0415
 
@@ -159,6 +163,7 @@ class VLChecker:
             # no "format": the JSON grammar made this model pad with whitespace
             "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": num_predict},
         }
+        self.rater.used = True  # so unload() frees it
         try:
             resp = requests.post(f"{self.rater.url}/api/chat", json=payload, timeout=(3, 300))
             resp.raise_for_status()

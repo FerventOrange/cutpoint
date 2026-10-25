@@ -261,8 +261,10 @@ then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` wo
 
 ### Optional: Ollama vision
 
-`analyze` can rate the top candidates with a vision model through Ollama. It is used
-automatically when the server and model are reachable, and skipped quietly otherwise.
+`analyze --vision` (and `edit --vision`, or the vision checkbox next to "Analyze footage" in
+`cutpoint ui`) rates the top candidates with a vision model through Ollama. It is off unless
+you ask for it, so Ollama is never needed otherwise; the model is unloaded from GPU memory as
+soon as the rating is done.
 
 ```powershell
 winget install --id Ollama.Ollama -e

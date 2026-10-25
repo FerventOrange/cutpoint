@@ -240,6 +240,25 @@ def test_unload_only_when_clip_installed(monkeypatch, tmp_path: Path, ambiguous,
     assert len(unloads) == (1 if installed else 0)
 
 
+def test_without_clip_only_the_rater_model_is_unloaded(monkeypatch, tmp_path: Path, ambiguous):
+    """No CLIP step follows: free just the vision model the profile used, not every model."""
+    unloads: list[str] = []
+    monkeypatch.setattr(activity, "unload_ollama", lambda *a, **k: unloads.append("all"))
+    monkeypatch.setattr(activity.importlib.util, "find_spec", lambda n: None)
+
+    class Rater(activity.VisionRater):
+        def ask_json(self, *_a, **_k) -> dict:
+            return {}
+
+        def unload(self) -> None:
+            unloads.append(self.model)
+
+    rater = Rater(url="http://x:1", model="some-model")
+    monkeypatch.setattr(activity, "default_ask", lambda: (rater.ask_json, rater.model))
+    activity.resolve(tmp_path, context="packrafting trip")
+    assert unloads == ["some-model"]
+
+
 @pytest.mark.parametrize(
     ("context", "llm", "ask", "reason", "profile"),
     [

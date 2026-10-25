@@ -245,3 +245,26 @@ def test_analyze_stores_the_vision_options_and_reanalyze_passes_them_back(
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
     analyze.reanalyze(proj)
     assert (seen["vision_top"], seen["ollama_url"], seen["ollama_model"]) == (top, url, model)
+
+
+@pytest.mark.parametrize(
+    ("settings", "vision"),
+    [
+        ({"vision_requested": True, "vision_used": True}, True),
+        ({"vision_requested": True, "vision_used": False}, True),  # asked; Ollama was down
+        ({"vision_requested": False, "vision_used": False}, False),
+        # before vision was opt-in: an automatic run is no request, so no Ollama call now
+        ({"vision_used": True}, False),
+        ({}, False),
+    ],
+)
+def test_reanalyze_uses_vision_only_when_the_earlier_run_asked_for_it(
+    tmp_path, monkeypatch, settings, vision
+):
+    proj = tmp_path / "proj"
+    write(proj / "highlights.json", json.dumps({"style": "funny", "sources": [], "settings": {
+        "inputs": [str(tmp_path / "a.mp4")], **settings}}))  # fmt: skip
+    seen: dict = {}
+    monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
+    analyze.reanalyze(proj)
+    assert seen["vision"] is vision

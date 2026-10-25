@@ -32,7 +32,7 @@
         <span id="momentsCount" class="muted"></span>
         <span class="spacer"></span>
         <div class="moments-acts">
-          <button type="button" id="analyzeBtn" class="btn" hidden>Analyze again</button>
+          <button type="button" id="analyzeBtn" class="btn" aria-haspopup="dialog" hidden>Analyze again</button>
           <button type="button" id="revealHeadBtn" class="btn outline" hidden>Show folder</button>
         </div>
       </div>
@@ -199,6 +199,19 @@
       <div class="dialog-actions">
         <button type="button" class="btn" id="settingsCancel">Cancel</button>
         <button type="submit" class="btn primary" id="settingsSave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="analyzeDialog" class="confirm" aria-labelledby="analyzeTitle" aria-describedby="analyzeText">
+    <form method="dialog">
+      <h2 id="analyzeTitle">Analyze again?</h2>
+      <p id="analyzeText" class="muted">The project's footage is analyzed again and its moments are ranked anew.</p>
+      <label class="check"><input type="checkbox" id="againVision" aria-describedby="againVisionHint"> Rate frames with a local vision model (Ollama)</label>
+      <p id="againVisionHint" class="hint">Optional. Slower, and uses several GB of GPU memory while it runs; needs Ollama with qwen3-vl:8b.</p>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="btn" id="againCancel">Cancel</button>
+        <button type="submit" value="ok" class="btn primary" id="againOk">Analyze</button>
       </div>
     </form>
   </dialog>

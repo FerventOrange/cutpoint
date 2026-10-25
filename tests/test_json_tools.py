@@ -419,11 +419,16 @@ def test_360_director_json_vl_check_only_when_this_run_saved_it(pano_project, mo
     code, doc = _json(capsys, argv)
     assert code == 0 and doc["outputs"]["vl_check"] is None
 
+    unloads: list[int] = []
+
     class Checker:
         model, dead = "m", False
 
         def available(self) -> bool:
             return True
+
+        def unload(self) -> None:
+            unloads.append(1)
 
     def render_segment(clip, path, start, end, preview, **_k) -> dict:
         write(preview, "mp4")
@@ -436,6 +441,7 @@ def test_360_director_json_vl_check_only_when_this_run_saved_it(pano_project, mo
     code, doc = _json(capsys, [*argv, "--vl-check"])
     assert code == 0 and doc["outputs"]["vl_check"] == str(out_dir / "vl_check.json")
     assert cache.load_json(out_dir / "vl_check.json")["segments"][0]["stem"] == "001_jump"
+    assert unloads == [1]  # the vision model is freed once, after the last check
 
 
 def test_360_director_json_bad_out_name(pano_project, capsys):

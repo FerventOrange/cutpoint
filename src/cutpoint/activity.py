@@ -485,6 +485,8 @@ def resolve(
             rec.update(description=desc, described_by=how, model=model)
             if model is not None and _clip_installed():  # free its VRAM for the CLIP steps
                 unload_ollama()
+            elif isinstance(rater := getattr(ask, "__self__", None), VisionRater):
+                rater.unload()  # done with it: not 5 more minutes of VRAM
             if new is not None:  # LLM words add phrases, never re-weight known ones
                 known = (profile if seed else base())["incident"]["words"]
                 new["incident"]["words"] = {

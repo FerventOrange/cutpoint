@@ -617,6 +617,8 @@ def _direct(
             )
         if a.preview and not checked:  # after the path JSON: a failed render keeps it
             render()
+    if checker is not None:  # free the vision model's VRAM now (None: never used, or dead)
+        checker.unload()
     for bak in redundant:  # every carried path is saved under its new stem by now
         bak.unlink(missing_ok=True)
     if a.out_name:  # previews of earlier selections would mislead `360 qa`

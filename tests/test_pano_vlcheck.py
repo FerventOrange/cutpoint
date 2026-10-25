@@ -78,6 +78,27 @@ def test_a_server_that_stops_answering_is_not_asked_again(monkeypatch: pytest.Mo
     assert chk.ask(b"jpeg") is None and len(posts) == 1
 
 
+def test_unload_frees_the_model_only_after_a_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
+    posts: list[tuple[str, dict]] = []
+
+    class Resp:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, Any]:
+            return {"message": {"content": '{"blocked": false}'}}
+
+    monkeypatch.setattr(
+        requests, "post", lambda url, json, **kw: posts.append((url, json)) or Resp()
+    )
+    chk.unload()
+    assert posts == []  # nothing asked yet: nothing to unload
+    chk.ask(b"jpeg")
+    chk.unload()
+    assert posts[-1] == ("http://127.0.0.1:1/api/generate", {"model": "m", "keep_alive": 0})
+
+
 def path_of(suspect: list[float]) -> dict[str, Any]:
     keys = [{"t": t / 2, "yaw": 30.0, "pitch": -8.0, "fov": 86.0} for t in range(25)]
     return {

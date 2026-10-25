@@ -304,6 +304,10 @@ function renderUnanalyzed(el, n, error) {
         n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory'),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', { text: 'Analyze footage to transcribe audio and rank the strongest moments.' }),
+    h('label', { class: 'check' },
+      h('input', { type: 'checkbox', id: 'optVision', 'aria-describedby': 'optVisionHint' }),
+      'Rate frames with a local vision model (Ollama)'),
+    h('p', { id: 'optVisionHint', class: 'hint', text: 'Optional. Slower, and uses several GB of GPU memory while it runs; needs Ollama with qwen3-vl:8b.' }),
     h('button', {
       type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
       onclick: async (e) => {
@@ -314,7 +318,7 @@ function renderUnanalyzed(el, n, error) {
         const drop = () => { delete el.dataset.refocus; stop.abort(); };
         document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
         document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
-        await startJob('analyze');
+        await startJob('analyze', { vision: $('#optVision').checked });
         if (![...S.tracked.values()].some(live)) renderBusy(); // it failed: enable again
       },
     }, 'Analyze footage'),
@@ -840,6 +844,20 @@ function confirmAction(title, text, ok = 'Remove') {
       resolve(d.returnValue === 'ok');
     }, { once: true });
   });
+}
+
+/** "Analyze again": confirm in a dialog whose vision box starts as the last analysis asked. */
+function analyzeAgain() {
+  const d = $('#analyzeDialog');
+  const back = document.activeElement;
+  $('#againVision').checked = !!S.project?.vision_requested;
+  d.returnValue = '';
+  d.showModal();
+  $('#againCancel').focus();
+  d.addEventListener('close', () => {
+    if (back?.isConnected) back.focus();
+    if (d.returnValue === 'ok') startJob('analyze', { vision: $('#againVision').checked });
+  }, { once: true });
 }
 
 /** Focus control ``act`` of the row now at ``i`` (the last row if fewer remain). */
@@ -1584,7 +1602,7 @@ function bind() {
     renderBatch();
     focusRow(0, 'select');
   });
-  $('#analyzeBtn').addEventListener('click', () => startJob('analyze'));
+  $('#analyzeBtn').addEventListener('click', analyzeAgain);
   $('#revealHeadBtn').prepend(icon('folder'));
   $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
   for (const [id, target] of [['#revealClipsBtn', 'clips'], ['#revealOutBtn', 'outputs']]) {
@@ -1621,7 +1639,7 @@ function bind() {
   });
 
   addEventListener('keydown', (e) => {
-    if (e.defaultPrevented || $('#newDialog').open || $('#confirmDialog').open || $('#settingsDialog').open || popOpen()) return;
+    if (e.defaultPrevented || $('#newDialog').open || $('#confirmDialog').open || $('#analyzeDialog').open || $('#settingsDialog').open || popOpen()) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       saveReview().catch(fail);
