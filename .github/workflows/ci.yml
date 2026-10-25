@@ -39,7 +39,7 @@ jobs:
       # Ubuntu 24.04 apt ships ffmpeg 6.1 (libx264, xfade, acrossfade, loudnorm; -fps_mode needs 5.1+).
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
-        timeout-minutes: 12
+        timeout-minutes: 15
         # apt hung on the runner twice (no output, no timeout): bound every call and retry.
         run: |
           apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
@@ -49,7 +49,8 @@ jobs:
               exit 0
             fi
             echo "apt attempt $attempt failed" >&2
-            sleep 10
+            sudo timeout 60 dpkg --configure -a || true
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
           done
           echo "::error::Installing ffmpeg failed after 3 attempts"
           exit 1
