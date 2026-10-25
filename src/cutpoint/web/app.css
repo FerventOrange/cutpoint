@@ -177,6 +177,30 @@ select { max-width: 100%; }
 .fresh-why { color: var(--bad); font-size: 13.5px; }
 .fresh-why.progress { color: var(--muted); }
 .fresh-note { font-size: 13px; }
+/* analysis steps: under "Analyze footage", or under the Moments header while "Analyze again" runs */
+.steps { display: grid; gap: 6px; text-align: start; justify-self: stretch; margin-bottom: 8px; font-size: 13.5px; }
+.steps-head { color: var(--muted); font-weight: 600; }
+.step-list { display: grid; gap: 4px; }
+.step { display: grid; grid-template-columns: 1.25em minmax(0, 1fr) auto; column-gap: 8px; align-items: baseline; padding: 4px 8px; background: var(--deep); border: 1px solid var(--card-line); border-radius: 4px; }
+.step-icon { justify-self: center; font-weight: 700; }
+.step-label { color: var(--text); overflow-wrap: anywhere; }
+.step-state { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.step-detail, .step-bar { grid-column: 2 / -1; }
+.step-detail { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.step[data-state=running] .step-state { color: var(--amber); }
+.step[data-state=done] .step-icon, .step[data-state=done] .step-state { color: var(--ok); }
+.step[data-state=skipped] .step-icon, .step[data-state=skipped] .step-state,
+.step[data-state=cancelled] .step-icon, .step[data-state=cancelled] .step-state { color: var(--muted); }
+/* not started: the whole row recedes */
+.step[data-state=waiting], .step[data-state=notrun] { background: none; border-style: dashed; }
+.step[data-state=waiting] > *, .step[data-state=notrun] > * { color: var(--muted); }
+.step[data-state=failed] .step-icon, .step[data-state=failed] .step-state,
+.step[data-state=interrupted] .step-icon, .step[data-state=interrupted] .step-state,
+.step[data-state=failed] .step-detail { color: var(--bad); }
+.step-bar { height: 3px; margin-top: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.step-bar > span { display: block; height: 100%; background: var(--amber); }
+.spin { align-self: center; width: 0.9em; height: 0.9em; border: 2px solid var(--line); border-top-color: var(--amber); border-radius: 50%; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* moments */
 .filter { display: block; margin-bottom: 8px; }
@@ -442,6 +466,7 @@ dialog form { display: grid; gap: 14px; }
 
 @media (prefers-reduced-motion: reduce) {
   .indeterminate::after { animation: none; width: 40%; }
+  .spin { animation: none; }
   .seq-thumb.loading::after { animation: none; }
   * { scroll-behavior: auto !important; transition: none !important; }
 }

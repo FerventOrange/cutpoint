@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CUTPOINT_PROGRESS=1` prints `PROGRESS {...}` step lines on stderr for `analyze` (6 steps) and
   `edit` (8 steps).
 - `step_failed` JSON warning: an analysis step failed and the run continued without it.
+- Analysis steps in the UI: while an analysis runs, the Moments column lists each step under
+  "Analyze footage" (or under the header for "Analyze again") with its state (waiting, running
+  with a percentage when known, done, skipped with the reason, failed with the error); a step
+  still running when the job fails reads "interrupted", a cancelled one "cancelled", and steps
+  that never started "not run". The UI starts its jobs with
+  `CUTPOINT_PROGRESS=1` and keeps the `PROGRESS` lines out of the job log; `GET /api/jobs`
+  returns them per job as `progress` (`total`, `steps`).
 - `--json` on `events`. It reports the `events.json` and `events.txt` paths, the layers, the
   event and window counts, `highlights.json` once re-ranked (and `highlights.pre-events.json`
   when the run created it), and when written `crashes.json`, the contact sheets and the HUD
@@ -252,6 +259,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HUD region discovery no longer drops every frame of a game with a busy HUD as a menu. A frame
+  counted as a menu or scoreboard above 28 text boxes; busy HUDs show 50 to 100 in every frame.
+  Now a frame with at least 24 boxes is a menu when their centres fill at least half of the
+  screen centre (6 x 4 cells of a coarse 8 x 6 grid) or when it has at least twice the median
+  box count of its recording. Mined `candidate_phrases` (profile version 3) use the same frames
+  and now also find mixed-case texts ("Shield Saver", kept in their most common casing and only
+  when that casing shows in two thirds of their bursts), words OCR joined
+  ("blockedShieldSaver:x1"), and phrases inside longer lines once numbers, timestamps,
+  gamertags, multipliers ("x2") and player tags are cut out; a name-like slot at either end is
+  not mined: a word that takes 4 or more different values next to a fixed phrase of 2 or more
+  words, or next to a single word when it also varies elsewhere, as the names in
+  "<name> blocked <name>" lines do. Banner families that share a word ("GATE SECURED",
+  "HILL SECURED") are all kept. The proposal
+  lists the OCR records of its run (`discovery.frames`), and mining reads only those. Discovery
+  params record `menu_min_boxes`, `menu_cover` and `menu_jump` instead of `menu_boxes`.
 - `events` with the crash layer logs each unreachable source once, not twice: the crash layer
   logs it at debug level, since `events` already warned.
 - `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines

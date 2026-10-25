@@ -194,6 +194,17 @@ next to "Export clips" (the latest export
 folder, `clips_ui_*`) and next to "Assemble" (the project folder, which holds the final videos and
 their `.srt` subtitles and `.fcpxml` and `.otio` timelines), once that folder exists.
 
+While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
+Crashes, Ranking, Vision rating) under "Analyze footage", or under the column header for "Analyze
+again": each with its state (waiting, running with a progress bar and a percentage when the step
+reports one, done, skipped with the reason, failed with the error). A step still running when
+the job fails reads "interrupted", one stopped by Cancel reads "cancelled", and the steps that
+never started read "not run". The list stays after a failed or cancelled analysis
+until another job runs, and gives way to the moments once the analysis completes. The UI asks for
+the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` returns them per job as
+`progress` (`total` and `steps`, ordered by step). A Cutpoint version that sends no steps shows
+the log in Jobs only, as before.
+
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 500 per project, least recently used evicted). Drag the

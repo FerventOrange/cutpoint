@@ -5,19 +5,32 @@ Region discovery (:mod:`cutpoint.events.discover`) finds *where* HUD text is.
 (``discovery/<game>/ocr.jsonl``), with no model, no network and no new
 dependency (the ``ocr`` backend):
 
-* ``candidate_phrases``: recurring upper-case multi-word texts of the banner
-  regions (and the generic big-text region), kept only when they fuzzy-occur
-  in at least :data:`MIN_BURSTS` distinct bursts. A number OCR joined to a word
-  is split off and dropped ("WON ROUND5" is "WON ROUND"); see
-  :func:`_split_numbers`. Gamertags (other words mixing letters and digits),
-  single words, chat lines, static labels (fuzzy-found in most gameplay
-  frames), phrases close to one of
-  :data:`~cutpoint.events.regions.GENERIC_BANNERS` and phrases naming one of the
-  user's player tags are left out; at most :data:`MAX_PHRASES`.
-  They are inactive: a recurring header can also show on screens that are no
-  event, so ``banner_phrases`` stays as discovery set it. A later model pass
-  promotes confirmed candidates into ``banner_phrases``; a user can promote
-  one by hand by moving it there (``notes`` says so in the file).
+* ``candidate_phrases``: recurring multi-word texts of the banner regions (and
+  the generic big-text region) of the gameplay frames
+  (:func:`~cutpoint.events.discover.gameplay_frames`), kept only when they
+  fuzzy-occur in at least :data:`MIN_BURSTS` distinct bursts. Texts are split
+  into word runs first (:func:`_segments`): words OCR joined are split at
+  camelCase boundaries ("blockedShieldSaver" is "blocked Shield Saver"), and
+  numbers ("ROUND5", "x1", "2/3", "3RD"), timestamps, gamertags (other words
+  mixing letters and digits), the user's player tags, handles, punctuation and
+  a chat message after "name: " end a run. A candidate is a run, or a part of
+  a run, of 2 to :data:`MAX_WORDS` words, so a phrase inside a log line is
+  found. A part is tried only where it also shows without the rest of its
+  run. No candidate (a whole run or a part) is tried when its first or last
+  word is a slot, as with the names in
+  "<name> blocked <name>" lines: the rest of the phrase (2+ words) has at
+  least :data:`SLOT_WORDS` different words on that side and the phrase is in
+  less than half of its frames, or the edge word itself varies (it also shows
+  on the other side of its neighbour, or next to :data:`SLOT_WORDS` other
+  words) and the same holds for that neighbour. A family of banners sharing a
+  word ("GATE SECURED", "HILL SECURED") is no slot. A longer phrase hides a
+  shorter one it contains unless the shorter one occurs in more bursts. Case
+  is ignored for counting and matching, as the OCR layer does; a candidate must have one casing in at least
+  :data:`CASE_SHARE` of the bursts it shows in and keeps that casing ("Shield
+  Saver"). Runs longer than :data:`MAX_WORDS` words (hints, chat), static
+  labels (fuzzy-found in most gameplay frames) and phrases close to one of
+  :data:`~cutpoint.events.regions.GENERIC_BANNERS` are left out; at most
+  :data:`MAX_PHRASES`.
 * ``title`` and ``match`` from the game key. ``title`` is the name the VLM
   prompt already derives from the key; ``match`` is left empty unless the key
   is a plausible game name (see :func:`match_hint`).
@@ -25,7 +38,7 @@ dependency (the ``ocr`` backend):
 Regions are kept exactly as discovery proposed them, and ``feed`` colours,
 ``view`` and ``hype`` are not set: the OCR text alone does not say what they
 should be. The result keeps ``"source": "discovered"`` and records its
-provenance as ``"profile": {"backend": "ocr", "version": 2}``.
+provenance as ``"profile": {"backend": "ocr", "version": 3}``.
 
 Cache keys: ``source``, ``profile``, ``title``, ``match``, ``notes`` and
 ``candidate_phrases`` are not part of the OCR cache key
@@ -45,28 +58,33 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import fields
 from typing import Any
 
-from cutpoint.events.discover import DiscoverParams, boxes_in
+from cutpoint.events.discover import DiscoverParams, boxes_in, gameplay_frames
 from cutpoint.events.killfeed import fuzzy_contains, is_player, norm, similar
 from cutpoint.events.regions import GENERIC_BANNERS, bigtext_region
 
 BACKEND = "ocr"
-VERSION = 2  # bump when the OCR backend's output changes
+VERSION = 3  # bump when the OCR backend's output changes
 MAX_PHRASES = 12
 MIN_BURSTS = 2  # a phrase must be seen in this many distinct bursts
 STATIC_SHARE = 0.5  # texts in at least this share of gameplay frames are static labels
 FUZZY = 0.8  # same threshold as the OCR layer's phrase matching
 MAX_WORDS = 5  # longer texts are sentences (hints, chat), not banners
 MAX_CANDIDATES = 100  # most frequent candidates compared fuzzily (bounds the cost)
+CASE_SHARE = 2 / 3  # a candidate's casing in at least this share of its bursts
+SLOT_WORDS = 4  # an edge word with this many alternatives next to the rest is a slot
 NOTES = (
     "candidate_phrases were mined from the discovery OCR and are inactive. To activate one,"
     " move it into banner_phrases."
 )
-# a token holding a number: digits only (spaces from "1/3"), or one letter run and
-# one digit run ("ROUND5", "5KILLS")
-_NUMBERED = re.compile(r"[\d ]+|[A-Z]+\d+|\d+[A-Z]+")
-_DIGITS = re.compile(r"\d+")
+# a handle ("@name", "#tag") or a separator: ends a word run
+_BREAK = re.compile(r"[@#]\S*|[:;,!?|/\\()\[\]{}<>\"]")
+_CHAT = re.compile(r":\s.*", re.DOTALL)  # "name: message": the message is chat
+_CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")  # "blockedShield" -> "blocked", "Shield"
+# a number joined to a word: one letter run and one digit run ("ROUND5", "5KILLS")
+_NUMBERED = re.compile(r"([A-Za-z]+)\d+|\d+([A-Za-z]+)")
 _ORDINAL = re.compile(r"\d+(?:ST|ND|RD|TH)")  # "3RD", dropped whole
 
 # Words that name a folder of recordings, not a game: a key containing one is
@@ -139,8 +157,8 @@ def build_profile(
         ocr_samples: The discovery OCR records
             (:func:`~cutpoint.events.discover.read_ocr_samples` of ``ocr.jsonl``).
         game: Preset key of the game.
-        player_tags: The user's in-game names; phrases with a word matching one
-            (fuzzy, as in the OCR layer) are left out.
+        player_tags: The user's in-game names; words matching one (fuzzy, as
+            in the OCR layer) are cut out of the texts, so they end a phrase.
 
     Returns:
         A preset dict for :func:`~cutpoint.events.regions.preset_from_dict`: the
@@ -185,24 +203,39 @@ def mine_phrases(
 ) -> list[str]:
     """Recurring banner phrases in the OCR text of ``preset``'s banner regions.
 
+    Only gameplay frames count (:func:`~cutpoint.events.discover.gameplay_frames`
+    with the proposal's discovery params). Candidates are word runs of
+    :func:`_segments` and their parts of 2 to :data:`MAX_WORDS` words; a part
+    that never shows without a longer candidate around it (same frames) is not
+    tried, nor is any candidate whose first or last word is a varying slot ("<name>
+    blocked"; see the module docstring: :data:`SLOT_WORDS` different words next
+    to the rest, or next to the neighbour of a varying edge word, which has the
+    candidate in less than half of its frames). Candidates are compared
+    case-folded and need one casing in :data:`CASE_SHARE` of the bursts they
+    show in (see :func:`_casing`).
+
     Occurrences are fuzzy (:func:`~cutpoint.events.killfeed.fuzzy_contains`) for
     the burst count and for the static-label share alike; each distinct text is
     compared with a candidate at most once, and only the :data:`MAX_CANDIDATES`
-    most frequent candidates are compared at all.
-
-    Candidates are :func:`_split_numbers` texts, so "WON ROUND5" gives "WON
-    ROUND". Bursts count only texts OCR would match once the phrase is promoted
-    (plain :func:`~cutpoint.events.killfeed.norm`, digits kept: "WON ROUND5"
-    counts, "WON 10 ROUND" does not); the static-label share uses the split
-    texts, so labels with changing numbers stay static. Player tags are checked
-    against the words before the split ("ASH99").
+    most frequent candidates are compared at all. Bursts count only raw texts
+    OCR would match once the phrase is promoted (plain
+    :func:`~cutpoint.events.killfeed.norm`, digits kept: "WON ROUND5" counts,
+    "WON 10 ROUND" does not, "blockedShieldSaver:x1" counts for "Shield
+    Saver"); the static-label share uses the texts with numbers and tags left
+    out, so labels with changing numbers stay static. A kept phrase inside a
+    longer kept one is dropped unless it occurs in more bursts.
 
     Sorted by the number of bursts they occur in (most first), then by text.
     """
     tags = tuple(player_tags)
-    params = preset.get("discovery", {}).get("params", {})
-    menu_boxes = int(params.get("menu_boxes", DiscoverParams.menu_boxes))
-    frames = [f for f in ocr_samples if len(f.get("boxes", [])) <= menu_boxes]
+    known = {f.name for f in fields(DiscoverParams)}
+    raw_params = preset.get("discovery", {}).get("params", {})
+    params = DiscoverParams(**{k: v for k, v in raw_params.items() if k in known})
+    run_ids = preset.get("discovery", {}).get("frames")
+    if run_ids is not None:  # the frames of the discovery run (ocr.jsonl only grows)
+        ids = set(map(str, run_ids))
+        ocr_samples = [f for f in ocr_samples if str(f.get("id")) in ids]
+    frames = gameplay_frames(ocr_samples, params)
     rects = [
         (r["x"], r["y"], r["w"], r["h"], int(r.get("min_text_h", 0)))
         for r in preset.get("regions", [])
@@ -213,33 +246,94 @@ def mine_phrases(
     ):
         big = bigtext_region()
         rects.append((big.x, big.y, big.w, big.h, big.min_text_h))
-    # distinct split banner texts per frame, norm texts per burst; exact frame counts
+    # split texts per frame, norm texts per burst; exact frame counts of candidates
     by_frame: dict[str, set[str]] = {}
     by_burst: dict[tuple[str, int], set[str]] = {}
     frames_of: dict[str, set[str]] = {}
-    words_of: dict[str, set[str]] = {}  # words before the split, for the tag check
+    longer: dict[str, set[str]] = {}  # candidates one word longer around each
+    span_frames: dict[str, set[str]] = {}  # frames of every span, single words too
+    left: dict[str, set[str]] = {}  # distinct words directly left of each span
+    right: dict[str, set[str]] = {}  # ... and right of it
+    casings: dict[str, dict[str, set[tuple[str, int]]]] = {}  # casing -> bursts
     for f in frames:
         fid, bkey = str(f["id"]), (str(f["source"]), int(f["burst"]))
         for text in {b["text"] for rect in rects for b in boxes_in(f, *rect)}:
-            n, tag = _split_numbers(text)
             if raw := norm(text):
                 by_burst.setdefault(bkey, set()).add(raw)
-            if not n:
-                continue
-            by_frame.setdefault(fid, set()).add(n)
-            if not tag and _is_candidate(text, n):
-                frames_of.setdefault(n, set()).add(fid)
-                words_of.setdefault(n, set()).update(raw.split())
+            runs = _segments(text, tags)
+            if split := " ".join(w for run in runs for w in run).upper():
+                by_frame.setdefault(fid, set()).add(split)
+            for run in runs:
+                if len(run) > MAX_WORDS:
+                    continue  # a sentence (hint, chat), not a banner
+                up = [w.upper() for w in run]
+                for i in range(len(run)):
+                    for j in range(i + 1, len(run) + 1):
+                        sp = " ".join(up[i:j])
+                        span_frames.setdefault(sp, set()).add(fid)
+                        if i > 0:
+                            left.setdefault(sp, set()).add(up[i - 1])
+                        if j < len(run):
+                            right.setdefault(sp, set()).add(up[j])
+                for i in range(len(run) - 1):
+                    for j in range(i + 2, len(run) + 1):
+                        c = " ".join(run[i:j]).upper()
+                        frames_of.setdefault(c, set()).add(fid)
+                        casings.setdefault(c, {}).setdefault(" ".join(run[i:j]), set()).add(bkey)
+                        around = longer.setdefault(c, set())
+                        if i > 0:
+                            around.add(" ".join(run[i - 1 : j]).upper())
+                        if j < len(run):
+                            around.add(" ".join(run[i : j + 1]).upper())
     static = STATIC_SHARE * max(1, len(frames))
+
+    def slot(c: str) -> bool:
+        """Whether the first or last word of ``c`` is a varying slot (a name).
+
+        Either the rest of ``c`` (2+ words) has :data:`SLOT_WORDS` different
+        words on that side and ``c`` is in less than half of its frames
+        ("<name> blocked Shield Saver"), or the edge word itself varies and the
+        same holds for its single neighbour ("<name> tagged <name>"). An edge
+        word varies when it also shows on the other side of that neighbour or
+        next to :data:`SLOT_WORDS` other words; a banner family sharing a word
+        ("GATE SECURED", "HILL SECURED", ...) has fixed edge words and stays.
+        """
+        words = c.split()
+        n = len(frames_of[c])
+        checks = (
+            (words[0], " ".join(words[1:]), words[1], left, right),
+            (words[-1], " ".join(words[:-1]), words[-2], right, left),
+        )
+        for edge, rest, nb, side, other in checks:
+            # a constant phrase of 2+ words after/before varying words
+            if (
+                len(words) >= 3
+                and len(side.get(rest, ())) >= SLOT_WORDS
+                and n < len(span_frames[rest]) / 2
+            ):
+                return True
+            # the single neighbour only when the edge word itself varies
+            free = edge in other.get(nb, ()) or len(other.get(edge, ())) >= SLOT_WORDS
+            if free and len(side.get(nb, ())) >= SLOT_WORDS and n < len(span_frames[nb]) / 2:
+                return True
+        return False
+
     generic = [norm(g) for g in GENERIC_BANNERS]
     cands = sorted(
-        (c for c, fs in frames_of.items() if len(fs) < static),  # exact count: cheap pre-filter
+        (
+            c
+            for c, fs in frames_of.items()
+            if len(fs) < static  # exact count: cheap pre-filter
+            and all(len(frames_of[e]) < len(fs) for e in longer[c])  # shows on its own
+            and not slot(c)
+        ),
         key=lambda c: (-len(frames_of[c]), c),
     )
     frame_sets = [by_frame[k] for k in sorted(by_frame)]
     burst_sets = [by_burst[k] for k in sorted(by_burst)]
     grams = {t: _bigrams(t) for texts in (*burst_sets, *frame_sets) for t in texts}
     kept: list[tuple[str, int]] = []
+    names: dict[str, str] = {}
     tried = 0
     for c in cands:
         if tried >= MAX_CANDIDATES:
@@ -248,8 +342,9 @@ def mine_phrases(
             continue  # an OCR variant of a more frequent phrase
         if any(similar(c, g) >= FUZZY for g in generic):
             continue  # already matched by every JSON preset
-        if tags and any(is_player(w, tags) for w in words_of[c]):
-            continue  # names the player
+        name = _casing(casings[c])
+        if name is None:
+            continue  # casing varies: not one HUD text
         tried += 1
         hits: dict[str, bool] = {}
         cg = _bigrams(c)
@@ -269,8 +364,14 @@ def mine_phrases(
         bursts = _count(burst_sets, occurs, len(burst_sets))
         if bursts >= MIN_BURSTS and _count(frame_sets, occurs, static) < static:
             kept.append((c, bursts))
+            names[c] = name
+    kept = [
+        (c, n)
+        for c, n in kept
+        if not any(k != c and f" {c} " in f" {k} " and kn >= n for k, kn in kept)
+    ]
     kept.sort(key=lambda p: (-p[1], p[0]))
-    return [c for c, _ in kept[:MAX_PHRASES]]
+    return [names[c] for c, _ in kept[:MAX_PHRASES]]
 
 
 def _bigrams(text: str) -> set[str]:
@@ -289,41 +390,66 @@ def _count(sets: list[set[str]], occurs: Callable[[set[str]], bool], stop: float
     return n
 
 
-def _split_numbers(text: str) -> tuple[str, bool]:
-    """``norm(text)`` without numbers, and whether it has a gamertag.
+def _casing(forms: dict[str, set[tuple[str, int]]]) -> str | None:
+    """The casing of a candidate seen in the most bursts (then the first by text),
+    or None when it has less than :data:`CASE_SHARE` of the bursts the candidate
+    shows in ("Shield Saver" in 2 bursts, "SHIELD saver" in 1: "Shield Saver")."""
+    best = min(forms, key=lambda s: (-len(forms[s]), s))
+    bursts = set().union(*forms.values())
+    return best if len(forms[best]) >= CASE_SHARE * len(bursts) else None
 
-    Each whitespace-separated token with a digit is normalised on its own
-    (:func:`~cutpoint.events.killfeed.norm`). Digits only ("5", "1/3") and
-    ordinals ("3RD") are dropped; one letter run and one digit run ("ROUND5",
-    "5KILLS") keep the letters. Any other token with a digit is a gamertag ("N0VA", "A1B2", or
-    "XX_ASH99", whose separator makes two words): it is kept as is and flags the
-    text, which then is no candidate.
+
+def _segments(text: str, tags: tuple[str, ...] = ()) -> list[list[str]]:
+    """The word runs of an OCR text, case kept.
+
+    A chat message after "name: " is dropped. Handles ("@name", "#tag") and
+    separators (``: ; , ! ? | / \\ ( ) [ ] { } < > "``) end a run; so do the
+    breaks of :func:`_words` (numbers, gamertags, the user's player tags).
+    "[12:03] Ash99 blockedShieldSaver:x1" gives ``[["Ash"], ["blocked",
+    "Shield", "Saver"]]`` ("x1" is a number).
     """
-    words, tag = [], False
-    for tok in text.split():
-        w = norm(tok)
-        if any(c.isdigit() for c in w):
-            if _ORDINAL.fullmatch(w):
-                w = ""
-            elif _NUMBERED.fullmatch(w):
-                w = _DIGITS.sub(" ", w)
+    runs: list[list[str]] = [[]]
+    for tok in _BREAK.sub(" | ", _CHAT.sub("", text)).split():
+        for w in [None] if tok == "|" else _words(tok, tags):
+            if w is None:
+                runs.append([])
             else:
-                tag = True
-        words.append(w)
-    return " ".join(" ".join(words).split()), tag
+                runs[-1].append(w)
+    return [r for r in runs if r]
 
 
-def _is_candidate(text: str, words: str) -> bool:
-    """Whether an OCR text can be a banner phrase: upper case, mostly letters
-    (numbers left out), :func:`_split_numbers` ``words`` of 2 to
-    :data:`MAX_WORDS` words, not chat."""
-    if any(c in text for c in ":[]<>@#"):
-        return False  # chat lines ("[ALL] name: text"), handles
-    letters = [c for c in text if c.isalpha()]
-    if not letters or sum(c.isupper() for c in letters) < 0.9 * len(letters):
-        return False
-    chars = [c for c in text if not c.isspace() and not c.isdigit()]
-    return 2 <= len(words.split()) <= MAX_WORDS and len(letters) >= 0.8 * len(chars)
+def _words(tok: str, tags: tuple[str, ...]) -> list[str | None]:
+    """The words of one whitespace token; None marks a break.
+
+    The token is split at other characters (``_ . - '``) and at camelCase
+    boundaries ("blockedShieldSaver"). A word with a digit is a break: digits
+    only, ordinals ("3RD") and one letter joined to digits (the multiplier
+    "x2") whole; a longer letter run and one digit run ("ROUND5", "5KILLS")
+    keep their letters. Any other token with a digit is a
+    gamertag ("N0VA", "A1B2", or "XX_ASH99", whose separator makes two
+    pieces) and a break as a whole, as is a token or camelCase piece that is
+    one of the user's player ``tags`` (:func:`~cutpoint.events.killfeed.is_player`).
+    """
+    if tags and any(similar(tok, t) >= FUZZY for t in tags):
+        return [None]  # the token is a player tag
+    pieces = re.sub(r"[^A-Za-z0-9]", " ", tok).split()
+    if len(pieces) > 1 and any(c.isdigit() for c in tok):
+        return [None]  # "XX_ASH99": a gamertag
+    out: list[str | None] = []
+    for w in (c for p in pieces for c in _CAMEL.split(p)):
+        if tags and is_player(w, tags):
+            out.append(None)
+        elif not any(c.isdigit() for c in w):
+            out.append(w)
+        elif (
+            (m := _NUMBERED.fullmatch(w))
+            and not _ORDINAL.fullmatch(w.upper())
+            and len(m[1] or m[2]) > 1
+        ):
+            out += [m[1], None] if m[1] else [None, m[2]]
+        else:
+            out.append(None)  # digits, "x2", an ordinal or a gamertag ("N0VA")
+    return out
 
 
 __all__ = ["BACKEND", "VERSION", "build_profile", "match_hint", "mine_phrases"]
