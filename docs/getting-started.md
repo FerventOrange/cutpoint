@@ -85,8 +85,8 @@ packages of any extra you leave out. List every extra you use each time:
 uv sync --extra ski --extra events --extra gpu
 ```
 
-The easy way to keep everything is `uv sync --extra all` (`ski`, `events`, `gpu` and `ui`; the `dev` tools
-come by default). It includes the large torch download of `events`.
+The easy way to keep everything is `uv sync --extra all` (`ski`, `events`, `gpu` and `ui`; the
+`dev` tools come by default). It includes the large torch download of `events`.
 
 With an NVIDIA GPU, `uv sync --extra gpu` is the minimum for GPU Whisper.
 
@@ -120,7 +120,7 @@ A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on W
 (`uv pip` keeps an already-installed CPU-only torch unless you add `--reinstall-package torch
 --reinstall-package torchvision`); these need no index flags. `pip` and PyPI or wheel installs do
 not apply it. For a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add the PyTorch
-index (`all` is every extra, the browser workspace included):
+index (`all` is `ski`, `events`, `gpu` and `ui`):
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match

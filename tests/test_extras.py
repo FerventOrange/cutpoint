@@ -42,7 +42,7 @@ def test_install_hint_uv_and_pip(monkeypatch, tmp_path):
     monkeypatch.setenv("UV", "1")
     hint = extras.install_hint("events")
     assert hint.startswith("uv sync --extra events")
-    assert "or use --extra all for everything" in hint
+    assert "or use --extra all for everything, a large download with torch and CUDA" in hint
     monkeypatch.delenv("UV")
     monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: object())
     assert "-m pip install" in extras.install_hint("events")
