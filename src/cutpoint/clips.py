@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, sources, srt
+from cutpoint import boundaries, cache, jsonout, sources, srt
 from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
@@ -32,7 +32,7 @@ from cutpoint.ffmpeg_utils import (
     staged_dir,
     swap_in,
 )
-from cutpoint.planning import Padding, pad, select_moments, speech_pass
+from cutpoint.planning import Padding, pad, report_clips, select_moments, speech_pass
 from cutpoint.styles import Style, get_style
 from cutpoint.tail import TailResult, TailSettings, smart_tail
 from cutpoint.utils import clip_files, slugify
@@ -925,7 +925,10 @@ def export_clips(
         ValueError: If the selection or a crop is invalid.
     """
     if crop is not None:
-        parse_spec(crop)  # fail before any work
+        try:
+            parse_spec(crop)  # fail before any work
+        except ValueError as err:
+            raise jsonout.ArgumentError(str(err)) from None
     highlights = cache.load_json(project / "highlights.json")
     style_name = (highlights or {}).get("style", "gaming")
     if segments is not None:
@@ -989,7 +992,9 @@ def export_clips(
         if size is not None and not vertical:
             w, h = size
             if w <= 0 or h <= 0 or w % 2 or h % 2:
-                raise ValueError(f"--size {w}x{h}: width and height must be positive and even")
+                raise jsonout.ArgumentError(
+                    f"--size {w}x{h}: width and height must be positive and even"
+                )
             fmt = OutputFormat(width=w, height=h, fps=fmt.fps)
         if pano is not None:  # 360 renders are 1920x1080 (or 1080x1920): match them
             fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
@@ -1055,26 +1060,20 @@ def export_clips(
             swap_in(work, out_dir, [*replace, "manifest.json"])
     hint = "assemble includes them, so move them out if they are not part of the edit"
     if kept_sources:
-        logger.warning(
-            "Kept %s in %s: a file this run reads as a source is never replaced. They are not "
-            "in the new manifest.json and %s",
-            ", ".join(kept_sources),
-            out_dir,
-            hint,
+        message = (
+            f"Kept {', '.join(kept_sources)} in {out_dir}: a file this run reads as a source is "
+            f"never replaced. They are not in the new manifest.json and {hint}"
         )
-    if kept and had_manifest:
-        logger.warning(
-            "Kept %s in %s: the old manifest.json does not list them (renamed during review or "
-            "added by hand); %s",
-            ", ".join(kept),
-            out_dir,
-            hint,
+        logger.warning("%s", message)
+        jsonout.warn("kept_sources", message, [out_dir / n for n in kept_sources])
+    if kept:
+        why = (
+            "the old manifest.json does not list them (renamed during review or added by hand)"
+            if had_manifest
+            else "not replaced because there is no readable manifest.json"
         )
-    elif kept:
-        logger.warning(
-            "Kept %s in %s: not replaced because there is no readable manifest.json; %s",
-            ", ".join(kept),
-            out_dir,
-            hint,
-        )
+        message = f"Kept {', '.join(kept)} in {out_dir}: {why}; {hint}"
+        logger.warning("%s", message)
+        jsonout.warn("kept_clips", message, [out_dir / n for n in kept])
+    report_clips(out_dir)
     return out_dir

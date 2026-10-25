@@ -248,7 +248,9 @@ def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
 
     assert (clips / "002_joke.mp4").read_text(encoding="utf-8") == "renamed"
     assert (clips / "002_joke.srt").read_text(encoding="utf-8") == "renamed subs"
-    assert "002_joke.mp4: no manifest entry" in caplog.text
+    # In place it stays in the folder (and in the edit): a Kept warning, not "skipped".
+    assert f"Kept 002_joke.mp4 in {clips.absolute()}: the old manifest.json" in caplog.text
+    assert "skipped" not in caplog.text
 
 
 def _out_with_old_manifest(tmp_path: Path, clips: Path) -> Path:

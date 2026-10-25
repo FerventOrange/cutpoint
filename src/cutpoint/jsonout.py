@@ -26,13 +26,21 @@ from typing import Any, TextIO
 SCHEMA = 1
 
 # Error codes (``error.code``).
-BAD_ARGS = "bad_args"  # argparse rejected the command line (exit 2); SystemExit("msg") (exit 1)
+BAD_ARGS = "bad_args"  # argparse rejected the command line (exit 2); SystemExit("msg") and
+# ArgumentError (exit 1)
 NOT_FOUND = "not_found"  # FileNotFoundError: an input, project or file is missing
 FFMPEG_MISSING = "ffmpeg_missing"  # FFmpegNotFoundError: ffmpeg / ffprobe not found
 MISSING_EXTRA = "missing_extra"  # an optional extra is not installed
 OUTPUT_NOT_EMPTY = "output_not_empty"  # FileExistsError: an output is in the way (--force)
 INTERRUPTED = "interrupted"  # Ctrl+C, Ctrl+Break, SIGTERM (exit 130)
 ERROR = "error"  # anything else
+
+
+class ArgumentError(ValueError):
+    """A command's own check of an option failed (e.g. ``--clip-override`` without ``=``).
+
+    A ValueError, so it is logged and exits 1 as before; ``--json`` reports ``bad_args``.
+    """
 
 
 class Result:
@@ -122,6 +130,8 @@ def error_code(err: BaseException) -> str:
         return OUTPUT_NOT_EMPTY
     if isinstance(err, FileNotFoundError):
         return NOT_FOUND
+    if isinstance(err, ArgumentError):
+        return BAD_ARGS
     return ERROR
 
 

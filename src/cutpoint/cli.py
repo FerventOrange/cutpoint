@@ -23,7 +23,7 @@ from importlib.resources import files
 from pathlib import Path, PurePath
 from typing import NoReturn
 
-from cutpoint import __version__, jsonout, paths, stage
+from cutpoint import __version__, cache, jsonout, paths, stage
 from cutpoint.activity import resolve as resolve_activity
 from cutpoint.assemble import assemble
 from cutpoint.boundaries import SpeechSettings
@@ -32,7 +32,7 @@ from cutpoint.config import get_config, projects_dir, resolve_project_path
 from cutpoint.crash import CrashParams, detect_project
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.events import paths as event_paths
-from cutpoint.extend import extend_clips
+from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.ffmpeg_utils import FFmpegError
 from cutpoint.mix import EXCLUDE_FILE, load_exclusions, parse_quotas, run_mix
 from cutpoint.planning import Padding
@@ -56,6 +56,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
             else (Path(os.path.commonpath([t.resolve() for t in targets])).name or "multi")
         )
         out = projects_dir() / name
+    jsonout.set_project(out)
     style = get_style(a.style)
     if a.must_include_crash is not None:
         style = replace(style, must_include_crash=a.must_include_crash)
@@ -80,9 +81,12 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
 
 def _cmd_edit(a: argparse.Namespace) -> None:
     targets = [Path(t) for t in a.inputs]
+    project = resolve_project_path(a.out) if a.out else projects_dir() / edit_name(targets[0])
+    jsonout.set_project(project)
+    jsonout.output("kind", a.kind)
     run_edit(
         targets,
-        resolve_project_path(a.out) if a.out else projects_dir() / edit_name(targets[0]),
+        project,
         resolve_kind(a.kind, style=a.style, top=a.top, max_total=a.max_total),
         vertical=a.vertical,
         force=a.force,
@@ -109,6 +113,7 @@ def _segments_where(text: str, given: PurePath, segments: Path) -> str:
 
 def _cmd_clips(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.project)
+    jsonout.set_project(project)
     segments = resolve_project_path(a.segments, bare_names=False) if a.segments else None
     if segments is not None and not a.mix and not segments.is_file():
         if segments.is_dir():
@@ -149,9 +154,20 @@ def _cmd_clips(a: argparse.Namespace) -> None:
     )
 
 
+def _set_clips_project(clips_dir: Path) -> None:
+    """For --json: the project of a clips folder (its manifest's ``project``, else the parent)."""
+    if jsonout.active():
+        manifest = cache.load_json(clips_dir / "manifest.json")
+        jsonout.set_project(
+            manifest_project(manifest if isinstance(manifest, dict) else {}, clips_dir)
+        )
+
+
 def _cmd_extend(a: argparse.Namespace) -> None:
+    clips_dir = resolve_project_path(a.clips_dir, bare_names=False)
+    _set_clips_project(clips_dir)
     extend_clips(
-        resolve_project_path(a.clips_dir, bare_names=False),
+        clips_dir,
         Padding.from_args(a.seconds, a.start, a.end),
         out_dir=resolve_project_path(a.out, bare_names=False) if a.out else None,
         force=a.force,
@@ -174,11 +190,11 @@ def _clip_overrides(items: list[list[str]] | None) -> dict[str, dict[str, float]
     for pattern, assign in items:
         key, sep, value = assign.partition("=")
         if not sep:
-            raise ValueError(f"--clip-override {pattern} {assign}: expected KEY=SECONDS")
+            raise jsonout.ArgumentError(f"--clip-override {pattern} {assign}: expected KEY=SECONDS")
         try:
             out.setdefault(pattern, {})[key.strip().replace("-", "_")] = float(value)
         except ValueError:
-            raise ValueError(
+            raise jsonout.ArgumentError(
                 f"--clip-override {pattern} {assign}: {value!r} is not a number of seconds"
             ) from None
     return out
@@ -309,8 +325,10 @@ def _cmd_mix(a: argparse.Namespace) -> None:
 
 
 def _cmd_assemble(a: argparse.Namespace) -> None:
+    clips_dir = resolve_project_path(a.clips_dir, bare_names=False)
+    _set_clips_project(clips_dir)
     assemble(
-        resolve_project_path(a.clips_dir, bare_names=False),
+        clips_dir,
         resolve_project_path(a.out, bare_names=False) if a.out else None,
         transition=a.transition,
         fade_dur=a.fade_dur,
@@ -573,6 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
     ed.add_argument("--ollama-model", help="default: qwen3-vl:8b")
+    _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit)
 
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
@@ -641,6 +660,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="ski: always clip crashes from crashes.json (cutpoint crashes) with at "
         "least this confidence, 0-1 (default: style, 0.6 for ski; 0 = off)",
     )
+    _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)
 
     cl = sub.add_parser("clips", help="export selected moments as numbered clips")
@@ -747,6 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_speech_arguments(cl, "on, per style")
     _add_pano_arguments(cl, "auto")
+    _add_json_argument(cl)
     cl.set_defaults(func=_cmd_clips)
 
     ex = sub.add_parser(
@@ -789,6 +810,7 @@ def build_parser() -> argparse.ArgumentParser:
         "format and fade are identical there instead of re-encoding",
     )
     _add_pano_arguments(ex, None)
+    _add_json_argument(ex)
     ex.set_defaults(func=_cmd_extend)
 
     ev = sub.add_parser(
@@ -1037,6 +1059,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(clips from cutpoint clips / cutpoint extend already do; default "
         "0.25, 0 = off)",
     )
+    _add_json_argument(asm)
     asm.set_defaults(func=_cmd_assemble)
 
     from cutpoint.pano.cli import add_parser as add_pano_parser  # noqa: PLC0415

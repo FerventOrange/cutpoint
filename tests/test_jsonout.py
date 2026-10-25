@@ -272,6 +272,7 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
     [
         (["paths", "--json", "--bogus"], "unrecognized arguments: --bogus"),
         (["paths", "extra", "--json"], "unrecognized arguments: extra"),
+        (["clips", "p", "--size", "abc", "--json"], "argument --size: 'abc': expected WxH"),
     ],
 )
 def test_bad_args_envelope(capsys, argv, message):
@@ -280,8 +281,8 @@ def test_bad_args_envelope(capsys, argv, message):
     assert exc.value.code == 2
     out, err = capsys.readouterr()
     doc = _envelope(out)
-    assert doc["error"] == {"code": "bad_args", "message": message}
-    assert doc["command"] == "paths"
+    assert doc["error"]["code"] == "bad_args" and doc["error"]["message"].startswith(message)
+    assert doc["command"] == argv[0]
     assert "usage: cutpoint" in err and message in err
 
 
@@ -308,8 +309,7 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
     [
         ["paths", "--bogus"],  # no --json
         ["pathz", "--json"],  # unknown command: no command to report
-        ["assemble", "x", "--json"],  # a command without --json (yet)
-        ["clips", "p", "--size", "abc", "--json"],
+        ["mix", "x", "--json"],  # a command without --json (yet)
     ],
 )
 def test_bad_args_without_envelope(capsys, argv):
