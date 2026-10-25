@@ -17,7 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache
+from cutpoint import cache, jsonout
 from cutpoint import paths as cutpoint_paths
 from cutpoint.config import source_path
 from cutpoint.events import paths
@@ -146,6 +146,7 @@ def run_events(
     preflight(layers)
     sources = []
     seen: set[str] = set()
+    unreachable: list[tuple[str, OSError]] = []
     for s in hl["sources"]:  # virtual parts (--recover) share one path
         if s["path"] not in seen:
             seen.add(s["path"])
@@ -153,6 +154,11 @@ def run_events(
                 sources.append(load_source(Path(s["path"]), s.get("duration")))
             except OSError as err:
                 logger.warning("%s: footage not reachable (%s); skipped", s["path"], err)
+                unreachable.append((s["path"], err))
+    for path, err in unreachable:
+        jsonout.warn(
+            "footage_unreachable", f"{path}: footage not reachable ({err}); skipped", [path]
+        )
     if not sources:
         raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
     bad = bad_ranges(hl, sources, avoid)
@@ -232,7 +238,7 @@ def run_events(
         enc = kept.pop() if kept else None
         try:
             with VramMonitor() as vm:
-                detect_project(project, force="crash" in force, encoder=enc)
+                detect_project(project, force="crash" in force, encoder=enc, warn_unreachable=False)
         finally:
             if enc is not None:
                 enc.close()

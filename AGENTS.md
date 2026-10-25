@@ -13,10 +13,10 @@ everything into a project folder.
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
-| `cutpoint edit`: analyze, clips and assemble in one command | `--json` on `events` |
+| `cutpoint edit`: analyze, clips and assemble in one command | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
-| `--json` result envelope on stdout: `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `360 ...` | |
+| `--json` result envelope on stdout: `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `360 ...` | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 
 If the user asks for "edit this video and make it a montage" in one step, use

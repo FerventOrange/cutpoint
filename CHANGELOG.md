@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--json` on `events`. It reports the `events.json` and `events.txt` paths, the layers, the
+  event and window counts, `highlights.json` once re-ranked (and `highlights.pre-events.json`
+  when the run created it), and when written `crashes.json`, the contact sheets and the HUD
+  discovery files. A missing `events` extra is `missing_extra`; an unreachable source is
+  `footage_unreachable` (also on `360 analyze`), a skipped ski re-rank `highlights_not_updated`
+  (#4).
 - Reaction points for event types: the preset `events` fields `reaction` (0-12 points once per
   candidate) and `styles` (limits `score` and `reaction` to some styles). `player_deaths` now
   defaults to `reaction` 8 for `funny`: laughter, a scream or speech after a pause that starts

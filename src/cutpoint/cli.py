@@ -1003,6 +1003,7 @@ def build_parser() -> argparse.ArgumentParser:
     from cutpoint.events.cli import add_arguments as add_event_arguments  # noqa: PLC0415
 
     add_event_arguments(ev)
+    _add_json_argument(ev)
     ev.set_defaults(func=_cmd_events)
 
     st = sub.add_parser(

@@ -30,8 +30,8 @@ prints tracebacks of errors.
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
 on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
-`setup`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
-`director`, `stitch`, `check`, `qa`, `repair`). Not yet on `events` and the other commands. Logs and errors stay on stderr, and
+`setup`, `events`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
+`director`, `stitch`, `check`, `qa`, `repair`). Not yet on the other commands. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
 codes are unchanged.
 
@@ -84,10 +84,10 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `stitch_failed` | `360 stitch` | A clip's stitch failed; `files` names its log |
 | `qa_clips_skipped` | `360 qa` | Clips that could not be checked |
 | `qa_clips_stale` | `360 repair` | QA clips with no matching segment, or newer than the QA |
-| `footage_unreachable` | `crashes` | A source is not reachable (offline drive, moved file) and was skipped |
-| `no_telemetry` | `crashes` | A source has no IMU telemetry; its crashes come from the transcript only |
-| `no_visual_layer` | `crashes` | A source has no visual layer; run `events` first so what the camera sees counts |
-| `highlights_not_updated` | `crashes` | The reanalyze step was skipped (footage not reachable), so `highlights.json` is unchanged |
+| `footage_unreachable` | `crashes`, `events` (so `360 analyze`) | A source is not reachable (offline drive, moved file) and was skipped |
+| `no_telemetry` | `crashes`, `events` (crash layer) | A source has no IMU telemetry; its crashes come from the transcript only |
+| `no_visual_layer` | `crashes`, `events` (crash layer) | A source has no visual layer; run `events` first so what the camera sees counts |
+| `highlights_not_updated` | `crashes`, `events` | The reanalyze step (`events`: the ski re-rank) was skipped (footage not reachable), so `highlights.json` is unchanged |
 | `context_not_applied` | `crashes`, `profile` | `--context` was not applied (Ollama or the LLM unavailable, or no usable profile from it) |
 
 `outputs` keys per command (`project` as in the table above):
@@ -113,6 +113,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `360 qa` | `qa_dir`, `report`, `mode`, `sheets`, `clips` (each `file`, `score`, `pass`, `fails`), `count`, `passed`, `score` |
 | `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
 | `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |
+| `events` | `events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed`; `preset` is `built-in` when the kept preset is the bundled one). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files or llama-server are `not_found` and name the `cutpoint setup` command |
 | `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
@@ -319,6 +320,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry |
 | `--sheets` | Write contact sheets to `<project>\visual_check` |
 | `--no-rescore` | Do not touch `highlights.json` |
+| `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 Every layer is cached per source, so reruns are cheap.
 
