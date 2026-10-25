@@ -19,7 +19,8 @@ A matcher takes the event ``type`` plus one of ``prefix`` / ``contains``
 must be false). Preset types are checked before
 :data:`DEFAULT_EVENT_TYPES` and replace a default with the same name; the
 first matching type wins. Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
-built-in rules, so the defaults reproduce the original behaviour exactly.
+built-in rules, so the defaults reproduce the original behaviour exactly,
+except that deaths in generic (verb-style) feeds no longer count as player kills.
 """
 
 from __future__ import annotations
@@ -165,7 +166,8 @@ def from_dict(data: dict[str, Any]) -> EventType:
 
     Raises:
         ValueError, TypeError, KeyError: When the entry is malformed (also: a name
-            in :data:`RESERVED_NAMES`, a ``payoff`` that is not a JSON bool).
+            in :data:`RESERVED_NAMES`, a ``payoff`` that is not a JSON bool, a
+            ``flag`` token that is a lone ``!`` or starts with ``!!``).
     """
     when = tuple(
         Matcher(
@@ -178,6 +180,9 @@ def from_dict(data: dict[str, Any]) -> EventType:
     )
     if not data.get("name") or not when:
         raise ValueError("an event type needs a name and at least one matcher")
+    for m in when:
+        if any(f == "!" or f.startswith("!!") for f in m.flag.split()):
+            raise ValueError(f"bad flag {m.flag!r}")
     name = str(data["name"])
     if name in RESERVED_NAMES:
         raise ValueError(f"the name {name!r} is reserved")

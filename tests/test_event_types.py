@@ -1,7 +1,8 @@
 """Golden tests for event types (scoring, tails, VLM prompt, cache keys).
 
 They pin the behaviour before event types moved into the HUD preset data, so
-the preset-driven defaults must reproduce today's values exactly.
+the preset-driven defaults reproduce the original values, except that deaths in
+generic feeds no longer count as player kills.
 """
 
 from __future__ import annotations
@@ -36,6 +37,16 @@ R6 = dict(
         _ocr("r6_match_point", "banner", "MATCH POINT", 14.0),
         _ocr("r6_double", "multikill", "DOUBLE KILL (Bob, Cy)", 15.0, player=True, kills=2),
         _ocr("r6_other_kill", "kill", "Dee > Eve", 16.0, player=False, teamkill=False),
+        _ocr(
+            "r6_death",
+            "kill",
+            "Bob > Ash",
+            17.0,
+            player=True,
+            player_kill=False,
+            player_death=True,
+            teamkill=False,
+        ),
     ]
 )
 WT = dict(
@@ -117,16 +128,17 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("names", "boost", "evidence"),
     [
-        # R6: 1 kill, teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
-        (list(R6), 30.0, _ev(kills=1, tk=2, banners=2)),
+        # R6: 2 kills (own kill and death), teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
+        (list(R6), 30.0, _ev(kills=2, tk=2, banners=2)),
         # WT: only the player's kill counts (6), not the death; TARGET DESTROYED (6); logs do not count
         (list(WT), 12.0, _ev(kills=1, banners=1)),
         # no preset: laughter min(12, 30), scream min(6, 4)
         (list(NONE), 16.0, _ev(laugh=0.5, scream=0.1)),
-        (list(LAYER), 30.0, _ev(0.5, 0.1, 2, 2, 3)),
+        (list(LAYER), 30.0, _ev(0.5, 0.1, 3, 2, 3)),
         (["r6_kill", "r6_double"], 12.0, _ev(kills=1, banners=1)),
         (["r6_rff"], 12.0, _ev(tk=1)),
         (["r6_match_point", "r6_other_kill"], 0.0, _ev()),
+        (["r6_death"], 6.0, _ev(kills=1)),  # built-in R6 kills count with the player on either side
         (["wt_death", "wt_log"], 0.0, _ev()),
     ],
 )
@@ -175,6 +187,7 @@ PAYOFF = {
     "r6_match_point": False,
     "r6_double": True,
     "r6_other_kill": False,
+    "r6_death": True,
     "wt_kill": True,
     "wt_death": True,
     "wt_log": True,
@@ -191,6 +204,7 @@ SEED = {
     "r6_match_point": None,
     "r6_double": 2.0,
     "r6_other_kill": 0.5,
+    "r6_death": 1.2,
     "wt_kill": 1.2,
     "wt_death": 1.2,
     "wt_log": 0.9,
@@ -209,7 +223,7 @@ def test_is_payoff(name):
 @pytest.mark.parametrize(
     ("end", "words", "events", "limit", "expected"),
     [
-        # speech ends at 10: payoffs up to 20 count (kills, RFF, ACE, DOUBLE, wt_kill), cap 24
+        # speech ends at 10: payoffs up to 20 count (kills, RFF, ACE, DOUBLE, r6_death, wt_kill), cap 24
         (
             10.0,
             None,
@@ -224,6 +238,7 @@ def test_is_payoff(name):
                     "OCR banner: REVERSE FRIENDLY FIRE @12.0",
                     "OCR banner: ACE @13.0",
                     "OCR multikill: DOUBLE KILL (Bob, Cy) @15.0",
+                    "OCR kill: Bob > Ash @17.0",
                     "OCR kill: me (T-34) > foe (Tiger) @20.0",
                 ],
             ),
@@ -529,6 +544,15 @@ def test_event_type_clamping_and_malformed(tmp_path, home):
     assert (by_name["big"].tail_s, by_name["big"].seed) == (10.0, 3.0)
     assert "defuser" in by_name and "player_kills" in by_name  # the rest still loads
     assert not {"nowhen", "x", "laughter", "yes"} & by_name.keys()
+
+
+@pytest.mark.parametrize("flag", ["! verb", "!!x"])
+def test_malformed_flag_type_skipped(tmp_path, home, flag):
+    bad = {"name": "bangs", "when": [{"type": "kill", "flag": flag}], "score": 3}
+    preset = load_preset("foo", _custom(tmp_path, [bad, DEFUSER]))
+    by_name = {t.name: t for t in eventtypes.types_for(preset)}
+    assert "bangs" not in by_name
+    assert "defuser" in by_name and "player_kills" in by_name  # the defaults still load
 
 
 def test_resolve_never_raises(tmp_path, home):
