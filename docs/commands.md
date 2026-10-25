@@ -145,18 +145,16 @@ The gear button in the header opens Settings, which sets the projects folder (sa
 which case it is created; it must be writable. Existing projects are not moved. The setting is
 read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a job is running.
 Settings also has "Rate frames with a local vision model (Ollama)" (off by default; saved as
-[`vision`](configuration.md#vision) in `config.json`): the default of the vision checkboxes below,
-and of `analyze` and `edit` on the command line.
+[`vision`](configuration.md#vision) in `config.json`): every analysis the UI starts, a first
+one or "Analyze again", uses it (passed as `--vision` or `--no-vision`), and it is the default of
+`analyze` and `edit` on the command line. The UI has no per-run vision checkbox.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
-Before a project is analyzed, the Moments column offers "Analyze footage", with a "Rate frames
-with a local vision model (Ollama)" checkbox (it starts from the Settings default, which is off
-unless you turn it on; ticked it passes `--vision`, unticked `--no-vision`), and "Show folder", which
+Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
-in the column header. "Analyze again" asks for confirmation in a dialog with the same vision
-checkbox, ticked only if the previous analysis asked for vision (a project not analyzed yet:
-the Settings default). "Show folder" also appears next to "Export clips" (the latest export
+in the column header. "Analyze again" asks for confirmation first. "Show folder" also appears
+next to "Export clips" (the latest export
 folder, `clips_ui_*`) and next to "Assemble" (the project folder, which holds the final videos and
 their `.srt` subtitles and `.fcpxml` and `.otio` timelines), once that folder exists.
 

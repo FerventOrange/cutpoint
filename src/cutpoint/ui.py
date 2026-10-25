@@ -27,9 +27,9 @@ Trust boundaries:
   dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
 * Settings (``GET``/``PUT /api/settings``) change only ``projects_dir`` and ``vision`` in
   ``config.json``. The projects folder never changes while a job runs or when
-  ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. ``vision`` is the starting
-  value of the page's vision boxes; every analysis the page starts passes ``--vision`` or
-  ``--no-vision`` explicitly.
+  ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
+  starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
+  starts; the page has no per-run vision box.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
 """
@@ -1544,12 +1544,6 @@ def create_app(port: int) -> FastAPI:
             "style": meta.get("style") or (hl or {}).get("style") or "",
             "source": meta.get("source"),
             "highlights": moments_view(hl),
-            # "Analyze again" starts its vision box from this (older analyses: off)
-            "vision_requested": ((hl or {}).get("settings") or {}).get("vision_requested") is True,
-            # ... and, before a first analysis, the vision boxes from this (Settings)
-            "vision_default": get_config().vision,
-            # the model those vision boxes name (Settings, CUTPOINT_VISION_MODEL)
-            "vision_model": default_model(),
             "review": review if isinstance(review, dict) else None,
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp
@@ -1634,15 +1628,9 @@ def create_app(port: int) -> FastAPI:
                 args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
             if st.get("recursive") is True:
                 args.append("--recursive")
-            # The box the user ticked, else what the last run asked for, else the Settings
-            # default; always explicit, so the CLI does not apply config.json's vision again.
-            if "vision" in body:
-                vision = _flag(body, "vision")
-            elif hl is not None:
-                vision = st.get("vision_requested") is True
-            else:
-                vision = get_config().vision
-            args.append("--vision" if vision else "--no-vision")
+            # The Settings value now, first analysis or again; explicit, so the job and the
+            # page agree even if config.json changes before the CLI reads it.
+            args.append("--vision" if get_config().vision else "--no-vision")
             vision_top = st.get("vision_top")
             if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
                 args.append(f"--vision-top={vision_top}")
