@@ -1548,6 +1548,8 @@ def create_app(port: int) -> FastAPI:
             "vision_requested": ((hl or {}).get("settings") or {}).get("vision_requested") is True,
             # ... and, before a first analysis, the vision boxes from this (Settings)
             "vision_default": get_config().vision,
+            # the model those vision boxes name (Settings, CUTPOINT_VISION_MODEL)
+            "vision_model": default_model(),
             "review": review if isinstance(review, dict) else None,
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp

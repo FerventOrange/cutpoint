@@ -428,6 +428,19 @@ def test_project_reports_the_settings_vision_default(
     assert got["vision_default"] is (cfg is True) and got["vision_requested"] is False
 
 
+@pytest.mark.parametrize("env", [None, "llava:7b"])
+def test_project_reports_the_vision_model(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str | None
+) -> None:
+    """The vision boxes' hints name this model, not a hardcoded one."""
+    if env is None:
+        monkeypatch.delenv("CUTPOINT_VISION_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("CUTPOINT_VISION_MODEL", env)
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    assert client.get(f"/api/projects/{pid}").json()["vision_model"] == (env or "qwen3-vl:8b")
+
+
 @pytest.mark.parametrize(
     ("saved", "want"),
     [({"vision_requested": True}, True), ({"vision_used": True}, False), ({}, False)],

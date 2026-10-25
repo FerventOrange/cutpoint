@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that the setting turns on. A `vision` that is not true or false is rejected.
   `GET`/`PUT /api/settings` carry `vision` (and `vision_model`, read-only); `PUT` may send
   `projects_dir`, `vision` or both.
-
 - Reaction points for event types: the preset `events` fields `reaction` (0-12 points once per
   candidate) and `styles` (limits `score` and `reaction` to some styles). `player_deaths` now
   defaults to `reaction` 8 for `funny`: laughter, a scream or speech after a pause that starts

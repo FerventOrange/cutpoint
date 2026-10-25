@@ -307,7 +307,7 @@ function renderUnanalyzed(el, n, error) {
     h('label', { class: 'check' },
       h('input', { type: 'checkbox', id: 'optVision', 'aria-describedby': 'optVisionHint', checked: S.project?.vision_default === true }),
       'Rate frames with a local vision model (Ollama)'),
-    h('p', { id: 'optVisionHint', class: 'hint', text: 'Optional. Slower, and uses several GB of GPU memory while it runs; needs Ollama with qwen3-vl:8b.' }),
+    h('p', { id: 'optVisionHint', class: 'hint', text: visionHint(S.project?.vision_model) }),
     h('button', {
       type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
       onclick: async (e) => {
@@ -846,6 +846,11 @@ function confirmAction(title, text, ok = 'Remove') {
   });
 }
 
+/** The vision boxes' hint, naming the Ollama model a run would use. */
+function visionHint(model) {
+  return `Optional. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${model || 'qwen3-vl:8b'}.`;
+}
+
 /** "Analyze again": confirm in a dialog whose vision box starts as the last analysis asked
  * (before a first analysis: the Settings default). */
 function analyzeAgain() {
@@ -853,6 +858,8 @@ function analyzeAgain() {
   const back = document.activeElement;
   const p = S.project;
   $('#againVision').checked = p?.highlights ? !!p.vision_requested : !!p?.vision_default;
+  // a re-run uses the model the last analysis recorded
+  $('#againVisionHint').textContent = visionHint(p?.highlights?.settings?.ollama_model || p?.vision_model);
   d.returnValue = '';
   d.showModal();
   $('#againCancel').focus();
@@ -1340,7 +1347,8 @@ async function openSettings() {
   box.dataset.saved = String(box.checked);
   $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. New analyses start with this choice and can still change it per run. Saved in ${st.config_file}.`;
   d.showModal();
-  input.focus();
+  // a locked folder cannot be edited: start on the first control that can
+  (st.projects_dir_locked ? box : input).focus();
 }
 
 async function saveSettings() {
