@@ -56,6 +56,9 @@ def test_hints_builtin_kill_says_whose_kill():
 
     assert hint(player_death=True).endswith("a > b (the PLAYER died)")
     assert hint(player_kill=True).endswith("a > b (the PLAYER's kill)")
+    assert hint(player_kill=True, player_death=True).endswith(
+        "a > b (the PLAYER killed themselves)"
+    )
     assert hint().endswith("a > b")
 
 

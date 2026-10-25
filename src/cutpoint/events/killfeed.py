@@ -1117,12 +1117,19 @@ def derive_streaks(events: list[dict[str, Any]], window_s: float = 20.0) -> None
     """Add ``multikill`` events for 2+ player kills within ``window_s`` (in place).
 
     Only generic-feed kills (JSON presets, they carry ``verb``) are considered,
-    so built-in R6 results are unchanged. Idempotent: old derived events are
-    dropped first.
+    so built-in R6 results are unchanged; a self-kill (``player_death`` set too)
+    is no kill here. Idempotent: old derived events are dropped first.
     """
     events[:] = [e for e in events if e.get("type") != "multikill"]
     kills = sorted(
-        (e for e in events if e.get("type") == "kill" and e.get("verb") and e.get("player_kill")),
+        (
+            e
+            for e in events
+            if e.get("type") == "kill"
+            and e.get("verb")
+            and e.get("player_kill")
+            and not e.get("player_death")
+        ),
         key=lambda e: e["t"],
     )
     i = 0
