@@ -149,11 +149,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max`, `payoff`, `tail_s`, `seed`) and the vision prompt's `title`, `view` and `hype`: custom
   events add to the highlight boost, extend clip ends and set the priority of vision windows.
   Preset types are checked before the built-in ones and can replace them (#8).
-
-### Documentation
-
 - `docs/commands.md` lists measured analysis costs (GPU and CPU), how to force a CPU run with
-  `CUDA_VISIBLE_DEVICES=-1`, and that the analysis cache is shared between devices.
+  `CUDA_VISIBLE_DEVICES=-1`, and that no cache key includes the device (the transcript is reused
+  only with the same `--model`).
 
 ### Changed
 
