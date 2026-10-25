@@ -309,7 +309,7 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
     [
         ["paths", "--bogus"],  # no --json
         ["pathz", "--json"],  # unknown command: no command to report
-        ["mix", "x", "--json"],  # a command without --json (yet)
+        ["fit", "x", "--json"],  # a command without --json (yet)
     ],
 )
 def test_bad_args_without_envelope(capsys, argv):
@@ -451,14 +451,17 @@ def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
     assert error == {"code": "bad_args", "message": "unrecognized arguments: --bogus"}
 
 
-# The commands with their own --json keep it until they move to the envelope (phase 3).
+# capabilities and 360 repair moved their own --json to the envelope (phase 3); profile keeps
+# its own for now. 360 qa --json-only (skip the contact sheets) is not a JSON output flag.
 
 
-def test_capabilities_json_unchanged(monkeypatch, capsys):
+def test_capabilities_json_is_the_envelope(monkeypatch, capsys):
     data = {"gpu": {"nvidia": False}, "encoders": ["libx264"]}
     monkeypatch.setattr(capabilities, "report", lambda: data)
     assert cli.main(["capabilities", "--json"]) == 0
-    assert capsys.readouterr().out == json.dumps(data, indent=2) + "\n"
+    doc = _envelope(capsys.readouterr().out)
+    assert doc["ok"] is True and doc["command"] == "capabilities"
+    assert doc["outputs"] == data and doc["warnings"] == []
 
 
 def test_profile_json_unchanged(home, monkeypatch, capsys):
@@ -468,17 +471,27 @@ def test_profile_json_unchanged(home, monkeypatch, capsys):
     assert capsys.readouterr().out == json.dumps(rec, indent=2) + "\n"
 
 
-@pytest.mark.parametrize(
-    ("argv", "flag"),
-    [
-        (["profile", "p", "--json"], "json"),
-        (["capabilities", "--json"], "json"),
-        (["360", "repair", "p", "--qa", "q.json", "--json"], "json"),
-        (["360", "qa", "p", "--json-only"], "json_only"),
-    ],
-)
-def test_existing_json_flags_do_not_use_the_envelope(argv, flag):
-    args = cli.build_parser().parse_args(argv)
-    assert getattr(args, flag) is True
+def test_profile_json_does_not_use_the_envelope():
+    args = cli.build_parser().parse_args(["profile", "p", "--json"])
+    assert args.json is True
     assert not getattr(args, "json_result", False)
     assert getattr(args, "json_command", None) is None
+
+
+@pytest.mark.parametrize(
+    ("argv", "command"),
+    [
+        (["capabilities", "--json"], "capabilities"),
+        (["360", "repair", "p", "--qa", "q.json", "--json"], "360 repair"),
+        (["360", "qa", "p", "--json"], "360 qa"),
+    ],
+)
+def test_migrated_json_flags_use_the_envelope(argv, command):
+    args = cli.build_parser().parse_args(argv)
+    assert args.json_result is True and args.json_command == command
+    assert not hasattr(args, "json")
+
+
+def test_360_qa_json_only_still_skips_the_sheets_without_the_envelope():
+    args = cli.build_parser().parse_args(["360", "qa", "p", "--json-only"])
+    assert args.json_only is True and args.json_result is False

@@ -64,7 +64,7 @@ See the [command reference](docs/commands.md#ui) for details.
 
 - Windows or Linux
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
-- ffmpeg
+- ffmpeg 5.1 or newer
 - An NVIDIA GPU is recommended (add the `gpu` extra for GPU Whisper). Without one, everything
   still runs but slower.
 - Optional: Ollama for AI frame rating, extra downloads (about 8 GB) for sound, on-screen text

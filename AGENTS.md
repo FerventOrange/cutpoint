@@ -13,9 +13,10 @@ everything into a project folder.
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
-| `cutpoint edit`: analyze, clips and assemble in one command | JSON on stdout for every command |
+| `cutpoint edit`: analyze, clips and assemble in one command | `--json` on `events`, `crashes` and `profile` (`profile --json` prints the profile) |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
+| `--json` result envelope on stdout: `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `360 ...` | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 
 If the user asks for "edit this video and make it a montage" in one step, use
@@ -44,7 +45,13 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
   `cutpoint -v <command>` (flag before the command) for debug output and tracebacks.
 - Paths inside a project must start with `projects/<name>/...` (forward slashes work on every OS; do not use backslashes in bash) or be absolute; a bare name means
   the project itself.
-- Results are files, not stdout. Read the JSON files below instead of parsing logs.
+- Results are files. Read the JSON files below instead of parsing logs. `--json` (on the commands in
+  the Status table) also writes one JSON object to stdout, with the file paths and warnings:
+  `ok`, `command`, `schema`, `project`, `outputs`, `warnings` (`code`, `message`, `files`) and
+  `error` (`code`, `message`, or `null`). `error.code` is `bad_args` (exit 2), `not_found`,
+  `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `interrupted` (130) or `error`.
+  Read `warnings` such as `kept_clips` and tell the user. Keys:
+  [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output).
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
   `clips` refuses a non-empty output folder without `--force`, which replaces only the clips its
   `manifest.json` lists, once every new clip is exported (other files, sources included, stay;

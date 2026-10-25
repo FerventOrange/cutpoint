@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -10,9 +9,8 @@ from pathlib import Path
 import pytest
 
 from conftest import link_file, messages
-from cutpoint import cache, mix
+from cutpoint import cache, cli, mix
 from cutpoint.mix import Cand, apply_exclusions
-from cutpoint.pano import cli as pano_cli
 from cutpoint.pano.repair import _fit_budget, plan, repair
 
 
@@ -57,14 +55,16 @@ def _qa(project: Path, flags: list[list[str]], subj: bool = True) -> Path:
 
 
 def test_repair_json_output_shape(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """``360 repair --json`` prints the report dict; a clean QA changes nothing."""
+    """``360 repair --json``: the report's keys are the envelope's outputs (plus
+    ``exclude_file``); a clean QA changes nothing."""
     qa = _qa(project, [[]] * 18)
     before = (project / "mix_segments.json").read_bytes()
-    args = argparse.Namespace(
-        project=str(project), segments="mix_segments.json", qa=str(qa), out=None, json=True
-    )
-    pano_cli.cmd_repair(args)
-    rep = json.loads(capsys.readouterr().out)
+    assert cli.main(["360", "repair", str(project), "--qa", str(qa), "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is True and doc["command"] == "360 repair"
+    assert doc["project"] == str(project)
+    rep = doc["outputs"]
+    assert rep.pop("exclude_file") is None
     assert set(rep) == {
         "segments",
         "written",

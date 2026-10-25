@@ -9,12 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docs for the `--json` result envelope: a "JSON output" section in `docs/commands.md` (envelope,
+  error and warning codes, `outputs` keys per command), `--json` in the options of each command
+  that has it, and `AGENTS.md`, the skill and the FAQ no longer call it planned; `events`,
+  `crashes` and `profile` are still planned (#4).
 - `--json` result envelope, starting with `cutpoint paths --json`: the command writes exactly one
   JSON object to stdout, `{"ok", "command", "schema": 1, "project", "outputs", "warnings",
   "error"}`, with `error.code` one of `bad_args`, `not_found`, `ffmpeg_missing`,
   `missing_extra`, `output_not_empty`, `interrupted` or `error`. Logs, stray output and the
   output of child processes go to stderr; exit codes are unchanged. Other commands follow;
-  the existing `--json` of `profile`, `capabilities` and `360 repair` is unchanged (#4).
+  the existing `--json` of `profile` is unchanged (#4).
 - `--json` on `analyze`, `clips`, `assemble`, `edit` and `extend`: `outputs` lists the files
   written (absolute paths) and their key facts, such as the candidate count, each clip with its
   subtitles, source and times, and the final video's duration. `edit` writes one envelope with
@@ -24,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `extend` with nothing to do, is `bad_args` (still exit 1). `extend`'s "Kept" warning now names the folder by its absolute
   path, and an in-place `extend` gives it for clips without a manifest entry instead of saying
   they were skipped (#4).
+- `--json` on `capabilities`, `mix`, `stage`, `setup` and every `360` subcommand (`scan`,
+  `analyze`, `status`, `director`, `stitch`, `check`, `qa`, `repair`). `outputs` holds the files
+  written (absolute paths) and their key numbers: `mix` the segments, report and sheet files and
+  each moment with its duration; `stage` each file with its source, staged copy, size and
+  whether it was `copied` or `skipped` (`--list`: the staged copies, `--clear`: the count
+  removed); `setup` per component each file with its size and whether it was `downloaded`,
+  `found` or is `missing`, and for `pip` the missing modules; the `360` commands their
+  `pano.json`, path JSONs, previews, sheets, `qa.json` or stitched files, never the Insta360
+  SDK's own output. New warning codes: `torch_no_cuda`, `sdk_needs_nvidia`,
+  `exclusions_ignored`, `content_qa_failed`, `nothing_staged_under_input`,
+  `events_extra_missing`, `events_not_in_highlights`, `not_a_360_clip`,
+  `vl_check_unavailable`, `stitch_failed`, `qa_clips_skipped` and `qa_clips_stale`. `stage`
+  without inputs, a bad `mix --quotas` and a bad `360 director --out-name` are `bad_args`
+  (still exit 1) (#4).
 - `cutpoint skill install [--dir DIR] [--force]` installs a Claude Code skill
   (`~/.claude/skills/cutpoint/SKILL.md` by default) so an agent finds Cutpoint for requests such
   as "edit this video" or "find the best moments" and runs the edit loop; it points to
@@ -95,6 +113,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint capabilities --json` writes the result envelope: the report it printed before is now
+  its `outputs`, with the same keys (`platform`, `gpu_vendors_present`, `video_encoders`,
+  `active_video_encoder`, `transcription`, `llama_cpp`, `torch`, `insta360_sdk`); read
+  `outputs.torch` instead of `torch`. The torch and Insta360 SDK warnings are also in
+  `warnings` (#4).
+- `cutpoint 360 repair --json` writes the result envelope: the report it printed before is now
+  its `outputs`, with the same keys (`segments`, `written`, `findings`, `skipped`, `trimmed`,
+  `dropped`, `added`, `capped`, `exclusions`, `rendered_s`, `content_qa`) plus `exclude_file`;
+  the repair summary is now logged to stderr with `--json` too (#4).
+- `cutpoint 360 qa --json` is the result envelope. `--json-only` (skip the contact sheets) is
+  unchanged; `--json` no longer abbreviates it (#4).
+- `cutpoint ui` runs its jobs (analyze, clips, assemble, ...) and proxy encodes at below-normal
+  priority (Windows `BELOW_NORMAL_PRIORITY_CLASS`; elsewhere `nice -n 10` when available), and
+  the ffmpeg they start inherits it, so the desktop and the browser stay responsive. Cancelling a
+  job works as before.
+- `cutpoint ui` preview proxies have a keyframe every 30 frames and at most 30 fps, so seeking in
+  a proxy is about as quick as in the source (the encoder default allowed up to ~0.4 s per seek).
+- `cutpoint ui` encodes preview proxies with NVENC (`h264_nvenc`) when it works on the machine and
+  `video_encoder` is `auto` or `nvenc`, with a bitrate cap that keeps the file near libx264's
+  size; otherwise, and when an NVENC encode fails (it is retried with libx264, which is then used
+  for the rest of the run), with libx264 as before. On a 1080p60 recording this took about half
+  the CPU time of libx264.
 - The Rainbow Six Siege HUD preset is now the bundled JSON preset `r6.json`, next to `wt.json`, so
   it can be copied and edited; a copy is read as a generic preset, not with the built-in R6
   interpretation. A user or project `r6.json` still overrides it. Detection and the OCR cache of
@@ -137,10 +177,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` no longer logs a `ConnectionResetError` (`[WinError 10054]`) ERROR traceback each
+  time the browser cancels a video request, such as on a seek or when switching sources.
 - `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with
   "Requested resampling engine is unavailable" on ffmpeg builds without libsoxr (such as the
   gyan.dev "essentials" build). The limiter uses soxr only when the build has it, else ffmpeg's
   default resampler.
+- `cutpoint ui` shows one banner when the server restarted or the link's session token is stale
+  ("The Cutpoint server restarted or this link expired. Open the new link printed in the
+  terminal.") and stops polling, prepare retries and timers, instead of failing repeatedly.
+  Other 403 errors (host or origin guard) are unchanged.
+- `cutpoint ui` applies edits to `source_remap` and `source_remap_exclude` in `config.json` on
+  the next request; the cached source list used to keep the old mapping for up to 60 s.
 - `cutpoint ui` no longer probes every source with ffprobe when a project opens (200 sources took
   about 12 s, now about 0.1 s). Each source is probed when the player first loads it.
 - `cutpoint ui` shows the real error for an unanalyzed project whose source folder is missing or

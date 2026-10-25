@@ -43,6 +43,15 @@ cutpoint capabilities
 cutpoint capabilities --json
 ```
 
+`--json` writes one [result envelope](../commands.md#json-output) on stdout; the report is under
+`outputs`, and the `torch_no_cuda` and `sdk_needs_nvidia` warnings, if any, are in `warnings`:
+
+```json
+{"ok": true, "command": "capabilities", "schema": 1, "project": null,
+ "outputs": {"torch": {"...": "..."}, "insta360_sdk": {"...": "..."}, "...": "..."},
+ "warnings": [], "error": null}
+```
+
 The report keeps three things apart: which GPU vendors are present (hardware only), which
 encoders are listed by your ffmpeg and which of them really encode, and what transcription uses.
 An AMD or NVIDIA GPU being present does not make an encoder usable; a listed encoder can still
@@ -109,7 +118,7 @@ checks download and change nothing. A usable NVIDIA driver means the Linux kerne
 or `nvidia-smi -L` lists a GPU (on Windows, the second test). The torch warning uses only this
 test; the SDK check (`nvidia_gpu_present`) also counts an NVIDIA display adapter.
 
-torch line and `torch` JSON keys:
+torch line and `outputs.torch` JSON keys:
 
 | Line or key | Meaning |
 |---|---|
@@ -130,7 +139,7 @@ What to do about the warning:
   Update the NVIDIA driver (check `nvidia-smi`); for a build other than CUDA 12.6 the fix also
   offers the CUDA 12.6 reinstall command.
 
-SDK line and `insta360_sdk` JSON keys:
+SDK line and `outputs.insta360_sdk` JSON keys:
 
 | Key | Meaning |
 |---|---|

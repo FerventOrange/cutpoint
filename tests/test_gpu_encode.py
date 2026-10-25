@@ -174,7 +174,7 @@ def test_capability_report_keeps_vendor_presence_apart_from_usable_encoders(monk
     monkeypatch.setattr("cutpoint.transcribe.cuda_available", lambda: False)
     monkeypatch.setattr(setup, "nvidia_usable", lambda: False)
     assert cli.main(["capabilities", "--json"]) == 0
-    data = json.loads(capsys.readouterr().out)
+    data = json.loads(capsys.readouterr().out)["outputs"]
     assert data["gpu_vendors_present"] == {"nvidia": False, "amd": True}
     vaapi = data["video_encoders"]["vaapi"]
     assert (vaapi["listed_by_ffmpeg"], vaapi["usable"]) == (True, False)
