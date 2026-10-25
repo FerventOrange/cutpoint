@@ -242,7 +242,13 @@ still gameplay (scoped, about 6 s) keeps its banners; it runs only when the boun
 preset's regions is at least a quarter of the frame. Feed sightings and kills are never dropped,
 by any menu test. A discovered kill feed takes in the rows above and below
 it that show only when the feed is full (up to twice its height), counted from its outermost
-rows seen in enough frames, so a stray box at its edge does not stop the growth.
+rows seen in enough frames, so a stray box at its edge does not stop the growth. A row is added
+when it shows in 5% of the feed's frames (at least 2) and in 2 bursts with changing text; as a
+full feed is rare, a row seen in only 2 frames is also added when those frames are in 2 bursts,
+it shows a different text in each burst (ignoring case, digits and punctuation, so a static label
+is not added) and at least half of its frames show the full feed (the feed's row next to it and
+all others but one, as OCR misses a box now and then; so a notice or chat line next to the feed
+is not added).
 
 ### Event types and prompt keys
 

@@ -39,9 +39,21 @@ jobs:
       # Ubuntu 24.04 apt ships ffmpeg 6.1 (libx264, xfade, acrossfade, loudnorm; -fps_mode needs 5.1+).
       - name: Install ffmpeg (Linux)
         if: runner.os == 'Linux'
+        timeout-minutes: 15
+        # apt hung on the runner twice (no output, no timeout): bound every call and retry.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get $apt_opts update \
+              && sudo timeout 120 apt-get $apt_opts install -y --no-install-recommends ffmpeg; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed" >&2
+            sudo timeout 60 dpkg --configure -a || true
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+          done
+          echo "::error::Installing ffmpeg failed after 3 attempts"
+          exit 1
       # Windows has no ffmpeg: pinned gyan.dev 9.0.2 essentials build (the version the pano code was
       # measured on), downloaded from the GyanD/codexffmpeg release and verified by SHA256.
       - name: Install ffmpeg (Windows)
