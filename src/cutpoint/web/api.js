@@ -4,6 +4,9 @@
 const KEY = 'cutpoint-token';
 const NO_TOKEN = 'This page has no session token. Open the complete URL printed by `cutpoint ui`.';
 const BAD_TOKEN = 'The server rejected this session token. Open the complete URL printed by `cutpoint ui` again.';
+// ui.py auth: the one 403 detail meaning the token is not this run's (a host/origin 403 differs)
+const TOKEN_DETAIL = 'missing or wrong session token';
+const EXPIRED = 'The Cutpoint server restarted or this link expired. Open the new link printed in the terminal.';
 
 export class ApiError extends Error {
   constructor(status, message) {
@@ -29,6 +32,15 @@ addEventListener('hashchange', () => {
   if (/^#t=[\w-]+/.test(location.hash)) location.reload();
 });
 
+// Set once the server rejects the token: every later call fails at once, without a request.
+let expired = null;
+let onExpired = () => {};
+
+/** Call ``fn(error)`` once, when the server first rejects this page's session token. */
+export function whenExpired(fn) {
+  onExpired = fn;
+}
+
 async function detail(r) {
   try {
     const j = await r.json();
@@ -43,6 +55,7 @@ async function detail(r) {
 
 export async function api(path, { method = 'GET', body } = {}) {
   if (!token) throw new ApiError(401, NO_TOKEN);
+  if (expired) throw expired;
   let r;
   try {
     r = await fetch(path, {
@@ -56,7 +69,14 @@ export async function api(path, { method = 'GET', body } = {}) {
   } catch {
     throw new ApiError(0, "Can't reach the cutpoint server. Is `cutpoint ui` still running?");
   }
-  if (r.status === 403) throw new ApiError(403, BAD_TOKEN);
+  if (r.status === 403) {
+    if ((await detail(r)) !== TOKEN_DETAIL) throw new ApiError(403, BAD_TOKEN);
+    if (!expired) {
+      expired = new ApiError(403, EXPIRED);
+      onExpired(expired);
+    }
+    throw expired;
+  }
   if (!r.ok) throw new ApiError(r.status, await detail(r));
   return r.status === 204 ? null : r.json();
 }

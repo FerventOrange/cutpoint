@@ -49,6 +49,11 @@ def _fill_encoder(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     ffmpeg_utils.video_encoder()  # fills encoder_error (the probes) and video_encoder
 
 
+def _fill_soxr(tmp: Path, mp: pytest.MonkeyPatch) -> None:
+    mp.setattr(ffmpeg_utils, "run", lambda *a, **k: "")
+    ffmpeg_utils.has_soxr()
+
+
 def _fill_aesthetic(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     from cutpoint.events import visual  # noqa: PLC0415
 
@@ -75,6 +80,7 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.stage.staged_path": lambda t, m: stage.staged_path("-"),
     "cutpoint.ffmpeg_utils.find_tool": _fill_find_tool,
     "cutpoint.ffmpeg_utils.encoder_error": _fill_encoder,
+    "cutpoint.ffmpeg_utils.has_soxr": _fill_soxr,
     "cutpoint.events.visual._aesthetic_layers": _fill_aesthetic,
     "cutpoint.events.paths._TORCH_HOME_SET": _fill_torch_home,
 }
