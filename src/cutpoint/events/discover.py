@@ -8,7 +8,9 @@ changes*:
 * Frames are taken in bursts (default 40 bursts x 4 frames, 1.5 s apart), so
   "changes over time" can be measured where it matters: within seconds, as a
   kill feed or a banner does, not across minutes.
-* Menu / scoreboard frames (many text boxes, mostly static) are dropped.
+* Menu / scoreboard frames are dropped (:func:`gameplay_frames`): text spread
+  over most of the screen centre, or far more text boxes than the source
+  usually shows. A busy HUD (many boxes along the edges, in every frame) stays.
 * Every text box is rasterised onto a coarse grid (1920x1080 reference, 24 px
   cells). Per cell: how often text is there (occupancy) and how often its text
   differs between consecutive frames of a burst (change rate). Cells with
@@ -51,6 +53,7 @@ logger = logging.getLogger(__name__)
 REF_W, REF_H = 1920, 1080
 CELL = 24  # reference pixels per grid cell
 GW, GH = REF_W // CELL, REF_H // CELL
+MENU_CELL_W, MENU_CELL_H = REF_W // 8, REF_H // 6  # coarse 8 x 6 grid for the menu test
 
 
 @dataclass
@@ -62,7 +65,12 @@ class DiscoverParams:
     burst_step_s: float = 1.5
     width: int = 1280  # decode width for OCR (text >= ~12 px at 1080p stays legible)
     min_score: float = 0.5
-    menu_boxes: int = 28  # frames with more boxes than this are menus/scoreboards
+    # menus/scoreboards (see gameplay_frames): at least menu_min_boxes boxes and either
+    # box centres in >= menu_cover of the centre cells of the coarse menu grid, or
+    # >= menu_jump x the source's median boxes per frame
+    menu_min_boxes: int = 24
+    menu_cover: float = 0.5
+    menu_jump: float = 2.0
     static_occupancy: float = 0.45  # cells with text this often...
     static_change: float = 0.12  # ...and changing less than this are static HUD
     min_change: float = 0.2  # dynamic cell: changes in >= 20% of its occupied pairs
@@ -214,6 +222,48 @@ def _ocr_frames(
     return out
 
 
+# --------------------------------------------------------------------------- menus
+
+
+def _centre_cover(frame: dict[str, Any]) -> float:
+    """Share of the 24 centre cells (6 x 4 inside the coarse 8 x 6 grid) that hold
+    a text box centre: HUDs hug the edges and keep the centre free for the game
+    view; menus and scoreboards fill it."""
+    cells = set()
+    for b in frame.get("boxes", []):
+        gx = int((b["x0"] + b["x1"]) / 2 // MENU_CELL_W)
+        gy = int((b["y0"] + b["y1"]) / 2 // MENU_CELL_H)
+        if 1 <= gx <= 6 and 1 <= gy <= 4:
+            cells.add((gx, gy))
+    return len(cells) / 24
+
+
+def gameplay_frames(frames: list[dict[str, Any]], params: DiscoverParams) -> list[dict[str, Any]]:
+    """``frames`` without menu and scoreboard frames, in order.
+
+    A frame is a menu when it has at least ``params.menu_min_boxes`` text boxes
+    and either their centres fall in at least ``params.menu_cover`` of the
+    centre cells (:func:`_centre_cover`) or it has at least ``params.menu_jump``
+    times the median box count of its source's frames. A box count alone says
+    nothing: a busy HUD shows 50 to 100 boxes in every frame. Discovery and the
+    game profile builder use this test, so both see the same frames.
+    """
+    counts: dict[str, list[int]] = {}
+    for f in frames:
+        counts.setdefault(str(f.get("source")), []).append(len(f.get("boxes", [])))
+    median = {s: float(np.median(c)) for s, c in counts.items()}
+    out = []
+    for f in frames:
+        n = len(f.get("boxes", []))
+        menu = n >= params.menu_min_boxes and (
+            _centre_cover(f) >= params.menu_cover
+            or n >= params.menu_jump * median[str(f.get("source"))]
+        )
+        if not menu:
+            out.append(f)
+    return out
+
+
 # --------------------------------------------------------------------------- clustering
 
 
@@ -304,7 +354,7 @@ def cluster_regions(
         evidence}`` in reference pixels; ``maps`` holds the per-cell grids and
         ``stats``.
     """
-    game_frames = [f for f in frames if len(f["boxes"]) <= params.menu_boxes]
+    game_frames = gameplay_frames(frames, params)
     menu = len(frames) - len(game_frames)
     occ = np.zeros((GH, GW))
     change = np.zeros((GH, GW))
@@ -547,7 +597,9 @@ def discover_regions(
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
-        ``discovery`` stats and per-region evidence).
+        ``discovery`` stats, per-region evidence and the ids of the OCR records
+        the run used, ``frames``, since ``ocr.jsonl`` keeps records of earlier
+        runs).
     """
     params = params or DiscoverParams()
     t0 = time.perf_counter()
@@ -564,7 +616,7 @@ def discover_regions(
     regions = proposals_to_regions(proposals)
     info = probe(sources[0].io_path) if sources else None
     write_overlay(
-        [f for f in frames if len(f["boxes"]) <= params.menu_boxes],
+        gameplay_frames(frames, params),
         out_dir / "frames",
         maps,
         proposals,
@@ -582,6 +634,7 @@ def discover_regions(
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "source_resolution": [info.width, info.height] if info else None,
             "proposals": proposals,
+            "frames": [f["id"] for f in frames],  # this run's OCR records
         },
     }
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -604,5 +657,6 @@ __all__ = [
     "boxes_in",
     "cluster_regions",
     "discover_regions",
+    "gameplay_frames",
     "read_ocr_samples",
 ]
