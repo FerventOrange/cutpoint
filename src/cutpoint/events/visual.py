@@ -619,7 +619,10 @@ def _aesthetic_layers(path: Path) -> list[tuple[np.ndarray, np.ndarray]]:
         sd = torch.load(path, map_location="cpu", weights_only=True)
         arrays = {k: v.float().numpy() for k, v in sd.items()}
     if not all(isinstance(k, str) and _LAYER_KEY.fullmatch(k) for k in arrays):
-        raise ValueError(f"{path}: not an aesthetic head (unexpected tensor names)")
+        raise ValueError(
+            f"{path}: not an aesthetic head (unexpected tensor names); "
+            "run cutpoint setup --only visual"
+        )
     keys = sorted({k.rsplit(".", 1)[0] for k in arrays}, key=lambda k: int(k.split(".")[1]))
     return [
         (arrays[f"{k}.weight"].astype(np.float32), arrays[f"{k}.bias"].astype(np.float32))
@@ -698,7 +701,9 @@ def _read_state_dict(path: Path) -> dict[str, np.ndarray]:
         pickle.UnpicklingError,
         zipfile.BadZipFile,
     ) as err:
-        raise ValueError(f"{path}: not readable without torch ({err})") from err
+        raise ValueError(
+            f"{path}: not readable without torch ({err}); run cutpoint setup --only visual"
+        ) from err
     return dict(sd)
 
 

@@ -196,7 +196,9 @@ def test_read_state_dict_rejects_disallowed_global(tmp_path: Path):
     path = tmp_path / "evil.pth"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("archive/data.pkl", pickle.dumps(Evil(), protocol=2))
-    with pytest.raises(ValueError, match="not readable without torch"):
+    with pytest.raises(
+        ValueError, match=r"not readable without torch.*cutpoint setup --only visual"
+    ):
         visual._read_state_dict(path)
 
 
@@ -263,12 +265,16 @@ def test_read_state_dict_rejects_non_dict_and_non_array_values(tmp_path: Path):
     plain = tmp_path / "list.pth"
     with zipfile.ZipFile(plain, "w") as zf:
         zf.writestr("archive/data.pkl", pickle.dumps([1, 2], protocol=2))
-    with pytest.raises(ValueError, match="not readable without torch"):
+    with pytest.raises(
+        ValueError, match=r"not readable without torch.*cutpoint setup --only visual"
+    ):
         visual._read_state_dict(plain)
     values = tmp_path / "values.pth"
     with zipfile.ZipFile(values, "w") as zf:
         zf.writestr("archive/data.pkl", pickle.dumps({"a": 1.5}, protocol=2))
-    with pytest.raises(ValueError, match="not readable without torch"):
+    with pytest.raises(
+        ValueError, match=r"not readable without torch.*cutpoint setup --only visual"
+    ):
         visual._read_state_dict(values)
 
 
@@ -280,7 +286,9 @@ def test_aesthetic_layers_rejects_a_checkpoint_that_is_not_an_aesthetic_head(
     monkeypatch.setitem(sys.modules, "torch", None)
     visual._aesthetic_layers.cache_clear()
     try:
-        with pytest.raises(ValueError, match="not an aesthetic head"):
+        with pytest.raises(
+            ValueError, match=r"not an aesthetic head.*cutpoint setup --only visual"
+        ):
             visual._aesthetic_layers(path)
     finally:
         visual._aesthetic_layers.cache_clear()
