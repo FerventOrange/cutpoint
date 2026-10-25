@@ -284,10 +284,21 @@ def run_events(
         ocr_stats = {}
         with VramMonitor() as vm:
             ocr_sources = sources if "ocr" in layers or cached_ocr else []  # ski: no HUD
+            shown = [base]  # the step's pct never goes back
+
+            def on_source(done: float, n: int = len(ocr_sources)) -> None:
+                pct = base + (100 - base) * progress.fraction(done, n) / 100
+                if pct > shown[0]:
+                    shown[0] = pct
+                    progress.update(pct)
+
             for i, s in enumerate(ocr_sources):
                 if "ocr" in layers:  # a cached read only is no step of its own
+                    shown[0] = max(
+                        shown[0], base + (100 - base) * progress.fraction(i, len(ocr_sources)) / 100
+                    )
                     progress.update(
-                        base + (100 - base) * progress.fraction(i, len(ocr_sources)) / 100,
+                        shown[0],
                         f"reading HUD text: source {i + 1}/{len(ocr_sources)}" if base else None,
                     )
                 evs, st = detect_ocr_events(
@@ -297,6 +308,9 @@ def run_events(
                     force="ocr" in force,
                     debug_dir=ocr_debug,
                     avoid=bad.get(str(s.path)),
+                    on_progress=(
+                        (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
+                    ),
                 )
                 preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
                 link_teamkills(

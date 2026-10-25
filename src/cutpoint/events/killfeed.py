@@ -12,10 +12,12 @@ Events: ``{t, end, type, text, confidence, region, ...}`` with type one of
 
 from __future__ import annotations
 
+import bisect
 import difflib
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
@@ -76,8 +78,9 @@ class OcrParams:
 
 
 # bump when the generic (JSON preset) interpretation changes; 7: menu frames give no
-# events (:func:`menu_times`), multi-word phrases and feed kill words match whole words only
-GENERIC_VERSION = 7
+# events (:func:`menu_times`), multi-word phrases and feed kill words match whole words only;
+# 8: static screens are menus too (:func:`static_frames`)
+GENERIC_VERSION = 8
 
 
 # --------------------------------------------------------------------------- text utils
@@ -1235,8 +1238,106 @@ def derive_streaks(events: list[dict[str, Any]], window_s: float = 20.0) -> None
 
 LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when the jump is off
 
+# Static screens (rule "static"): hangar, crew and loadout menus show as little text as a busy
+# HUD (6-17 boxes, centre cover 0.04-0.12), so the box rules miss them, but they hold still
+# while gameplay moves. Every OCR frame takes a STATIC_THUMB (w, h) grayscale thumbnail of the
+# HUD area it already decoded (:func:`_thumb`, no extra decode) and :class:`StillRuns` gives it
+# the id of its still run (``"still"`` in the frame record; no thumbnail is kept). A run goes
+# on while thumbnails stay within STATIC_MAX_DIFF of its first frame (mean absolute difference
+# in 0-255 grey levels: still video and its compression noise stay below 1, a moving game view
+# changes by tens of levels, a menu cursor or a small animation by a few) and no frame is
+# missing (a gap over STATIC_MAX_GAP_S, e.g. a skipped bad range, ends it). The frames within
+# STATIC_FEED_GUARD_S of feed activity (a feed sighting or a kill) are taken out, so kills in
+# still gameplay (scoped, spectating) are never dropped; the rest of a run is a static screen
+# where at least STATIC_MIN_FRAMES frames hold still for at least STATIC_MIN_S. The test runs
+# only when the decoded HUD area is at least STATIC_MIN_AREA of the frame: a few small corner
+# regions see too little of the screen (still sky or ground would pass as a menu).
+STATIC_THUMB = (32, 18)
+STATIC_MAX_DIFF = 3.0
+STATIC_MIN_S = 5.0
+STATIC_MIN_FRAMES = 3
+STATIC_FEED_GUARD_S = 2.0
+STATIC_MAX_GAP_S = 1.0  # at least; 2 frame intervals at low OCR frame rates
+STATIC_MIN_AREA = 0.25
 
-def menu_times(frames: list[dict[str, Any]], params: DiscoverParams | None = None) -> set[float]:
+
+def _thumb(frame: np.ndarray) -> np.ndarray:
+    """The :data:`STATIC_THUMB` grayscale thumbnail (float32) of a decoded BGR frame."""
+    import cv2  # noqa: PLC0415
+
+    small = cv2.resize(frame, STATIC_THUMB, interpolation=cv2.INTER_AREA)
+    return small.astype(np.float32).mean(axis=2)
+
+
+class StillRuns:
+    """Still run ids of thumbnails in time order, computed online: only the run's
+    first thumbnail and the last time are kept (see :data:`STATIC_THUMB`)."""
+
+    def __init__(self, fps: float) -> None:
+        self.max_gap = max(STATIC_MAX_GAP_S, 2 / fps) if fps > 0 else STATIC_MAX_GAP_S
+        self.anchor: np.ndarray | None = None
+        self.last_t: float | None = None
+        self.run = -1
+
+    def add(self, t: float, thumb: np.ndarray) -> int:
+        """The run id of the frame at ``t`` with ``thumb``."""
+        if (
+            self.anchor is None
+            or self.last_t is None
+            or t - self.last_t > self.max_gap
+            or float(np.mean(np.abs(thumb - self.anchor))) > STATIC_MAX_DIFF
+        ):
+            self.run += 1
+            self.anchor = thumb
+        self.last_t = t
+        return self.run
+
+
+def still_stretches(frames: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """``frames`` (in time order) cut into their still runs (``"still"`` ids from
+    :class:`StillRuns`). A frame without one is a run of its own (records made
+    before still runs existed, or a HUD area too small for the test)."""
+    runs: list[list[dict[str, Any]]] = []
+    prev: Any = None
+    for f in frames:
+        run = f.get("still")
+        if run is None or run != prev or not runs:
+            runs.append([f])
+        else:
+            runs[-1].append(f)
+        prev = run
+    return runs
+
+
+def static_frames(frames: list[dict[str, Any]], feed_times: set[float]) -> set[Any]:
+    """Ids of the frames of a static screen (see :data:`STATIC_THUMB`): in a still
+    run, further than :data:`STATIC_FEED_GUARD_S` from every time of
+    ``feed_times`` (feed sightings and kills), in a part of such frames at least
+    :data:`STATIC_MIN_S` long with at least :data:`STATIC_MIN_FRAMES` frames."""
+    busy = sorted(feed_times)
+
+    def near_feed(t: float) -> bool:
+        i = bisect.bisect_left(busy, t - STATIC_FEED_GUARD_S)
+        return i < len(busy) and busy[i] <= t + STATIC_FEED_GUARD_S
+
+    out: set[Any] = set()
+    for run in still_stretches(frames):
+        part: list[dict[str, Any]] = []
+        for f in [*run, None]:  # None closes the last part
+            if f is not None and f.get("still") is not None and not near_feed(f["t"]):
+                part.append(f)
+                continue
+            if len(part) >= STATIC_MIN_FRAMES and part[-1]["t"] - part[0]["t"] >= STATIC_MIN_S:
+                out.update(p["id"] for p in part)
+            part = []
+    return out
+
+
+def menu_times(
+    frames: list[dict[str, Any]],
+    params: DiscoverParams | None = None,
+    feed_times: set[float] | None = None,
+) -> set[float]:
     """Times of the menu and scoreboard frames among ``frames`` of one source.
 
     ``frames`` are ``{"id", "t", "source", "boxes"}`` records of the text boxes
@@ -1248,24 +1349,30 @@ def menu_times(frames: list[dict[str, Any]], params: DiscoverParams | None = Non
     menu_jump``. Below that, a frame with ``menu_min_boxes`` boxes is a menu
     when they cover the screen centre (``menu_cover``) or at least
     :data:`LIST_MENU_COVER` of it (a 1- or 2-column list or scoreboard).
+    With ``feed_times`` (the times of feed sightings and kills), frames with a
+    ``still`` run id that hold still are menus too (:func:`static_frames`).
     """
-    rules, _ = menu_rules(frames, params)
+    rules, _ = menu_rules(frames, params, feed_times)
     return {f["t"] for f in frames if rules[f["id"]] != "none"}
 
 
 def menu_rules(
-    frames: list[dict[str, Any]], params: DiscoverParams | None = None
+    frames: list[dict[str, Any]],
+    params: DiscoverParams | None = None,
+    feed_times: set[float] | None = None,
 ) -> tuple[dict[Any, str], dict[str, float]]:
     """The :func:`menu_times` decision per frame id: the rule that made it a menu
-    (``cover``, ``jump`` or ``list``) or ``none``, and the source's numbers
-    (``median`` box count, ``min_boxes``, ``cover`` and ``jump`` thresholds; the
-    jump threshold is inf when it is off)."""
+    (``cover``, ``jump``, ``list`` or ``static``) or ``none``, and the source's
+    numbers (``median`` box count, ``min_boxes``, the ``cover``, ``list`` and
+    ``jump`` thresholds, inf when off, and the ``static_s`` and ``static_diff``
+    of the static rule, which runs only with ``feed_times``)."""
     params = params or DiscoverParams()
     median = float(np.median([len(f["boxes"]) for f in frames])) if frames else 0.0
     lists = median < params.menu_min_boxes / params.menu_jump
     if lists:
         params = replace(params, menu_jump=float("inf"))
     keep = {f["id"] for f in gameplay_frames(frames, params)}
+    static = static_frames(frames, feed_times) if feed_times is not None else set()
     rules = {}
     for f in frames:
         if f["id"] not in keep:
@@ -1276,13 +1383,18 @@ def menu_rules(
             and _centre_cover(f) >= LIST_MENU_COVER
         ):
             rules[f["id"]] = "list"
+        elif f["id"] in static:
+            rules[f["id"]] = "static"
         else:
             rules[f["id"]] = "none"
     info = {
         "median": median,
         "min_boxes": params.menu_min_boxes,
-        "cover": LIST_MENU_COVER if lists else params.menu_cover,
+        "cover": params.menu_cover,
+        "list": LIST_MENU_COVER if lists else float("inf"),
         "jump": float("inf") if lists else params.menu_jump * median,
+        "static_s": STATIC_MIN_S if feed_times is not None else float("inf"),
+        "static_diff": STATIC_MAX_DIFF,
     }
     return rules, info
 
@@ -1300,22 +1412,34 @@ def _log_menu_frames(
     for e in events:
         for t in e["_times"]:
             seen[t] = seen.get(t, 0) + 1
-    jump = "off" if info["jump"] == float("inf") else f">= {info['jump']:.0f}"
+    still: dict[Any, float] = {}  # how long each frame's still stretch lasts
+    for run in still_stretches(frames):
+        for f in run:
+            still[f["id"]] = run[-1]["t"] - run[0]["t"] if f.get("still") is not None else 0.0
+
+    def off(v: float, fmt: str) -> str:
+        return "off" if v == float("inf") else f">= {v:{fmt}}"
+
+    jump, lists = off(info["jump"], ".0f"), off(info["list"], ".2f")
+    static = off(info["static_s"], ".1f") + ("s" if info["static_s"] != float("inf") else "")
     for f in frames:
         rule, n = rules[f["id"]], seen.get(f["t"], 0)
         if rule == "none" and not n:
             continue
         logger.debug(
-            "%s menu test %.1fs: %d boxes (min %d), centre cover %.2f (>= %.2f), "
-            "median %.1f, jump %s, %d OCR events -> %s",
+            "%s menu test %.1fs: %d boxes (min %d), centre cover %.2f (cover >= %.2f, list %s), "
+            "median %.1f, jump %s, still %.1fs (static %s), %d OCR events -> %s",
             name,
             f["t"],
             len(f["boxes"]),
             info["min_boxes"],
             _centre_cover(f),
             info["cover"],
+            lists,
             info["median"],
             jump,
+            still[f["id"]],
+            static,
             n,
             rule,
         )
@@ -1328,15 +1452,19 @@ def detect_ocr_events(
     force: bool = False,
     debug_dir: Path | None = None,
     avoid: list[tuple[float, float]] | None = None,
+    on_progress: Callable[[float], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
 
     JSON presets (not ``"builtin"``) drop what menu and scoreboard frames show
     (:func:`menu_times`): every frame records the text boxes the "det" gates
     last detected in its regions other than feeds (a region keeps its boxes on
-    the frames it is skipped), and after the pass the sightings in menu frames
+    the frames it is skipped) and the still run of the decoded HUD area
+    (:func:`static_frames`; when that area is at least :data:`STATIC_MIN_AREA` of
+    the frame), and after the pass the sightings in menu frames
     are forgotten.
-    No OCR runs for this; ``stats["menu_frames"]`` counts them.
+    No OCR runs for this; ``stats["menu_frames"]`` counts them, of which
+    ``stats["static_frames"]`` held still.
 
     Args:
         src: Source video (read once, sequentially).
@@ -1345,6 +1473,8 @@ def detect_ocr_events(
         force: Ignore the cache.
         debug_dir: If set, save the region crop of every new event as a PNG.
         avoid: Time ranges never decoded (bad sectors); part of the cache key.
+        on_progress: Called with the share (0-1) of the source decoded so far,
+            at most once per percent.
 
     Returns:
         (events, stats).
@@ -1393,6 +1523,11 @@ def detect_ocr_events(
     menus = interp.generic and any(r.gate == "det" for r in regions)
     det_boxes: dict[str, list[tuple[float, float, float, float]]] = {}
     frame_boxes: list[dict[str, Any]] = []
+    # static screens (see STATIC_THUMB): only when the decoded HUD area sees enough of the frame
+    area = union[2] * union[3] / max(1, info.width * info.height)
+    still_runs = StillRuns(params.fps) if menus and area >= STATIC_MIN_AREA else None
+    if menus:
+        stats["static_area"] = round(area, 2)
     sx, sy = 1920 / info.width, 1080 / info.height
 
     def det_changed(r: Region, crop: np.ndarray) -> bool:
@@ -1514,6 +1649,8 @@ def detect_ocr_events(
                     ],
                 }
             )
+            if still_runs is not None:
+                frame_boxes[-1]["still"] = still_runs.add(t, _thumb(frame))
 
     errors: list[str] = []
     all_errors: list[str] = []
@@ -1521,6 +1658,14 @@ def detect_ocr_events(
     if avoid:
         stats["skipped_ranges"] = [[round(a, 1), round(b, 1)] for a, b in avoid]
     hw = params.hwaccel
+    shown = [-1]  # the last percent reported to on_progress
+
+    def report(t: float) -> None:
+        pct = int(100 * min(1.0, t / info.duration)) if info.duration > 0 else 0
+        if on_progress is not None and pct > shown[0]:
+            shown[0] = pct
+            on_progress(pct / 100)
+
     for seg_a, seg_b in segments:
         while True:
             errors.clear()
@@ -1536,6 +1681,7 @@ def detect_ocr_events(
                 ):
                     stats["frames"] += 1
                     process_frame(t, frame)
+                    report(t)
                 stats["hwaccel"] = hw
                 break
             except RuntimeError as err:
@@ -1559,12 +1705,22 @@ def detect_ocr_events(
     stats["decoded_s"] = round(stats["frames"] / params.fps, 1)
     stats["elapsed_s"] = round(time.perf_counter() - t_start, 2)
     if menus:
-        rules, info = menu_rules(frame_boxes)
+        feeds = {r.name for r in regions if r.kind == "feed"}
+        feed_times = {
+            t
+            for e in interp.tracker.events
+            if e.get("region") in feeds or e.get("type") == "kill"
+            for t in e["_times"]
+        }
+        rules, menu_info = menu_rules(
+            frame_boxes, feed_times=feed_times if still_runs is not None else None
+        )
         if logger.isEnabledFor(logging.DEBUG):
-            _log_menu_frames(src.name, frame_boxes, rules, info, interp.tracker.events)
+            _log_menu_frames(src.name, frame_boxes, rules, menu_info, interp.tracker.events)
         menu = {f["t"] for f in frame_boxes if rules[f["id"]] != "none"}
         interp.tracker.drop_sightings(menu)
         stats["menu_frames"] = len(menu)
+        stats["static_frames"] = sum(r == "static" for r in rules.values())
     events = interp.tracker.finish()
     for e in events:
         e["kind"] = "ocr"

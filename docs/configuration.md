@@ -233,7 +233,11 @@ per event, far below that share; text in at least half of all gameplay frames is
 and left out too. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
 far more text than the recording usually shows), so a busy game HUD is not mistaken for a menu.
 With a JSON preset, the OCR layer applies the same test to the text it detects in the preset's
-regions other than feeds (a full kill feed is no menu) and drops what menu frames show. A discovered kill feed takes in the rows above and below
+regions other than feeds (a full kill feed is no menu) and drops what menu frames show. It also
+treats a screen that holds still as a menu (hangar and crew screens show as little text as a busy
+HUD): a 32x18 grey thumbnail of the HUD area within 3 grey levels of the first frame for at least
+5 s, more than 2 s from any feed sighting or kill, so kills in still gameplay are kept; it runs only
+when the bounding box of the preset's regions is at least a quarter of the frame. A discovered kill feed takes in the rows above and below
 it that show only when the feed is full (up to twice its height), counted from its outermost
 rows seen in enough frames, so a stray box at its edge does not stop the growth.
 
