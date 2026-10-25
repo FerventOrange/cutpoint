@@ -27,9 +27,15 @@ prompts and the person rules can change without decoding again.
 
 from __future__ import annotations
 
+import collections
 import hashlib
+import io
 import logging
+import pickle
+import re
 import time
+import zipfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -597,14 +603,108 @@ def prompt_score(
 @state.register_cache
 @lru_cache(maxsize=1)
 def _aesthetic_layers(path: Path) -> list[tuple[np.ndarray, np.ndarray]]:
-    """LAION improved-aesthetic-predictor MLP weights at ``path`` as numpy (768-1024-128-64-16-1)."""
-    import torch  # noqa: PLC0415
+    """LAION improved-aesthetic-predictor MLP weights at ``path`` as numpy (768-1024-128-64-16-1).
 
+    Without torch (no ``events`` extra) the checkpoint is read with numpy, so
+    ``analyze`` can score a cached visual layer.
+    """
     if not path.exists():
         raise FileNotFoundError(f"{path} missing; run cutpoint setup --only visual")
-    sd = torch.load(path, map_location="cpu", weights_only=True)
-    keys = sorted({k.rsplit(".", 1)[0] for k in sd}, key=lambda k: int(k.split(".")[1]))
-    return [(sd[f"{k}.weight"].float().numpy(), sd[f"{k}.bias"].float().numpy()) for k in keys]
+    try:
+        import torch  # noqa: PLC0415
+    except ImportError:
+        logger.debug("torch not installed; reading the aesthetic head with numpy")
+        arrays = _read_state_dict(path)
+    else:
+        sd = torch.load(path, map_location="cpu", weights_only=True)
+        arrays = {k: v.float().numpy() for k, v in sd.items()}
+    if not all(isinstance(k, str) and _LAYER_KEY.fullmatch(k) for k in arrays):
+        raise ValueError(
+            f"{path}: not an aesthetic head (unexpected tensor names); "
+            "run cutpoint setup --only visual"
+        )
+    keys = sorted({k.rsplit(".", 1)[0] for k in arrays}, key=lambda k: int(k.split(".")[1]))
+    return [
+        (arrays[f"{k}.weight"].astype(np.float32), arrays[f"{k}.bias"].astype(np.float32))
+        for k in keys
+    ]
+
+
+_LAYER_KEY = re.compile(r"[^.]+\.\d+\.(weight|bias)")
+_NP_STORAGE = {"FloatStorage": np.float32, "HalfStorage": np.float16, "DoubleStorage": np.float64}
+
+
+def _read_state_dict(path: Path) -> dict[str, np.ndarray]:
+    """Tensors of a ``torch.save`` zip checkpoint (a state dict of float tensors)
+    as numpy arrays, without torch. Only plain tensors are unpickled.
+
+    Raises:
+        ValueError: Not such a checkpoint.
+    """
+
+    def rebuild(storage: np.ndarray, offset: int, size: tuple, stride: tuple, *_: Any) -> Any:
+        ints = (int, np.integer)
+        if not (
+            isinstance(storage, np.ndarray)
+            and isinstance(offset, ints)
+            and offset >= 0
+            and isinstance(size, tuple)
+            and isinstance(stride, tuple)
+            and len(size) == len(stride)
+            and all(isinstance(v, ints) for v in size + stride)
+        ):
+            raise ValueError("malformed tensor")
+        isz = storage.itemsize
+        # np.ndarray checks the view against the buffer bounds (as_strided does not)
+        return np.ndarray(
+            tuple(size),
+            storage.dtype,
+            buffer=storage,
+            offset=offset * isz,
+            strides=tuple(s * isz for s in stride),
+        ).copy()
+
+    allowed = {
+        ("collections", "OrderedDict"): collections.OrderedDict,
+        ("torch._utils", "_rebuild_tensor_v2"): rebuild,
+        ("torch._utils", "_rebuild_parameter"): lambda data, *_: data,
+    }
+    try:
+        with zipfile.ZipFile(path) as zf:
+            pkl = next(n for n in zf.namelist() if n.endswith("/data.pkl"))
+            root = pkl[: -len("data.pkl")]
+            if root + "byteorder" in zf.namelist() and zf.read(root + "byteorder") != b"little":
+                raise ValueError("big-endian checkpoint")
+
+            class _Unpickler(pickle.Unpickler):
+                def find_class(self, module: str, name: str) -> Any:
+                    if module == "torch" and name in _NP_STORAGE:
+                        return name
+                    if (module, name) in allowed:
+                        return allowed[module, name]
+                    raise pickle.UnpicklingError(f"{module}.{name} is not allowed")
+
+                def persistent_load(self, pid: Any) -> Any:
+                    _, kind, key, _location, _numel = pid
+                    return np.frombuffer(zf.read(f"{root}data/{key}"), _NP_STORAGE[kind])
+
+            sd = _Unpickler(io.BytesIO(zf.read(pkl))).load()
+            if not isinstance(sd, dict) or not all(isinstance(v, np.ndarray) for v in sd.values()):
+                raise pickle.UnpicklingError("not a state dict of tensors")
+    except (
+        OSError,
+        KeyError,
+        StopIteration,
+        TypeError,
+        ValueError,
+        AttributeError,
+        pickle.UnpicklingError,
+        zipfile.BadZipFile,
+    ) as err:
+        raise ValueError(
+            f"{path}: not readable without torch ({err}); run cutpoint setup --only visual"
+        ) from err
+    return dict(sd)
 
 
 def aesthetic(emb: np.ndarray) -> np.ndarray:
@@ -760,8 +860,14 @@ def run_layer(
     params: VisualParams,
     force: bool = False,
     bad: dict[str, list[tuple[float, float]]] | None = None,
+    handoff: Callable[[VisualModels], None] | None = None,
 ) -> dict[str, Any]:
-    """Compute the visual layer for every source that lacks it; returns stats."""
+    """Compute the visual layer for every source that lacks it; returns stats.
+
+    ``handoff`` is called with the loaded models before they are freed, so a
+    later step can keep their CLIP model (``models.clip``) instead of loading
+    it again; the detector is freed either way.
+    """
     need = [s for s in sources if force or load_visual(s, params) is None]
     stats: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
     if not need:
@@ -783,6 +889,8 @@ def run_layer(
                 is not None
             ):
                 stats["computed"] += 1
+        if handoff is not None:
+            handoff(models)
     finally:
         models.close()
     return stats

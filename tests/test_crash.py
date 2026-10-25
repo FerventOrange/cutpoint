@@ -94,3 +94,152 @@ def test_detect_project_skips_offline_source_and_processes_the_rest(tmp_path, mo
     assert loaded == [here]
     assert "gone.mp4: footage not reachable" in caplog.text
     assert json.loads(out.read_text(encoding="utf-8"))["n_candidates"] == 0
+
+
+class _FakeClip:
+    def __init__(self):
+        self.at = "cuda"
+
+    def to(self, device):
+        self.at = device
+        return self
+
+
+class _FakeModels:
+    def __init__(self):
+        self.torch, self.device, self.dtype = object(), "cpu", "f16"
+        self.clip, self.mean, self.std = _FakeClip(), "mean", "std"
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+def test_clip_encoder_from_visual_shares_the_model_and_double_close_is_safe(monkeypatch):
+    def boom(self, *a, **k):
+        raise AssertionError("CLIP must not be loaded again")
+
+    monkeypatch.setattr(crash.ClipEncoder, "__init__", boom)
+    monkeypatch.setattr("cutpoint.events.common.free_torch", lambda: None)
+    models = _FakeModels()
+    enc = crash.ClipEncoder.from_visual(models)
+    assert enc.model is models.clip and enc.device == "cpu" and enc.mean == "mean"
+    assert models.clip.at == "cpu" and not enc.on_device  # parked until the first embed
+    enc.close()
+    enc.close()
+    assert enc.model is None
+
+
+@pytest.mark.parametrize(
+    ("tel", "expected"),
+    [
+        ({"speed_before_kmh": 71, "speed_min_after_kmh": 0.4, "on_lift": False}, True),
+        ({"speed_before_kmh": 30, "speed_min_after_kmh": 0.4, "on_lift": False}, False),
+        ({"speed_before_kmh": 71, "speed_min_after_kmh": 8, "on_lift": False}, False),
+        ({"speed_before_kmh": 71, "speed_min_after_kmh": 0.4, "on_lift": True}, False),
+        ({"speed_before_kmh": None, "speed_min_after_kmh": None, "on_lift": False}, False),
+    ],
+)
+def test_speed_drop_only_for_a_fast_rider_stopped_dead(tel, expected):
+    cand = {"telemetry": tel}
+    assert crash._speed_drop(cand, crash.CrashParams()) is expected
+
+
+def _cand(name, pre, before, after, on_lift=False):
+    tel = {"speed_before_kmh": before, "speed_min_after_kmh": after, "on_lift": on_lift}
+    return {
+        "name": name,
+        "source": "s.mp4",
+        "t0": 10.0,
+        "t1": 12.0,
+        "origin": "telemetry",
+        "pre_score": pre,
+        "telemetry": tel,
+        "scores": {"telemetry": 0, "visual": 0, "audio": 0, "words": 0},
+    }
+
+
+def test_detect_project_dense_checks_speed_drops_below_prefilter(tmp_path, monkeypatch):
+    src = tmp_path / "s.mp4"
+    src.write_bytes(b"x")
+    project = _project(tmp_path, src)
+    cands = [
+        _cand("high", 0.5, 10, 10),
+        _cand("drop1", 0.161, 71, 0.4),
+        _cand("slow", 0.16, 30, 0.4),
+        _cand("notstopped", 0.15, 71, 8),
+        _cand("lift", 0.14, 71, 0.4, on_lift=True),
+        *[_cand(f"drop{k}", 0.1, 80, 0.0) for k in range(2, 9)],
+    ]
+    for c in cands:
+        c["source"] = str(src)
+    checked, ends = [], []
+    enc = SimpleNamespace(close=lambda: ends.append(1))
+    monkeypatch.setattr(crash, "load_inputs", lambda *a: _inputs(spike=False))
+    monkeypatch.setattr(crash, "candidate_events", lambda inp, p: cands)
+    monkeypatch.setattr(crash, "score_candidate", lambda inp, c, p: c)
+    monkeypatch.setattr(crash, "plan_clip", lambda i, c, p: {"start": c["t0"], "end": c["t1"]})
+    monkeypatch.setattr(crash, "ClipEncoder", lambda: pytest.fail("loaded a new encoder"))
+
+    def dense(e, inp, c, p, store):
+        assert e is enc
+        checked.append(c["name"])
+        return {"score": 0.5}
+
+    monkeypatch.setattr(crash, "dense_feature", dense)
+    own_words = replace(crash.CrashParams(), words=())
+    crash.detect_project(project, params=own_words, encoder=enc, sheets=0)
+    p = crash.CrashParams()
+    assert checked == ["high", "drop1", *[f"drop{k}" for k in range(2, 1 + p.drop_top)]]
+    assert ends == [1]
+
+
+def test_detect_project_dense_zero_never_lowers_a_speed_drop_bypass(tmp_path, monkeypatch):
+    src = tmp_path / "s.mp4"
+    src.write_bytes(b"x")
+    project = _project(tmp_path, src)
+    normal, drop = _cand("normal", 0.5, 10, 10), _cand("drop", 0.161, 71, 0.4)
+    drop["t0"], drop["t1"] = 40.0, 42.0  # outside the other clip, so it is not absorbed
+    for c in (normal, drop):
+        c["source"] = str(src)
+        c["scores"].update(telemetry=0.8, visual=0.6)
+    enc = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(crash, "load_inputs", lambda *a: _inputs(spike=False))
+    monkeypatch.setattr(crash, "candidate_events", lambda inp, p: [normal, drop])
+    monkeypatch.setattr(crash, "score_candidate", lambda inp, c, p: c)
+    monkeypatch.setattr(crash, "plan_clip", lambda i, c, p: {"start": c["t0"], "end": c["t1"]})
+    pre = {
+        c["name"]: crash._confidence(c, dict(crash.CrashParams().weights)) for c in (normal, drop)
+    }
+    monkeypatch.setattr(crash, "dense_feature", lambda e, inp, c, p, store: {"score": 0.0})
+    own_words = replace(crash.CrashParams(), words=())
+    crash.detect_project(project, params=own_words, encoder=enc, sheets=0)
+    got = {
+        c["name"]: c
+        for c in json.loads((project / "crashes.json").read_text(encoding="utf-8"))["crashes"]
+    }
+    assert got["drop"]["confirmed"] and got["normal"]["confirmed"]
+    assert got["drop"]["confidence"] >= round(pre["drop"], 3)  # the bypass is never penalised
+    assert got["normal"]["confidence"] < round(pre["normal"], 3)  # a normal candidate still drops
+
+
+class _TrackedClip(_FakeClip):
+    def __init__(self):
+        super().__init__()
+        self.moves = []
+
+    def to(self, device):
+        self.moves.append(device)
+        return super().to(device)
+
+
+def test_clip_encoder_returns_to_the_device_once_on_first_embed():
+    models = _FakeModels()
+    models.clip, models.device = _TrackedClip(), "cuda"
+    enc = crash.ClipEncoder.from_visual(models)
+    assert models.clip.moves == ["cpu"]  # parked on the CPU after the handoff
+    empty = np.zeros((0, 8, 8, 3), np.uint8)
+    assert enc.embed(empty).shape == (0, 3, 768)
+    assert models.clip.moves == ["cpu", "cuda"] and models.clip.at == "cuda"
+    enc.embed(empty)
+    assert models.clip.moves == ["cpu", "cuda"]  # not moved again

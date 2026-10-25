@@ -105,6 +105,13 @@ class CrashParams:
         dense_top: Candidates per project that get the dense confirm.
         prefilter: Candidates below this pre-score (telemetry + visual + audio
             + transcript, before the dense step) are not confirmed.
+        drop_from_kmh: A candidate below ``prefilter`` still gets the dense
+            confirm when its GPS speed before the event was at least this and it
+            fell to a stop (``still_kmh`` + 1, as in the telemetry score) within
+            10 s after it: a fast rider stopped dead right after a shock. The
+            dense score can only raise such a candidate's confidence.
+        drop_top: At most this many such speed-drop candidates per project are
+            confirmed on top of ``dense_top``.
         weights: Fusion weights of the sub-scores.
         pos, neg: Zero-shot prompts.
         words: Transcript cues.
@@ -123,6 +130,8 @@ class CrashParams:
     dense_post_s: float = 6.0
     dense_top: int = 15
     prefilter: float = 0.2
+    drop_from_kmh: float = 40.0
+    drop_top: int = 5
     weights: tuple[tuple[str, float], ...] = (
         ("telemetry", 0.40),
         ("visual", 0.15),
@@ -440,12 +449,30 @@ class ClipEncoder:
             CLIP_ARCH, pretrained=CLIP_PRETRAINED, cache_dir=str(paths.clip_dir())
         )
         self.model = model.eval().to(self.device, self.dtype)
+        self.on_device = True
         self.mean = torch.tensor(CLIP_MEAN, device=self.device).view(1, 3, 1, 1)
         self.std = torch.tensor(CLIP_STD, device=self.device).view(1, 3, 1, 1)
+
+    @classmethod
+    def from_visual(cls, models: Any) -> ClipEncoder:
+        """The CLIP model the visual layer has loaded (a ``VisualModels``), without
+        loading it again; same device, dtype and normalisation.
+
+        The model waits on the CPU (the visual layer's close then frees its VRAM)
+        and moves back to ``device`` on the first :meth:`embed`.
+        """
+        enc = cls.__new__(cls)
+        enc.torch, enc.device, enc.dtype = models.torch, models.device, models.dtype
+        enc.model, enc.mean, enc.std = models.clip.to("cpu"), models.mean, models.std
+        enc.on_device = False
+        return enc
 
     def embed(self, frames: np.ndarray, batch: int = 32) -> np.ndarray:
         """``(N, 3, 768)`` L2-normalised embeddings of left / centre / right crops."""
         torch = self.torch
+        if not self.on_device:
+            self.model = self.model.to(self.device)
+            self.on_device = True
         out = []
         for i in range(0, len(frames), batch):
             x = torch.from_numpy(frames[i : i + batch]).to(self.device).permute(0, 3, 1, 2)
@@ -465,10 +492,12 @@ class ClipEncoder:
         return np.concatenate(out) if out else np.zeros((0, 3, 768), np.float32)
 
     def close(self) -> None:
-        """Release the model and GPU memory."""
+        """Release the model and GPU memory (again: no-op)."""
         from cutpoint.events.common import free_torch  # noqa: PLC0415
 
-        del self.model
+        if self.model is None:
+            return
+        self.model = None
         free_torch()
 
 
@@ -794,6 +823,19 @@ def candidate_events(inp: SourceInputs, p: CrashParams) -> list[dict[str, Any]]:
     return cands
 
 
+def _speed_drop(c: dict[str, Any], p: CrashParams) -> bool:
+    """True if the rider went from ``drop_from_kmh`` or faster to a stop around ``c``."""
+    tel = c.get("telemetry") or {}
+    before, after = tel.get("speed_before_kmh"), tel.get("speed_min_after_kmh")
+    return (
+        before is not None
+        and after is not None
+        and not tel.get("on_lift")
+        and before >= p.drop_from_kmh
+        and after <= p.still_kmh + 1.0
+    )
+
+
 def score_candidate(inp: SourceInputs, c: dict[str, Any], p: CrashParams) -> dict[str, Any]:
     """Telemetry, visual, audio and transcript sub-scores plus the pre-score."""
     t0, t1 = c["t0"], c["t1"]
@@ -1087,6 +1129,7 @@ def detect_project(
     activity_name: str | None = None,
     context: str | None = None,
     refresh_profile: bool = False,
+    encoder: ClipEncoder | None = None,
 ) -> Path:
     """Find crashes in every source of a project and write ``crashes.json``.
 
@@ -1107,6 +1150,9 @@ def detect_project(
             its own prompts or words.
         context: The user's words about the video (refines the profile).
         refresh_profile: Re-detect / re-synthesize the profile.
+        encoder: An already loaded CLIP model for the dense confirm (else it is
+            loaded when needed); closed after the dense step, the caller closes
+            it if this raises before.
 
     Returns:
         Path of crashes.json.
@@ -1160,7 +1206,23 @@ def detect_project(
     w = dict(p.weights)
     t0 = time.perf_counter()
     todo = [c for c in cands if c["pre_score"] >= p.prefilter][: p.dense_top] if dense else []
-    enc = None
+    if dense:
+        drops = [c for c in cands if c["pre_score"] < p.prefilter and _speed_drop(c, p)]
+        for c in drops[: p.drop_top]:
+            tel = c["telemetry"]
+            logger.debug(
+                "%s %.1fs: pre-score %.3f < prefilter, %.1f -> %.1f km/h: dense check",
+                c["name"],
+                c["t0"],
+                c["pre_score"],
+                tel["speed_before_kmh"],
+                tel["speed_min_after_kmh"],
+            )
+        todo += drops[: p.drop_top]
+    # Speed-drop candidates only reach the dense check through the bypass:
+    # it may confirm them but never lower their confidence.
+    bypass = {id(c) for c in todo if c["pre_score"] < p.prefilter}
+    enc = encoder
     stores: dict[str, dict[str, Any]] = {}
     try:
         for c in todo:
@@ -1179,9 +1241,11 @@ def detect_project(
     timings["dense_s"] = round(time.perf_counter() - t0, 1)
     for c in cands:
         d = c.get("dense")
+        before = _confidence(c, w)
         if d is not None:
             c["scores"]["dense"] = d["score"]
-        c["confidence"] = round(_confidence(c, w), 3)
+        conf = _confidence(c, w)
+        c["confidence"] = round(max(before, conf) if id(c) in bypass else conf, 3)
         c["confirmed"] = d is not None
         c["clip"] = plan_clip(inputs[c["source"]], c, p)
     cands = _absorb(sorted(cands, key=lambda c: -c["confidence"]))
@@ -1233,7 +1297,7 @@ def detect_project(
             c["scores"]["words"],
         )
     logger.info(
-        "Wrote %s (%d candidates, %d confirmed densely, %d sheets) in %.1fs",
+        "Wrote %s (%d candidates, %d checked densely, %d sheets) in %.1fs",
         out,
         len(cands),
         sum(c["confirmed"] for c in cands),
