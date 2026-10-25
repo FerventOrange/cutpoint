@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import set_config
-from cutpoint import cli, edit
+from cutpoint import cli, edit, progress
 
 
 @pytest.mark.parametrize(
@@ -214,3 +215,55 @@ def test_edit_failed_analyze_leaves_no_new_project_folder(
     assert reached == [video]
     projects = home / "projects"
     assert not projects.exists() or list(projects.iterdir()) == []
+
+
+# -- progress steps ----------------------------------------------------------------------
+
+
+def _progress_lines(capsys) -> list[dict]:
+    err = capsys.readouterr().err
+    return [
+        json.loads(x.removeprefix("PROGRESS "))
+        for x in err.splitlines()
+        if x.startswith("PROGRESS ")
+    ]
+
+
+@pytest.mark.parametrize("kind", ["highlights", "clips", "funny-moments"])
+def test_edit_reports_eight_steps_and_assembles_for_every_kind(
+    pipeline, home, monkeypatch, capsys, kind
+):
+    monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
+    assert cli.main(["edit", str(pipeline.video), "--kind", kind]) == 0
+    got = _progress_lines(capsys)
+    assert {g["total"] for g in got} == {8}
+    final = {g["step"]: g["state"] for g in got}
+    assert list(final) == [*progress.ANALYZE_STEPS, "clips", "assemble"]
+    assert final["clips"] == final["assemble"] == "done"
+    assert [c[0] for c in pipeline.calls] == ["analyze", "clips", "assemble"]  # --kind clips too
+    assert (home / "projects" / "My Clip" / "My Clip-final.mp4").is_file()
+
+
+def test_edit_without_the_env_var_writes_no_progress(pipeline, capsys):
+    assert cli.main(["edit", str(pipeline.video)]) == 0
+    assert "PROGRESS" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("argv", "skip"), [([], ()), (["--skip", "crashes", "reactions"], ("crashes", "reactions"))]
+)
+def test_edit_passes_skip_to_analyze(pipeline, argv, skip):
+    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
+    assert pipeline.calls[0][2]["skip"] == skip
+
+
+def test_edit_cancelled_in_clips_fails_that_step(pipeline, home, monkeypatch, capsys):
+    monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
+
+    def cancel(project, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(edit, "export_clips", cancel)
+    assert cli.main(["edit", str(pipeline.video), "--kind", "clips"]) == 130
+    last = _progress_lines(capsys)[-1]
+    assert (last["step"], last["state"], last["detail"]) == ("clips", "failed", "cancelled")
