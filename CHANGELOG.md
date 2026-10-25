@@ -118,6 +118,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the repair summary is now logged to stderr with `--json` too (#4).
 - `cutpoint 360 qa --json` is the result envelope. `--json-only` (skip the contact sheets) is
   unchanged; `--json` no longer abbreviates it (#4).
+- `cutpoint ui` runs its jobs (analyze, clips, assemble, ...) and proxy encodes at below-normal
+  priority (Windows `BELOW_NORMAL_PRIORITY_CLASS`; elsewhere `nice -n 10` when available), and
+  the ffmpeg they start inherits it, so the desktop and the browser stay responsive. Cancelling a
+  job works as before.
+- `cutpoint ui` preview proxies have a keyframe every 30 frames and at most 30 fps, so seeking in
+  a proxy is about as quick as in the source (the encoder default allowed up to ~0.4 s per seek).
+- `cutpoint ui` encodes preview proxies with NVENC (`h264_nvenc`) when it works on the machine and
+  `video_encoder` is `auto` or `nvenc`, with a bitrate cap that keeps the file near libx264's
+  size; otherwise, and when an NVENC encode fails (it is retried with libx264, which is then used
+  for the rest of the run), with libx264 as before. On a 1080p60 recording this took about half
+  the CPU time of libx264.
 - The Rainbow Six Siege HUD preset is now the bundled JSON preset `r6.json`, next to `wt.json`, so
   it can be copied and edited; a copy is read as a generic preset, not with the built-in R6
   interpretation. A user or project `r6.json` still overrides it. Detection and the OCR cache of
@@ -160,6 +171,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` no longer logs a `ConnectionResetError` (`[WinError 10054]`) ERROR traceback each
+  time the browser cancels a video request, such as on a seek or when switching sources.
 - `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with
   "Requested resampling engine is unavailable" on ffmpeg builds without libsoxr (such as the
   gyan.dev "essentials" build). The limiter uses soxr only when the build has it, else ffmpeg's

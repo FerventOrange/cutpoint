@@ -33,6 +33,7 @@ Trust boundaries:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import errno
 import hashlib
@@ -75,7 +76,15 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_value,
 )
-from cutpoint.ffmpeg_utils import SOFT_STOP_S, FFmpegError, audio_mix_filter, grab_images, probe
+from cutpoint.ffmpeg_utils import (
+    SOFT_STOP_S,
+    FFmpegError,
+    VideoEncoder,
+    audio_mix_filter,
+    find_encoder,
+    grab_images,
+    probe,
+)
 from cutpoint.styles import get_style, learned_styles, style_names
 from cutpoint.utils import VIDEO_EXTS, clip_files, find_videos, slugify
 
@@ -117,12 +126,19 @@ def bad(detail: str, status: int = 400) -> HTTPException:
 
 # --------------------------------------------------------------------------- processes
 def spawn(args: list[str]) -> subprocess.Popen[str]:
-    """Start ``args`` (no shell) in its own process group, stdout+stderr merged."""
-    group = (
-        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt"
-        else {"start_new_session": True}
-    )
+    """Start ``args`` (no shell) in its own process group at low priority, stdout+stderr merged.
+
+    Low priority keeps the desktop and the browser responsive while a job or proxy encodes; the
+    children it starts (ffmpeg, workers) inherit it. Windows: BELOW_NORMAL_PRIORITY_CLASS;
+    elsewhere ``nice -n 10`` when there is one (it execs, so the pid and group stay the same).
+    """
+    if os.name == "nt":
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        group: dict[str, Any] = {"creationflags": flags}
+    else:
+        group = {"start_new_session": True}
+        nice = shutil.which("nice")
+        args = [nice, "-n", "10", *args] if nice else args
     proc = subprocess.Popen(
         args,
         stdin=subprocess.DEVNULL,
@@ -634,14 +650,34 @@ class Jobs:
                 kill_tree(job.proc, term=False)
 
 
-def proxy_args(real: Path, out: Path, audio_streams: int) -> list[str]:
-    """ffmpeg command for a 720p H.264/AAC preview; several audio tracks are mixed as in exports."""
+# Proxies: a keyframe every PROXY_GOP frames and at most PROXY_FPS_MAX fps keep seeks quick (the
+# encoder default GOP made them take up to ~0.4 s) and the encode light.
+PROXY_GOP = 30
+PROXY_FPS_MAX = 30
+# NVENC at CQ 28 alone was up to four times libx264's size at CRF 27. At CQ 32 with this cap, a
+# 1080p60 recording's proxy was about 1.2 times libx264's (scoring a higher SSIM) and needed
+# about half the CPU time of libx264.
+PROXY_NVENC_CQ = 32
+PROXY_NVENC_RATE = ["-maxrate", "1500k", "-bufsize", "3000k"]
+
+
+def proxy_args(real: Path, out: Path, audio_streams: int, *, nvenc: bool = False) -> list[str]:
+    """ffmpeg command for a 720p H.264/AAC preview; several audio tracks are mixed as in exports.
+
+    ``nvenc``: encode with h264_nvenc, else libx264. Decoding stays on the CPU: ``-hwaccel cuda``
+    halved the CPU time but made the build two to three times slower on an RTX 3080.
+    """
     mix = audio_mix_filter(audio_streams)
     audio = ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else ["-map", "0:a:0?"]
+    video = (
+        [*VideoEncoder("nvenc").args(PROXY_NVENC_CQ), *PROXY_NVENC_RATE]
+        if nvenc
+        else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p"]
+    )
     return [
         "ffmpeg", "-y", "-nostdin", "-v", "error", "-i", str(real), "-map", "0:v:0", *audio,
-        "-vf", "scale=-2:min(720\\,ih)",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p",
+        "-vf", "scale=-2:min(720\\,ih)", *video,
+        "-g", str(PROXY_GOP), "-fpsmax", str(PROXY_FPS_MAX),
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out),
     ]  # fmt: skip
 
@@ -657,6 +693,7 @@ class Media:
         self.procs: set[subprocess.Popen[str]] = set()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cutpoint-proxy")
         self.closing = False
+        self.nvenc_failed = False  # a proxy failed with NVENC and worked with libx264 this run
         # still file name -> (its builder lock, requests using it); dropped when the last one leaves
         self.frame_locks: dict[str, tuple[threading.Lock, int]] = {}
         self.frame_slots = threading.BoundedSemaphore(FRAME_SLOTS)
@@ -740,13 +777,16 @@ class Media:
             _ui_folder(project, "proxy", made)
             # a link made while this build was queued
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")
-            proc = spawn(proxy_args(real, tmp, audio_streams))
-            self.procs.add(proc)
-            try:
-                tail = (proc.communicate()[0] or "").strip()[-500:]
-            finally:
-                self.procs.discard(proc)
-            if proc.returncode == 0 and not self.closing:
+            nvenc = self._nvenc()
+            code, tail = self._encode(proxy_args(real, tmp, audio_streams, nvenc=nvenc))
+            if code != 0 and nvenc and not self.closing:
+                # The probe encodes 0.2 s of black: a driver can still fail on real footage.
+                logger.warning(
+                    "proxy of %s: h264_nvenc failed (%s); retrying with libx264", real.name, tail
+                )
+                code, tail = self._encode(proxy_args(real, tmp, audio_streams))
+                self.nvenc_failed = code == 0
+            if code == 0 and not self.closing:
                 _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # a link made during the encode
                 tmp.replace(proxy)
                 state = ""
@@ -770,6 +810,34 @@ class Media:
                     for folder in made:  # failed: the folders it created, while still empty
                         with contextlib.suppress(OSError):
                             folder.rmdir()
+
+    def _nvenc(self) -> bool:
+        """Encode proxies with NVENC: ``video_encoder`` allows it and it encodes here (probed once,
+        as for exports), unless a proxy already failed with it and worked with libx264."""
+        if self.nvenc_failed:
+            return False
+        try:
+            choice = get_config().video_encoder
+        except ValueError:
+            return False
+        return choice in {"auto", "nvenc"} and find_encoder("nvenc")[0] is not None
+
+    def _encode(self, args: list[str]) -> tuple[int, str]:
+        """Run one proxy encode; ``(exit code, end of its output)``.
+
+        Spawned and registered under ``self.lock`` once ``closing`` is checked, so ``shutdown``
+        either kills it or it never starts.
+        """
+        with self.lock:
+            if self.closing:
+                return 1, "the server is shutting down"
+            proc = spawn(args)
+            self.procs.add(proc)
+        try:
+            tail = (proc.communicate()[0] or "").strip()[-500:]
+        finally:
+            self.procs.discard(proc)
+        return proc.returncode, tail
 
     def frame(self, project: Path, path: str, at: float, width: int) -> Path | None:
         """A JPEG still of ``path`` at ``at`` s (clamped into the source), ``width`` px wide.
@@ -855,9 +923,11 @@ class Media:
             self._drop_frames([*stale, *folder.glob("*.part")])
 
     def shutdown(self) -> None:
-        self.closing = True
+        with self.lock:  # as in ``_encode``: no proxy ffmpeg starts after this
+            self.closing = True
+            procs = list(self.procs)
         self.pool.shutdown(wait=False, cancel_futures=True)
-        for proc in list(self.procs):
+        for proc in procs:
             kill_tree(proc, SOFT_STOP_S)  # a bare ffmpeg: no soft stop of its own to wait for
 
 
@@ -1288,6 +1358,7 @@ def create_app(port: int) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        asyncio.get_running_loop().set_exception_handler(quiet_resets)
         yield
         jobs.shutdown()
         media.shutdown()
@@ -1721,6 +1792,17 @@ def create_app(port: int) -> FastAPI:
     if WEB_DIR.is_dir():
         app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     return app
+
+
+def quiet_resets(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+    """Event loop exception handler: drop connection resets, pass the rest to the default.
+
+    A browser that cancels a video range request (a seek, another source) resets the connection;
+    on Windows the proactor then logged an ERROR traceback (WinError 10054) for each one.
+    """
+    if isinstance(context.get("exception"), ConnectionResetError | ConnectionAbortedError):
+        return
+    loop.default_exception_handler(context)
 
 
 def _hangup(*_: object) -> None:
