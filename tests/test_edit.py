@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import cutpoint.analyze
+from conftest import set_config
 from cutpoint import cli, edit
 
 
@@ -122,10 +123,20 @@ def test_edit_name_of_a_drive_root_is_edit(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("argv", "vision"), [([], None), (["--no-vision"], False), (["--vision"], True)]
+    ("cfg", "argv", "vision"),
+    [
+        (None, [], False),  # no config.json key: off (vision is opt-in)
+        (None, ["--no-vision"], False),
+        (None, ["--vision"], True),
+        (True, [], True),  # "vision": true in config.json is the default
+        (True, ["--no-vision"], False),  # ... and --no-vision turns it off
+        (False, ["--vision"], True),
+    ],
 )
-def test_edit_passes_vision_to_analyze(pipeline, argv, vision):
-    """No option: analyze's own default (off: vision is opt-in); --no-vision still parses."""
+def test_edit_passes_vision_to_analyze(pipeline, home, cfg, argv, vision):
+    """The flag wins; without one, config.json's vision (default off)."""
+    if cfg is not None:
+        set_config(home, vision=cfg)
     assert cli.main(["edit", str(pipeline.video), *argv]) == 0
     assert pipeline.calls[0][2] == {
         "vision": vision, "vision_top": None, "ollama_url": None, "ollama_model": None,
