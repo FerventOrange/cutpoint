@@ -293,6 +293,20 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
         context=a.context,
         refresh_profile=a.refresh_profile,
     )
+    if jsonout.active():  # recorded before reanalyze, so a failure there still reports them
+        data = cache.load_json(out) or {}
+        cands = data.get("crashes") or []
+        jsonout.output("crashes", out)
+        jsonout.output("count", len(cands))
+        jsonout.output(
+            "candidates",
+            [
+                {k: c[k] for k in _CRASH_SUMMARY_KEYS if k in c}
+                for c in cands  # strongest first, as in crashes.json
+            ],
+        )
+        jsonout.output("activity_file", project / ACTIVITY_FILE)
+        jsonout.output("profile_name", (data.get("activity") or {}).get("name"))
     if a.reanalyze:
         from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
 
@@ -302,21 +316,6 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
                 "footage not reachable; highlights.json left unchanged, rerun once it is back",
                 [project / "highlights.json"],
             )
-    if not jsonout.active():
-        return
-    data = cache.load_json(out) or {}
-    cands = data.get("crashes") or []
-    jsonout.output("crashes", out)
-    jsonout.output("count", len(cands))
-    jsonout.output(
-        "candidates",
-        [
-            {k: c[k] for k in _CRASH_SUMMARY_KEYS if k in c}
-            for c in cands  # strongest first, as in crashes.json
-        ],
-    )
-    jsonout.output("activity_file", project / ACTIVITY_FILE)
-    jsonout.output("profile_name", (data.get("activity") or {}).get("name"))
 
 
 # The per-crash keys of crashes.json that ``crashes --json`` reports.

@@ -107,6 +107,20 @@ def test_crashes_json_warnings(ski, tmp_path, monkeypatch, capsys):
     assert doc["outputs"]["count"] == 0 and doc["outputs"]["candidates"] == []
 
 
+def test_crashes_json_reanalyze_failure_keeps_outputs(ski, monkeypatch, capsys):
+    project, _ = ski
+
+    def boom(project):
+        raise RuntimeError("reanalyze broke")
+
+    monkeypatch.setattr(analyze, "reanalyze_if_reachable", boom)
+    code, doc = _json(capsys, [*CRASHES[:-1], "--reanalyze"])
+    assert code == 1 and doc["ok"] is False and doc["error"]["message"] == "reanalyze broke"
+    # crashes.json was written before reanalyze ran; the envelope still names it.
+    assert doc["outputs"]["crashes"] == str(project / "crashes.json")
+    assert (project / "crashes.json").is_file() and doc["outputs"]["count"] == 1
+
+
 def test_crashes_json_without_clip_is_missing_extra(ski, monkeypatch, capsys):
     monkeypatch.delenv("TORCH_HOME", raising=False)  # set by the encoder before its imports
     monkeypatch.setitem(sys.modules, "open_clip", None)  # import open_clip fails
