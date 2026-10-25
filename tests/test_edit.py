@@ -125,7 +125,7 @@ def test_edit_name_of_a_drive_root_is_edit(tmp_path):
     ("argv", "vision"), [([], None), (["--no-vision"], False), (["--vision"], True)]
 )
 def test_edit_passes_vision_to_analyze(pipeline, argv, vision):
-    """No option: analyze's own default (the style's, else Ollama if reachable)."""
+    """No option: analyze's own default (off: vision is opt-in); --no-vision still parses."""
     assert cli.main(["edit", str(pipeline.video), *argv]) == 0
     assert pipeline.calls[0][2] == {
         "vision": vision, "vision_top": None, "ollama_url": None, "ollama_model": None,

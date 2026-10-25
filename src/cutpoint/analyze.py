@@ -933,7 +933,8 @@ def analyze(
         target: Video file or folder, or a list of files and/or folders.
         style: Style preset.
         out_dir: Project directory.
-        vision: True = require attempt, False = skip, None = use if reachable.
+        vision: True = rate the top candidates with Ollama (a warning if it is not
+            available); False or None = no vision (opt-in, never automatic).
         model: faster-whisper model name (default: medium on CUDA, small on CPU).
         language: Force transcription language (e.g. "en"); None = autodetect.
         use_scenes: Run scene detection.
@@ -967,11 +968,6 @@ def analyze(
     logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
     with output_dir(out_dir):  # a failed run leaves no empty project folder behind
         use_scenes = use_scenes and style.use_scenes
-        if vision is None and style.vision_default is False:
-            vision = False
-            logger.info(
-                "Style %s: Ollama vision off by default (pass --vision to use it)", style.name
-            )
         ski_ctx = None
         if style.kind == "ski":
             from cutpoint import ski  # noqa: PLC0415
@@ -1070,7 +1066,7 @@ def analyze(
 
         vision_used = False
         vision_stats: dict[str, int] | None = None
-        if vision is not False and cands:
+        if vision and cands:
             rater = VisionRater(
                 **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
             )
@@ -1088,31 +1084,31 @@ def analyze(
                     len(cands),
                 )
                 n_failed = 0
-                for c in cands[:n_top]:
-                    res = rater.rate(remap_source(c.source), c.start, c.end, style.base)
-                    if res is None:
-                        n_failed += 1
-                        continue
-                    vision_used = True
-                    c.vision = {"score": res.score, "label": res.label}
-                    c.score = round(
-                        (1 - style.vision_weight) * c.score + style.vision_weight * res.score * 10,
-                        1,
-                    )
-                    logger.info(
-                        "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c.start, c.end
-                    )
+                try:
+                    for c in cands[:n_top]:
+                        res = rater.rate(remap_source(c.source), c.start, c.end, style.base)
+                        if res is None:
+                            n_failed += 1
+                            continue
+                        vision_used = True
+                        c.vision = {"score": res.score, "label": res.label}
+                        c.score = round(
+                            (1 - style.vision_weight) * c.score
+                            + style.vision_weight * res.score * 10,
+                            1,
+                        )
+                        logger.info(
+                            "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c.start, c.end
+                        )
+                finally:  # free the VRAM now, not after Ollama's default 5 min keep_alive
+                    rater.unload()
                 timings["vision_s"] = round(time.perf_counter() - t0, 2)
                 vision_stats = {"requested": min(n_top, len(cands)), "failed": n_failed}
                 cands.sort(key=lambda c: -c.score)
-            elif vision:
+            else:
                 message = "--vision requested but Ollama/model unavailable; continuing without it"
                 logger.warning("%s", message)
                 jsonout.warn("vision_unavailable", message)
-            else:  # the default: vision if reachable; only --json tells an agent it was not
-                jsonout.warn(
-                    "vision_unavailable", "Ollama/model unavailable; continuing without vision"
-                )
 
         cands.sort(key=lambda c: (not c.must_include, -c.score))  # must-include first
         total, suggested = 0.0, 0
@@ -1140,6 +1136,7 @@ def analyze(
                 "whisper_model": tr.model_name,
                 "whisper_device": tr.device,
                 "scenes": use_scenes,
+                "vision_requested": bool(vision),
                 "vision_used": vision_used,
                 "vision": vision_stats,
                 "vision_top": vision_top,
@@ -1259,7 +1256,8 @@ def reanalyze(project: Path) -> Path:
         [Path(p) for p in inputs],
         style,
         project,
-        vision=None if st.get("vision_used") else False,
+        # opt-in: only if the earlier run asked (older projects record no request: off)
+        vision=st.get("vision_requested") is True,
         vision_top=st.get("vision_top"),
         ollama_url=st.get("ollama_url"),
         ollama_model=st.get("ollama_model"),

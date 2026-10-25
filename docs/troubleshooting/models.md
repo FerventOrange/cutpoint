@@ -2,8 +2,10 @@
 
 ## Ollama is not reachable
 
-`analyze` uses Ollama only for the optional `--vision` rating. If the server or model is not
-available it skips the step quietly. With `--vision` you get an error instead.
+`analyze` uses Ollama only for the optional `--vision` rating, which is off unless you pass
+`--vision` (or tick the vision box in `cutpoint ui`). If the server or model is not available
+then, it logs a WARNING (a `vision_unavailable` warning with `--json`) and continues without the
+rating.
 
 1. Start Ollama and pull the model: `ollama pull qwen3-vl:8b`.
 2. Check the server: open `http://127.0.0.1:11434` in a browser; it answers "Ollama is running".

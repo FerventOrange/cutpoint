@@ -119,6 +119,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Ollama vision rating is opt-in for every style: `analyze` and `edit` use it only with
+  `--vision`, and `cutpoint ui` only when "Rate frames with a local vision model (Ollama)" is
+  ticked next to "Analyze footage" or in the dialog "Analyze again" now opens (there it starts as
+  the previous analysis asked). Before, it ran whenever Ollama was reachable (except for `ski`),
+  loading about 7 GB into GPU memory unasked. `--no-vision` is still accepted and changes
+  nothing. The `vision_unavailable` warning now only comes with `--vision`. `highlights.json`
+  records the request as `settings.vision_requested`; re-analyzing (`cutpoint events`) uses
+  vision only if the earlier run asked for it, so a project analyzed before this change (no
+  record) is re-analyzed without it. The style setting `vision_default` is gone. Building an activity profile
+  (`profile`, `crashes`) and `360 director --vl-check` also unload the vision model when they
+  are done with it (`--vl-check` also when it fails or is interrupted). With CLIP installed,
+  building a profile now unloads only that model, not every model loaded in Ollama.
 - `profile --json` writes the result envelope: the `activity.json` record it printed before is
   under `outputs` with the same keys, plus `activity_file` (its path) (#4).
 - `cutpoint capabilities --json` writes the result envelope: the report it printed before is now
@@ -185,6 +197,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `analyze` (and `edit`) unloads the Ollama vision model right after the vision pass, also when
+  it fails or is interrupted, instead of leaving it in GPU memory (about 7 GB for qwen3-vl:8b)
+  for Ollama's default 5 minutes. Only the model the run used is unloaded; if unloading fails,
+  the run goes on (a DEBUG line).
+- The vision retry for the `ski` style now asks about skiing (jumps, crashes, chairlifts) like
+  the first attempt, not about menus and scoreboards.
 - In generic (verb-style) kill feeds such as War Thunder, the player's own deaths no longer count
   as player kills in the highlight boost, so moments with deaths rank lower; R6 is unchanged. The
   teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff

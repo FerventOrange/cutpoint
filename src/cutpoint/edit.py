@@ -119,7 +119,7 @@ def run_edit(
 
     Analysis is cached as with ``cutpoint analyze``. ``force`` has ``clips --force``
     semantics. ``events`` runs ``cutpoint events`` (default options) before the clips.
-    ``vision`` is ``analyze --vision`` (None: the style's default, else if Ollama is reachable);
+    ``vision`` is ``analyze --vision`` (opt-in: None or False rates nothing with Ollama);
     ``vision_top``, ``ollama_url`` and ``ollama_model`` are analyze's options of those names.
 
     Returns:

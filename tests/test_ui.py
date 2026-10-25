@@ -348,6 +348,71 @@ def test_reanalyze_passes_recorded_vision_and_ollama_options(
     assert [a for a in args if a.startswith(("--vision-top", "--ollama"))] == flags
 
 
+@pytest.mark.parametrize(
+    ("body", "saved", "vision"),
+    [
+        ({}, {}, False),  # opt-in: off by default
+        ({"vision": False}, {}, False),
+        ({"vision": True}, {}, True),  # the box is checked
+        ({}, {"vision_requested": True}, True),  # Analyze again: as the last run asked
+        ({}, {"vision_used": True}, False),  # an older, automatic vision run: still off
+        ({"vision": False}, {"vision_requested": True}, False),  # the box wins
+    ],
+)
+def test_analyze_job_passes_vision_only_when_asked(
+    client: TestClient,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: dict,
+    saved: dict,
+    vision: bool,
+) -> None:
+    p = ui.projects_dir() / "cli-made"
+    p.mkdir(parents=True)
+    footage = tmp_path / "clip.mp4"
+    footage.write_bytes(b"x")
+    settings = {"inputs": [str(footage)], **saved}
+    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
+    captured: list[list[str]] = []
+
+    def fake_start(self, project_id, action, args, *rest, **kw):
+        captured.append(args)
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    res = client.post("/api/projects/cli-made/jobs", json={"action": "analyze", **body})
+    assert res.status_code == 200
+    assert ("--vision" in captured[0]) is vision
+    assert "--no-vision" not in captured[0]
+
+
+@pytest.mark.parametrize(
+    ("saved", "want"),
+    [({"vision_requested": True}, True), ({"vision_used": True}, False), ({}, False)],
+)
+def test_project_reports_whether_its_analysis_asked_for_vision(
+    client: TestClient, tmp_path: Path, saved: dict, want: bool
+) -> None:
+    """The "Analyze again" dialog starts its vision box from this; older analyses: off."""
+    p = ui.projects_dir() / "cli-made"
+    p.mkdir(parents=True)
+    settings = {"inputs": [str(tmp_path / "clip.mp4")], **saved}
+    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
+    assert client.get("/api/projects/cli-made").json()["vision_requested"] is want
+
+
+def test_analyze_job_rejects_a_non_boolean_vision(client: TestClient, tmp_path: Path) -> None:
+    p = ui.projects_dir() / "cli-made"
+    p.mkdir(parents=True)
+    footage = tmp_path / "clip.mp4"
+    footage.write_bytes(b"x")
+    settings = {"inputs": [str(footage)]}
+    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
+    res = client.post("/api/projects/cli-made/jobs", json={"action": "analyze", "vision": "yes"})
+    assert res.status_code == 400
+
+
 def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) -> None:
     script = (
         "import subprocess, sys, time\n"

@@ -38,6 +38,10 @@ cutpoint edit <video> --kind highlights|montage|clips|funny-moments
 It writes the project with the clips, `final.mp4` and `<video>-final.mp4` plus `.srt`
 subtitles; the last log lines name them. `--out NAME` names the project.
 
+`--vision` (on `edit` and `analyze`) adds an optional frame rating by a local Ollama vision
+model. It is off by default: slower and uses several GB of GPU memory, so pass it only when the
+user asks for it.
+
 Choosing the moments yourself:
 
 1. `cutpoint analyze <video> --style <style> --out <project>`.

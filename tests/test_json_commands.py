@@ -380,21 +380,17 @@ class _NoOllama:
 
 @needs_ffmpeg
 @pytest.mark.parametrize(
-    ("flags", "style_off", "message"),
+    ("flags", "message"),
     [
-        ([], False, "Ollama/model unavailable; continuing without vision"),
-        (["--vision"], False, VISION_MSG),
-        (["--no-vision"], False, None),
-        ([], True, None),  # the style turns vision off by default (as ski does)
+        ([], None),  # vision is opt-in: nothing was asked, nothing to warn about
+        (["--vision"], VISION_MSG),
+        (["--no-vision"], None),
     ],
 )
 def test_analyze_json_warns_when_vision_was_wanted_but_unavailable(
-    video, home, capsys, caplog, monkeypatch, flags, style_off, message
+    video, home, capsys, caplog, monkeypatch, flags, message
 ):
     monkeypatch.setattr(cutpoint.analyze, "VisionRater", _NoOllama)
-    if style_off:
-        funny = replace(cli.get_style("funny"), vision_default=False)
-        monkeypatch.setattr(cli, "get_style", lambda name: funny)
     argv = ["analyze", str(video), "--style", "funny", "--out", "j", "--no-scenes", *flags]
     code, doc, _ = _json(capsys, argv)
     assert code == 0 and doc["ok"] is True and doc["outputs"]["candidates"] > 0

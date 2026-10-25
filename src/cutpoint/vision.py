@@ -56,9 +56,18 @@ _RETRY_PROMPT = (
     "replays score 0-2. Output only JSON: "
     '{{"score": <number>, "label": "<2-4 words>"}}'
 )
-# (prompt, num_ctx, num_predict) per attempt. 3 frames at 640 px are ~3300
-# prompt tokens, so num_ctx must leave room for the reasoning plus the JSON.
-_ATTEMPTS = ((_PROMPT, 8192, 3072), (_RETRY_PROMPT, 12288, 6144))
+_RETRY_PROMPT_SKI = (
+    "{n} frames from a first-person skiing / snowboarding video moment. Answer "
+    "immediately, no reasoning. Score 0-10 for a ski edit; jumps, crashes, powder and "
+    "fast riding score high, chairlifts, standing around and the lodge score 0-2. "
+    'Output only JSON: {{"score": <number>, "label": "<2-4 words>"}}'
+)
+# (first prompt, retry prompt) per style; styles not listed use the default pair.
+_PROMPTS = {"ski": (_PROMPT_SKI, _RETRY_PROMPT_SKI)}
+_DEFAULT_PROMPTS = (_PROMPT, _RETRY_PROMPT)
+# (num_ctx, num_predict) per attempt. 3 frames at 640 px are ~3300 prompt
+# tokens, so num_ctx must leave room for the reasoning plus the JSON.
+_ATTEMPTS = ((8192, 3072), (12288, 6144))
 
 
 @dataclass
@@ -77,6 +86,7 @@ class VisionRater:
         if not self.url.startswith("http"):
             self.url = f"http://{self.url}"
         self.model = model or default_model()
+        self.used = False  # True once a request went to the model: unload() frees it
 
     def available(self) -> bool:
         """True if the server answers and has the model pulled."""
@@ -132,6 +142,7 @@ class VisionRater:
                 "options": options,
             }
             endpoint = "generate"
+        self.used = True
         try:
             resp = requests.post(f"{self.url}/api/{endpoint}", json=payload, timeout=600)
             resp.raise_for_status()
@@ -156,15 +167,14 @@ class VisionRater:
             logger.warning("Vision frame grab failed: %s", err)
             return None
         content = ""
-        for attempt, (prompt, num_ctx, num_predict) in enumerate(_ATTEMPTS, 1):
+        steps = zip(_PROMPTS.get(style, _DEFAULT_PROMPTS), _ATTEMPTS, strict=True)
+        for attempt, (prompt, (num_ctx, num_predict)) in enumerate(steps, 1):
             payload = {
                 "model": self.model,
                 "messages": [
                     {
                         "role": "user",
-                        "content": (
-                            _PROMPT_SKI if style == "ski" and attempt == 1 else prompt
-                        ).format(n=n_frames, style=style),
+                        "content": prompt.format(n=n_frames, style=style),
                         "images": images,
                     }
                 ],
@@ -177,6 +187,7 @@ class VisionRater:
                     "num_predict": num_predict,
                 },
             }
+            self.used = True
             try:
                 resp = requests.post(f"{self.url}/api/chat", json=payload, timeout=300)
                 resp.raise_for_status()
@@ -199,6 +210,22 @@ class VisionRater:
             )
         logger.warning("Vision reply not parseable: %.120s", content)
         return None
+
+    def unload(self) -> None:
+        """Free the model's memory now (``keep_alive: 0``) instead of after Ollama's
+        default 5 minutes; only if this rater sent it a request. Failures are not fatal."""
+        if not self.used:
+            return
+        try:
+            resp = requests.post(
+                f"{self.url}/api/generate", json={"model": self.model, "keep_alive": 0}, timeout=10
+            )
+            resp.raise_for_status()
+        except requests.RequestException as err:
+            logger.debug("Could not unload Ollama model %s: %s", self.model, err)
+            return
+        self.used = False
+        logger.debug("Unloaded Ollama model %s", self.model)
 
 
 def _parse(content: str) -> VisionResult | None:
