@@ -76,7 +76,7 @@ current browser tab's session storage. After restarting the server, open its new
 | `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
 | `dev` | pytest, ruff, pre-commit. |
-| `all` | `ski`, `events` and `gpu`. |
+| `all` | `ski`, `events`, `gpu` and `ui`. |
 
 `uv sync` makes the environment match exactly the extras you name, so it removes the
 packages of any extra you leave out. List every extra you use each time:
@@ -85,12 +85,15 @@ packages of any extra you leave out. List every extra you use each time:
 uv sync --extra ski --extra events --extra gpu
 ```
 
+The easy way to keep everything is `uv sync --extra all` (`ski`, `events`, `gpu` and `ui`; the
+`dev` tools come by default). It includes the large torch download of `events`.
+
 With an NVIDIA GPU, `uv sync --extra gpu` is the minimum for GPU Whisper.
 
 The same rule applies when you add a missing extra later: use the install form that matches how
 you installed Cutpoint, and list every extra you use. In a clone that is `uv sync --extra X`
-plus your other extras. For a tool install it is `uv tool install "cutpoint[X]" --reinstall`
-plus your other extras; for a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add
+plus your other extras, or `uv sync --extra all`. For a tool install it is
+`uv tool install "cutpoint[X]" --reinstall` plus your other extras; for a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add
 the PyTorch index flags shown under [Install as a tool](#install-as-a-tool-optional).
 
 ### Install as a tool (optional)
@@ -117,7 +120,7 @@ A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on W
 (`uv pip` keeps an already-installed CPU-only torch unless you add `--reinstall-package torch
 --reinstall-package torchvision`); these need no index flags. `pip` and PyPI or wheel installs do
 not apply it. For a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add the PyTorch
-index:
+index (`all` is `ski`, `events`, `gpu` and `ui`):
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match

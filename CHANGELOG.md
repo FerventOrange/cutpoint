@@ -132,6 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `all` extra now includes `ui`, so `cutpoint[all]` and `uv sync --extra all` also install
+  the browser workspace (`cutpoint ui`). The missing-extra hint for a clone mentions
+  `--extra all`.
 - The HUD presets folder in `CUTPOINT_HOME` (`cutpoint paths`) is now trusted like the bundled
   folder: `"builtin": true` is honoured there, and only project `hud_presets` folders ignore it
   (with a WARNING). User and bundled presets never get a separate VLM cache key; a project preset

@@ -313,9 +313,10 @@ def install_hint(extra: str) -> str:
                 f'-e "{clone.as_posix()}[{extra}]"{_notes(gpu)}'
             )
         return (
-            f"uv sync --extra {extra} (list every other extra you use too: uv sync "
-            f"removes packages of extras you leave out), or: uv pip install --python "
-            f'"{sys.executable}" -e ".[{extra}]"{_notes(gpu)}'
+            f"uv sync --extra {extra} (list every other extra you use too, since uv sync removes "
+            f"packages of extras you leave out, or use --extra all for everything, a large "
+            f"download with torch and CUDA), or: uv pip "
+            f'install --python "{sys.executable}" -e ".[{extra}]"{_notes(gpu)}'
         )
     # pip ignores [tool.uv.sources], so it installs PyPI torch (CPU-only on Windows).
     gpu = _torch_index_note(False) if extra in TORCH_EXTRAS and sys.platform == "win32" else ""
