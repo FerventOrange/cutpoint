@@ -7,6 +7,7 @@ and the LLM is a stub.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,17 +109,23 @@ def test_crashes_json_warnings(ski, tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("warn_unreachable, expected", [(True, 1), (False, 0)])
-def test_detect_project_warn_unreachable(ski, tmp_path, capsys, warn_unreachable, expected):
+def test_detect_project_warn_unreachable(ski, tmp_path, capsys, caplog, warn_unreachable, expected):
+    """False (the events path, which already warned): no JSON warning and no WARNING line."""
     project, src = ski
     gone = tmp_path / "gone.mp4"
     sources = [{"path": str(gone), "duration": 60}, {"path": str(src), "duration": 60}]
     cache.save_json(project / "highlights.json", {"sources": sources})
-    with jsonout.run("crashes") as result:
+    with (
+        caplog.at_level(logging.DEBUG, logger=crash.logger.name),
+        jsonout.run("crashes") as result,
+    ):
         crash.detect_project(
             project, dense=False, sheets=0, activity_name="ski", warn_unreachable=warn_unreachable
         )
     capsys.readouterr()
     assert _codes_of(result.warnings).count("footage_unreachable") == expected
+    lines = [r for r in caplog.records if "footage not reachable" in r.getMessage()]
+    assert [r.levelno for r in lines] == [logging.WARNING if warn_unreachable else logging.DEBUG]
 
 
 def _codes_of(warnings: list[dict]) -> list[str]:
