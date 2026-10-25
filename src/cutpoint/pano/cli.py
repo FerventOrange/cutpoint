@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -83,8 +84,9 @@ def _set_folder_project(folder: Path) -> None:
     (``<project>/pano_paths/<name>``)."""
     if not jsonout.active():
         return
-    if folder.resolve().parent.name == "pano_paths":
-        jsonout.set_project(folder.resolve().parent.parent)
+    full = Path(os.path.abspath(folder))  # noqa: PTH100 - resolve() turns a mapped drive into UNC
+    if full.parent.name == "pano_paths":
+        jsonout.set_project(full.parent.parent)
         return
     from cutpoint.cli import _set_clips_project  # noqa: PLC0415 - cli imports this module
 
@@ -452,9 +454,8 @@ def cmd_director(a: argparse.Namespace) -> None:
         raise jsonout.ArgumentError(f"--out-name must be a plain folder name, got {name!r}")
     out_dir = project / "pano_paths" / name
     with output_dir(out_dir):  # a failed run leaves no empty folder behind
-        stems = _direct(a, project, clips, overrides, out_dir)
+        stems, vl_saved = _direct(a, project, clips, overrides, out_dir)
     if jsonout.active():
-        vl = out_dir / "vl_check.json"
         jsonout.output("paths_dir", out_dir)
         jsonout.output(
             "paths",
@@ -467,7 +468,7 @@ def cmd_director(a: argparse.Namespace) -> None:
             ],
         )
         jsonout.output("count", len(stems))
-        jsonout.output("vl_check", vl if vl.is_file() else None)
+        jsonout.output("vl_check", out_dir / "vl_check.json" if vl_saved else None)
 
 
 def _direct(
@@ -476,9 +477,9 @@ def _direct(
     clips: dict[str, Any],
     overrides: dict[str, Any] | None,
     out_dir: Path,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """The body of :func:`cmd_director`, writing into the existing ``out_dir``; returns the
-    stems of the paths written, in order."""
+    stems of the paths written, in order, and whether this run saved ``vl_check.json``."""
     from cutpoint.pano import director as D  # noqa: PLC0415
     from cutpoint.pano.project import (  # noqa: PLC0415
         RenderSource,
@@ -630,7 +631,7 @@ def _direct(
             sum(secs) / len(secs),
             max(secs),
         )
-    return [stem for stem, *_ in segs]
+    return [stem for stem, *_ in segs], bool(vl_report)
 
 
 def cmd_stitch(a: argparse.Namespace) -> None:
@@ -683,11 +684,15 @@ def cmd_stitch(a: argparse.Namespace) -> None:
             jsonout.warn(
                 "stitch_failed",
                 f"clip {r['clip']}: the stitch failed; see its log file",
-                [r["log_file"]] if r.get("log_file") else [],
+                [Path(r["log_file"])] if r.get("log_file") else [],
             )
     # Never the SDK's own output (``sdk``, ``log``, ``error``) or command line.
     keys = ("clip", "output", "status", "seconds", "log_file", "estimated_gb")
-    jsonout.output("clips", [{k: r[k] for k in keys if k in r} for r in recs])
+    path_keys = ("output", "log_file")  # Path, so the envelope has them absolute
+    jsonout.output(
+        "clips",
+        [{k: Path(r[k]) if k in path_keys else r[k] for k in keys if k in r} for r in recs],
+    )
     jsonout.output("dry_run", a.dry_run)
 
 

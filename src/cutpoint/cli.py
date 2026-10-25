@@ -360,10 +360,9 @@ def _cmd_mix(a: argparse.Namespace) -> None:
 def _report_mix(out: Path, report: dict) -> None:
     """``--json`` outputs of ``mix``: the files written, the moments and their durations."""
     segs = cache.load_json(out) or []
-    sheet = out.with_name("mix_sheet.jpg")
     jsonout.output("segments", out)
     jsonout.output("report", out.with_name("mix_report.json"))
-    jsonout.output("sheet", sheet if sheet.is_file() else None)
+    jsonout.output("sheet", report.get("sheet"))  # only one this run wrote
     jsonout.output(
         "moments",
         [

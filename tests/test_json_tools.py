@@ -21,9 +21,10 @@ from cutpoint.pano import check as pano_check
 from cutpoint.pano import director as D
 from cutpoint.pano import project as P
 from cutpoint.pano import qa as pano_qa
+from cutpoint.pano import render as pano_render
 from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import views as VW
-from cutpoint.pano import x3
+from cutpoint.pano import vlcheck, x3
 from pano_helpers import x3clip
 from test_jsonout import _envelope
 
@@ -119,6 +120,14 @@ def test_mix_json(mix_project, capsys):
     assert ("content_qa_failed" in _codes(doc)) is not report["content_qa"]["pass"]
 
 
+def test_mix_json_sheet_is_none_when_this_run_wrote_none(mix_project, monkeypatch, capsys):
+    write(mix_project / "mix_sheet.jpg", "an earlier run's sheet")
+    monkeypatch.setattr(mix, "_write_sheet", lambda segs, out: None)  # e.g. no frame decoded
+    code, doc = _json(capsys, ["mix", "ski", "--target", "25"])
+    assert code == 0 and doc["outputs"]["sheet"] is None
+    assert "sheet" not in cache.load_json(mix_project / "mix_report.json")
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="drive-relative paths are Windows only")
 def test_mix_json_warns_about_ignored_exclusions(mix_project, capsys):
     cache.save_json(mix_project / "mix_exclude.json", [{"source": "D:a.mp4", "start": 0, "end": 1}])
@@ -190,6 +199,15 @@ def test_stage_json_missing_input(home, tmp_path, plenty_of_space, capsys):
     assert code == 1 and doc["error"]["code"] == "not_found"
 
 
+def test_stage_json_relative_input_is_reported_absolute(
+    home, tmp_path, plenty_of_space, monkeypatch, capsys
+):
+    a = write(tmp_path / "footage" / "a.mp4", "aaaa")
+    monkeypatch.chdir(tmp_path)
+    code, doc = _json(capsys, ["stage", "footage"])
+    assert code == 0 and [f["source"] for f in doc["outputs"]["files"]] == [str(a)]
+
+
 # ----------------------------------------------------------------------------------- setup
 @pytest.fixture
 def fake_installs(monkeypatch) -> list[str]:
@@ -253,6 +271,18 @@ def test_setup_json_bad_component_is_bad_args(home, capsys):
     assert exc.value.code == 2
     doc = _envelope(capsys.readouterr().out)
     assert doc["command"] == "setup" and doc["error"]["code"] == "bad_args"
+
+
+def test_setup_json_visual_without_events_extra_is_missing_extra(home, monkeypatch, capsys):
+    real = setup.importlib.util.find_spec
+    monkeypatch.setattr(setup, "download", lambda url, dst: None)
+    monkeypatch.setattr(
+        setup.importlib.util, "find_spec", lambda m, *a: None if m == "torch" else real(m, *a)
+    )
+    code, doc = _json(capsys, ["setup", "--only", "visual"])
+    assert code == 1 and doc["ok"] is False
+    assert doc["error"]["code"] == "missing_extra"
+    assert doc["error"]["message"].startswith("torch is not installed; it comes with the 'events'")
 
 
 # ------------------------------------------------------------------------------ 360: helpers
@@ -376,6 +406,38 @@ def test_360_director_json(pano_project, monkeypatch, capsys):
     assert (out["count"], out["vl_check"]) == (1, None)
 
 
+def test_360_director_json_vl_check_only_when_this_run_saved_it(pano_project, monkeypatch, capsys):
+    project, clip = pano_project
+    segments = project / "picks.json"
+    cache.save_json(segments, [{"source": clip.lrv, "start": 1.0, "end": 4.0, "label": "jump"}])
+    out_dir = project / "pano_paths" / "director"
+    write(out_dir / "vl_check.json", "{}")  # an earlier run's
+    monkeypatch.setattr(
+        D, "compute_path", lambda *a, **k: {"version": D.PATH_VERSION, "keys": [], "cuts": []}
+    )
+    argv = ["360", "director", "trip", "--segments", str(segments), "--force"]
+    code, doc = _json(capsys, argv)
+    assert code == 0 and doc["outputs"]["vl_check"] is None
+
+    class Checker:
+        model, dead = "m", False
+
+        def available(self) -> bool:
+            return True
+
+    def render_segment(clip, path, start, end, preview, **_k) -> dict:
+        write(preview, "mp4")
+        return {"seconds": 0.1}
+
+    vl = {"bad": 0, "frames": 1, "flags": [], "seconds": 0.1}
+    monkeypatch.setattr(vlcheck, "VLChecker", Checker)
+    monkeypatch.setattr(vlcheck, "check_preview", lambda *a, **k: ([], vl))
+    monkeypatch.setattr(pano_render, "render_segment", render_segment)
+    code, doc = _json(capsys, [*argv, "--vl-check"])
+    assert code == 0 and doc["outputs"]["vl_check"] == str(out_dir / "vl_check.json")
+    assert cache.load_json(out_dir / "vl_check.json")["segments"][0]["stem"] == "001_jump"
+
+
 def test_360_director_json_bad_out_name(pano_project, capsys):
     code, doc = _json(capsys, ["360", "director", "trip", "--out-name", "../x"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
@@ -386,7 +448,7 @@ def test_360_stitch_json_never_reports_sdk_output(pano_project, monkeypatch, cap
     project, _ = pano_project
     log = project / "stitch.log"
     recs = [
-        {"clip": "001", "output": str(project / "a.mp4"), "status": "dry-run",
+        {"clip": "001", "output": "a.mp4", "status": "dry-run",
          "command": ["sdk", "-x"], "estimated_gb": 1.5},
         {"clip": "002", "output": str(project / "b.mp4"), "status": "failed", "seconds": 3.0,
          "log_file": str(log), "error": "sdk said no", "log": ["sdk line"], "sdk": {"x": 1}},
@@ -398,7 +460,7 @@ def test_360_stitch_json_never_reports_sdk_output(pano_project, monkeypatch, cap
     out = doc["outputs"]
     assert out["dry_run"] is True
     assert out["clips"] == [
-        {"clip": "001", "output": str(project / "a.mp4"), "status": "dry-run",
+        {"clip": "001", "output": str(Path("a.mp4").absolute()), "status": "dry-run",
          "estimated_gb": 1.5},
         {"clip": "002", "output": str(project / "b.mp4"), "status": "failed", "seconds": 3.0,
          "log_file": str(log)},

@@ -658,7 +658,8 @@ def run_mix(
             current folder: make it absolute first.
 
     Returns:
-        The report.
+        The report, plus ``sheet``: the contact sheet this run wrote, or None (not in
+        ``mix_report.json``).
     """
     r = rules or MixRules()
     q = quotas or DEFAULT_QUOTAS
@@ -746,8 +747,7 @@ def run_mix(
     )
     failed = [k for k, v in report["content_qa"]["checks"].items() if not v["ok"]]
     logger.info("mix content QA: %s", f"FAIL ({', '.join(failed)})" if failed else "pass")
-    if sheet:
-        _write_sheet(segs, out.with_name("mix_sheet.jpg"))
+    report["sheet"] = _write_sheet(segs, out.with_name("mix_sheet.jpg")) if sheet else None
     return report
 
 

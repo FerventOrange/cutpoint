@@ -568,7 +568,12 @@ def stage_sources(
 
 def _item(src: Path, dst: Path, size: int, status: str) -> dict[str, Any]:
     """One staged file for :func:`stage_sources`' ``items``."""
-    return {"source": str(src), "staged": str(dst.absolute()), "bytes": size, "status": status}
+    return {
+        "source": str(src.absolute()),
+        "staged": str(dst.absolute()),
+        "bytes": size,
+        "status": status,
+    }
 
 
 def _recorded_under(
