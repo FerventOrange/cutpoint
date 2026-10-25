@@ -119,6 +119,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The HUD presets folder in `CUTPOINT_HOME` (`cutpoint paths`) is now trusted like the bundled
+  folder: `"builtin": true` is honoured there, and only project `hud_presets` folders ignore it
+  (with a WARNING). User and bundled presets never get a separate VLM cache key; a project preset
+  gets one only when its prompt differs from the user (or bundled) preset of the same game key.
+  After adding a user preset with `title`, `view` or `hype`, or editing those fields in one, run `cutpoint events <project> --force vlm`.
 - `profile --json` writes the result envelope: the `activity.json` record it printed before is
   under `outputs` with the same keys, plus `activity_file` (its path) (#4).
 - `cutpoint capabilities --json` writes the result envelope: the report it printed before is now
