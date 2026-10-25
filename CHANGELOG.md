@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docs for the `--json` result envelope: a "JSON output" section in `docs/commands.md` (envelope,
+  error and warning codes, `outputs` keys per command), `--json` in the options of each command
+  that has it, and `AGENTS.md`, the skill and the FAQ no longer call it planned; `events`,
+  `crashes` and `profile` are still planned (#4).
 - `--json` result envelope, starting with `cutpoint paths --json`: the command writes exactly one
   JSON object to stdout, `{"ok", "command", "schema": 1, "project", "outputs", "warnings",
   "error"}`, with `error.code` one of `bad_args`, `not_found`, `ffmpeg_missing`,

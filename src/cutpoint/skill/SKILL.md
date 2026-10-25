@@ -59,9 +59,12 @@ Choosing the moments yourself:
   background or with a long timeout.
 - Results are files: read the JSON in the project folder instead of parsing logs. Logs and
   errors go to stderr as `HH:MM:SS LEVEL message`; exit code `0` is success.
-- Machine-readable stdout (`--json` on every command) is planned and does not exist yet. Today
-  only `cutpoint profile --json`, `cutpoint capabilities --json` and
-  `cutpoint 360 repair --json` print JSON; `cutpoint 360 qa` writes a `qa.json` file.
+- `--json` prints the result as one JSON object on stdout (logs stay on stderr): `ok`, `command`,
+  `schema`, `project`, `outputs` (absolute paths and key facts), `warnings` (`code`, `message`,
+  `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `clips`,
+  `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup` and every `360`
+  subcommand. `events` and `crashes` do not have it yet; `cutpoint profile --json` prints the
+  profile instead.
 - Check `cutpoint <command> --help`; never invent options.
 - When done, report the absolute paths of `final.mp4` (and the `<name>-final.mp4` copy after
   `cutpoint edit`), its `.srt` and the clips folder, exactly as the last log lines print them;
