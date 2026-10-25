@@ -34,3 +34,13 @@ def test_build_messages_uses_media_content(tmp_path: Path):
     assert "input_audio" in {c["type"] for c in media}
     assert "nice shot" in text and "Laughter" in text
     assert content[1:-1] == media
+
+
+def test_hints_builtin_kill_says_whose_kill():
+    def hint(**fields):
+        ev = {"kind": "ocr", "type": "kill", "text": "a > b", "t": 5.0, **fields}
+        return vw._hints([ev], 0.0, 10.0)
+
+    assert hint(player_death=True).endswith("a > b (the PLAYER died)")
+    assert hint(player_kill=True).endswith("a > b (the PLAYER's kill)")
+    assert hint().endswith("a > b")
