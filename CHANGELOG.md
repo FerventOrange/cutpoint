@@ -135,6 +135,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Requested resampling engine is unavailable" on ffmpeg builds without libsoxr (such as the
   gyan.dev "essentials" build). The limiter uses soxr only when the build has it, else ffmpeg's
   default resampler.
+- `cutpoint ui` shows one banner when the server restarted or the link's session token is stale
+  ("The Cutpoint server restarted or this link expired. Open the new link printed in the
+  terminal.") and stops polling, prepare retries and timers, instead of failing repeatedly.
+  Other 403 errors (host or origin guard) are unchanged.
+- `cutpoint ui` applies edits to `source_remap` and `source_remap_exclude` in `config.json` on
+  the next request; the cached source list used to keep the old mapping for up to 60 s.
 - `cutpoint ui` no longer probes every source with ffprobe when a project opens (200 sources took
   about 12 s, now about 0.1 s). Each source is probed when the player first loads it.
 - `cutpoint ui` shows the real error for an unanalyzed project whose source folder is missing or
