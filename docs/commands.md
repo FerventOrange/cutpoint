@@ -147,7 +147,8 @@ read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a 
 Settings also has "Rate frames with a local vision model (Ollama)" (off by default; saved as
 [`vision`](configuration.md#vision) in `config.json`): every analysis the UI starts, a first
 one or "Analyze again", uses it (passed as `--vision` or `--no-vision`), and it is the default of
-`analyze` and `edit` on the command line. The UI has no per-run vision checkbox.
+`analyze` and `edit` on the command line. The UI has no per-run vision checkbox. "Analyze again"
+keeps the Ollama model, URL and vision-top the last analysis recorded.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which

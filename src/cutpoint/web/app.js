@@ -1331,7 +1331,7 @@ async function openSettings() {
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
   box.checked = st.vision === true;
   box.dataset.saved = String(box.checked);
-  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting. Saved in ${st.config_file}.`;
+  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.`;
   d.showModal();
   // a locked folder cannot be edited: start on the first control that can
   (st.projects_dir_locked ? box : input).focus();
