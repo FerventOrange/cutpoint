@@ -11,6 +11,7 @@ import re
 import sys
 import time
 import wave
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -188,17 +189,20 @@ class Transcriber:
         self.device = "cpu"
         self.close()
 
-    def transcribe(self, wav: Path) -> list[Segment]:
-        """Transcribe ``wav`` with word timestamps."""
+    def transcribe(
+        self, wav: Path, on_progress: Callable[[float], None] | None = None
+    ) -> list[Segment]:
+        """Transcribe ``wav`` with word timestamps; ``on_progress`` gets the share of the
+        audio transcribed so far (0-1) as each segment is decoded."""
         try:
-            return self._run(wav)
+            return self._run(wav, on_progress)
         except (RuntimeError, OSError) as err:
             if self.device != "cuda":
                 raise
             self._fallback_to_cpu(err)
-            return self._run(wav)
+            return self._run(wav, on_progress)
 
-    def _run(self, wav: Path) -> list[Segment]:
+    def _run(self, wav: Path, on_progress: Callable[[float], None] | None = None) -> list[Segment]:
         model = self._load()
         segments, info = model.transcribe(
             load_wav(wav),
@@ -223,6 +227,8 @@ class Transcriber:
                 pct = int(seg.end / total * 100)
                 logger.info("  transcribe: %d%% (%.0fs elapsed)", pct, time.perf_counter() - t0)
                 next_pct = (pct // 10 + 1) * 10
+            if on_progress is not None and total > 0:
+                on_progress(min(1.0, seg.end / total))
             result.append(
                 {
                     "start": round(seg.start, 3),

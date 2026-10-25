@@ -1,13 +1,14 @@
 # Game streams and gameplay recordings
 
 Use style `gaming` for fast gameplay with commentary. `commentary` suits long stream VODs where
-the talk matters more than the action. The optional `events` command adds sound events,
-HUD text (kill feeds, round banners) and model descriptions, which re-rank the candidates and let
-clips run on to the payoff after the banter.
+the talk matters more than the action. `analyze` also runs the sound-event and HUD-text steps (kill feeds, round banners) when the `events`
+extra and models are installed, which re-rank the candidates and let clips run on to the payoff
+after the banter; otherwise those steps are skipped with an INFO line. The optional `events`
+command adds the model descriptions (`vlm` layer) and can force layers.
 
 ```powershell
 cutpoint analyze D:\Videos\Game --style gaming --out match-night
-cutpoint events match-night --player YourGameName     # needs the `events` extra and `cutpoint setup`
+cutpoint events match-night --player YourGameName     # optional: VLM layer, forced layers; needs the `events` extra and `cutpoint setup`
 cutpoint clips match-night --top 8
 cutpoint assemble projects/match-night/clips --transition fade --loudnorm
 ```
@@ -28,7 +29,7 @@ This needs your name set, as above; other styles are unchanged.
 | `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, "N VS M", multi-kills |
 | `vlm` | A local Qwen2.5-Omni model describes candidate windows from frames, audio and transcript |
 
-Outputs: `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
+Outputs (written by `analyze` and by `events`): `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
 events by time, which is the easiest file to read when picking segments:
 
 ```text
@@ -52,7 +53,7 @@ preset with `"builtin": true` in the user folder keeps the built-in interpretati
 folder it is read as a generic preset (see [Configuration](../configuration.md#hud-presets)). The game is
 picked from the file or folder name, or set with `--game KEY`.
 
-For a game without a preset, `events` runs region discovery automatically. It samples bursts of
+For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events` run region discovery automatically; `analyze` logs `first run for <game>: discovering HUD regions`, which can take several minutes on CPU OCR. It samples bursts of
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and
 world text, and writes a proposal to `<project>\discovery\<game>\` (`proposal.json`, `overlay.jpg`)
 and installs it as a preset. Check `overlay.jpg`, then edit the preset JSON to calibrate.

@@ -45,7 +45,9 @@ user asks for it. If the user's `config.json` has `"vision": true`, it is on by 
 
 Choosing the moments yourself:
 
-1. `cutpoint analyze <video> --style <style> --out <project>`.
+1. `cutpoint analyze <video> --style <style> --out <project>`. It also runs the reaction, keyframe
+   and crash steps it can (skipped with an INFO line when the extra or models are missing;
+   `--skip reactions keyframes crashes` leaves them out) and writes `events.json`.
 2. Read `highlights.json` (ranked `candidates` with `id`, `start`, `end`, `score`, `label`,
    `transcript`) and `transcript.txt` in the project folder.
 3. Export: `cutpoint clips <project> --top 8`, `cutpoint clips <project> --ids h001 h004` or
@@ -60,7 +62,7 @@ Choosing the moments yourself:
 - Ask the user before `cutpoint setup` (about 8 GB of downloads), `cutpoint stage` (copies
   footage to local disk), and before `cutpoint clips --force` or `cutpoint edit --force` over a
   non-empty folder.
-- Transcription, `cutpoint events` and export can take minutes to hours: run them in the
+- Transcription, `cutpoint analyze`, `cutpoint events` and export can take minutes to hours: run them in the
   background or with a long timeout.
 - Results are files: read the JSON in the project folder instead of parsing logs. Logs and
   errors go to stderr as `HH:MM:SS LEVEL message`; exit code `0` is success.

@@ -52,6 +52,11 @@ documents every key.
     Ollama vision model unless ``--no-vision`` is given (``--vision`` turns it on for one run).
     Default ``false``: vision is opt-in. ``cutpoint ui`` changes it in Settings.
 
+``analysis``
+    ``{"skip": [...]}``: analysis steps ``cutpoint analyze`` and ``cutpoint edit`` leave out
+    by default, any of ``reactions``, ``keyframes`` and ``crashes`` (``--skip`` overrides it
+    per run). Default: none.
+
 ``pano``
     Insta360 settings, read by :func:`cutpoint.pano.project.pano_config`.
 
@@ -94,6 +99,7 @@ class Config:
     ollama_url: str = ""
     video_encoder: str = "auto"
     vision: bool = False
+    analysis_skip: tuple[str, ...] = ()
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -209,6 +215,7 @@ def _load_config(path: Path) -> Config:
     _check_type(path, data, "source_remap_exclude", _is_str_list, "a list of strings")
     _check_type(path, data, "player_tags", _is_str_or_list, "a list of names")
     _check_type(path, data, "vision", _is_bool, "true or false")
+    skip = _analysis_skip(path, data)
     projects = resolve_projects_dir(data)
     remap = data.get("source_remap") or {}
     # Longest prefix first, so nested prefixes win.
@@ -232,7 +239,30 @@ def _load_config(path: Path) -> Config:
         str(data.get("ollama_url") or ""),
         encoder,
         data.get("vision") is True,
+        skip,
     )
+
+
+def _analysis_skip(path: Path, data: dict) -> tuple[str, ...]:
+    """``analysis.skip`` of config ``data``, checked against the steps that can be skipped."""
+    from cutpoint.progress import SKIPPABLE  # noqa: PLC0415
+
+    _check_type(path, data, "analysis", lambda v: isinstance(v, dict), "an object")
+    section = data.get("analysis") or {}
+    _check_type(
+        path,
+        {"analysis.skip": section.get("skip")},
+        "analysis.skip",
+        _is_str_list,
+        "a list of step names",
+    )
+    skip = tuple(dict.fromkeys(section.get("skip") or ()))
+    bad = [s for s in skip if s not in SKIPPABLE]
+    if bad:
+        raise ValueError(
+            f"{path}: analysis.skip has {bad[0]!r}; expected any of {', '.join(SKIPPABLE)}"
+        )
+    return skip
 
 
 def set_config_value(key: str, value: object, path: Path | None = None) -> Path:
@@ -282,6 +312,12 @@ def vision_default() -> bool:
     """Whether ``analyze`` and ``edit`` rate frames with Ollama when neither ``--vision`` nor
     ``--no-vision`` is given (``vision`` in ``config.json``; default False)."""
     return get_config().vision
+
+
+def analysis_skip() -> tuple[str, ...]:
+    """Analysis steps left out when ``--skip`` is not given (``analysis.skip`` in
+    ``config.json``; default none)."""
+    return get_config().analysis_skip
 
 
 def player_tags() -> tuple[str, ...]:

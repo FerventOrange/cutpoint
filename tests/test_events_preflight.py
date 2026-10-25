@@ -226,7 +226,7 @@ def ambiguous(monkeypatch):
     monkeypatch.setattr(
         activity, "_text_emb", lambda prompts: np.ones((len(prompts), 4), np.float32)
     )
-    monkeypatch.setattr(activity, "keyframes", lambda project: (v, []))
+    monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (v, []))
 
 
 def test_profile_unloads_only_the_model_it_used(monkeypatch, tmp_path: Path, ambiguous):

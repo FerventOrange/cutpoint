@@ -13,7 +13,7 @@ everything into a project folder.
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
-| `cutpoint edit`: analyze, clips and assemble in one command | |
+| `cutpoint edit`: analyze, clips and assemble in one command; `analyze` includes the reaction, keyframe and crash steps | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `360 ...` | |
@@ -50,7 +50,7 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
   `ok`, `command`, `schema`, `project`, `outputs`, `warnings` (`code`, `message`, `files`) and
   `error` (`code`, `message`, or `null`). `error.code` is `bad_args` (exit 2), `not_found`,
   `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `interrupted` (130) or `error`.
-  Read `warnings` such as `kept_clips` and tell the user. Keys:
+  Read `warnings` such as `kept_clips` and `step_failed` and tell the user. With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step ([docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output)). Keys:
   [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output).
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
   `clips` refuses a non-empty output folder without `--force`, which replaces only the clips its
@@ -59,7 +59,7 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
   user, and move them out only if they are clips you exported, never delete a file you did not
   export). If such a clip has the name of a new clip, the run stops before exporting with an
   `ERROR` naming it; tell the user to move or rename it.
-- Transcription, `events` and export can take minutes to hours. Run them in the background or
+- Transcription, `analyze` steps, `events` and export can take minutes to hours. Run them in the background or
   with a long timeout.
 - Never modify or delete the user's source videos. You may delete or rename clips in a project's
   `clips` folder during review.
@@ -102,9 +102,12 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
 
    Writes `highlights.json` and `transcript.txt` into the project folder (`<projects>\clip-edit`, see
    `cutpoint paths`).
-3. **Optional, game footage or when a model-based pass is requested:**
-   `uv run cutpoint events clip-edit` (needs the `events` extra and `cutpoint setup`). It
-   re-ranks `highlights.json` and writes `events.json` and `events.txt`. If it reports a missing
+3. **Optional, for the VLM layer or to force layers:**
+   `uv run cutpoint events clip-edit` (needs the `events` extra and `cutpoint setup`).
+   `analyze` already ran the reaction, keyframe and crash steps it can (steps are skipped with
+   an INFO line when the extra or model files are missing; `--skip reactions keyframes crashes`, given after the paths,
+   leaves them out) and wrote `events.json` and `events.txt`. `events` adds the VLM layer,
+   re-ranks `highlights.json` and rewrites those files. If it reports a missing
    module, tell the user how to add the extra (see [When something fails](#when-something-fails)).
 4. **Choose moments.** Read `highlights.json` (`candidates` with `id`, `source`, `start`, `end`,
    `score` 0-100, `label`, `transcript`; `suggested_top`) and, for banter and funny moments,
@@ -151,14 +154,14 @@ Variants:
 
 | File | Written by | Content |
 |---|---|---|
-| `highlights.json` | `analyze`, `events` | Ranked candidates and settings |
+| `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates and settings |
 | `transcript.txt` | `analyze` | Time-stamped transcript |
-| `events.json`, `events.txt` | `events` | Detected sounds, HUD events, model descriptions |
+| `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, srt |
 | `clips/001_<label>.srt`, ... | `clips`, `extend` | Subtitles of each clip, from the cached transcript |
 | `final.mp4`, `final.fcpxml`, `final.otio`, `final.srt` | `assemble` | Result, timelines and subtitles |
 | `<name>-final.mp4`, `<name>-final.srt` | `edit` | Copy of the final video and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
-| `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands | See the action-cam page |
+| `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands; `crashes.json` also `analyze` (action footage) | See the action-cam page |
 | `activity.json` | `profile`, `crashes` | Activity profile in use: `name`, `source`, `profile` |
 
 ## When something fails

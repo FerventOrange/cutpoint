@@ -13,12 +13,17 @@ word boundaries, optionally re-scored by a vision model, and written to
 
 from __future__ import annotations
 
+import contextlib
+import gc
+import importlib.util
 import logging
 import math
 import os
 import re
+import sys
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
@@ -27,16 +32,19 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, jsonout
+from cutpoint import cache, jsonout, progress
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
-from cutpoint.events.scoring import rescore_highlights
+from cutpoint.events import paths as event_paths
+from cutpoint.events.scoring import rescore
+from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
     MediaInfo,
     ProgressResult,
     extract_audio,
+    ffprobe_json,
     momentary_loudness,
     output_dir,
     probe,
@@ -44,6 +52,7 @@ from cutpoint.ffmpeg_utils import (
     run_progress,
     wav_duration,
 )
+from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors
 from cutpoint.styles import LAUGHTER, PROFANITY, Style
 from cutpoint.transcribe import (
@@ -65,6 +74,10 @@ PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
 VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
 SHORTFALL_S, SHORTFALL_FRAC, SHORTFALL_FLOOR_S = 2.0, 0.01, 0.5  # truncation thresholds
 RESUME_STEPS_S = (5, 10, 20, 40, 80, 160, 320)  # probe offsets past a read failure
+EXTRACT_SHARE = 0.1  # the audio extract's share of a source in the transcribe step's pct
+EXTRACT_POLL_S = 0.5  # how often the growing WAV is measured for that pct
+WAV_BYTES_PER_S = 16000 * 2  # extract_audio's 16 kHz mono s16 output
+WAV_HEADER = 44
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
@@ -216,13 +229,44 @@ def _loudness(wav: Path, cdir: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(data["t"]) - 0.2, np.asarray(data["m"])
 
 
-def _transcript(wav: Path, cdir: Path, tr: Transcriber) -> list[Segment]:
+def _transcript(
+    wav: Path, cdir: Path, tr: Transcriber, on_progress: Callable[[float], None] | None = None
+) -> list[Segment]:
     path = cdir / f"transcript-{tr.model_name}.json"
     data = cache.load_json(path)
     if data is None:
-        data = tr.transcribe(wav)
+        data = tr.transcribe(wav, on_progress) if on_progress else tr.transcribe(wav)
         cache.save_json(path, data)
     return data
+
+
+@contextlib.contextmanager
+def _watch_extract(
+    wav: Path, seconds: float, report: Callable[[float], None] | None
+) -> Iterator[None]:
+    """While the block runs :func:`extract_audio` into ``wav``, report the share of its
+    ``seconds`` written so far (0-1), measured from the size of the growing temp WAV."""
+    if report is None or seconds <= 0:
+        yield
+        return
+    tmp = wav.with_suffix(".tmp.wav")  # extract_audio's temp file, renamed when complete
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.wait(EXTRACT_POLL_S):
+            try:
+                size = tmp.stat().st_size
+            except OSError:  # not created yet
+                continue
+            report(min(1.0, max(0, size - WAV_HEADER) / (WAV_BYTES_PER_S * seconds)))
+
+    thread = threading.Thread(target=poll, name="extract-progress", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
 
 
 def scene_cuts(
@@ -512,6 +556,19 @@ def _label(c: Candidate, style: Style) -> str:
 
 # --------------------------------------------------------------------------- main entry
 @dataclass
+class PartSignals:
+    """What :func:`pick_candidates` needs of one analysed part (part-relative time)."""
+
+    n: int
+    sig: dict[str, np.ndarray]
+    kw_hits: list[tuple[float, float, str]]
+    laugh_hits: list[tuple[float, float, str]]
+    words: list[dict[str, Any]]
+    segments: list[Segment]
+    cuts: list[float]
+
+
+@dataclass
 class SourceResult:
     """Output of :func:`analyze_source` for one source or recovered part.
 
@@ -523,6 +580,7 @@ class SourceResult:
         candidates: Candidates in absolute source time.
         segments: Transcript in absolute source time.
         read_error: The ``read_errors.json`` record if reading was cut short.
+        signals: The signals the candidates are picked from.
     """
 
     source: Path
@@ -532,6 +590,7 @@ class SourceResult:
     candidates: list[Candidate]
     segments: list[Segment]
     read_error: dict[str, Any] | None
+    signals: PartSignals | None = None
 
 
 def _shortfall_limit(expected: float) -> float:
@@ -665,6 +724,8 @@ def analyze_source(
     offset: float = 0.0,
     recover: bool = False,
     ski_ctx: Any = None,
+    pick: bool = True,
+    report: Callable[[float], None] | None = None,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -672,7 +733,10 @@ def analyze_source(
     transcript are returned in absolute source time. With ``ski_ctx`` (a
     :class:`cutpoint.ski.SkiContext`), candidates come from the ski
     feature grid instead of the generic signals. ``src`` is the original path
-    (recorded everywhere); files are read through ``source_remap``.
+    (recorded everywhere); files are read through ``source_remap``. With ``pick``
+    False no candidates are picked yet (:func:`pick_candidates` does it later).
+    ``report`` gets the share of the source's transcription done (0-1): the audio
+    extract is its first :data:`EXTRACT_SHARE`, Whisper the rest.
     """
 
     def tick(name: str, t0: float) -> None:
@@ -689,8 +753,22 @@ def analyze_source(
         t0 = time.perf_counter()
         wav = cdir / "audio16k.wav"
         res = None
+
+        def at(frac: float) -> float:
+            """Position of ``frac`` of this part in the whole source (0-1)."""
+            return (offset + frac * span) / info.duration
+
+        def extracted(frac: float) -> None:
+            if report is not None:
+                report(EXTRACT_SHARE * at(frac))
+
+        def transcribed(frac: float) -> None:
+            if report is not None:
+                report(EXTRACT_SHARE + (1 - EXTRACT_SHARE) * at(frac))
+
         if not wav.exists():
-            res = extract_audio(io, wav, info, start=offset)
+            with _watch_extract(wav, span, extracted if report else None):
+                res = extract_audio(io, wav, info, start=offset)
         tick("audio_extract_s", t0)
         read_error = check_read(src, info, offset, wav, cdir, res)
         if read_error:
@@ -702,7 +780,7 @@ def analyze_source(
         tick("loudness_s", t0)
 
         t0 = time.perf_counter()
-        segments = _transcript(wav, cdir, tr)
+        segments = _transcript(wav, cdir, tr, transcribed if report else None)
         tick("transcribe_s", t0)
         segments, dropped = filter_hallucinations(segments)
         if dropped:
@@ -740,6 +818,45 @@ def analyze_source(
         sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
         tick("scenes_s", t0)
 
+    res = SourceResult(
+        source=src,
+        info=info,
+        offset=offset,
+        duration=span,
+        candidates=[],
+        segments=_shift_segments(segments, offset),
+        read_error=read_error,
+        signals=PartSignals(n, sig, kw_hits, laugh_hits, words, segments, cuts),
+    )
+    if pick:
+        res.candidates = pick_candidates(res, style, max_candidates, timings, ski_ctx)
+    where = f" from {clock(offset)}" if offset else ""
+    logger.info(
+        "%s%s: %.0fs, %d words, %d scene cuts%s",
+        src.name,
+        where,
+        span,
+        len(words),
+        len(cuts),
+        f", {len(res.candidates)} candidates" if pick else "",
+    )
+    return res
+
+
+def pick_candidates(
+    res: SourceResult,
+    style: Style,
+    max_candidates: int | None,
+    timings: dict[str, float],
+    ski_ctx: Any = None,
+) -> list[Candidate]:
+    """Candidates of one analysed part (:func:`analyze_source`), in absolute source time."""
+    src, span, offset = res.source, res.duration, res.offset
+    ps = res.signals
+    if ps is None:
+        raise ValueError(f"{src}: no signals to pick candidates from")
+    n, sig, kw_hits, laugh_hits = ps.n, ps.sig, ps.kw_hits, ps.laugh_hits
+    words, segments = ps.words, ps.segments
     if ski_ctx is not None:
         cands = _ski_candidates(
             src, n, span, sig, offset, style, ski_ctx, max_candidates, segments, timings
@@ -752,7 +869,7 @@ def analyze_source(
         combined = sum(style.weights.get(k, 0.0) * v for k, v in sig.items())
         cands = _merge(_pick_windows(src, combined, sig, style, span, max_candidates), style)
         for c in cands:
-            _snap(c, cuts, segments, span, style)
+            _snap(c, ps.cuts, segments, span, style)
         cands = _resolve_overlaps(cands, style)
     wsum = sum(style.weights.values()) or 1.0
     for c in cands:
@@ -771,25 +888,7 @@ def analyze_source(
         if offset:  # back to absolute source time: clips cut the original file
             c.start, c.end = round(c.start + offset, 3), round(c.end + offset, 3)
             c.peak_t += offset
-    where = f" from {clock(offset)}" if offset else ""
-    logger.info(
-        "%s%s: %.0fs, %d words, %d scene cuts, %d candidates",
-        src.name,
-        where,
-        span,
-        len(words),
-        len(cuts),
-        len(cands),
-    )
-    return SourceResult(
-        source=src,
-        info=info,
-        offset=offset,
-        duration=span,
-        candidates=cands,
-        segments=_shift_segments(segments, offset),
-        read_error=read_error,
-    )
+    return cands
 
 
 def _ski_candidates(
@@ -903,6 +1002,316 @@ def _find_inputs(
     return list(dict.fromkeys(found))
 
 
+# --------------------------------------------------------------------------- analysis steps
+GAME_STYLES = ("gaming", "funny")  # keyframes: HUD OCR (with region discovery)
+ACTION_STYLES = ("action", "sport", "ski")  # keyframes: CLIP; crash detection
+# Skip reasons of plan_layers (the PROGRESS ``detail``) and, for keyframes, why
+# crashes.json has no visual layer (its ``no_visual_layer`` warning).
+SKIP_OPTION = "left out by --skip or analysis.skip"
+SKIP_NO_EXTRA = "events extra not installed"
+SKIP_NO_CUDA = "no CUDA GPU (CLIP on the CPU: about an hour per hour)"
+NO_VISUAL_REASON = {
+    SKIP_OPTION: "keyframes left out by --skip or analysis.skip",
+    SKIP_NO_EXTRA: "the events extra is not installed",
+    SKIP_NO_CUDA: "no CUDA GPU for the keyframes step",
+}
+LAYER_STEP = {
+    "audio": "reactions",
+    "voice": "reactions",
+    "visual": "keyframes",
+    "ocr": "keyframes",
+    "crash": "crashes",
+    "write": "ranking",
+}
+
+
+@dataclass
+class LayerPlan:
+    """The event layers ``analyze`` runs per step, and why the other steps are left out.
+
+    Attributes:
+        layers: ``{step: layers}`` of the steps that run (:data:`LAYER_STEP` order).
+        skipped: ``{step: reason}`` of the steps left out.
+        game: Game footage: cached HUD OCR events count even when OCR does not run.
+    """
+
+    layers: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    skipped: dict[str, str] = field(default_factory=dict)
+    game: bool = False
+
+    def all_layers(self) -> tuple[str, ...]:
+        """Every planned layer, in the order :func:`run_events` runs them."""
+        return tuple(x for x in LAYER_STEP if any(x in v for v in self.layers.values()))
+
+
+def has_telemetry(src: Path) -> bool:
+    """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
+    trailer); only the container's stream list is read."""
+    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+
+    try:
+        if imu_source(src) is not None:
+            return True
+        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=60)
+    except (OSError, FFmpegError):
+        return False
+    return any(s.get("codec_tag_string") == "gpmd" for s in info.get("streams") or [])
+
+
+def _cuda() -> bool:
+    """Whether torch sees a CUDA GPU; False when torch itself fails to load (a broken
+    install, a missing DLL), so the analysis goes on without the GPU-only steps."""
+    try:
+        import torch  # noqa: PLC0415
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        logger.debug("torch CUDA check failed", exc_info=True)
+        return False
+
+
+def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) -> LayerPlan:
+    """Which event layers the reactions, keyframes and crashes steps run.
+
+    Reactions: the PANNs audio events (plus the voice layer for action-cam footage, whose
+    crash audio score reads it). Keyframes: HUD OCR for game styles, the CLIP visual layer
+    for action footage (only with a CUDA GPU). Crashes: action-cam footage only (telemetry,
+    or an action style). A step whose events extra or model files are missing is left out
+    with one INFO line naming the fix; nothing is downloaded.
+    """
+    plan = LayerPlan(game=style.base in GAME_STYLES)
+    action = style.kind == "ski" or style.base in ACTION_STYLES
+    for step in SKIPPABLE:
+        if step in skip:
+            plan.skipped[step] = SKIP_OPTION
+    want = plan.layers
+    if "crashes" not in plan.skipped:
+        if action or any(has_telemetry(s) for s in sources):
+            want["crashes"] = ("crash",)
+        else:
+            plan.skipped["crashes"] = "not action-cam footage"
+    if "reactions" not in plan.skipped:
+        want["reactions"] = ("audio", "voice") if "crashes" in want else ("audio",)
+    if "keyframes" not in plan.skipped:
+        if plan.game:
+            want["keyframes"] = ("ocr",)
+        elif action:
+            want["keyframes"] = ("visual",)
+        else:
+            plan.skipped["keyframes"] = f"no keyframe layer for the {style.name} style"
+    if not want:
+        return plan
+    missing = [m for m in EVENTS_MODULES if importlib.util.find_spec(m) is None]
+    if missing:
+        from cutpoint.extras import install_hint  # noqa: PLC0415
+
+        names = [LABELS[s].lower() for s in want]
+        logger.info(
+            "The events extra is not installed, so the %s %s skipped; to add it: %s",
+            " and ".join([", ".join(names[:-1]), names[-1]] if len(names) > 1 else names),
+            "step is" if len(names) == 1 else "steps are",
+            install_hint("events"),
+        )
+        for step in want:
+            plan.skipped[step] = SKIP_NO_EXTRA
+        want.clear()
+        return plan
+    if "keyframes" in want and want["keyframes"] == ("visual",) and not _cuda():
+        logger.info(
+            "No CUDA GPU: keyframes skipped (CLIP on the CPU would take about an hour per "
+            "hour of footage)"
+        )
+        plan.skipped["keyframes"] = SKIP_NO_CUDA
+        del want["keyframes"]
+    components: dict[str, None] = {}
+    for step, layers in list(want.items()):
+        files = event_paths.missing_files(layers)
+        if not files:
+            continue
+        components.update(dict.fromkeys(comp for comp, _ in files))
+        rest = tuple(x for x in layers if x != "voice")
+        if "voice" in layers and not event_paths.missing_files(rest):
+            want[step] = rest  # reactions without the voice layer
+            continue
+        need = " ".join(dict.fromkeys(comp for comp, _ in files))
+        plan.skipped[step] = f"model files missing (cutpoint setup --only {need})"
+        del want[step]
+    if components:
+        logger.info(
+            "Model files are missing for some analysis steps (nothing is downloaded now); "
+            "to add them: cutpoint setup --only %s",
+            " ".join(sorted(components, key=COMPONENTS.index)),
+        )
+    return plan
+
+
+class _StepHook:
+    """``run_events``'s ``stage`` for :func:`analyze`: each layer reports as its step; a
+    layer that fails fails its step (an ERROR line and a ``step_failed`` warning), and the
+    next steps still run."""
+
+    def __init__(self, steps: progress.Run) -> None:
+        self.steps = steps
+        self.failed: set[str] = set()
+
+    @contextlib.contextmanager
+    def __call__(self, layer: str) -> Iterator[None]:
+        step = LAYER_STEP[layer]
+        if step not in self.failed:
+            self.steps.start(step)
+        if layer == "write":  # events.json: an error here stops the run
+            yield
+            return
+        try:
+            yield
+        except Exception as err:
+            message = f"{LABELS[step]} failed: {err}; continuing without it"
+            logger.debug("%s layer failed", layer, exc_info=True)
+            logger.error("%s", message)
+            jsonout.warn("step_failed", message)
+            if self.steps.current == step:
+                self.steps.fail(message)
+            self.failed.add(step)
+
+
+def _ocr_options(project: Path) -> tuple[tuple[str, ...], str]:
+    """Player tags and HUD game for the OCR layer. Tags: ``player_tags`` in config.json,
+    or when it has none those of the last ``cutpoint events`` run (its ``--player``, kept
+    in events.json). Game: that run's ``--game`` when it was not ``auto``."""
+    from cutpoint.config import player_tags  # noqa: PLC0415
+
+    tags, game = player_tags(), "auto"
+    doc = cache.load_json(project / "events.json")
+    settings = doc.get("settings") if isinstance(doc, dict) else None
+    prev = settings.get("ocr") if isinstance(settings, dict) else None
+    if not isinstance(prev, dict):
+        return tags, game
+    reused = []
+    old = prev.get("tags")
+    if not tags and isinstance(old, list) and old and all(isinstance(t, str) for t in old):
+        tags = tuple(old)
+        reused.append(f"{len(tags)} player tag{'s' if len(tags) != 1 else ''}")
+    old_game = prev.get("game")
+    if isinstance(old_game, str) and old_game and old_game != game:
+        game = old_game
+        reused.append(f"game {game}")
+    if reused:
+        logger.info("Reusing %s from the last `cutpoint events` run", " and ".join(reused))
+    return tags, game
+
+
+def _run_layers(
+    project: Path, plan: LayerPlan, hl: dict[str, Any], steps: progress.Run, llm: bool
+) -> bool:
+    """Run the planned event layers on the analysis ``hl`` (not written yet) and write
+    events.json, as ``cutpoint events`` would; False if they stopped before writing it."""
+    from cutpoint.crash import no_visual_reason  # noqa: PLC0415
+    from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
+    from cutpoint.events.common import pending_highlights  # noqa: PLC0415
+    from cutpoint.events.killfeed import OcrParams  # noqa: PLC0415
+    from cutpoint.events.pipeline import run_events  # noqa: PLC0415
+    from cutpoint.events.vlm_windows import VlmParams  # noqa: PLC0415
+
+    tags, game = _ocr_options(project)
+    why = plan.skipped.get("keyframes")
+    try:
+        with pending_highlights(project, hl), no_visual_reason(NO_VISUAL_REASON.get(why or "")):
+            # The options of a plain `cutpoint events`, so it reuses these caches.
+            run_events(
+                project,
+                layers=plan.all_layers(),
+                audio=AudioParams(),
+                ocr=OcrParams(game=game, player_tags=tags),
+                vlm=VlmParams(max_windows=None),
+                stage=_StepHook(steps),
+                cached_ocr=plan.game,
+                llm=llm,
+            )
+    except Exception as err:
+        if steps.current == "ranking":
+            raise
+        message = f"Analysis steps failed: {err}; continuing without them"
+        logger.debug("event layers failed", exc_info=True)
+        logger.error("%s", message)
+        jsonout.warn("step_failed", message)
+        if steps.current is None:  # stopped before its first layer: that step failed
+            first = next((s for s in SKIPPABLE if s in plan.layers and s not in steps.state), None)
+            if first is not None:
+                steps.start(first)
+        if steps.current is not None:
+            steps.fail(message)
+        for step in plan.layers:
+            steps.skip(step, "not run: an earlier step failed")
+        return False
+    return True
+
+
+def free_models() -> None:
+    """Free a closed model's memory before the next step loads one (and torch's cached
+    CUDA memory when torch is loaded)."""
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        with contextlib.suppress(Exception):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+
+def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str, Any]:
+    """A highlights.json candidate without its ``id`` (given by the final rank)."""
+    return {
+        "source": str(c.source),
+        "source_index": source_index,
+        "start": c.start,
+        "end": c.end,
+        "duration": round(c.end - c.start, 3),
+        "score": c.score,
+        "signals": {
+            **c.signals,
+            "keywords": c.keywords,
+            "vision": c.vision["score"] if c.vision else None,
+        },
+        "label": _label(c, style),
+        **({"kind": c.kind} if c.kind else {}),
+        **({"must_include": True, "crash": c.event} if c.must_include else {}),
+        "transcript": c.transcript,
+    }
+
+
+def _rate_vision(
+    cands: list[dict[str, Any]],
+    rater: VisionRater,
+    n_top: int,
+    style: Style,
+) -> tuple[bool, int]:
+    """Rate the first ``n_top`` candidates with Ollama and blend the rating into their
+    analysis score (``score_pre_events`` once events rescored them); returns
+    ``(any rated, failures)``."""
+    used, n_failed = False, 0
+    top = cands[:n_top]
+    try:
+        for i, c in enumerate(top):
+            progress.update(progress.fraction(i, len(top)))
+            res = rater.rate(remap_source(Path(c["source"])), c["start"], c["end"], style.base)
+            if res is None:
+                n_failed += 1
+                continue
+            used = True
+            c["signals"]["vision"] = res.score
+            if res.label:
+                c["label"] = slugify(res.label, 30)
+            key = "score_pre_events" if "score_pre_events" in c else "score"
+            c[key] = round(
+                (1 - style.vision_weight) * c[key] + style.vision_weight * res.score * 10, 1
+            )
+            logger.info(
+                "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
+            )
+    finally:  # free the VRAM now, not after Ollama's default 5 min keep_alive
+        rater.unload()
+    return used, n_failed
+
+
 def analyze(
     target: Path | Sequence[Path],
     style: Style,
@@ -919,8 +1328,18 @@ def analyze(
     exclude: Sequence[str] = (),
     recursive: bool = False,
     recover: bool = False,
+    layers: bool = False,
+    skip: Collection[str] = (),
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
+
+    The steps (:data:`cutpoint.progress.ANALYZE_STEPS`) run one after another, each
+    model freed before the next one loads: transcription (audio, loudness, Whisper,
+    scene cuts), with ``layers`` the event layers of ``cutpoint events`` (reactions,
+    keyframes and crashes, see :func:`plan_layers`; events.json is written so a later
+    ``cutpoint events`` reuses their caches), ranking (the events rescore the candidates)
+    and the optional vision rating. highlights.json is written once, atomically, at the
+    end: a failed or cancelled run leaves the previous one untouched.
 
     A source whose read stops early (ffmpeg "Error during demuxing", an I/O
     error, or audio meaningfully shorter than the container) gets a loud
@@ -946,11 +1365,59 @@ def analyze(
         exclude: Glob patterns (file name or full path) to skip.
         recursive: Search sub-folders of folder inputs.
         recover: Resume after read errors by seeking past the bad region.
+        layers: Run the reactions, keyframes and crashes steps and report the steps
+            (``CUTPOINT_PROGRESS``); False (``reanalyze``, ``360 analyze``): reuse
+            events.json as it is.
+        skip: Steps of :data:`cutpoint.progress.SKIPPABLE` left out.
 
     Returns:
         Path of the written highlights.json.
     """
+    with progress.run(ANALYZE_STEPS, use=layers) as steps:
+        return _analyze(
+            target,
+            style,
+            out_dir,
+            steps,
+            vision=vision,
+            model=model,
+            language=language,
+            use_scenes=use_scenes,
+            max_candidates=max_candidates,
+            vision_top=vision_top,
+            ollama_url=ollama_url,
+            ollama_model=ollama_model,
+            exclude=exclude,
+            recursive=recursive,
+            recover=recover,
+            layers=layers,
+            skip=skip,
+        )
+
+
+def _analyze(
+    target: Path | Sequence[Path],
+    style: Style,
+    out_dir: Path,
+    steps: progress.Run,
+    *,
+    vision: bool | None,
+    model: str | None,
+    language: str | None,
+    use_scenes: bool,
+    max_candidates: int | None,
+    vision_top: int | None,
+    ollama_url: str | None,
+    ollama_model: str | None,
+    exclude: Sequence[str],
+    recursive: bool,
+    recover: bool,
+    layers: bool,
+    skip: Collection[str],
+) -> Path:
+    """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
+    steps.start("transcribe")
     found = _find_inputs(target, exclude, recursive)
     # Projects record the original paths; files are read through config source_remap.
     # De-duplicate by the file actually read; the first spelling given is recorded.
@@ -967,6 +1434,7 @@ def analyze(
         )
     logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
     with output_dir(out_dir):  # a failed run leaves no empty project folder behind
+        # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
         ski_ctx = None
         if style.kind == "ski":
@@ -978,22 +1446,27 @@ def analyze(
                 for f in stale.glob("*.npz"):
                     f.unlink()
             taste = (style.learned or {}).get("taste")
-            ski_ctx = ski.prepare(
-                sources,
-                {str(s): probe(remap_source(s)).duration for s in sources},
-                out_dir,
-                taste=Path(taste) if taste else None,
-            )
+            durations = {str(s): probe(remap_source(s)).duration for s in sources}
+            ski_ctx = ski.prepare(sources, durations, out_dir, taste=Path(taste) if taste else None)
             telemetry_s = round(time.perf_counter() - t0, 2)
         tr = Transcriber(model=model, language=language)
         timings: dict[str, float] = {}
         if ski_ctx is not None:
             timings["telemetry_s"] = telemetry_s
         results: list[SourceResult] = []
-        part_of: dict[int, int] = {}  # id(candidate) -> index into results
-        cands: list[Candidate] = []
         transcript_lines: list[str] = []
-        for src in sources:
+        for i, src in enumerate(sources):
+            steps.update(progress.fraction(i, len(sources)), src.name)
+
+            shown = 0.0  # this source's share in the pct so far
+
+            def report(done: float, i: int = i) -> None:
+                """``done`` of source ``i`` in the step's pct, never lower than before (a
+                recovered part's extract starts over at its own offset)."""
+                nonlocal shown
+                shown = max(shown, done)
+                steps.update(progress.fraction(i + shown, len(sources)))
+
             offset, n_parts = 0.0, 0
             while True:
                 logger.info(
@@ -1001,6 +1474,7 @@ def analyze(
                     src,
                     f" from {clock(offset)} (recovered part)" if offset else "",
                 )
+                # Ski candidates come from the feature grid, after the event layers.
                 res = analyze_source(
                     src,
                     style,
@@ -1010,12 +1484,10 @@ def analyze(
                     timings,
                     offset=offset,
                     recover=recover,
-                    ski_ctx=ski_ctx,
+                    pick=ski_ctx is None,
+                    report=report if steps.active else None,
                 )
                 results.append(res)
-                for c in res.candidates:
-                    part_of[id(c)] = len(results) - 1
-                cands.extend(res.candidates)
                 name = f"{src.name}@{offset:.0f}" if offset else src.name
                 transcript_lines.append(f"# {src}" + (f" (from {clock(offset)})" if offset else ""))
                 transcript_lines.extend(transcript_text(name, res.segments) or ["(no speech)"])
@@ -1047,7 +1519,9 @@ def analyze(
                     rec["lost_s"],
                 )
                 offset, n_parts = resume, n_parts + 1
-        tr.close()
+        tr.close()  # Whisper out of memory before the next step loads a model
+        free_models()
+        steps.done()  # an error of the later steps never fails the transcription
         bad = [r for r in results if r.read_error]
         if bad:
             for r in bad:
@@ -1062,68 +1536,11 @@ def analyze(
                     if not recover
                     else " (could not recover)",
                 )
-        cands.sort(key=lambda c: -c.score)
-
-        vision_used = False
-        vision_stats: dict[str, int] | None = None
-        if vision and cands:
-            rater = VisionRater(
-                **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
-            )
-            if rater.available():
-                t0 = time.perf_counter()
-                # vision_top itself stays None (auto) in the saved settings, for reanalyze
-                n_top = (
-                    auto_vision_top(sum(r.duration for r in results))
-                    if vision_top is None
-                    else vision_top
-                )
-                logger.info(
-                    "Vision: rating top %d of %d candidates",
-                    min(n_top, len(cands)),
-                    len(cands),
-                )
-                n_failed = 0
-                try:
-                    for c in cands[:n_top]:
-                        res = rater.rate(remap_source(c.source), c.start, c.end, style.base)
-                        if res is None:
-                            n_failed += 1
-                            continue
-                        vision_used = True
-                        c.vision = {"score": res.score, "label": res.label}
-                        c.score = round(
-                            (1 - style.vision_weight) * c.score
-                            + style.vision_weight * res.score * 10,
-                            1,
-                        )
-                        logger.info(
-                            "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c.start, c.end
-                        )
-                finally:  # free the VRAM now, not after Ollama's default 5 min keep_alive
-                    rater.unload()
-                timings["vision_s"] = round(time.perf_counter() - t0, 2)
-                vision_stats = {"requested": min(n_top, len(cands)), "failed": n_failed}
-                cands.sort(key=lambda c: -c.score)
-            else:
-                message = "--vision requested but Ollama/model unavailable; continuing without it"
-                logger.warning("%s", message)
-                jsonout.warn("vision_unavailable", message)
-
-        cands.sort(key=lambda c: (not c.must_include, -c.score))  # must-include first
-        total, suggested = 0.0, 0
-        for c in cands:
-            if total >= style.target_total and not c.must_include:
-                break
-            total += c.end - c.start
-            suggested += 1
-
-        timings["total_s"] = round(time.perf_counter() - t_start, 2)
-        result = {
+        hl: dict[str, Any] = {
             "version": 1,
             "style": style.name,
             "style_kind": style.kind,
-            "created": datetime.now().isoformat(timespec="seconds"),
+            "created": None,
             "settings": {
                 **(
                     {
@@ -1137,8 +1554,8 @@ def analyze(
                 "whisper_device": tr.device,
                 "scenes": use_scenes,
                 "vision_requested": bool(vision),
-                "vision_used": vision_used,
-                "vision": vision_stats,
+                "vision_used": False,
+                "vision": None,
                 "vision_top": vision_top,
                 "ollama_url": ollama_url,
                 "ollama_model": ollama_model,
@@ -1158,7 +1575,7 @@ def analyze(
                 "recover": recover,
             },
             "timings": timings,
-            "suggested_top": suggested,
+            "suggested_top": 0,
             "sources": [
                 {
                     "path": str(r.source),
@@ -1175,34 +1592,102 @@ def analyze(
                 }
                 for r in results
             ],
-            "candidates": [
-                {
-                    "id": f"h{rank:03d}",
-                    "source": str(c.source),
-                    "source_index": part_of[id(c)],
-                    "start": c.start,
-                    "end": c.end,
-                    "duration": round(c.end - c.start, 3),
-                    "score": c.score,
-                    "signals": {
-                        **c.signals,
-                        "keywords": c.keywords,
-                        "vision": c.vision["score"] if c.vision else None,
-                    },
-                    "label": _label(c, style),
-                    **({"kind": c.kind} if c.kind else {}),
-                    **({"must_include": True, "crash": c.event} if c.must_include else {}),
-                    "transcript": c.transcript,
-                }
-                for rank, c in enumerate(cands, 1)
-            ],
+            "candidates": [],
         }
+
+        def records() -> list[dict[str, Any]]:
+            """The candidates, best first; ``source_index`` is the index into ``results``."""
+            found = [(c, i) for i, r in enumerate(results) for c in r.candidates]
+            found.sort(key=lambda ci: -ci[0].score)
+            return [_candidate_record(c, i, style) for c, i in found]
+
+        # ---- 2-4. reactions, keyframes, crashes: the event layers (events.json)
+        events_new = False
+        if layers:
+            plan = plan_layers(style, sources, skip)
+            for step, reason in plan.skipped.items():
+                steps.skip(step, reason)
+            if plan.layers:
+                hl["candidates"] = records()  # VLM windows cached by `events` follow them
+                t0 = time.perf_counter()
+                events_new = _run_layers(out_dir, plan, hl, steps, llm=bool(vision))
+                timings["events_s"] = round(time.perf_counter() - t0, 2)
+                free_models()
+
+        # ---- 5. ranking: candidates rescored with the events
+        steps.start("ranking")
+        if ski_ctx is not None:
+            if events_new:  # with this run's events.json and crashes.json
+                ski_ctx = ski.prepare(
+                    sources, durations, out_dir, taste=Path(taste) if taste else None
+                )
+            for r in results:
+                r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
+                logger.info("%s: %d candidates", r.source.name, len(r.candidates))
+        hl["candidates"] = records()
+        ev = None
+        if style.kind != "ski":  # ski: the events are features of the scorer itself
+            ev = cache.load_json(out_dir / "events.json")
+        if ev:
+            changed = rescore(hl, ev, out_dir)
+            logger.info(
+                "Rescored %d of %d candidates from events.json", changed, len(hl["candidates"])
+            )
+
+        # ---- 6. vision: the Ollama rating, blended into the top candidates
+        cands = hl["candidates"]
+        if not vision:
+            steps.skip("vision", "vision is off (Settings, config.json or --vision)")
+        elif not cands:
+            steps.skip("vision", "no candidates to rate")
+        else:
+            rater = VisionRater(
+                **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
+            )
+            if rater.available():
+                with steps.step("vision"):
+                    t0 = time.perf_counter()
+                    # vision_top itself stays None (auto) in the saved settings, for reanalyze
+                    n_top = (
+                        auto_vision_top(sum(r.duration for r in results))
+                        if vision_top is None
+                        else vision_top
+                    )
+                    logger.info(
+                        "Vision: rating top %d of %d candidates", min(n_top, len(cands)), len(cands)
+                    )
+                    used, n_failed = _rate_vision(cands, rater, n_top, style)
+                    if ev:  # the blended analysis scores plus the event boosts again
+                        rescore(hl, ev, out_dir)
+                    timings["vision_s"] = round(time.perf_counter() - t0, 2)
+                    hl["settings"]["vision_used"] = used
+                    hl["settings"]["vision"] = {
+                        "requested": min(n_top, len(cands)),
+                        "failed": n_failed,
+                    }
+            else:
+                message = "--vision requested but Ollama/model unavailable; continuing without it"
+                logger.warning("%s", message)
+                jsonout.warn("vision_unavailable", message)
+                steps.skip("vision", "Ollama or its vision model is not reachable")
+
+        cands = hl["candidates"]
+        cands.sort(key=lambda c: (not c.get("must_include"), -c["score"]))  # must-include first
+        total, suggested = 0.0, 0
+        for c in cands:
+            if total >= style.target_total and not c.get("must_include"):
+                break
+            total += c["end"] - c["start"]
+            suggested += 1
+        hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
+        hl["suggested_top"] = suggested
+        hl["created"] = datetime.now().isoformat(timespec="seconds")
+        timings["total_s"] = round(time.perf_counter() - t_start, 2)
         out = out_dir / "highlights.json"
-        cache.save_json(out, result)
+        cache.save_json(out, hl)  # once, atomically (temp file in the folder + os.replace)
+        if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
+            (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)
         logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, timings["total_s"])
-        if (out_dir / "events.json").exists() and style.kind != "ski":  # earlier cutpoint events
-            (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)  # stale copy
-            rescore_highlights(out_dir)
         report_highlights(out_dir, out)
         return out
 

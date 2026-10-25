@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import write
-from cutpoint import analyze, cache, cli
+from cutpoint import analyze, cache, cli, crash
 from cutpoint.events import cli as events_cli
 from cutpoint.events import pipeline, scoring
 from test_jsonout import _envelope
@@ -171,3 +172,33 @@ def test_events_json_footage_unreachable_warned_once(
     assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
         [str(gone)]
     ]
+
+
+def test_events_crash_layer_one_warning_line_per_unreachable_source(
+    project, tmp_path, monkeypatch, capsys, caplog
+):
+    """The real crash layer, its profile detected from the footage: the unreachable source
+    gets run_events' one WARNING line, none from detect_project or the keyframe read."""
+    gone = tmp_path / "gone.mp4"
+    (src,) = [s["path"] for s in cache.load_json(project / "highlights.json")["sources"]]
+    sources = [{"path": src, "duration": 60}, {"path": str(gone), "duration": 60}]
+    cache.save_json(project / "highlights.json", {"sources": sources})
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(
+        crash,
+        "load_inputs",
+        lambda s, dur, p, tmp: crash.SourceInputs(
+            path=s, duration=dur, tel=None, imu=None, visual=SimpleNamespace(t=[]), kf_crash=None
+        ),
+    )
+    monkeypatch.setattr("cutpoint.activity.default_ask", lambda: (None, None))
+    with caplog.at_level(logging.DEBUG):
+        code, doc = _json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
+    assert code == 0 and doc["ok"] is True, doc
+    warns = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and str(gone) in r.getMessage()
+    ]
+    assert len(warns) == 1, warns
+    assert _codes(doc).count("footage_unreachable") == 1, doc

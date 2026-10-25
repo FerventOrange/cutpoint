@@ -46,7 +46,7 @@ def _stub(reply: dict) -> activity.Ask:
 
 def test_resolution_order(tmp_path: Path, fake_clip, monkeypatch: pytest.MonkeyPatch):
     emb = {"v": fake_clip("ski")}
-    monkeypatch.setattr(activity, "keyframes", lambda project: (emb["v"], []))
+    monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb["v"], []))
     ski = activity.full(activity.library()["ski"])
 
     rec = activity.resolve(tmp_path, llm=False)  # clear library match

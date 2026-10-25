@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `analyze` and `edit` run the reactions (PANNs sound events, and the voice layer when crashes
+  run), keyframes (HUD OCR with discovery for `gaming` and `funny`, the CLIP visual layer for
+  `action`, `ski` and `sport` with CUDA) and crashes (action-cam) steps, one after another, then
+  rank. Without the `events` extra or the model files a step is skipped with an INFO line;
+  nothing is downloaded. The llama-server VLM layer stays in `events` and `edit --events`.
+- `--skip reactions|keyframes|crashes` on `analyze` and `edit`, and `analysis.skip` in
+  `config.json`.
+- `CUTPOINT_PROGRESS=1` prints `PROGRESS {...}` step lines on stderr for `analyze` (6 steps) and
+  `edit` (8 steps).
+- `step_failed` JSON warning: an analysis step failed and the run continued without it.
 - Analysis steps in the UI: while an analysis runs, the Moments column lists each step under
   "Analyze footage" (or under the header for "Analyze again") with its state (waiting, running
   with a percentage when known, done, skipped with the reason, failed with the error); a step
@@ -139,9 +149,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max`, `payoff`, `tail_s`, `seed`) and the vision prompt's `title`, `view` and `hype`: custom
   events add to the highlight boost, extend clip ends and set the priority of vision windows.
   Preset types are checked before the built-in ones and can replace them (#8).
+- `docs/commands.md` lists measured analysis costs (GPU and CPU), how to force a CPU run with
+  `CUDA_VISIBLE_DEVICES=-1`, and that no cache key includes the device (the transcript is reused
+  only with the same `--model`).
 
 ### Changed
 
+- `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
+  ranks with them. `highlights.json` is written once, atomically, at the end: a cancelled run
+  leaves the previous file. The analysis score stays in each candidate's `score_pre_events`;
+  `highlights.pre-events.json` is written only when the analysis was not ranked with events
+  yet.
+- The vision rating (`--vision`) now rates the top candidates after the events ranking.
+- Re-running `analyze` keeps the `--game` of the last `cutpoint events` run (read from
+  `events.json`), and its `--player` tags when `player_tags` in `config.json` is empty; it logs
+  an INFO line when it does.
+- Inside `analyze`, the `no_visual_layer` warning of the crashes step says why there is no
+  visual layer (no CUDA GPU, left out by `--skip` or `analysis.skip`, or the `events` extra
+  missing) instead of asking for `cutpoint events`.
 - A self-kill (the player is both killer and victim in a kill feed, generic verb-style feeds
   and the built-in coloured-box feed alike) no longer counts as a player kill: a new default
   event type `self_kills`, checked after `teamkills` and before `player_deaths` and
