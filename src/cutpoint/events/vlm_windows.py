@@ -501,7 +501,8 @@ def _hints(events: list[dict[str, Any]], start: float, end: float) -> str:
             "multikill",
         ):
             extra = " (TEAMKILL)" if ev.get("teamkill") else ""
-            if ev.get("verb"):  # generic feed (JSON presets): say whose kill it is
+            # feed kills (generic verb feeds and built-in R6 rows): say whose kill it is
+            if ev.get("verb") or ev["type"] == "kill":
                 extra += (
                     " (the PLAYER's kill)"
                     if ev.get("player_kill")

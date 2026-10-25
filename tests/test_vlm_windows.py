@@ -39,6 +39,16 @@ def test_build_messages_uses_media_content(tmp_path: Path):
     assert content[1:-1] == media
 
 
+def test_hints_builtin_kill_says_whose_kill():
+    def hint(**fields):
+        ev = {"kind": "ocr", "type": "kill", "text": "a > b", "t": 5.0, **fields}
+        return vw._hints([ev], 0.0, 10.0)
+
+    assert hint(player_death=True).endswith("a > b (the PLAYER died)")
+    assert hint(player_kill=True).endswith("a > b (the PLAYER's kill)")
+    assert hint().endswith("a > b")
+
+
 # -- game_prompt: user presets are installed (trusted), project ones are custom --
 def _gp(game: str, preset) -> dict:
     return vw.VlmParams().key(vw.game_prompt(game, preset))

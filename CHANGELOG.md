@@ -209,9 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The vision retry for the `ski` style now asks about skiing (jumps, crashes, chairlifts) like
   the first attempt, not about menus and scoreboards.
 - In generic (verb-style) kill feeds such as War Thunder, the player's own deaths no longer count
-  as player kills in the highlight boost, so moments with deaths rank lower; R6 is unchanged. The
+  as player kills in the highlight boost, so moments with deaths rank lower (R6: see below). The
   teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff
   banners.
+- The player's own death in the built-in coloured-box kill feed (R6) no longer adds the kill boost:
+  a new default event type `player_deaths` is checked after `teamkills` and before `player_kills`.
+  The death is still a tail payoff and a VLM seed, so the reaction after it stays; a self-kill
+  still counts as a kill. This needs the player's name in `player_tags` or `--player`. The VLM
+  hint now says "the PLAYER died" or "the PLAYER's kill" for built-in feed kills too.
 - `--style ski`: a stretch of footage at one score (a 15-30 s `cutpoint events` VLM window, a
   long fast section) gives one clip instead of several back-to-back clips that filled the top
   10. Each pick takes the run around its peak that stays above 70% of it, centred on a flat top,
