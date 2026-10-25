@@ -419,11 +419,16 @@ def test_360_director_json_vl_check_only_when_this_run_saved_it(pano_project, mo
     code, doc = _json(capsys, argv)
     assert code == 0 and doc["outputs"]["vl_check"] is None
 
+    unloads: list[int] = []
+
     class Checker:
         model, dead = "m", False
 
         def available(self) -> bool:
             return True
+
+        def unload(self) -> None:
+            unloads.append(1)
 
     def render_segment(clip, path, start, end, preview, **_k) -> dict:
         write(preview, "mp4")
@@ -436,6 +441,55 @@ def test_360_director_json_vl_check_only_when_this_run_saved_it(pano_project, mo
     code, doc = _json(capsys, [*argv, "--vl-check"])
     assert code == 0 and doc["outputs"]["vl_check"] == str(out_dir / "vl_check.json")
     assert cache.load_json(out_dir / "vl_check.json")["segments"][0]["stem"] == "001_jump"
+    assert unloads == [1]  # the vision model is freed once, after the last check
+
+
+@pytest.mark.parametrize("ending", ["dead", "error"])
+def test_360_director_vl_check_unloads_the_model_on_any_exit(
+    pano_project, monkeypatch, capsys, ending
+):
+    project, clip = pano_project
+    segments = project / "picks.json"
+    picks = [
+        {"source": clip.lrv, "start": 1.0, "end": 4.0, "label": "jump"},
+        {"source": clip.lrv, "start": 5.0, "end": 8.0, "label": "land"},
+    ]
+    cache.save_json(segments, picks)
+    monkeypatch.setattr(
+        D, "compute_path", lambda *a, **k: {"version": D.PATH_VERSION, "keys": [], "cuts": []}
+    )
+    unloads: list[int] = []
+    checks: list[int] = []
+
+    class Checker:
+        model, dead = "m", False
+
+        def available(self) -> bool:
+            return True
+
+        def unload(self) -> None:
+            unloads.append(1)
+
+    def check_preview(checker, *a, **k):
+        checks.append(1)
+        if ending == "error":
+            raise RuntimeError("boom")
+        checker.dead = True  # stops answering after the first segment
+        return [], {"bad": 0, "frames": 1, "flags": [], "seconds": 0.1}
+
+    def render_segment(clip, path, start, end, preview, **_k) -> dict:
+        write(preview, "mp4")
+        return {"seconds": 0.1}
+
+    monkeypatch.setattr(vlcheck, "VLChecker", Checker)
+    monkeypatch.setattr(vlcheck, "check_preview", check_preview)
+    monkeypatch.setattr(pano_render, "render_segment", render_segment)
+    argv = ["360", "director", "trip", "--segments", str(segments), "--force", "--vl-check"]
+    code, doc = _json(capsys, argv)
+    assert code == (1 if ending == "error" else 0)
+    assert ("vl_check_unavailable" in _codes(doc)) == (ending == "dead")
+    assert checks == [1]  # a dead model is not asked again; an error ends the run
+    assert unloads == [1]  # freed anyway, once
 
 
 def test_360_director_json_bad_out_name(pano_project, capsys):

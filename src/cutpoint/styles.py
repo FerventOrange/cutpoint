@@ -51,7 +51,7 @@ class Style:
             continuity); the combined score is their weighted sum, normalised
             to 0-100. ``continuity`` is the fraction of time someone is talking.
         vision_weight: Fraction of the final score taken from the vision model
-            rating when vision is enabled.
+            rating when vision is requested (``--vision``; opt-in for every style).
         pre_roll: Seconds of context kept before a peak.
         post_roll: Seconds kept after a peak.
         min_len: Minimum clip length in seconds.
@@ -85,8 +85,6 @@ class Style:
             :mod:`cutpoint.ski`; ``weights`` then name ski features).
         use_scenes: Run scene detection by default (pointless on single-take
             action-cam clips, and the 4K proxy decode is the slowest step).
-        vision_default: Use the Ollama vision rater when ``--vision`` is not
-            given: None = if reachable, False = only on request.
         learned: Fit metadata for presets loaded from the styles folder.
         mask_friends: Ski only: friends score (0-10; VLM friends_faces tag or
             the visual layer's ``people`` score x 10) that lifts the lift/stop
@@ -121,7 +119,6 @@ class Style:
     speech_max_lead: float = 5.0
     kind: str = "generic"
     use_scenes: bool = True
-    vision_default: bool | None = None
     learned: dict | None = None
     mask_friends: float = 7.0
     must_include_crash: float = 0.0
@@ -310,7 +307,6 @@ STYLES: dict[str, Style] = {
         profanity_alone=False,
         keywords=_SKI_KEYWORDS,
         use_scenes=False,
-        vision_default=False,
         tail_min=1.0,
         tail_max=3.0,
         must_include_crash=0.6,

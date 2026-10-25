@@ -72,7 +72,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder; `assemble` includes them |
 | `kept_sources` | `clips` | A file the run reads as a source was not replaced |
 | `skipped_clips` | `extend` | Clips without a manifest entry were not re-exported |
-| `vision_unavailable` | `analyze` | Ollama or the model is not available, so no vision rating ran |
+| `vision_unavailable` | `analyze` | `--vision` was passed but Ollama or the model is not available, so no vision rating ran |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -145,10 +145,12 @@ which case it is created; it must be writable. Existing projects are not moved. 
 read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a job is running.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
-Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
+Before a project is analyzed, the Moments column offers "Analyze footage", with a "Rate frames
+with a local vision model (Ollama)" checkbox (off by default; it adds `--vision`), and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
-in the column header. "Show folder" also appears next to "Export clips" (the latest export
+in the column header. "Analyze again" asks for confirmation in a dialog with the same vision
+checkbox, ticked only if the previous analysis asked for vision. "Show folder" also appears next to "Export clips" (the latest export
 folder, `clips_ui_*`) and next to "Assemble" (the project folder, which holds the final videos and
 their `.srt` subtitles and `.fcpxml` and `.otio` timelines), once that folder exists.
 
@@ -231,7 +233,7 @@ one of them is refused.
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
-| `--vision` / `--no-vision` | As `analyze --vision`: rate top candidates with Ollama. Default: used if the server and model are reachable (the `ski` style: only with `--vision`) |
+| `--vision` / `--no-vision` | As `analyze --vision`: rate top candidates with Ollama. Default: off (opt-in for every style); `--no-vision` is accepted and changes nothing |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
@@ -257,7 +259,7 @@ an analysed set processes only the new file.
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate top candidates with Ollama. Default: used if the server and model are reachable |
+| `--vision` / `--no-vision` | Rate top candidates with a local Ollama vision model. Default: off for every style, so Ollama is never needed unless you ask; `--no-vision` is accepted and changes nothing. The model is unloaded from GPU memory right after the rating |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `qwen3-vl:8b` |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |

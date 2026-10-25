@@ -14,8 +14,8 @@ cutpoint clips trip --max-total 150
 cutpoint assemble projects/trip/clips --loudnorm
 ```
 
-`analyze --style ski` skips scene detection and the Ollama rater (pass `--vision` to use it).
-It writes `telemetry.json` (day summary, runs, per-source events). Clips are ordered by their
+`analyze --style ski` skips scene detection. As with every style, the Ollama frame rating runs
+only with `--vision`. It writes `telemetry.json` (day summary, runs, per-source events). Clips are ordered by their
 start time (GPS time, else the camera clock) and the day is split into runs at lift segments
 and gaps over 4 minutes.
 

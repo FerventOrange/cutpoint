@@ -229,16 +229,24 @@ def ambiguous(monkeypatch):
     monkeypatch.setattr(activity, "keyframes", lambda project: (v, []))
 
 
-@pytest.mark.parametrize("installed", [True, False])
-def test_unload_only_when_clip_installed(monkeypatch, tmp_path: Path, ambiguous, installed: bool):
-    unloads = []
-    monkeypatch.setattr(activity, "unload_ollama", lambda *a, **k: unloads.append(1))
-    monkeypatch.setattr(
-        activity.importlib.util, "find_spec", lambda n: object() if installed else None
-    )
-    monkeypatch.setattr(activity, "default_ask", lambda: (lambda p, i, s: {}, "some-model"))
+def test_profile_unloads_only_the_model_it_used(monkeypatch, tmp_path: Path, ambiguous):
+    """Free just the vision model the profile used (VRAM for the CLIP steps); models the user
+    loaded in Ollama for other things stay loaded."""
+    unloads: list[str] = []
+
+    class Rater(activity.VisionRater):
+        def ask_json(self, *_a, **_k) -> dict:
+            return {}
+
+        def unload(self) -> None:
+            unloads.append(self.model)
+
+    rater = Rater(url="http://x:1", model="some-model")
+    monkeypatch.setattr(activity, "default_ask", lambda: (rater.ask_json, rater.model))
+    for verb in ("get", "post"):  # e.g. unload_ollama listing and unloading every model
+        monkeypatch.setattr(common.requests, verb, lambda url, *a, **k: unloads.append(url))
     activity.resolve(tmp_path, context="packrafting trip")
-    assert len(unloads) == (1 if installed else 0)
+    assert unloads == ["some-model"]
 
 
 @pytest.mark.parametrize(
