@@ -57,7 +57,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import activity, cache
+from cutpoint import activity, cache, jsonout
 from cutpoint.dsp import conv_same
 from cutpoint.stage import is_remote as _is_remote
 
@@ -1117,6 +1117,9 @@ def detect_project(
             cache.source_dir(src)  # every cached layer is keyed by the file's size and mtime
         except OSError as err:
             logger.warning("%s: footage not reachable (%s); skipped", src, err)
+            jsonout.warn(
+                "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
+            )
             continue
         sources.append((src, dur))
     if not sources:
@@ -1135,7 +1138,20 @@ def detect_project(
     for src, dur in sources:
         if force:
             imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
-        inputs[str(src)] = load_inputs(src, dur, p, tmp_dir)
+        inp = inputs[str(src)] = load_inputs(src, dur, p, tmp_dir)
+        if inp.imu is None:
+            jsonout.warn(
+                "no_telemetry",
+                f"{src.name}: no IMU telemetry; crashes are found from the transcript only",
+                [src],
+            )
+        if inp.visual is None:
+            jsonout.warn(
+                "no_visual_layer",
+                f"{src.name}: no visual layer; run `cutpoint events` first to score what the "
+                "camera sees",
+                [src],
+            )
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)
     cands = []
     for inp in inputs.values():

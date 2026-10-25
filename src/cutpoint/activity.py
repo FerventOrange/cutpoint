@@ -50,7 +50,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, paths, state
+from cutpoint import cache, jsonout, paths, state
 from cutpoint.config import remap_source
 from cutpoint.events.common import load_highlights, unload_ollama
 from cutpoint.events.visual import load_visual, text_embeddings
@@ -441,7 +441,9 @@ def resolve(
         activity, context = req.get("activity"), req.get("context")
     lib = library()
     if activity and activity not in lib:
-        raise ValueError(f"unknown activity {activity!r}; known: {', '.join(sorted(lib))}")
+        raise jsonout.ArgumentError(
+            f"unknown activity {activity!r}; known: {', '.join(sorted(lib))}"
+        )
     context = " ".join(context.split())[:MAX_CONTEXT_CHARS] if context else None
     request = {"activity": activity, "context": context}
     if (
@@ -501,11 +503,10 @@ def resolve(
         named = _named_profile(context, lib) if seed is None else None
         if named:
             profile = full(lib[named])
-        logger.warning(
-            "activity: --context not applied: %s%s",
-            why,
-            f"; using the library profile {named!r} named in it" if named else "",
-        )
+        used = f"; using the library profile {named!r} named in it" if named else ""
+        message = f"activity: --context not applied: {why}{used}"
+        logger.warning("%s", message)
+        jsonout.warn("context_not_applied", message)
     rec["name"] = profile["name"]
     rec["profile"] = profile
     cache.save_json(path, rec)

@@ -451,8 +451,8 @@ def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
     assert error == {"code": "bad_args", "message": "unrecognized arguments: --bogus"}
 
 
-# capabilities and 360 repair moved their own --json to the envelope (phase 3); profile keeps
-# its own for now. 360 qa --json-only (skip the contact sheets) is not a JSON output flag.
+# capabilities, 360 repair (phase 3a) and profile (phase 3b) moved their own --json to the
+# envelope. 360 qa --json-only (skip the contact sheets) is not a JSON output flag.
 
 
 def test_capabilities_json_is_the_envelope(monkeypatch, capsys):
@@ -464,18 +464,14 @@ def test_capabilities_json_is_the_envelope(monkeypatch, capsys):
     assert doc["outputs"] == data and doc["warnings"] == []
 
 
-def test_profile_json_unchanged(home, monkeypatch, capsys):
+def test_profile_json_is_the_envelope_with_the_record_keys(home, monkeypatch, capsys):
     rec = {"name": "ski", "source": "detected", "profile": {"incident": {}}}
     monkeypatch.setattr(cli, "resolve_activity", lambda *a, **k: rec)
     assert cli.main(["profile", "proj", "--json"]) == 0
-    assert capsys.readouterr().out == json.dumps(rec, indent=2) + "\n"
-
-
-def test_profile_json_does_not_use_the_envelope():
-    args = cli.build_parser().parse_args(["profile", "p", "--json"])
-    assert args.json is True
-    assert not getattr(args, "json_result", False)
-    assert getattr(args, "json_command", None) is None
+    doc = _envelope(capsys.readouterr().out)
+    assert doc["ok"] is True and doc["command"] == "profile"
+    activity_file = str(home / "projects" / "proj" / "activity.json")
+    assert doc["outputs"] == rec | {"activity_file": activity_file}
 
 
 @pytest.mark.parametrize(
@@ -484,6 +480,7 @@ def test_profile_json_does_not_use_the_envelope():
         (["capabilities", "--json"], "capabilities"),
         (["360", "repair", "p", "--qa", "q.json", "--json"], "360 repair"),
         (["360", "qa", "p", "--json"], "360 qa"),
+        (["profile", "p", "--json"], "profile"),
     ],
 )
 def test_migrated_json_flags_use_the_envelope(argv, command):
