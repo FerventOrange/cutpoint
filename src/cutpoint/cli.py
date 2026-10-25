@@ -318,7 +318,8 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
         if reanalyze_if_reachable(project) is None:
             jsonout.warn(
                 "highlights_not_updated",
-                "footage not reachable; highlights.json left unchanged, rerun once it is back",
+                "a source could not be found or reached; highlights.json left unchanged, "
+                "rerun once it is back",
                 [project / "highlights.json"],
             )
 
