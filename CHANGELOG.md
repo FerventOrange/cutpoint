@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--json` on `crashes` and `profile`. `crashes` reports the `crashes.json` path, the crash
+  count, each crash with its `crashes.json` keys (`id`, `source`, `t0`, `t1`, `confidence`,
+  `confirmed`, `origin`, `clip`, `sheet`), the `activity.json` path and the profile name; a
+  missing CLIP or torch is `missing_extra`. New warning codes: `footage_unreachable`,
+  `no_telemetry`, `no_visual_layer`, `highlights_not_updated` and `context_not_applied`. An
+  unknown `--activity` is `bad_args` (still exit 1) (#4).
 - Docs for the `--json` result envelope: a "JSON output" section in `docs/commands.md` (envelope,
   error and warning codes, `outputs` keys per command), `--json` in the options of each command
   that has it, and `AGENTS.md`, the skill and the FAQ no longer call it planned; `events`,
@@ -113,6 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `profile --json` writes the result envelope: the `activity.json` record it printed before is
+  under `outputs` with the same keys, plus `activity_file` (its path) (#4).
 - `cutpoint capabilities --json` writes the result envelope: the report it printed before is now
   its `outputs`, with the same keys (`platform`, `gpu_vendors_present`, `video_encoders`,
   `active_video_encoder`, `transcription`, `llama_cpp`, `torch`, `insta360_sdk`); read

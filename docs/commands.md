@@ -30,9 +30,8 @@ prints tracebacks of errors.
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
 on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
-`setup` and every `360` subcommand (`scan`, `analyze`, `status`, `director`, `stitch`, `check`,
-`qa`, `repair`). Not yet on `events`, `crashes` and the other commands; `profile --json` is older and prints the
-`activity.json` record instead (see [profile](#profile)). Logs and errors stay on stderr, and
+`setup`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
+`director`, `stitch`, `check`, `qa`, `repair`). Not yet on `events` and the other commands. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
 codes are unchanged.
 
@@ -56,7 +55,7 @@ codes are unchanged.
 With a failure, `ok` is `false` and `outputs` holds whatever was recorded before it. An
 argument error (`bad_args` from the parser) also writes an envelope, then exits 2. A command that
 checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--clip-override`, `--ids`, `mix --quotas`,
-`360 director --out-name`, `stage` with no inputs) reports `bad_args` and exits 1.
+`360 director --out-name`, `stage` with no inputs, an unknown `--activity`) reports `bad_args` and exits 1.
 
 | `error.code` | Exit | Cause |
 |---|---|---|
@@ -85,6 +84,11 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `stitch_failed` | `360 stitch` | A clip's stitch failed; `files` names its log |
 | `qa_clips_skipped` | `360 qa` | Clips that could not be checked |
 | `qa_clips_stale` | `360 repair` | QA clips with no matching segment, or newer than the QA |
+| `footage_unreachable` | `crashes` | A source is not reachable (offline drive, moved file) and was skipped |
+| `no_telemetry` | `crashes` | A source has no IMU telemetry; its crashes come from the transcript only |
+| `no_visual_layer` | `crashes` | A source has no visual layer; run `events` first so what the camera sees counts |
+| `highlights_not_updated` | `crashes` | The reanalyze step was skipped (footage not reachable), so `highlights.json` is unchanged |
+| `context_not_applied` | `crashes`, `profile` | `--context` was not applied (Ollama or the LLM unavailable, or no usable profile from it) |
 
 `outputs` keys per command (`project` as in the table above):
 
@@ -108,6 +112,8 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `360 check` | `check_dir`, `sheets` |
 | `360 qa` | `qa_dir`, `report`, `mode`, `sheets`, `clips` (each `file`, `score`, `pass`, `fails`), `count`, `passed`, `score` |
 | `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
+| `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |
+| `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
 
@@ -508,7 +514,7 @@ uses new copies, and a changed `stage_dir` or `source_remap`, without a restart.
 ```text
 cutpoint crashes <project> [--dense | --no-dense] [--dense-top N] [--sheets N] [--lead S]
                  [--max-after S] [--max-clip S] [--force] [--reanalyze | --no-reanalyze]
-                 [--activity NAME] [--context TEXT] [--refresh-profile]
+                 [--activity NAME] [--context TEXT] [--refresh-profile] [--json]
 ```
 
 Action-cam module (extras `ski` and `events`). Finds crashes and wipeouts in an analysed
@@ -516,7 +522,8 @@ project from full-rate IMU data, visual, audio and transcript evidence, and writ
 `crashes.json` plus contact sheets in `crash_check\`. Confident crashes are always exported by
 `clips`. The visual prompts and crash words come from the project's activity profile (see
 `profile`; the three profile options are the same). See
-[action-cam workflow](workflows/action-cam.md).
+[action-cam workflow](workflows/action-cam.md). `--json` writes the result as one
+[JSON envelope](#json-output) on stdout.
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, the default reanalyze step is skipped and `highlights.json` is left unchanged; rerun once the footage is back.
 
@@ -535,7 +542,7 @@ reuse it.
 | `--activity NAME` | Use a library profile: `ski`, `snowboard`, `mtb`, `moto`, `skate`, `surf`, `hike`, `generic`, or one learned earlier. Default: detected from the footage |
 | `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
 | `--refresh-profile` | Ignore `activity.json` and detect or build the profile again |
-| `--json` | Print the `activity.json` record: `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile` |
+| `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
 
 Needs the visual layer of `events` for detection, and Ollama with a Qwen model
 (`CUTPOINT_VISION_MODEL`) for new profiles and `--context`. Without them it falls back to the

@@ -13,10 +13,10 @@ everything into a project folder.
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
-| `cutpoint edit`: analyze, clips and assemble in one command | `--json` on `events`, `crashes` and `profile` (`profile --json` prints the profile) |
+| `cutpoint edit`: analyze, clips and assemble in one command | `--json` on `events` |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
-| `--json` result envelope on stdout: `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `360 ...` | |
+| `--json` result envelope on stdout: `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `360 ...` | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 
 If the user asks for "edit this video and make it a montage" in one step, use
@@ -141,7 +141,7 @@ Variants:
 | Short clip or reel for social media | `clips <project> --vertical --max-total 60`, then `assemble projects/<project>/clips_vertical --captions` |
 | Highlights of a specific length | `clips <project> --max-total <seconds>` |
 | "Extra" instruction such as "only funny moments" or "keep the speech intact" | Choose `--style`, filter candidates by `transcript`/`label`, use `--segments`. The CLI does not parse these instructions |
-| The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json`. Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |
+| The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used). Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |
 | Room to trim in an editor | `clips ... --extend 1.5` or `extend <clips_dir> --seconds 2` |
 | 360 (Insta360 X3) footage | [docs/workflows/360.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/360.md) |
 | Action-cam with telemetry | [docs/workflows/action-cam.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/action-cam.md) |
