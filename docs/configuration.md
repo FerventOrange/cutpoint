@@ -189,10 +189,14 @@ Game-HUD OCR regions come from a preset, looked up in this order:
 3. bundled presets in `src/cutpoint/events/presets/` (`r6.json`, Rainbow Six Siege; `wt.json`, War Thunder)
 
 A file named like a bundled preset in 1 or 2 overrides it. To change a bundled preset, copy it
-to one of those folders and edit the copy. The `"builtin"` key is only read in bundled presets;
-elsewhere it is ignored with a WARNING. A copy of `r6.json` is therefore read as a generic JSON
-preset (generic kill-feed parsing, generic banners added, new OCR cache), not with the built-in R6
-interpretation.
+to one of those folders and edit the copy. The user folder (2) is trusted like the bundled one:
+the `"builtin"` key is honoured there and in the bundled folder, so a copy of a built-in preset in
+`<CUTPOINT_HOME>\presets` keeps its built-in interpretation and OCR cache keys. In a project
+`hud_presets` folder (1) `"builtin"` is ignored with a WARNING (shown once) and the preset is read
+as a generic JSON preset (generic kill-feed parsing, generic banners added, new OCR cache).
+
+A builtin preset's `banner_phrases` are not part of the OCR cache key. After editing them, run
+`cutpoint events <project> --force ocr` to read the footage again.
 
 ### Event types and prompt keys
 
@@ -247,10 +251,12 @@ before.
 - Names `laughter`, `scream`, `boost` and `vlm`, and names ending in `_reaction`, are reserved, and a `payoff` must be true or false.
   Such entries, and other invalid ones, are skipped with a WARNING shown once. Entries of `events`
   that are not objects are dropped without a warning.
-- Changing scores, `max` or tails does not re-run OCR. A project or user preset gets its own VLM
-  cache key, so its windows are described again once, only when its prompt (name, view, hype)
-  differs from the bundled preset for the same game key (or from the default prompt if there is
-  none). Seeds do not affect the key. The
-  bundled `r6.json` and `wt.json` keep their OCR cache keys.
+- Changing scores, `max` or tails does not re-run OCR. A preset in the user or bundled folder
+  never gets a separate VLM cache key. A project preset gets one only when its prompt (name, view,
+  hype) differs from the user (or bundled) preset for the same game key, or from the default
+  prompt if there is none; its windows are then described again once. Seeds do not affect the
+  key. After adding a user-folder preset with `title`, `view` or `hype`, or editing those fields in one, run
+  `cutpoint events <project> --force vlm` to describe the windows again. The bundled `r6.json`
+  and `wt.json` keep their OCR cache keys.
 
 See [game streams](workflows/game-streams.md).
