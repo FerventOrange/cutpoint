@@ -93,7 +93,14 @@ def test_other_styles_get_nothing(style):
     got = scoring.event_boost(CAND, [death()], style=style, segments=[seg(1, 3), seg(12, 14)])
     assert got == (
         0.0,
-        {"laughter": 0.0, "scream": 0.0, "player_kills": 0, "teamkills": 0, "banners": 0},
+        {
+            "laughter": 0.0,
+            "scream": 0.0,
+            "player_kills": 0,
+            "teamkills": 0,
+            "banners": 0,
+            "self_kills": 0,
+        },
     )
 
 
