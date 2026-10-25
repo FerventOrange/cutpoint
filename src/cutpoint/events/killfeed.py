@@ -523,7 +523,7 @@ class Interpreter:
         for ph in self.phrases:
             if fuzzy_contains(text, ph, self.params.fuzzy):
                 # Keep trailing digits for "WON ROUND 5"-style banners.
-                m = re.search(r"ROUND\s*(\d{1,2})\b", norm(text)) if "ROUND" in ph else None
+                m = re.search(r"ROUND\s*(\d{1,2})\b", norm(text)) if "ROUND" in ph.upper() else None
                 label = f"{ph} {m.group(1)}" if m else ph
                 self.tracker.see(
                     t,
