@@ -108,7 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max`, `payoff`, `tail_s`, `seed`) and the vision prompt's `title`, `view` and `hype`: custom
   events add to the highlight boost, extend clip ends and set the priority of vision windows.
   Preset types are checked before the built-in ones and can replace them. `r6.json` now carries
-  these for Rainbow Six Siege with unchanged results, and the bundled presets' OCR cache is
+  `title`, `view` and `hype` for Rainbow Six Siege with unchanged results, and the bundled presets' OCR cache is
   unchanged (#8).
 
 ### Changed

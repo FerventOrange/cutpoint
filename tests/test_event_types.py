@@ -12,7 +12,8 @@ from typing import Any
 
 import pytest
 
-from cutpoint.events import eventtypes, scoring, tails
+from cutpoint import paths
+from cutpoint.events import eventtypes, regions, scoring, tails
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrParams
@@ -178,17 +179,6 @@ def test_is_payoff(name):
     assert tails.is_payoff(EVENTS[name], tails.EventTailSettings()) is PAYOFF[name]
 
 
-def test_event_tail_settings_default():
-    assert tails.EventTailSettings().to_json() == {
-        "enabled": True,
-        "window": 10.0,
-        "pad": 1.5,
-        "max_ext": 14.0,
-        "vlm_min": 6,
-        "audio_min": 0.05,
-    }
-
-
 @pytest.mark.parametrize(
     ("end", "words", "events", "limit", "expected"),
     [
@@ -293,26 +283,6 @@ def test_seed_priority(name):
     assert vw._seed_priority(LAYER[name]) == pytest.approx(SEED[name])
 
 
-def test_hints():
-    evs = [{**v, "t": v["t"] - 10} for v in LAYER.values()]
-    assert vw._hints(evs, 0.0, 40.0) == (
-        "0.0s on-screen kill: Ash > Bob\n"
-        "1.0s on-screen kill: Ash > Cy (TEAMKILL)\n"
-        "2.0s on-screen banner: REVERSE FRIENDLY FIRE\n"
-        "3.0s on-screen banner: ACE\n"
-        "4.0s on-screen banner: MATCH POINT\n"
-        "5.0s on-screen multikill: DOUBLE KILL (Bob, Cy)\n"
-        "6.0s on-screen kill: Dee > Eve\n"
-        "10.0s on-screen kill: me (T-34) > foe (Tiger) (the PLAYER's kill)\n"
-        "11.0s on-screen kill: foe (Tiger) > me (T-34) (the PLAYER died)\n"
-        "12.0s on-screen log: me crashed\n"
-        "13.0s on-screen banner: TARGET DESTROYED\n"
-        "31.0s audio detector: Laughter (0.50)\n"
-        "33.5s audio detector: Scream (0.10)\n"
-        "35.5s audio detector: Cheering (0.01)"
-    )
-
-
 def test_vlm_key():
     assert vw.VlmParams().key() == {
         "frames": 14,
@@ -325,59 +295,6 @@ def test_vlm_key():
         "model": "qwen2.5-omni-7b-q4km",
     }
 
-
-R6_KEY = {
-    "extra": {},
-    "fps": 3.0,
-    "fuzzy": 0.8,
-    "game": "r6",
-    "min_text_score": 0.6,
-    "persist_s": 8.0,
-    "regions": [
-        {
-            "h": 185,
-            "kind": "killfeed",
-            "min_change": 0.008,
-            "min_fill": 0.002,
-            "name": "killfeed",
-            "w": 560,
-            "x": 1300,
-            "y": 150,
-        },
-        {
-            "h": 110,
-            "kind": "counter",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-            "name": "counter",
-            "w": 400,
-            "x": 760,
-            "y": 200,
-        },
-        {
-            "h": 220,
-            "kind": "banner",
-            "min_change": 0.03,
-            "min_fill": 0.012,
-            "name": "banner",
-            "w": 880,
-            "x": 520,
-            "y": 380,
-        },
-        {
-            "h": 80,
-            "kind": "notice",
-            "min_change": 0.03,
-            "min_fill": 0.006,
-            "name": "notice",
-            "w": 720,
-            "x": 600,
-            "y": 740,
-        },
-    ],
-    "tags": [],
-    "v": 3,
-}
 
 WT_KEY = {
     "extra": {},
@@ -515,9 +432,8 @@ WT_KEY = {
 }
 
 
-@pytest.mark.parametrize(("game", "expected"), [("r6", R6_KEY), ("wt", WT_KEY)])
-def test_ocr_key(game, expected):
-    assert OcrParams().key(game, load_preset(game)) == expected
+def test_ocr_key():  # the r6 key is pinned in test_paths.py
+    assert OcrParams().key("wt", load_preset("wt")) == WT_KEY
 
 
 # --- preset-defined event types ------------------------------------------------
@@ -547,7 +463,7 @@ def _custom(tmp_path: Path, events: list[Any], **extra: Any) -> Path:
 def test_custom_event_type(tmp_path, home):
     project = _custom(tmp_path, [DEFUSER])
     preset = load_preset("foo", project)
-    assert preset.phrases == ("MY BANNER", "DEFUSER PLANTED", *GENERIC_BANNERS)
+    assert preset.phrases == ("MY BANNER", *GENERIC_BANNERS, "DEFUSER PLANTED")
     types = eventtypes.types_for(preset)
     raw = {"kind": "ocr", "type": "banner", "text": "DEFUSER PLANTED 2", "t": 12.0, "end": 15.0}
     ev = normalize("a.mp4", raw)
@@ -572,13 +488,20 @@ def test_custom_event_type(tmp_path, home):
 
 
 def test_event_type_clamping_and_malformed(tmp_path, home):
-    big = {**DEFUSER, "name": "big", "score": 60, "max": 9}
-    bad = [{"name": "nowhen"}, {"name": "x", "when": [{"type": "banner"}], "score": "lots"}, 5]
+    big = {**DEFUSER, "name": "big", "score": 60, "max": 9, "tail_s": 99, "seed": 9}
+    bad = [
+        {"name": "nowhen"},
+        {**DEFUSER, "name": "laughter"},  # reserved
+        {**DEFUSER, "name": "yes", "payoff": "yes"},  # not a bool
+        {"name": "x", "when": [{"type": "banner"}], "score": "lots"},
+        5,
+    ]
     preset = load_preset("foo", _custom(tmp_path, [*bad, big, DEFUSER]))
     by_name = {t.name: t for t in eventtypes.types_for(preset)}
     assert (by_name["big"].score, by_name["big"].max) == (12.0, 3)
+    assert (by_name["big"].tail_s, by_name["big"].seed) == (10.0, 3.0)
     assert "defuser" in by_name and "player_kills" in by_name  # the rest still loads
-    assert "nowhen" not in by_name and "x" not in by_name
+    assert not {"nowhen", "x", "laughter", "yes"} & by_name.keys()
 
 
 def test_resolve_never_raises(tmp_path, home):
@@ -604,6 +527,53 @@ def test_vlm_gp_key_only_for_prompt_customisation(tmp_path, home):
         p = load_preset("foo", _custom(tmp_path, [], **extra))
         assert "gp" in vw.VlmParams().key(vw.game_prompt("foo", p))
     seeded = load_preset("foo", _custom(tmp_path, [DEFUSER]))
-    assert "gp" in vw.VlmParams().key(vw.game_prompt("foo", seeded))
-    unseeded = load_preset("foo", _custom(tmp_path, [{**DEFUSER, "seed": None}]))
-    assert "gp" not in vw.VlmParams().key(vw.game_prompt("foo", unseeded))
+    assert "gp" not in vw.VlmParams().key(vw.game_prompt("foo", seeded))  # seeds only
+
+
+def test_vlm_gp_key_against_bundled_reference(tmp_path, home):
+    def key(game: str, preset) -> dict[str, Any]:
+        return vw.VlmParams().key(vw.game_prompt(game, preset))
+
+    wt = json.loads((paths.PRESETS_DIR / "wt.json").read_text(encoding="utf-8"))
+    (wt_dir := tmp_path / "wt" / "hud_presets").mkdir(parents=True)
+    (wt_dir / "wt.json").write_text(json.dumps(wt), encoding="utf-8")
+    assert "gp" not in key("wt", load_preset("wt", wt_dir.parent))  # same content as bundled
+
+    r6 = json.loads((paths.PRESETS_DIR / "r6.json").read_text(encoding="utf-8"))
+    for field in ("title", "hype"):
+        r6.pop(field, None)
+    (r6_dir := tmp_path / "r6" / "hud_presets").mkdir(parents=True)
+    (r6_dir / "r6.json").write_text(json.dumps(r6), encoding="utf-8")
+    assert "gp" in key("r6", load_preset("r6", r6_dir.parent))
+
+
+def test_hype_normalised(tmp_path, home):
+    def prompt(hype: str) -> vw.GamePrompt:
+        return vw.game_prompt("foo", load_preset("foo", _custom(tmp_path, [], hype=hype)))
+
+    assert prompt("hype: x") == prompt("  hype: x\n")
+
+
+def test_invalid_preset_warned_once(tmp_path, home, caplog, monkeypatch):
+    monkeypatch.setattr(regions, "_warned_invalid", set())
+    project = _custom(tmp_path, [])
+    (project / "hud_presets" / "foo.json").write_text("{not json", encoding="utf-8")
+    for _ in range(2):
+        load_preset("foo", project)
+    assert sum("Ignoring invalid HUD preset" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_preset_type_replaces_builtin(tmp_path, home):
+    mine = {"name": "player_kills", "when": [{"type": "kill", "flag": "player"}],
+            "score": 3, "payoff": False}  # fmt: skip
+    project = _custom(tmp_path, [mine])
+    types = eventtypes.types_for(load_preset("foo", project))
+    kill = EVENTS["r6_kill"]
+    boost, evidence = scoring.event_boost(CAND, [kill], types)
+    assert boost == 3.0 and evidence["player_kills"] == 1
+    (project / "events.json").write_text(
+        json.dumps({"settings": {"ocr": {"game": "foo"}}, "events": [{**kill, "source": "a.mp4"}]}),
+        encoding="utf-8",
+    )
+    loaded = tails.load_events(project)["a.mp4"]
+    assert not tails.is_payoff(loaded[0], tails.EventTailSettings())

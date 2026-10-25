@@ -58,6 +58,11 @@ BANNER_PAYOFFS = (
 )
 MAX_SCORE = 12.0  # custom types: points per event
 MAX_COUNT = 3  # custom types: events counted per candidate
+MAX_TAIL_S = 10.0  # custom types: reaction kept after a payoff, seconds
+MAX_SEED = 3.0  # custom types: VLM seed priority (the built-in tiers top out at 2.0)
+# Other evidence fields of ``signals.events`` (scoring.rescore_highlights); a type
+# with one of these names would overwrite them.
+RESERVED_NAMES = frozenset({"laughter", "scream", "boost", "vlm"})
 
 
 @dataclass(frozen=True)
@@ -138,11 +143,17 @@ def _num(v: Any) -> float | None:
     return None if v is None or isinstance(v, bool) else float(v)
 
 
+def _clamp(v: float | None, hi: float) -> float | None:
+    return None if v is None else max(0.0, min(hi, v))
+
+
 def from_dict(data: dict[str, Any]) -> EventType:
-    """An :class:`EventType` from preset JSON; ``score`` is clamped to 0-12, ``max`` to 1-3.
+    """An :class:`EventType` from preset JSON; ``score`` is clamped to 0-12, ``max`` to
+    1-3, ``tail_s`` to 0-10 and ``seed`` to 0-3.
 
     Raises:
-        ValueError, TypeError, KeyError: When the entry is malformed.
+        ValueError, TypeError, KeyError: When the entry is malformed (also: a name
+            in :data:`RESERVED_NAMES`, a ``payoff`` that is not a JSON bool).
     """
     when = tuple(
         Matcher(
@@ -155,16 +166,20 @@ def from_dict(data: dict[str, Any]) -> EventType:
     )
     if not data.get("name") or not when:
         raise ValueError("an event type needs a name and at least one matcher")
-    score = _num(data.get("score"))
+    name = str(data["name"])
+    if name in RESERVED_NAMES:
+        raise ValueError(f"the name {name!r} is reserved")
     payoff = data.get("payoff")
+    if payoff is not None and not isinstance(payoff, bool):
+        raise ValueError(f"payoff must be true or false, not {payoff!r}")
     return EventType(
-        str(data["name"]),
+        name,
         when,
-        score=None if score is None else max(0.0, min(MAX_SCORE, score)),
+        score=_clamp(_num(data.get("score")), MAX_SCORE),
         max=max(1, min(MAX_COUNT, int(data.get("max", 1)))),
-        payoff=None if payoff is None else bool(payoff),
-        tail_s=_num(data.get("tail_s")),
-        seed=_num(data.get("seed")),
+        payoff=payoff,
+        tail_s=_clamp(_num(data.get("tail_s")), MAX_TAIL_S),
+        seed=_clamp(_num(data.get("seed")), MAX_SEED),
     )
 
 

@@ -241,10 +241,15 @@ def preset_files(project: Path | None = None) -> list[Path]:
     return [p for d in dirs if d.is_dir() for p in sorted(d.glob("*.json"))]
 
 
+_warned_invalid: set[Path] = set()  # invalid presets already warned about (once per path)
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     data = cache.load_json(path)
     if not isinstance(data, dict):
-        logger.warning("Ignoring invalid HUD preset %s", path)
+        if path not in _warned_invalid:
+            _warned_invalid.add(path)
+            logger.warning("Ignoring invalid HUD preset %s", path)
         return None
     return data
 
@@ -270,7 +275,7 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
     phrases = tuple(map(str, data.get("banner_phrases", [])))
     events = tuple(e for e in data.get("events") or [] if isinstance(e, dict))
     if not builtin:
-        phrases = tuple(dict.fromkeys([*phrases, *_event_phrases(events), *GENERIC_BANNERS]))
+        phrases = tuple(dict.fromkeys([*phrases, *GENERIC_BANNERS, *_event_phrases(events)]))
     return HudPreset(
         game=str(data.get("game") or (path.stem if path else "game")),
         regions=_regions(data),

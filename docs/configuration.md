@@ -213,12 +213,12 @@ before.
 ```
 
 - `title`, `view`, `hype`: the game name, the camera view and the hype rubric line in the VLM
-  prompt. Empty or unset: the generic prompt.
+  prompt. Unset `title`: a name built from the game key (`some-game` becomes "Some Game"); unset `view`: not mentioned; unset `hype`: the generic rubric. A `hype` value is trimmed, then indented and ended with a newline, so a plain one-liner works.
 - `events`: custom event types. Each has `name` (the key in `signals.events`), `when` (matchers;
   any one is enough) and optional `score` (points per event, clamped to 0-12; unset: no boost),
   `max` (events counted per candidate, clamped to 1-3, default 1), `payoff` (true: the event ends
-  a clip tail), `tail_s` (seconds kept after the payoff) and `seed` (priority when choosing VLM
-  windows). Unset `payoff`, `tail_s` and `seed` keep the built-in rules.
+  a clip tail), `tail_s` (seconds kept after the payoff, clamped to 0-10) and `seed` (priority when choosing
+  VLM windows, clamped to 0-3). Unset `payoff`, `tail_s` and `seed` keep the built-in rules.
 - A matcher is an OCR event `type` (such as `kill`, `banner` or `multikill`) plus at most one
   test: `prefix` or `contains` (lists of upper-case label text; the label must start with, or
   contain, one of them) or `flag` (a boolean field of the event, such as `player`, `teamkill` or
@@ -227,10 +227,14 @@ before.
   first matching type wins, and a type with a built-in's name replaces it.
 - Scored types add to the highlight boost, which stays capped, and show up as evidence in
   `signals.events`. The `prefix` phrases of `banner` matchers are also added to the OCR phrases of
-  generic presets.
-- An invalid entry is skipped with a WARNING.
-- Changing scores, `max` or tails does not re-run OCR. A user preset that sets `title`, `view`,
-  `hype` or a `seed` gets its own VLM cache key, so its windows are described again once. The
+  generic presets, after the generic banners.
+- Names `laughter`, `scream`, `boost` and `vlm` are reserved, and a `payoff` must be true or false.
+  Such entries, and other invalid ones, are skipped with a WARNING shown once. Entries of `events`
+  that are not objects are dropped without a warning.
+- Changing scores, `max` or tails does not re-run OCR. A project or user preset gets its own VLM
+  cache key, so its windows are described again once, only when its prompt (name, view, hype)
+  differs from the bundled preset for the same game key (or from the default prompt if there is
+  none). Seeds do not affect the key. The
   bundled `r6.json` and `wt.json` keep their OCR cache keys.
 
 See [game streams](workflows/game-streams.md).

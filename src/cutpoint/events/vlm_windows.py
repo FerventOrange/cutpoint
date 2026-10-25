@@ -39,7 +39,7 @@ from cutpoint.events.common import (
 )
 from cutpoint.events.eventtypes import EventType, first_match
 from cutpoint.events.llama_server import LlamaServer, LlamaServerError
-from cutpoint.events.regions import HudPreset, load_preset
+from cutpoint.events.regions import HudPreset, load_preset, preset_from_dict
 from cutpoint.ffmpeg_utils import FFmpegError, grab_images
 from cutpoint.utils import clock
 
@@ -143,9 +143,11 @@ class GamePrompt:
         name: Game name ("Rainbow Six Siege", "video game").
         view: Camera view ("first-person"; empty: not mentioned).
         hype: The hype rubric line.
-        custom: A project or user preset (not a bundled one) sets prompt fields
-            (``title``, ``view``, ``hype`` or an event type ``seed``), so the VLM
-            cache key includes the prompt text.
+        custom: A project or user preset (not a bundled one) gives a prompt
+            (name, view, hype) that differs from the reference prompt of its game
+            key (the bundled preset's, else the derived default), so the VLM cache
+            key includes the prompt text. Event type seeds do not count: they only
+            change window selection.
     """
 
     name: str = "video game"
@@ -159,27 +161,48 @@ class GamePrompt:
         return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
 
 
-def _custom_prompt(preset: HudPreset) -> bool:
-    """Whether a non-bundled preset sets fields that change the prompt or the seeds;
-    presets without them (e.g. written by discovery) keep their VLM cache keys."""
-    if preset.path is None or preset.path.parent == paths.PRESETS_DIR:
-        return False
-    seeds = any(e.get("seed") is not None for e in preset.events)
-    return bool(preset.title or preset.view or preset.hype or seeds)
+def _is_bundled(preset: HudPreset) -> bool:
+    return preset.path is None or preset.path.parent == paths.PRESETS_DIR
+
+
+def _bundled_preset(game: str) -> HudPreset | None:
+    """The bundled preset for ``game`` (project and user presets ignored)."""
+    for path in sorted(paths.PRESETS_DIR.glob("*.json")):
+        data = cache.load_json(path)
+        if isinstance(data, dict) and (data.get("game") or path.stem) == game:
+            return preset_from_dict(data, path)
+    return None
+
+
+def _prompt_of(name: str, preset: HudPreset | None) -> GamePrompt:
+    """Prompt fields of ``preset`` (``name``: the derived game name); a ``hype`` line
+    is normalised to two leading spaces and one trailing newline."""
+    if preset is None:
+        return GamePrompt(name)
+    hype = preset.hype.strip()
+    return GamePrompt(
+        name=preset.title or name,
+        view=preset.view,
+        hype=f"  {hype}\n" if hype else HYPE_GENERIC,
+    )
 
 
 def game_prompt(game: str | None, preset: HudPreset | None) -> GamePrompt:
     """The prompt fields for ``game``: the preset's ``title``/``view``/``hype``, else
-    the game key as a name ("some-game" -> "Some Game") and the generic rubric."""
+    the game key as a name ("some-game" -> "Some Game") and the generic rubric.
+
+    ``custom`` is set for a project or user preset whose prompt differs from the
+    reference: the bundled preset of the same game key, else the derived default.
+    Presets without prompt fields (e.g. written by discovery) keep their VLM cache keys.
+    """
     name = (game or "").replace("-", " ").title() or "video game"
-    if preset is None:
-        return GamePrompt(name)
-    return GamePrompt(
-        name=preset.title or name,
-        view=preset.view,
-        hype=preset.hype or HYPE_GENERIC,
-        custom=_custom_prompt(preset),
-    )
+    prompt = _prompt_of(name, preset)
+    if preset is None or _is_bundled(preset):
+        return prompt
+    ref = _prompt_of(name, _bundled_preset(game) if game else None)
+    if prompt == ref:
+        return prompt
+    return GamePrompt(prompt.name, prompt.view, prompt.hype, custom=True)
 
 
 @dataclass
