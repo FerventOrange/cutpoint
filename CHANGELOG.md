@@ -327,6 +327,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the still time and the rule `static`. The first run re-reads the footage (new OCR
   cache). The `keyframes` step's percentage now also rises while each source is read, instead of
   once per source, and the menu line prints both the cover (0.5) and the list (0.25) thresholds.
+- Menu frames no longer drop kills, and still gameplay is no static screen (#312). The OCR layer
+  (JSON presets) keeps every kill and feed sighting in a frame the menu tests flag (a kill comes
+  from the feed region, which shows no menu), where the box tests (cover, jump, list) dropped
+  them. A still HUD area counts as a static screen after 5 s only when new menu text shows: text
+  that is no preset phrase, first read in the still stretch or up to 2 s before it; otherwise it
+  must hold still for 10 s. Still gameplay (scoped, about 6 s) keeps its banners, while menus
+  (hangar, crew and spawn screens hold still for 17 s or more) and result screens with words of
+  their own are still left out. The `-v` menu line shows both minimums and `menu text yes`, `no`
+  or `-`. The first run re-reads the footage (new OCR cache).
 - `events` with the crash layer logs each unreachable source once, not twice: the crash layer
   logs it at debug level, since `events` already warned.
 - `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines

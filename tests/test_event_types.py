@@ -430,7 +430,7 @@ VERBFEED_KEY = {
     "preset": {
         "bigtext": True,
         "feed": {"kill_words": {"toppled": "kill"}},
-        "interp": 8,
+        "interp": 9,
         "phrases": ["VERB DONE", *GENERIC_BANNERS],
         "preset_tags": ["BOXER"],
     },

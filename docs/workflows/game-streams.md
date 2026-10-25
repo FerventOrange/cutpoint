@@ -58,17 +58,21 @@ frames, finds text that changes quickly (kill feeds, banners, notices), ignores 
 world text, and writes a proposal to `<project>\discovery\<game>\` (`proposal.json`, `overlay.jpg`)
 and installs it as a preset. Check `overlay.jpg`, then edit the preset JSON to calibrate.
 A discovered kill feed grows by the oldest rows that show only when the feed is full (up to
-twice its height). With such a preset, menu and scoreboard frames produce no OCR events.
+twice its height). With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed.
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
-static screen when a small grey thumbnail of the HUD area stays nearly the same for at least
-5 s with no feed sighting or kill within 2 s, so kills in still gameplay are kept. This test
+static screen when a small grey thumbnail of the HUD area stays nearly the same, with no feed
+sighting or kill within 2 s, for at least 5 s when new menu text shows (text that is no preset
+phrase, first read in that stretch or just before it) or 10 s without, so still gameplay (scoped,
+about 6 s) keeps its banners. Kills and other feed sightings are never dropped, even in a menu
+frame. This test
 runs only when the preset's regions span at least a quarter of the frame (`static_area`), since a
 few small corner regions see too little of the screen.
 `stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out, and
 `static_frames` how many of them held still.
 With `cutpoint -v`, the OCR layer logs one line per frame that is a menu or has an OCR event:
 the time, the box count of the regions other than feeds, the centre cover, the recording's
-median box count, the thresholds (cover, list, jump), how long the screen held still and the
+median box count, the thresholds (cover, list, jump), how long the screen held still, whether new
+menu text showed (`menu text yes`, `no`, or `-` near feed activity) and the
 rule that decided (`cover`, `jump`, `list`, `static` or `none`). Discovery logs how a kill feed grew (`Feed growth ...`: the row pitch, the frames with
 a full feed, what a row needs, and above and below every row tried, with its frames (how many
 with a full feed), bursts, label variety and sighting variety, ending in `ok: frames` (seen in
