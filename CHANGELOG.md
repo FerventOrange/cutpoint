@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Analysis steps in the UI: while an analysis runs, the Moments column lists each step under
+  "Analyze footage" (or under the header for "Analyze again") with its state (waiting, running
+  with a percentage when known, done, skipped with the reason, failed with the error); a step
+  still running when the job fails reads "interrupted", a cancelled one "cancelled", and steps
+  that never started "not run". The UI starts its jobs with
+  `CUTPOINT_PROGRESS=1` and keeps the `PROGRESS` lines out of the job log; `GET /api/jobs`
+  returns them per job as `progress` (`total`, `steps`).
 - `--json` on `events`. It reports the `events.json` and `events.txt` paths, the layers, the
   event and window counts, `highlights.json` once re-ranked (and `highlights.pre-events.json`
   when the run created it), and when written `crashes.json`, the contact sheets and the HUD
