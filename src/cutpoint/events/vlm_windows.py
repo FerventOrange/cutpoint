@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+import hashlib
 import json
 import logging
 import re
@@ -27,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache
+from cutpoint import cache, paths
 from cutpoint.config import source_path
 from cutpoint.events.common import (
     Source,
@@ -36,7 +37,9 @@ from cutpoint.events.common import (
     transcript_excerpt,
     wav_bytes,
 )
+from cutpoint.events.eventtypes import EventType, first_match
 from cutpoint.events.llama_server import LlamaServer, LlamaServerError
+from cutpoint.events.regions import HudPreset, load_preset, preset_from_dict
 from cutpoint.ffmpeg_utils import FFmpegError, grab_images
 from cutpoint.utils import clock
 
@@ -124,18 +127,82 @@ SKI_TAG_HELP = (
     "restaurant).\n"
 )
 
-GAME_NAMES = {"r6": "Rainbow Six Siege", "wt": "War Thunder"}
-HYPE_R6 = (
-    "  hype: 0-1 walking/waiting, menus, loading, operator select, scoreboard, "
-    "killcam, replay; 3-4 a single ordinary kill; 6-7 a round win, a multi-kill, "
-    "a close fight; 8-10 a clutch (1 vs many), an ace, a spectacular kill.\n"
-)
 HYPE_GENERIC = (
     "  hype: 0-1 driving/waiting, menus, hangar, loading, vehicle or respawn "
     "select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a "
     "multi-kill, a big explosion, a close call, a match win; 8-10 several "
     "kills in quick succession, a spectacular kill or a spectacular death.\n"
 )
+
+
+@dataclass(frozen=True)
+class GamePrompt:
+    """Game-specific parts of the VLM prompt (from the HUD preset).
+
+    Attributes:
+        name: Game name ("Rainbow Six Siege", "video game").
+        view: Camera view ("first-person"; empty: not mentioned).
+        hype: The hype rubric line.
+        custom: A project or user preset (not a bundled one) gives a prompt
+            (name, view, hype) that differs from the reference prompt of its game
+            key (the bundled preset's, else the derived default), so the VLM cache
+            key includes the prompt text. Event type seeds do not count: they only
+            change window selection.
+    """
+
+    name: str = "video game"
+    view: str = ""
+    hype: str = HYPE_GENERIC
+    custom: bool = False
+
+    def key(self) -> str:
+        """Short hash of the prompt fields (VLM cache key ``gp``)."""
+        text = json.dumps([self.name, self.view, self.hype])
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+
+
+def _is_bundled(preset: HudPreset) -> bool:
+    return preset.path is None or preset.path.parent == paths.PRESETS_DIR
+
+
+def _bundled_preset(game: str) -> HudPreset | None:
+    """The bundled preset for ``game`` (project and user presets ignored)."""
+    for path in sorted(paths.PRESETS_DIR.glob("*.json")):
+        data = cache.load_json(path)
+        if isinstance(data, dict) and (data.get("game") or path.stem) == game:
+            return preset_from_dict(data, path)
+    return None
+
+
+def _prompt_of(name: str, preset: HudPreset | None) -> GamePrompt:
+    """Prompt fields of ``preset`` (``name``: the derived game name); a ``hype`` line
+    is normalised to two leading spaces and one trailing newline."""
+    if preset is None:
+        return GamePrompt(name)
+    hype = preset.hype.strip()
+    return GamePrompt(
+        name=preset.title or name,
+        view=preset.view,
+        hype=f"  {hype}\n" if hype else HYPE_GENERIC,
+    )
+
+
+def game_prompt(game: str | None, preset: HudPreset | None) -> GamePrompt:
+    """The prompt fields for ``game``: the preset's ``title``/``view``/``hype``, else
+    the game key as a name ("some-game" -> "Some Game") and the generic rubric.
+
+    ``custom`` is set for a project or user preset whose prompt differs from the
+    reference: the bundled preset of the same game key, else the derived default.
+    Presets without prompt fields (e.g. written by discovery) keep their VLM cache keys.
+    """
+    name = (game or "").replace("-", " ").title() or "video game"
+    prompt = _prompt_of(name, preset)
+    if preset is None or _is_bundled(preset):
+        return prompt
+    ref = _prompt_of(name, _bundled_preset(game) if game else None)
+    if prompt == ref:
+        return prompt
+    return GamePrompt(prompt.name, prompt.view, prompt.hype, custom=True)
 
 
 @dataclass
@@ -160,8 +227,11 @@ class VlmParams:
     ski: bool = False  # ski prompt + tags (set by the pipeline for ski projects)
     max_fill_windows: int = 0  # ski: extra windows over stopped / lift footage
 
-    def key(self) -> dict[str, Any]:
-        """Parameters that change a window's result (selection params excluded)."""
+    def key(self, prompt: GamePrompt | None = None) -> dict[str, Any]:
+        """Parameters that change a window's result (selection params excluded).
+
+        A ``prompt`` from a project or user preset adds its hash as ``gp``.
+        """
         return {
             "frames": self.frames,
             "h": self.frame_height,
@@ -172,6 +242,7 @@ class VlmParams:
             "prompt": PROMPT_VERSION,
             "model": "qwen2.5-omni-7b-q4km",
             **({"ski": SKI_PROMPT_VERSION} if self.ski else {}),
+            **({"gp": prompt.key()} if prompt and prompt.custom else {}),
         }
 
 
@@ -200,8 +271,14 @@ TELEMETRY_SEEDS = {"crash": 2.0, "airtime": 1.0, "coverage": 0.25}
 GAP_FILL_TYPES = ("stopped/lift",)
 
 
-def _seed_priority(ev: dict[str, Any]) -> float | None:
-    """Priority of a layer-1 event as a window seed (None = not a seed)."""
+def _seed_priority(ev: dict[str, Any], types: tuple[EventType, ...] = ()) -> float | None:
+    """Priority of a layer-1 event as a window seed (None = not a seed).
+
+    The ``seed`` of the first matching preset event type in ``types`` comes first.
+    """
+    t = first_match(types, ev)
+    if t and t.seed is not None:
+        return t.seed
     if ev.get("kind") == "audio":
         w = SEED_WEIGHTS.get(ev["label"])
         if w is None or not ev.get("seed", True):
@@ -279,6 +356,7 @@ def select_windows(
     candidates: list[dict[str, Any]],
     layer1: dict[str, list[dict[str, Any]]],
     params: VlmParams,
+    types: dict[str, tuple[EventType, ...]] | None = None,
 ) -> list[Window]:
     """Build, merge and cap the windows to send to the VLM.
 
@@ -287,6 +365,7 @@ def select_windows(
         candidates: highlights.json candidates.
         layer1: ``{source_path: [layer-1 events]}`` (audio + OCR).
         params: Selection parameters.
+        types: ``{source_path: event types}`` (custom seed priorities).
     """
     dur = {str(s.path): s.duration for s in sources}
     raw: list[Window] = []
@@ -309,8 +388,9 @@ def select_windows(
             )
         )
     for src, events in layer1.items():
+        src_types = (types or {}).get(src, ())
         for ev in events:
-            pr = _seed_priority(ev)
+            pr = _seed_priority(ev, src_types)
             if pr is None:
                 continue
             t = ev.get("peak_t", ev["t"])
@@ -450,21 +530,26 @@ def build_messages(
     win: Window,
     frames: list[bytes],
     params: VlmParams,
-    game: str | None,
+    game: GamePrompt | str | None,
     transcript_lines: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """OpenAI-style messages for one window."""
+    """OpenAI-style messages for one window.
+
+    ``game`` is the window's :class:`GamePrompt`, or a game key whose preset is
+    looked up (bundled and user presets).
+    """
     if params.ski:
         return build_messages_ski(src, win, frames, params, transcript_lines, events)
+    if not isinstance(game, GamePrompt):
+        game = game_prompt(game, load_preset(game))
     dur = win.end - win.start
-    game_name = GAME_NAMES.get(game or "", (game or "").replace("-", " ").title() or "video game")
-    view = "first-person " if game == "r6" else ""
+    view = f"{game.view} " if game.view else ""
     content: list[dict[str, Any]] = [
         {
             "type": "text",
             "text": (
-                f"This is a {dur:.0f}-second window of a {view}{game_name} recording, "
+                f"This is a {dur:.0f}-second window of a {view}{game.name} recording, "
                 f"starting at {clock(win.start)} in {src.name}. The single audio track mixes "
                 "game sound, the player's microphone and friends on voice chat. "
                 f"{len(frames)} frames follow, each labelled with seconds from the window start."
@@ -487,7 +572,7 @@ def build_messages(
                 "and deaths, and listen to the audio for laughter and tone. "
                 "Use on-screen HUD text only as context; do not transcribe it.\n"
                 "Scoring rubric (integers 0-10):\n"
-                + (HYPE_R6 if game == "r6" else HYPE_GENERIC)
+                + game.hype
                 + "  funny: 0-1 no joke; 3-4 light banter; 6-7 a clear joke or people "
                 "laughing; 8-10 everyone laughing hard, an absurd mistake, a teamkill "
                 "followed by laughter.\n"
@@ -656,7 +741,7 @@ def describe_windows(
     sources: dict[str, Source],
     windows: list[Window],
     params: VlmParams,
-    games: dict[str, str | None],
+    prompts: dict[str, GamePrompt],
     transcript_lines: list[dict[str, Any]],
     layer1: dict[str, list[dict[str, Any]]],
     force: bool = False,
@@ -668,7 +753,7 @@ def describe_windows(
         sources: ``{source_path: Source}``.
         windows: Windows from :func:`select_windows`.
         params: VLM parameters.
-        games: ``{source_path: game preset}``.
+        prompts: ``{source_path: game prompt}`` (missing: a generic video game).
         transcript_lines: Parsed transcript.txt.
         layer1: Layer-1 events per source (for hints).
         force: Ignore cached results.
@@ -688,8 +773,9 @@ def describe_windows(
     caches: dict[str, tuple[Path, dict[str, Any]]] = {}
     for win in windows:
         src = sources[win.source]
+        prompt = prompts.get(win.source)
         if win.source not in caches:
-            cpath = layer_cache_path(src.cdir, "vlm", params.key())
+            cpath = layer_cache_path(src.cdir, "vlm", params.key(prompt))
             caches[win.source] = (cpath, cache.load_json(cpath) or {"windows": {}})
         cpath, store = caches[win.source]
         hit = store["windows"].get(win.key)
@@ -716,7 +802,7 @@ def describe_windows(
             win,
             frames,
             params,
-            games.get(win.source),
+            prompt,
             transcript_lines,
             layer1.get(win.source, []),
         )
@@ -753,7 +839,7 @@ def describe_windows(
             "prompt_tokens": usage.get("prompt_tokens"),
         }
         store["windows"][win.key] = rec
-        cache.save_json(cpath, {**store, "params": params.key()})
+        cache.save_json(cpath, {**store, "params": params.key(prompt)})
         stats["ok"] += 1
         stats["seconds"].append(elapsed)
         stats["prompt_tokens"].append(usage.get("prompt_tokens"))
