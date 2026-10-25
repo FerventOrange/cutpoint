@@ -225,6 +225,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `highlights_not_updated` warning of `crashes --reanalyze` and `events` now says a source
+  "could not be found or reached": it also comes when a source is missing at its recorded or
+  remapped path, not only when its drive is offline.
 - `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines
   at debug level instead of info.
 - `events` loads CLIP once per run: the crash dense check reuses the visual layer's model.
