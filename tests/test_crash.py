@@ -194,6 +194,35 @@ def test_detect_project_dense_checks_speed_drops_below_prefilter(tmp_path, monke
     assert ends == [1]
 
 
+def test_detect_project_dense_zero_never_lowers_a_speed_drop_bypass(tmp_path, monkeypatch):
+    src = tmp_path / "s.mp4"
+    src.write_bytes(b"x")
+    project = _project(tmp_path, src)
+    normal, drop = _cand("normal", 0.5, 10, 10), _cand("drop", 0.161, 71, 0.4)
+    drop["t0"], drop["t1"] = 40.0, 42.0  # outside the other clip, so it is not absorbed
+    for c in (normal, drop):
+        c["source"] = str(src)
+        c["scores"].update(telemetry=0.8, visual=0.6)
+    enc = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(crash, "load_inputs", lambda *a: _inputs(spike=False))
+    monkeypatch.setattr(crash, "candidate_events", lambda inp, p: [normal, drop])
+    monkeypatch.setattr(crash, "score_candidate", lambda inp, c, p: c)
+    monkeypatch.setattr(crash, "plan_clip", lambda i, c, p: {"start": c["t0"], "end": c["t1"]})
+    pre = {
+        c["name"]: crash._confidence(c, dict(crash.CrashParams().weights)) for c in (normal, drop)
+    }
+    monkeypatch.setattr(crash, "dense_feature", lambda e, inp, c, p, store: {"score": 0.0})
+    own_words = replace(crash.CrashParams(), words=())
+    crash.detect_project(project, params=own_words, encoder=enc, sheets=0)
+    got = {
+        c["name"]: c
+        for c in json.loads((project / "crashes.json").read_text(encoding="utf-8"))["crashes"]
+    }
+    assert got["drop"]["confirmed"] and got["normal"]["confirmed"]
+    assert got["drop"]["confidence"] >= round(pre["drop"], 3)  # the bypass is never penalised
+    assert got["normal"]["confidence"] < round(pre["normal"], 3)  # a normal candidate still drops
+
+
 class _TrackedClip(_FakeClip):
     def __init__(self):
         super().__init__()

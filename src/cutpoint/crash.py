@@ -108,7 +108,8 @@ class CrashParams:
         drop_from_kmh: A candidate below ``prefilter`` still gets the dense
             confirm when its GPS speed before the event was at least this and it
             fell to a stop (``still_kmh`` + 1, as in the telemetry score) within
-            10 s after it: a fast rider stopped dead right after a shock.
+            10 s after it: a fast rider stopped dead right after a shock. The
+            dense score can only raise such a candidate's confidence.
         drop_top: At most this many such speed-drop candidates per project are
             confirmed on top of ``dense_top``.
         weights: Fusion weights of the sub-scores.
@@ -1218,6 +1219,9 @@ def detect_project(
                 tel["speed_min_after_kmh"],
             )
         todo += drops[: p.drop_top]
+    # Speed-drop candidates only reach the dense check through the bypass:
+    # it may confirm them but never lower their confidence.
+    bypass = {id(c) for c in todo if c["pre_score"] < p.prefilter}
     enc = encoder
     stores: dict[str, dict[str, Any]] = {}
     try:
@@ -1237,9 +1241,11 @@ def detect_project(
     timings["dense_s"] = round(time.perf_counter() - t0, 1)
     for c in cands:
         d = c.get("dense")
+        before = _confidence(c, w)
         if d is not None:
             c["scores"]["dense"] = d["score"]
-        c["confidence"] = round(_confidence(c, w), 3)
+        conf = _confidence(c, w)
+        c["confidence"] = round(max(before, conf) if id(c) in bypass else conf, 3)
         c["confirmed"] = d is not None
         c["clip"] = plan_clip(inputs[c["source"]], c, p)
     cands = _absorb(sorted(cands, key=lambda c: -c["confidence"]))
@@ -1291,7 +1297,7 @@ def detect_project(
             c["scores"]["words"],
         )
     logger.info(
-        "Wrote %s (%d candidates, %d confirmed densely, %d sheets) in %.1fs",
+        "Wrote %s (%d candidates, %d checked densely, %d sheets) in %.1fs",
         out,
         len(cands),
         sum(c["confirmed"] for c in cands),
