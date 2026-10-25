@@ -48,8 +48,9 @@ In `CUTPOINT_HOME` (run `cutpoint paths`). See [Configuration](configuration.md)
 Yes: `cutpoint edit <video> --kind highlights|montage|clips|funny-moments` runs `analyze`,
 `clips` and `assemble` in one go (see [commands](commands.md#edit)). `clips` and `assemble`
 write SRT subtitles next to the clips and the final video. `cutpoint skill install` adds a
-Claude Code skill so an agent finds Cutpoint on its own. JSON on stdout for every command is
-planned (#4).
+Claude Code skill so an agent finds Cutpoint on its own. `--json` writes the result of most
+commands as one JSON object on stdout (see [JSON output](commands.md#json-output)); `events`,
+`crashes` and `profile` do not have the envelope yet (#4).
 
 **Do I need the Insta360 SDK?**
 Only for high-quality stitching of Insta360 X3 `.insv` files. Everything else works without it,
