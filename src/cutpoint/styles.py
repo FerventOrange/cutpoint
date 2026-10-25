@@ -88,10 +88,11 @@ class Style:
         vision_default: Use the Ollama vision rater when ``--vision`` is not
             given: None = if reachable, False = only on request.
         learned: Fit metadata for presets loaded from the styles folder.
-        mask_friends: Ski only: friends score (0-10; VLM friends_faces tag or
-            the visual layer's ``people`` score x 10) that lifts the lift/stop
-            mask (11 = never; 0 = soft mask: nothing is forbidden and the
-            ``stopped`` feature weight decides).
+        mask_friends: Ski only: the lift/stop mask. Above 0 it is hard (no
+            clips on lifts or stops; friends in view do not lift it, so every
+            value above 0, such as the 5-11 of older presets, acts the same);
+            0 = soft mask: nothing is forbidden and the ``stopped`` feature
+            weight decides.
         must_include_crash: Ski only: crashes in ``crashes.json`` (``cutpoint
             crashes``) with at least this confidence (0-1) are always clipped,
             with their approach, aftermath and reaction, whatever the weights

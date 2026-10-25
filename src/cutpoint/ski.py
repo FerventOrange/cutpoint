@@ -6,8 +6,10 @@ analysis grid of one source:
 
     airtime  telemetry airtime events (strength by duration and confidence)
     crash    telemetry crash events (impact g followed by a stop; head tilt raises it)
-    vlm      ``cutpoint events`` window tags: max of jump_air, landing, powder_spray,
-             friends_faces (0-10 -> 0-1); 0 before ``cutpoint events`` has run
+    vlm      ``cutpoint events`` window tags: max of jump_air, landing, powder_spray
+             and friends_faces (0-10 -> 0-1); friends only outside the lift/still
+             mask, scaled down by the window's chairlift / standing_talking /
+             lodge tags; 0 before ``cutpoint events`` has run
     speed    GPS speed percentile within the day (above-median part, 0-1); the
              GoPro wind meter stands in where there is no GPS fix
     social   PANNs Laughter / Scream / Cheering (after ``cutpoint events``) and
@@ -46,12 +48,13 @@ From ``cutpoint crashes`` (``<project>/crashes.json``, 0 until it ran):
              ``must_include_crash`` also become must-include candidates
              (:func:`must_include_picks`), whatever the weights say.
 
-The weighted sum is hard-masked on lifts and stops (``lift_mask | still_mask``)
-unless friends are seen strongly: a VLM window rating ``friends_faces``, or
-the ``people`` score, at >= ``FRIENDS_STRONG`` / 10. Peaks are
+The weighted sum is hard-masked on lifts and stops (``lift_mask | still_mask``);
+friends in view do not lift the mask. Peaks are
 turned into clips whose length depends on the dominant feature: jumps 3-6 s
 (1.5 s before take-off to 1.5 s after landing), crashes 4-8 s, speed/carve
-4-10 s, scenic 2-4 s, social/VLM 4-8 s.
+4-10 s, scenic 2-4 s, social/VLM 4-8 s. Each pick takes its whole stretch
+(the run around the peak above ``STRETCH`` of it), so a flat stretch gives
+one clip, not several back to back.
 """
 
 from __future__ import annotations
@@ -94,8 +97,10 @@ FEATURES = (
 # Features computed from the voice / visual layers and the taste head.
 NEW_FEATURES = ("beauty", "people", "group", "laughter", "voice", "taste")
 SHORT_CLIP_S = 30.0  # a clip this short was recorded on purpose for one moment
-VLM_ACTION_TAGS = ("jump_air", "landing", "powder_spray", "friends_faces")
-FRIENDS_STRONG = 7  # VLM friends_faces score that lifts the lift/still mask
+VLM_ACTION_TAGS = ("jump_air", "landing", "powder_spray")
+VLM_IDLE_TAGS = ("chairlift", "standing_talking", "lodge")  # friends do not count there
+FRIENDS_STRONG = 7  # default mask_friends: > 0 = hard lift/still mask, 0 = soft
+STRETCH = 0.7  # a pick takes the run around its peak that stays above this share of it
 FEATURES_DIR = "ski_features"
 # Clip geometry per dominant feature: (min_len, max_len, pre, post) around the peak.
 GEOMETRY: dict[str, tuple[float, float, float, float]] = {
@@ -312,14 +317,20 @@ def build_features(
     friends = np.zeros(n)
     wins = ctx.windows.get(_key(src), [])
     if wins:
-        act, scen, fr = [], [], []
+        act, scen, fr, fr_ride = [], [], [], []
         for w in wins:
             tags = w.get("tags") or {}
             a, b = w["start"] - offset, w["end"] - offset
             act.append((a, b, max(tags.get(t, 0) for t in VLM_ACTION_TAGS) / 10))
             scen.append((a, b, tags.get("scenic_vista", 0) / 10))
             fr.append((a, b, tags.get("friends_faces", 0) / 10))
-        f["vlm"], f["scenic"], friends = _paint(n, act), _paint(n, scen), _paint(n, fr)
+            # Friends raise a riding moment, not lift, standing or lodge time, where
+            # they are in view for minutes: scaled down by the window's idle tags.
+            idle = max(tags.get(t, 0) for t in VLM_IDLE_TAGS) / 10
+            fr_ride.append((a, b, tags.get("friends_faces", 0) / 10 * (1 - idle)))
+        f["scenic"], friends = _paint(n, scen), _paint(n, fr)
+        # ... and only outside the telemetry lift/still mask.
+        f["vlm"] = np.maximum(_paint(n, act), _paint(n, fr_ride) * (1 - mask))
     f["wipeout"] = _paint(
         n,
         [
@@ -417,15 +428,17 @@ def taste_frames(vd: Any, taste: dict[str, Any]) -> np.ndarray:
 def effective_mask(
     mask: np.ndarray, friends: np.ndarray, friends_strong: float = FRIENDS_STRONG
 ) -> np.ndarray:
-    """1 where clips are forbidden: lift/stop, unless friends are seen strongly.
+    """1 where clips are forbidden: lift/stop.
 
-    ``friends_strong`` is the VLM friends_faces score (0-10) that lifts the
-    mask; above 10 the mask is never lifted, and 0 or less means a *soft*
-    mask (nothing is forbidden; the ``stopped`` weight decides).
+    ``friends_strong`` (a style's ``mask_friends``) above 0 keeps the mask
+    hard; 0 or less means a *soft* mask (nothing is forbidden; the
+    ``stopped`` weight decides). Friends no longer lift the mask: people
+    standing and chatting, or on the chairlift, are in view for minutes, so
+    ``friends`` is accepted for the callers but not used.
     """
     if friends_strong <= 0:
         return np.zeros_like(mask)
-    return mask * (friends < friends_strong / 10)
+    return mask.copy()
 
 
 def combine(
@@ -492,7 +505,7 @@ def pick(
         duration: Length of this (part of the) source.
         max_picks: Upper bound on clips.
         offset: Start of a recovered part.
-        friends_strong: VLM friends_faces score that lifts the mask.
+        friends_strong: A style's ``mask_friends`` (see :func:`effective_mask`).
     """
     combined = combine(features, weights, mask, friends, friends_strong)
     n = len(combined)
@@ -500,11 +513,25 @@ def pick(
     gmax = float(score.max()) if n else 0.0
     evs = [{**e, "t": e["t"] - offset, "end": e["end"] - offset} for e in events]
     picks: list[Pick] = []
+    taken = np.zeros(n, dtype=bool)  # suppressed by a pick: its clip and its stretch
     while len(picks) < max_picks and gmax > 0:
         i = int(score.argmax())
         peak = float(score[i])
         if peak <= 0.02 or peak < 0.08 * gmax:
             break
+        # The stretch: the run around the peak that stays above STRETCH of it (a
+        # flat VLM window, a long fast section) is one moment and gives one clip.
+        # A stretch that reaches an earlier pick's, with no dip below STRETCH
+        # between them, is that moment's shoulder: suppressed, not picked.
+        s0, s1 = i, i
+        while s0 > 0 and combined[s0 - 1] >= STRETCH * peak:
+            s0 -= 1
+        while s1 < n - 1 and combined[s1 + 1] >= STRETCH * peak:
+            s1 += 1
+        if taken[max(0, s0 - 1) : s1 + 2].any():
+            score[s0 : s1 + 1] = 0.0
+            taken[s0 : s1 + 1] = True
+            continue
         t = i * DT
         contrib = {k: weights.get(k, 0) * features[k][i] for k in features}
         kind = max(contrib, key=contrib.get)
@@ -531,8 +558,10 @@ def pick(
             grow = (lo_len - (b - a)) / 2
             a, b = a - grow, b + grow
         a, b = max(0.0, a), min(duration, b)
-        ia, ib = max(0, int(a / DT) - 5), min(n, int(b / DT) + 5)
+        ia = max(0, min(int(a / DT), s0) - 5)
+        ib = min(n, max(int(b / DT), s1 + 1) + 5)
         score[ia:ib] = 0.0
+        taken[ia:ib] = True
         sl = slice(int(a / DT), max(int(a / DT) + 1, int(b / DT)))
         sigs = {k: round(float(v[sl].max()), 3) for k, v in features.items()}
         picks.append(
