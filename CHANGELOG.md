@@ -131,6 +131,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with
+  "Requested resampling engine is unavailable" on ffmpeg builds without libsoxr (such as the
+  gyan.dev "essentials" build). The limiter uses soxr only when the build has it, else ffmpeg's
+  default resampler.
 - `cutpoint ui` shows one banner when the server restarted or the link's session token is stale
   ("The Cutpoint server restarted or this link expired. Open the new link printed in the
   terminal.") and stops polling, prepare retries and timers, instead of failing repeatedly.

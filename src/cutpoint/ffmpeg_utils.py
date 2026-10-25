@@ -587,6 +587,23 @@ def _first_error_line(err: FFmpegError) -> str:
     return lines[-1]
 
 
+def buildconf_has_soxr(buildconf: str) -> bool:
+    """True if ``ffmpeg -buildconf`` output lists ``--enable-libsoxr``."""
+    return re.search(r"(?m)^\s*--enable-libsoxr\s*$", buildconf) is not None
+
+
+@state.register_cache
+@cache
+def has_soxr() -> bool:
+    """True if this ffmpeg build has the soxr resampler (libsoxr); not every build does."""
+    try:
+        found = buildconf_has_soxr(run(["ffmpeg", "-hide_banner", "-buildconf"], timeout=30))
+    except FFmpegError:
+        found = False
+    logger.debug("ffmpeg resampler: %s", "soxr" if found else "swr (no libsoxr in this build)")
+    return found
+
+
 def vaapi_devices() -> list[str]:
     """VAAPI render nodes (Linux), in a stable order; each is probed, none is assumed."""
     if not sys.platform.startswith("linux"):
