@@ -124,6 +124,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (with a WARNING). User and bundled presets never get a separate VLM cache key; a project preset
   gets one only when its prompt differs from the user (or bundled) preset of the same game key.
   After adding a user preset with `title`, `view` or `hype`, or editing those fields in one, run `cutpoint events <project> --force vlm`.
+- The Ollama vision rating is opt-in for every style: `analyze` and `edit` use it only with
+  `--vision`, and `cutpoint ui` only when "Rate frames with a local vision model (Ollama)" is
+  ticked next to "Analyze footage" or in the dialog "Analyze again" now opens (there it starts as
+  the previous analysis asked). Before, it ran whenever Ollama was reachable (except for `ski`),
+  loading about 7 GB into GPU memory unasked. `--no-vision` is still accepted and changes
+  nothing. The `vision_unavailable` warning now only comes with `--vision`. `highlights.json`
+  records the request as `settings.vision_requested`; re-analyzing (`cutpoint events`) uses
+  vision only if the earlier run asked for it, so a project analyzed before this change (no
+  record) is re-analyzed without it. The style setting `vision_default` is gone. Building an activity profile
+  (`profile`, `crashes`) and `360 director --vl-check` also unload the vision model when they
+  are done with it (`--vl-check` also when it fails or is interrupted). With CLIP installed,
+  building a profile now unloads only that model, not every model loaded in Ollama.
 - `profile --json` writes the result envelope: the `activity.json` record it printed before is
   under `outputs` with the same keys, plus `activity_file` (its path) (#4).
 - `cutpoint capabilities --json` writes the result envelope: the report it printed before is now
@@ -190,10 +202,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `analyze` (and `edit`) unloads the Ollama vision model right after the vision pass, also when
+  it fails or is interrupted, instead of leaving it in GPU memory (about 7 GB for qwen3-vl:8b)
+  for Ollama's default 5 minutes. Only the model the run used is unloaded; if unloading fails,
+  the run goes on (a DEBUG line).
+- The vision retry for the `ski` style now asks about skiing (jumps, crashes, chairlifts) like
+  the first attempt, not about menus and scoreboards.
 - In generic (verb-style) kill feeds such as War Thunder, the player's own deaths no longer count
   as player kills in the highlight boost, so moments with deaths rank lower; R6 is unchanged. The
   teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff
   banners.
+- `--style ski`: a stretch of footage at one score (a 15-30 s `cutpoint events` VLM window, a
+  long fast section) gives one clip instead of several back-to-back clips that filled the top
+  10. Each pick takes the run around its peak that stays above 70% of it, centred on a flat top,
+  and a lower peak with no dip between it and an earlier pick counts as part of that moment;
+  peaks separated by a dip, such as two jumps on one run, are still picked. On the Day-1 test
+  footage without events the top 10 went from 6 to 10 distinct moments. `cutpoint mix` picks
+  its ski candidates the same way, so a long stretch now gives it fewer candidates (#282).
+- `--style ski`: friends in view no longer lift the lift/stop mask, and the VLM `friends_faces`
+  tag counts less as action: scaled by 1 - idle/10, so not at all in a window the VLM tags as
+  fully `chairlift`, `standing_talking` or `lodge`, nor on a lift or while stopped. Standing and
+  chatting at the top or unloading from a chairlift no longer gets the top VLM score; friends
+  while riding still raise a moment. A learned preset's `mask_friends` above 0 now means a hard
+  mask (0 is still the soft mask), and `cutpoint fit` and `cutpoint refmatch` fit the soft and
+  the hard mask once each instead of six thresholds that now give the same result. Saved
+  features still count friends in `vlm` until `analyze --style ski` is re-run; refit learned
+  presets after that (#283).
 - `cutpoint ui` no longer logs a `ConnectionResetError` (`[WinError 10054]`) ERROR traceback each
   time the browser cancels a video request, such as on a seek or when switching sources.
 - `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with

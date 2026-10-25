@@ -757,7 +757,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--vision",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="rate top candidates with Ollama, as analyze --vision (default: if reachable)",
+        help="rate top candidates with a local Ollama vision model, as analyze --vision "
+        "(default: off)",
     )
     ed.add_argument(
         "--vision-top",
@@ -807,7 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--vision",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="rate top candidates with Ollama (default: if reachable)",
+        help="rate top candidates with a local Ollama vision model (default: off)",
     )
     an.add_argument(
         "--vision-top",

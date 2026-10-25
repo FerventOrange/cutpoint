@@ -1527,6 +1527,8 @@ def create_app(port: int) -> FastAPI:
             "style": meta.get("style") or (hl or {}).get("style") or "",
             "source": meta.get("source"),
             "highlights": moments_view(hl),
+            # "Analyze again" starts its vision box from this (older analyses: off)
+            "vision_requested": ((hl or {}).get("settings") or {}).get("vision_requested") is True,
             "review": review if isinstance(review, dict) else None,
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp
@@ -1611,6 +1613,9 @@ def create_app(port: int) -> FastAPI:
                 args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
             if st.get("recursive") is True:
                 args.append("--recursive")
+            # Opt-in: the box the user ticked, else ("Analyze again") what the last run asked for.
+            if _flag(body, "vision") if "vision" in body else st.get("vision_requested") is True:
+                args.append("--vision")
             vision_top = st.get("vision_top")
             if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
                 args.append(f"--vision-top={vision_top}")

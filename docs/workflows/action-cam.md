@@ -3,7 +3,7 @@
 This is an optional module (extra `ski`; the full feature set also needs the `events` extra and
 `cutpoint setup`). It uses telemetry in GoPro HERO 9-13 files (accelerometer, gyro, GPS) to
 score moments by what happened: speed, airtime, carving, crashes. Lifts and stops are masked
-unless friends are in view. The style name is `ski`, but the signals apply to any riding or
+even with friends in view. The style name is `ski`, but the signals apply to any riding or
 action footage that carries telemetry.
 
 ```powershell
@@ -14,8 +14,8 @@ cutpoint clips trip --max-total 150
 cutpoint assemble projects/trip/clips --loudnorm
 ```
 
-`analyze --style ski` skips scene detection and the Ollama rater (pass `--vision` to use it).
-It writes `telemetry.json` (day summary, runs, per-source events). Clips are ordered by their
+`analyze --style ski` skips scene detection. As with every style, the Ollama frame rating runs
+only with `--vision`. It writes `telemetry.json` (day summary, runs, per-source events). Clips are ordered by their
 start time (GPS time, else the camera clock) and the day is split into runs at lift segments
 and gaps over 4 minutes.
 
