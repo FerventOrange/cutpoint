@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reaction points for event types: the preset `events` fields `reaction` (0-12 points once per
+  candidate) and `styles` (limits `score` and `reaction` to some styles). `player_deaths` now defaults to `reaction` 8 for
+  `funny`: a player death followed within 6 s by laughter, a scream or speech after a pause adds
+  8 points once per candidate. It is rescored from the cache and needs `player_tags` or `--player`.
 - `--json` on `crashes` and `profile`. `crashes` reports the `crashes.json` path, the crash
   count, each crash with its `crashes.json` keys (`id`, `source`, `t0`, `t1`, `confidence`,
   `confirmed`, `origin`, `clip`, `sheet`), the `activity.json` path and the profile name; a
