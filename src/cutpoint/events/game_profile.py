@@ -204,7 +204,7 @@ def mine_phrases(
     )
     frame_sets = [by_frame[k] for k in sorted(by_frame)]
     burst_sets = [by_burst[k] for k in sorted(by_burst)]
-    grams = {t: _trigrams(t) for texts in burst_sets for t in texts}
+    grams = {t: _bigrams(t) for texts in burst_sets for t in texts}
     kept: list[tuple[str, int]] = []
     tried = 0
     for c in cands:
@@ -218,15 +218,16 @@ def mine_phrases(
             continue  # names the player
         tried += 1
         hits: dict[str, bool] = {}
-        cg = _trigrams(c)
+        cg = _bigrams(c)
 
         def occurs(
             texts: set[str], c: str = c, cg: set[str] = cg, hits: dict[str, bool] = hits
         ) -> bool:
             for t in sorted(texts):
                 if t not in hits:
-                    # a fuzzy match of a 6+ character phrase shares a trigram with it
-                    hits[t] = bool(cg & grams[t] or len(cg) < 4) and fuzzy_contains(t, c, FUZZY)
+                    # a fuzzy match shares a bigram with a phrase of 3+ characters: with
+                    # only 1-character matching blocks, M <= (2n+1)/3 < 0.8n
+                    hits[t] = bool(cg & grams[t] or len(cg) < 2) and fuzzy_contains(t, c, FUZZY)
                 if hits[t]:
                     return True
             return False
@@ -238,10 +239,10 @@ def mine_phrases(
     return [c for c, _ in kept[:MAX_PHRASES]]
 
 
-def _trigrams(text: str) -> set[str]:
-    """Character trigrams of ``text`` with spaces removed."""
+def _bigrams(text: str) -> set[str]:
+    """Character bigrams of ``text`` with spaces removed."""
     t = text.replace(" ", "")
-    return {t[i : i + 3] for i in range(len(t) - 2)}
+    return {t[i : i + 2] for i in range(len(t) - 1)}
 
 
 def _count(sets: list[set[str]], occurs: Callable[[set[str]], bool], stop: float) -> int:

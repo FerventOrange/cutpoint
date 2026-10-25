@@ -82,6 +82,12 @@ def test_rejects_gamertags_chat_static_and_generic() -> None:
     assert mine_phrases(_proposal(), frames) == ["ZONE SECURED"]
 
 
+def test_occurrence_sharing_only_bigrams() -> None:
+    # OCR inserted and dropped letters: no common trigram, still a fuzzy occurrence
+    frames = _frames({0: ["ABX CDEFZGH"], 3: ["ABCDYEFGHW"]})
+    assert mine_phrases(_proposal(), frames) == ["ABX CDEFZGH"]
+
+
 def test_static_label_with_ocr_variant() -> None:
     texts = {b: ["OBJECTIVE ZONE"] for b in range(10)}
     texts[9] = ["OBJECTlVE ZONE"]  # one OCR misread of the static label
