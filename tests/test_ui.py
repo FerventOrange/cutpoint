@@ -352,16 +352,15 @@ def test_reanalyze_passes_recorded_vision_and_ollama_options(
     ("body", "saved", "cfg", "vision"),
     [
         ({}, {}, None, False),  # opt-in: off by default
-        ({"vision": False}, {}, None, False),
-        ({"vision": True}, {}, None, True),  # the box is checked
-        ({}, {"vision_requested": True}, None, True),  # Analyze again: as the last run asked
-        ({}, {"vision_used": True}, None, False),  # an older, automatic vision run: still off
-        ({"vision": False}, {"vision_requested": True}, None, False),  # the box wins
-        ({"vision": False}, {}, True, False),  # the box wins over the Settings default
-        ({}, {}, True, False),  # an analyzed project: its last run, not the Settings default
+        ({}, {}, False, False),
+        ({}, {}, True, True),  # Analyze again: the Settings value
+        ({}, {"vision_requested": True}, None, False),  # not what the last run asked
+        ({}, {"vision_requested": False}, True, True),
+        ({"vision": True}, {}, False, False),  # no per-run choice: a body flag is ignored
+        ({"vision": False}, {}, True, True),
     ],
 )
-def test_analyze_job_always_passes_an_explicit_vision(
+def test_analyze_job_passes_the_settings_vision_explicitly(
     client: TestClient,
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -371,7 +370,7 @@ def test_analyze_job_always_passes_an_explicit_vision(
     cfg: bool | None,
     vision: bool,
 ) -> None:
-    """--vision or --no-vision, never neither: the CLI must not apply config.json's vision."""
+    """--vision or --no-vision as Settings says when the job starts, never neither."""
     if cfg is not None:
         set_config(home, vision=cfg)
     p = ui.projects_dir() / "cli-made"
@@ -394,7 +393,7 @@ def test_analyze_job_always_passes_an_explicit_vision(
 
 
 @pytest.mark.parametrize("cfg", [None, False, True])
-def test_first_analysis_without_a_box_uses_the_settings_default(
+def test_first_analysis_uses_the_settings_vision(
     client: TestClient,
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -416,55 +415,27 @@ def test_first_analysis_without_a_box_uses_the_settings_default(
     assert flag in captured[0] and len({"--vision", "--no-vision"} & set(captured[0])) == 1
 
 
-@pytest.mark.parametrize("cfg", [None, False, True])
-def test_project_reports_the_settings_vision_default(
-    client: TestClient, home: Path, tmp_path: Path, cfg: bool | None
+def test_analyze_follows_settings_saved_just_before(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The page starts its vision boxes of a project not analyzed yet from this."""
-    if cfg is not None:
-        set_config(home, vision=cfg)
+    """Saving Settings changes the next analysis at once, without a reload or restart."""
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
-    got = client.get(f"/api/projects/{pid}").json()
-    assert got["vision_default"] is (cfg is True) and got["vision_requested"] is False
+    captured: list[list[str]] = []
 
+    def fake_start(self, project_id, action, args, *rest, **kw):
+        captured.append(args)
+        return SimpleNamespace(view=lambda: {"status": "running"})
 
-@pytest.mark.parametrize("env", [None, "llava:7b"])
-def test_project_reports_the_vision_model(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str | None
-) -> None:
-    """The vision boxes' hints name this model, not a hardcoded one."""
-    if env is None:
-        monkeypatch.delenv("CUTPOINT_VISION_MODEL", raising=False)
-    else:
-        monkeypatch.setenv("CUTPOINT_VISION_MODEL", env)
-    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
-    assert client.get(f"/api/projects/{pid}").json()["vision_model"] == (env or "qwen3-vl:8b")
-
-
-@pytest.mark.parametrize(
-    ("saved", "want"),
-    [({"vision_requested": True}, True), ({"vision_used": True}, False), ({}, False)],
-)
-def test_project_reports_whether_its_analysis_asked_for_vision(
-    client: TestClient, tmp_path: Path, saved: dict, want: bool
-) -> None:
-    """The "Analyze again" dialog starts its vision box from this; older analyses: off."""
-    p = ui.projects_dir() / "cli-made"
-    p.mkdir(parents=True)
-    settings = {"inputs": [str(tmp_path / "clip.mp4")], **saved}
-    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
-    assert client.get("/api/projects/cli-made").json()["vision_requested"] is want
-
-
-def test_analyze_job_rejects_a_non_boolean_vision(client: TestClient, tmp_path: Path) -> None:
-    p = ui.projects_dir() / "cli-made"
-    p.mkdir(parents=True)
-    footage = tmp_path / "clip.mp4"
-    footage.write_bytes(b"x")
-    settings = {"inputs": [str(footage)]}
-    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
-    res = client.post("/api/projects/cli-made/jobs", json={"action": "analyze", "vision": "yes"})
-    assert res.status_code == 400
+    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    for value in (True, False, True):
+        assert client.put("/api/settings", json={"vision": value}).status_code == 200
+        res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+        assert res.status_code == 200
+    assert [("--vision" in a, "--no-vision" in a) for a in captured] == [
+        (True, False),
+        (False, True),
+        (True, False),
+    ]
 
 
 def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) -> None:

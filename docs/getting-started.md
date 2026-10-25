@@ -264,11 +264,12 @@ then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` wo
 
 ### Optional: Ollama vision
 
-`analyze --vision` (and `edit --vision`, or the vision checkbox next to "Analyze footage" in
-`cutpoint ui`) rates the top candidates with a vision model through Ollama. It is off unless
-you ask for it per run or turn it on by default with "Rate frames with a local vision model
-(Ollama)" in the UI's Settings, which saves [`"vision": true`](configuration.md#vision) in
-`config.json` (`--no-vision` then skips it for one run); apart from building a new activity profile (see
+`analyze --vision` (and `edit --vision`) rates the top candidates with a vision model through
+Ollama. It is off unless you ask for it per run or turn it on by default with "Rate frames with
+a local vision model (Ollama)" in the UI's Settings, which saves
+[`"vision": true`](configuration.md#vision) in `config.json` (`--no-vision` then skips it for one
+run). In `cutpoint ui`, that setting is the only switch: every analysis there follows it. Apart
+from building a new activity profile (see
 [action-cam](workflows/action-cam.md#activity-profiles)) and `360 director --vl-check`, nothing
 else uses Ollama. The model is unloaded from GPU memory as soon as the rating is done.
 
