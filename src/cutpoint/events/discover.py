@@ -17,7 +17,9 @@ changes*:
   frequent static text (ammo labels, minimap letters) are ignored.
 * Connected groups of "dynamic" cells become regions, classified from the
   boxes inside them:
-    - ``feed``: stacked lines (2+ rows per frame) near a screen edge or corner;
+    - ``feed``: stacked lines (2+ rows per frame) near a screen edge or corner,
+      grown up and down by rows that continue it at its row pitch but show
+      too rarely to be dynamic (:func:`_grow_feed`, up to twice its height);
     - ``banner``: large text (>= 3.4% of the frame height) near the centre that
       appears briefly;
     - ``notice``: other centred text lines (objective messages, hints);
@@ -54,6 +56,15 @@ REF_W, REF_H = 1920, 1080
 CELL = 24  # reference pixels per grid cell
 GW, GH = REF_W // CELL, REF_H // CELL
 MENU_CELL_W, MENU_CELL_H = REF_W // 8, REF_H // 6  # coarse 8 x 6 grid for the menu test
+# Feed growth (_grow_feed): a feed's oldest rows show only when it is full, too rarely for
+# their cells to count as dynamic. A row one pitch above or below the feed is added when
+# text of the feed's height and x-span sits there in FEED_GROW_SHARE of the feed's frames
+# (and FEED_GROW_BURSTS bursts) and varies (label variety >= FEED_GROW_VARIETY: no static
+# label); the feed grows to FEED_GROW_MAX times its height at most.
+FEED_GROW_SHARE = 0.05
+FEED_GROW_BURSTS = 2
+FEED_GROW_VARIETY = 0.15  # the readout cut of cluster_regions
+FEED_GROW_MAX = 2.0
 
 
 @dataclass
@@ -309,6 +320,65 @@ def _label_variety(texts: list[str]) -> float:
     return len({s for s in stripped if s}) / max(1, len(texts))
 
 
+def _grow_feed(
+    frames: list[dict[str, Any]], rect: tuple[int, int, int, int], med_h: float, n_feed: int
+) -> tuple[int, int, int]:
+    """Grow a feed rectangle ``(x0, y0, x1, y1)`` up and down by whole rows.
+
+    Rows are text boxes centred in the feed's x-span, 0.5 to 2 times its median
+    text height ``med_h``. The row pitch is the median gap between adjacent
+    rows of a frame inside the feed. One pitch past the top (bottom) row a row
+    is added when its boxes (centre within a third of a pitch) show in at
+    least :data:`FEED_GROW_SHARE` of the ``n_feed`` frames with feed text and in
+    :data:`FEED_GROW_BURSTS` bursts and their texts vary
+    (:data:`FEED_GROW_VARIETY`); growth stops at :data:`FEED_GROW_MAX` times
+    the height.
+
+    Returns:
+        (y0, y1, rows added).
+    """
+    x0, y0, x1, y1 = rect
+    rows: list[tuple[str, tuple[str, int], float, str]] = []  # (frame, burst, centre y, text)
+    gaps: list[float] = []
+    for f in frames:
+        cys = []
+        for b in f["boxes"]:
+            cy, h = (b["y0"] + b["y1"]) / 2, b["y1"] - b["y0"]
+            if x0 <= (b["x0"] + b["x1"]) / 2 <= x1 and 0.5 * med_h <= h <= 2 * med_h:
+                rows.append((str(f["id"]), (f["source"], f["burst"]), cy, b["text"]))
+                if y0 <= cy <= y1:
+                    cys.append(cy)
+        cys.sort()
+        gaps += [b - a for a, b in pairwise(cys) if 0.5 * med_h < b - a < 3 * med_h]
+    if not gaps:
+        return y0, y1, 0
+    pitch = float(np.median(gaps))
+    inner = [cy for _, _, cy, _ in rows if y0 <= cy <= y1]
+    top, bottom = min(inner), max(inner)
+    limit = FEED_GROW_MAX * (y1 - y0)
+    need = max(2.0, FEED_GROW_SHARE * n_feed)
+    ends = {-1: (top, y0), 1: (bottom, y1)}  # direction -> (outer row centre, edge)
+    added = 0
+    for d in (-1, 1):
+        while True:
+            centre = ends[d][0] + d * pitch
+            band = [row for row in rows if abs(row[2] - centre) <= pitch / 3]
+            edge = centre + d * pitch / 2
+            other = ends[-d][1]
+            if (
+                abs(edge - other) > limit
+                or not 0 <= edge <= REF_H
+                or len({fid for fid, _, _, _ in band}) < need
+                or len({bk for _, bk, _, _ in band}) < FEED_GROW_BURSTS
+                or _label_variety([t for _, _, _, t in band]) < FEED_GROW_VARIETY
+            ):
+                break
+            centre = float(np.median([cy for _, _, cy, _ in band]))
+            ends[d] = (centre, round(centre + d * pitch / 2))
+            added += 1
+    return min(y0, int(ends[-1][1])), max(y1, int(ends[1][1])), added
+
+
 def _banner_proposal(frames: list[dict[str, Any]], min_h: float) -> dict[str, Any] | None:
     """One centred banner region from tall, mostly alphabetic text boxes."""
     tall = [
@@ -434,6 +504,7 @@ def cluster_regions(
             kind = "readout"  # gauges, compass, ammo: labels fixed, numbers change
         elif mean_rows >= 1.3 and side and med_h < 0.034 * REF_H:
             kind = "feed"
+            y0, y1, grown = _grow_feed(game_frames, (x0, y0, x1, y1), med_h, len(inside))
         elif med_h >= 0.034 * REF_H and 0.25 < cx < 0.75:
             kind = "banner"
         elif 0.3 < cx < 0.7:
@@ -464,7 +535,8 @@ def cluster_regions(
                     "alpha_share": round(alpha, 3),
                     "change_rate": round(float(chg_rate[gy0:gy1, gx0:gx1].mean()), 3),
                     "samples": texts[:8],
-                },
+                }
+                | ({"grown_rows": grown} if kind == "feed" else {}),
             }
         )
     if not any(p["kind"] == "banner" for p in proposals):

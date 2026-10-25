@@ -252,6 +252,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "HILL SECURED") are all kept. The proposal
   lists the OCR records of its run (`discovery.frames`), and mining reads only those. Discovery
   params record `menu_min_boxes`, `menu_cover` and `menu_jump` instead of `menu_boxes`.
+- HUD phrases are learned from real event text, and menus no longer produce OCR events. The OCR
+  layer (JSON presets) drops the events of menu and scoreboard frames, by the test discovery uses
+  on the text boxes it detects in the preset's regions other than feeds (a full feed is no menu);
+  the first run re-reads the footage (new OCR cache). A multi-word phrase now matches only whole
+  words, at runtime and in mining: "Hullbreached" still matches "Hull breached", but a short
+  phrase is no longer found inside a longer word. A kill-feed kill word of fewer than 7 letters
+  matches only as a whole word ("assist" is not found in "assistance"); a longer one may be joined
+  to a name on one side ("Ashdestroyed Kip"). Mined `candidate_phrases` (profile version 4) need 2 occurrences in gameplay frames
+  at least 2 s apart instead of 2 bursts, also come from notice regions (so smaller centre text,
+  below the 36 px of the big-text check, is mined there), and include 2 to 5-word parts of longer
+  sentences. A discovered kill feed grows by the rows above or below it that show only when the
+  feed is full, up to twice its height. Built-in presets keep their OCR cache: run
+  `cutpoint events <project> --force ocr` for the new matching.
 - `events` with the crash layer logs each unreachable source once, not twice: the crash layer
   logs it at debug level, since `events` already warned.
 - `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines

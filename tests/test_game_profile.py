@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from cutpoint.events import discover
-from cutpoint.events.game_profile import build_profile, match_hint, mine_phrases
+from cutpoint.events.game_profile import (
+    MIN_GAP_S,
+    VERSION,
+    build_profile,
+    match_hint,
+    mine_phrases,
+)
 from cutpoint.events.killfeed import OcrParams, fuzzy_contains
-from cutpoint.events.regions import preset_from_dict
+from cutpoint.events.regions import bigtext_region, preset_from_dict
 from cutpoint.events.vlm_windows import game_prompt
 
 BANNER = {"x": 600, "y": 300, "w": 700, "h": 120}  # banner region (reference px)
@@ -45,13 +52,17 @@ def _frames(texts_by_burst: dict[int, list[str]], frames_per_burst: int = 4) -> 
         for k in range(frames_per_burst):
             boxes = [_box(t) for t in texts_by_burst.get(b, [])] if k == 0 else []
             out.append(
-                {"id": f"rec.mp4@{b * 60 + k * 1.5:.1f}", "source": "rec.mp4"}
+                {
+                    "id": f"rec.mp4@{b * 60 + k * 1.5:.1f}",
+                    "t": b * 60 + k * 1.5,
+                    "source": "rec.mp4",
+                }
                 | {"burst": b, "k": k, "boxes": boxes}
             )
     return out
 
 
-def test_phrase_needs_two_bursts() -> None:
+def test_phrase_needs_two_occurrences() -> None:
     frames = _frames({0: ["ZONE SECURED"], 3: ["ZONE SECURFD"], 5: ["BRIDGE FALLEN"]})
     assert mine_phrases(_proposal(), frames) == ["ZONE SECURED"]
 
@@ -141,7 +152,11 @@ def test_name_slots_not_mined() -> None:
             if b in (5, 18, 31) and k == 0:
                 texts.append("Crew Held The Gate")
             frames.append(
-                {"id": f"rec.mp4@{b * 60 + k * 1.5:.1f}", "source": "rec.mp4"}
+                {
+                    "id": f"rec.mp4@{b * 60 + k * 1.5:.1f}",
+                    "t": b * 60 + k * 1.5,
+                    "source": "rec.mp4",
+                }
                 | {
                     "burst": b,
                     "k": k,
@@ -339,7 +354,7 @@ def test_round_trip_and_superset() -> None:
     assert prof["candidate_phrases"] == ["ZONE SECURED"]
     assert "banner_phrases" in prof["notes"] and "candidate_phrases" in prof["notes"]
     assert prof["source"] == "discovered"
-    assert prof["profile"] == {"backend": "ocr", "version": 3}
+    assert prof["profile"] == {"backend": "ocr", "version": VERSION}
     assert prof["title"] == "Zone War"
     assert prof["match"] == ["zone war"]
     preset = preset_from_dict(json.loads(json.dumps(prof)))
@@ -373,3 +388,143 @@ def test_read_ocr_samples(tmp_path: Path) -> None:
     path.write_text(json.dumps(rec) + "\nnot json\n[1]\n", encoding="utf-8")
     assert discover.read_ocr_samples(path) == [rec]
     assert discover.read_ocr_samples(tmp_path / "missing.jsonl") == []
+
+
+def _burst(texts_by_k: dict[int, list[str]], region: dict | None = None) -> list[dict]:
+    """Burst 20's four frames (1.5 s apart), frame ``k`` showing ``texts_by_k[k]``, after
+    the 40 text-less frames of :func:`_frames`."""
+    r, b = region or BANNER, 20
+    return _frames({}) + [
+        {"id": f"rec.mp4@{b * 60 + k * 1.5:.1f}", "t": b * 60 + k * 1.5, "source": "rec.mp4"}
+        | {"burst": b, "k": k}
+        | {"boxes": [_box(t, x=r["x"] + 20, y=r["y"] + 20) for t in texts_by_k.get(k, [])]}
+        for k in range(4)
+    ]
+
+
+def test_two_frames_of_one_burst_apart_count() -> None:
+    # 3 s apart in one burst: two occurrences
+    assert 2 * 1.5 >= MIN_GAP_S > 1.5
+    assert mine_phrases(_proposal(), _burst({0: ["Squad wiped"], 2: ["Squad wiped"]})) == [
+        "Squad wiped"
+    ]
+    # neighbouring frames (1.5 s apart) are one occurrence
+    assert mine_phrases(_proposal(), _burst({0: ["Squad wiped"], 1: ["Squad wiped"]})) == []
+    # a third frame 1.5 s after the second still counts: 3 s after the first counted one
+    three = _burst({0: ["Squad wiped"], 1: ["Squad wiped"], 2: ["Squad wiped"]})
+    assert mine_phrases(_proposal(), three) == ["Squad wiped"]
+
+
+def test_menu_frames_never_count() -> None:
+    frames = _burst({0: ["Squad wiped"], 2: ["Squad wiped"]})
+    assert mine_phrases(_proposal(), frames) == ["Squad wiped"]
+    # frame 2 is a scoreboard: a centred table of 44 boxes
+    frames[-2]["boxes"] += [
+        _box(f"Nym {c * 7 + r}", x=400 + c * 300, y=250 + r * 60, h=20)
+        for r in range(11)
+        for c in range(4)
+    ]
+    assert discover.gameplay_frames(frames, discover.DiscoverParams()) == frames[:-2] + frames[-1:]
+    assert mine_phrases(_proposal(), frames) == []
+
+
+def test_phrase_not_counted_inside_a_word() -> None:
+    # the old count slid "QORV KAL" over "HULLQORVKALBREACHED" with spaces removed
+    texts = {0: ["QORV KAL"], 2: ["HULLQORVKALBREACHED"], 4: ["HULLQORVKALBREACHED"]}
+    assert mine_phrases(_proposal(), _frames(texts)) == []
+    # a space-less reading of a whole phrase still counts
+    texts = {1: ["Hull breached"], 3: ["Hullbreached"], 6: ["Qorv k/20 Hullbreached"]}
+    assert mine_phrases(_proposal(), _frames(texts)) == ["Hull breached"]
+
+
+@pytest.mark.parametrize(
+    ("text", "phrase", "found"),
+    [
+        ("HULLQORVKBREACHED", "QORVK", False),
+        ("HULLQORVKBREACHED", "QORV K", False),
+        ("SQUADWIPED", "QUAD WIPE", False),
+        ("BLOCKEDSHIELDUPGRADE", "SHIELD UP", False),
+        ("Hullbreached", "Hull breached", True),
+        ("HullBreached by Nym", "Hull breached", True),
+        ("Qorv k/20 Hullbreached", "Hull breached", True),
+        ("Hull brea ched!", "Hull breached", True),
+        ("lHull breached", "Hull breached", True),  # a stray letter OCR glued on
+        ("NymSquadWiped", "Squad wiped", True),
+        ("HULL BREACHED5", "HULL BREACHED", True),
+    ],
+)
+def test_fuzzy_contains_whole_words(text: str, phrase: str, found: bool) -> None:
+    assert fuzzy_contains(text, phrase) is found
+
+
+def test_notice_regions_mined() -> None:
+    notice = {"x": 650, "y": 700, "w": 600, "h": 80}
+    proposal = _proposal()
+    proposal["regions"].append({"name": "notice2", **notice, "kind": "notice", "gate": "det"})
+    frames = _burst({0: ["Squad wiped"], 3: ["Squad wiped"]}, region=notice)
+    for f in frames:
+        for b in f["boxes"]:
+            b["y1"] = b["y0"] + 31  # notice text: below the banner minimum of the OCR layer
+    assert mine_phrases(proposal, frames) == ["Squad wiped"]
+    proposal["regions"].pop()
+    proposal["bigtext"] = False
+    assert mine_phrases(proposal, frames) == []  # outside every mined region
+
+
+def test_bigtext_mined_at_the_runtime_minimum_height() -> None:
+    # text the OCR layer's big-text check skips is not mined there (notices are mined instead)
+    proposal = _proposal()
+    proposal["regions"] = proposal["regions"][:1]  # the generic big-text region only
+    frames = _frames({0: ["ZONE SECURED"], 4: ["ZONE SECURED"]})
+    min_h = bigtext_region().min_text_h
+    for h, mined in ((min_h, True), (min_h - 5, False)):
+        for f in frames:
+            for b in f["boxes"]:
+                b["y1"] = b["y0"] + h
+        assert (mine_phrases(proposal, frames) == ["ZONE SECURED"]) is mined
+
+
+def test_parts_of_long_runs_mined() -> None:
+    # 7-word runs: names around a fixed phrase. Before, runs over 5 words gave nothing
+    names = ["Orrin", "Pell", "Quade", "Sorrel", "Tamsin", "Ulric", "Varo", "Wynn"]
+    texts = {
+        b: [f"{names[b % 8]} {names[(b + 3) % 8]} hull was breached by {names[(b + 5) % 8]}"]
+        for b in range(8)
+    }
+    got = mine_phrases(_proposal(), _frames(texts))
+    assert got == ["hull was breached by"]
+    words = {n.upper() for n in names}
+    assert not [p for p in got if set(p.upper().split()) & words]
+
+
+def test_repeated_sentence_gives_nothing() -> None:
+    line = "Hold the gate until the convoy reaches the depot"
+    assert mine_phrases(_proposal(), _frames({b: [line] for b in (0, 3, 6)})) == []
+
+
+def test_heavy_log_cost() -> None:
+    # 160 frames of 12 notice lines of 12 invented words each, most of them unique
+    rng = random.Random(5)
+    syl = "bdfgklmnprstvz"
+    vocab = ["".join(rng.choice(syl) + rng.choice("aeiou") for _ in range(3)) for _ in range(300)]
+    frames = []
+    for b in range(40):
+        for k in range(4):
+            lines = [" ".join(rng.choice(vocab) for _ in range(12)) for _ in range(12)]
+            if k == 0 and b % 9 == 0:
+                lines[0] = (
+                    f"{rng.choice(vocab)} {rng.choice(vocab)} Squad wiped {rng.choice(vocab)}"
+                )
+            frames.append(
+                {
+                    "id": f"rec.mp4@{b * 60 + k * 1.5:.1f}",
+                    "t": b * 60 + k * 1.5,
+                    "source": "rec.mp4",
+                }
+                | {"burst": b, "k": k}
+                | {"boxes": [_box(t, y=310 + i * 8, h=40) for i, t in enumerate(lines)]}
+            )
+    t0 = time.perf_counter()
+    got = mine_phrases(_proposal(), frames)
+    assert time.perf_counter() - t0 < 10  # ~1 s; a generous bound against blow-ups
+    assert got == ["Squad wiped"]

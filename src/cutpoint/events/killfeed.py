@@ -16,7 +16,7 @@ import difflib
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.events.common import Source, layer_cache_path
+from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_frames
 from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, probe
 
@@ -74,7 +75,9 @@ class OcrParams:
         return key
 
 
-GENERIC_VERSION = 6  # bump when the generic (JSON preset) interpretation changes
+# bump when the generic (JSON preset) interpretation changes; 7: menu frames give no
+# events (:func:`menu_times`), multi-word phrases and feed kill words match whole words only
+GENERIC_VERSION = 7
 
 
 # --------------------------------------------------------------------------- text utils
@@ -88,13 +91,20 @@ def norm(text: str) -> str:
 def fuzzy_contains(text: str, phrase: str, thr: float = 0.8) -> bool:
     """Whether ``phrase`` occurs in ``text`` allowing OCR typos.
 
+    Words of ``text`` also end at camelCase boundaries ("TargetDestroyed" is
+    "TARGET DESTROYED") and between letters and digits ("ROUND5").
+
     * phrases of <= 4 characters (e.g. "ACE") must equal a whole word;
     * other single-word phrases must fuzzy-match one word (or two adjacent
       words OCR split apart) of similar length, so "DEF ATK" is not "DEFEAT";
-    * multi-word phrases are slid over the text with spaces removed, because
-      OCR often drops spaces ("ReverseFriendlyFire hasbeen activated").
+    * multi-word phrases are compared with the text with spaces removed,
+      because OCR often drops spaces ("ReverseFriendlyFire hasbeen activated"),
+      but only with a stretch of whole words (:func:`_word_spans`): it starts
+      and ends at a word boundary or an end of the text and its length is
+      within a fifth of the phrase's. So "Targetdestroyed" matches "TARGET
+      DESTROYED", while "SHIELD UP" is not found inside "BLOCKEDSHIELDUPGRADE".
     """
-    t, p = norm(text), norm(phrase)
+    t, p = norm(_CAMEL_RE.sub(" ", text)), norm(phrase)
     if not t or not p:
         return False
     words = t.split()
@@ -107,16 +117,36 @@ def fuzzy_contains(text: str, phrase: str, thr: float = 0.8) -> bool:
             and difflib.SequenceMatcher(None, w, p).ratio() >= max(thr, 0.85)
             for w in cands
         )
-    if p in t:
+    if f" {p} " in f" {t} ":
         return True
-    tc, pc = t.replace(" ", ""), p.replace(" ", "")
-    n = len(pc)
-    if len(tc) < n * 0.8:
-        return False
-    for i in range(max(1, len(tc) - n + 1)):
-        if difflib.SequenceMatcher(None, tc[i : i + n], pc).ratio() >= thr:
+    pc = p.replace(" ", "")
+    m = difflib.SequenceMatcher(None, "", pc)  # the phrase's index is built once
+    for span in _word_spans(t, len(pc), max(1, len(pc) // 5)):
+        m.set_seq1(span)
+        if m.quick_ratio() >= thr and m.ratio() >= thr:  # quick_ratio: an upper bound
             return True
     return False
+
+
+_CAMEL_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")  # "TargetDestroyed": a word boundary
+
+
+def _word_spans(t: str, n: int, tol: int) -> list[str]:
+    """Space-less stretches of whole words of the normalized text ``t`` that are
+    ``n`` +- ``tol`` characters long; letter and digit runs are words."""
+    toks = re.findall(r"[A-Z]+|[0-9]+", t)
+    bounds = [0]
+    for tok in toks:
+        bounds.append(bounds[-1] + len(tok))
+    tc = "".join(toks)
+    out = []
+    for i, a in enumerate(bounds):
+        for b in bounds[i + 1 :]:
+            if b - a > n + tol:
+                break
+            if b - a >= n - tol:
+                out.append(tc[a:b])
+    return out
 
 
 def similar(a: str, b: str) -> float:
@@ -352,6 +382,7 @@ class EventTracker:
                 e["end"] = round(t, 2)
                 e["sightings"] += 1
                 e["_seen_t"] = t
+                e["_times"].append(t)
                 if fields.get("confidence", 0) > e.get("confidence", 0):
                     # keep a player flag found in any reading
                     flags = {
@@ -369,12 +400,31 @@ class EventTracker:
             "_key": key,
             "sightings": 1,
             "_seen_t": t,
+            "_times": [t],
             **fields,
         }
         self.events.append(ev)
         self._active.append(ev)
         self.touched.append(ev)
         return ev
+
+    def drop_sightings(self, times: set[float]) -> None:
+        """Forget the sightings at ``times`` (menu frames).
+
+        An event seen only then is dropped; the others start at their first
+        remaining sighting and count only the remaining ones.
+        """
+        kept = []
+        for e in self.events:
+            seen = [t for t in e["_times"] if t not in times]
+            if seen:
+                e["_times"], e["sightings"] = seen, len(seen)
+                e["t"] = round(seen[0], 2)
+                e["end"] = max(e["end"], e["t"])
+                kept.append(e)
+        ids = {id(e) for e in kept}
+        self.events = kept
+        self._active = [e for e in self._active if id(e) in ids]
 
     def finish(self, min_sightings: int = 1) -> list[dict[str, Any]]:
         """Events with internal keys removed (single sightings optionally dropped).
@@ -756,6 +806,21 @@ def split_name(text: str) -> tuple[str, str | None]:
     return t.strip(" -_>"), None
 
 
+KILL_WORD_GLUE = 7  # kill words this long may be joined to a name on one side
+
+
+def _is_bound(text: str, i: int) -> bool:
+    """Whether position ``i`` of ``text`` is a word boundary, as in
+    :func:`fuzzy_contains`: an end of the text, a character that is no letter
+    or digit on either side, a camelCase step ("yA") or a letter/digit step."""
+    if i <= 0 or i >= len(text):
+        return True
+    a, b = text[i - 1], text[i]
+    if not (a.isalnum() and b.isalnum()):
+        return True
+    return (a.islower() and b.isupper()) or a.isdigit() != b.isdigit()
+
+
 class FeedParser:
     """Game-agnostic kill-feed parsing for "feed" regions.
 
@@ -843,12 +908,22 @@ class FeedParser:
         }
 
     def _word_split(self, line: str) -> tuple[str, str, str] | None:
-        up = line.upper()
+        """(actor, target, verb) around the longest kill word of ``line``, or None.
+
+        A kill word matches whole words only (case ignored): a word of fewer
+        than :data:`KILL_WORD_GLUE` letters starts and ends at a word boundary of
+        :func:`_is_bound`, so "assist" is not found in "assistance" or "killed"
+        in "skilled" but is in "PlayerAssistFoe". A longer one needs a boundary
+        on one side only, since OCR often joins a name to it ("Ashdestroyed
+        Kip", "Kiphas crashed").
+        """
         for word, verb in sorted(self.words.items(), key=lambda kv: -len(kv[0])):
-            i = up.find(word)
-            if i < 0:
-                continue
-            return line[:i].strip(), line[i + len(word) :].strip(), verb
+            pat = r"\s+".join(map(re.escape, word.split()))
+            glue = len(word.replace(" ", "")) >= KILL_WORD_GLUE
+            for m in re.finditer(pat, line, re.IGNORECASE):
+                a, b = _is_bound(line, m.start()), _is_bound(line, m.end())
+                if (a or b) if glue else (a and b):
+                    return line[: m.start()].strip(), line[m.end() :].strip(), verb
         return None
 
     def _colour_target(
@@ -1158,6 +1233,40 @@ def derive_streaks(events: list[dict[str, Any]], window_s: float = 20.0) -> None
     events.sort(key=lambda e: e["t"])
 
 
+LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when the jump is off
+
+
+def menu_times(frames: list[dict[str, Any]], params: DiscoverParams | None = None) -> set[float]:
+    """Times of the menu and scoreboard frames among ``frames`` of one source.
+
+    ``frames`` are ``{"id", "t", "source", "boxes"}`` records of the text boxes
+    the OCR layer detected per frame (reference pixels); the test is
+    discovery's :func:`~cutpoint.events.discover.gameplay_frames` (default
+    params), with the source's median box count taken over these frames. The
+    region boxes of a frame are few (a median of 0 to 6), so the box-count
+    jump applies only when the median is at least ``menu_min_boxes /
+    menu_jump``. Below that, a frame with ``menu_min_boxes`` boxes is a menu
+    when they cover the screen centre (``menu_cover``) or at least
+    :data:`LIST_MENU_COVER` of it (a 1- or 2-column list or scoreboard).
+    """
+    params = params or DiscoverParams()
+    median = float(np.median([len(f["boxes"]) for f in frames])) if frames else 0.0
+    lists = median < params.menu_min_boxes / params.menu_jump
+    if lists:
+        params = replace(params, menu_jump=float("inf"))
+    keep = {f["id"] for f in gameplay_frames(frames, params)}
+    return {
+        f["t"]
+        for f in frames
+        if f["id"] not in keep
+        or (
+            lists
+            and len(f["boxes"]) >= params.menu_min_boxes
+            and _centre_cover(f) >= LIST_MENU_COVER
+        )
+    }
+
+
 def detect_ocr_events(
     src: Source,
     params: OcrParams,
@@ -1167,6 +1276,13 @@ def detect_ocr_events(
     avoid: list[tuple[float, float]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
+
+    JSON presets (not ``"builtin"``) drop what menu and scoreboard frames show
+    (:func:`menu_times`): every frame records the text boxes the "det" gates
+    last detected in its regions other than feeds (a region keeps its boxes on
+    the frames it is skipped), and after the pass the sightings in menu frames
+    are forgotten.
+    No OCR runs for this; ``stats["menu_frames"]`` counts them.
 
     Args:
         src: Source video (read once, sequentially).
@@ -1219,6 +1335,11 @@ def detect_ocr_events(
         stats["det_calls"] = {r.name: 0 for r in regions if r.gate == "det"}
     t_start = time.perf_counter()
     frame_no = [0]
+    # menu test (JSON presets): the det boxes of every region in reference px, per frame
+    menus = interp.generic and any(r.gate == "det" for r in regions)
+    det_boxes: dict[str, list[tuple[float, float, float, float]]] = {}
+    frame_boxes: list[dict[str, Any]] = []
+    sx, sy = 1920 / info.width, 1080 / info.height
 
     def det_changed(r: Region, crop: np.ndarray) -> bool:
         """Text-layout gate: True when the detected text *rows* changed.
@@ -1230,9 +1351,19 @@ def detect_ocr_events(
         message).
         """
         stats["det_calls"][r.name] += 1
-        rows = group_rows(
-            engine.detect(crop, r.det_scale), r.min_text_h * interp.scale, 10 * interp.scale
-        )
+        boxes = engine.detect(crop, r.det_scale)
+        if menus and r.kind != "feed":  # a full feed is no menu
+            rx, ry, _, _ = rects[r.name]
+            det_boxes[r.name] = [
+                (
+                    (rx + min(p[0] for p in b)) * sx,
+                    (ry + min(p[1] for p in b)) * sy,
+                    (rx + max(p[0] for p in b)) * sx,
+                    (ry + max(p[1] for p in b)) * sy,
+                )
+                for b in boxes
+            ]
+        rows = group_rows(boxes, r.min_text_h * interp.scale, 10 * interp.scale)
         q = 8 * interp.scale
         layout = [tuple(round(v / q) for v in (cy, x0, x1)) for cy, x0, x1, _, _ in rows]
         prev, last_layout[r.name] = last_layout[r.name], layout
@@ -1312,6 +1443,23 @@ def detect_ocr_events(
 
                 debug_dir.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(debug_dir / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop)
+        if menus:
+            # regions overlap (notices inside the big-text area): one box per ~12 px spot
+            spots = {
+                (round((a + c) / 24), round((b + d) / 24)): (a, b, c, d)
+                for bs in det_boxes.values()
+                for a, b, c, d in bs
+            }
+            frame_boxes.append(
+                {
+                    "id": n,
+                    "t": t,
+                    "source": src.name,
+                    "boxes": [
+                        {"x0": a, "y0": b, "x1": c, "y1": d} for a, b, c, d in spots.values()
+                    ],
+                }
+            )
 
     errors: list[str] = []
     all_errors: list[str] = []
@@ -1356,6 +1504,10 @@ def detect_ocr_events(
     stats["read_errors"] = len(read_errors)
     stats["decoded_s"] = round(stats["frames"] / params.fps, 1)
     stats["elapsed_s"] = round(time.perf_counter() - t_start, 2)
+    if menus:
+        menu = menu_times(frame_boxes)
+        interp.tracker.drop_sightings(menu)
+        stats["menu_frames"] = len(menu)
     events = interp.tracker.finish()
     for e in events:
         e["kind"] = "ocr"
