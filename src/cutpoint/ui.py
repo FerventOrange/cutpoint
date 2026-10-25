@@ -25,8 +25,11 @@ Trust boundaries:
   dialog (Windows: Tk's system dialog; macOS: ``osascript``; Linux: zenity, else kdialog) in a
   child process without a shell, one at a time; the server never lists folders itself. With no
   dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
-* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir`` in ``config.json``, never
-  while a job runs or when ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved.
+* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir`` and ``vision`` in
+  ``config.json``. The projects folder never changes while a job runs or when
+  ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. ``vision`` is the starting
+  value of the page's vision boxes; every analysis the page starts passes ``--vision`` or
+  ``--no-vision`` explicitly.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
 """
@@ -74,7 +77,7 @@ from cutpoint.config import (
     projects_dir,
     remap_source,
     resolve_projects_dir,
-    set_config_value,
+    set_config_values,
 )
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
@@ -87,6 +90,7 @@ from cutpoint.ffmpeg_utils import (
 )
 from cutpoint.styles import get_style, learned_styles, style_names
 from cutpoint.utils import VIDEO_EXTS, clip_files, find_videos, slugify
+from cutpoint.vision import default_model
 
 logger = logging.getLogger(__name__)
 
@@ -476,8 +480,9 @@ def require_config() -> None:
 
 
 def settings_view(data: dict[str, Any]) -> dict[str, Any]:
-    """The settings for config ``data``; only the projects folder, so other invalid keys in
-    ``config.json`` do not hide it; a wrongly typed ``projects_dir`` is shown as is, to replace."""
+    """The settings for config ``data``: the projects folder and the vision default, so other
+    invalid keys in ``config.json`` do not hide them; a wrongly typed ``projects_dir`` is shown as
+    is, to replace, and a ``vision`` that is not ``true`` as off."""
     try:
         folder = str(resolve_projects_dir(data))
     except TypeError:
@@ -486,6 +491,8 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "projects_dir": folder,
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
         "config_file": str(paths.config_file()),
+        "vision": data.get("vision") is True,
+        "vision_model": default_model(),
     }
 
 
@@ -1432,25 +1439,35 @@ def create_app(port: int) -> FastAPI:
 
     @secure.put("/settings")
     def put_settings(body: dict[str, Any]):
-        """Change the projects folder in ``config.json``. Existing projects stay where they are."""
-        if paths.env("PROJECTS_DIR") is not None:
+        """Change the projects folder and/or the vision default in ``config.json``. Existing
+        projects stay where they are."""
+        if "projects_dir" not in body and "vision" not in body:
+            raise bad("send projects_dir and/or vision")
+        updates: dict[str, Any] = {}
+        if "vision" in body:
+            updates["vision"] = _flag(body, "vision")
+        moving = "projects_dir" in body
+        if moving and paths.env("PROJECTS_DIR") is not None:
             raise bad(
                 "CUTPOINT_PROJECTS_DIR sets the projects folder; change or unset it there", 409
             )
         busy = "wait for the running job to finish before changing the projects folder"
-        if any(j.status == "running" for j in list(jobs.jobs.values())):
+        if moving and any(j.status == "running" for j in list(jobs.jobs.values())):
             raise bad(busy, 409)
-        config_data()  # an unreadable config.json: refuse before creating the folder
-        folder, created = check_projects_dir(body.get("projects_dir"))
+        data = config_data()  # an unreadable config.json: refuse before creating the folder
+        folder, created = None, False
+        if moving:
+            folder, created = check_projects_dir(body.get("projects_dir"))
+            updates["projects_dir"] = str(folder)
         # The jobs lock makes the running-job check and the write atomic against Jobs.start,
         # so no job starts against the old folder while the setting changes.
         try:
             with jobs.lock:
-                if any(j.status == "running" for j in jobs.jobs.values()):
+                if moving and any(j.status == "running" for j in jobs.jobs.values()):
                     raise bad(busy, 409)
-                set_config_value("projects_dir", str(folder))
+                set_config_values(updates)
         except (ValueError, OSError, HTTPException) as err:
-            if created:
+            if created and folder is not None:
                 with contextlib.suppress(OSError):
                     folder.rmdir()
             if isinstance(err, HTTPException):
@@ -1458,7 +1475,7 @@ def create_app(port: int) -> FastAPI:
             if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
                 raise bad(str(err), 409) from err
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
-        return settings_view({"projects_dir": str(folder)})
+        return settings_view({**data, **updates})
 
     @owned.get("/projects")
     def list_projects():
@@ -1529,6 +1546,10 @@ def create_app(port: int) -> FastAPI:
             "highlights": moments_view(hl),
             # "Analyze again" starts its vision box from this (older analyses: off)
             "vision_requested": ((hl or {}).get("settings") or {}).get("vision_requested") is True,
+            # ... and, before a first analysis, the vision boxes from this (Settings)
+            "vision_default": get_config().vision,
+            # the model those vision boxes name (Settings, CUTPOINT_VISION_MODEL)
+            "vision_model": default_model(),
             "review": review if isinstance(review, dict) else None,
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp
@@ -1613,9 +1634,15 @@ def create_app(port: int) -> FastAPI:
                 args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
             if st.get("recursive") is True:
                 args.append("--recursive")
-            # Opt-in: the box the user ticked, else ("Analyze again") what the last run asked for.
-            if _flag(body, "vision") if "vision" in body else st.get("vision_requested") is True:
-                args.append("--vision")
+            # The box the user ticked, else what the last run asked for, else the Settings
+            # default; always explicit, so the CLI does not apply config.json's vision again.
+            if "vision" in body:
+                vision = _flag(body, "vision")
+            elif hl is not None:
+                vision = st.get("vision_requested") is True
+            else:
+                vision = get_config().vision
+            args.append("--vision" if vision else "--no-vision")
             vision_top = st.get("vision_top")
             if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
                 args.append(f"--vision-top={vision_top}")

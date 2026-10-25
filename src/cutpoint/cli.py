@@ -29,7 +29,7 @@ from cutpoint.activity import resolve as resolve_activity
 from cutpoint.assemble import assemble
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import export_clips
-from cutpoint.config import get_config, projects_dir, resolve_project_path
+from cutpoint.config import get_config, projects_dir, resolve_project_path, vision_default
 from cutpoint.crash import CrashParams, detect_project
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.events import paths as event_paths
@@ -42,6 +42,11 @@ from cutpoint.styles import get_style, style_names
 from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
 
 logger = logging.getLogger("cutpoint")
+
+
+def _vision(a: argparse.Namespace) -> bool:
+    """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json (default off)."""
+    return vision_default() if a.vision is None else a.vision
 
 
 def _cmd_analyze(a: argparse.Namespace) -> None:
@@ -66,7 +71,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         targets,
         style,
         out,
-        vision=a.vision,
+        vision=_vision(a),
         model=a.model,
         language=a.language,
         use_scenes=not a.no_scenes,
@@ -92,7 +97,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         vertical=a.vertical,
         force=a.force,
         events=a.events,
-        vision=a.vision,
+        vision=_vision(a),
         vision_top=a.vision_top,
         ollama_url=a.ollama_url,
         ollama_model=a.ollama_model,
@@ -757,8 +762,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--vision",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="rate top candidates with a local Ollama vision model, as analyze --vision "
-        "(default: off)",
+        help="rate top candidates with a local Ollama vision model, as analyze --vision; "
+        "--no-vision skips it when config.json turns it on (default: vision in config.json, "
+        "else off)",
     )
     ed.add_argument(
         "--vision-top",
@@ -808,7 +814,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--vision",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="rate top candidates with a local Ollama vision model (default: off)",
+        help="rate top candidates with a local Ollama vision model; --no-vision skips it when "
+        "config.json turns it on (default: vision in config.json, else off)",
     )
     an.add_argument(
         "--vision-top",

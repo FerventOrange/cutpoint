@@ -40,7 +40,8 @@ subtitles; the last log lines name them. `--out NAME` names the project.
 
 `--vision` (on `edit` and `analyze`) adds an optional frame rating by a local Ollama vision
 model. It is off by default: slower and uses several GB of GPU memory, so pass it only when the
-user asks for it.
+user asks for it. If the user's `config.json` has `"vision": true`, it is on by default and
+`--no-vision` skips it.
 
 Choosing the moments yourself:
 
