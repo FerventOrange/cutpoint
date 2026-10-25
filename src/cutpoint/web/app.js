@@ -96,6 +96,9 @@ whenExpired((e) => {
   clearTimeout(S.prepTimer);
   clearTimeout(S.jobTimer);
   drop(''); // the banner already says why; a second status line would be announced too
+  const st = $('#jobStatus'); // an earlier failed poll may have left "Can't reach the server…"
+  st.textContent = '';
+  st.dataset.status = '';
 });
 
 function preserveFocus(fn) {
