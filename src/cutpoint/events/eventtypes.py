@@ -25,8 +25,9 @@ first matching type wins, whatever the project style (``styles`` gates only
 the points). Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
 built-in rules, so the defaults reproduce the original behaviour exactly,
 except that the player's own deaths (generic verb-style feeds and built-in R6
-feeds alike) no longer count as player kills, and in the ``funny`` style a
-death followed by a reaction adds ``player_deaths``' reaction points.
+feeds alike) no longer count as player kills, a self-kill counts as
+``self_kills`` (half a kill) instead, and in the ``funny`` style a death
+followed by a reaction adds ``player_deaths``' reaction points.
 """
 
 from __future__ import annotations
@@ -151,15 +152,23 @@ class EventType:
 # no count key; in the funny style a reaction after the death (a friend's
 # "look out" after it already happened) adds 8 points. The
 # unset payoff / seed keep the built-in rules (a tail payoff, seed 1.2 in R6
-# feeds, where ``player`` is set for either side). Player kills: kills by the
-# player, a self-kill included; ``player !verb`` still counts built-in rows
-# that carry neither ``player_kill`` nor ``player_death``.
+# feeds, where ``player`` is set for either side). Self-kills (the player is
+# killer and victim) come after teamkills and before both: their own type,
+# worth half a kill, a tail payoff and a seed like a death. Player kills: kills
+# by the player; ``player !verb`` still counts built-in rows that carry neither
+# ``player_kill`` nor ``player_death``.
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     EventType(
         "teamkills",
         (Matcher("kill", flag="teamkill"), Matcher("banner", prefix=("REVERSE FRIENDLY FIRE",))),
         score=12.0,
         max=1,
+    ),
+    EventType(
+        "self_kills",
+        (Matcher("kill", flag="player_kill player_death"),),
+        score=3.0,
+        max=3,
     ),
     EventType(
         "player_deaths",

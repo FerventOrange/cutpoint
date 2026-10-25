@@ -6,6 +6,7 @@ and the ski re-analysis are stubs, and the failure cases stop before any layer r
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -139,8 +140,10 @@ def test_events_json_footage_unreachable(project, tmp_path, monkeypatch, capsys)
     assert doc["warnings"][0]["files"] == [str(gone)]
 
 
-def test_events_json_footage_unreachable_warned_once(project, tmp_path, monkeypatch, capsys):
-    """run_events warns per unreachable source; the crash layer adds no second warning."""
+def test_events_json_footage_unreachable_warned_once(
+    project, tmp_path, monkeypatch, capsys, caplog
+):
+    """run_events warns and logs per unreachable source; the crash layer adds neither again."""
     gone = tmp_path / "gone.mp4"
     (src,) = [s["path"] for s in cache.load_json(project / "highlights.json")["sources"]]
     cache.save_json(project / "highlights.json", {"sources": [{"path": src}, {"path": str(gone)}]})
@@ -154,9 +157,16 @@ def test_events_json_footage_unreachable_warned_once(project, tmp_path, monkeypa
 
     monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
     monkeypatch.setattr("cutpoint.crash.detect_project", detect)
-    code, doc = _json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
+    with caplog.at_level(logging.WARNING):
+        code, doc = _json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
     assert code == 0 and doc["ok"] is True
-    assert seen["warn_unreachable"] is False
+    assert seen["warn_unreachable"] is False  # detect_project then logs it at DEBUG only
+    warns = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "footage not reachable" in r.getMessage()
+    ]
+    assert len(warns) == 1 and warns[0].startswith(str(gone)), warns
     assert _codes(doc).count("footage_unreachable") == 1, doc
     assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
         [str(gone)]
