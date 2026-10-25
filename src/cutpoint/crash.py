@@ -48,9 +48,12 @@ gravity and stops work for any GoPro HERO 9-13 sport. Prompts passed through
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import tempfile
 import time
+from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -62,6 +65,21 @@ from cutpoint.dsp import conv_same
 from cutpoint.stage import is_remote as _is_remote
 
 logger = logging.getLogger(__name__)
+# Why the run that calls detect_project has no visual layer (``analyze`` left the
+# keyframes step out); None: the user can add it with ``cutpoint events``.
+_NO_VISUAL_REASON: ContextVar[str | None] = ContextVar("no_visual_reason", default=None)
+
+
+@contextlib.contextmanager
+def no_visual_reason(reason: str | None) -> Iterator[None]:
+    """Inside the block, the ``no_visual_layer`` warning gives ``reason`` instead of
+    asking for ``cutpoint events``."""
+    token = _NO_VISUAL_REASON.set(reason)
+    try:
+        yield
+    finally:
+        _NO_VISUAL_REASON.reset(token)
+
 
 DT = 0.1
 G = 9.80665
@@ -1184,7 +1202,12 @@ def detect_project(
     prof = None
     if (p.pos, p.neg, p.words) == (CRASH_POS, CRASH_NEG, tuple(CRASH_WORDS.items())):
         prof = activity.resolve(
-            project, activity=activity_name, context=context, refresh=refresh_profile, llm=llm
+            project,
+            activity=activity_name,
+            context=context,
+            refresh=refresh_profile,
+            llm=llm,
+            warn_unreachable=False,  # warned above (or by the caller)
         )
         p = p.with_profile(prof["profile"])
     t_start = time.perf_counter()
@@ -1202,10 +1225,14 @@ def detect_project(
                 [src],
             )
         if inp.visual is None:
+            reason = _NO_VISUAL_REASON.get()
             jsonout.warn(
                 "no_visual_layer",
-                f"{src.name}: no visual layer; run `cutpoint events` first to score what the "
-                "camera sees",
+                f"{src.name}: no visual layer ({reason}); crashes are found without what the "
+                "camera sees"
+                if reason
+                else f"{src.name}: no visual layer; run `cutpoint events` first to score what "
+                "the camera sees",
                 [src],
             )
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)

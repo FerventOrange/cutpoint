@@ -278,7 +278,8 @@ def run_events(
         with VramMonitor() as vm:
             ocr_sources = sources if "ocr" in layers or cached_ocr else []  # ski: no HUD
             for i, s in enumerate(ocr_sources):
-                progress.update(progress.fraction(i, len(ocr_sources)))
+                if "ocr" in layers:  # a cached read only is no step of its own
+                    progress.update(progress.fraction(i, len(ocr_sources)))
                 evs, st = detect_ocr_events(
                     s,
                     ocr,

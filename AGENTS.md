@@ -156,12 +156,12 @@ Variants:
 |---|---|---|
 | `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates and settings |
 | `transcript.txt` | `analyze` | Time-stamped transcript |
-| `events.json`, `events.txt` | `events` | Detected sounds, HUD events, model descriptions |
+| `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, srt |
 | `clips/001_<label>.srt`, ... | `clips`, `extend` | Subtitles of each clip, from the cached transcript |
 | `final.mp4`, `final.fcpxml`, `final.otio`, `final.srt` | `assemble` | Result, timelines and subtitles |
 | `<name>-final.mp4`, `<name>-final.srt` | `edit` | Copy of the final video and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
-| `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands | See the action-cam page |
+| `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands; `crashes.json` also `analyze` (action footage) | See the action-cam page |
 | `activity.json` | `profile`, `crashes` | Activity profile in use: `name`, `source`, `profile` |
 
 ## When something fails

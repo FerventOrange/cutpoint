@@ -21,8 +21,9 @@ import math
 import os
 import re
 import sys
+import threading
 import time
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
@@ -73,6 +74,10 @@ PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
 VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
 SHORTFALL_S, SHORTFALL_FRAC, SHORTFALL_FLOOR_S = 2.0, 0.01, 0.5  # truncation thresholds
 RESUME_STEPS_S = (5, 10, 20, 40, 80, 160, 320)  # probe offsets past a read failure
+EXTRACT_SHARE = 0.1  # the audio extract's share of a source in the transcribe step's pct
+EXTRACT_POLL_S = 0.5  # how often the growing WAV is measured for that pct
+WAV_BYTES_PER_S = 16000 * 2  # extract_audio's 16 kHz mono s16 output
+WAV_HEADER = 44
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
@@ -224,13 +229,44 @@ def _loudness(wav: Path, cdir: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(data["t"]) - 0.2, np.asarray(data["m"])
 
 
-def _transcript(wav: Path, cdir: Path, tr: Transcriber) -> list[Segment]:
+def _transcript(
+    wav: Path, cdir: Path, tr: Transcriber, on_progress: Callable[[float], None] | None = None
+) -> list[Segment]:
     path = cdir / f"transcript-{tr.model_name}.json"
     data = cache.load_json(path)
     if data is None:
-        data = tr.transcribe(wav)
+        data = tr.transcribe(wav, on_progress) if on_progress else tr.transcribe(wav)
         cache.save_json(path, data)
     return data
+
+
+@contextlib.contextmanager
+def _watch_extract(
+    wav: Path, seconds: float, report: Callable[[float], None] | None
+) -> Iterator[None]:
+    """While the block runs :func:`extract_audio` into ``wav``, report the share of its
+    ``seconds`` written so far (0-1), measured from the size of the growing temp WAV."""
+    if report is None or seconds <= 0:
+        yield
+        return
+    tmp = wav.with_suffix(".tmp.wav")  # extract_audio's temp file, renamed when complete
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.wait(EXTRACT_POLL_S):
+            try:
+                size = tmp.stat().st_size
+            except OSError:  # not created yet
+                continue
+            report(min(1.0, max(0, size - WAV_HEADER) / (WAV_BYTES_PER_S * seconds)))
+
+    thread = threading.Thread(target=poll, name="extract-progress", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
 
 
 def scene_cuts(
@@ -689,6 +725,7 @@ def analyze_source(
     recover: bool = False,
     ski_ctx: Any = None,
     pick: bool = True,
+    report: Callable[[float], None] | None = None,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -698,6 +735,8 @@ def analyze_source(
     feature grid instead of the generic signals. ``src`` is the original path
     (recorded everywhere); files are read through ``source_remap``. With ``pick``
     False no candidates are picked yet (:func:`pick_candidates` does it later).
+    ``report`` gets the share of the source's transcription done (0-1): the audio
+    extract is its first :data:`EXTRACT_SHARE`, Whisper the rest.
     """
 
     def tick(name: str, t0: float) -> None:
@@ -714,8 +753,22 @@ def analyze_source(
         t0 = time.perf_counter()
         wav = cdir / "audio16k.wav"
         res = None
+
+        def at(frac: float) -> float:
+            """Position of ``frac`` of this part in the whole source (0-1)."""
+            return (offset + frac * span) / info.duration
+
+        def extracted(frac: float) -> None:
+            if report is not None:
+                report(EXTRACT_SHARE * at(frac))
+
+        def transcribed(frac: float) -> None:
+            if report is not None:
+                report(EXTRACT_SHARE + (1 - EXTRACT_SHARE) * at(frac))
+
         if not wav.exists():
-            res = extract_audio(io, wav, info, start=offset)
+            with _watch_extract(wav, span, extracted if report else None):
+                res = extract_audio(io, wav, info, start=offset)
         tick("audio_extract_s", t0)
         read_error = check_read(src, info, offset, wav, cdir, res)
         if read_error:
@@ -727,7 +780,7 @@ def analyze_source(
         tick("loudness_s", t0)
 
         t0 = time.perf_counter()
-        segments = _transcript(wav, cdir, tr)
+        segments = _transcript(wav, cdir, tr, transcribed if report else None)
         tick("transcribe_s", t0)
         segments, dropped = filter_hallucinations(segments)
         if dropped:
@@ -952,6 +1005,16 @@ def _find_inputs(
 # --------------------------------------------------------------------------- analysis steps
 GAME_STYLES = ("gaming", "funny")  # keyframes: HUD OCR (with region discovery)
 ACTION_STYLES = ("action", "sport", "ski")  # keyframes: CLIP; crash detection
+# Skip reasons of plan_layers (the PROGRESS ``detail``) and, for keyframes, why
+# crashes.json has no visual layer (its ``no_visual_layer`` warning).
+SKIP_OPTION = "left out by --skip or analysis.skip"
+SKIP_NO_EXTRA = "events extra not installed"
+SKIP_NO_CUDA = "no CUDA GPU (CLIP on the CPU: about an hour per hour)"
+NO_VISUAL_REASON = {
+    SKIP_OPTION: "keyframes left out by --skip or analysis.skip",
+    SKIP_NO_EXTRA: "the events extra is not installed",
+    SKIP_NO_CUDA: "no CUDA GPU for the keyframes step",
+}
 LAYER_STEP = {
     "audio": "reactions",
     "voice": "reactions",
@@ -996,9 +1059,15 @@ def has_telemetry(src: Path) -> bool:
 
 
 def _cuda() -> bool:
-    import torch  # noqa: PLC0415
+    """Whether torch sees a CUDA GPU; False when torch itself fails to load (a broken
+    install, a missing DLL), so the analysis goes on without the GPU-only steps."""
+    try:
+        import torch  # noqa: PLC0415
 
-    return bool(torch.cuda.is_available())
+        return bool(torch.cuda.is_available())
+    except Exception:
+        logger.debug("torch CUDA check failed", exc_info=True)
+        return False
 
 
 def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) -> LayerPlan:
@@ -1014,7 +1083,7 @@ def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) ->
     action = style.kind == "ski" or style.base in ACTION_STYLES
     for step in SKIPPABLE:
         if step in skip:
-            plan.skipped[step] = "left out by --skip or analysis.skip"
+            plan.skipped[step] = SKIP_OPTION
     want = plan.layers
     if "crashes" not in plan.skipped:
         if action or any(has_telemetry(s) for s in sources):
@@ -1044,7 +1113,7 @@ def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) ->
             install_hint("events"),
         )
         for step in want:
-            plan.skipped[step] = "events extra not installed"
+            plan.skipped[step] = SKIP_NO_EXTRA
         want.clear()
         return plan
     if "keyframes" in want and want["keyframes"] == ("visual",) and not _cuda():
@@ -1052,7 +1121,7 @@ def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) ->
             "No CUDA GPU: keyframes skipped (CLIP on the CPU would take about an hour per "
             "hour of footage)"
         )
-        plan.skipped["keyframes"] = "no CUDA GPU (CLIP on the CPU: about an hour per hour)"
+        plan.skipped["keyframes"] = SKIP_NO_CUDA
         del want["keyframes"]
     components: dict[str, None] = {}
     for step, layers in list(want.items()):
@@ -1105,26 +1174,54 @@ class _StepHook:
             self.failed.add(step)
 
 
+def _ocr_options(project: Path) -> tuple[tuple[str, ...], str]:
+    """Player tags and HUD game for the OCR layer. Tags: ``player_tags`` in config.json,
+    or when it has none those of the last ``cutpoint events`` run (its ``--player``, kept
+    in events.json). Game: that run's ``--game`` when it was not ``auto``."""
+    from cutpoint.config import player_tags  # noqa: PLC0415
+
+    tags, game = player_tags(), "auto"
+    doc = cache.load_json(project / "events.json")
+    settings = doc.get("settings") if isinstance(doc, dict) else None
+    prev = settings.get("ocr") if isinstance(settings, dict) else None
+    if not isinstance(prev, dict):
+        return tags, game
+    reused = []
+    old = prev.get("tags")
+    if not tags and isinstance(old, list) and old and all(isinstance(t, str) for t in old):
+        tags = tuple(old)
+        reused.append(f"{len(tags)} player tag{'s' if len(tags) != 1 else ''}")
+    old_game = prev.get("game")
+    if isinstance(old_game, str) and old_game and old_game != game:
+        game = old_game
+        reused.append(f"game {game}")
+    if reused:
+        logger.info("Reusing %s from the last `cutpoint events` run", " and ".join(reused))
+    return tags, game
+
+
 def _run_layers(
     project: Path, plan: LayerPlan, hl: dict[str, Any], steps: progress.Run, llm: bool
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would; False if they stopped before writing it."""
-    from cutpoint.config import player_tags  # noqa: PLC0415
+    from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
     from cutpoint.events.killfeed import OcrParams  # noqa: PLC0415
     from cutpoint.events.pipeline import run_events  # noqa: PLC0415
     from cutpoint.events.vlm_windows import VlmParams  # noqa: PLC0415
 
+    tags, game = _ocr_options(project)
+    why = plan.skipped.get("keyframes")
     try:
-        with pending_highlights(project, hl):
+        with pending_highlights(project, hl), no_visual_reason(NO_VISUAL_REASON.get(why or "")):
             # The options of a plain `cutpoint events`, so it reuses these caches.
             run_events(
                 project,
                 layers=plan.all_layers(),
                 audio=AudioParams(),
-                ocr=OcrParams(player_tags=player_tags()),
+                ocr=OcrParams(game=game, player_tags=tags),
                 vlm=VlmParams(max_windows=None),
                 stage=_StepHook(steps),
                 cached_ocr=plan.game,
@@ -1137,6 +1234,10 @@ def _run_layers(
         logger.debug("event layers failed", exc_info=True)
         logger.error("%s", message)
         jsonout.warn("step_failed", message)
+        if steps.current is None:  # stopped before its first layer: that step failed
+            first = next((s for s in SKIPPABLE if s in plan.layers and s not in steps.state), None)
+            if first is not None:
+                steps.start(first)
         if steps.current is not None:
             steps.fail(message)
         for step in plan.layers:
@@ -1356,6 +1457,16 @@ def _analyze(
         transcript_lines: list[str] = []
         for i, src in enumerate(sources):
             steps.update(progress.fraction(i, len(sources)), src.name)
+
+            shown = 0.0  # this source's share in the pct so far
+
+            def report(done: float, i: int = i) -> None:
+                """``done`` of source ``i`` in the step's pct, never lower than before (a
+                recovered part's extract starts over at its own offset)."""
+                nonlocal shown
+                shown = max(shown, done)
+                steps.update(progress.fraction(i + shown, len(sources)))
+
             offset, n_parts = 0.0, 0
             while True:
                 logger.info(
@@ -1374,6 +1485,7 @@ def _analyze(
                     offset=offset,
                     recover=recover,
                     pick=ski_ctx is None,
+                    report=report if steps.active else None,
                 )
                 results.append(res)
                 name = f"{src.name}@{offset:.0f}" if offset else src.name
@@ -1409,6 +1521,7 @@ def _analyze(
                 offset, n_parts = resume, n_parts + 1
         tr.close()  # Whisper out of memory before the next step loads a model
         free_models()
+        steps.done()  # an error of the later steps never fails the transcription
         bad = [r for r in results if r.read_error]
         if bad:
             for r in bad:
@@ -1516,7 +1629,6 @@ def _analyze(
         if style.kind != "ski":  # ski: the events are features of the scorer itself
             ev = cache.load_json(out_dir / "events.json")
         if ev:
-            (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)  # stale copy
             changed = rescore(hl, ev, out_dir)
             logger.info(
                 "Rescored %d of %d candidates from events.json", changed, len(hl["candidates"])
@@ -1573,6 +1685,8 @@ def _analyze(
         timings["total_s"] = round(time.perf_counter() - t_start, 2)
         out = out_dir / "highlights.json"
         cache.save_json(out, hl)  # once, atomically (temp file in the folder + os.replace)
+        if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
+            (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)
         logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, timings["total_s"])
         report_highlights(out_dir, out)
         return out

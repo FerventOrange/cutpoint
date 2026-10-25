@@ -147,7 +147,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
   ranks with them. `highlights.json` is written once, atomically, at the end: a cancelled run
-  leaves the previous file. `analyze` no longer writes `highlights.pre-events.json`.
+  leaves the previous file. The analysis score stays in each candidate's `score_pre_events`;
+  `highlights.pre-events.json` is written only when the analysis was not ranked with events
+  yet.
+- The vision rating (`--vision`) now rates the top candidates after the events ranking.
+- Re-running `analyze` keeps the `--game` of the last `cutpoint events` run (read from
+  `events.json`), and its `--player` tags when `player_tags` in `config.json` is empty; it logs
+  an INFO line when it does.
+- Inside `analyze`, the `no_visual_layer` warning of the crashes step says why there is no
+  visual layer (no CUDA GPU, left out by `--skip` or `analysis.skip`, or the `events` extra
+  missing) instead of asking for `cutpoint events`.
 - A self-kill (the player is both killer and victim in a kill feed, generic verb-style feeds
   and the built-in coloured-box feed alike) no longer counts as a player kill: a new default
   event type `self_kills`, checked after `teamkills` and before `player_deaths` and

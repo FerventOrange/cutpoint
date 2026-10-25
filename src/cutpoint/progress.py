@@ -11,9 +11,9 @@ stderr::
 The steps of a run are fixed when it starts (:data:`ANALYZE_STEPS`, :data:`EDIT_STEPS`;
 their names are a stable API) and run in that order. A step that does not apply is
 emitted ``skipped`` with the reason in ``detail``. Updates of a running step (``pct``,
-``detail``) are throttled to two per second; state changes never are. A failed write
-(closed or broken stderr) turns progress off for the rest of the run: emitting never
-stops the run itself.
+``detail``) are throttled to two per second and left out when nothing changed; state
+changes never are. A failed write (closed or broken stderr) turns progress off for the
+rest of the run: emitting never stops the run itself.
 
 A cancelled run (Ctrl+C, exit 130) ends its current step ``failed`` with detail
 ``cancelled``; an error that stops the run ends it ``failed`` with the error text.
@@ -71,6 +71,7 @@ class Run:
         self._detail: str | None = None
         self._last = 0.0  # time of the last running line of the current step
         self._pending: dict[str, Any] | None = None  # a throttled running line
+        self._sent: dict[str, Any] | None = None  # the last line written
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
 
@@ -90,6 +91,7 @@ class Run:
         """Write one line; any failure turns progress off (never raises)."""
         if not self.active:
             return
+        self._sent = line
         try:
             sys.stderr.write("PROGRESS " + json.dumps(line, separators=(",", ":")) + "\n")
             sys.stderr.flush()
@@ -151,6 +153,9 @@ class Run:
             self._detail = detail
         line = self._line(step, "running", self._pct, self._detail)
         with self._lock:
+            if line == self._sent:  # nothing new (a pending change was undone)
+                self._cancel_pending()
+                return
             wait = self._last + MIN_INTERVAL_S - time.monotonic()
             if wait <= 0:
                 self._cancel_pending()
@@ -275,6 +280,6 @@ def update(pct: float | None = None, detail: str | None = None) -> None:
         _RUNS[-1].update(pct, detail)
 
 
-def fraction(done: int, total: int) -> float:
+def fraction(done: float, total: int) -> float:
     """``done`` of ``total`` as a percentage (0 for an empty total)."""
     return 100.0 * done / total if total else 0.0

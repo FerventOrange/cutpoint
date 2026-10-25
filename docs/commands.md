@@ -136,7 +136,7 @@ PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"ru
 | `pct` | 0 to 100, or `null` when there is no cheap measure |
 | `detail` | Short text (a skip reason, an error) or `null` |
 
-Running updates come at most 2 per second. Steps run in table order.
+Running updates come at most 2 per second. Steps run in table order. The `pct` of `transcribe` covers each source's audio extract (its first 10%) and then Whisper.
 
 | `step` | `analyze` | `edit` |
 |---|---|---|
@@ -149,8 +149,8 @@ Running updates come at most 2 per second. Steps run in table order.
 | `clips` | | 7 |
 | `assemble` | | 8 |
 
-On Ctrl+C the current step ends `failed` with detail `cancelled`. Steps that were never started
-are not emitted after a cancel or a fatal error. A first-time HUD discovery shows
+On Ctrl+C the current step ends `failed` with detail `cancelled`. After a cancel or a fatal
+error, steps after the failed one are not emitted. A first-time HUD discovery shows
 `first run for <game>: discovering HUD regions` as the detail of `keyframes`.
 
 ## ui
@@ -333,7 +333,7 @@ The steps run strictly one after another, and only one model is loaded at a time
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
 | `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `ski` and `sport`, the CLIP visual layer, only with a CUDA GPU |
 | `crashes` | Action-cam footage only (telemetry found, or style `ski`, `action` or `sport`) |
-| `ranking` | Re-ranks the candidates with the events, and writes `highlights.json` |
+| `ranking` | Re-ranks the candidates with the events (writes `events.json` and `events.txt`); `highlights.json` is written after the last step |
 | `vision` | Ollama frame rating, only when vision is on |
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
@@ -343,8 +343,9 @@ VLM layer is not part of `analyze`; it stays in [`events`](#events) and `edit --
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
-file, and a cancelled first run leaves none. `analyze` no longer writes
-`highlights.pre-events.json`.
+file, and a cancelled first run leaves none. The analysis score stays in each candidate's
+`score_pre_events`, and `highlights.pre-events.json` is written only when the analysis was not
+ranked with events yet.
 
 A first-time discovery for a game can take several minutes on CPU OCR (one measurement: about
 3.3 minutes per 10 bursts). Rough extra cost per hour of footage (estimates, not measured):
