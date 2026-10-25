@@ -47,6 +47,11 @@ documents every key.
     overrides it. Auto picks the first GPU encoder that really encodes, else libx264; a named
     GPU encoder that does not work is an error (see :func:`cutpoint.ffmpeg_utils.video_encoder`).
 
+``vision``
+    ``true`` rates the top candidates of ``cutpoint analyze`` and ``cutpoint edit`` with the local
+    Ollama vision model unless ``--no-vision`` is given (``--vision`` turns it on for one run).
+    Default ``false``: vision is opt-in. ``cutpoint ui`` changes it in Settings.
+
 ``pano``
     Insta360 settings, read by :func:`cutpoint.pano.project.pano_config`.
 
@@ -88,6 +93,7 @@ class Config:
     player_tags: tuple[str, ...] = ()
     ollama_url: str = ""
     video_encoder: str = "auto"
+    vision: bool = False
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -116,6 +122,10 @@ def load_config_data(path: Path | None = None) -> dict:
 
 def _is_str(value: object) -> bool:
     return isinstance(value, str)
+
+
+def _is_bool(value: object) -> bool:
+    return isinstance(value, bool)
 
 
 def _is_str_list(value: object) -> bool:
@@ -198,6 +208,7 @@ def _load_config(path: Path) -> Config:
     _check_type(path, data, "source_remap", _is_str_map, "an object mapping strings to strings")
     _check_type(path, data, "source_remap_exclude", _is_str_list, "a list of strings")
     _check_type(path, data, "player_tags", _is_str_or_list, "a list of names")
+    _check_type(path, data, "vision", _is_bool, "true or false")
     projects = resolve_projects_dir(data)
     remap = data.get("source_remap") or {}
     # Longest prefix first, so nested prefixes win.
@@ -220,12 +231,18 @@ def _load_config(path: Path) -> Config:
         tuple(t for t in tags if t.strip()),
         str(data.get("ollama_url") or ""),
         encoder,
+        data.get("vision") is True,
     )
 
 
 def set_config_value(key: str, value: object, path: Path | None = None) -> Path:
-    """Write ``key`` into ``config.json`` atomically, keeping the other keys, their order and the
-    file's indentation; the cached :func:`get_config` is dropped. Returns the file written.
+    """Write ``key`` into ``config.json``; see :func:`set_config_values`."""
+    return set_config_values({key: value}, path)
+
+
+def set_config_values(values: dict[str, object], path: Path | None = None) -> Path:
+    """Write ``values`` into ``config.json`` atomically, keeping the other keys, their order and
+    the file's indentation; the cached :func:`get_config` is dropped. Returns the file written.
 
     Raises:
         ValueError: If the file exists but is not valid JSON.
@@ -239,7 +256,7 @@ def set_config_value(key: str, value: object, path: Path | None = None) -> Path:
         lead = next((ln[: len(ln) - len(ln.lstrip())] for ln in lines[1:] if ln.strip()), "")
         if lead:
             indent = len(lead) if lead.strip(" ") == "" else lead
-    data[key] = value
+    data.update(values)
     path.parent.mkdir(parents=True, exist_ok=True)
     cache.save_json(path, data, indent=indent)  # type: ignore[arg-type]
     get_config.cache_clear()
@@ -259,6 +276,12 @@ def resolve_stage_dir(data: dict) -> Path:
     return paths.env_path("STAGE_DIR") or (
         paths.absolute(configured) if configured else paths.default_stage_dir()
     )
+
+
+def vision_default() -> bool:
+    """Whether ``analyze`` and ``edit`` rate frames with Ollama when neither ``--vision`` nor
+    ``--no-vision`` is given (``vision`` in ``config.json``; default False)."""
+    return get_config().vision
 
 
 def player_tags() -> tuple[str, ...]:

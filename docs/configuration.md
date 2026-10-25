@@ -68,7 +68,8 @@ with `_` are ignored.
   "stage_dir": "C:\\Cutpoint\\stage",
   "player_tags": ["YourGameName"],
   "ollama_url": "http://127.0.0.1:11434",
-  "video_encoder": "auto"
+  "video_encoder": "auto",
+  "vision": false
 }
 ```
 
@@ -128,6 +129,15 @@ overrides it per run. Default: none.
 Ollama base URL for `analyze --vision` and the model layers of `events`. `OLLAMA_HOST` overrides
 it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines; see
 [troubleshooting](troubleshooting/models.md)).
+
+### vision
+
+`true` or `false` (default). With `true`, `analyze` and `edit` rate the top candidates with the
+local Ollama vision model ([getting started](getting-started.md#optional-ollama-vision)) unless
+`--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
+Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
+the UI's vision checkboxes start from it; every analysis the UI starts passes its checkbox as
+`--vision` or `--no-vision`. Other values are rejected.
 
 ### video_encoder
 

@@ -30,6 +30,57 @@ def test_player_tags_blank_names_dropped(home):
     assert config.player_tags() == ()
 
 
+# -- vision ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("data", "want"),
+    [({}, False), ({"vision": None}, False), ({"vision": False}, False), ({"vision": True}, True)],
+)
+def test_vision_default_is_off_unless_true(home, data, want):
+    set_config(home, **data)
+    assert config.vision_default() is want
+
+
+@pytest.mark.parametrize("value", ["yes", "true", 1, 0, [True], {"on": True}])
+def test_vision_must_be_a_boolean(home, value):
+    set_config(home, vision=value)
+    with pytest.raises(ValueError, match=r"vision must be true or false"):
+        config.get_config()
+
+
+def test_vision_is_read_from_cutpoint_config(home, tmp_path, monkeypatch):
+    other = write(tmp_path / "elsewhere" / "c.json", json.dumps({"vision": True}))
+    write(home / "config.json", json.dumps({"vision": False}))
+    monkeypatch.setenv("CUTPOINT_CONFIG", str(other))
+    config.get_config.cache_clear()
+    assert config.vision_default() is True
+
+
+@pytest.mark.parametrize(
+    ("cfg", "argv", "vision"),
+    [
+        (None, [], False),
+        (None, ["--vision"], True),
+        (None, ["--no-vision"], False),
+        (False, [], False),
+        (False, ["--vision"], True),
+        (True, [], True),
+        (True, ["--no-vision"], False),
+    ],
+)
+def test_analyze_vision_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, vision):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    if cfg is not None:
+        set_config(home, vision=cfg)
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["vision"]))
+    assert cli.main(["analyze", str(video), "--out", "p", *argv]) == 0
+    assert seen == [vision]
+
+
 # -- pano_config ----------------------------------------------------------------------
 
 
@@ -114,6 +165,13 @@ def test_set_config_value_refuses_an_invalid_file_and_leaves_it(home):
     with pytest.raises(ValueError, match="expected a JSON object"):
         config.set_config_value("projects_dir", "x")
     assert path.read_text(encoding="utf-8") == "[1]"
+
+
+def test_set_config_values_writes_several_keys_at_once(home):
+    path = write(home / "config.json", '{"b": 1}')
+    config.set_config_values({"vision": True, "projects_dir": "x"})
+    want = {"b": 1, "vision": True, "projects_dir": "x"}
+    assert json.loads(path.read_text(encoding="utf-8")) == want
 
 
 def test_set_config_value_writes_an_explicit_path(tmp_path):

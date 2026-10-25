@@ -305,7 +305,7 @@ function renderUnanalyzed(el, n, error) {
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', { text: 'Analyze footage to transcribe audio and rank the strongest moments.' }),
     h('label', { class: 'check' },
-      h('input', { type: 'checkbox', id: 'optVision', 'aria-describedby': 'optVisionHint' }),
+      h('input', { type: 'checkbox', id: 'optVision', 'aria-describedby': 'optVisionHint', checked: S.project?.vision_default === true }),
       'Rate frames with a local vision model (Ollama)'),
     h('p', { id: 'optVisionHint', class: 'hint', text: 'Optional. Slower, and uses several GB of GPU memory while it runs; needs Ollama with qwen3-vl:8b.' }),
     h('button', {
@@ -846,11 +846,13 @@ function confirmAction(title, text, ok = 'Remove') {
   });
 }
 
-/** "Analyze again": confirm in a dialog whose vision box starts as the last analysis asked. */
+/** "Analyze again": confirm in a dialog whose vision box starts as the last analysis asked
+ * (before a first analysis: the Settings default). */
 function analyzeAgain() {
   const d = $('#analyzeDialog');
   const back = document.activeElement;
-  $('#againVision').checked = !!S.project?.vision_requested;
+  const p = S.project;
+  $('#againVision').checked = p?.highlights ? !!p.vision_requested : !!p?.vision_default;
   d.returnValue = '';
   d.showModal();
   $('#againCancel').focus();
@@ -1319,6 +1321,7 @@ const PROJECTS_NOTE = 'New projects are created in this folder. Existing project
 async function openSettings() {
   const d = $('#settingsDialog');
   const input = $('#setProjects');
+  const box = $('#setVision');
   $('#settingsError').textContent = '';
   let st;
   try {
@@ -1330,27 +1333,34 @@ async function openSettings() {
   input.readOnly = st.projects_dir_locked;
   input.dataset.saved = st.projects_dir;
   $('#setProjectsPick').hidden = !S.canPick || st.projects_dir_locked;
-  $('#settingsSave').hidden = st.projects_dir_locked;
   $('#setProjectsNote').textContent = st.projects_dir_locked
     ? 'Set by the CUTPOINT_PROJECTS_DIR environment variable. Change or unset it, then restart cutpoint ui, to choose the folder here.'
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
-  $('#settingsCancel').textContent = st.projects_dir_locked ? 'Close' : 'Cancel';
+  box.checked = st.vision === true;
+  box.dataset.saved = String(box.checked);
+  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. New analyses start with this choice and can still change it per run. Saved in ${st.config_file}.`;
   d.showModal();
   input.focus();
 }
 
 async function saveSettings() {
   const input = $('#setProjects');
+  const box = $('#setVision');
   const err = $('#settingsError');
   const value = input.value.trim();
   err.textContent = '';
-  if (!value) return (err.textContent = 'Enter the full path of a folder.');
-  if (value === input.dataset.saved) return $('#settingsDialog').close();
-  if (dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
+  const body = {};
+  if (!input.readOnly) {
+    if (!value) return (err.textContent = 'Enter the full path of a folder.');
+    if (value !== input.dataset.saved) body.projects_dir = value;
+  }
+  if (String(box.checked) !== box.dataset.saved) body.vision = box.checked;
+  if (!Object.keys(body).length) return $('#settingsDialog').close();
+  if (body.projects_dir && dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
   $('#settingsSave').disabled = true;
   let st;
   try {
-    st = await api('/api/settings', { method: 'PUT', body: { projects_dir: value } });
+    st = await api('/api/settings', { method: 'PUT', body });
   } catch (e) {
     err.textContent = e.message;
     return;
@@ -1358,7 +1368,15 @@ async function saveSettings() {
     $('#settingsSave').disabled = false;
   }
   input.value = input.dataset.saved = st.projects_dir;
+  box.dataset.saved = String(st.vision === true);
   $('#settingsDialog').close();
+  if ('vision' in body) {
+    // the open project's boxes start from the new default; a first analysis's box changes now
+    if (S.project) S.project.vision_default = st.vision === true;
+    const opt = $('#optVision');
+    if (opt) opt.checked = st.vision === true;
+  }
+  if (!body.projects_dir) return;
   // A project of the same id in the new folder is another project: start afresh either way.
   try {
     const was = S.id;
