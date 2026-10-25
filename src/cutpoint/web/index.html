@@ -195,6 +195,11 @@
           <p id="setProjectsNote" class="hint"></p>
         </div>
       </fieldset>
+      <fieldset class="panel">
+        <legend>Analysis</legend>
+        <label class="check"><input type="checkbox" id="setVision" aria-describedby="setVisionHint"> Rate frames with a local vision model (Ollama)</label>
+        <p id="setVisionHint" class="hint"></p>
+      </fieldset>
       <p id="settingsError" class="error" role="alert"></p>
       <div class="dialog-actions">
         <button type="button" class="btn" id="settingsCancel">Cancel</button>
@@ -208,7 +213,7 @@
       <h2 id="analyzeTitle">Analyze again?</h2>
       <p id="analyzeText" class="muted">The project's footage is analyzed again and its moments are ranked anew.</p>
       <label class="check"><input type="checkbox" id="againVision" aria-describedby="againVisionHint"> Rate frames with a local vision model (Ollama)</label>
-      <p id="againVisionHint" class="hint">Optional. Slower, and uses several GB of GPU memory while it runs; needs Ollama with qwen3-vl:8b.</p>
+      <p id="againVisionHint" class="hint"></p>
       <div class="dialog-actions">
         <button type="submit" value="cancel" class="btn" id="againCancel">Cancel</button>
         <button type="submit" value="ok" class="btn primary" id="againOk">Analyze</button>

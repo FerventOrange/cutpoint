@@ -77,8 +77,8 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 60 s, best first, crossfades), `clips` (the 10 best; the clips are the deliverable) or
 `funny-moments` (funny style, 8 moments, chronological, burned-in captions). `--style`, `--top`,
 `--max-total`, `--vertical`, `--force` and `--events` override the kind; `--vision` adds the
-optional Ollama frame rating (off by default for every style; `--no-vision` is accepted and
-changes nothing), and `--vision-top`, `--ollama-url` and `--ollama-model` work as on `analyze`. It writes the project
+optional Ollama frame rating (off for every style unless `"vision": true` in the user's
+`config.json` turns it on by default; `--no-vision` then skips it), and `--vision-top`, `--ollama-url` and `--ollama-model` work as on `analyze`. It writes the project
 `<projects>\clip` (`--out NAME` to change it) with the clips, `final.mp4` and
 `clip-final.mp4` plus `.srt` subtitles; the last log lines name the final video, its subtitles
 and the clips folder. A non-empty clips folder needs `--force` (ask the user first, as for

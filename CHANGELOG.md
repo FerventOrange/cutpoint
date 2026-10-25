@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A default for the Ollama vision rating: "Rate frames with a local vision model (Ollama)" in
+  the UI's Settings saves `"vision": true` or `false` in `config.json` (default false, so nothing
+  changes unless you turn it on). The UI's vision checkboxes start from it ("Analyze again" on an
+  analyzed project still starts from what the last analysis asked) and can change it per run;
+  the UI passes `--vision` or `--no-vision` explicitly. `cutpoint analyze` and `cutpoint edit`
+  use it when neither `--vision` nor `--no-vision` is given, so `--no-vision` now skips vision
+  that the setting turns on. A `vision` that is not true or false is rejected.
+  `GET`/`PUT /api/settings` carry `vision` (and `vision_model`, read-only); `PUT` may send
+  `projects_dir`, `vision` or both.
 - Reaction points for event types: the preset `events` fields `reaction` (0-12 points once per
   candidate) and `styles` (limits `score` and `reaction` to some styles). `player_deaths` now
   defaults to `reaction` 8 for `funny`: laughter, a scream or speech after a pause that starts
