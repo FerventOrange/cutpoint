@@ -137,13 +137,10 @@ def _transcript_file(cdir: Path) -> Path | None:
     return files[0]
 
 
-def source_words(src: Path) -> list[dict[str, Any]] | None:
-    """All cached transcript words of ``src`` in absolute time, or None if untranscribed.
-
-    Each word also carries its segment's ``avg_logprob`` (when the transcript
-    stored it), a confidence for gating words heard in wind.
-    """
-    words: list[dict[str, Any]] = []
+def source_segments(src: Path) -> list[dict[str, Any]] | None:
+    """Cached transcript segments of ``src`` in absolute time (their words too),
+    hallucinations dropped, or None if untranscribed."""
+    out: list[dict[str, Any]] = []
     found = False
     for p in parts(src):
         f = _transcript_file(p.cdir)
@@ -154,13 +151,33 @@ def source_words(src: Path) -> list[dict[str, Any]] | None:
             continue
         found = True
         segments, _ = filter_hallucinations(segments)
-        for seg in segments:
-            conf = {"avg_logprob": seg["avg_logprob"]} if seg.get("avg_logprob") is not None else {}
-            for w in flat_words([seg]):
-                words.append(
-                    {**w, **conf, "start": w["start"] + p.offset, "end": w["end"] + p.offset}
-                )
-    if not found:
+        out.extend(
+            {
+                **seg,
+                "start": seg["start"] + p.offset,
+                "end": seg["end"] + p.offset,
+                "words": [
+                    {**w, "start": w["start"] + p.offset, "end": w["end"] + p.offset}
+                    for w in seg.get("words", [])
+                ],
+            }
+            for seg in segments
+        )
+    return out if found else None
+
+
+def source_words(src: Path) -> list[dict[str, Any]] | None:
+    """All cached transcript words of ``src`` in absolute time, or None if untranscribed.
+
+    Each word also carries its segment's ``avg_logprob`` (when the transcript
+    stored it), a confidence for gating words heard in wind.
+    """
+    segments = source_segments(src)
+    if segments is None:
         return None
+    words: list[dict[str, Any]] = []
+    for seg in segments:
+        conf = {"avg_logprob": seg["avg_logprob"]} if seg.get("avg_logprob") is not None else {}
+        words.extend({**w, **conf} for w in flat_words([seg]))
     words.sort(key=lambda w: w["start"])
     return words

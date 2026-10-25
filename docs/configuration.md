@@ -224,6 +224,13 @@ before.
   `max` (events counted per candidate, clamped to 1-3, default 1), `payoff` (true: the event ends
   a clip tail), `tail_s` (seconds kept after the payoff, clamped to 0-10) and `seed` (priority when choosing
   VLM windows, clamped to 0-3). Unset `payoff`, `tail_s` and `seed` keep the built-in rules.
+  Two more fields: `reaction` (points added once per candidate when a reaction follows one of
+  the type's events, clamped to 0-12; unset: none) and `styles` (a style name or a list of names;
+  `score` and `reaction` count only in a project with one of these styles, and a learned style
+  counts through its base; unset: every style). `styles` gates only the points: matching, tail
+  payoffs and seeds ignore it. An unknown style name invalidates the entry. When `reaction` applies
+  to the project's style, the evidence in `signals.events` gains `<name>_reaction` (0 or 1);
+  otherwise the key is absent.
 - A matcher is an OCR event `type` (such as `kill`, `banner` or `multikill`) plus at most one
   test: `prefix` or `contains` (lists of upper-case label text; the label must start with, or
   contain, one of them) or `flag` (one or more space-separated fields of the event that must be set
@@ -232,13 +239,18 @@ before.
   skipped with a warning.
 - Preset types are checked before the built-in ones (`teamkills`, `player_deaths`, `player_kills`,
   `banners`); the first matching type wins, and a type with a built-in's name replaces it.
-  `player_deaths` matches the player's own deaths (not a self-kill) and adds no boost, so a death
-  does not count as a kill; it stays a tail payoff and a VLM seed. It needs the player's name in
+  `player_deaths` matches the player's own deaths (not a self-kill) and adds no per-event boost, so a death
+  does not count as a kill; it stays a tail payoff and a VLM seed. Its default is `reaction` 8 with
+  `styles` `["funny"]`: with `--style funny`, a candidate where the player dies and someone
+  reacts gets +8, once. A reaction is laughter, a scream or speech that starts within 6 s after
+  the death; speech counts only after a 1.5 s pause before the death, so continuous banter and
+  laughter already running do not count. It is rescored from the cache without re-running
+  `events`. Other styles are unchanged. It needs the player's name in
   [`player_tags`](#player_tags) or `--player`; without it no event is a player event.
 - Scored types add to the highlight boost, which stays capped, and show up as evidence in
   `signals.events`. The `prefix` phrases of `banner` matchers are also added to the OCR phrases of
   generic presets, after the generic banners.
-- Names `laughter`, `scream`, `boost` and `vlm` are reserved, and a `payoff` must be true or false.
+- Names `laughter`, `scream`, `boost` and `vlm`, and names ending in `_reaction`, are reserved, and a `payoff` must be true or false.
   Such entries, and other invalid ones, are skipped with a WARNING shown once. Entries of `events`
   that are not objects are dropped without a warning.
 - Changing scores, `max` or tails does not re-run OCR. A preset in the user or bundled folder
