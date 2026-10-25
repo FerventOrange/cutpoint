@@ -2988,3 +2988,148 @@ def test_a_source_remap_change_rebuilds_the_list_at_once_and_other_edits_keep_it
     assert after(source_remap={"/old": "/new"}, source_remap_exclude=["*skip*"]) == 1  # exclude
     assert after(source_remap={"/old": "/new"}, source_remap_exclude=["*skip*"]) == 0
     assert after(source_remap={"/old": "/other"}, source_remap_exclude=["*skip*"]) == 1  # retarget
+
+
+SAMPLE_PROGRESS = [
+    'PROGRESS {"step":"transcribe","index":1,"total":6,"label":"Transcription","state":"running","pct":0,"detail":"sample.mp4"}',
+    "12:00:01 INFO transcribing sample.mp4",
+    'PROGRESS {"step":"transcribe","index":1,"total":6,"label":"Transcription","state":"done","pct":100,"detail":null}',
+    'PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"skipped","pct":null,"detail":"events extra not installed"}',
+    'PROGRESS {"step":"crashes","index":4,"total":6,"label":"Crashes","state":"skipped","pct":null,"detail":"not action-cam footage"}',
+    'PROGRESS {"step":"vision","index":6,"total":6,"label":"Vision rating","state":"skipped","pct":null,"detail":"vision is off (Settings, config.json or --vision)"}',
+]  # fmt: skip
+
+
+def progress_job(lines: list[str], code: int = 0) -> ui.Job:
+    """A finished job whose child printed ``lines`` and exited ``code``."""
+    script = f"import sys\nfor ln in {lines!r}:\n    print(ln)\nsys.exit({code})"
+    job = ui.Jobs().start("p", "analyze", [sys.executable, "-c", script])
+    assert job.done.wait(20)
+    return job
+
+
+def test_progress_lines_become_steps_and_stay_out_of_the_log() -> None:
+    job = progress_job(SAMPLE_PROGRESS)
+    view = job.view()
+    assert view["status"] == "completed"
+    assert view["logs"] == ["12:00:01 INFO transcribing sample.mp4"]
+    assert view["progress"]["total"] == 6
+    steps = view["progress"]["steps"]
+    assert [(s["step"], s["state"]) for s in steps] == [
+        ("transcribe", "done"),  # its latest state only
+        ("reactions", "skipped"),
+        ("crashes", "skipped"),
+        ("vision", "skipped"),
+    ]
+    assert steps[0] == {
+        "step": "transcribe",
+        "index": 1,
+        "label": "Transcription",
+        "state": "done",
+        "pct": 100.0,
+        "detail": None,
+    }
+    assert steps[1]["detail"] == "events extra not installed" and steps[1]["pct"] is None
+
+
+def test_a_step_sent_again_later_keeps_its_index_place_and_a_log_prefix_is_accepted() -> None:
+    job = ui.Job("p", "edit")
+    for line in [
+        'PROGRESS {"step":"keyframes","index":3,"total":8,"label":"Keyframes","state":"done","pct":100,"detail":null}',
+        '12:00:02 INFO PROGRESS {"step":"vision","index":6,"total":8,"label":"Vision rating","state":"done","pct":100,"detail":null}',
+        'PROGRESS {"step":"keyframes","index":3,"total":8,"label":"Keyframes","state":"running","pct":40.5,"detail":"events"}\r\n',
+    ]:  # fmt: skip
+        job.add_output(line)
+    view = job.view()
+    assert [(s["step"], s["state"], s["pct"]) for s in view["progress"]["steps"]] == [
+        ("keyframes", "running", 40.5),
+        ("vision", "done", 100.0),
+    ]
+    assert view["progress"]["total"] == 8
+    assert view["logs"] == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "PROGRESS {not json",
+        "PROGRESS [1, 2]",
+        'PROGRESS {"step":"x","index":"1","state":"done"}',
+        'PROGRESS {"step":"x","index":1,"state":"exploded"}',
+        'PROGRESS {"index":1,"state":"done"}',
+        'PROGRESS {"step":"x","index":true,"state":"done"}',
+        'Saying PROGRESS {"step":"x","index":1,"state":"done"} mid-line',
+    ],
+)
+def test_a_malformed_progress_line_stays_in_the_log_as_text(line: str) -> None:
+    job = ui.Job("p", "analyze")
+    job.add_output(line + "\n")
+    assert job.view()["logs"] == [line]
+    assert job.view()["progress"] == {"total": None, "steps": []}
+
+
+def test_odd_progress_fields_are_tidied() -> None:
+    step = ui.parse_progress(
+        'PROGRESS {"step":"x","index":2,"total":true,"label":"","state":"running","pct":250,"detail":5}'
+    )
+    assert step == {
+        "step": "x",
+        "index": 2,
+        "total": None,
+        "label": "x",
+        "state": "running",
+        "pct": 100.0,
+        "detail": None,
+    }
+    nan = ui.parse_progress('PROGRESS {"step":"x","index":2,"state":"running","pct":NaN}')
+    assert nan is not None and nan["pct"] is None
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_a_step_still_running_when_the_job_fails_reads_interrupted(code: int) -> None:
+    job = progress_job([*SAMPLE_PROGRESS[:1], "12:00:03 ERROR boom"], code)
+    view = job.view()
+    assert view["status"] == ("completed" if code == 0 else "failed")
+    (step,) = view["progress"]["steps"]
+    assert step["state"] == ("running" if code == 0 else "interrupted")
+    assert step["pct"] == 0.0 and step["detail"] == "sample.mp4"
+
+
+def test_a_cancelled_job_interrupts_its_running_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = FakeProc()
+    monkeypatch.setattr(ui, "spawn", lambda args: proc)
+    monkeypatch.setattr(ui, "kill_tree", lambda _p: proc.release.set())
+    jobs = ui.Jobs()
+    job = jobs.start("p", "analyze", ["x"])
+    try:
+        job.add_output(SAMPLE_PROGRESS[0])
+        job.add_output(SAMPLE_PROGRESS[3])
+        jobs.cancel(job.id)
+    finally:
+        proc.release.set()
+    assert job.done.wait(10)
+    assert job.view()["status"] == "cancelled"
+    assert [s["state"] for s in job.view()["progress"]["steps"]] == ["interrupted", "skipped"]
+
+
+def test_api_jobs_carries_the_progress(client: TestClient) -> None:
+    script = f"for ln in {SAMPLE_PROGRESS!r}:\n    print(ln)"
+    job = client.app.state.jobs.start("p", "analyze", [sys.executable, "-c", script])
+    assert job.done.wait(20)
+    (seen,) = client.get("/api/jobs").json()["jobs"]
+    assert seen["progress"]["total"] == 6
+    steps = seen["progress"]["steps"]
+    assert [(s["index"], s["state"]) for s in steps] == [
+        (1, "done"),
+        (2, "skipped"),
+        (4, "skipped"),
+        (6, "skipped"),
+    ]
+    assert not any("PROGRESS" in ln for ln in seen["logs"])
+
+
+def test_spawn_asks_the_cli_for_progress_lines() -> None:
+    code = "import os; print(os.environ.get('CUTPOINT_PROGRESS'))"
+    proc = ui.spawn([sys.executable, "-c", code])
+    out = proc.communicate(timeout=30)[0]
+    assert out.split()[-1] == "1"

@@ -38,6 +38,7 @@ const S = {
   renameDraft: '',
   renameErr: '',
   expired: false, // the server rejected the session token: nothing polls or retries any more
+  stepStates: null, // {job, states: {step: state}}: the analysis steps last announced (renderSteps)
 };
 
 const v = $('#video');
@@ -323,6 +324,8 @@ function renderUnanalyzed(el, n, error) {
       onclick: (e) => revealFolder(e.currentTarget),
     }, icon('folder'), 'Show folder'),
     h('p', { id: 'analyzeWhy', class: 'fresh-why', 'aria-live': 'polite' }),
+    h('div', { id: 'freshSteps', class: 'steps', hidden: true }), // the running analysis's steps (renderSteps)
+    h('p', { id: 'freshStepsStatus', class: 'vh', role: 'status' }),
     h('p', { id: 'analyzeNote', class: 'fresh-note', text: 'This process can take a long time on large footage.' }),
   );
 }
@@ -1187,7 +1190,8 @@ function renderBusy() {
   const big = $('#analyzeBig');
   if (big) {
     const own = S.active?.project_id === S.id && S.active?.action === 'analyze';
-    const reason = own ? 'Analyzing… progress is in Jobs.' : busy ? why
+    const steps = own && !!stepsJob(); // an older CLI sends no steps: the Jobs log is all there is
+    const reason = own ? (steps ? 'Analyzing… each step is listed below.' : 'Analyzing… progress is in Jobs.') : busy ? why
       : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
     set('#analyzeBig', !p || busy || !p.sources?.length, reason);
     const label = own ? 'Analyzing…' : 'Analyze footage';
@@ -1204,6 +1208,113 @@ function renderBusy() {
   $('#revealOutBtn').hidden = !p?.outputs?.length || !S.canReveal;
   $('#exportPanel').disabled = !p;
   $('#assemblePanel').disabled = !p;
+  renderSteps();
+}
+
+// ---------- analysis steps ----------
+
+const STEP_TEXT = {
+  running: 'Running', done: 'Done', skipped: 'Skipped', failed: 'Failed', interrupted: 'Interrupted',
+  cancelled: 'Cancelled', waiting: 'Waiting', notrun: 'Not run',
+};
+const STEP_ICON = { done: '✓', skipped: '–', failed: '✕', interrupted: '!', cancelled: '■', waiting: '○', notrun: '–' }; // running: a spinner
+// The CLI's step names, in order (a stable API): analyze sends the first 6, edit all 8. Labels for
+// steps not sent yet; a label the CLI sends wins.
+const STEP_LABELS = {
+  transcribe: 'Transcription', reactions: 'Reactions', keyframes: 'Keyframes', crashes: 'Crashes',
+  ranking: 'Ranking', vision: 'Vision rating', clips: 'Clips', assemble: 'Assemble',
+};
+const STEP_NAMES = Object.keys(STEP_LABELS);
+
+/**
+ * The rows to show: the steps sent, plus, when ``total`` is a known step count (6 or 8), the ones
+ * not sent yet: "waiting" while the job runs, "not run" after it ended (a cancel or fatal error).
+ * Each row gets a display ``state``: a failed or interrupted step of a cancel reads "cancelled".
+ */
+function stepRows(j) {
+  const { steps, total } = j.progress;
+  const cancel = (s) => s.detail === 'cancelled' || (s.state === 'interrupted' && j.status === 'cancelled');
+  const rows = steps.map((s) => ({
+    ...s,
+    state: (s.state === 'failed' || s.state === 'interrupted') && cancel(s) ? 'cancelled' : s.state,
+    detail: s.detail === 'cancelled' ? null : s.detail, // the state says it
+  }));
+  if (total === 6 || total === 8) {
+    const sent = new Set(steps.map((s) => s.step));
+    STEP_NAMES.slice(0, total).forEach((name, i) => {
+      if (!sent.has(name))
+        rows.push({ step: name, index: i + 1, label: STEP_LABELS[name], state: live(j.status) ? 'waiting' : 'notrun', pct: null, detail: null });
+    });
+    rows.sort((a, b) => a.index - b.index);
+  }
+  return rows;
+}
+
+/**
+ * The analysis whose steps the Moments column shows: this project's running one, or, while it is
+ * still the latest job, one that failed or was cancelled (a completed one gives way to its moments).
+ * Null when it sent no steps (a CLI without PROGRESS lines).
+ */
+function stepsJob() {
+  const j = S.active ?? S.jobs[S.jobs.length - 1];
+  if (!S.id || j?.project_id !== S.id || j.action !== 'analyze' || j.status === 'completed') return null;
+  return j.progress?.steps?.length ? j : null;
+}
+
+/** One step row: an icon (decorative), the label, its state in words, pct (running only) and detail when sent. */
+function stepRow(s) {
+  const running = s.state === 'running';
+  const pct = running && s.pct != null ? Math.round(s.pct) : null;
+  return h('li', { class: 'step', 'data-state': s.state },
+    running ? h('span', { class: 'step-icon spin', 'aria-hidden': 'true' })
+      : h('span', { class: 'step-icon', 'aria-hidden': 'true', text: STEP_ICON[s.state] ?? '•' }),
+    h('span', { class: 'step-label', text: s.label }),
+    h('span', { class: 'step-state', text: `${STEP_TEXT[s.state] ?? s.state}${pct == null ? '' : ` ${pct}%`}` }),
+    s.detail ? h('span', { class: 'step-detail', text: s.detail }) : null,
+    running ? (pct == null
+      ? h('div', { class: 'indeterminate step-bar', 'aria-hidden': 'true' })
+      : h('div', { class: 'step-bar', 'aria-hidden': 'true' }, h('span', { style: `width:${pct}%` })))
+      : null,
+  );
+}
+
+/**
+ * Fill the steps box under "Analyze footage" (before analysis) or under the Moments header
+ * ("Analyze again"). Rebuilt only when a step changed; it holds nothing focusable, so polling
+ * never moves focus. The status line announces state changes, not every percent tick.
+ */
+function renderSteps() {
+  const fresh = $('#freshSteps');
+  const box = fresh ?? $('#analyzeSteps');
+  if (fresh) $('#analyzeSteps').hidden = true;
+  const j = stepsJob();
+  box.hidden = !j;
+  if (!j) {
+    box.replaceChildren();
+    delete box.dataset.key;
+    return;
+  }
+  const { total } = j.progress;
+  const steps = stepRows(j);
+  const sig = JSON.stringify([j.id, total, steps]);
+  if (box.dataset.key === sig) return;
+  box.dataset.key = sig;
+  // Announce the steps whose state changed since the last render of this job; not the
+  // placeholders ("waiting", "not run"), which the list itself shows.
+  const seen = S.stepStates?.job === j.id ? S.stepStates.states : {};
+  const sent = steps.filter((s) => s.state !== 'waiting' && s.state !== 'notrun');
+  const changed = sent.filter((s) => seen[s.step] !== s.state);
+  S.stepStates = { job: j.id, states: Object.fromEntries(sent.map((s) => [s.step, s.state])) };
+  const finished = steps.filter((s) => s.state === 'done' || s.state === 'skipped').length;
+  const head = total ? `Analysis steps: ${finished} of ${total} finished` : 'Analysis steps';
+  if (changed.length) // a sibling of the box, never hidden or rebuilt, so screen readers hear each change
+    $(`#${box.id}Status`).textContent = changed
+      .map((s) => `${s.label}: ${(STEP_TEXT[s.state] ?? s.state).toLowerCase()}${s.state !== 'running' && s.detail ? `, ${s.detail}` : ''}`)
+      .join('. ');
+  box.replaceChildren(
+    h('p', { class: 'steps-head', id: `${box.id}Head`, text: head }),
+    h('ol', { class: 'step-list', 'aria-labelledby': `${box.id}Head` }, ...steps.map(stepRow)),
+  );
 }
 
 function renderOutputs() {

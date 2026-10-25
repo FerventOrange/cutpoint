@@ -41,6 +41,7 @@ import contextlib
 import errno
 import hashlib
 import importlib.util
+import json
 import logging
 import math
 import mimetypes
@@ -115,6 +116,10 @@ FINAL_EXTS = (".mp4", ".fcpxml", ".otio", ".srt", ".ass")
 # and ``edit``'s <name>-final.mp4 / <name>-final_vertical.mp4. Partial and staging files start
 # with "." and never match.
 FINAL_VIDEO = re.compile(r"(?:[^.].*-)?final(?:_.*)?\.mp4")
+# A step update the CLI writes when CUTPOINT_PROGRESS=1 (``spawn`` sets it), bare or after a
+# ``HH:MM:SS LEVEL`` log prefix: ``PROGRESS {"step": ..., "index": ..., "state": ...}``.
+PROGRESS_LINE = re.compile(r"(?:\d{1,2}:\d{2}:\d{2}\s+[A-Z]+\s+)?PROGRESS\s+(\{.*\})")
+STEP_STATES = {"running", "done", "skipped", "failed"}
 FRAME_WIDTH = 160  # default still width (px) for sequence thumbnails
 FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
@@ -151,7 +156,14 @@ def spawn(args: list[str]) -> subprocess.Popen[str]:
         text=True,
         encoding="utf-8",
         errors="replace",
-        env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
+        # CUTPOINT_PROGRESS: analyze and edit write PROGRESS step lines (``parse_progress``); the
+        # other commands and ffmpeg ignore it.
+        env={
+            **os.environ,
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "CUTPOINT_PROGRESS": "1",
+        },
         **group,
     )
     if os.name == "nt":
@@ -529,6 +541,43 @@ def check_projects_dir(value: Any) -> tuple[Path, bool]:
 
 
 # --------------------------------------------------------------------------- jobs
+def parse_progress(line: str) -> dict[str, Any] | None:
+    """The step update a ``PROGRESS {...}`` output line carries, or None for any other line.
+
+    A line that starts like one but is not a valid update (bad JSON, missing or wrong fields) is
+    None as well, so it stays in the log as text.
+    """
+    m = PROGRESS_LINE.fullmatch(line.strip())
+    if not m:
+        return None
+    try:
+        raw = json.loads(m.group(1))
+    except ValueError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    step, index, label, state = (raw.get(k) for k in ("step", "index", "label", "state"))
+    total, pct, detail = raw.get("total"), raw.get("pct"), raw.get("detail")
+    if (
+        not isinstance(step, str)
+        or not step
+        or not isinstance(index, int)
+        or isinstance(index, bool)
+        or state not in STEP_STATES
+    ):
+        return None
+    number = isinstance(pct, (int, float)) and not isinstance(pct, bool) and math.isfinite(pct)
+    return {
+        "step": step,
+        "index": index,
+        "total": total if isinstance(total, int) and not isinstance(total, bool) else None,
+        "label": label if isinstance(label, str) and label else step,
+        "state": state,
+        "pct": min(100.0, max(0.0, float(pct))) if number else None,
+        "detail": detail if isinstance(detail, str) and detail else None,
+    }
+
+
 class Job:
     """One child process and what it said."""
 
@@ -538,13 +587,36 @@ class Job:
         self.action = action
         self.status = "running"
         self.logs: deque[str] = deque(maxlen=MAX_LOG_LINES)
+        # Latest update per step (``parse_progress``), keyed by step: the CLI's PROGRESS lines.
+        self.steps: dict[str, dict[str, Any]] = {}
+        self.steps_total: int | None = None
         self.error: str | None = None
         self.started = datetime.now().isoformat(timespec="seconds")
         self.proc: subprocess.Popen[str] | None = None
         self.cancelled = False
         self.done = threading.Event()
 
+    def add_output(self, line: str) -> None:
+        """One output line: a step update goes to the steps, any other text to the log."""
+        step = parse_progress(line)
+        if step is None:
+            if line.strip():
+                self.logs.append(line.rstrip())
+            return
+        total = step.pop("total")
+        if total is not None:
+            self.steps_total = total
+        self.steps[step["step"]] = step  # replaced, never changed in place: ``view`` copies it
+
+    def interrupt_steps(self) -> None:
+        """The job failed or was stopped: a step still running will not finish."""
+        for name, step in list(self.steps.items()):
+            if step["state"] == "running":
+                self.steps[name] = {**step, "state": "interrupted"}
+
     def view(self) -> dict[str, Any]:
+        # Ordered by the CLI's step index; a step sent again later keeps its place.
+        steps = sorted(self.steps.values(), key=lambda s: s["index"])
         out: dict[str, Any] = {
             "id": self.id,
             "project_id": self.project_id,
@@ -552,6 +624,7 @@ class Job:
             # Cancelled but the watcher has not seen the exit yet (Windows can lag a poll or two).
             "status": "cancelling" if self.cancelled and self.status == "running" else self.status,
             "logs": list(self.logs),
+            "progress": {"total": self.steps_total, "steps": steps},
             "started": self.started,
         }
         if self.error:
@@ -599,9 +672,10 @@ class Jobs:
         assert proc is not None and proc.stdout is not None
         try:
             for line in proc.stdout:
-                if line.strip():
-                    job.logs.append(line.rstrip())
+                job.add_output(line)
             code = proc.wait()
+            if job.cancelled or code != 0:
+                job.interrupt_steps()
             if job.cancelled:
                 job.status = "cancelled"
             elif code != 0:
