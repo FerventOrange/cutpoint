@@ -375,8 +375,8 @@ Measured on 1080p gaming footage (RTX 3080 10 GB), rounded:
 | CPU only, one 10 min file, discovery done | about 5.7 min | `transcribe` 2 min, `reactions` 16 s, `keyframes` 3.4 min (OCR on the CPU) | |
 | CPU only, 60 s action clip | 25 s | `keyframes` skipped with "no CUDA GPU (CLIP on the CPU: about an hour per hour)" | |
 
-`keyframes` dominates first runs. HUD discovery runs once per game, and the `keyframes` bar
-reports no percentage while it runs. The CLIP layer is skipped without a CUDA GPU because on the
+`keyframes` dominates first runs. HUD discovery runs once per game and fills the first half of the
+`keyframes` bar ("discovering HUD: n/N frames"). The CLIP layer is skipped without a CUDA GPU because on the
 CPU it would take about an hour per hour of footage.
 
 To force a CPU run, set `CUDA_VISIBLE_DEVICES=-1`; an empty value does not hide the GPU on

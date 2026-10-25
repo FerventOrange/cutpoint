@@ -1249,22 +1249,76 @@ def menu_times(frames: list[dict[str, Any]], params: DiscoverParams | None = Non
     when they cover the screen centre (``menu_cover``) or at least
     :data:`LIST_MENU_COVER` of it (a 1- or 2-column list or scoreboard).
     """
+    rules, _ = menu_rules(frames, params)
+    return {f["t"] for f in frames if rules[f["id"]] != "none"}
+
+
+def menu_rules(
+    frames: list[dict[str, Any]], params: DiscoverParams | None = None
+) -> tuple[dict[Any, str], dict[str, float]]:
+    """The :func:`menu_times` decision per frame id: the rule that made it a menu
+    (``cover``, ``jump`` or ``list``) or ``none``, and the source's numbers
+    (``median`` box count, ``min_boxes``, ``cover`` and ``jump`` thresholds; the
+    jump threshold is inf when it is off)."""
     params = params or DiscoverParams()
     median = float(np.median([len(f["boxes"]) for f in frames])) if frames else 0.0
     lists = median < params.menu_min_boxes / params.menu_jump
     if lists:
         params = replace(params, menu_jump=float("inf"))
     keep = {f["id"] for f in gameplay_frames(frames, params)}
-    return {
-        f["t"]
-        for f in frames
-        if f["id"] not in keep
-        or (
+    rules = {}
+    for f in frames:
+        if f["id"] not in keep:
+            rules[f["id"]] = "cover" if _centre_cover(f) >= params.menu_cover else "jump"
+        elif (
             lists
             and len(f["boxes"]) >= params.menu_min_boxes
             and _centre_cover(f) >= LIST_MENU_COVER
-        )
+        ):
+            rules[f["id"]] = "list"
+        else:
+            rules[f["id"]] = "none"
+    info = {
+        "median": median,
+        "min_boxes": params.menu_min_boxes,
+        "cover": LIST_MENU_COVER if lists else params.menu_cover,
+        "jump": float("inf") if lists else params.menu_jump * median,
     }
+    return rules, info
+
+
+def _log_menu_frames(
+    name: str,
+    frames: list[dict[str, Any]],
+    rules: dict[Any, str],
+    info: dict[str, float],
+    events: list[dict[str, Any]],
+) -> None:
+    """One DEBUG line per frame that is a menu or has an OCR sighting: its numbers and
+    the rule that fired, no OCR text (logs get shared)."""
+    seen: dict[float, int] = {}
+    for e in events:
+        for t in e["_times"]:
+            seen[t] = seen.get(t, 0) + 1
+    jump = "off" if info["jump"] == float("inf") else f">= {info['jump']:.0f}"
+    for f in frames:
+        rule, n = rules[f["id"]], seen.get(f["t"], 0)
+        if rule == "none" and not n:
+            continue
+        logger.debug(
+            "%s menu test %.1fs: %d boxes (min %d), centre cover %.2f (>= %.2f), "
+            "median %.1f, jump %s, %d OCR events -> %s",
+            name,
+            f["t"],
+            len(f["boxes"]),
+            info["min_boxes"],
+            _centre_cover(f),
+            info["cover"],
+            info["median"],
+            jump,
+            n,
+            rule,
+        )
 
 
 def detect_ocr_events(
@@ -1505,7 +1559,10 @@ def detect_ocr_events(
     stats["decoded_s"] = round(stats["frames"] / params.fps, 1)
     stats["elapsed_s"] = round(time.perf_counter() - t_start, 2)
     if menus:
-        menu = menu_times(frame_boxes)
+        rules, info = menu_rules(frame_boxes)
+        if logger.isEnabledFor(logging.DEBUG):
+            _log_menu_frames(src.name, frame_boxes, rules, info, interp.tracker.events)
+        menu = {f["t"] for f in frame_boxes if rules[f["id"]] != "none"}
         interp.tracker.drop_sightings(menu)
         stats["menu_frames"] = len(menu)
     events = interp.tracker.finish()

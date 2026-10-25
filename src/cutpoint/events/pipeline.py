@@ -61,6 +61,10 @@ LAYERS = ("audio", "voice", "visual", "crash", "ocr", "vlm")
 # Layers run by default; voice/visual/crash feed ski features (other styles opt in).
 DEFAULT_LAYERS = ("audio", "ocr", "vlm")
 SKI_LAYERS = ("audio", "voice", "visual", "crash", "vlm")
+# Share (percent) of the OCR step's progress HUD discovery takes when it runs; the
+# per-source OCR takes the rest. Measured first runs: discovery was about 4 of 7 min of
+# OCR on a 7 min file and 7 of 14 min on two 10 min files.
+DISCOVERY_PCT = 50.0
 
 
 def _require_events_extra(layers: tuple[str, ...]) -> None:
@@ -261,11 +265,14 @@ def run_events(
     t0 = time.perf_counter()
     ocr.project = project
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
+        base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
             stats["discovery"] = _discover(
                 project, sources, ocr, discover, discover_bursts, preset_scope
             )
             timings["discovery_s"] = round(time.perf_counter() - t0, 1)
+            if stats["discovery"]:
+                base = DISCOVERY_PCT
         engine = OcrEngine() if "ocr" in layers else None
         if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
             logger.warning(
@@ -279,7 +286,10 @@ def run_events(
             ocr_sources = sources if "ocr" in layers or cached_ocr else []  # ski: no HUD
             for i, s in enumerate(ocr_sources):
                 if "ocr" in layers:  # a cached read only is no step of its own
-                    progress.update(progress.fraction(i, len(ocr_sources)))
+                    progress.update(
+                        base + (100 - base) * progress.fraction(i, len(ocr_sources)) / 100,
+                        f"reading HUD text: source {i + 1}/{len(ocr_sources)}" if base else None,
+                    )
                 evs, st = detect_ocr_events(
                     s,
                     ocr,
@@ -519,16 +529,17 @@ def _discover(
     by_game: dict[str, list[Any]] = {}
     for s in sources:
         by_game.setdefault(game_key_for_path(str(s.path), ocr.game, project), []).append(s)
-    out: dict[str, Any] = {}
+    todo = []  # the games discovery runs for, with their existing preset
     for game, srcs in by_game.items():
         existing = load_preset(game, project)
-        if existing is not None and not force:
-            continue
+        if existing is None or force:
+            todo.append((game, srcs, existing))
+    out: dict[str, Any] = {}
+    for gi, (game, srcs, existing) in enumerate(todo):
+        name = "this game" if game == "game" else game
+        first = "" if existing is not None else f"first run for {name}: "
         if existing is None:
-            progress.update(
-                detail=f"first run for {'this game' if game == 'game' else game}: "
-                "discovering HUD regions"
-            )
+            progress.update(detail=f"{first}discovering HUD regions")
             logger.info(
                 "No HUD preset matches %s; discovering regions as %r (a few minutes). "
                 "Put a preset in %s and pass --game, or --no-discover to skip",
@@ -536,9 +547,19 @@ def _discover(
                 game,
                 cutpoint_paths.presets_dir(),
             )
+
+        def on_frame(done: int, total: int, gi: int = gi, first: str = first) -> None:
+            # the first DISCOVERY_PCT of the step, an equal part per game
+            share = (gi + progress.fraction(done, total) / 100) / len(todo)
+            progress.update(DISCOVERY_PCT * share, f"{first}discovering HUD: {done}/{total} frames")
+
         t0 = time.perf_counter()
         proposal = discover_regions(
-            srcs, project / "discovery" / game, game, DiscoverParams(bursts=bursts)
+            srcs,
+            project / "discovery" / game,
+            game,
+            DiscoverParams(bursts=bursts),
+            on_frame=on_frame,
         )
         rec: dict[str, Any] = {
             "proposal": str(project / "discovery" / game / "proposal.json"),

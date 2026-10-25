@@ -226,11 +226,16 @@ may be part of a longer line or sentence: words OCR joined are split ("blockedSh
 "blocked Shield Saver"), and numbers, timestamps, gamertags and your player tags are cut out.
 Matching ignores case and spaces, so a phrase also finds text OCR read without spaces
 ("Hullbreached" for "Hull breached"), but only whole words: a phrase is not found inside a longer
-word. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
+word. Static hint lines (tutorial and control hints) are left out: a text found in at least 25%
+of a recording's sampled gameplay frames whose sightings span at least half of the sampled time
+(tested for recordings with at least 8 sampled bursts). An event banner shows for a few seconds
+per event, far below that share; text in at least half of all gameplay frames is a static label
+and left out too. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
 far more text than the recording usually shows), so a busy game HUD is not mistaken for a menu.
 With a JSON preset, the OCR layer applies the same test to the text it detects in the preset's
 regions other than feeds (a full kill feed is no menu) and drops what menu frames show. A discovered kill feed takes in the rows above and below
-it that show only when the feed is full (up to twice its height).
+it that show only when the feed is full (up to twice its height), counted from its outermost
+rows seen in enough frames, so a stray box at its edge does not stop the growth.
 
 ### Event types and prompt keys
 

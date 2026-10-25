@@ -33,10 +33,12 @@ and edited.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from itertools import pairwise
@@ -165,14 +167,21 @@ def boxes_in(
 
 
 def _ocr_frames(
-    bursts: list[tuple[Source, float]], params: DiscoverParams, frame_dir: Path, cache_path: Path
+    bursts: list[tuple[Source, float]],
+    params: DiscoverParams,
+    frame_dir: Path,
+    cache_path: Path,
+    on_frame: Callable[[int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
-    """OCR every burst frame (cached in ``cache_path`` as JSON lines)."""
+    """OCR every burst frame (cached in ``cache_path`` as JSON lines); ``on_frame`` is
+    called with (frames done, frames planned) after each frame and each burst."""
     import cv2  # noqa: PLC0415
 
     from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
 
     done = {rec["id"]: rec for rec in read_ocr_samples(cache_path)}
+    total = len(bursts) * params.burst_frames
+    report = on_frame or (lambda _done, _total: None)
     engine = None
     out: list[dict[str, Any]] = []
     fh = None
@@ -185,6 +194,7 @@ def _ocr_frames(
             ]
             if all(i in done for i in ids):
                 out += [done[i] for i in ids]
+                report((bi + 1) * params.burst_frames, total)
                 continue
             frames = _burst_frames(
                 src.io_path, t, params.burst_frames, params.burst_step_s, params.width
@@ -228,6 +238,8 @@ def _ocr_frames(
                 fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 fh.flush()
                 out.append(rec)
+                report(bi * params.burst_frames + k + 1, total)
+            report((bi + 1) * params.burst_frames, total)  # a short burst counts as done
             if (bi + 1) % 10 == 0:
                 logger.info("  discovery OCR: %d/%d bursts", bi + 1, len(bursts))
     return out
@@ -327,12 +339,14 @@ def _grow_feed(
 
     Rows are text boxes centred in the feed's x-span, 0.5 to 2 times its median
     text height ``med_h``. The row pitch is the median gap between adjacent
-    rows of a frame inside the feed. One pitch past the top (bottom) row a row
-    is added when its boxes (centre within a third of a pitch) show in at
+    rows of a frame inside the feed. The feed's top (bottom) row is the outermost
+    row inside it with the support a grown row needs (:func:`_outer_row`), so a
+    stray box near the edge does not set it. One pitch past the top (bottom) row
+    a row is added when its boxes (centre within a third of a pitch) show in at
     least :data:`FEED_GROW_SHARE` of the ``n_feed`` frames with feed text and in
     :data:`FEED_GROW_BURSTS` bursts and their texts vary
     (:data:`FEED_GROW_VARIETY`); growth stops at :data:`FEED_GROW_MAX` times
-    the height.
+    the height. One DEBUG line says why it stopped in each direction.
 
     Returns:
         (y0, y1, rows added).
@@ -350,33 +364,84 @@ def _grow_feed(
                     cys.append(cy)
         cys.sort()
         gaps += [b - a for a, b in pairwise(cys) if 0.5 * med_h < b - a < 3 * med_h]
+    where = f"feed {x0},{y0} {x1 - x0}x{y1 - y0}"
     if not gaps:
+        logger.debug("Feed growth %s: no two rows in one frame, no pitch; 0 rows added", where)
         return y0, y1, 0
     pitch = float(np.median(gaps))
-    inner = [cy for _, _, cy, _ in rows if y0 <= cy <= y1]
-    top, bottom = min(inner), max(inner)
-    limit = FEED_GROW_MAX * (y1 - y0)
     need = max(2.0, FEED_GROW_SHARE * n_feed)
+    inner = sorted((cy, fid) for fid, _, cy, _ in rows if y0 <= cy <= y1)
+    top, bottom = _outer_row(inner, pitch, need, -1), _outer_row(inner, pitch, need, 1)
+    limit = FEED_GROW_MAX * (y1 - y0)
     ends = {-1: (top, y0), 1: (bottom, y1)}  # direction -> (outer row centre, edge)
     added = 0
+    why: dict[int, str] = {}
     for d in (-1, 1):
         while True:
             centre = ends[d][0] + d * pitch
             band = [row for row in rows if abs(row[2] - centre) <= pitch / 3]
             edge = centre + d * pitch / 2
-            other = ends[-d][1]
-            if (
-                abs(edge - other) > limit
-                or not 0 <= edge <= REF_H
-                or len({fid for fid, _, _, _ in band}) < need
-                or len({bk for _, bk, _, _ in band}) < FEED_GROW_BURSTS
-                or _label_variety([t for _, _, _, t in band]) < FEED_GROW_VARIETY
-            ):
+            n_frames = len({fid for fid, _, _, _ in band})
+            n_bursts = len({bk for _, bk, _, _ in band})
+            variety = _label_variety([t for _, _, _, t in band])
+            checks = (
+                ("limit", abs(edge - ends[-d][1]) > limit),
+                ("screen edge", not 0 <= edge <= REF_H),
+                ("frames", n_frames < need),
+                ("bursts", n_bursts < FEED_GROW_BURSTS),
+                ("variety", variety < FEED_GROW_VARIETY),
+            )
+            stop = next((name for name, hit in checks if hit), None)
+            if stop is not None:
+                why[d] = (
+                    f"row at y {centre:.0f}: {n_frames} frames, {n_bursts} bursts, "
+                    f"variety {variety:.2f}, stop: {stop}"
+                )
                 break
             centre = float(np.median([cy for _, _, cy, _ in band]))
             ends[d] = (centre, round(centre + d * pitch / 2))
             added += 1
+    if logger.isEnabledFor(logging.DEBUG):
+        # a frame shows the full feed when it has a row at every pitch from top to bottom
+        slots = round((bottom - top) / pitch) + 1
+        per_frame: dict[str, set[int]] = {}
+        for cy, fid in inner:
+            per_frame.setdefault(fid, set()).add(round((cy - top) / pitch))
+        full = sum(len(s & set(range(slots))) >= slots for s in per_frame.values())
+        logger.debug(
+            "Feed growth %s: pitch %.1f px, %d rows, full in %d/%d frames; a row needs "
+            "%.0f frames, %d bursts, variety %.2f; above: %s; below: %s; %d rows added",
+            where,
+            pitch,
+            slots,
+            full,
+            n_feed,
+            need,
+            FEED_GROW_BURSTS,
+            FEED_GROW_VARIETY,
+            why[-1],
+            why[1],
+            added,
+        )
     return min(y0, int(ends[-1][1])), max(y1, int(ends[1][1])), added
+
+
+def _outer_row(inner: list[tuple[float, str]], pitch: float, need: float, d: int) -> float:
+    """Centre of the top (``d`` = -1) or bottom (1) row of ``inner`` (``(centre y,
+    frame)`` sorted by y): the first row from that end whose boxes within a third of a
+    pitch show in ``need`` frames, re-centred on their median. Falls back to the
+    outermost box when no row has the support."""
+    cys = [cy for cy, _ in inner]
+    order = range(len(cys)) if d == -1 else range(len(cys) - 1, -1, -1)
+    for i in order:
+        lo = bisect.bisect_left(cys, cys[i] - pitch / 3)
+        hi = bisect.bisect_right(cys, cys[i] + pitch / 3)
+        if len({fid for _, fid in inner[lo:hi]}) >= need:
+            c = float(np.median(cys[lo:hi]))
+            lo = bisect.bisect_left(cys, c - pitch / 3)
+            hi = bisect.bisect_right(cys, c + pitch / 3)
+            return float(np.median(cys[lo:hi]))
+    return cys[0] if d == -1 else cys[-1]
 
 
 def _banner_proposal(frames: list[dict[str, Any]], min_h: float) -> dict[str, Any] | None:
@@ -656,7 +721,11 @@ def write_overlay(
 
 
 def discover_regions(
-    sources: list[Source], out_dir: Path, game: str, params: DiscoverParams | None = None
+    sources: list[Source],
+    out_dir: Path,
+    game: str,
+    params: DiscoverParams | None = None,
+    on_frame: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -666,6 +735,8 @@ def discover_regions(
             ``proposal.json`` (usually ``<project>/discovery/<game>``).
         game: Preset key the proposal is for.
         params: Sampling / clustering parameters.
+        on_frame: Called with (frames OCR'd or read from the cache, frames planned)
+            as the sampling goes on.
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
@@ -683,7 +754,7 @@ def discover_regions(
         params.burst_frames,
         len(sources),
     )
-    frames = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl")
+    frames = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", on_frame)
     proposals, maps = cluster_regions(frames, params)
     regions = proposals_to_regions(proposals)
     info = probe(sources[0].io_path) if sources else None

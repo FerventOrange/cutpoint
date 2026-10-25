@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +18,7 @@ from cutpoint.events.killfeed import (
     FeedParser,
     OcrParams,
     detect_ocr_events,
+    menu_rules,
     menu_times,
 )
 from cutpoint.events.regions import preset_from_dict
@@ -120,6 +123,39 @@ def test_menu_frames_give_no_events(tmp_path: Path, monkeypatch) -> None:
     assert _run(tmp_path, monkeypatch, None) == (events, stats)
 
 
+def test_menu_and_event_frames_are_logged_at_debug(tmp_path: Path, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.killfeed")
+    _run(tmp_path, monkeypatch, _Engine())
+    lines = [r.getMessage() for r in caplog.records if " menu test " in r.getMessage()]
+    menus = [x for x in lines if not x.endswith("-> none")]
+    assert len(menus) == 30  # the menu frames, 20-30 s at 3 fps
+    assert re.fullmatch(
+        r"rec\.mp4 menu test 20\.0s: \d+ boxes \(min 24\), centre cover 0\.\d\d \(>= 0\.25\), "
+        r"median 1\.0, jump off, \d+ OCR events -> cover",
+        menus[0],
+    )
+    events = [x for x in lines if x.endswith("-> none")]
+    assert events and all(" 0 OCR events" not in x for x in events)  # frames with sightings
+    assert any(x.startswith("rec.mp4 menu test 5.0s: 2 boxes (min 24)") for x in events)
+    texts = ("Squad", "Hull", "Option", "Hold")
+    assert not [x for x in lines if any(t in x for t in texts)]  # no OCR text
+
+
+def test_menu_rules_name_the_rule() -> None:
+    def frame(n: int, boxes: int, spread: bool) -> dict[str, Any]:
+        pos = [
+            (300 + 240 * (i % 6), 200 + 130 * (i // 6)) if spread else (20, 30 * i)
+            for i in range(boxes)
+        ]
+        edge = [{"x0": x, "y0": y, "x1": x + 60, "y1": y + 20} for x, y in pos]
+        return {"id": n, "t": n / 3, "source": "rec.mp4", "boxes": edge}
+
+    frames = [frame(n, 30, False) for n in range(10)] + [frame(10, 30, True), frame(11, 70, False)]
+    rules, info = menu_rules(frames)
+    assert [rules[n] for n in range(12)] == ["none"] * 10 + ["cover", "jump"]
+    assert info == {"median": 30.0, "min_boxes": 24, "cover": 0.5, "jump": 60.0}
+
+
 def test_menu_rule_changes_the_cache_key() -> None:
     preset = preset_from_dict(_preset())
     assert GENERIC_VERSION >= 7
@@ -159,6 +195,8 @@ def test_list_menu_with_a_quiet_median() -> None:
     ]
     frames = [frame(n, _screen(n / 3 + 40)) for n in range(20)] + [frame(20, listed)]
     assert menu_times(frames) == {20 / 3}
+    rules, info = menu_rules(frames)
+    assert rules[20] == "list" and info["jump"] == float("inf")
 
 
 def test_box_jump_needs_a_busy_median() -> None:
@@ -169,6 +207,8 @@ def test_box_jump_needs_a_busy_median() -> None:
     # region boxes are few: 30 boxes along an edge are no jump over a median of 4
     frames = [frame(n, 2 + n % 5) for n in range(20)] + [frame(20, 30)]
     assert menu_times(frames) == set()
+    # a quiet HUD (median 0): the jump is off, not inf x 0
+    assert menu_rules([frame(n, 0) for n in range(5)])[1]["jump"] == float("inf")
 
 
 def test_full_feed_is_no_menu(tmp_path: Path, monkeypatch) -> None:
