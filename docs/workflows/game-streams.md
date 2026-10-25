@@ -16,6 +16,10 @@ Set `player_tags` in [`config.json`](../configuration.md#player_tags) once inste
 `--player` every time. Your own deaths are told apart from your kills only when your name is set
 this way; without it no event counts as yours.
 
+With `--style funny`, a moment where you die and someone reacts (laughter, a scream, or speech
+after a pause, within 6 s) gets +8 points, so a friend's warning after the fact ranks higher.
+This needs your name set, as above; other styles are unchanged.
+
 ## What `events` adds
 
 | Layer | Detects |
