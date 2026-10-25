@@ -69,9 +69,11 @@ few small corner regions see too little of the screen.
 With `cutpoint -v`, the OCR layer logs one line per frame that is a menu or has an OCR event:
 the time, the box count of the regions other than feeds, the centre cover, the recording's
 median box count, the thresholds (cover, list, jump), how long the screen held still and the
-rule that decided (`cover`, `jump`, `list`, `static` or `none`). Discovery logs why a kill feed stopped growing (`Feed growth ...`: the row pitch, the
-frames with a full feed, and the frames, bursts and label variety of the next row above and
-below). These lines hold no OCR text, so they can be shared when tuning a preset.
+rule that decided (`cover`, `jump`, `list`, `static` or `none`). Discovery logs how a kill feed grew (`Feed growth ...`: the row pitch, the frames with
+a full feed, what a row needs, and above and below every row tried, with its frames (how many
+with a full feed), bursts, label variety and sighting variety, ending in `ok: frames` (seen in
+enough frames), `ok: varied` (fewer frames, but a different text per burst while the feed is
+full) or `stop: <reason>` (`limit`, `screen edge`, `frames`, `bursts` or `variety`)). These lines hold no OCR text, so they can be shared when tuning a preset.
 Force or skip it with `--discover-regions` and `--no-discover`.
 
 A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`; optional `gate`: `mask` (default, a HUD colour mask) or `det` (text detection, works for any game); optional `every`),

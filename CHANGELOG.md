@@ -262,6 +262,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A discovered kill feed grows by rows seen in fewer frames. A full feed is rare (4 of 59 frames
+  in a 10-minute match), so its oldest rows showed in too few frames (a row needed 5% of the
+  feed's frames) and a 6-row feed stopped at its common rows. A row seen in 2 or more frames is
+  now added when it shows in 2 bursts, with a different text per burst (sighting variety 0.75 or
+  more, ignoring case, digits, punctuation and box order, so a static label is not added), and at
+  least half of its frames show the full feed (the feed's row next to it and all others but one;
+  so a notice or chat line next to the feed is not added); the
+  burst minimum, the twice-the-height limit and the screen-edge stop are unchanged. With `-v`,
+  the feed growth line lists every row tried, with its full-feed frames and sighting variety,
+  ending in `ok: frames`, `ok: varied` or `stop: <reason>`. An installed discovered preset is
+  kept: run `cutpoint events <project> --discover-regions` (it reuses the cached discovery OCR)
+  and copy the new `proposal.json` over the preset, or delete the preset so the next run
+  installs a new one.
 - HUD region discovery no longer drops every frame of a game with a busy HUD as a menu. A frame
   counted as a menu or scoreboard above 28 text boxes; busy HUDs show 50 to 100 in every frame.
   Now a frame with at least 24 boxes is a menu when their centres fill at least half of the

@@ -81,8 +81,10 @@ def test_growth_is_bounded() -> None:
     assert feed["h"] <= FEED_GROW_MAX * plain["h"]
 
 
-def test_split_rows_count_frames_not_boxes() -> None:
-    # the rare rows are split into 3 boxes each (9 boxes) but show in only 3 frames
+def test_split_rows_count_frames_not_boxes(caplog: pytest.LogCaptureFixture) -> None:
+    # the rare rows are split into 3 boxes each (9 boxes) but show in only 3 frames, below
+    # the 8 a row needs (5% of 160): they join as varied rows, not on their box count
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
     frames = _frames(6, 3, set())
     for f in frames:
         if f["burst"] in (0, 13, 26) and f["k"] == 0:
@@ -94,8 +96,14 @@ def test_split_rows_count_frames_not_boxes() -> None:
                         _row(r, f["burst"], 0)["text"].split(), (1500, 1560, 1620), strict=True
                     )
                 ]
-    feed = _feed(frames)
-    assert feed["evidence"]["grown_rows"] == 0
+    _feed(frames)
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Feed growth"))
+    assert "a row needs 8 frames" in line
+    assert (
+        "above: row at y 110: 3 frames (3 full), 3 bursts, variety 0.78, sighting variety 1.00, "
+        "ok: varied"
+    ) in line
+    assert "ok: frames" not in line
 
 
 def test_a_stray_box_at_the_feed_edge_does_not_stop_growth() -> None:
@@ -115,6 +123,148 @@ def test_growth_logs_why_it_stopped(caplog: pytest.LogCaptureFixture) -> None:
     assert len(lines) == 1
     line = lines[0]
     assert "pitch 30.0 px, 3 rows, full in 160/160 frames" in line
-    assert "above: row at y 110: 0 frames, 0 bursts, variety 0.00, stop: frames" in line
+    assert (
+        "above: row at y 110: 0 frames (0 full), 0 bursts, variety 0.00, sighting variety 0.00, "
+        "stop: frames"
+    ) in line
     assert "below: row at y 230: 0 frames" in line and line.endswith("; 0 rows added")
     assert not any(n in line for n in NAMES)  # no OCR text in the log
+
+
+def _two_frame_row(frames: list[dict], texts: tuple[str, str], bursts: tuple[int, int]) -> None:
+    """Add a row one pitch above a 3-row feed (rows at y 40 + 3 pitches and below) in
+    frame 0 of each of ``bursts`` with ``texts``."""
+    for f in frames:
+        if f["k"] == 0 and f["burst"] in bursts:
+            f["boxes"].append(_box(texts[bursts.index(f["burst"])], 1500, 40 + 2 * PITCH))
+
+
+def test_a_varied_row_in_two_frames_of_two_bursts_is_added(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 2 frames of 160 (a row needs 8): a full feed is rare, distinct texts admit the row
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
+    frames = _frames(6, 3, set())
+    _two_frame_row(frames, ("Ash downed Kip", "Nova downed Wren"), (5, 21))
+    feed = _feed(frames)
+    assert feed["evidence"]["grown_rows"] == 1
+    assert feed["y"] <= 40 + 2 * PITCH
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Feed growth"))
+    assert (
+        "above: row at y 110: 2 frames (2 full), 2 bursts, variety 1.00, sighting variety 1.00, "
+        "ok: varied | "
+    ) in line
+
+
+def test_a_static_label_in_two_frames_is_not_added(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
+    frames = _frames(6, 3, set())
+    _two_frame_row(frames, ("RELOAD", "RELOAD"), (5, 21))
+    assert _feed(frames)["evidence"]["grown_rows"] == 0
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Feed growth"))
+    assert (
+        "above: row at y 110: 2 frames (2 full), 2 bursts, variety 0.50, sighting variety 0.50, "
+        "stop: frames"
+    ) in line
+
+
+def test_a_varied_row_in_two_frames_of_one_burst_is_not_added(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
+    frames = _frames(6, 3, set())
+    for f in frames:
+        if f["burst"] == 5 and f["k"] in (0, 1):
+            f["boxes"].append(_box(f"{NAMES[f['k']]} downed Kip", 1500, 40 + 2 * PITCH))
+    assert _feed(frames)["evidence"]["grown_rows"] == 0
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Feed growth"))
+    assert (
+        "above: row at y 110: 2 frames (2 full), 1 bursts, variety 1.00, sighting variety 1.00, "
+        "stop: bursts"
+    ) in line
+
+
+def _feed_line(caplog: pytest.LogCaptureFixture) -> str:
+    return next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Feed growth"))
+
+
+def test_a_row_that_stays_for_two_frames_of_two_bursts_is_added(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # a real row stays while the feed is full: the same text in frames 0 and 1 of a burst
+    # (label variety 0.50 per box; one distinct text per burst)
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
+    frames = _frames(6, 3, set())
+    texts = {5: "Ash downed Kip", 21: "Nova downed Wren"}
+    for f in frames:
+        if f["burst"] in texts and f["k"] in (0, 1):
+            f["boxes"].append(_box(texts[f["burst"]], 1500, 40 + 2 * PITCH))
+    assert _feed(frames)["evidence"]["grown_rows"] == 1
+    line = _feed_line(caplog)
+    assert "4 frames (4 full), 2 bursts, variety 0.50, sighting variety 1.00, ok: varied" in line
+
+
+def test_split_rows_in_five_bursts_are_added() -> None:
+    # 3 rare rows split into 3 boxes each, in frame 0 of 5 of 40 bursts: 5 frames, below the
+    # 8 a row needs, and the repeated kill word lowers the per-box variety
+    frames = _frames(6, 3, set())
+    bursts = (0, 8, 16, 24, 32)
+    for f in frames:
+        if f["burst"] in bursts and f["k"] == 0:
+            i = bursts.index(f["burst"])
+            for r in range(3):
+                words = [NAMES[i * 3 + r], "downed", NAMES[(i * 3 + r + 7) % 16]]
+                f["boxes"] += [
+                    _box(t, x, 40 + r * PITCH, w=50)
+                    for t, x in zip(words, (1500, 1560, 1620), strict=True)
+                ]
+    feed = _feed(frames)
+    assert feed["evidence"]["grown_rows"] == 3
+    assert feed["y"] <= 40
+
+
+def test_a_static_label_in_changing_case_is_not_added() -> None:
+    frames = _frames(6, 3, set())
+    _two_frame_row(frames, ("RELOAD", "Reload"), (5, 21))  # OCR case jitter
+    assert _feed(frames)["evidence"]["grown_rows"] == 0
+
+
+def test_notices_next_to_a_feed_that_is_not_full_are_not_added(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # two different notices one pitch above the feed, in frames whose feed lacks its top row:
+    # a feed's oldest row shows only when the feed is full
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
+    frames = _frames(6, 3, set())
+    for f in frames:
+        if f["k"] == 0 and f["burst"] in (5, 21):
+            f["boxes"] = [b for b in f["boxes"] if b["y0"] != 40 + 3 * PITCH]
+    _two_frame_row(frames, ("Gate captured", "Supply drop incoming"), (5, 21))
+    assert _feed(frames)["evidence"]["grown_rows"] == 0
+    assert "row at y 110: 2 frames (0 full), 2 bursts" in _feed_line(caplog)
+
+
+def test_an_oldest_row_is_added_when_ocr_missed_one_inner_row(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # the feed's middle row (row 4) is missing from both frames that show the oldest row:
+    # they still count as full feed frames (the row next to it is there, one other missed)
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.discover")
+    frames = _frames(6, 3, set())
+    for f in frames:
+        if f["k"] == 0 and f["burst"] in (5, 21):
+            f["boxes"] = [b for b in f["boxes"] if b["y0"] != 40 + 4 * PITCH]
+    _two_frame_row(frames, ("Ash downed Kip", "Nova downed Wren"), (5, 21))
+    assert _feed(frames)["evidence"]["grown_rows"] == 1
+    assert "row at y 110: 2 frames (2 full), 2 bursts" in _feed_line(caplog)
+
+
+def test_box_order_does_not_make_a_label_varied() -> None:
+    frames = _frames(6, 3, set())
+    for f in frames:
+        if f["k"] == 0 and f["burst"] in (5, 21):
+            words = ("PRESS", "RELOAD") if f["burst"] == 5 else ("RELOAD", "PRESS")
+            f["boxes"] += [
+                _box(t, x, 40 + 2 * PITCH, w=70) for t, x in zip(words, (1500, 1580), strict=True)
+            ]
+    assert _feed(frames)["evidence"]["grown_rows"] == 0
