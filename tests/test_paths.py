@@ -8,7 +8,8 @@ import pytest
 
 from cutpoint import paths
 from cutpoint.events import regions
-from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.killfeed import Interpreter, OcrParams
+from hud_fixtures import boxfeed, write_preset
 
 
 @pytest.mark.parametrize(
@@ -169,13 +170,23 @@ def test_r6_builtin_fallback_without_bundled_folder(tmp_path, home, monkeypatch)
     assert regions.load_preset("r6") == default
 
 
-@pytest.mark.parametrize("where", ["user", "project"])
-def test_builtin_flag_ignored_outside_bundle(where, preset_env, caplog, monkeypatch):
-    _, project, proj_dir, user_dir, _ = preset_env
+def test_builtin_flag_honoured_in_user_folder(preset_env, caplog, monkeypatch):
+    _, project, _, user_dir, _ = preset_env
     monkeypatch.setattr(regions, "_warned_builtin", set(), raising=False)
-    folder = user_dir if where == "user" else proj_dir
-    folder.mkdir(parents=True)
-    f = folder / "r6.json"
+    write_preset(user_dir, boxfeed())
+    with caplog.at_level("WARNING"):
+        p = regions.load_preset("boxfeed", project)
+    assert p.builtin is True
+    assert p.path is None
+    assert p.phrases == ("STACK COMPLETE",)  # no GENERIC_BANNERS
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_builtin_flag_ignored_in_project_folder(preset_env, caplog, monkeypatch):
+    _, project, proj_dir, _, _ = preset_env
+    monkeypatch.setattr(regions, "_warned_builtin", set(), raising=False)
+    f = proj_dir / "r6.json"
+    proj_dir.mkdir(parents=True)
     f.write_text(
         json.dumps({"game": "r6", "builtin": True, "banner_phrases": ["ACE"], "regions": []}),
         encoding="utf-8",
@@ -188,6 +199,38 @@ def test_builtin_flag_ignored_outside_bundle(where, preset_env, caplog, monkeypa
     assert set(regions.GENERIC_BANNERS) <= set(p.phrases)
     assert "phrases" in p.key()
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+def test_user_builtin_preset_equals_bundled_one(preset_env, caplog, monkeypatch):
+    """A builtin preset in the user folder is the same as in the bundled folder; a project
+    copy is generic (own OCR key) and warns once."""
+    _, project, proj_dir, user_dir, bundled_dir = preset_env
+    monkeypatch.setattr(regions, "_warned_builtin", set(), raising=False)
+    user_file = write_preset(user_dir, boxfeed())
+    user = regions.load_preset("boxfeed")
+    bundled_dir.mkdir()
+    user_file.rename(bundled_dir / user_file.name)
+    bundled = regions.load_preset("boxfeed")
+    assert user == bundled
+    assert OcrParams().key("boxfeed", user) == OcrParams().key("boxfeed", bundled)
+    assert "preset" not in OcrParams().key("boxfeed", user)
+
+    write_preset(proj_dir, boxfeed())
+    with caplog.at_level("WARNING"):
+        generic = regions.load_preset("boxfeed", project)
+        regions.load_preset("boxfeed", project)
+    assert generic.builtin is False and generic.path is not None
+    assert "preset" in OcrParams().key("boxfeed", generic)
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+def test_interpreter_generic_only_for_non_installed_preset(preset_env):
+    _, project, proj_dir, user_dir, _ = preset_env
+    write_preset(user_dir, boxfeed())
+    write_preset(proj_dir, boxfeed())
+    for proj, generic in ((None, False), (project, True)):
+        preset = regions.load_preset("boxfeed", proj)
+        assert Interpreter("boxfeed", OcrParams(), 1.0, preset).generic is generic
 
 
 @pytest.mark.parametrize(
