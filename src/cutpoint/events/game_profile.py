@@ -25,7 +25,7 @@ dependency (the ``ocr`` backend):
 Regions are kept exactly as discovery proposed them, and ``feed`` colours,
 ``view`` and ``hype`` are not set: the OCR text alone does not say what they
 should be. The result keeps ``"source": "discovered"`` and records its
-provenance as ``"profile": {"backend": "ocr", "version": 1}``.
+provenance as ``"profile": {"backend": "ocr", "version": 2}``.
 
 Cache keys: ``source``, ``profile``, ``title``, ``match``, ``notes`` and
 ``candidate_phrases`` are not part of the OCR cache key
