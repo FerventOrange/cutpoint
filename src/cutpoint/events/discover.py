@@ -112,6 +112,39 @@ def plan_bursts(sources: list[Source], n: int) -> list[tuple[Source, float]]:
 # --------------------------------------------------------------------------- OCR
 
 
+def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
+    """The OCR'd burst frames cached in ``path`` (``discovery/<game>/ocr.jsonl``).
+
+    Each record: ``{id, source, t, burst, k, frame, boxes}``; a box is
+    ``{x0, y0, x1, y1, text, score}`` in reference pixels. Unreadable lines are
+    skipped; a missing file gives ``[]``.
+    """
+    out = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and "id" in rec:
+                out.append(rec)
+    return out
+
+
+def boxes_in(
+    frame: dict[str, Any], x: int, y: int, w: int, h: int, min_h: int = 0
+) -> list[dict[str, Any]]:
+    """Text boxes of an OCR'd ``frame`` whose centre lies in the rectangle
+    (reference pixels) and that are at least ``min_h`` tall."""
+    return [
+        b
+        for b in frame["boxes"]
+        if x <= (b["x0"] + b["x1"]) / 2 <= x + w
+        and y <= (b["y0"] + b["y1"]) / 2 <= y + h
+        and b["y1"] - b["y0"] >= min_h
+    ]
+
+
 def _ocr_frames(
     bursts: list[tuple[Source, float]], params: DiscoverParams, frame_dir: Path, cache_path: Path
 ) -> list[dict[str, Any]]:
@@ -120,14 +153,7 @@ def _ocr_frames(
 
     from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
 
-    done: dict[str, dict[str, Any]] = {}
-    if cache_path.exists():
-        for line in cache_path.read_text(encoding="utf-8").splitlines():
-            try:
-                rec = json.loads(line)
-                done[rec["id"]] = rec
-            except (json.JSONDecodeError, KeyError):
-                continue
+    done = {rec["id"]: rec for rec in read_ocr_samples(cache_path)}
     engine = None
     out: list[dict[str, Any]] = []
     fh = None
@@ -572,4 +598,11 @@ def discover_regions(
     return preset
 
 
-__all__ = ["GENERIC_BANNERS", "DiscoverParams", "cluster_regions", "discover_regions"]
+__all__ = [
+    "GENERIC_BANNERS",
+    "DiscoverParams",
+    "boxes_in",
+    "cluster_regions",
+    "discover_regions",
+    "read_ocr_samples",
+]
