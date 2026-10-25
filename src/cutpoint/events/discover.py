@@ -62,10 +62,18 @@ MENU_CELL_W, MENU_CELL_H = REF_W // 8, REF_H // 6  # coarse 8 x 6 grid for the m
 # their cells to count as dynamic. A row one pitch above or below the feed is added when
 # text of the feed's height and x-span sits there in FEED_GROW_SHARE of the feed's frames
 # (and FEED_GROW_BURSTS bursts) and varies (label variety >= FEED_GROW_VARIETY: no static
-# label); the feed grows to FEED_GROW_MAX times its height at most.
+# label). A full feed is rare, so a row in fewer frames (FEED_GROW_MIN_FRAMES at least) is
+# added too when its sightings differ (sighting variety >= FEED_GROW_VARIED: distinct
+# normalised frame texts per burst; a static label seen in 2 bursts has 0.5) and at least
+# FEED_GROW_FULL_SHARE of its frames show the full feed (an oldest row shows only then, a
+# notice or chat line next to the feed any time). The feed grows to FEED_GROW_MAX times its
+# height at most.
 FEED_GROW_SHARE = 0.05
 FEED_GROW_BURSTS = 2
 FEED_GROW_VARIETY = 0.15  # the readout cut of cluster_regions
+FEED_GROW_MIN_FRAMES = 2
+FEED_GROW_VARIED = 0.75
+FEED_GROW_FULL_SHARE = 0.5
 FEED_GROW_MAX = 2.0
 
 
@@ -332,6 +340,19 @@ def _label_variety(texts: list[str]) -> float:
     return len({s for s in stripped if s}) / max(1, len(texts))
 
 
+def _sighting_variety(band: list[tuple[str, tuple[str, int], float, str]]) -> float:
+    """Distinct texts of a row's sightings per burst, at most 1. A sighting is the
+    texts of one frame in ``band`` (``(frame, burst, centre y, text)``), each
+    lower-cased, without digits and punctuation, joined in sorted order; so a row that
+    stays for a few frames or is split into boxes (in any order) counts once per text,
+    and a static label (in any case) has 1 / bursts."""
+    texts: dict[str, list[str]] = {}
+    for fid, _, _, t in band:
+        texts.setdefault(fid, []).append(re.sub(r"[0-9]", "", _norm_text(t)))
+    distinct = {"".join(sorted(ts)) for ts in texts.values()} - {""}
+    return min(1.0, len(distinct) / max(1, len({bk for _, bk, _, _ in band})))
+
+
 def _grow_feed(
     frames: list[dict[str, Any]], rect: tuple[int, int, int, int], med_h: float, n_feed: int
 ) -> tuple[int, int, int]:
@@ -345,8 +366,14 @@ def _grow_feed(
     a row is added when its boxes (centre within a third of a pitch) show in at
     least :data:`FEED_GROW_SHARE` of the ``n_feed`` frames with feed text and in
     :data:`FEED_GROW_BURSTS` bursts and their texts vary
-    (:data:`FEED_GROW_VARIETY`); growth stops at :data:`FEED_GROW_MAX` times
-    the height. One DEBUG line says why it stopped in each direction.
+    (:data:`FEED_GROW_VARIETY`). A row in fewer frames, but at least
+    :data:`FEED_GROW_MIN_FRAMES`, is added when its sightings differ
+    (:func:`_sighting_variety` at least :data:`FEED_GROW_VARIED`) and at least
+    :data:`FEED_GROW_FULL_SHARE` of its frames show the full feed (the feed's row next
+    to it and a row at every other pitch from its top to its bottom row but one, as OCR
+    misses a box now and then). Growth stops at :data:`FEED_GROW_MAX` times
+    the height. One DEBUG line says which condition added each row ("ok: frames" or
+    "ok: varied") and why growth stopped in each direction.
 
     Returns:
         (y0, y1, rows added).
@@ -374,8 +401,24 @@ def _grow_feed(
     top, bottom = _outer_row(inner, pitch, need, -1), _outer_row(inner, pitch, need, 1)
     limit = FEED_GROW_MAX * (y1 - y0)
     ends = {-1: (top, y0), 1: (bottom, y1)}  # direction -> (outer row centre, edge)
+    # a frame shows the full feed when it has a row at every pitch from top to bottom
+    slots = round((bottom - top) / pitch) + 1
+    per_frame: dict[str, set[int]] = {}
+    for cy, fid in inner:
+        per_frame.setdefault(fid, set()).add(round((cy - top) / pitch))
+    full_ids = {fid for fid, s in per_frame.items() if len(s & set(range(slots))) >= slots}
+    # for growth past the top (bottom) row a frame counts as full when it has that row and
+    # misses at most one other: OCR misses a box now and then
+    near_full = {
+        d: {
+            fid
+            for fid, s in per_frame.items()
+            if end in s and len(s & set(range(slots))) >= slots - 1
+        }
+        for d, end in ((-1, 0), (1, slots - 1))
+    }
     added = 0
-    why: dict[int, str] = {}
+    why: dict[int, list[str]] = {-1: [], 1: []}
     for d in (-1, 1):
         while True:
             centre = ends[d][0] + d * pitch
@@ -383,44 +426,53 @@ def _grow_feed(
             edge = centre + d * pitch / 2
             n_frames = len({fid for fid, _, _, _ in band})
             n_bursts = len({bk for _, bk, _, _ in band})
+            n_full = len({fid for fid, _, _, _ in band} & near_full[d])
             variety = _label_variety([t for _, _, _, t in band])
+            seen = _sighting_variety(band)
+            # a full feed is rare: fewer frames do when the row's sightings differ and
+            # show with the full feed
+            varied = (
+                n_frames >= FEED_GROW_MIN_FRAMES
+                and seen >= FEED_GROW_VARIED
+                and n_full >= FEED_GROW_FULL_SHARE * n_frames
+            )
             checks = (
                 ("limit", abs(edge - ends[-d][1]) > limit),
                 ("screen edge", not 0 <= edge <= REF_H),
-                ("frames", n_frames < need),
+                ("frames", n_frames < need and not varied),
                 ("bursts", n_bursts < FEED_GROW_BURSTS),
                 ("variety", variety < FEED_GROW_VARIETY),
             )
             stop = next((name for name, hit in checks if hit), None)
+            row = (
+                f"row at y {centre:.0f}: {n_frames} frames ({n_full} full), {n_bursts} bursts, "
+                f"variety {variety:.2f}, sighting variety {seen:.2f}, "
+            )
             if stop is not None:
-                why[d] = (
-                    f"row at y {centre:.0f}: {n_frames} frames, {n_bursts} bursts, "
-                    f"variety {variety:.2f}, stop: {stop}"
-                )
+                why[d].append(f"{row}stop: {stop}")
                 break
+            why[d].append(f"{row}ok: {'frames' if n_frames >= need else 'varied'}")
             centre = float(np.median([cy for _, _, cy, _ in band]))
             ends[d] = (centre, round(centre + d * pitch / 2))
             added += 1
     if logger.isEnabledFor(logging.DEBUG):
-        # a frame shows the full feed when it has a row at every pitch from top to bottom
-        slots = round((bottom - top) / pitch) + 1
-        per_frame: dict[str, set[int]] = {}
-        for cy, fid in inner:
-            per_frame.setdefault(fid, set()).add(round((cy - top) / pitch))
-        full = sum(len(s & set(range(slots))) >= slots for s in per_frame.values())
         logger.debug(
             "Feed growth %s: pitch %.1f px, %d rows, full in %d/%d frames; a row needs "
-            "%.0f frames, %d bursts, variety %.2f; above: %s; below: %s; %d rows added",
+            "%.0f frames (%d if sighting variety >= %.2f and %.0f%% full), %d bursts, "
+            "variety %.2f; above: %s; below: %s; %d rows added",
             where,
             pitch,
             slots,
-            full,
+            len(full_ids),
             n_feed,
             need,
+            FEED_GROW_MIN_FRAMES,
+            FEED_GROW_VARIED,
+            100 * FEED_GROW_FULL_SHARE,
             FEED_GROW_BURSTS,
             FEED_GROW_VARIETY,
-            why[-1],
-            why[1],
+            " | ".join(why[-1]),
+            " | ".join(why[1]),
             added,
         )
     return min(y0, int(ends[-1][1])), max(y1, int(ends[1][1])), added
