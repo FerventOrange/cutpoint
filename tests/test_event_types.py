@@ -20,25 +20,36 @@ from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrParams
 from cutpoint.events.regions import GENERIC_BANNERS, load_preset
 from cutpoint.events.report import normalize
+from hud_fixtures import boxfeed, verbfeed, write_preset
 
 
 def _ocr(name: str, typ: str, text: str, t: float, **kw: Any) -> tuple[str, dict[str, Any]]:
     return name, {"kind": "ocr", "type": typ, "text": text, "t": t, "end": t + 3, **kw}
 
 
-# Layer events by game shape: R6 (banners, multikill), WT (verb-based feed, log),
+# Layer events by game shape: box feed (banners, multikill), verb feed (verb-based feed, log),
 # no preset (audio only), as the layers emit them before events.json.
-R6 = dict(
+BOXFEED = dict(
     [
-        _ocr("r6_kill", "kill", "Ash > Bob", 10.0, player=True, player_kill=True, teamkill=False),
-        _ocr("r6_teamkill", "kill", "Ash > Cy", 11.0, player=True, player_kill=True, teamkill=True),
-        _ocr("r6_rff", "banner", "REVERSE FRIENDLY FIRE", 12.0),
-        _ocr("r6_ace", "banner", "ACE", 13.0),
-        _ocr("r6_match_point", "banner", "MATCH POINT", 14.0),
-        _ocr("r6_double", "multikill", "DOUBLE KILL (Bob, Cy)", 15.0, player=True, kills=2),
-        _ocr("r6_other_kill", "kill", "Dee > Eve", 16.0, player=False, teamkill=False),
         _ocr(
-            "r6_death",
+            "boxfeed_kill", "kill", "Ash > Bob", 10.0, player=True, player_kill=True, teamkill=False
+        ),
+        _ocr(
+            "boxfeed_teamkill",
+            "kill",
+            "Ash > Cy",
+            11.0,
+            player=True,
+            player_kill=True,
+            teamkill=True,
+        ),
+        _ocr("boxfeed_rff", "banner", "REVERSE FRIENDLY FIRE", 12.0),
+        _ocr("boxfeed_ace", "banner", "ACE", 13.0),
+        _ocr("boxfeed_match_point", "banner", "MATCH POINT", 14.0),
+        _ocr("boxfeed_double", "multikill", "DOUBLE KILL (Bob, Cy)", 15.0, player=True, kills=2),
+        _ocr("boxfeed_other_kill", "kill", "Dee > Eve", 16.0, player=False, teamkill=False),
+        _ocr(
+            "boxfeed_death",
             "kill",
             "Bob > Ash",
             17.0,
@@ -49,12 +60,12 @@ R6 = dict(
         ),
     ]
 )
-WT = dict(
+VERBFEED = dict(
     [
         _ocr(
-            "wt_kill",
+            "verbfeed_kill",
             "kill",
-            "me (T-34) > foe (Tiger)",
+            "me (Cube) > foe (Orb)",
             20.0,
             verb="kill",
             player=True,
@@ -63,9 +74,9 @@ WT = dict(
             teamkill=False,
         ),
         _ocr(
-            "wt_death",
+            "verbfeed_death",
             "kill",
-            "foe (Tiger) > me (T-34)",
+            "foe (Orb) > me (Cube)",
             21.0,
             verb="kill",
             player=True,
@@ -73,8 +84,8 @@ WT = dict(
             player_death=True,
             teamkill=False,
         ),
-        _ocr("wt_log", "log", "me crashed", 22.0, verb="crash", player=True),
-        _ocr("wt_banner", "banner", "TARGET DESTROYED", 23.0),
+        _ocr("verbfeed_log", "log", "me crashed", 22.0, verb="crash", player=True),
+        _ocr("verbfeed_banner", "banner", "TARGET DESTROYED", 23.0),
     ]
 )
 NONE = {
@@ -106,7 +117,7 @@ NONE = {
         "peak_t": 35.5,
     },
 }
-LAYER = {**R6, **WT, **NONE}
+LAYER = {**BOXFEED, **VERBFEED, **NONE}
 EVENTS = {k: normalize("a.mp4", v) for k, v in LAYER.items()}
 CAND = {"start": 0.0, "end": 100.0}
 
@@ -128,18 +139,22 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("names", "boost", "evidence"),
     [
-        # R6: 2 kills (own kill and death), teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
-        (list(R6), 30.0, _ev(kills=2, tk=2, banners=2)),
-        # WT: only the player's kill counts (6), not the death; TARGET DESTROYED (6); logs do not count
-        (list(WT), 12.0, _ev(kills=1, banners=1)),
+        # boxfeed: 2 kills (own kill and death), teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
+        (list(BOXFEED), 30.0, _ev(kills=2, tk=2, banners=2)),
+        # verbfeed: only the player's kill counts (6), not the death; TARGET DESTROYED (6); logs do not count
+        (list(VERBFEED), 12.0, _ev(kills=1, banners=1)),
         # no preset: laughter min(12, 30), scream min(6, 4)
         (list(NONE), 16.0, _ev(laugh=0.5, scream=0.1)),
         (list(LAYER), 30.0, _ev(0.5, 0.1, 3, 2, 3)),
-        (["r6_kill", "r6_double"], 12.0, _ev(kills=1, banners=1)),
-        (["r6_rff"], 12.0, _ev(tk=1)),
-        (["r6_match_point", "r6_other_kill"], 0.0, _ev()),
-        (["r6_death"], 6.0, _ev(kills=1)),  # built-in R6 kills count with the player on either side
-        (["wt_death", "wt_log"], 0.0, _ev()),
+        (["boxfeed_kill", "boxfeed_double"], 12.0, _ev(kills=1, banners=1)),
+        (["boxfeed_rff"], 12.0, _ev(tk=1)),
+        (["boxfeed_match_point", "boxfeed_other_kill"], 0.0, _ev()),
+        (
+            ["boxfeed_death"],
+            6.0,
+            _ev(kills=1),
+        ),  # builtin-preset kills count with the player on either side
+        (["verbfeed_death", "verbfeed_log"], 0.0, _ev()),
     ],
 )
 def test_event_boost(names, boost, evidence):
@@ -180,35 +195,35 @@ def test_event_boost_window():
 
 
 PAYOFF = {
-    "r6_kill": True,
-    "r6_teamkill": True,
-    "r6_rff": True,
-    "r6_ace": True,
-    "r6_match_point": False,
-    "r6_double": True,
-    "r6_other_kill": False,
-    "r6_death": True,
-    "wt_kill": True,
-    "wt_death": True,
-    "wt_log": True,
-    "wt_banner": True,
+    "boxfeed_kill": True,
+    "boxfeed_teamkill": True,
+    "boxfeed_rff": True,
+    "boxfeed_ace": True,
+    "boxfeed_match_point": False,
+    "boxfeed_double": True,
+    "boxfeed_other_kill": False,
+    "boxfeed_death": True,
+    "verbfeed_kill": True,
+    "verbfeed_death": True,
+    "verbfeed_log": True,
+    "verbfeed_banner": True,
     "audio_laugh": True,
     "audio_scream": True,
     "audio_quiet": False,
 }
 SEED = {
-    "r6_kill": 1.2,
-    "r6_teamkill": 2.0,
-    "r6_rff": 2.0,
-    "r6_ace": 2.0,
-    "r6_match_point": None,
-    "r6_double": 2.0,
-    "r6_other_kill": 0.5,
-    "r6_death": 1.2,
-    "wt_kill": 1.2,
-    "wt_death": 1.2,
-    "wt_log": 0.9,
-    "wt_banner": 0.6,
+    "boxfeed_kill": 1.2,
+    "boxfeed_teamkill": 2.0,
+    "boxfeed_rff": 2.0,
+    "boxfeed_ace": 2.0,
+    "boxfeed_match_point": None,
+    "boxfeed_double": 2.0,
+    "boxfeed_other_kill": 0.5,
+    "boxfeed_death": 1.2,
+    "verbfeed_kill": 1.2,
+    "verbfeed_death": 1.2,
+    "verbfeed_log": 0.9,
+    "verbfeed_banner": 0.6,
     "audio_laugh": 1.5,
     "audio_scream": 0.5833333333333334,
     "audio_quiet": 0.32,
@@ -223,7 +238,7 @@ def test_is_payoff(name):
 @pytest.mark.parametrize(
     ("end", "words", "events", "limit", "expected"),
     [
-        # speech ends at 10: payoffs up to 20 count (kills, RFF, ACE, DOUBLE, r6_death, wt_kill), cap 24
+        # speech ends at 10: payoffs up to 20 count (kills, RFF, ACE, DOUBLE, boxfeed_death, verbfeed_kill), cap 24
         (
             10.0,
             None,
@@ -231,7 +246,7 @@ def test_is_payoff(name):
             99.0,
             (
                 22.5,
-                "event payoff (OCR kill: me (T-34) > foe (Tiger) @20.0)",
+                "event payoff (OCR kill: me (Cube) > foe (Orb) @20.0)",
                 [
                     "OCR kill: Ash > Bob @10.0",
                     "OCR kill: Ash > Cy @11.0",
@@ -239,7 +254,7 @@ def test_is_payoff(name):
                     "OCR banner: ACE @13.0",
                     "OCR multikill: DOUBLE KILL (Bob, Cy) @15.0",
                     "OCR kill: Bob > Ash @17.0",
-                    "OCR kill: me (T-34) > foe (Tiger) @20.0",
+                    "OCR kill: me (Cube) > foe (Orb) @20.0",
                 ],
             ),
         ),
@@ -257,7 +272,7 @@ def test_is_payoff(name):
         (  # speech ends at 9: the same two kills are inside the window
             10.0,
             [{"start": 8.0, "end": 9.0}],
-            ["r6_kill", "r6_teamkill"],
+            ["boxfeed_kill", "boxfeed_teamkill"],
             99.0,
             (
                 13.5,
@@ -265,7 +280,7 @@ def test_is_payoff(name):
                 ["OCR kill: Ash > Bob @10.0", "OCR kill: Ash > Cy @11.0"],
             ),
         ),
-        (10.0, None, ["r6_match_point", "r6_other_kill"], 99.0, (10.0, None, [])),
+        (10.0, None, ["boxfeed_match_point", "boxfeed_other_kill"], 99.0, (10.0, None, [])),
     ],
 )
 def test_event_tail(end, words, events, limit, expected):
@@ -287,21 +302,28 @@ FRAMES = (
     "labelled with seconds from the window start."
 )
 PROMPT_START = "Describe what actually happens in this window, in time order: what the player does, kills and deaths (who kills whom, with what), teamkills, round results, and how the friends react (laughing, shouting, banter, jokes). Do not list transcript lines one by one: summarise a conversation as ONE event and spend the other events on actions and reactions. Connect the talk to the action: if a conversation is followed by a kill, a death, a round win or laughter, say so explicitly ('after the argument, the player gets a kill and the team laughs'). Look at the frames for weapons, kills and deaths, and listen to the audio for laughter and tone. Use on-screen HUD text only as context; do not transcribe it.\nScoring rubric (integers 0-10):\n"
-HYPE_R6 = "  hype: 0-1 walking/waiting, menus, loading, operator select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a round win, a multi-kill, a close fight; 8-10 a clutch (1 vs many), an ace, a spectacular kill.\n"
+HYPE_BOXFEED = boxfeed()["hype"]
 HYPE_GENERIC = "  hype: 0-1 driving/waiting, menus, hangar, loading, vehicle or respawn select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a multi-kill, a big explosion, a close call, a match win; 8-10 several kills in quick succession, a spectacular kill or a spectacular death.\n"
 PROMPT_END = '  funny: 0-1 no joke; 3-4 light banter; 6-7 a clear joke or people laughing; 8-10 everyone laughing hard, an absurd mistake, a teamkill followed by laughter.\n  highlight_score: how much this window deserves a place in a highlight montage (max of the best moment\'s hype and funny, plus 1 if both).\nEvent \'t\' is seconds from the window start. Reply with JSON only: {"events": [{"t": number, "what": str, "funny": int, "hype": int}], "summary": str, "funny_score": int, "highlight_score": int, "label": "2-4 word slug"}'
 
 
 @pytest.mark.parametrize(
-    ("game", "intro", "hype"),
+    ("game", "intro", "hype", "bare"),
     [
-        ("r6", "This is a 15-second window of a first-person Rainbow Six Siege", HYPE_R6),
-        ("wt", "This is a 15-second window of a War Thunder", HYPE_GENERIC),
-        ("some-game", "This is a 15-second window of a Some Game", HYPE_GENERIC),
-        (None, "This is a 15-second window of a video game", HYPE_GENERIC),
+        ("boxfeed", "This is a 15-second window of a top-down Box Feed", HYPE_BOXFEED, False),
+        ("verbfeed", "This is a 15-second window of a top-down Verb Feed", HYPE_BOXFEED, False),
+        # a title but no view/hype: the intro has no view, the rubric is the generic one
+        ("verbfeed", "This is a 15-second window of a Verb Feed", HYPE_GENERIC, True),
+        ("some-game", "This is a 15-second window of a Some Game", HYPE_GENERIC, False),
+        (None, "This is a 15-second window of a video game", HYPE_GENERIC, False),
     ],
 )
-def test_prompt(tmp_path, game, intro, hype):
+def test_prompt(tmp_path, home, game, intro, hype, bare):
+    verb = verbfeed()
+    if bare:
+        verb = {k: v for k, v in verb.items() if k not in ("view", "hype")}
+    for preset in (boxfeed(), verb):
+        write_preset(paths.presets_dir(), preset)
     win = vw.Window("game.mp4", 5.0, 20.0, 1.0, [])
     msgs = vw.build_messages(_src(tmp_path), win, [], vw.VlmParams(), game, [], [])
     transcript = (
@@ -338,121 +360,40 @@ def test_vlm_key():
     }
 
 
-WT_KEY = {
+VERBFEED_KEY = {
     "extra": {},
     "fps": 3.0,
     "fuzzy": 0.8,
-    "game": "wt",
+    "game": "verbfeed",
     "min_text_score": 0.6,
     "persist_s": 8.0,
     "preset": {
         "bigtext": True,
-        "feed": {
-            "colors": {
-                "blue": "ally",
-                "cyan": "ally",
-                "green": "squad",
-                "orange": "self",
-                "purple": "ally",
-                "red": "enemy",
-                "yellow": "self",
-            },
-            "entry": "paren",
-            "row_tol": 10,
-        },
+        "feed": {"kill_words": {"toppled": "kill"}},
         "interp": 6,
-        "phrases": [
-            "YOU HAVE BEEN DESTROYED",
-            "CREW KNOCKED OUT",
-            "TARGET DESTROYED",
-            "SHOT DOWN",
-            "SET AFIRE",
-            "CRITICALLY DAMAGED",
-            "SEVERELY DAMAGED",
-            "MISSION ACCOMPLISHED",
-            "MISSION FAILED",
-            "ZONE CAPTURED",
-            "MULTI STRIKE",
-            "TANK RESCUER",
-            "WITHOUT A SCRATCH",
-            "TERMINATOR",
-            "AVENGER",
-            "FINAL BLOW",
-            "ONE SHOT ONE KILL",
-            "STREAK",
-            "VICTORY",
-            "DEFEAT",
-            "MISSION COMPLETE",
-            "YOU DIED",
-            "YOU WIN",
-            "YOU LOSE",
-            "WASTED",
-            "ELIMINATED",
-            "DESTROYED",
-            "KILLED",
-            "ACE",
-            "ROUND WON",
-            "ROUND LOST",
-            "WON ROUND",
-            "LOST ROUND",
-            "LEVEL UP",
-            "ACHIEVEMENT",
-            "ACHIEVEMENT UNLOCKED",
-            "DOUBLE KILL",
-            "TRIPLE KILL",
-            "MULTI KILL",
-            "KILLING SPREE",
-            "HEADSHOT",
-            "FIRST BLOOD",
-            "WINNER",
-            "GAME OVER",
-            "MATCH POINT",
-            "OVERTIME",
-            "DRAW",
-            "CHAMPION",
-            "RANK UP",
-            "NEW RECORD",
-        ],
-        "preset_tags": [],
+        "phrases": ["VERB DONE", *GENERIC_BANNERS],
+        "preset_tags": ["BOXER"],
     },
     "regions": [
         {
-            "det_scale": 0.6,
-            "gate": "det",
-            "h": 258,
+            "h": 160,
             "kind": "feed",
             "min_change": 0.015,
             "min_fill": 0.002,
-            "name": "killfeed",
-            "w": 580,
-            "x": 1340,
-            "y": 430,
+            "name": "feed",
+            "w": 500,
+            "x": 1400,
+            "y": 40,
         },
         {
-            "det_scale": 0.5,
-            "every": 6,
-            "gate": "det",
-            "h": 270,
-            "kind": "notice",
+            "h": 120,
+            "kind": "banner",
             "min_change": 0.015,
             "min_fill": 0.002,
-            "name": "awards",
-            "w": 1200,
-            "x": 360,
-            "y": 160,
-        },
-        {
-            "det_scale": 0.5,
-            "every": 6,
-            "gate": "det",
-            "h": 210,
-            "kind": "notice",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-            "name": "messages",
-            "w": 960,
-            "x": 480,
-            "y": 760,
+            "name": "banner",
+            "w": 700,
+            "x": 600,
+            "y": 100,
         },
         {
             "det_scale": 0.35,
@@ -474,15 +415,77 @@ WT_KEY = {
 }
 
 
-def test_ocr_key():  # the r6 key is pinned in test_paths.py
-    assert OcrParams().key("wt", load_preset("wt")) == WT_KEY
+def test_ocr_key(home):
+    write_preset(paths.presets_dir(), verbfeed())
+    assert OcrParams().key("verbfeed", load_preset("verbfeed")) == VERBFEED_KEY
+
+
+BOXFEED_KEY = {
+    "v": 3,
+    "game": "boxfeed",
+    "fps": 3.0,
+    "fuzzy": 0.8,
+    "min_text_score": 0.6,
+    "persist_s": 8.0,
+    "extra": {},
+    "tags": [],
+    "regions": [
+        {
+            "name": "feed",
+            "x": 1400,
+            "y": 40,
+            "w": 500,
+            "h": 160,
+            "kind": "feed",
+            "min_change": 0.015,
+            "min_fill": 0.002,
+        },
+        {
+            "name": "banner",
+            "x": 600,
+            "y": 100,
+            "w": 700,
+            "h": 120,
+            "kind": "banner",
+            "min_change": 0.015,
+            "min_fill": 0.002,
+        },
+        {
+            "name": "bigtext",
+            "x": 300,
+            "y": 110,
+            "w": 1320,
+            "h": 700,
+            "kind": "bigtext",
+            "min_change": 0.015,
+            "min_fill": 0.002,
+            "gate": "det",
+            "every": 6,
+            "min_text_h": 36,
+            "det_scale": 0.35,
+        },
+    ],
+}
+
+
+def test_ocr_key_builtin_has_no_preset_fields(home, tmp_path, monkeypatch):
+    """A ``builtin`` preset keeps the original key layout (no ``preset``), wherever it is loaded from."""
+    write_preset(paths.presets_dir(), boxfeed())
+    from_user = OcrParams().key("boxfeed", load_preset("boxfeed"))
+    assert from_user == BOXFEED_KEY
+
+    bundled = tmp_path / "bundled"
+    write_preset(bundled, boxfeed())
+    (paths.presets_dir() / "boxfeed.json").unlink()
+    monkeypatch.setattr(paths, "PRESETS_DIR", bundled)
+    assert OcrParams().key("boxfeed", load_preset("boxfeed")) == from_user
 
 
 # --- preset-defined event types ------------------------------------------------
 
-DEFUSER = {
-    "name": "defuser",
-    "when": [{"type": "banner", "prefix": ["DEFUSER PLANTED"]}],
+PLACER = {
+    "name": "placer",
+    "when": [{"type": "banner", "prefix": ["BOX PLACED"]}],
     "score": 6,
     "max": 2,
     "payoff": True,
@@ -503,15 +506,15 @@ def _custom(tmp_path: Path, events: list[Any], **extra: Any) -> Path:
 
 
 def test_custom_event_type(tmp_path, home):
-    project = _custom(tmp_path, [DEFUSER])
+    project = _custom(tmp_path, [PLACER])
     preset = load_preset("foo", project)
-    assert preset.phrases == ("MY BANNER", *GENERIC_BANNERS, "DEFUSER PLANTED")
+    assert preset.phrases == ("MY BANNER", *GENERIC_BANNERS, "BOX PLACED")
     types = eventtypes.types_for(preset)
-    raw = {"kind": "ocr", "type": "banner", "text": "DEFUSER PLANTED 2", "t": 12.0, "end": 15.0}
+    raw = {"kind": "ocr", "type": "banner", "text": "BOX PLACED 2", "t": 12.0, "end": 15.0}
     ev = normalize("a.mp4", raw)
 
     boost, evidence = scoring.event_boost(CAND, [ev], types)
-    assert boost == 6.0 and evidence["defuser"] == 1
+    assert boost == 6.0 and evidence["placer"] == 1
     assert scoring.event_boost(CAND, [ev])[0] == 0.0  # defaults know nothing of it
 
     assert vw._seed_priority(raw, types) == 1.5
@@ -530,29 +533,29 @@ def test_custom_event_type(tmp_path, home):
 
 
 def test_event_type_clamping_and_malformed(tmp_path, home):
-    big = {**DEFUSER, "name": "big", "score": 60, "max": 9, "tail_s": 99, "seed": 9}
+    big = {**PLACER, "name": "big", "score": 60, "max": 9, "tail_s": 99, "seed": 9}
     bad = [
         {"name": "nowhen"},
-        {**DEFUSER, "name": "laughter"},  # reserved
-        {**DEFUSER, "name": "yes", "payoff": "yes"},  # not a bool
+        {**PLACER, "name": "laughter"},  # reserved
+        {**PLACER, "name": "yes", "payoff": "yes"},  # not a bool
         {"name": "x", "when": [{"type": "banner"}], "score": "lots"},
         5,
     ]
-    preset = load_preset("foo", _custom(tmp_path, [*bad, big, DEFUSER]))
+    preset = load_preset("foo", _custom(tmp_path, [*bad, big, PLACER]))
     by_name = {t.name: t for t in eventtypes.types_for(preset)}
     assert (by_name["big"].score, by_name["big"].max) == (12.0, 3)
     assert (by_name["big"].tail_s, by_name["big"].seed) == (10.0, 3.0)
-    assert "defuser" in by_name and "player_kills" in by_name  # the rest still loads
+    assert "placer" in by_name and "player_kills" in by_name  # the rest still loads
     assert not {"nowhen", "x", "laughter", "yes"} & by_name.keys()
 
 
 @pytest.mark.parametrize("flag", ["! verb", "!!x"])
 def test_malformed_flag_type_skipped(tmp_path, home, flag):
     bad = {"name": "bangs", "when": [{"type": "kill", "flag": flag}], "score": 3}
-    preset = load_preset("foo", _custom(tmp_path, [bad, DEFUSER]))
+    preset = load_preset("foo", _custom(tmp_path, [bad, PLACER]))
     by_name = {t.name: t for t in eventtypes.types_for(preset)}
     assert "bangs" not in by_name
-    assert "defuser" in by_name and "player_kills" in by_name  # the defaults still load
+    assert "placer" in by_name and "player_kills" in by_name  # the defaults still load
 
 
 def test_resolve_never_raises(tmp_path, home):
@@ -564,7 +567,7 @@ def test_resolve_never_raises(tmp_path, home):
     ):
         got = eventtypes.resolve(tmp_path, data)
         assert all(v == eventtypes.DEFAULT_EVENT_TYPES for v in got.values())
-    project = _custom(tmp_path, [DEFUSER])
+    project = _custom(tmp_path, [PLACER])
     (project / "hud_presets" / "foo.json").write_text("{not json", encoding="utf-8")
     data = {"settings": {"ocr": {"game": "foo"}}, "events": [ev]}
     assert eventtypes.resolve(project, data)[ev["source"]] == eventtypes.DEFAULT_EVENT_TYPES
@@ -577,25 +580,25 @@ def test_vlm_gp_key_only_for_prompt_customisation(tmp_path, home):
     for extra in ({"hype": "  hype: x\n"}, {"title": "Foo Game"}, {"view": "third-person"}):
         p = load_preset("foo", _custom(tmp_path, [], **extra))
         assert "gp" in vw.VlmParams().key(vw.game_prompt("foo", p))
-    seeded = load_preset("foo", _custom(tmp_path, [DEFUSER]))
+    seeded = load_preset("foo", _custom(tmp_path, [PLACER]))
     assert "gp" not in vw.VlmParams().key(vw.game_prompt("foo", seeded))  # seeds only
 
 
-def test_vlm_gp_key_against_bundled_reference(tmp_path, home):
+def test_vlm_gp_key_against_installed_reference(tmp_path, home):
+    """A project copy of an installed preset keeps the VLM key; a changed prompt adds ``gp``."""
+
     def key(game: str, preset) -> dict[str, Any]:
         return vw.VlmParams().key(vw.game_prompt(game, preset))
 
-    wt = json.loads((paths.PRESETS_DIR / "wt.json").read_text(encoding="utf-8"))
-    (wt_dir := tmp_path / "wt" / "hud_presets").mkdir(parents=True)
-    (wt_dir / "wt.json").write_text(json.dumps(wt), encoding="utf-8")
-    assert "gp" not in key("wt", load_preset("wt", wt_dir.parent))  # same content as bundled
+    installed = verbfeed()
+    write_preset(paths.presets_dir(), installed)
+    same = tmp_path / "same"
+    write_preset(same / "hud_presets", installed)
+    assert "gp" not in key("verbfeed", load_preset("verbfeed", same))
 
-    r6 = json.loads((paths.PRESETS_DIR / "r6.json").read_text(encoding="utf-8"))
-    for field in ("title", "hype"):
-        r6.pop(field, None)
-    (r6_dir := tmp_path / "r6" / "hud_presets").mkdir(parents=True)
-    (r6_dir / "r6.json").write_text(json.dumps(r6), encoding="utf-8")
-    assert "gp" in key("r6", load_preset("r6", r6_dir.parent))
+    changed = tmp_path / "changed"
+    write_preset(changed / "hud_presets", {k: v for k, v in installed.items() if k != "hype"})
+    assert "gp" in key("verbfeed", load_preset("verbfeed", changed))
 
 
 def test_hype_normalised(tmp_path, home):
@@ -619,7 +622,7 @@ def test_preset_type_replaces_builtin(tmp_path, home):
             "score": 3, "payoff": False}  # fmt: skip
     project = _custom(tmp_path, [mine])
     types = eventtypes.types_for(load_preset("foo", project))
-    kill = EVENTS["r6_kill"]
+    kill = EVENTS["boxfeed_kill"]
     boost, evidence = scoring.event_boost(CAND, [kill], types)
     assert boost == 3.0 and evidence["player_kills"] == 1
     (project / "events.json").write_text(

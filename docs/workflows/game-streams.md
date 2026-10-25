@@ -41,10 +41,10 @@ With `events.json` present, `clips` also applies event tails: if a payoff starts
 ## HUD presets
 
 OCR regions come from a per-game preset (lookup order in
-[Configuration](../configuration.md#hud-presets)). Rainbow Six Siege and War Thunder
-ship as bundled presets (`r6.json`, `wt.json`) that you can copy and edit as a starting point; a
-copy in `<CUTPOINT_HOME>\presets` keeps the built-in interpretation; a copy in a project `hud_presets`
-folder is read as a generic preset (see [Configuration](../configuration.md#hud-presets)). The game is
+[Configuration](../configuration.md#hud-presets)). No game presets are bundled. Write one, or let region
+discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. A
+preset with `"builtin": true` in the user folder keeps the built-in interpretation; in a project `hud_presets`
+folder it is read as a generic preset (see [Configuration](../configuration.md#hud-presets)). The game is
 picked from the file or folder name, or set with `--game KEY`.
 
 For a game without a preset, `events` runs region discovery automatically. It samples bursts of
@@ -53,10 +53,22 @@ world text, and writes a proposal to `<project>\discovery\<game>\` (`proposal.js
 and installs it as a preset. Check `overlay.jpg`, then edit the preset JSON to calibrate.
 Force or skip it with `--discover-regions` and `--no-discover`.
 
-A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`),
+A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`; optional `gate`: `mask` (default, a HUD colour mask) or `det` (text detection, works for any game); optional `every`),
 `banner_phrases`, `player_tags`, `match` hints and optional `feed` settings. Coordinates are in
-1920x1080 reference pixels and are scaled per axis to the video. See
-`src/cutpoint/events/presets/wt.json` for a complete example.
+1920x1080 reference pixels and are scaled per axis to the video. A small example, saved as
+`my-game.json`:
+
+```json
+{
+  "match": ["my game"],
+  "regions": [
+    {"name": "feed", "x": 1500, "y": 100, "w": 400, "h": 300, "kind": "feed", "gate": "det"},
+    {"name": "banner", "x": 660, "y": 80, "w": 600, "h": 100, "kind": "banner", "gate": "det", "every": 3}
+  ],
+  "banner_phrases": ["VICTORY"],
+  "player_tags": ["MyName"]
+}
+```
 
 A preset can also define its own event types (what an event is worth, how clip tails end, which
 moments the vision model describes first) and the game name used in the vision prompt; see

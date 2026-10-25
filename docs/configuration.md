@@ -186,11 +186,12 @@ Game-HUD OCR regions come from a preset, looked up in this order:
 
 1. `<project>\hud_presets\<game>.json`
 2. `<CUTPOINT_HOME>\presets\<game>.json` (region discovery writes here)
-3. bundled presets in `src/cutpoint/events/presets/` (`r6.json`, Rainbow Six Siege; `wt.json`, War Thunder)
+3. the bundled presets folder `src/cutpoint/events/presets/` (no game presets are bundled)
 
-A file named like a bundled preset in 1 or 2 overrides it. To change a bundled preset, copy it
-to one of those folders and edit the copy. The user folder (2) is trusted like the bundled one:
-the `"builtin"` key is honoured there and in the bundled folder, so a copy of a built-in preset in
+The first preset whose `game` key (or file name, without `game`) matches wins: 1 overrides 2 and 3,
+and 2 overrides 3. To make a preset for a game, write one
+in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one:
+the `"builtin"` key is honoured there and in the bundled folder, so a preset with `"builtin": true` in
 `<CUTPOINT_HOME>\presets` keeps its built-in interpretation and OCR cache keys. In a project
 `hud_presets` folder (1) `"builtin"` is ignored with a WARNING (shown once) and the preset is read
 as a generic JSON preset (generic kill-feed parsing, generic banners added, new OCR cache).
@@ -205,12 +206,12 @@ before.
 
 ```json
 {
-  "title": "Rainbow Six Siege",
+  "title": "Example Game",
   "view": "first-person",
   "hype": "  hype: 0-1 ...\n",
   "events": [
-    {"name": "defuser",
-     "when": [{"type": "banner", "prefix": ["DEFUSER PLANTED"]}],
+    {"name": "objective",
+     "when": [{"type": "banner", "prefix": ["OBJECTIVE CAPTURED"]}],
      "score": 6, "max": 2, "payoff": true, "tail_s": 2.5, "seed": 1.5}
   ]
 }
@@ -242,7 +243,7 @@ before.
   hype) differs from the user (or bundled) preset for the same game key, or from the default
   prompt if there is none; its windows are then described again once. Seeds do not affect the
   key. After adding a user-folder preset with `title`, `view` or `hype`, or editing those fields in one, run
-  `cutpoint events <project> --force vlm` to describe the windows again. The bundled `r6.json`
-  and `wt.json` keep their OCR cache keys.
+  `cutpoint events <project> --force vlm` to describe the windows again. A preset moved from the
+  bundled folder to the user folder keeps its OCR and VLM cache keys.
 
 See [game streams](workflows/game-streams.md).

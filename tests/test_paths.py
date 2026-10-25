@@ -121,53 +121,22 @@ def test_invalid_preset_file_ignored(preset_env):
     assert regions.load_preset("foo") is None
 
 
-# -- the bundled R6 preset (presets/r6.json) keeps the original built-in behaviour
-R6_PHRASES = (
-    "WON ROUND", "ROUND WON", "LOST ROUND", "ROUND LOST", "VICTORY", "DEFEAT",
-    "REVERSE FRIENDLY FIRE", "ACE", "CLUTCH", "OVERTIME", "MATCH POINT",
-    "LAST OP STANDING", "DEFUSER PLANTED", "DEFUSER DISABLED", "BOMB DEFUSED",
-    "ELIMINATED", "TEAM KILL", "TEAMKILL", "DRAW",
-)  # fmt: skip
-R6_REGIONS = (
-    ("killfeed", 1300, 150, 560, 185, "killfeed", 0.008, 0.002),
-    ("counter", 760, 200, 400, 110, "counter", 0.015, 0.002),
-    ("banner", 520, 380, 880, 220, "banner", 0.03, 0.012),
-    ("notice", 600, 740, 720, 80, "notice", 0.03, 0.006),
-)
-R6_KEY = {  # OcrParams().key("r6", load_preset("r6")), computed before the move to JSON
-    "v": 3,
-    "game": "r6",
-    "fps": 3.0,
-    "fuzzy": 0.8,
-    "min_text_score": 0.6,
-    "persist_s": 8.0,
-    "extra": {},
-    "tags": [],
-    "regions": [
-        {"name": n, "x": x, "y": y, "w": w, "h": h, "kind": k, "min_change": mc, "min_fill": mf}
-        for n, x, y, w, h, k, mc, mf in R6_REGIONS
-    ],
-}
+# -- no bundled game presets: lookups must cope with an empty or missing bundled folder
+def test_lookups_without_bundled_folder(tmp_path, home, monkeypatch):
+    monkeypatch.setattr(paths, "PRESETS_DIR", tmp_path / "does-not-exist")
+    assert regions.preset_files() == []
+    assert regions.load_preset("boxfeed") is None
+    assert regions.preset_for_path("/x/anything.mp4") is None
+    write_preset(paths.presets_dir(), boxfeed(match=["box"]))
+    assert regions.load_preset("boxfeed") is not None
+    assert regions.preset_for_path("/x/box.mp4") == "boxfeed"
 
 
-def test_r6_preset_parity():
-    p = regions.load_preset("r6")
-    assert (p.builtin, p.bigtext, p.path, p.feed, p.player_tags, p.title) == (
-        True, False, None, {}, (), "Rainbow Six Siege",
-    )  # fmt: skip
-    got = tuple(
-        (r.name, r.x, r.y, r.w, r.h, r.kind, r.min_change, r.min_fill) for r in p.all_regions()
-    )
-    assert got == R6_REGIONS
-    assert p.phrases == R6_PHRASES  # no GENERIC_BANNERS
-    assert p.key() == {}
-    assert OcrParams().key("r6", p) == R6_KEY
-
-
-def test_r6_builtin_fallback_without_bundled_folder(tmp_path, home, monkeypatch):
-    default = regions.load_preset("r6")
-    monkeypatch.setattr(paths, "PRESETS_DIR", tmp_path / "empty")
-    assert regions.load_preset("r6") == default
+def test_lookups_with_empty_bundled_folder(tmp_path, home, monkeypatch):
+    (tmp_path / "bundled").mkdir()
+    monkeypatch.setattr(paths, "PRESETS_DIR", tmp_path / "bundled")
+    assert regions.load_preset("boxfeed", tmp_path / "proj") is None
+    assert regions.preset_for_path("/x/anything.mp4", project=tmp_path / "proj") is None
 
 
 def test_builtin_flag_honoured_in_user_folder(preset_env, caplog, monkeypatch):
@@ -185,15 +154,15 @@ def test_builtin_flag_honoured_in_user_folder(preset_env, caplog, monkeypatch):
 def test_builtin_flag_ignored_in_project_folder(preset_env, caplog, monkeypatch):
     _, project, proj_dir, _, _ = preset_env
     monkeypatch.setattr(regions, "_warned_builtin", set(), raising=False)
-    f = proj_dir / "r6.json"
+    f = proj_dir / "boxfeed.json"
     proj_dir.mkdir(parents=True)
     f.write_text(
-        json.dumps({"game": "r6", "builtin": True, "banner_phrases": ["ACE"], "regions": []}),
+        json.dumps({"game": "boxfeed", "builtin": True, "banner_phrases": ["ACE"], "regions": []}),
         encoding="utf-8",
     )
     with caplog.at_level("WARNING"):
-        p = regions.load_preset("r6", project)
-        regions.load_preset("r6", project)
+        p = regions.load_preset("boxfeed", project)
+        regions.load_preset("boxfeed", project)
     assert p.builtin is False
     assert p.path == f
     assert set(regions.GENERIC_BANNERS) <= set(p.phrases)
@@ -233,17 +202,34 @@ def test_interpreter_generic_only_for_non_installed_preset(preset_env):
         assert Interpreter("boxfeed", OcrParams(), 1.0, preset).generic is generic
 
 
-@pytest.mark.parametrize(
-    "path", ["D:/Rainbow Six Siege 2025.mp4", "/x/r6/match.mp4", "/x/SIEGE.mp4"]
-)
-def test_preset_for_path_r6(path):
-    assert regions.preset_for_path(path) == "r6"
-
-
-def test_r6_wins_over_user_preset_matching_siege(preset_env):
+@pytest.mark.parametrize("path", ["D:/Box Feed 2025.mp4", "/x/BOXES/match.mp4"])
+def test_preset_for_path_uses_match_hints_case_insensitively(preset_env, path):
     _, _, _, user_dir, _ = preset_env
-    user_dir.mkdir(parents=True)
-    (user_dir / "other.json").write_text(
-        json.dumps({"game": "other", "match": ["siege"], "regions": []}), encoding="utf-8"
-    )
-    assert regions.preset_for_path("/x/siege.mp4") == "r6"
+    write_preset(user_dir, boxfeed(match=["box feed", "boxes"]))
+    assert regions.preset_for_path(path) == "boxfeed"
+    assert regions.preset_for_path("/x/other.mp4") is None
+
+
+def test_preset_for_path_override(preset_env):
+    _, _, _, user_dir, _ = preset_env
+    write_preset(user_dir, boxfeed(match=["box"]))
+    assert regions.preset_for_path("/x/box.mp4", override="mine") == "mine"
+    assert regions.preset_for_path("/x/box.mp4", override="auto") == "boxfeed"
+
+
+def test_preset_for_path_order_project_user_bundled(preset_env):
+    _, project, proj_dir, user_dir, bundled_dir = preset_env
+    write_preset(bundled_dir, boxfeed(game="from-bundled", match=["clip"]))
+    assert regions.preset_for_path("/x/clip.mp4", project=project) == "from-bundled"
+    write_preset(user_dir, boxfeed(game="from-user", match=["clip"]))
+    assert regions.preset_for_path("/x/clip.mp4", project=project) == "from-user"
+    write_preset(proj_dir, boxfeed(game="from-project", match=["clip"]))
+    assert regions.preset_for_path("/x/clip.mp4", project=project) == "from-project"
+    assert regions.preset_for_path("/x/clip.mp4") == "from-user"  # no project: user first
+
+
+def test_preset_for_path_sorted_within_folder(preset_env):
+    _, _, _, user_dir, _ = preset_env
+    for game in ("zeta", "alpha", "mid"):  # written out of order
+        write_preset(user_dir, boxfeed(game=game, match=["clip"]))
+    assert regions.preset_for_path("/x/clip.mp4") == "alpha"

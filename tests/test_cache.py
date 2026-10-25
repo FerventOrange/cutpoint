@@ -55,7 +55,7 @@ def test_crash_dense_key_matches_legacy():
 
 
 def test_events_params_key_matches_legacy():
-    params = {"fps": 3.0, "game": "r6", "tags": ["x"]}
+    params = {"fps": 3.0, "game": "boxfeed", "tags": ["x"]}
     blob = json.dumps({"v": common.EVENTS_CACHE_VERSION, **params}, sort_keys=True, default=str)
     assert common.params_key(params) == hashlib.sha1(blob.encode("utf-8")).hexdigest()[:10]
 

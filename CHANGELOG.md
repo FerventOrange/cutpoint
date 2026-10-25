@@ -113,9 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HUD presets can define event types with an `events` list (`name`, `when` matchers, `score`,
   `max`, `payoff`, `tail_s`, `seed`) and the vision prompt's `title`, `view` and `hype`: custom
   events add to the highlight boost, extend clip ends and set the priority of vision windows.
-  Preset types are checked before the built-in ones and can replace them. `r6.json` now carries
-  `title`, `view` and `hype` for Rainbow Six Siege with unchanged results, and the bundled presets' OCR cache is
-  unchanged (#8).
+  Preset types are checked before the built-in ones and can replace them (#8).
 
 ### Changed
 
@@ -160,10 +158,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   size; otherwise, and when an NVENC encode fails (it is retried with libx264, which is then used
   for the rest of the run), with libx264 as before. On a 1080p60 recording this took about half
   the CPU time of libx264.
-- The Rainbow Six Siege HUD preset is now the bundled JSON preset `r6.json`, next to `wt.json`, so
-  it can be copied and edited; a copy is read as a generic preset, not with the built-in R6
-  interpretation. A user or project `r6.json` still overrides it. Detection and the OCR cache of
-  the bundled preset are unchanged (#8).
 - `cutpoint edit` takes `analyze`'s `--vision-top`, `--ollama-url` and `--ollama-model` with the
   same defaults and checks (`--vision-top` must be greater than 0) and passes them to the analysis.
 - The UI's New Project Source field no longer has the in-browser "Browse" button and folder
@@ -200,6 +194,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and repeated key times still act as a step. Existing `360 director --preview` videos
   are reused and keep the old motion until deleted; paths are not re-planned (#14).
 
+### Removed
+
+- The bundled game HUD presets (`r6.json`, `wt.json`) and the game-name
+  hints that picked them. Detection uses each preset's `match` field. To keep a game preset, copy
+  yours to the user presets folder (`cutpoint paths`), where `"builtin": true` is honoured, or let
+  region discovery write one (#8).
+
 ### Fixed
 
 - `analyze` (and `edit`) unloads the Ollama vision model right after the vision pass, also when
@@ -208,8 +209,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the run goes on (a DEBUG line).
 - The vision retry for the `ski` style now asks about skiing (jumps, crashes, chairlifts) like
   the first attempt, not about menus and scoreboards.
-- In generic (verb-style) kill feeds such as War Thunder, the player's own deaths no longer count
-  as player kills in the highlight boost, so moments with deaths rank lower; R6 is unchanged. The
+- In generic (verb-style) kill feeds the player's own deaths no longer count
+  as player kills in the highlight boost, so moments with deaths rank lower. The
   teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff
   banners.
 - `--style ski`: a stretch of footage at one score (a 15-30 s `cutpoint events` VLM window, a
