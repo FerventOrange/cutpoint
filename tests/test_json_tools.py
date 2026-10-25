@@ -275,7 +275,7 @@ def test_setup_json_bad_component_is_bad_args(home, capsys):
 
 def test_setup_json_visual_without_events_extra_is_missing_extra(home, monkeypatch, capsys):
     real = setup.importlib.util.find_spec
-    monkeypatch.setattr(setup, "download", lambda url, dst: None)
+    monkeypatch.setattr(setup, "download", lambda url, dst, *_a, **_k: None)
     monkeypatch.setattr(
         setup.importlib.util, "find_spec", lambda m, *a: None if m == "torch" else real(m, *a)
     )

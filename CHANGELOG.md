@@ -207,6 +207,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines
+  at debug level instead of info.
+- `events` loads CLIP once per run: the crash dense check reuses the visual layer's model.
+- `crashes` and the `events` crash layer no longer miss a rider who fell from a high speed to a
+  stop. A candidate below the 0.2 prefilter still gets the dense check when the speed dropped
+  from at least 40 km/h to 4 km/h or less within 10 s, not on a lift, at most 5 such extra
+  checks per project. A 71 to 0.4 km/h stop scored below the prefilter and was dropped. For
+  these extra checks the dense score can only raise the confidence, never lower it. The log
+  line now says how many candidates were checked densely.
+- `analyze --style ski` without the `events` extra (no torch) can score a cached visual layer:
+  the aesthetic head is read with numpy. `cutpoint setup` checks the downloaded aesthetic head's
+  size and SHA-256, and an unreadable head points to `cutpoint setup --only visual`.
 - `analyze` (and `edit`) unloads the Ollama vision model right after the vision pass, also when
   it fails or is interrupted, instead of leaving it in GPU memory (about 7 GB for qwen3-vl:8b)
   for Ollama's default 5 minutes. Only the model the run used is unloaded; if unloading fails,

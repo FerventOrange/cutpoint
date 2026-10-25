@@ -378,3 +378,14 @@ class _Dead:
 
     def poll(self):
         return self.returncode
+
+
+def test_install_visual_pins_the_aesthetic_head_size_and_hash(monkeypatch):
+    calls = []
+    monkeypatch.setattr(setup, "download", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda m, *a: None)
+    with pytest.raises(ModuleNotFoundError):  # stops after the download: no torch needed
+        setup.install_visual()
+    ((args, kwargs),) = calls
+    assert (*args, *kwargs.values())[2:] == (setup.AESTHETIC_SIZE, setup.AESTHETIC_SHA256)
+    assert args[0] == ev_paths.AESTHETIC_URL

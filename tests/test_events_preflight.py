@@ -6,13 +6,14 @@ import argparse
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from cutpoint import activity
+from cutpoint import activity, crash
 from cutpoint import analyze as analyze_mod
-from cutpoint.events import common, paths, pipeline
+from cutpoint.events import common, paths, pipeline, visual
 from cutpoint.pano import cli, views
 
 
@@ -279,3 +280,62 @@ def test_no_context_no_warning(tmp_path: Path, caplog, ambiguous):
     with caplog.at_level(logging.WARNING, logger=activity.logger.name):
         activity.resolve(tmp_path, llm=False)
     assert not any("--context not applied" in r.getMessage() for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- visual -> crash handoff
+class _Sentinel(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("layers", "only", "handed"),
+    [
+        (("visual", "crash"), (), True),
+        (("visual", "crash"), ("a*",), False),
+        (("visual",), (), False),
+    ],
+    ids=["crash-run", "only-sources", "no-crash-layer"],
+)
+def test_run_events_hands_the_visual_clip_model_to_the_crash_layer(
+    monkeypatch, tmp_path: Path, layers, only, handed
+):
+    src = SimpleNamespace(path=tmp_path / "a.mp4", name="a.mp4", duration=60.0)
+    monkeypatch.setattr(
+        pipeline, "load_highlights", lambda project: {"sources": [{"path": str(src.path)}]}
+    )
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: src)
+    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
+    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+
+    class Enc:
+        closed = 0
+
+        def close(self):
+            Enc.closed += 1
+
+    enc, got, models = Enc(), {}, object()
+    monkeypatch.setattr(
+        crash.ClipEncoder, "from_visual", classmethod(lambda cls, m: enc if m is models else None)
+    )
+
+    def run_layer(sources, params, force=False, bad=None, handoff=None):
+        got["handoff"] = handoff
+        if handoff is not None:
+            handoff(models)
+        if handoff is None:
+            raise _Sentinel  # nothing to hand over: stop here
+        return {}
+
+    def detect(project, **kw):
+        got["encoder"] = kw.get("encoder", "missing")
+        raise _Sentinel
+
+    monkeypatch.setattr(visual, "run_layer", run_layer)
+    monkeypatch.setattr(crash, "detect_project", detect)
+    with pytest.raises(_Sentinel):
+        pipeline.run_events(tmp_path, layers=layers, only=only)
+    assert (got["handoff"] is not None) is handed
+    if handed:
+        assert got["encoder"] is enc and Enc.closed >= 1

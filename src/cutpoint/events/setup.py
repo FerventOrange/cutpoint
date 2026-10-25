@@ -76,6 +76,8 @@ PANNS_CKPT_MIRRORS: tuple[str, ...] = (
 )
 PANNS_CKPT_SIZE = 327428481
 PANNS_CKPT_SHA256 = "dd3b4043a87d4ec13df8082c0fcfee3fb5084151808e47e060987a95eabdd142"
+AESTHETIC_SIZE = 3714759
+AESTHETIC_SHA256 = "21dd590f3ccdc646f0d53120778b296013b096a035a2718c9cb0d511bff0f1e0"
 # A mirror with another one after it is dropped if it delivers less than this (bytes/s)
 # over its first SLOW_START_WINDOW seconds. The last mirror is never dropped for slowness.
 PANNS_MIN_RATE = 500_000
@@ -640,7 +642,7 @@ def install_omni() -> None:
 
 def install_visual() -> None:
     """Download the aesthetic head; load CLIP + Faster R-CNN once so their weights download."""
-    download(paths.AESTHETIC_URL, paths.aesthetic_head())
+    download(paths.AESTHETIC_URL, paths.aesthetic_head(), AESTHETIC_SIZE, AESTHETIC_SHA256)
     for m in ("torch", "open_clip"):
         if importlib.util.find_spec(m) is None:
             # The CLI turns this into "<m> is not installed; it comes with the 'events' extra"

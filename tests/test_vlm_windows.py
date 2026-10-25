@@ -39,6 +39,16 @@ def test_build_messages_uses_media_content(tmp_path: Path):
     assert content[1:-1] == media
 
 
+def test_select_windows_quiet_logs_counts_at_debug_only(tmp_path: Path, caplog):
+    src = _source(tmp_path)
+    with caplog.at_level("INFO"):
+        vw.select_windows([src], [], {}, vw.VlmParams(), quiet=True)
+    assert "VLM windows" not in caplog.text
+    with caplog.at_level("INFO"):
+        vw.select_windows([src], [], {}, vw.VlmParams())
+    assert "VLM windows" in caplog.text
+
+
 def test_hints_builtin_kill_says_whose_kill():
     def hint(**fields):
         ev = {"kind": "ocr", "type": "kill", "text": "a > b", "t": 5.0, **fields}

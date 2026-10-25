@@ -345,6 +345,7 @@ def select_windows(
     layer1: dict[str, list[dict[str, Any]]],
     params: VlmParams,
     types: dict[str, tuple[EventType, ...]] | None = None,
+    quiet: bool = False,
 ) -> list[Window]:
     """Build, merge and cap the windows to send to the VLM.
 
@@ -354,6 +355,8 @@ def select_windows(
         layer1: ``{source_path: [layer-1 events]}`` (audio + OCR).
         params: Selection parameters.
         types: ``{source_path: event types}`` (custom seed priorities).
+        quiet: Log the window counts at debug level (VLM layer off: only cached
+            descriptions are reused).
     """
     dur = {str(s.path): s.duration for s in sources}
     raw: list[Window] = []
@@ -437,7 +440,8 @@ def select_windows(
     chosen.sort(key=lambda w: (order.get(w.source, 0), w.start))
     for w in chosen:
         w.start, w.end = round(w.start, 1), round(w.end, 1)
-    logger.info(
+    logger.log(
+        logging.DEBUG if quiet else logging.INFO,
         "VLM windows: %d raw seeds -> %d merged -> %d kept (+%d gap-fill)",
         len(raw),
         len(merged),
