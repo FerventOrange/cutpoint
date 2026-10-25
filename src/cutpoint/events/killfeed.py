@@ -1233,7 +1233,7 @@ def detect_ocr_events(
         if not layout:
             return False
         if r.kind == "feed":
-            # Feeds add entries at one end (War Thunder: the bottom) and scroll or
+            # Feeds add entries at one end (by default the bottom) and scroll or
             # fade the rest, which were already read: recognise only when a row
             # was added or the newest row changed.
             newest = (

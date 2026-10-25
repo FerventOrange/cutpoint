@@ -480,6 +480,14 @@ def _discover(
         existing = load_preset(game, project)
         if existing is not None and not force:
             continue
+        if existing is None:
+            logger.info(
+                "No HUD preset matches %s; discovering regions as %r (a few minutes). "
+                "Put a preset in %s and pass --game, or --no-discover to skip",
+                srcs[0].path,
+                game,
+                cutpoint_paths.presets_dir(),
+            )
         t0 = time.perf_counter()
         proposal = discover_regions(
             srcs, project / "discovery" / game, game, DiscoverParams(bursts=bursts)

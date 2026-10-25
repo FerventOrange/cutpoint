@@ -38,7 +38,7 @@ or replaced by hand-edited input (`clips --segments`). Per-source results are ca
 | `ffmpeg_utils.py` | ffmpeg discovery, probing, loudness, encoder choice, read-error detection |
 | `telemetry.py`, `ski.py`, `crash.py`, `refmatch.py`, `mix.py` | Action-cam module |
 | `extras.py` | Maps missing optional modules to the extra and install command |
-| `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, `llama_server.py`), `pipeline.py` to run them, `scoring.py` to feed results back; `setup.py` downloads models; `presets/` has bundled HUD presets |
+| `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, `llama_server.py`), `pipeline.py` to run them, `scoring.py` to feed results back; `setup.py` downloads models; `presets/` is the bundled HUD presets folder (no game presets ship) |
 | `pano/` | `cutpoint 360`: `x3.py` (clip discovery), `geometry.py` (IMU levelling), `views.py`, `director.py`, `render.py`, `stitch.py` (SDK wrapper), `qa.py`, `repair.py`, `project.py` (`pano.json` and the `pano` config section) |
 
 See [360 director](workflows/360-director.md) for the 360 design.

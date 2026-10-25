@@ -5,11 +5,12 @@ Games use JSON presets, looked up in this order: the project's
 ``<CUTPOINT_HOME>/presets`` (where region discovery writes by default), then
 the presets bundled with the package (``cutpoint/events/presets``). They are
 written by region discovery (:mod:`cutpoint.events.discover`) and calibrated
-by hand. War Thunder's bundled preset is ``presets/wt.json``.
+by hand. No game presets ship with the package; the bundled folder is kept
+for generic ones.
 
-Rainbow Six Siege (the optional R6 module, 2025 HUD) is the bundled
-``presets/r6.json``, marked ``"builtin": true``: it keeps the original R6
-interpretation, so its OCR cache keys and results are unchanged.
+An installed preset marked ``"builtin": true`` keeps the original R6
+interpretation (coloured name boxes, its own banner list), so its OCR cache
+keys and results stay those of the former built-in R6 preset.
 
 The user and bundled folders are the installed, trusted tiers: a preset copied
 into ``<CUTPOINT_HOME>/presets`` behaves exactly like the same file bundled with
@@ -43,7 +44,6 @@ bundled); a project preset that sets it is loaded as a normal JSON preset
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field, fields
@@ -117,19 +117,6 @@ def _regions(data: dict[str, Any]) -> tuple[Region, ...]:
     )
 
 
-# Built-in presets ("builtin": true), read from the bundled JSON at import, so
-# they stay available when the bundled folder is not searched.
-_BUILTIN: dict[str, dict[str, Any]] = {
-    "r6": json.loads((paths.PRESETS_DIR / "r6.json").read_text(encoding="utf-8")),
-}
-
-# Substrings of the source path that identify a game (lower-case), checked
-# before the "match" hints of JSON presets.
-GAME_HINTS: dict[str, tuple[str, ...]] = {
-    "r6": tuple(_BUILTIN["r6"]["match"]),
-    "wt": ("war thunder", "warthunder"),
-}
-
 # Game-agnostic banner vocabulary for the generic big-text check, merged into
 # every JSON preset's phrases. Matching is fuzzy.
 GENERIC_BANNERS: tuple[str, ...] = (
@@ -176,7 +163,7 @@ class HudPreset:
     """Regions and vocabulary for one game.
 
     Attributes:
-        game: Preset key ("r6", "wt", or a slug of the game's name).
+        game: Preset key (the preset's ``game``, or a slug of the game's name).
         regions: HUD rectangles to OCR.
         phrases: Banner phrases (built-in R6: its own list only; JSON presets:
             their list plus :data:`GENERIC_BANNERS`).
@@ -271,9 +258,9 @@ def is_installed_path(path: Path | None) -> bool:
 
 
 def _is_builtin(data: dict[str, Any], path: Path | None) -> bool:
-    """``"builtin": true`` counts only for installed presets: bundled (``path`` None:
-    :data:`_BUILTIN`, or in :data:`~cutpoint.paths.PRESETS_DIR`) or user presets
-    (in :func:`~cutpoint.paths.presets_dir`)."""
+    """``"builtin": true`` counts only for installed presets: bundled (``path`` None
+    or in :data:`~cutpoint.paths.PRESETS_DIR`) or user presets (in
+    :func:`~cutpoint.paths.presets_dir`)."""
     if not data.get("builtin"):
         return False
     if is_installed_path(path):
@@ -323,8 +310,7 @@ def _event_phrases(events: tuple[dict[str, Any], ...]) -> list[str]:
 def load_preset(game: str | None, project: Path | None = None) -> HudPreset | None:
     """The HUD preset for ``game``.
 
-    Lookup order: project, user (``<CUTPOINT_HOME>/presets``), bundled, then
-    built-in (the bundled ``"builtin": true`` presets, read at import).
+    Lookup order: project, user (``<CUTPOINT_HOME>/presets``), then bundled.
 
     Returns:
         The preset, or None when ``game`` has none (discovery can create one).
@@ -335,8 +321,6 @@ def load_preset(game: str | None, project: Path | None = None) -> HudPreset | No
         data = _read_json(path)
         if data and (data.get("game") or path.stem) == game:
             return preset_from_dict(data, path)
-    if game in _BUILTIN:
-        return preset_from_dict(_BUILTIN[game])
     return None
 
 
@@ -345,15 +329,12 @@ def preset_for_path(
 ) -> str | None:
     """Game key for ``path`` (or ``override`` when not "auto").
 
-    Built-in hints first (R6, WT), then the ``match`` hints of JSON presets.
+    The ``match`` hints of JSON presets, in lookup order (project, user, bundled).
     Returns None when nothing matches (see :func:`game_key_for_path`).
     """
     if override and override != "auto":
         return override
     low = path.lower()
-    for game, hints in GAME_HINTS.items():
-        if any(h in low for h in hints):
-            return game
     for p in preset_files(project):
         data = _read_json(p) or {}
         if any(str(h).lower() in low for h in data.get("match", [])):

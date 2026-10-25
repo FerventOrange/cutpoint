@@ -318,7 +318,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--force LAYER ...` | Recompute those layers |
 | `--only GLOB` | Only sources whose file name matches |
 | `--avoid "GLOB@START-END"` | Never decode this range (repeatable). Recorded read errors are always avoided |
-| `--game KEY`, `--player TAG` | HUD preset (`auto`, `r6`, `wt`, or a preset name) and your in-game name(s) |
+| `--game KEY`, `--player TAG` | HUD preset (`auto` or a preset key) and your in-game name(s) |
 | `--discover-regions` / `--no-discover` | Force or disable HUD region discovery |
 | `--preset-scope {user,project}` | Where a discovered preset is saved |
 | `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry |

@@ -154,11 +154,11 @@ def test_learned_funny_style_applies(home):
     assert got[0] == 0.0
 
 
-@pytest.mark.parametrize("name", ["r6", "wt"])
+@pytest.mark.parametrize("name", ["boxfeed", "verbfeed"])
 @pytest.mark.parametrize("style", [None, "funny", "gaming", "highlights"])
 def test_own_death_is_first_match_in_every_style(name, style):
     e = death()
-    if name == "wt":
+    if name == "verbfeed":
         e["verb"] = "kill"
     t = eventtypes.first_match(DEFAULT_EVENT_TYPES, e)
     assert t is not None and t.name == "player_deaths"

@@ -11,7 +11,7 @@ priority as a VLM window seed (``seed``, :mod:`cutpoint.events.vlm_windows`).
 HUD presets can define their own types in an ``events`` list::
 
     "events": [
-      {"name": "defuser", "when": [{"type": "banner", "prefix": ["DEFUSER PLANTED"]}],
+      {"name": "objective", "when": [{"type": "banner", "prefix": ["OBJECTIVE CAPTURED"]}],
        "score": 6, "max": 2, "payoff": true, "tail_s": 2.5, "seed": 1.5,
        "reaction": 4, "styles": ["funny", "gaming"]}
     ]
@@ -55,7 +55,7 @@ BANNER_PAYOFFS = (
     "TARGET DESTROYED",
     "SHOT DOWN",
     "MISSION ACCOMPLISHED",
-    # generic / War Thunder (never produced by the R6 preset)
+    # generic and verb-style feed banners
     "YOU HAVE BEEN DESTROYED",
     "CREW KNOCKED OUT",
     "MISSION FAILED",
