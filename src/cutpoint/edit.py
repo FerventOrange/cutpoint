@@ -3,7 +3,8 @@
 Runs ``analyze`` -> (``events``) -> ``clips`` -> ``assemble`` in-process with the
 options of a :data:`KINDS` entry, then copies the final video and its subtitles
 to ``<name>-final.mp4`` / ``.srt`` in the project folder (``<name>``: see
-:func:`edit_name`).
+:func:`edit_name`). With ``CUTPOINT_PROGRESS=1`` it reports the steps of
+:data:`cutpoint.progress.EDIT_STEPS` (analyze's, then clips and assemble).
 """
 
 from __future__ import annotations
@@ -12,10 +13,11 @@ import argparse
 import logging
 import os
 import shutil
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from cutpoint import cache, jsonout
+from cutpoint import cache, jsonout, progress
 from cutpoint.assemble import assemble
 from cutpoint.clips import export_clips
 from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
@@ -114,13 +116,15 @@ def run_edit(
     vision_top: int | None = None,
     ollama_url: str | None = None,
     ollama_model: str | None = None,
+    skip: Collection[str] = (),
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
     Analysis is cached as with ``cutpoint analyze``. ``force`` has ``clips --force``
-    semantics. ``events`` runs ``cutpoint events`` (default options) before the clips.
-    ``vision`` is ``analyze --vision`` (opt-in: None or False rates nothing with Ollama);
-    ``vision_top``, ``ollama_url`` and ``ollama_model`` are analyze's options of those names.
+    semantics. ``events`` runs ``cutpoint events`` (default options) before the clips; its
+    VLM layer reports as the ``keyframes`` step again. ``vision`` is ``analyze --vision``
+    (opt-in: None or False rates nothing with Ollama); ``vision_top``, ``ollama_url``,
+    ``ollama_model`` and ``skip`` are analyze's options of those names.
 
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
@@ -134,8 +138,42 @@ def run_edit(
         ModuleNotFoundError: With ``events``, if the events extra is missing (before any
             analysis).
     """
+    with progress.run(progress.EDIT_STEPS) as steps:
+        return _run_edit(
+            inputs,
+            project,
+            kind,
+            steps,
+            vertical=vertical,
+            force=force,
+            events=events,
+            vision=vision,
+            vision_top=vision_top,
+            ollama_url=ollama_url,
+            ollama_model=ollama_model,
+            skip=skip,
+        )
+
+
+def _run_edit(
+    inputs: list[Path],
+    project: Path,
+    kind: Kind,
+    steps: progress.Run,
+    *,
+    vertical: bool,
+    force: bool,
+    events: bool,
+    vision: bool | None,
+    vision_top: int | None,
+    ollama_url: str | None,
+    ollama_model: str | None,
+    skip: Collection[str],
+) -> Path:
+    """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
 
+    steps.start("transcribe")  # the checks below fail the first step
     videos = find_videos(inputs)
     if any(file_keys(v.parent) & file_keys(project) for v in videos):
         raise ValueError(
@@ -166,20 +204,25 @@ def run_edit(
         vision_top=vision_top,
         ollama_url=ollama_url,
         ollama_model=ollama_model,
+        layers=True,
+        skip=skip,
     )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415
 
-        run_args(_events_namespace(project))
+        with steps.step("keyframes", detail="describing moments with the VLM"):
+            run_args(_events_namespace(project))
         report_highlights(project, project / "highlights.json")  # events re-ranked it
-    export_clips(
-        project,
-        top=kind.top,
-        max_total=kind.max_total,
-        order=kind.order,
-        vertical=vertical,
-        force=force,
-    )
+    with steps.step("clips"):
+        export_clips(
+            project,
+            top=kind.top,
+            max_total=kind.max_total,
+            order=kind.order,
+            vertical=vertical,
+            force=force,
+        )
+    steps.start("assemble")
     srt = (project / final_name).with_suffix(".srt")
     before = _identity(srt)  # an earlier run's final.srt is not this run's subtitles
     final = assemble(

@@ -140,6 +140,7 @@ def test_edit_passes_vision_to_analyze(pipeline, home, cfg, argv, vision):
     assert cli.main(["edit", str(pipeline.video), *argv]) == 0
     assert pipeline.calls[0][2] == {
         "vision": vision, "vision_top": None, "ollama_url": None, "ollama_model": None,
+        "layers": True, "skip": (),
     }  # fmt: skip
 
 
@@ -152,6 +153,8 @@ def test_edit_passes_the_vision_options_to_analyze(pipeline):
         "vision_top": 12,
         "ollama_url": "http://ollama.example:11434",
         "ollama_model": "llava:7b",
+        "layers": True,
+        "skip": (),
     }
 
 

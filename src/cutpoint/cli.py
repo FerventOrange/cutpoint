@@ -29,7 +29,13 @@ from cutpoint.activity import resolve as resolve_activity
 from cutpoint.assemble import assemble
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import export_clips
-from cutpoint.config import get_config, projects_dir, resolve_project_path, vision_default
+from cutpoint.config import (
+    analysis_skip,
+    get_config,
+    projects_dir,
+    resolve_project_path,
+    vision_default,
+)
 from cutpoint.crash import CrashParams, detect_project
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.events import paths as event_paths
@@ -37,6 +43,7 @@ from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.ffmpeg_utils import FFmpegError
 from cutpoint.mix import EXCLUDE_FILE, parse_quotas, read_exclusions, run_mix
 from cutpoint.planning import Padding
+from cutpoint.progress import SKIPPABLE
 from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_names
 from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
@@ -47,6 +54,25 @@ logger = logging.getLogger("cutpoint")
 def _vision(a: argparse.Namespace) -> bool:
     """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json (default off)."""
     return vision_default() if a.vision is None else a.vision
+
+
+def _skip(a: argparse.Namespace) -> tuple[str, ...]:
+    """``--skip`` as given, else ``analysis.skip`` in config.json (default none)."""
+    return analysis_skip() if a.skip is None else tuple(a.skip)
+
+
+def _add_skip_argument(p: argparse.ArgumentParser) -> None:
+    """``--skip STEP [STEP ...]``: analysis steps left out (see cutpoint.progress)."""
+    p.add_argument(
+        "--skip",
+        nargs="+",
+        choices=SKIPPABLE,
+        metavar="STEP",
+        help="leave out analysis steps: reactions (sound events such as laughter), keyframes "
+        "(game HUD text or, with a CUDA GPU, what the camera sees) and/or crashes (action-cam "
+        "footage), given after the input paths (e.g. analyze clip.mp4 --skip crashes); default: "
+        "analysis.skip in config.json, else none",
+    )
 
 
 def _cmd_analyze(a: argparse.Namespace) -> None:
@@ -82,6 +108,8 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         exclude=a.exclude or [],
         recursive=a.recursive,
         recover=a.recover,
+        layers=True,
+        skip=_skip(a),
     )
 
 
@@ -101,6 +129,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         vision_top=a.vision_top,
         ollama_url=a.ollama_url,
         ollama_model=a.ollama_model,
+        skip=_skip(a),
     )
 
 
@@ -779,6 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
     ed.add_argument("--ollama-model", help="default: qwen3-vl:8b")
+    _add_skip_argument(ed)
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit)
 
@@ -849,6 +879,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="ski: always clip crashes from crashes.json (cutpoint crashes) with at "
         "least this confidence, 0-1 (default: style, 0.6 for ski; 0 = off)",
     )
+    _add_skip_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)
 

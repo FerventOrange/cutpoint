@@ -164,6 +164,17 @@ def rescore_highlights(project: Path) -> int:
     backup = project / "highlights.pre-events.json"
     if not backup.exists() and not hl.get("settings", {}).get("events_rescored"):
         cache.save_json(backup, hl)  # one-time copy of the untouched analysis
+    changed = rescore(hl, ev, project)
+    cache.save_json(project / "highlights.json", hl)
+    logger.info(
+        "Rescored %d of %d candidates from events.json", changed, len(hl.get("candidates", []))
+    )
+    return changed
+
+
+def rescore(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int:
+    """:func:`rescore_highlights` in memory: rescore the analysis ``hl`` of ``project``
+    from the events ``ev`` (an events.json object); returns the candidates changed."""
     by_src: dict[str, list[dict[str, Any]]] = {}
     for e in ev.get("events", []):
         by_src.setdefault(e["source"], []).append(e)
@@ -212,8 +223,4 @@ def rescore_highlights(project: Path) -> int:
             n += 1
         hl["suggested_top"] = n
     hl.setdefault("settings", {})["events_rescored"] = ev.get("created")
-    cache.save_json(project / "highlights.json", hl)
-    logger.info(
-        "Rescored %d of %d candidates from events.json", changed, len(hl.get("candidates", []))
-    )
     return changed

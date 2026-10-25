@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import subprocess
@@ -198,13 +199,35 @@ def transcript_excerpt(
     return "\n".join(parts)[:max_chars]
 
 
+# Analyses in progress: project folder -> the highlights.json they will write.
+_PENDING: dict[Path, dict[str, Any]] = {}
+
+
+@contextlib.contextmanager
+def pending_highlights(project: Path, data: dict[str, Any]) -> Iterator[None]:
+    """Let :func:`load_highlights` return ``data`` for ``project`` in the block.
+
+    ``cutpoint analyze`` runs the event layers and crash detection before it writes
+    highlights.json (once, at the end); they read the analysis from here meanwhile.
+    """
+    key = project.resolve()
+    _PENDING[key] = data
+    try:
+        yield
+    finally:
+        _PENDING.pop(key, None)
+
+
 def load_highlights(project: Path) -> dict[str, Any]:
-    """Read ``highlights.json`` of a project.
+    """Read ``highlights.json`` of a project (or the analysis in progress, see
+    :func:`pending_highlights`).
 
     Raises:
         FileNotFoundError: If it is missing.
         ValueError: If it is unreadable, not valid JSON or has no ``sources`` list.
     """
+    if _PENDING and (pending := _PENDING.get(project.resolve())) is not None:
+        return pending
     path = project / "highlights.json"
     try:
         data = cache.read_json(path, hint="; re-run `cutpoint analyze` to rewrite it")

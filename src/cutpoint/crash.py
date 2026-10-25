@@ -1131,6 +1131,7 @@ def detect_project(
     refresh_profile: bool = False,
     encoder: ClipEncoder | None = None,
     warn_unreachable: bool = True,
+    llm: bool = True,
 ) -> Path:
     """Find crashes in every source of a project and write ``crashes.json``.
 
@@ -1156,6 +1157,8 @@ def detect_project(
             it if this raises before.
         warn_unreachable: Add a ``footage_unreachable`` JSON warning per
             unreachable source (False when the caller already warned).
+        llm: Let the profile detection ask the local Ollama models
+            (:func:`cutpoint.activity.resolve`); False: library and generic profiles only.
 
     Returns:
         Path of crashes.json.
@@ -1178,7 +1181,7 @@ def detect_project(
     prof = None
     if (p.pos, p.neg, p.words) == (CRASH_POS, CRASH_NEG, tuple(CRASH_WORDS.items())):
         prof = activity.resolve(
-            project, activity=activity_name, context=context, refresh=refresh_profile
+            project, activity=activity_name, context=context, refresh=refresh_profile, llm=llm
         )
         p = p.with_profile(prof["profile"])
     t_start = time.perf_counter()
