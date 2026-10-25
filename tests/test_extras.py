@@ -40,7 +40,9 @@ def test_install_hint_uv_and_pip(monkeypatch, tmp_path):
     editable = _Dist(_editable_url(tmp_path))
     monkeypatch.setattr(extras.importlib.metadata, "distribution", lambda name: editable)
     monkeypatch.setenv("UV", "1")
-    assert extras.install_hint("events").startswith("uv sync --extra events")
+    hint = extras.install_hint("events")
+    assert hint.startswith("uv sync --extra events")
+    assert "or use --extra all for everything" in hint
     monkeypatch.delenv("UV")
     monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: object())
     assert "-m pip install" in extras.install_hint("events")

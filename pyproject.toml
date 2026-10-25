@@ -54,7 +54,7 @@ events = [
 ]
 # `cutpoint ui`: local browser workspace for the standard-video highlight workflow.
 ui = ["fastapi>=0.116", "uvicorn>=0.30"]
-all = ["cutpoint[ski,events,gpu]"]
+all = ["cutpoint[ski,events,gpu,ui]"]
 
 [dependency-groups]
 # Installed by default by `uv sync` / `uv run`; not part of the published wheel.
