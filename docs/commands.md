@@ -358,14 +358,32 @@ file, and a cancelled first run leaves none. The analysis score stays in each ca
 `score_pre_events`, and `highlights.pre-events.json` is written only when the analysis was not
 ranked with events yet.
 
-A first-time discovery for a game can take several minutes on CPU OCR (one measurement: about
-3.3 minutes per 10 bursts). Rough extra cost per hour of footage (estimates, not measured):
-`reactions` seconds on a GPU and a few minutes on the CPU; `keyframes` minutes.
-
 If ffmpeg hits read errors (a damaged file, a failing drive), `analyze` warns loudly, records
 `read_errors` on that source in `highlights.json`, and stops analysing that source at the
 failure time. `--recover` then probes past the bad region and continues from the first
 readable point.
+
+#### Typical cost
+
+Measured on 1080p gaming footage (RTX 3080 10 GB), rounded:
+
+| Run | Total | Breakdown | GPU memory peak |
+|---|---|---|---|
+| GPU, one 7.4 min file, first run | about 8.5 min | `transcribe` 76 s, `reactions` 5 s, `keyframes` 7 min (about 4 min of it HUD discovery), `ranking` under 1 s | about 4 GB |
+| GPU, 2 x 10 min files, first run | about 17 min | `transcribe` 2.7 min, `reactions` 26 s, `keyframes` 14 min (about 7 min of it discovery) | about 3.7 GB |
+| Cached re-run | about 5 s | | |
+| CPU only, one 10 min file, discovery done | about 5.7 min | `transcribe` 2 min, `reactions` 16 s, `keyframes` 3.4 min (OCR on the CPU) | |
+| CPU only, 60 s action clip | 25 s | `keyframes` skipped with "no CUDA GPU (CLIP on the CPU: about an hour per hour)" | |
+
+`keyframes` dominates first runs. HUD discovery runs once per game, and the `keyframes` bar
+reports no percentage while it runs. The CLIP layer is skipped without a CUDA GPU because on the
+CPU it would take about an hour per hour of footage.
+
+To force a CPU run, set `CUDA_VISIBLE_DEVICES=-1`; an empty value does not hide the GPU on
+Windows. No analysis cache key includes the device, so the `reactions`, `keyframes` and
+`crashes` results are reused across devices (after a GPU run, a CPU run reuses them, and the
+other way round). The transcript is cached per Whisper model (`--model`; the default is `medium`
+on CUDA and `small` on CPU), so it is reused only when both runs use the same `--model`.
 
 ## events
 
