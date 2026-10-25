@@ -508,7 +508,9 @@ def _hints(events: list[dict[str, Any]], start: float, end: float) -> str:
             # feed kills (generic verb feeds and built-in R6 rows): say whose kill it is
             if ev.get("verb") or ev["type"] == "kill":
                 extra += (
-                    " (the PLAYER's kill)"
+                    " (the PLAYER killed themselves)"
+                    if ev.get("player_kill") and ev.get("player_death")
+                    else " (the PLAYER's kill)"
                     if ev.get("player_kill")
                     else " (the PLAYER died)"
                     if ev.get("player_death")

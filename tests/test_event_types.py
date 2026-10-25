@@ -2,7 +2,8 @@
 
 They pin the behaviour before event types moved into the HUD preset data, so
 the preset-driven defaults reproduce the original values, except that the
-player's own deaths (generic and built-in feeds alike) no longer count as player kills.
+player's own deaths (generic and built-in feeds alike) no longer count as player kills
+and a self-kill is ``self_kills`` (half a kill), not a player kill.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from cutpoint import paths
 from cutpoint.events import eventtypes, regions, scoring, tails
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source
-from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.killfeed import FeedParser, OcrParams, derive_streaks
 from cutpoint.events.regions import GENERIC_BANNERS, load_preset
 from cutpoint.events.report import normalize
 from hud_fixtures import boxfeed, verbfeed, write_preset
@@ -126,13 +127,14 @@ def _boost(names: list[str]) -> tuple[float, dict[str, Any]]:
     return scoring.event_boost(CAND, [EVENTS[n] for n in names])
 
 
-def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0) -> dict[str, Any]:
+def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0) -> dict[str, Any]:
     return {
         "laughter": laugh,
         "scream": scream,
         "player_kills": kills,
         "teamkills": tk,
         "banners": banners,
+        "self_kills": self_kills,
     }
 
 
@@ -181,15 +183,38 @@ def test_matcher_multi_flag(flag, fields, expected):
 @pytest.mark.parametrize(
     ("fields", "boost", "evidence"),
     [
-        # a self-kill (player is killer and victim) still counts as a kill
-        ({"player_kill": True, "player_death": True}, 6.0, _ev(kills=1)),
+        # a self-kill (player is killer and victim) is its own type: half a kill, not a kill
+        ({"player_kill": True, "player_death": True}, 3.0, _ev(self_kills=1)),
         # a teamkill that kills the player is still a teamkill
         ({"player_death": True, "teamkill": True}, 12.0, _ev(tk=1)),
+        # teamkills come first: a self-kill flagged as a teamkill is a teamkill
+        ({"player_kill": True, "player_death": True, "teamkill": True}, 12.0, _ev(tk=1)),
     ],
 )
 def test_builtin_kill_flag_combinations(fields, boost, evidence):
     ev = normalize("a.mp4", _ocr("e", "kill", "zed > zed", 1.0, player=True, **fields)[1])
     assert scoring.event_boost(CAND, [ev]) == (boost, evidence)
+
+
+@pytest.mark.parametrize("style", [None, "funny", "gaming"])
+def test_self_kills_capped_like_kills(style):
+    """3 points per self-kill in every style, at most 3 counted, like kills."""
+    ev = normalize(
+        "a.mp4",
+        _ocr("e", "kill", "zed > zed", 1.0, player=True, player_kill=True, player_death=True)[1],
+    )
+    boost, evidence = scoring.event_boost(CAND, [ev] * 4, style=style)
+    assert boost == 9.0 and evidence["self_kills"] == 4 and evidence["player_kills"] == 0
+
+
+def test_verb_feed_self_kill_is_self_kill():
+    """A generic verb feed row where the player kills themselves lands in self_kills."""
+    parser = FeedParser({"kill_words": {"toppled": "kill"}}, ("BOXER",), 1.0)
+    raw = parser._event("BOXER", "BOXER", "kill", None, None, 0.9, "BOXER toppled BOXER")
+    assert raw["player_kill"] and raw["player_death"]
+    ev = normalize("a.mp4", {"kind": "ocr", "t": 1.0, "end": 4.0, **raw})
+    assert eventtypes.first_match(eventtypes.DEFAULT_EVENT_TYPES, ev).name == "self_kills"
+    assert scoring.event_boost(CAND, [ev]) == (3.0, _ev(self_kills=1))
 
 
 @pytest.mark.parametrize(
@@ -369,6 +394,17 @@ def test_default_own_death_type_sets_nothing(name):
     assert t is not None
     assert t.name == "player_deaths"
     assert (t.payoff, t.tail_s, t.seed) == (None, None, None)
+
+
+def test_default_self_kill_type_keeps_payoff_and_seed():
+    """Like a death, a self-kill keeps the built-in tail payoff and VLM seed."""
+    raw = {"kind": "ocr", "type": "kill", "text": "zed > zed", "t": 1.0, "end": 4.0}
+    raw |= {"player": True, "player_kill": True, "player_death": True}
+    t = eventtypes.first_match(eventtypes.DEFAULT_EVENT_TYPES, raw)
+    assert t is not None and t.name == "self_kills"
+    assert (t.payoff, t.tail_s, t.seed) == (None, None, None)
+    assert vw._seed_priority(raw, eventtypes.DEFAULT_EVENT_TYPES) == pytest.approx(1.2)
+    assert tails.is_payoff(normalize("a.mp4", raw), tails.EventTailSettings())
 
 
 def test_vlm_key():
@@ -655,3 +691,22 @@ def test_preset_type_replaces_builtin(tmp_path, home):
     )
     loaded = tails.load_events(project)["a.mp4"]
     assert not tails.is_payoff(loaded[0], tails.EventTailSettings())
+
+
+def test_self_kill_is_no_streak_kill():
+    """Two verb-feed kills make a multikill; a self-kill between them adds nothing to it."""
+
+    def kill(t: float, victim: str) -> dict[str, Any]:
+        own = victim == "BOXER"
+        return {
+            "type": "kill", "t": t, "text": f"BOXER > {victim}", "victim": victim, "verb": "kill",
+            "player": True, "player_kill": True, "player_death": own,
+        }  # fmt: skip
+
+    events = [kill(1.0, "zed"), kill(5.0, "BOXER")]
+    derive_streaks(events)
+    assert not [e for e in events if e["type"] == "multikill"]
+    events.append(kill(9.0, "yan"))
+    derive_streaks(events)
+    (multi,) = [e for e in events if e["type"] == "multikill"]
+    assert multi["text"] == "DOUBLE KILL (zed, yan)" and multi["kills"] == 2

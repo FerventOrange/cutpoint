@@ -1155,8 +1155,9 @@ def detect_project(
         encoder: An already loaded CLIP model for the dense confirm (else it is
             loaded when needed); closed after the dense step, the caller closes
             it if this raises before.
-        warn_unreachable: Add a ``footage_unreachable`` JSON warning per
-            unreachable source (False when the caller already warned).
+        warn_unreachable: Log a WARNING and add a ``footage_unreachable`` JSON
+            warning per unreachable source; False when the caller already did
+            both (the line is then logged at DEBUG).
         llm: Let the profile detection ask the local Ollama models
             (:func:`cutpoint.activity.resolve`); False: library and generic profiles only.
 
@@ -1168,11 +1169,13 @@ def detect_project(
         try:
             cache.source_dir(src)  # every cached layer is keyed by the file's size and mtime
         except OSError as err:
+            if not warn_unreachable:  # the caller already logged and warned
+                logger.debug("%s: footage not reachable (%s); skipped", src, err)
+                continue
             logger.warning("%s: footage not reachable (%s); skipped", src, err)
-            if warn_unreachable:
-                jsonout.warn(
-                    "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
-                )
+            jsonout.warn(
+                "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
+            )
             continue
         sources.append((src, dur))
     if not sources:

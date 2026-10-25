@@ -148,6 +148,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
   ranks with them. `highlights.json` is written once, atomically, at the end: a cancelled run
   leaves the previous file. `analyze` no longer writes `highlights.pre-events.json`.
+- A self-kill (the player is both killer and victim in a kill feed, generic verb-style feeds
+  and the built-in coloured-box feed alike) no longer counts as a player kill: a new default
+  event type `self_kills`, checked after `teamkills` and before `player_deaths` and
+  `player_kills`, adds 3 points each (half a kill, at most 3 counted) in every style. It stays a
+  tail payoff and a VLM seed but no longer counts toward DOUBLE/TRIPLE KILL streaks,
+  `signals.events` gains a `self_kills` count, and the VLM hint says
+  "the PLAYER killed themselves". Its points are rescored from the cache; streaks are rebuilt on
+  the next `cutpoint events` run (OCR is reused). It needs `player_tags` or `--player`.
 - The `all` extra now includes `ui`, so `cutpoint[all]` and `uv sync --extra all` also install
   the browser workspace (`cutpoint ui`). The missing-extra hint for a clone mentions
   `--extra all`.
@@ -235,6 +243,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `events` with the crash layer logs each unreachable source once, not twice: the crash layer
+  logs it at debug level, since `events` already warned.
 - `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines
   at debug level instead of info.
 - `events` loads CLIP once per run: the crash dense check reuses the visual layer's model.
@@ -260,7 +270,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The player's own death in the built-in coloured-box kill feed no longer adds the kill boost:
   a new default event type `player_deaths` is checked after `teamkills` and before `player_kills`.
   The death is still a tail payoff and a VLM seed, so the reaction after it stays; a self-kill
-  still counts as a kill. This needs the player's name in `player_tags` or `--player`. The VLM
+  counts as `self_kills` (see above). This needs the player's name in `player_tags` or `--player`. The VLM
   hint now says "the PLAYER died" or "the PLAYER's kill" for built-in feed kills too.
 - `--style ski`: a stretch of footage at one score (a 15-30 s `cutpoint events` VLM window, a
   long fast section) gives one clip instead of several back-to-back clips that filled the top

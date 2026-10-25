@@ -216,6 +216,9 @@ as a generic JSON preset (generic kill-feed parsing, generic banners added, new 
 A builtin preset's `banner_phrases` are not part of the OCR cache key. After editing them, run
 `cutpoint events <project> --force ocr` to read the footage again.
 
+A preset may list `candidate_phrases`: banner texts mined from the discovery OCR. They are inactive
+and not part of any cache key; to have OCR look for one, move it into `banner_phrases`.
+
 ### Event types and prompt keys
 
 A preset may add these optional keys. Without them, scoring, clip tails and VLM windows behave as
@@ -254,8 +257,12 @@ before.
   (true or non-empty), such as `player`, `teamkill` or `player_kill`; a field written `!name` must be
   unset or false, for example `"flag": "player !verb"`). A lone `!` or `!!` is invalid: the type is
   skipped with a warning.
-- Preset types are checked before the built-in ones (`teamkills`, `player_deaths`, `player_kills`,
-  `banners`); the first matching type wins, and a type with a built-in's name replaces it.
+- Preset types are checked before the built-in ones (`teamkills`, `self_kills`, `player_deaths`,
+  `player_kills`, `banners`); the first matching type wins, and a type with a built-in's name replaces it.
+  `self_kills` matches a kill where the player is both killer and victim (`player_kill` and
+  `player_death` set; a teamkill stays a teamkill) and adds 3 points each, half a kill, at most 3
+  counted, in every style; it is not a player kill, and like a death it stays a tail payoff and a
+  VLM seed.
   `player_deaths` matches the player's own deaths (not a self-kill) and adds no per-event boost, so a death
   does not count as a kill; it stays a tail payoff and a VLM seed. Its default is `reaction` 8 with
   `styles` `["funny"]`: with `--style funny`, a candidate where the player dies and someone
