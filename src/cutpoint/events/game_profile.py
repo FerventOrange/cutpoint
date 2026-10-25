@@ -5,18 +5,21 @@ Region discovery (:mod:`cutpoint.events.discover`) finds *where* HUD text is.
 (``discovery/<game>/ocr.jsonl``), with no model, no network and no new
 dependency (the ``ocr`` backend):
 
-* ``candidate_phrases``: recurring multi-word texts of the banner regions (and
-  the generic big-text region) of the gameplay frames
-  (:func:`~cutpoint.events.discover.gameplay_frames`), kept only when they
-  fuzzy-occur in at least :data:`MIN_BURSTS` distinct bursts. Texts are split
+* ``candidate_phrases``: recurring multi-word texts of the banner and notice
+  regions (and the generic big-text region, with the OCR layer's minimum text
+  height, so a mined phrase can be read there once promoted; smaller centre
+  text is mined through the notice regions) of the gameplay frames
+  (:func:`~cutpoint.events.discover.gameplay_frames`; menu frames never
+  count), kept only when they fuzzy-occur, aligned to whole words, in at least
+  :data:`MIN_OCCURRENCES` frames at least :data:`MIN_GAP_S` apart. Texts are split
   into word runs first (:func:`_segments`): words OCR joined are split at
   camelCase boundaries ("blockedShieldSaver" is "blocked Shield Saver"), and
   numbers ("ROUND5", "x1", "2/3", "3RD"), timestamps, gamertags (other words
   mixing letters and digits), the user's player tags, handles, punctuation and
   a chat message after "name: " end a run. A candidate is a run, or a part of
-  a run, of 2 to :data:`MAX_WORDS` words, so a phrase inside a log line is
-  found. A part is tried only where it also shows without the rest of its
-  run. No candidate (a whole run or a part) is tried when its first or last
+  a run, of 2 to :data:`MAX_WORDS` words, so a phrase inside a log line or a
+  longer sentence is found. A part is tried only where it also shows without
+  the rest of its run. No candidate (a whole run or a part) is tried when its first or last
   word is a slot, as with the names in
   "<name> blocked <name>" lines: the rest of the phrase (2+ words) has at
   least :data:`SLOT_WORDS` different words on that side and the phrase is in
@@ -24,11 +27,12 @@ dependency (the ``ocr`` backend):
   on the other side of its neighbour, or next to :data:`SLOT_WORDS` other
   words) and the same holds for that neighbour. A family of banners sharing a
   word ("GATE SECURED", "HILL SECURED") is no slot. A longer phrase hides a
-  shorter one it contains unless the shorter one occurs in more bursts. Case
+  shorter one it contains unless the shorter one occurs more often. Case
   is ignored for counting and matching, as the OCR layer does; a candidate must have one casing in at least
   :data:`CASE_SHARE` of the bursts it shows in and keeps that casing ("Shield
-  Saver"). Runs longer than :data:`MAX_WORDS` words (hints, chat), static
-  labels (fuzzy-found in most gameplay frames) and phrases close to one of
+  Saver"). A sentence repeated whole (a hint) gives nothing, as no part shows
+  without the rest; static labels (fuzzy-found in most gameplay frames) and
+  phrases close to one of
   :data:`~cutpoint.events.regions.GENERIC_BANNERS` are left out; at most
   :data:`MAX_PHRASES`.
 * ``title`` and ``match`` from the game key. ``title`` is the name the VLM
@@ -38,7 +42,7 @@ dependency (the ``ocr`` backend):
 Regions are kept exactly as discovery proposed them, and ``feed`` colours,
 ``view`` and ``hype`` are not set: the OCR text alone does not say what they
 should be. The result keeps ``"source": "discovered"`` and records its
-provenance as ``"profile": {"backend": "ocr", "version": 3}``.
+provenance as ``"profile": {"backend": "ocr", "version": 4}``.
 
 Cache keys: ``source``, ``profile``, ``title``, ``match``, ``notes`` and
 ``candidate_phrases`` are not part of the OCR cache key
@@ -66,9 +70,14 @@ from cutpoint.events.killfeed import fuzzy_contains, is_player, norm, similar
 from cutpoint.events.regions import GENERIC_BANNERS, bigtext_region
 
 BACKEND = "ocr"
-VERSION = 3  # bump when the OCR backend's output changes
+VERSION = 4  # bump when the OCR backend's output changes
 MAX_PHRASES = 12
-MIN_BURSTS = 2  # a phrase must be seen in this many distinct bursts
+# a phrase must occur in this many gameplay frames, each at least MIN_GAP_S after the
+# previous one counted in its source: a banner held 3 s counts twice, one reading of a
+# frame and its 1.5 s neighbour once
+MIN_OCCURRENCES = 2
+MIN_GAP_S = 2.0
+MINED_KINDS = ("banner", "bigtext", "notice")  # regions whose text is mined
 STATIC_SHARE = 0.5  # texts in at least this share of gameplay frames are static labels
 FUZZY = 0.8  # same threshold as the OCR layer's phrase matching
 MAX_WORDS = 5  # longer texts are sentences (hints, chat), not banners
@@ -214,18 +223,21 @@ def mine_phrases(
     case-folded and need one casing in :data:`CASE_SHARE` of the bursts they
     show in (see :func:`_casing`).
 
-    Occurrences are fuzzy (:func:`~cutpoint.events.killfeed.fuzzy_contains`) for
-    the burst count and for the static-label share alike; each distinct text is
-    compared with a candidate at most once, and only the :data:`MAX_CANDIDATES`
-    most frequent candidates are compared at all. Bursts count only raw texts
-    OCR would match once the phrase is promoted (plain
-    :func:`~cutpoint.events.killfeed.norm`, digits kept: "WON ROUND5" counts,
-    "WON 10 ROUND" does not, "blockedShieldSaver:x1" counts for "Shield
-    Saver"); the static-label share uses the texts with numbers and tags left
-    out, so labels with changing numbers stay static. A kept phrase inside a
-    longer kept one is dropped unless it occurs in more bursts.
+    Occurrences are fuzzy (:func:`~cutpoint.events.killfeed.fuzzy_contains`,
+    aligned to whole words: "QORV" never counts inside "HULLQORVBREACHED") for
+    the occurrence count and for the static-label share alike; each distinct
+    text is compared with a candidate at most once, and only the
+    :data:`MAX_CANDIDATES` most frequent candidates are compared at all.
+    Occurrences count only raw texts OCR would match once the phrase is
+    promoted (digits kept: "WON ROUND5" counts, "WON 10 ROUND" does not,
+    "blockedShieldSaver:x1" counts for "Shield Saver"), one per frame, and a
+    frame within :data:`MIN_GAP_S` of the last counted one of its source does
+    not count (:func:`_occurrences`); the static-label share uses the texts
+    with numbers and tags left out, so labels with changing numbers stay
+    static. A kept phrase inside a longer kept one is dropped unless it
+    occurs more often.
 
-    Sorted by the number of bursts they occur in (most first), then by text.
+    Sorted by the number of occurrences (most first), then by text.
     """
     tags = tuple(player_tags)
     known = {f.name for f in fields(DiscoverParams)}
@@ -239,52 +251,68 @@ def mine_phrases(
     rects = [
         (r["x"], r["y"], r["w"], r["h"], int(r.get("min_text_h", 0)))
         for r in preset.get("regions", [])
-        if r.get("kind") in ("banner", "bigtext")
+        if r.get("kind") in MINED_KINDS
     ]
     if preset.get("bigtext", True) and not any(
         r.get("kind") == "bigtext" for r in preset.get("regions", [])
     ):
         big = bigtext_region()
         rects.append((big.x, big.y, big.w, big.h, big.min_text_h))
-    # split texts per frame, norm texts per burst; exact frame counts of candidates
+    # split texts per frame, raw texts per frame and its time; exact frame counts of spans
     by_frame: dict[str, set[str]] = {}
-    by_burst: dict[tuple[str, int], set[str]] = {}
-    frames_of: dict[str, set[str]] = {}
-    longer: dict[str, set[str]] = {}  # candidates one word longer around each
-    span_frames: dict[str, set[str]] = {}  # frames of every span, single words too
+    by_time: dict[tuple[str, float, str], set[str]] = {}
+    span_frames: dict[str, set[str]] = {}  # frames of every span of 1..MAX_WORDS+1 words
+    longer: dict[str, set[str]] = {}  # spans one word longer around each candidate
     left: dict[str, set[str]] = {}  # distinct words directly left of each span
     right: dict[str, set[str]] = {}  # ... and right of it
-    casings: dict[str, dict[str, set[tuple[str, int]]]] = {}  # casing -> bursts
+    casings: dict[str, dict[str, set[tuple[str, int]]]] = {}  # candidate -> casing -> bursts
+    text_frames: dict[str, set[str]] = {}  # each distinct text is split once
+    text_bursts: dict[str, set[tuple[str, int]]] = {}
     for f in frames:
         fid, bkey = str(f["id"]), (str(f["source"]), int(f["burst"]))
         for text in {b["text"] for rect in rects for b in boxes_in(f, *rect)}:
-            if raw := norm(text):
-                by_burst.setdefault(bkey, set()).add(raw)
-            runs = _segments(text, tags)
-            if split := " ".join(w for run in runs for w in run).upper():
+            text_frames.setdefault(text, set()).add(fid)
+            text_bursts.setdefault(text, set()).add(bkey)
+            if norm(text):
+                by_time.setdefault((bkey[0], float(f["t"]), fid), set()).add(text)
+    add_frames, add_casing, add_longer = (
+        span_frames.setdefault,
+        casings.setdefault,
+        longer.setdefault,
+    )
+    add_left, add_right = left.setdefault, right.setdefault
+    for text, fids in text_frames.items():
+        runs = _segments(text, tags)
+        if split := " ".join(w for run in runs for w in run).upper():
+            for fid in fids:
                 by_frame.setdefault(fid, set()).add(split)
-            for run in runs:
-                if len(run) > MAX_WORDS:
-                    continue  # a sentence (hint, chat), not a banner
-                up = [w.upper() for w in run]
-                for i in range(len(run)):
-                    for j in range(i + 1, len(run) + 1):
-                        sp = " ".join(up[i:j])
-                        span_frames.setdefault(sp, set()).add(fid)
-                        if i > 0:
-                            left.setdefault(sp, set()).add(up[i - 1])
-                        if j < len(run):
-                            right.setdefault(sp, set()).add(up[j])
-                for i in range(len(run) - 1):
-                    for j in range(i + 2, len(run) + 1):
-                        c = " ".join(run[i:j]).upper()
-                        frames_of.setdefault(c, set()).add(fid)
-                        casings.setdefault(c, {}).setdefault(" ".join(run[i:j]), set()).add(bkey)
-                        around = longer.setdefault(c, set())
-                        if i > 0:
-                            around.add(" ".join(run[i - 1 : j]).upper())
-                        if j < len(run):
-                            around.add(" ".join(run[i : j + 1]).upper())
+        bks = text_bursts[text]
+        for run in runs:
+            up = [w.upper() for w in run]
+            n = len(run)
+            for i in range(n):
+                # parts of a run longer than MAX_WORDS too (a phrase in a sentence)
+                sp, raw = up[i], run[i]
+                before = up[i - 1] if i > 0 else None
+                for j in range(i + 1, min(n, i + MAX_WORDS + 1) + 1):
+                    k = j - i
+                    if k > 1:
+                        sp, raw = f"{sp} {up[j - 1]}", f"{raw} {run[j - 1]}"
+                    after = up[j] if j < n else None
+                    add_frames(sp, set()).update(fids)
+                    if k < MAX_WORDS:  # the rest of a candidate, for slot()
+                        if before:
+                            add_left(sp, set()).add(before)
+                        if after:
+                            add_right(sp, set()).add(after)
+                    if k < 2 or k > MAX_WORDS:
+                        continue
+                    add_casing(sp, {}).setdefault(raw, set()).update(bks)
+                    around = add_longer(sp, set())
+                    if before:
+                        around.add(f"{before} {sp}")
+                    if after:
+                        around.add(f"{sp} {after}")
     static = STATIC_SHARE * max(1, len(frames))
 
     def slot(c: str) -> bool:
@@ -299,7 +327,7 @@ def mine_phrases(
         ("GATE SECURED", "HILL SECURED", ...) has fixed edge words and stays.
         """
         words = c.split()
-        n = len(frames_of[c])
+        n = len(span_frames[c])
         checks = (
             (words[0], " ".join(words[1:]), words[1], left, right),
             (words[-1], " ".join(words[:-1]), words[-2], right, left),
@@ -322,16 +350,18 @@ def mine_phrases(
     cands = sorted(
         (
             c
-            for c, fs in frames_of.items()
-            if len(fs) < static  # exact count: cheap pre-filter
-            and all(len(frames_of[e]) < len(fs) for e in longer[c])  # shows on its own
+            for c in casings
+            if len(fs := span_frames[c]) < static  # exact count: cheap pre-filter
+            and all(len(span_frames[e]) < len(fs) for e in longer[c])  # shows on its own
             and not slot(c)
         ),
-        key=lambda c: (-len(frames_of[c]), c),
+        key=lambda c: (-len(span_frames[c]), c),
     )
     frame_sets = [by_frame[k] for k in sorted(by_frame)]
-    burst_sets = [by_burst[k] for k in sorted(by_burst)]
-    grams = {t: _bigrams(t) for texts in (*burst_sets, *frame_sets) for t in texts}
+    timed = [(src, t, by_time[(src, t, fid)]) for src, t, fid in sorted(by_time)]
+    grams = {
+        t: _bigrams(norm(t)) for texts in (*(x for *_, x in timed), *frame_sets) for t in texts
+    }
     kept: list[tuple[str, int]] = []
     names: dict[str, str] = {}
     tried = 0
@@ -361,9 +391,9 @@ def mine_phrases(
                     return True
             return False
 
-        bursts = _count(burst_sets, occurs, len(burst_sets))
-        if bursts >= MIN_BURSTS and _count(frame_sets, occurs, static) < static:
-            kept.append((c, bursts))
+        occ = _occurrences(timed, occurs)
+        if occ >= MIN_OCCURRENCES and _count(frame_sets, occurs, static) < static:
+            kept.append((c, occ))
             names[c] = name
     kept = [
         (c, n)
@@ -387,6 +417,22 @@ def _count(sets: list[set[str]], occurs: Callable[[set[str]], bool], stop: float
         if n >= stop:
             break
         n += occurs(texts)
+    return n
+
+
+def _occurrences(
+    timed: list[tuple[str, float, set[str]]], occurs: Callable[[set[str]], bool]
+) -> int:
+    """Frames (``(source, t, texts)`` in time order per source) with an occurrence,
+    each at least :data:`MIN_GAP_S` after the previous one counted in its source."""
+    n = 0
+    last: dict[str, float] = {}
+    for src, t, texts in timed:
+        if src in last and t - last[src] < MIN_GAP_S:
+            continue
+        if occurs(texts):
+            n += 1
+            last[src] = t
     return n
 
 

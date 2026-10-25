@@ -57,6 +57,9 @@ For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and
 world text, and writes a proposal to `<project>\discovery\<game>\` (`proposal.json`, `overlay.jpg`)
 and installs it as a preset. Check `overlay.jpg`, then edit the preset JSON to calibrate.
+A discovered kill feed grows by the oldest rows that show only when the feed is full (up to
+twice its height). With such a preset, menu and scoreboard frames produce no OCR events;
+`stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out.
 Force or skip it with `--discover-regions` and `--no-discover`.
 
 A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`; optional `gate`: `mask` (default, a HUD colour mask) or `det` (text detection, works for any game); optional `every`),

@@ -218,13 +218,19 @@ A builtin preset's `banner_phrases` are not part of the OCR cache key. After edi
 
 A preset may list `candidate_phrases`: banner texts mined from the discovery OCR. They are inactive
 and not part of any cache key; to have OCR look for one, move it into `banner_phrases`. They are
-texts of 2 to 5 words that recur in the banner regions of at least 2 sampled bursts, in the casing
-the game shows ("Shield Saver" or "SHIELD SAVER"). They may be part of a longer line: words OCR
-joined are split ("blockedShieldSaver" is "blocked Shield Saver"), and numbers, timestamps,
-gamertags and your player tags are cut out. Matching ignores case and spaces, so a phrase also
-finds text OCR read without spaces. Discovery leaves out menu and scoreboard frames (text across
-most of the screen centre, or far more text than the recording usually shows), so a busy game HUD
-is not mistaken for a menu.
+texts of 2 to 5 words read in the banner and notice regions (and in the screen centre, text at
+least 36 px tall at 1080p, as the OCR layer reads it there; smaller centre text is mined through
+the notice regions) of at least 2 sampled frames that are at least 2 s apart (two frames
+of one burst can count), in the casing the game shows ("Shield Saver" or "SHIELD SAVER"). They
+may be part of a longer line or sentence: words OCR joined are split ("blockedShieldSaver" is
+"blocked Shield Saver"), and numbers, timestamps, gamertags and your player tags are cut out.
+Matching ignores case and spaces, so a phrase also finds text OCR read without spaces
+("Hullbreached" for "Hull breached"), but only whole words: a phrase is not found inside a longer
+word. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
+far more text than the recording usually shows), so a busy game HUD is not mistaken for a menu.
+With a JSON preset, the OCR layer applies the same test to the text it detects in the preset's
+regions other than feeds (a full kill feed is no menu) and drops what menu frames show. A discovered kill feed takes in the rows above and below
+it that show only when the feed is full (up to twice its height).
 
 ### Event types and prompt keys
 
