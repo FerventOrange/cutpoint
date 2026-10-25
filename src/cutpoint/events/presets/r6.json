@@ -1,5 +1,6 @@
 {
   "game": "r6",
+  "title": "Rainbow Six Siege",
   "builtin": true,
   "match": [
     "rainbow six",
@@ -78,5 +79,7 @@
     "TEAMKILL",
     "DRAW"
   ],
-  "bigtext": false
+  "bigtext": false,
+  "view": "first-person",
+  "hype": "  hype: 0-1 walking/waiting, menus, loading, operator select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a round win, a multi-kill, a close fight; 8-10 a clutch (1 vs many), an ace, a spectacular kill.\n"
 }

@@ -110,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--transition fade` (and for `edit` kinds that crossfade). It starts on the edit, and the
   clips and total length match `final.mp4`; with cuts the timelines are unchanged. On the OTIO
   audio track a clip without audio now leaves a gap, so later audio stays in sync (#246).
+- HUD presets can define event types with an `events` list (`name`, `when` matchers, `score`,
+  `max`, `payoff`, `tail_s`, `seed`) and the vision prompt's `title`, `view` and `hype`: custom
+  events add to the highlight boost, extend clip ends and set the priority of vision windows.
+  Preset types are checked before the built-in ones and can replace them. `r6.json` now carries
+  `title`, `view` and `hype` for Rainbow Six Siege with unchanged results, and the bundled presets' OCR cache is
+  unchanged (#8).
 
 ### Changed
 

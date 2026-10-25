@@ -57,6 +57,10 @@ A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice
 1920x1080 reference pixels and are scaled per axis to the video. See
 `src/cutpoint/events/presets/wt.json` for a complete example.
 
+A preset can also define its own event types (what an event is worth, how clip tails end, which
+moments the vision model describes first) and the game name used in the vision prompt; see
+[Event types and prompt keys](../configuration.md#event-types-and-prompt-keys).
+
 ## Limits
 
 - OCR samples 3 frames per second, so event times are accurate to about 0.3 s.

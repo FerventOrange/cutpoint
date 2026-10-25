@@ -152,7 +152,7 @@ R6_KEY = {  # OcrParams().key("r6", load_preset("r6")), computed before the move
 def test_r6_preset_parity():
     p = regions.load_preset("r6")
     assert (p.builtin, p.bigtext, p.path, p.feed, p.player_tags, p.title) == (
-        True, False, None, {}, (), "",
+        True, False, None, {}, (), "Rainbow Six Siege",
     )  # fmt: skip
     got = tuple(
         (r.name, r.x, r.y, r.w, r.h, r.kind, r.min_change, r.min_fill) for r in p.all_regions()

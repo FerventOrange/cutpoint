@@ -19,7 +19,13 @@ Preset JSON::
                   "kind": "feed", "gate": "det", "every": 1}, ...],
      "banner_phrases": ["TARGET DESTROYED", ...],
      "feed": {"kill_words": {"destroyed": "kill", ...}, "colors": {...}},
-     "bigtext": true}
+     "bigtext": true,
+     "view": "first-person", "hype": "  hype: 0-1 ...\\n",
+     "events": [{"name": "defuser", "when": [...], "score": 6}, ...]}
+
+``view`` and ``hype`` adjust the VLM prompt; ``events`` defines event types
+(:mod:`cutpoint.events.eventtypes`), whose banner ``prefix`` phrases are
+added to the phrases of JSON presets.
 
 Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
 ...); missing ones use the defaults. ``"builtin": true`` selects the original R6
@@ -175,6 +181,10 @@ class HudPreset:
         bigtext: Add the generic big-centred-text check.
         path: JSON file the preset came from (None for built-in ones).
         title: Human-readable game name (VLM prompt).
+        view: Camera view for the VLM prompt ("first-person"; empty: none).
+        hype: The VLM prompt's hype rubric line (empty: the generic one).
+        events: Event types (raw ``events`` entries, see
+            :mod:`cutpoint.events.eventtypes`).
     """
 
     game: str
@@ -186,6 +196,9 @@ class HudPreset:
     bigtext: bool = True
     path: Path | None = None
     title: str = ""
+    view: str = ""
+    hype: str = ""
+    events: tuple[dict[str, Any], ...] = ()
 
     def all_regions(self) -> tuple[Region, ...]:
         """Preset regions plus the generic big-text region when enabled."""
@@ -228,10 +241,15 @@ def preset_files(project: Path | None = None) -> list[Path]:
     return [p for d in dirs if d.is_dir() for p in sorted(d.glob("*.json"))]
 
 
+_warned_invalid: set[Path] = set()  # invalid presets already warned about (once per path)
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     data = cache.load_json(path)
     if not isinstance(data, dict):
-        logger.warning("Ignoring invalid HUD preset %s", path)
+        if path not in _warned_invalid:
+            _warned_invalid.add(path)
+            logger.warning("Ignoring invalid HUD preset %s", path)
         return None
     return data
 
@@ -255,8 +273,9 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
     """Build a :class:`HudPreset` from preset JSON (unknown keys are ignored)."""
     builtin = _is_builtin(data, path)
     phrases = tuple(map(str, data.get("banner_phrases", [])))
+    events = tuple(e for e in data.get("events") or [] if isinstance(e, dict))
     if not builtin:
-        phrases = tuple(dict.fromkeys([*phrases, *GENERIC_BANNERS]))
+        phrases = tuple(dict.fromkeys([*phrases, *GENERIC_BANNERS, *_event_phrases(events)]))
     return HudPreset(
         game=str(data.get("game") or (path.stem if path else "game")),
         regions=_regions(data),
@@ -267,7 +286,21 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
         bigtext=bool(data.get("bigtext", True)),
         path=None if builtin else path,
         title=str(data.get("title", "")),
+        view=str(data.get("view", "")),
+        hype=str(data.get("hype", "")),
+        events=events,
     )
+
+
+def _event_phrases(events: tuple[dict[str, Any], ...]) -> list[str]:
+    """Banner ``prefix`` phrases of event types, so OCR looks for them too."""
+    out = []
+    for e in events:
+        for m in e.get("when") or []:
+            if isinstance(m, dict) and m.get("type") == "banner":
+                p = m.get("prefix")
+                out += [str(x).upper() for x in (p if isinstance(p, list) else [p] if p else [])]
+    return out
 
 
 def load_preset(game: str | None, project: Path | None = None) -> HudPreset | None:

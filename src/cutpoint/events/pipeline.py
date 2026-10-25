@@ -30,6 +30,7 @@ from cutpoint.events.common import (
     load_transcript_lines,
     unload_ollama,
 )
+from cutpoint.events.eventtypes import types_for
 from cutpoint.events.killfeed import (
     OcrEngine,
     OcrParams,
@@ -46,6 +47,7 @@ from cutpoint.events.vlm_windows import (
     cached_windows,
     check_audio,
     describe_windows,
+    game_prompt,
     select_windows,
     windows_to_events,
 )
@@ -284,7 +286,11 @@ def run_events(
         str(s.path): "ski" if ski else game_key_for_path(str(s.path), ocr.game, project)
         for s in sources
     }
-    windows = select_windows(sources, hl.get("candidates", []), layer1, vlm)
+    # Game prompt and event types (custom seeds) from each source's HUD preset; ski has none.
+    presets = {} if ski else {src: load_preset(g, project) for src, g in games.items()}
+    prompts = {src: game_prompt(games[src], p) for src, p in presets.items()}
+    seed_types = {src: types_for(p) for src, p in presets.items()}
+    windows = select_windows(sources, hl.get("candidates", []), layer1, vlm, seed_types)
     if ski and "vlm" not in force:  # reuse described windows; only fill new footage
         prev = cached_windows(sources, vlm)
         if prev:
@@ -305,7 +311,7 @@ def run_events(
     results: list[dict[str, Any]] = []
     if "vlm" in layers:
         cached, vstats = describe_windows(
-            None, by_path, windows, vlm, games, transcript, layer1, force="vlm" in force
+            None, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
         )
         missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
         if missing > 0:
@@ -330,7 +336,7 @@ def run_events(
                         )
                         vlm.audio = False
                 results, vstats = describe_windows(
-                    srv, by_path, windows, vlm, games, transcript, layer1, force="vlm" in force
+                    srv, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
                 )
             vram["vlm"] = vm.summary()
         else:
@@ -342,7 +348,7 @@ def run_events(
             toks = [t for t in vstats.get("prompt_tokens", []) if t]
             stats["vlm"]["mean_prompt_tokens"] = round(sum(toks) / max(1, len(toks)))
     else:
-        results, _ = describe_windows(None, by_path, windows, vlm, games, transcript, layer1)
+        results, _ = describe_windows(None, by_path, windows, vlm, prompts, transcript, layer1)
     timings["vlm_s"] = round(time.perf_counter() - t0, 1)
     stats["vram_mib"] = vram
 
