@@ -16,7 +16,9 @@ Payoff events:
     * OCR: kill-feed entries involving the player or a teamkill, and round
       banners (WON/LOST ROUND, VICTORY, DEFEAT, ACE, CLUTCH, REVERSE FRIENDLY
       FIRE); "MATCH POINT"/"OVERTIME"/"x VS y" are context, not payoffs;
-    * VLM: moments with funny or hype >= ``vlm_min``.
+    * VLM: moments with funny or hype >= ``vlm_min``;
+    * OCR events of a HUD preset's event type that sets ``payoff`` (with its
+      own ``tail_s`` instead of ``pad``, see :mod:`cutpoint.events.eventtypes`).
 """
 
 from __future__ import annotations
@@ -26,32 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
+from cutpoint.events import eventtypes
 
 AUDIO_PAYOFFS = {"Laughter", "Scream", "Cheering"}
 OCR_HOLD_S = 1.0  # an OCR payoff counts as lasting this long from its first sighting
-BANNER_PAYOFFS = (
-    "WON ROUND",
-    "ROUND WON",
-    "LOST ROUND",
-    "ROUND LOST",
-    "VICTORY",
-    "DEFEAT",
-    "ACE",
-    "CLUTCH",
-    "REVERSE FRIENDLY FIRE",
-    "TARGET DESTROYED",
-    "SHOT DOWN",
-    "MISSION ACCOMPLISHED",
-    # generic / War Thunder (never produced by the R6 preset)
-    "YOU HAVE BEEN DESTROYED",
-    "CREW KNOCKED OUT",
-    "MISSION FAILED",
-    "MISSION COMPLETE",
-    "YOU DIED",
-    "DOUBLE KILL",
-    "TRIPLE KILL",
-    "MULTI KILL",
-)
+BANNER_PAYOFFS = eventtypes.BANNER_PAYOFFS  # moved to eventtypes; kept for imports
 
 
 @dataclass(frozen=True)
@@ -80,12 +61,22 @@ class EventTailSettings:
 
 
 def load_events(project: Path) -> dict[str, list[dict[str, Any]]] | None:
-    """Events of ``<project>/events.json`` grouped by source path (None if absent)."""
+    """Events of ``<project>/events.json`` grouped by source path (None if absent).
+
+    Events of a preset event type that sets ``payoff`` or ``tail_s`` get them as
+    in-memory ``_payoff`` / ``_tail_s`` fields (events.json is not changed).
+    """
     data = cache.load_json(project / "events.json")
     if not data:
         return None
+    types = eventtypes.resolve(project, data)
     out: dict[str, list[dict[str, Any]]] = {}
     for e in data.get("events", []):
+        t = eventtypes.first_match(types.get(e["source"], eventtypes.DEFAULT_EVENT_TYPES), e)
+        if t and t.payoff is not None:
+            e["_payoff"] = t.payoff
+        if t and t.tail_s is not None:
+            e["_tail_s"] = t.tail_s
         out.setdefault(str(Path(e["source"])), []).append(e)
     for evs in out.values():
         evs.sort(key=lambda e: e["start"])
@@ -94,6 +85,8 @@ def load_events(project: Path) -> dict[str, list[dict[str, Any]]] | None:
 
 def is_payoff(e: dict[str, Any], settings: EventTailSettings) -> bool:
     """Whether an events.json entry is a payoff worth extending a clip for."""
+    if e.get("_payoff") is not None:  # preset event type (see load_events)
+        return bool(e["_payoff"])
     kind = e.get("kind")
     if kind == "audio":
         return e.get("label") in AUDIO_PAYOFFS and (e.get("confidence") or 0) >= settings.audio_min
@@ -166,13 +159,14 @@ def event_tail(
             # An OCR event's end is how long the banner/kill row stays on screen,
             # not the reaction; the reaction is covered by ``pad``.
             e_end = min(e_end, e["start"] + OCR_HOLD_S)
+        pad = e.get("_tail_s", settings.pad)
         starts_after = ref - 0.5 <= e["start"]
         runs_past = e["start"] <= end < e_end  # still going at the cut
-        if not (starts_after or runs_past) or e_end + settings.pad <= end:
+        if not (starts_after or runs_past) or e_end + pad <= end:
             continue
         if e["start"] >= cap:
             continue
-        target = max(target, min(cap, e_end + settings.pad))
+        target = max(target, min(cap, e_end + pad))
         used.append(describe(e))
     if target <= end + 0.05:
         return end, None, []

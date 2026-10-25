@@ -194,4 +194,43 @@ elsewhere it is ignored with a WARNING. A copy of `r6.json` is therefore read as
 preset (generic kill-feed parsing, generic banners added, new OCR cache), not with the built-in R6
 interpretation.
 
+### Event types and prompt keys
+
+A preset may add these optional keys. Without them, scoring, clip tails and VLM windows behave as
+before.
+
+```json
+{
+  "title": "Rainbow Six Siege",
+  "view": "first-person",
+  "hype": "  hype: 0-1 ...\n",
+  "events": [
+    {"name": "defuser",
+     "when": [{"type": "banner", "prefix": ["DEFUSER PLANTED"]}],
+     "score": 6, "max": 2, "payoff": true, "tail_s": 2.5, "seed": 1.5}
+  ]
+}
+```
+
+- `title`, `view`, `hype`: the game name, the camera view and the hype rubric line in the VLM
+  prompt. Empty or unset: the generic prompt.
+- `events`: custom event types. Each has `name` (the key in `signals.events`), `when` (matchers;
+  any one is enough) and optional `score` (points per event, clamped to 0-12; unset: no boost),
+  `max` (events counted per candidate, clamped to 1-3, default 1), `payoff` (true: the event ends
+  a clip tail), `tail_s` (seconds kept after the payoff) and `seed` (priority when choosing VLM
+  windows). Unset `payoff`, `tail_s` and `seed` keep the built-in rules.
+- A matcher is an OCR event `type` (such as `kill`, `banner` or `multikill`) plus at most one
+  test: `prefix` or `contains` (lists of upper-case label text; the label must start with, or
+  contain, one of them) or `flag` (a boolean field of the event, such as `player`, `teamkill` or
+  `player_kill`).
+- Preset types are checked before the built-in ones (`teamkills`, `player_kills`, `banners`); the
+  first matching type wins, and a type with a built-in's name replaces it.
+- Scored types add to the highlight boost, which stays capped, and show up as evidence in
+  `signals.events`. The `prefix` phrases of `banner` matchers are also added to the OCR phrases of
+  generic presets.
+- An invalid entry is skipped with a WARNING.
+- Changing scores, `max` or tails does not re-run OCR. A user preset that sets `title`, `view`,
+  `hype` or a `seed` gets its own VLM cache key, so its windows are described again once. The
+  bundled `r6.json` and `wt.json` keep their OCR cache keys.
+
 See [game streams](workflows/game-streams.md).

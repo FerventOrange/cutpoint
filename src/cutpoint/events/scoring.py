@@ -16,20 +16,31 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
-from cutpoint.events.tails import BANNER_PAYOFFS
+from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 
 logger = logging.getLogger(__name__)
 
 LOOKAHEAD_S = 10.0  # events this long after a candidate still count for it
 VLM_WEIGHT = 0.35  # share of the final score taken from the VLM window score
 MAX_BOOST = 30.0
+# Evidence keys of the default event types, always present and summed in this order.
+EVIDENCE_KEYS = ("player_kills", "teamkills", "banners")
 
 
-def event_boost(cand: dict[str, Any], events: list[dict[str, Any]]) -> tuple[float, dict[str, Any]]:
-    """Additive boost (points on the 0-100 scale) and the evidence behind it."""
+def event_boost(
+    cand: dict[str, Any],
+    events: list[dict[str, Any]],
+    types: tuple[EventType, ...] = DEFAULT_EVENT_TYPES,
+) -> tuple[float, dict[str, Any]]:
+    """Additive boost (points on the 0-100 scale) and the evidence behind it.
+
+    Each OCR event counts for the first of ``types`` it matches (see
+    :mod:`cutpoint.events.eventtypes`); types without a ``score`` add nothing.
+    """
     a, b = cand["start"], cand["end"] + LOOKAHEAD_S
     laugh = scream = 0.0
-    kills = teamkill = banners = 0
+    scored = {t.name: t for t in types if t.score is not None}
+    counts = dict.fromkeys([*EVIDENCE_KEYS, *scored], 0)
     for e in events:
         if e["end"] < a or e["start"] > b:
             continue
@@ -39,32 +50,14 @@ def event_boost(cand: dict[str, Any], events: list[dict[str, Any]]) -> tuple[flo
             elif e["label"] in ("Scream", "Cheering"):
                 scream = max(scream, e["confidence"] or 0)
         elif e["kind"] == "ocr":
-            d = e.get("details") or {}
-            label = (e.get("label") or "").upper()
-            if e["type"] == "kill" and d.get("teamkill"):
-                teamkill += 1
-            elif e["type"] == "kill" and d.get("player"):
-                kills += 1
-            elif e["type"] == "banner" and "REVERSE FRIENDLY FIRE" in label:
-                teamkill += 1
-            elif (e["type"] == "banner" and any(label.startswith(x) for x in BANNER_PAYOFFS)) or e[
-                "type"
-            ] == "multikill":
-                banners += 1
-    boost = (
-        min(12.0, 60 * laugh)
-        + min(6.0, 40 * scream)
-        + 6.0 * min(kills, 3)
-        + 12.0 * min(teamkill, 1)
-        + 6.0 * min(banners, 2)
-    )
-    evidence = {
-        "laughter": round(laugh, 3),
-        "scream": round(scream, 3),
-        "player_kills": kills,
-        "teamkills": teamkill,
-        "banners": banners,
-    }
+            t = first_match(types, e)
+            if t and t.name in scored:
+                counts[t.name] += 1
+    boost = min(12.0, 60 * laugh) + min(6.0, 40 * scream)
+    for name, n in counts.items():  # defaults first, in the original order
+        if name in scored:
+            boost += scored[name].score * min(n, scored[name].max)
+    evidence = {"laughter": round(laugh, 3), "scream": round(scream, 3), **counts}
     return min(MAX_BOOST, boost), evidence
 
 
@@ -97,10 +90,13 @@ def rescore_highlights(project: Path) -> int:
     for e in ev.get("events", []):
         by_src.setdefault(e["source"], []).append(e)
     windows = ev.get("windows", [])
+    types = resolve(project, ev)
     changed = 0
     for c in hl.get("candidates", []):
         base = c.get("score_pre_events", c["score"])
-        boost, evidence = event_boost(c, by_src.get(c["source"], []))
+        boost, evidence = event_boost(
+            c, by_src.get(c["source"], []), types.get(c["source"], DEFAULT_EVENT_TYPES)
+        )
         score = base + boost
         win = best_window(c, windows)
         if win:
