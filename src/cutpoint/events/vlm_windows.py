@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, paths
+from cutpoint import cache
 from cutpoint.config import source_path
 from cutpoint.events.common import (
     Source,
@@ -39,7 +39,7 @@ from cutpoint.events.common import (
 )
 from cutpoint.events.eventtypes import EventType, first_match
 from cutpoint.events.llama_server import LlamaServer, LlamaServerError
-from cutpoint.events.regions import HudPreset, load_preset, preset_from_dict
+from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
 from cutpoint.ffmpeg_utils import FFmpegError, grab_images
 from cutpoint.utils import clock
 
@@ -140,14 +140,14 @@ class GamePrompt:
     """Game-specific parts of the VLM prompt (from the HUD preset).
 
     Attributes:
-        name: Game name ("Rainbow Six Siege", "video game").
+        name: Game name ("My Game", "video game").
         view: Camera view ("first-person"; empty: not mentioned).
         hype: The hype rubric line.
-        custom: A project or user preset (not a bundled one) gives a prompt
-            (name, view, hype) that differs from the reference prompt of its game
-            key (the bundled preset's, else the derived default), so the VLM cache
-            key includes the prompt text. Event type seeds do not count: they only
-            change window selection.
+        custom: A project preset (not an installed user or bundled one) gives a
+            prompt (name, view, hype) that differs from the reference prompt of its
+            game key (the installed preset's, else the derived default), so the VLM
+            cache key includes the prompt text. Event type seeds do not count: they
+            only change window selection.
     """
 
     name: str = "video game"
@@ -159,19 +159,6 @@ class GamePrompt:
         """Short hash of the prompt fields (VLM cache key ``gp``)."""
         text = json.dumps([self.name, self.view, self.hype])
         return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
-
-
-def _is_bundled(preset: HudPreset) -> bool:
-    return preset.path is None or preset.path.parent == paths.PRESETS_DIR
-
-
-def _bundled_preset(game: str) -> HudPreset | None:
-    """The bundled preset for ``game`` (project and user presets ignored)."""
-    for path in sorted(paths.PRESETS_DIR.glob("*.json")):
-        data = cache.load_json(path)
-        if isinstance(data, dict) and (data.get("game") or path.stem) == game:
-            return preset_from_dict(data, path)
-    return None
 
 
 def _prompt_of(name: str, preset: HudPreset | None) -> GamePrompt:
@@ -191,15 +178,16 @@ def game_prompt(game: str | None, preset: HudPreset | None) -> GamePrompt:
     """The prompt fields for ``game``: the preset's ``title``/``view``/``hype``, else
     the game key as a name ("some-game" -> "Some Game") and the generic rubric.
 
-    ``custom`` is set for a project or user preset whose prompt differs from the
-    reference: the bundled preset of the same game key, else the derived default.
+    ``custom`` is set for a project preset whose prompt differs from the
+    reference: the installed (user, else bundled) preset of the same game key,
+    else the derived default.
     Presets without prompt fields (e.g. written by discovery) keep their VLM cache keys.
     """
     name = (game or "").replace("-", " ").title() or "video game"
     prompt = _prompt_of(name, preset)
-    if preset is None or _is_bundled(preset):
+    if preset is None or is_installed_path(preset.path):
         return prompt
-    ref = _prompt_of(name, _bundled_preset(game) if game else None)
+    ref = _prompt_of(name, load_preset(game))
     if prompt == ref:
         return prompt
     return GamePrompt(prompt.name, prompt.view, prompt.hype, custom=True)
@@ -230,7 +218,7 @@ class VlmParams:
     def key(self, prompt: GamePrompt | None = None) -> dict[str, Any]:
         """Parameters that change a window's result (selection params excluded).
 
-        A ``prompt`` from a project or user preset adds its hash as ``gp``.
+        A ``prompt`` from a custom project preset adds its hash as ``gp``.
         """
         return {
             "frames": self.frames,
