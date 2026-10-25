@@ -48,14 +48,14 @@ codes are unchanged.
 | `ok` | `true` unless the command failed |
 | `command` | The command as typed, such as `analyze` or `360 qa` |
 | `schema` | `1` |
-| `project` | Absolute path of the project folder, or `null` when the command has none (`paths`, `capabilities`, `setup`, `stage`) |
+| `project` | Absolute path of the project folder, or `null` when the command has none (`paths`, `capabilities`, `setup`, `stage`, and `360 status` without a project) |
 | `outputs` | Object: the files written (absolute path strings) and key facts. The keys per command are below |
 | `warnings` | List of `{"code", "message", "files"}`; `files` is a list of absolute paths and may be empty |
 | `error` | `null`, or `{"code", "message"}`. `message` is the `ERROR` line printed on stderr |
 
 With a failure, `ok` is `false` and `outputs` holds whatever was recorded before it. An
 argument error (`bad_args` from the parser) also writes an envelope, then exits 2. A command that
-checks an option itself (a bad `--crop`, `--size`, `--clip-override`, `--ids`, `mix --quotas`,
+checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--clip-override`, `--ids`, `mix --quotas`,
 `360 director --out-name`, `stage` with no inputs) reports `bad_args` and exits 1.
 
 | `error.code` | Exit | Cause |
@@ -99,9 +99,9 @@ checks an option itself (a bad `--crop`, `--size`, `--clip-override`, `--ids`, `
 | `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
-| `setup` | `components`: per component given to `--only`, `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`; `version` also for `llama`); for `pip`, `installed` and `missing` |
+| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`), and `version` for `llama`; for `pip`, `installed` and `missing` |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
-| `360 analyze` | `timings`, `views` (`cached`, `computed`); unless `--views-only` or `--no-events` also `events`. Highlights are in the project's `highlights.json` |
+| `360 analyze` | `timings`, `views` (`cached`, `computed`); unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events` |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
 | `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
