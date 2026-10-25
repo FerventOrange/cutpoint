@@ -150,6 +150,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   events add to the highlight boost, extend clip ends and set the priority of vision windows.
   Preset types are checked before the built-in ones and can replace them (#8).
 
+### Documentation
+
+- `docs/commands.md` lists measured analysis costs (GPU and CPU), how to force a CPU run with
+  `CUDA_VISIBLE_DEVICES=-1`, and that the analysis cache is shared between devices.
+
 ### Changed
 
 - `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
