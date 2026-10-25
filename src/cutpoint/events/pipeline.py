@@ -203,7 +203,10 @@ def run_events(
             )
         vram["voice"] = vm.summary()
         timings["voice_s"] = round(time.perf_counter() - t0, 1)
+    crash_run = "crash" in layers and not only  # project-wide ranking: all sources
+    kept: list[Any] = []  # the visual layer's CLIP, reused by the crash dense confirm
     if "visual" in layers:
+        from cutpoint.crash import ClipEncoder  # noqa: PLC0415
         from cutpoint.events import visual as visual_layer  # noqa: PLC0415
 
         t0 = time.perf_counter()
@@ -213,6 +216,7 @@ def run_events(
                 visual_layer.VisualParams(hwaccel=ocr.hwaccel),
                 force="visual" in force,
                 bad=bad,
+                handoff=(lambda m: kept.append(ClipEncoder.from_visual(m))) if crash_run else None,
             )
         vram["visual"] = vm.summary()
         timings["visual_s"] = round(time.perf_counter() - t0, 1)
@@ -221,12 +225,17 @@ def run_events(
 
         stats["sheets"] = [str(p) for p in write_visual_sheets(project, sources)]
     # ---- crashes (after voice + visual, whose caches it reads): crashes.json
-    if "crash" in layers and not only:  # project-wide ranking: all sources
+    if crash_run:
         from cutpoint.crash import detect_project  # noqa: PLC0415
 
         t0 = time.perf_counter()
-        with VramMonitor() as vm:
-            detect_project(project, force="crash" in force)
+        enc = kept.pop() if kept else None
+        try:
+            with VramMonitor() as vm:
+                detect_project(project, force="crash" in force, encoder=enc)
+        finally:
+            if enc is not None:
+                enc.close()
         vram["crash"] = vm.summary()
         timings["crash_s"] = round(time.perf_counter() - t0, 1)
 
@@ -278,7 +287,8 @@ def run_events(
         vlm.max_fill_windows = 150
     if vlm.max_windows is None:
         vlm.max_windows = _auto_max_windows(layer1) if ski else 60
-        logger.info("VLM: up to %d windows", vlm.max_windows)
+        if "vlm" in layers:
+            logger.info("VLM: up to %d windows", vlm.max_windows)
 
     # ---- layer 2: VLM windows
     t0 = time.perf_counter()
@@ -290,13 +300,16 @@ def run_events(
     presets = {} if ski else {src: load_preset(g, project) for src, g in games.items()}
     prompts = {src: game_prompt(games[src], p) for src, p in presets.items()}
     seed_types = {src: types_for(p) for src, p in presets.items()}
-    windows = select_windows(sources, hl.get("candidates", []), layer1, vlm, seed_types)
+    windows = select_windows(
+        sources, hl.get("candidates", []), layer1, vlm, seed_types, quiet="vlm" not in layers
+    )
     if ski and "vlm" not in force:  # reuse described windows; only fill new footage
         prev = cached_windows(sources, vlm)
         if prev:
             n_new = len(windows)
             windows = add_incremental(prev, windows)
-            logger.info(
+            logger.log(
+                logging.INFO if "vlm" in layers else logging.DEBUG,
                 "VLM (ski, incremental): %d cached windows reused, %d of %d new "
                 "windows cover footage not described yet",
                 len(prev),
