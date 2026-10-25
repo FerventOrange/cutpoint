@@ -40,7 +40,6 @@ output is added on top of that profile. Built-in profiles live in
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import re
@@ -52,7 +51,7 @@ import numpy as np
 
 from cutpoint import cache, jsonout, paths, state
 from cutpoint.config import remap_source
-from cutpoint.events.common import load_highlights, unload_ollama
+from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
 from cutpoint.utils import slugify
@@ -381,17 +380,6 @@ def synthesize(
     return prof
 
 
-def _clip_installed() -> bool:
-    """True if the CLIP steps after the LLM (crash prompts, dense check) can run.
-
-    Otherwise unloading Ollama frees VRAM for nothing (the events extra is missing).
-    """
-    missing = [m for m in ("torch", "open_clip") if importlib.util.find_spec(m) is None]
-    if missing:
-        logger.info("activity: %s not installed; Ollama models stay loaded", ", ".join(missing))
-    return not missing
-
-
 def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
     """The library profile named as a word of ``context`` (``"downhill mtb"`` -> mtb).
 
@@ -483,10 +471,8 @@ def resolve(
             examples = [lib[seed]] if seed else [lib[k] for k in dict.fromkeys(near[:2])]
             new = synthesize(desc, context, ask, examples) if desc or context else None
             rec.update(description=desc, described_by=how, model=model)
-            if model is not None and _clip_installed():  # free its VRAM for the CLIP steps
-                unload_ollama()
-            elif isinstance(rater := getattr(ask, "__self__", None), VisionRater):
-                rater.unload()  # done with it: not 5 more minutes of VRAM
+            if isinstance(rater := getattr(ask, "__self__", None), VisionRater):
+                rater.unload()  # done with it: VRAM for the CLIP steps, other models stay
             if new is not None:  # LLM words add phrases, never re-weight known ones
                 known = (profile if seed else base())["incident"]["words"]
                 new["incident"]["words"] = {

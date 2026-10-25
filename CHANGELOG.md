@@ -128,8 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records the request as `settings.vision_requested`; re-analyzing (`cutpoint events`) uses
   vision only if the earlier run asked for it, so a project analyzed before this change (no
   record) is re-analyzed without it. The style setting `vision_default` is gone. Building an activity profile
-  (`profile`, `crashes`) without CLIP installed, and `360 director --vl-check`, also unload the
-  vision model when they are done with it.
+  (`profile`, `crashes`) and `360 director --vl-check` also unload the vision model when they
+  are done with it (`--vl-check` also when it fails or is interrupted). With CLIP installed,
+  building a profile now unloads only that model, not every model loaded in Ollama.
 - `profile --json` writes the result envelope: the `activity.json` record it printed before is
   under `outputs` with the same keys, plus `activity_file` (its path) (#4).
 - `cutpoint capabilities --json` writes the result envelope: the report it printed before is now

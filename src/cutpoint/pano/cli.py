@@ -453,8 +453,13 @@ def cmd_director(a: argparse.Namespace) -> None:
     if not name or Path(name).name != name or name in (".", ".."):
         raise jsonout.ArgumentError(f"--out-name must be a plain folder name, got {name!r}")
     out_dir = project / "pano_paths" / name
-    with output_dir(out_dir):  # a failed run leaves no empty folder behind
-        stems, vl_saved = _direct(a, project, clips, overrides, out_dir)
+    checker = _vl_checker(a)
+    try:
+        with output_dir(out_dir):  # a failed run leaves no empty folder behind
+            stems, vl_saved = _direct(a, project, clips, overrides, out_dir, checker)
+    finally:  # free the vision model's VRAM on any exit (errors, Ctrl+C, a dead model too)
+        if checker is not None:
+            checker.unload()
     if jsonout.active():
         jsonout.output("paths_dir", out_dir)
         jsonout.output(
@@ -471,15 +476,33 @@ def cmd_director(a: argparse.Namespace) -> None:
         jsonout.output("vl_check", out_dir / "vl_check.json" if vl_saved else None)
 
 
+def _vl_checker(a: argparse.Namespace) -> Any:
+    """The ``--vl-check`` vision checker, or None when not asked for or unavailable."""
+    if not getattr(a, "vl_check", False):  # absent on hand-built namespaces
+        return None
+    from cutpoint.pano.vlcheck import VLChecker  # noqa: PLC0415
+
+    checker = VLChecker()
+    if not checker.available():
+        logger.warning("--vl-check: local vision model unavailable; skipping the check")
+        jsonout.warn(
+            "vl_check_unavailable", "--vl-check: local vision model unavailable; not checked"
+        )
+        return None
+    return checker
+
+
 def _direct(
     a: argparse.Namespace,
     project: Path,
     clips: dict[str, Any],
     overrides: dict[str, Any] | None,
     out_dir: Path,
+    checker: Any = None,
 ) -> tuple[list[str], bool]:
     """The body of :func:`cmd_director`, writing into the existing ``out_dir``; returns the
-    stems of the paths written, in order, and whether this run saved ``vl_check.json``."""
+    stems of the paths written, in order, and whether this run saved ``vl_check.json``.
+    ``checker`` (:func:`_vl_checker`) is unloaded by the caller."""
     from cutpoint.pano import director as D  # noqa: PLC0415
     from cutpoint.pano.project import (  # noqa: PLC0415
         RenderSource,
@@ -489,17 +512,6 @@ def _direct(
     from cutpoint.pano.render import Format360, render_segment  # noqa: PLC0415
     from cutpoint.utils import slugify  # noqa: PLC0415
 
-    checker = None
-    if getattr(a, "vl_check", False):  # absent on hand-built namespaces
-        from cutpoint.pano.vlcheck import VLChecker  # noqa: PLC0415
-
-        checker = VLChecker()
-        if not checker.available():
-            logger.warning("--vl-check: local vision model unavailable; skipping the check")
-            jsonout.warn(
-                "vl_check_unavailable", "--vl-check: local vision model unavailable; not checked"
-            )
-            checker = None
     vl_report: list[dict[str, Any]] = []
     reuse = {} if checker is not None or getattr(a, "force", True) else _reusable(out_dir)
     segs = []
@@ -617,8 +629,6 @@ def _direct(
             )
         if a.preview and not checked:  # after the path JSON: a failed render keeps it
             render()
-    if checker is not None:  # free the vision model's VRAM now (None: never used, or dead)
-        checker.unload()
     for bak in redundant:  # every carried path is saved under its new stem by now
         bak.unlink(missing_ok=True)
     if a.out_name:  # previews of earlier selections would mislead `360 qa`

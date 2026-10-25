@@ -263,8 +263,9 @@ then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` wo
 
 `analyze --vision` (and `edit --vision`, or the vision checkbox next to "Analyze footage" in
 `cutpoint ui`) rates the top candidates with a vision model through Ollama. It is off unless
-you ask for it, so Ollama is never needed otherwise; the model is unloaded from GPU memory as
-soon as the rating is done.
+you ask for it; apart from building a new activity profile (see
+[action-cam](workflows/action-cam.md#activity-profiles)) and `360 director --vl-check`, nothing
+else uses Ollama. The model is unloaded from GPU memory as soon as the rating is done.
 
 ```powershell
 winget install --id Ollama.Ollama -e
