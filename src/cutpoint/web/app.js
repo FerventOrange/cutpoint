@@ -1261,15 +1261,19 @@ function stepsJob() {
   return j.progress?.steps?.length ? j : null;
 }
 
+/** A step's whole pct while it runs, else null. */
+const stepPct = (s) => (s.state === 'running' && s.pct != null ? Math.round(s.pct) : null);
+const stepStateText = (s, pct) => `${STEP_TEXT[s.state] ?? s.state}${pct == null ? '' : ` ${pct}%`}`;
+
 /** One step row: an icon (decorative), the label, its state in words, pct (running only) and detail when sent. */
 function stepRow(s) {
   const running = s.state === 'running';
-  const pct = running && s.pct != null ? Math.round(s.pct) : null;
+  const pct = stepPct(s);
   return h('li', { class: 'step', 'data-state': s.state },
     running ? h('span', { class: 'step-icon spin', 'aria-hidden': 'true' })
       : h('span', { class: 'step-icon', 'aria-hidden': 'true', text: STEP_ICON[s.state] ?? '•' }),
     h('span', { class: 'step-label', text: s.label }),
-    h('span', { class: 'step-state', text: `${STEP_TEXT[s.state] ?? s.state}${pct == null ? '' : ` ${pct}%`}` }),
+    h('span', { class: 'step-state', text: stepStateText(s, pct) }),
     s.detail ? h('span', { class: 'step-detail', text: s.detail }) : null,
     running ? (pct == null
       ? h('div', { class: 'indeterminate step-bar', 'aria-hidden': 'true' })
@@ -1292,6 +1296,7 @@ function renderSteps() {
   if (!j) {
     box.replaceChildren();
     delete box.dataset.key;
+    delete box.dataset.shape;
     return;
   }
   const { total } = j.progress;
@@ -1299,6 +1304,22 @@ function renderSteps() {
   const sig = JSON.stringify([j.id, total, steps]);
   if (box.dataset.key === sig) return;
   box.dataset.key = sig;
+  // Only a pct or detail changed: update those rows in place, so a running spinner or
+  // indeterminate bar keeps its animation instead of restarting on every tick.
+  const shape = JSON.stringify([j.id, total, steps.map((s) => [s.step, s.state, s.label, stepPct(s) == null, !s.detail])]);
+  const rows = box.querySelectorAll('.step-list > .step');
+  if (box.dataset.shape === shape && rows.length === steps.length) {
+    steps.forEach((s, i) => {
+      const pct = stepPct(s);
+      rows[i].querySelector('.step-state').textContent = stepStateText(s, pct);
+      const detail = rows[i].querySelector('.step-detail');
+      if (detail) detail.textContent = s.detail;
+      const bar = rows[i].querySelector('.step-bar > span');
+      if (bar) bar.style.width = `${pct}%`;
+    });
+    return;
+  }
+  box.dataset.shape = shape;
   // Announce the steps whose state changed since the last render of this job; not the
   // placeholders ("waiting", "not run"), which the list itself shows.
   const seen = S.stepStates?.job === j.id ? S.stepStates.states : {};

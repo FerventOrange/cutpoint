@@ -552,7 +552,7 @@ def parse_progress(line: str) -> dict[str, Any] | None:
         return None
     try:
         raw = json.loads(m.group(1))
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: nested too deeply
         return None
     if not isinstance(raw, dict):
         return None
@@ -672,7 +672,11 @@ class Jobs:
         assert proc is not None and proc.stdout is not None
         try:
             for line in proc.stdout:
-                job.add_output(line)
+                try:
+                    job.add_output(line)
+                except Exception:  # one odd line must not end the watcher: keep it as text
+                    logger.exception("job %s could not read an output line", job.id)
+                    job.logs.append(line.rstrip())
             code = proc.wait()
             if job.cancelled or code != 0:
                 job.interrupt_steps()

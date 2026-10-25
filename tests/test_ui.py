@@ -3059,6 +3059,7 @@ def test_a_step_sent_again_later_keeps_its_index_place_and_a_log_prefix_is_accep
         'PROGRESS {"index":1,"state":"done"}',
         'PROGRESS {"step":"x","index":true,"state":"done"}',
         'Saying PROGRESS {"step":"x","index":1,"state":"done"} mid-line',
+        pytest.param('PROGRESS {"a":' + "[" * 100000 + "]" * 100000 + "}", id="deep-nesting"),
     ],
 )
 def test_a_malformed_progress_line_stays_in_the_log_as_text(line: str) -> None:
