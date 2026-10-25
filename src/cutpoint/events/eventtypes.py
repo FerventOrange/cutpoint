@@ -55,7 +55,7 @@ BANNER_PAYOFFS = (
     "TARGET DESTROYED",
     "SHOT DOWN",
     "MISSION ACCOMPLISHED",
-    # generic / War Thunder (never produced by the R6 preset)
+    # generic and verb-style feed banners
     "YOU HAVE BEEN DESTROYED",
     "CREW KNOCKED OUT",
     "MISSION FAILED",
