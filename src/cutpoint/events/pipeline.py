@@ -3,21 +3,25 @@
 Stages run one after another so only one GPU model is resident at a time:
 PANNs (torch) -> freed -> voice (PANNs on high-passed audio + Silero VAD) ->
 visual (CLIP ViT-L/14 + Faster R-CNN, one decode per source) -> freed -> OCR
-(CPU, NVDEC decode) -> Ollama unloaded -> llama-server started -> windows
+(CPU, NVDEC decode) -> crashes (CLIP, handed over by the visual layer when no
+OCR runs in between) -> Ollama unloaded -> llama-server started -> windows
 described -> server stopped.
 """
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import importlib.util
 import logging
 import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, jsonout
+from cutpoint import cache, jsonout, progress
 from cutpoint import paths as cutpoint_paths
 from cutpoint.config import source_path
 from cutpoint.events import paths
@@ -110,6 +114,9 @@ def run_events(
     discover_bursts: int = 40,
     preset_scope: str = "user",
     sheets: bool = False,
+    stage: Callable[[str], AbstractContextManager[Any]] | None = None,
+    cached_ocr: bool | None = None,
+    llm: bool = True,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -133,15 +140,26 @@ def run_events(
             "package" is accepted as an old alias) or "project"
             (``<project>/hud_presets``).
         sheets: Write visual-layer contact sheets to ``<project>/visual_check``.
+        stage: Called with each layer of ``layers`` that runs ("audio", "voice",
+            "visual", "ocr", "crash"; not "vlm"), then with "write" for the events
+            collected and written; the context manager it returns wraps that part
+            (``cutpoint analyze`` reports its steps with it, and may suppress a layer's
+            error to go on without it).
+        cached_ocr: Read cached HUD OCR events when the OCR layer does not run
+            (None: unless ski, which has no HUD).
+        llm: Let the crash layer's activity profile ask the local Ollama models.
 
     Returns:
         Paths of events.json and events.txt.
     """
     audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
+    stage = stage or (lambda _layer: contextlib.nullcontext())
     hl = load_highlights(project)
     ski = hl.get("style_kind") == "ski"
     if layers is None:
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
+    if cached_ocr is None:
+        cached_ocr = not ski
     vlm.ski = ski
     preflight(layers)
     sources = []
@@ -179,18 +197,24 @@ def run_events(
     t0 = time.perf_counter()
     det = None
     if "audio" in layers:
-        unload_ollama()
-        with VramMonitor() as vm:
-            for s in sources:
-                need = "audio" in force or not detect_audio_events(s, None, audio)
-                if need and det is None:
-                    det = PannsDetector()
-                evs = detect_audio_events(s, det if need else None, audio, force="audio" in force)
-                layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
-            if det is not None:
-                stats["audio_device"] = det.device
-                det.close()
-        vram["audio"] = vm.summary()
+        with stage("audio"):
+            unload_ollama()
+            with VramMonitor() as vm:
+                try:
+                    for i, s in enumerate(sources):
+                        progress.update(progress.fraction(i, len(sources)))
+                        need = "audio" in force or not detect_audio_events(s, None, audio)
+                        if need and det is None:
+                            det = PannsDetector()
+                        evs = detect_audio_events(
+                            s, det if need else None, audio, force="audio" in force
+                        )
+                        layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
+                finally:
+                    if det is not None:
+                        stats["audio_device"] = det.device
+                        det.close()
+            vram["audio"] = vm.summary()
     else:
         for s in sources:
             layer1[str(s.path)] += [
@@ -203,7 +227,7 @@ def run_events(
         from cutpoint.events import voice as voice_layer  # noqa: PLC0415
 
         t0 = time.perf_counter()
-        with VramMonitor() as vm:
+        with stage("voice"), VramMonitor() as vm:
             stats["voice"] = voice_layer.run_layer(
                 sources, voice_layer.VoiceParams(), force="voice" in force
             )
@@ -215,14 +239,16 @@ def run_events(
         from cutpoint.crash import ClipEncoder  # noqa: PLC0415
         from cutpoint.events import visual as visual_layer  # noqa: PLC0415
 
+        # Hand CLIP over only when no OCR runs in between: one model resident at a time.
+        handoff = crash_run and "ocr" not in layers
         t0 = time.perf_counter()
-        with VramMonitor() as vm:
+        with stage("visual"), VramMonitor() as vm:
             stats["visual"] = visual_layer.run_layer(
                 sources,
                 visual_layer.VisualParams(hwaccel=ocr.hwaccel),
                 force="visual" in force,
                 bad=bad,
-                handoff=(lambda m: kept.append(ClipEncoder.from_visual(m))) if crash_run else None,
+                handoff=(lambda m: kept.append(ClipEncoder.from_visual(m))) if handoff else None,
             )
         vram["visual"] = vm.summary()
         timings["visual_s"] = round(time.perf_counter() - t0, 1)
@@ -230,6 +256,51 @@ def run_events(
         from cutpoint.events.sheets import write_visual_sheets  # noqa: PLC0415
 
         stats["sheets"] = [str(p) for p in write_visual_sheets(project, sources)]
+
+    # ---- layer 1b: OCR (with region discovery for games without a preset)
+    t0 = time.perf_counter()
+    ocr.project = project
+    with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
+        if "ocr" in layers and discover is not False:
+            stats["discovery"] = _discover(
+                project, sources, ocr, discover, discover_bursts, preset_scope
+            )
+            timings["discovery_s"] = round(time.perf_counter() - t0, 1)
+        engine = OcrEngine() if "ocr" in layers else None
+        if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
+            logger.warning(
+                "No player_tags set, so kills and deaths in the HUD cannot be "
+                'attributed to you. Add "player_tags": ["YourName"] to %s '
+                "or pass --player NAME.",
+                cutpoint_paths.config_file(),
+            )
+        ocr_stats = {}
+        with VramMonitor() as vm:
+            ocr_sources = sources if "ocr" in layers or cached_ocr else []  # ski: no HUD
+            for i, s in enumerate(ocr_sources):
+                if "ocr" in layers:  # a cached read only is no step of its own
+                    progress.update(progress.fraction(i, len(ocr_sources)))
+                evs, st = detect_ocr_events(
+                    s,
+                    ocr,
+                    engine,
+                    force="ocr" in force,
+                    debug_dir=ocr_debug,
+                    avoid=bad.get(str(s.path)),
+                )
+                preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
+                link_teamkills(
+                    evs,
+                    tags=ocr.player_tags,
+                    generic_teamkills=bool(preset and preset.feed.get("teamkills")),
+                )
+                derive_streaks(evs)
+                layer1[str(s.path)] += evs
+                ocr_stats[s.name] = st
+        vram["ocr"] = vm.summary()
+        stats["ocr"] = ocr_stats
+    timings["ocr_s"] = round(time.perf_counter() - t0, 1)
+
     # ---- crashes (after voice + visual, whose caches it reads): crashes.json
     if crash_run:
         from cutpoint.crash import detect_project  # noqa: PLC0415
@@ -237,53 +308,19 @@ def run_events(
         t0 = time.perf_counter()
         enc = kept.pop() if kept else None
         try:
-            with VramMonitor() as vm:
-                detect_project(project, force="crash" in force, encoder=enc, warn_unreachable=False)
+            with stage("crash"), VramMonitor() as vm:
+                detect_project(
+                    project,
+                    force="crash" in force,
+                    encoder=enc,
+                    warn_unreachable=False,
+                    llm=llm,
+                )
         finally:
             if enc is not None:
                 enc.close()
         vram["crash"] = vm.summary()
         timings["crash_s"] = round(time.perf_counter() - t0, 1)
-
-    # ---- layer 1b: OCR (with region discovery for games without a preset)
-    t0 = time.perf_counter()
-    ocr.project = project
-    if "ocr" in layers and discover is not False:
-        stats["discovery"] = _discover(
-            project, sources, ocr, discover, discover_bursts, preset_scope
-        )
-        timings["discovery_s"] = round(time.perf_counter() - t0, 1)
-    engine = OcrEngine() if "ocr" in layers else None
-    if not ocr.player_tags and sources and ("ocr" in layers or not ski):
-        logger.warning(
-            "No player_tags set, so kills and deaths in the HUD cannot be "
-            'attributed to you. Add "player_tags": ["YourName"] to %s '
-            "or pass --player NAME.",
-            cutpoint_paths.config_file(),
-        )
-    ocr_stats = {}
-    with VramMonitor() as vm:
-        for s in sources if "ocr" in layers or not ski else []:  # ski: no HUD
-            evs, st = detect_ocr_events(
-                s,
-                ocr,
-                engine,
-                force="ocr" in force,
-                debug_dir=ocr_debug,
-                avoid=bad.get(str(s.path)),
-            )
-            preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
-            link_teamkills(
-                evs,
-                tags=ocr.player_tags,
-                generic_teamkills=bool(preset and preset.feed.get("teamkills")),
-            )
-            derive_streaks(evs)
-            layer1[str(s.path)] += evs
-            ocr_stats[s.name] = st
-    vram["ocr"] = vm.summary()
-    stats["ocr"] = ocr_stats
-    timings["ocr_s"] = round(time.perf_counter() - t0, 1)
 
     # ---- telemetry (ski): airtime / crash seeds + coverage of the riding
     if ski:
@@ -371,30 +408,31 @@ def run_events(
     timings["vlm_s"] = round(time.perf_counter() - t0, 1)
     stats["vram_mib"] = vram
 
-    events = [
-        normalize(src, e)
-        for src, evs in layer1.items()
-        for e in evs
-        if e.get("type") not in ("coverage", "coverage_masked")
-    ]
-    events += [normalize(e["source"], e) for e in windows_to_events(results)]
-    settings = {
-        "layers": list(layers),
-        "avoid": dict(bad),
-        "audio": audio.key(),
-        "ocr": ocr.key(None) | {"game": ocr.game},
-        "vlm": asdict(vlm),
-    }
-    return write_outputs(
-        project,
-        [str(s.path) for s in sources],
-        events,
-        results,
-        transcript,
-        settings,
-        timings,
-        stats,
-    )
+    with stage("write"):
+        events = [
+            normalize(src, e)
+            for src, evs in layer1.items()
+            for e in evs
+            if e.get("type") not in ("coverage", "coverage_masked")
+        ]
+        events += [normalize(e["source"], e) for e in windows_to_events(results)]
+        settings = {
+            "layers": list(layers),
+            "avoid": dict(bad),
+            "audio": audio.key(),
+            "ocr": ocr.key(None) | {"game": ocr.game},
+            "vlm": asdict(vlm),
+        }
+        return write_outputs(
+            project,
+            [str(s.path) for s in sources],
+            events,
+            results,
+            transcript,
+            settings,
+            timings,
+            stats,
+        )
 
 
 def _telemetry_layer(
@@ -487,6 +525,10 @@ def _discover(
         if existing is not None and not force:
             continue
         if existing is None:
+            progress.update(
+                detail=f"first run for {'this game' if game == 'game' else game}: "
+                "discovering HUD regions"
+            )
             logger.info(
                 "No HUD preset matches %s; discovering regions as %r (a few minutes). "
                 "Put a preset in %s and pass --game, or --no-discover to skip",

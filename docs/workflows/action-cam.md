@@ -9,12 +9,14 @@ action footage that carries telemetry.
 ```powershell
 cutpoint stage D:\Videos\trip                        # telemetry reading uses whole files: stage slow storage first
 cutpoint analyze D:\Videos\trip --style ski --out trip
-cutpoint events trip                                 # sound events, voice, visual layers, crash check, model tags
+cutpoint events trip                                 # optional: model tags (VLM layer) or forced layers
 cutpoint clips trip --max-total 150
 cutpoint assemble projects/trip/clips --loudnorm
 ```
 
-`analyze --style ski` skips scene detection. As with every style, the Ollama frame rating runs
+`analyze --style ski` skips scene detection. It also runs the reaction (sound events, voice), keyframe
+(visual, only with a CUDA GPU) and crash steps when the `events` extra and models are installed,
+and writes `events.json` and `crashes.json`; `--skip` leaves steps out. As with every style, the Ollama frame rating runs
 only with `--vision`. It writes `telemetry.json` (day summary, runs, per-source events). Clips are ordered by their
 start time (GPS time, else the camera clock) and the day is split into runs at lift segments
 and gaps over 4 minutes.
@@ -25,7 +27,7 @@ features only: no speed, airtime or masking.
 ## Crashes
 
 ```powershell
-cutpoint crashes trip          # crashes.json, crash_check\*.jpg, then re-runs analyze
+cutpoint crashes trip          # re-run on its own (analyze already ran it): crashes.json, crash_check\*.jpg, then re-runs analyze
 cutpoint clips trip --max-total 480
 ```
 

@@ -69,7 +69,8 @@ with `_` are ignored.
   "player_tags": ["YourGameName"],
   "ollama_url": "http://127.0.0.1:11434",
   "video_encoder": "auto",
-  "vision": false
+  "vision": false,
+  "analysis": {"skip": []}
 }
 ```
 
@@ -138,6 +139,12 @@ local Ollama vision model ([getting started](getting-started.md#optional-ollama-
 Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
+
+### analysis
+
+`{"skip": [...]}`. Analysis steps that `analyze` and `edit` leave out by default: any of
+`reactions`, `keyframes` and `crashes`. `--skip` on the command overrides it for one run.
+Default: none. Other step names are rejected.
 
 ### video_encoder
 

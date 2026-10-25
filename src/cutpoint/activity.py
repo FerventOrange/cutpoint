@@ -236,12 +236,27 @@ def _text_emb(prompts: tuple[str, ...]) -> np.ndarray:
     return text_embeddings(prompts)
 
 
-def keyframes(project: Path, n: int = 240) -> tuple[np.ndarray, list[tuple[Path, float]]]:
+def keyframes(
+    project: Path, n: int = 240, warn_unreachable: bool = True
+) -> tuple[np.ndarray, list[tuple[Path, float]]]:
     """Up to ``n`` cached keyframe embeddings ``(N, 768)`` spread over the project's
-    sources (visual layer), with their ``(source, time)``."""
+    sources (visual layer), with their ``(source, time)``. An unreachable source is
+    skipped with one WARNING line and one ``footage_unreachable`` JSON warning, or at
+    DEBUG without ``warn_unreachable`` (the caller already warned)."""
 
     embs, refs = [], []
     for src in dict.fromkeys(s["path"] for s in load_highlights(project)["sources"]):
+        try:
+            cache.source_dir(Path(src))  # the visual cache key needs the file's size and mtime
+        except OSError as err:
+            if not warn_unreachable:
+                logger.debug("%s: footage not reachable (%s); no keyframes from it", src, err)
+                continue
+            logger.warning("%s: footage not reachable (%s); skipped", src, err)
+            jsonout.warn(
+                "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
+            )
+            continue
         vd = load_visual(Path(src))
         if vd is not None and len(vd.t):
             embs.append(vd.mean_emb)
@@ -405,6 +420,7 @@ def resolve(
     refresh: bool = False,
     ask: Ask | None = None,
     llm: bool = True,
+    warn_unreachable: bool = True,
 ) -> dict[str, Any]:
     """Profile of a project, cached in ``<project>/activity.json`` (see the module doc).
 
@@ -415,6 +431,8 @@ def resolve(
         refresh: Ignore activity.json.
         ask: Vision / text model (default: local Ollama when ``llm``).
         llm: Allow the local models (False: library and generic only).
+        warn_unreachable: Warn about each unreachable source when the footage is read
+            (:func:`keyframes`); False when the caller already did.
 
     Returns:
         The activity.json record; ``record["profile"]`` is the full profile.
@@ -445,7 +463,7 @@ def resolve(
     if activity:
         seed, rec["source"] = activity, "flag"
     else:
-        emb, refs = keyframes(project)
+        emb, refs = keyframes(project, warn_unreachable=warn_unreachable)
         rec["scores"] = match_scores(emb, lib)
         seed = pick(rec["scores"])
         rec["source"] = "library" if seed else "fallback"

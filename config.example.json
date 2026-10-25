@@ -8,6 +8,7 @@
     "player_tags": "Your in-game name(s) for the optional game-HUD OCR in `cutpoint events` (who killed whom). Fuzzy match, ignores _ . - and spaces. `cutpoint events --player NAME` overrides it per run. Default: none.",
     "ollama_url": "Ollama base URL for `analyze --vision` and the VLM layers of `cutpoint events`. Env OLLAMA_HOST overrides it. Default: http://127.0.0.1:11434.",
     "vision": "true or false (default). true: `cutpoint analyze` and `cutpoint edit` rate the top candidates with the local Ollama vision model unless --no-vision is given (slower; uses several GB of GPU memory). false: only --vision turns it on for one run. The UI's Settings dialog writes it, and the UI's vision checkboxes start from it.",
+    "analysis": "{\"skip\": [...]}: analysis steps `cutpoint analyze` and `cutpoint edit` leave out by default; any of reactions, keyframes and crashes. --skip overrides it per run. Default: none.",
     "video_encoder": "auto, nvenc, amf, vaapi or cpu (libx264). Env CUTPOINT_VIDEO_ENCODER overrides it. auto really encodes a short test clip with each GPU encoder and uses the first that works, else libx264; a named GPU encoder that does not work is an error. `cutpoint capabilities` shows what works. Default: auto.",
     "pano": "Optional 360-camera (Insta360) module: sdk_exe = MediaSDKTest.exe of the Insta360 Media SDK, which you apply for yourself (see docs/insta360-sdk.md; env CUTPOINT_INSTA360_SDK overrides; default: auto-detected under <CUTPOINT_HOME>\\sdk\\insta360\\); stitch_timeout_s = kill one clip's stitch after this many seconds (default: no limit); stitched_dir = where `cutpoint 360 stitch` writes equirects (default <CUTPOINT_HOME>\\360-stitched; about 54 GB per hour of footage); studio_dirs = folders with Insta360 Studio equirect exports (default <CUTPOINT_HOME>\\360-studio); stitch_args = MediaSDKTest arguments; cmd_every = update the virtual camera every N frames (default 1; 2 halves the commands but leaves shake on every other frame); level_strength = horizon lock when stabilising, 1 = always level, 0 = follow the camera's own tilt (default 0.7); tilt_follow_s = smoothing (s) of the followed tilt (default 0.5); imu_offset_s = IMU-to-video time offset in seconds (default 0); equirect_yaw_offset = yaw correction in degrees for Studio exports (default 0); default_style = --style of `cutpoint 360 analyze` when none is given (default ski).",
     "environment": "Not set here: CUTPOINT_HOME (data root), CUTPOINT_CONFIG (this file), CUTPOINT_CACHE_DIR, CUTPOINT_MODELS_DIR, CUTPOINT_TOOLS_DIR, CUTPOINT_STYLES_DIR, CUTPOINT_FFMPEG / CUTPOINT_FFPROBE, CUTPOINT_LLAMA_SERVER (path to llama-server; llama-server.exe on Windows), CUTPOINT_LLAMA_BACKEND (llama.cpp build `cutpoint setup` downloads: auto, cuda, vulkan or cpu; default auto), CUTPOINT_VISION_MODEL (Ollama model for `analyze --vision`, default qwen3-vl:8b) and OLLAMA_HOST (overrides ollama_url)."
@@ -25,6 +26,9 @@
   ],
   "video_encoder": "auto",
   "vision": false,
+  "analysis": {
+    "skip": []
+  },
   "pano": {
     "sdk_exe": "<CUTPOINT_HOME>\\sdk\\insta360\\MediaSDK-<version>-win64\\bin\\MediaSDKTest.exe",
     "stitched_dir": "D:\\Footage\\360-stitched",
