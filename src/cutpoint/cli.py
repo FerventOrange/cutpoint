@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
-import json
 import logging
 import os
 import shutil
@@ -25,6 +24,7 @@ from pathlib import Path, PurePath
 from typing import NoReturn
 
 from cutpoint import __version__, cache, jsonout, paths, stage
+from cutpoint.activity import ACTIVITY_FILE
 from cutpoint.activity import resolve as resolve_activity
 from cutpoint.assemble import assemble
 from cutpoint.boundaries import SpeechSettings
@@ -282,7 +282,8 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
         lead_s=a.lead, max_after_s=a.max_after, max_clip_s=a.max_clip, dense_top=a.dense_top
     )
     project = resolve_project_path(a.project)
-    detect_project(
+    jsonout.set_project(project)
+    out = detect_project(
         project,
         params,
         dense=a.dense,
@@ -292,21 +293,58 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
         context=a.context,
         refresh_profile=a.refresh_profile,
     )
+    if jsonout.active():  # recorded before reanalyze, so a failure there still reports them
+        data = cache.load_json(out) or {}
+        cands = data.get("crashes") or []
+        jsonout.output("crashes", out)
+        jsonout.output("count", len(cands))
+        jsonout.output(
+            "candidates",
+            [
+                {k: c[k] for k in _CRASH_SUMMARY_KEYS if k in c}
+                for c in cands  # strongest first, as in crashes.json
+            ],
+        )
+        jsonout.output("activity_file", project / ACTIVITY_FILE)
+        jsonout.output("profile_name", (data.get("activity") or {}).get("name"))
     if a.reanalyze:
         from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
 
-        reanalyze_if_reachable(project)
+        if reanalyze_if_reachable(project) is None:
+            jsonout.warn(
+                "highlights_not_updated",
+                "footage not reachable; highlights.json left unchanged, rerun once it is back",
+                [project / "highlights.json"],
+            )
+
+
+# The per-crash keys of crashes.json that ``crashes --json`` reports.
+_CRASH_SUMMARY_KEYS = (
+    "id",
+    "source",
+    "t0",
+    "t1",
+    "confidence",
+    "confirmed",
+    "origin",
+    "clip",
+    "sheet",
+)
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:
+    project = resolve_project_path(a.project)
+    jsonout.set_project(project)
     rec = resolve_activity(
-        resolve_project_path(a.project),
+        project,
         activity=a.activity,
         context=a.context,
         refresh=a.refresh_profile,
     )
-    if a.json:
-        print(json.dumps(rec, indent=2))
+    if jsonout.active():
+        for key, value in rec.items():  # the record's own keys, as the old --json printed them
+            jsonout.output(key, value)
+        jsonout.output("activity_file", project / ACTIVITY_FILE)
         return
     inc = rec["profile"]["incident"]
     print(f"activity  {rec['name']} ({rec['source']})")
@@ -1135,6 +1173,7 @@ def build_parser() -> argparse.ArgumentParser:
         "wipeout feature reach highlights.json (default: on)",
     )
     _add_activity_arguments(cr)
+    _add_json_argument(cr)
     cr.set_defaults(func=_cmd_crashes)
 
     pf = sub.add_parser(
@@ -1144,7 +1183,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pf.add_argument("project", help="analysed project (bare name = projects folder)")
     _add_activity_arguments(pf)
-    pf.add_argument("--json", action="store_true", help="print the activity.json record")
+    _add_json_argument(pf)
     pf.set_defaults(func=_cmd_profile)
 
     mx = sub.add_parser(
