@@ -15,7 +15,8 @@ HUD presets can define their own types in an ``events`` list::
 
 A matcher takes the event ``type`` plus one of ``prefix`` / ``contains``
 (upper-case label text) or ``flag`` (``player``, ``teamkill``,
-``player_kill``, ...). Preset types are checked before
+``player_kill``, ...; several space-separated flags must all hold, ``!flag``
+must be false). Preset types are checked before
 :data:`DEFAULT_EVENT_TYPES` and replace a default with the same name; the
 first matching type wins. Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
 built-in rules, so the defaults reproduce the original behaviour exactly.
@@ -85,7 +86,10 @@ class Matcher:
             return False
         # events.json keeps layer fields under "details"; layer-1 events have them flat
         flags = e["details"] if isinstance(e.get("details"), dict) else e
-        return not self.flag or bool(flags.get(self.flag))
+        return all(
+            not flags.get(f[1:]) if f.startswith("!") else bool(flags.get(f))
+            for f in self.flag.split()
+        )
 
 
 @dataclass(frozen=True)
@@ -115,17 +119,25 @@ class EventType:
         return any(m.matches(e) for m in self.when)
 
 
-# Order reproduces the original scoring chain: a teamkill (or an RFF banner,
-# matched with "in") before the player's kills, then payoff banners (matched
-# with startswith) and multikills.
+# Order reproduces the original scoring chain: a teamkill (or an RFF banner)
+# before the player's kills, then payoff banners and multikills. Banners are
+# matched with startswith: their label is the matched phrase ("WON ROUND 5"),
+# as in killfeed.link_teamkills. Player kills: generic feed kills (``verb``)
+# by the player only, not the player's deaths; built-in R6 kills with the
+# player on either side, as before.
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     EventType(
         "teamkills",
-        (Matcher("kill", flag="teamkill"), Matcher("banner", contains=("REVERSE FRIENDLY FIRE",))),
+        (Matcher("kill", flag="teamkill"), Matcher("banner", prefix=("REVERSE FRIENDLY FIRE",))),
         score=12.0,
         max=1,
     ),
-    EventType("player_kills", (Matcher("kill", flag="player"),), score=6.0, max=3),
+    EventType(
+        "player_kills",
+        (Matcher("kill", flag="player_kill"), Matcher("kill", flag="player !verb")),
+        score=6.0,
+        max=3,
+    ),
     EventType(
         "banners",
         (Matcher("banner", prefix=BANNER_PAYOFFS), Matcher("multikill")),

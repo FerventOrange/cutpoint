@@ -119,19 +119,46 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0) -> dict[str, Any]:
     [
         # R6: 1 kill, teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
         (list(R6), 30.0, _ev(kills=1, tk=2, banners=2)),
-        # WT: kill and death both carry player (2 x 6), TARGET DESTROYED (6); logs do not count
-        (list(WT), 18.0, _ev(kills=2, banners=1)),
+        # WT: only the player's kill counts (6), not the death; TARGET DESTROYED (6); logs do not count
+        (list(WT), 12.0, _ev(kills=1, banners=1)),
         # no preset: laughter min(12, 30), scream min(6, 4)
         (list(NONE), 16.0, _ev(laugh=0.5, scream=0.1)),
-        (list(LAYER), 30.0, _ev(0.5, 0.1, 3, 2, 3)),
+        (list(LAYER), 30.0, _ev(0.5, 0.1, 2, 2, 3)),
         (["r6_kill", "r6_double"], 12.0, _ev(kills=1, banners=1)),
         (["r6_rff"], 12.0, _ev(tk=1)),
         (["r6_match_point", "r6_other_kill"], 0.0, _ev()),
-        (["wt_death", "wt_log"], 6.0, _ev(kills=1)),
+        (["wt_death", "wt_log"], 0.0, _ev()),
     ],
 )
 def test_event_boost(names, boost, evidence):
     assert _boost(names) == (boost, evidence)
+
+
+@pytest.mark.parametrize(
+    ("flag", "fields", "expected"),
+    [
+        ("player !verb", {"player": True}, True),  # AND, negated flag false
+        ("player !verb", {"player": True, "verb": "kill"}, False),  # negation fails
+        ("player !verb", {"verb": "kill"}, False),  # AND, first flag missing
+        ("player_kill", {"player_kill": True, "player": True}, True),  # single flag
+        ("player_kill", {"player": True}, False),
+        ("", {}, True),  # empty flag matches any event of the type
+    ],
+)
+def test_matcher_multi_flag(flag, fields, expected):
+    ev = _ocr("e", "kill", "a > b", 1.0, **fields)[1]
+    assert eventtypes.Matcher("kill", flag=flag).matches(ev) is expected
+    # events.json keeps the layer fields under "details"
+    assert eventtypes.Matcher("kill", flag=flag).matches({**ev, "details": fields}) is expected
+
+
+@pytest.mark.parametrize(
+    ("label", "teamkills"),
+    [("REVERSE FRIENDLY FIRE", 1), ("NOT REVERSE FRIENDLY FIRE", 0)],
+)
+def test_rff_banner_is_prefix(label, teamkills):
+    ev = normalize("a.mp4", _ocr("b", "banner", label, 1.0)[1])
+    assert scoring.event_boost(CAND, [ev])[1]["teamkills"] == teamkills
 
 
 def test_event_boost_window():

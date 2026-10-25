@@ -221,8 +221,9 @@ before.
   VLM windows, clamped to 0-3). Unset `payoff`, `tail_s` and `seed` keep the built-in rules.
 - A matcher is an OCR event `type` (such as `kill`, `banner` or `multikill`) plus at most one
   test: `prefix` or `contains` (lists of upper-case label text; the label must start with, or
-  contain, one of them) or `flag` (a boolean field of the event, such as `player`, `teamkill` or
-  `player_kill`).
+  contain, one of them) or `flag` (one or more space-separated boolean fields of the event, such as `player`, `teamkill`
+  or `player_kill`; all must hold, and a field written `!name` must be false, for example
+  `"flag": "player !verb"`).
 - Preset types are checked before the built-in ones (`teamkills`, `player_kills`, `banners`); the
   first matching type wins, and a type with a built-in's name replaces it.
 - Scored types add to the highlight boost, which stays capped, and show up as evidence in

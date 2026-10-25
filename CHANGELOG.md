@@ -177,6 +177,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In generic (verb-style) kill feeds such as War Thunder, the player's own deaths no longer count
+  as player kills in the highlight boost, so moments with deaths rank lower; R6 is unchanged. The
+  teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff
+  banners.
 - `cutpoint ui` no longer logs a `ConnectionResetError` (`[WinError 10054]`) ERROR traceback each
   time the browser cancels a video request, such as on a seek or when switching sources.
 - `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with
