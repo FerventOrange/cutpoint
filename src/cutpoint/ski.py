@@ -532,6 +532,13 @@ def pick(
             score[s0 : s1 + 1] = 0.0
             taken[s0 : s1 + 1] = True
             continue
+        # On a flat top, centre on the run of samples at the peak, not its first sample.
+        r0, r1 = i, i
+        while r0 > s0 and combined[r0 - 1] >= peak:
+            r0 -= 1
+        while r1 < s1 and combined[r1 + 1] >= peak:
+            r1 += 1
+        i = (r0 + r1) // 2
         t = i * DT
         contrib = {k: weights.get(k, 0) * features[k][i] for k in features}
         kind = max(contrib, key=contrib.get)

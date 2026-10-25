@@ -34,6 +34,7 @@ def test_flat_stretch_gives_one_pick() -> None:
     assert len(picks) == 1
     lo, hi = ski.GEOMETRY["vlm"][:2]
     assert lo <= picks[0].end - picks[0].start <= hi
+    assert picks[0].start >= 10.0 and picks[0].end <= 40.0
 
 
 def test_shoulder_of_a_peak_is_not_a_second_pick() -> None:
