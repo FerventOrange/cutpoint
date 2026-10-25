@@ -73,6 +73,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `kept_sources` | `clips` | A file the run reads as a source was not replaced |
 | `skipped_clips` | `extend` | Clips without a manifest entry were not re-exported |
 | `vision_unavailable` | `analyze` | `--vision` was passed but Ollama or the model is not available, so no vision rating ran |
+| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -117,6 +118,40 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
+
+## Progress output
+
+With `CUTPOINT_PROGRESS=1` in the environment, `analyze` and `edit` print one line per state change on stderr:
+
+```text
+PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"running","pct":40,"detail":null}
+```
+
+| Field | Content |
+|---|---|
+| `step` | Step name, from the table below. A stable API |
+| `index`, `total` | Position from 1, and the number of steps of the command |
+| `label` | Display name |
+| `state` | `running`, `done`, `skipped` or `failed` |
+| `pct` | 0 to 100, or `null` when there is no cheap measure |
+| `detail` | Short text (a skip reason, an error) or `null` |
+
+Running updates come at most 2 per second. Steps run in table order.
+
+| `step` | `analyze` | `edit` |
+|---|---|---|
+| `transcribe` | 1 | 1 |
+| `reactions` | 2 | 2 |
+| `keyframes` | 3 | 3 |
+| `crashes` | 4 | 4 |
+| `ranking` | 5 | 5 |
+| `vision` | 6 | 6 |
+| `clips` | | 7 |
+| `assemble` | | 8 |
+
+On Ctrl+C the current step ends `failed` with detail `cancelled`. Steps that were never started
+are not emitted after a cancel or a fatal error. A first-time HUD discovery shows
+`first run for <game>: discovering HUD regions` as the detail of `keyframes`.
 
 ## ui
 
@@ -215,7 +250,7 @@ See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device 
 cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [--out DIR]
               [--top N] [--max-total S] [--vertical] [--force] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
-              [--ollama-model MODEL] [--json]
+              [--ollama-model MODEL] [--skip STEP [STEP ...]] [--json]
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
@@ -240,7 +275,10 @@ one of them is refused.
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
+| `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
+
+With `CUTPOINT_PROGRESS=1`, `edit` reports 8 [steps](#progress-output): the 6 of `analyze`, then `clips` and `assemble`. `--kind clips` still assembles. With `--events`, `keyframes` is reported again after `vision`, for the VLM layer.
 
 Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
 files removed) and logs the final video, its subtitles and the clips folder last. To change the
@@ -253,8 +291,8 @@ that updates `final.mp4` and `final.srt`, not the `<name>-final` copies.
 cutpoint analyze <file|folder> [<file|folder> ...] --style STYLE [--out DIR] [--json] [options]
 ```
 
-Transcribes the audio, scores it on a 0.1 s grid, and writes `highlights.json` and
-`transcript.txt` to the project folder. Inputs may be any mix of files and folders; they are
+Transcribes the audio, scores it on a 0.1 s grid, runs the analysis steps below, and writes
+`highlights.json` and `transcript.txt` to the project folder. Inputs may be any mix of files and folders; they are
 de-duplicated and kept in the order given. Each source has its own cache, so adding one file to
 an analysed set processes only the new file.
 
@@ -269,6 +307,7 @@ an analysed set processes only the new file.
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `qwen3-vl:8b` |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect) |
+| `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
@@ -284,6 +323,33 @@ Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` 
 `signals`, `label` and a `transcript` snippet. `transcript.txt` has one line per pause or
 sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
+### Analysis steps
+
+The steps run strictly one after another, and only one model is loaded at a time.
+
+| Step | What |
+|---|---|
+| `transcribe` | Whisper transcription, scoring and scene detection |
+| `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
+| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `ski` and `sport`, the CLIP visual layer, only with a CUDA GPU |
+| `crashes` | Action-cam footage only (telemetry found, or style `ski`, `action` or `sport`) |
+| `ranking` | Re-ranks the candidates with the events, and writes `highlights.json` |
+| `vision` | Ollama frame rating, only when vision is on |
+
+Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
+`INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
+logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The llama-server
+VLM layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
+
+`analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
+`highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
+file, and a cancelled first run leaves none. `analyze` no longer writes
+`highlights.pre-events.json`.
+
+A first-time discovery for a game can take several minutes on CPU OCR (one measurement: about
+3.3 minutes per 10 bursts). Rough extra cost per hour of footage (estimates, not measured):
+`reactions` seconds on a GPU and a few minutes on the CPU; `keyframes` minutes.
+
 If ffmpeg hits read errors (a damaged file, a failing drive), `analyze` warns loudly, records
 `read_errors` on that source in `highlights.json`, and stops analysing that source at the
 failure time. `--recover` then probes past the bad region and continues from the first
@@ -295,7 +361,7 @@ readable point.
 cutpoint events <project> [--layers audio voice visual crash ocr vlm] [--no-vlm] [options]
 ```
 
-Optional; needs the `events` extra and `cutpoint setup`. Run it after `analyze`. It works in
+Optional; needs the `events` extra and `cutpoint setup`. [`analyze`](#analysis-steps) already runs the `audio`, `ocr`, `voice`, `visual` and `crash` layers it can; use `events` for the `vlm` layer, to force layers (`--force`) or to rerun them with other options. It works in
 layers, one GPU model at a time, and writes `events.json` and `events.txt`, then re-ranks
 `highlights.json` (the original is kept as `highlights.pre-events.json`).
 

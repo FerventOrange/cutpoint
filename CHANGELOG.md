@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `analyze` and `edit` run the reactions (PANNs sound events, and the voice layer when crashes
+  run), keyframes (HUD OCR with discovery for `gaming` and `funny`, the CLIP visual layer for
+  `action`, `ski` and `sport` with CUDA) and crashes (action-cam) steps, one after another, then
+  rank. Without the `events` extra or the model files a step is skipped with an INFO line;
+  nothing is downloaded. The llama-server VLM layer stays in `events` and `edit --events`.
+- `--skip reactions|keyframes|crashes` on `analyze` and `edit`, and `analysis.skip` in
+  `config.json`.
+- `CUTPOINT_PROGRESS=1` prints `PROGRESS {...}` step lines on stderr for `analyze` (6 steps) and
+  `edit` (8 steps).
+- `step_failed` JSON warning: an analysis step failed and the run continued without it.
 - `--json` on `events`. It reports the `events.json` and `events.txt` paths, the layers, the
   event and window counts, `highlights.json` once re-ranked (and `highlights.pre-events.json`
   when the run created it), and when written `crashes.json`, the contact sheets and the HUD
@@ -135,6 +145,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
+  ranks with them. `highlights.json` is written once, atomically, at the end: a cancelled run
+  leaves the previous file. `analyze` no longer writes `highlights.pre-events.json`.
 - The `all` extra now includes `ui`, so `cutpoint[all]` and `uv sync --extra all` also install
   the browser workspace (`cutpoint ui`). The missing-extra hint for a clone mentions
   `--extra all`.
