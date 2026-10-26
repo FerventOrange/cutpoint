@@ -16,8 +16,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from conftest import write
-from cutpoint import ffmpeg_utils, paths
+from conftest import media_info, write
+from cutpoint import encode, ffmpeg_utils, paths
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, render
 from cutpoint.pano.x3 import X3Clip, imu_source
@@ -233,9 +233,7 @@ def ffmpeg(monkeypatch):
         return ""
 
     monkeypatch.setattr(render, "run", run)
-    monkeypatch.setattr(
-        render, "probe", lambda p: SimpleNamespace(duration=1.0, audio_duration=None)
-    )
+    monkeypatch.setattr(render, "probe", lambda p: media_info(duration=1.0))
     return calls
 
 
@@ -272,7 +270,7 @@ class TestRenderSegmentSendcmd:
         self, clip, tmp_path, ffmpeg, monkeypatch, audio_end, fade_out
     ):
         """#250: audio ending 0.6 s into a 1 s render fades out by 0.6 s, not after it."""
-        info = SimpleNamespace(duration=1.0, audio_duration=audio_end)
+        info = media_info(duration=1.0, audio_duration=audio_end)
         monkeypatch.setattr(render, "probe", lambda p: info)
         path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
         out = tmp_path / "a.mp4"
@@ -280,6 +278,33 @@ class TestRenderSegmentSendcmd:
             clip, path, 3.0, 4.0, out, src=_src("equirect", True), work_dir=tmp_path
         )
         assert f"afade=t=out:{fade_out}:" in self._filter(ffmpeg[0])
+
+    def test_hdr_source_is_tone_mapped_and_tagged_bt709(self, clip, tmp_path, ffmpeg, monkeypatch):
+        """#289: the 360 render converts HLG footage to SDR Rec.709 like a flat export."""
+        hlg = {"color_transfer": "arib-std-b67", "color_primaries": "bt2020"}
+        monkeypatch.setattr(render, "probe", lambda p: media_info(duration=1.0, **hlg))
+        monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+        path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
+        render.render_segment(
+            clip, path, 3.0, 4.0, tmp_path / "h.mp4", src=_src("equirect", True), work_dir=tmp_path
+        )
+        args = ffmpeg[0]
+        assert ":round=down,zscale=tin=arib-std-b67:" in self._filter(args)
+        assert "tonemap=tonemap=mobius:desat=0,zscale=" in self._filter(args)
+        assert "m=bt709:r=tv,format=yuv420p" in self._filter(args)
+        i = args.index("-color_range")
+        assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
+
+    def test_sdr_source_render_is_unchanged(self, clip, tmp_path, ffmpeg):
+        path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
+        render.render_segment(
+            clip, path, 3.0, 4.0, tmp_path / "s.mp4", src=_src("equirect", True), work_dir=tmp_path
+        )
+        args = ffmpeg[0]
+        assert "scale=in_range=pc:out_range=tv,setsar=1,fps=30:round=down,format=yuv420p[v]" in (
+            self._filter(args)
+        )
+        assert "-color_primaries" not in args and "-colorspace" not in args
 
 
 # --------------------------------------------------------------------------- moved footage

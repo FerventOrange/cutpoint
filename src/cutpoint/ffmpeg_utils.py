@@ -284,6 +284,12 @@ class MediaInfo:
     # End of the longest audio stream (s, from the container start); None without audio or
     # when a stream has no duration (MKV).
     audio_duration: float | None = None
+    # ffprobe's color tags of the video stream (``color_transfer``, ``color_primaries``,
+    # ``color_space``, ``color_range``); None when untagged or "unknown".
+    color_transfer: str | None = None
+    color_primaries: str | None = None
+    color_space: str | None = None
+    color_range: str | None = None
 
     def concat_key(self) -> tuple:
         """Parameters that must match for lossless concat-demuxer joining."""
@@ -358,7 +364,17 @@ def probe(path: Path) -> MediaInfo:
         sample_rate=int(a0["sample_rate"]) if a0.get("sample_rate") else None,
         channels=a0.get("channels"),
         audio_duration=audio_duration,
+        color_transfer=_color_tag(video, "color_transfer"),
+        color_primaries=_color_tag(video, "color_primaries"),
+        color_space=_color_tag(video, "color_space"),
+        color_range=_color_tag(video, "color_range"),
     )
+
+
+def _color_tag(stream: dict[str, Any], key: str) -> str | None:
+    """``stream[key]``, or None when it is missing, empty or "unknown"."""
+    value = stream.get(key) or ""
+    return None if value in ("", "unknown") else value
 
 
 def audio_mix_filter(n_streams: int, input_idx: int = 0) -> str | None:
@@ -624,6 +640,21 @@ def has_soxr() -> bool:
         found = False
     logger.debug("ffmpeg resampler: %s", "soxr" if found else "swr (no libsoxr in this build)")
     return found
+
+
+def filter_names(listing: str) -> frozenset[str]:
+    """Filter names in ``ffmpeg -filters`` output (lines like `` .S zscale  V->V  ...``)."""
+    return frozenset(re.findall(r"(?m)^ [.A-Z|]{2,3} (\w+)\s+\S+->\S+", listing))
+
+
+@state.register_cache
+@cache
+def ffmpeg_filters() -> frozenset[str]:
+    """Names of this ffmpeg build's filters (empty if ``ffmpeg -filters`` fails)."""
+    try:
+        return filter_names(run(["ffmpeg", "-hide_banner", "-filters"], timeout=30))
+    except FFmpegError:
+        return frozenset()
 
 
 def vaapi_devices() -> list[str]:
