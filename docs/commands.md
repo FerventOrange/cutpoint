@@ -384,7 +384,16 @@ only from a rating of 7).
 
 ### Analysis steps
 
-The steps run strictly one after another, and only one model is loaded at a time.
+The steps run one after another, and only one model is loaded at a time. One exception: with a
+CUDA GPU, the HUD OCR of `keyframes` starts in the background while `transcribe` and `reactions`
+use the GPU, and `keyframes` takes its results in its turn. It runs only for `gaming` and `funny`
+when Whisper runs on CUDA, every game has a HUD preset (discovery stays in its turn), a source
+read without errors, and the GPU has at least 2 GB free and 8 GB in all (unknown counts as
+enough). The results, `events.json`, `highlights.json`, the OCR caches and the progress steps
+are the same as with it off, and so are the log lines and their order, apart from rare `-v`
+debug lines of helper threads and a `resuming the OCR read` line when a background read is
+handed back to its turn; only timings differ. Set
+`CUTPOINT_ANALYZE_OVERLAP=0` to turn it off.
 
 | Step | What |
 |---|---|

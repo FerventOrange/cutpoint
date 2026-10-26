@@ -672,6 +672,75 @@ def test_a_cancel_leaves_the_previous_highlights_json_byte_identical(run, capsys
     assert last["step"] == ("reactions" if where == "reactions" else "vision")
 
 
+# ----------------------------------------------------------------- background OCR (#375)
+class FakePrefetch:
+    """``_ocr_prefetch``'s reader: records offers, the reader ``run_events`` gets, and
+    whether the project folder still existed when it was closed."""
+
+    def __init__(self, proj: Path) -> None:
+        self.proj = proj
+        self.offers: list[tuple[str, float, bool]] = []
+        self.closed_with_folder: bool | None = None
+        self.closed_early: bool | None = None
+        self.probe = lambda: None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self.closed_with_folder is None:  # the first close
+            self.closed_with_folder = self.proj.is_dir()
+            self.closed_early = self.probe()
+
+    def offer(self, src, duration, ok):
+        self.offers.append((Path(src).name, duration, ok))
+
+
+@pytest.fixture
+def prefetched(run, monkeypatch):
+    """``run`` with a fake OCR prefetch; ``run.read_error`` / ``run.device`` shape the
+    transcription the fake ``analyze_source`` reports."""
+    pre = FakePrefetch(run.proj)
+    # closed after the layers ran, before ranking ends with highlights.json
+    pre.probe = lambda: bool(run.events_calls) and "highlights.json" not in run.saves
+    run.pre, run.read_error, run.device = pre, None, "cuda"
+    monkeypatch.setattr(analyze, "_ocr_prefetch", lambda *a: pre)
+    inner = analyze.analyze_source
+
+    def analyze_source(src, style, tr, *a, read_checked=None, **kw):
+        tr.device = run.device
+        res = inner(src, style, tr, *a, **kw)
+        res.read_error = run.read_error
+        if read_checked is not None:
+            read_checked(res.info, run.read_error)
+        return res
+
+    monkeypatch.setattr(analyze, "analyze_source", analyze_source)
+    return run
+
+
+@pytest.mark.parametrize(
+    ("device", "read_error", "ok"),
+    [("cuda", None, True), ("cpu", None, False), ("cuda", {"failure_time": 30.0}, False)],
+)
+def test_sources_are_offered_to_the_ocr_prefetch(prefetched, device, read_error, ok):
+    prefetched.plan = plan(reactions=("audio",), keyframes=("ocr",))
+    prefetched.device, prefetched.read_error = device, read_error
+    prefetched.go("gaming")
+    assert prefetched.pre.offers == [("a.mp4", 60.0, ok)]
+    (_, _, kw) = prefetched.events_calls[0]
+    assert kw["prefetch"] is prefetched.pre
+    assert prefetched.pre.closed_early  # stopped once the layers are done
+
+
+def test_the_ocr_prefetch_stops_before_a_cancelled_run_cleans_up(prefetched):
+    prefetched.plan = plan(reactions=("audio",), keyframes=("ocr",))
+    prefetched.fail, prefetched.cancel = "audio", True
+    with pytest.raises(KeyboardInterrupt):
+        prefetched.go("gaming")
+    assert prefetched.pre.closed_with_folder is True  # output_dir's cleanup comes after
+
+
 # ----------------------------------------------------------------- --skip and analysis.skip
 @pytest.mark.parametrize(
     ("argv", "skip"),

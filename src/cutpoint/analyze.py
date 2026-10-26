@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -64,6 +64,9 @@ from cutpoint.transcribe import (
 )
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
 from cutpoint.vision import VisionRater
+
+if TYPE_CHECKING:
+    from cutpoint.events.ocr_prefetch import OcrPrefetch
 
 logger = logging.getLogger(__name__)
 
@@ -748,6 +751,7 @@ def analyze_source(
     ski_ctx: Any = None,
     pick: bool = True,
     report: Callable[[float], None] | None = None,
+    read_checked: Callable[[MediaInfo, dict[str, Any] | None], None] | None = None,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -758,7 +762,9 @@ def analyze_source(
     (recorded everywhere); files are read through ``source_remap``. With ``pick``
     False no candidates are picked yet (:func:`pick_candidates` does it later).
     ``report`` gets the share of the source's transcription done (0-1): the audio
-    extract is its first :data:`EXTRACT_SHARE`, Whisper the rest.
+    extract is its first :data:`EXTRACT_SHARE`, Whisper the rest. ``read_checked`` gets
+    the probe and the read-error record (None: a clean read) as soon as they are known,
+    before loudness, Whisper and the scene cuts.
     """
 
     def tick(name: str, t0: float) -> None:
@@ -796,6 +802,8 @@ def analyze_source(
         if read_error:
             warn_read_error(src, read_error, recover)
             span = read_error["audio_s"]  # analyse only what was actually read
+        if read_checked is not None:
+            read_checked(info, read_error)
 
         t0 = time.perf_counter()
         lufs_data = _loudness(wav, cdir)
@@ -809,6 +817,8 @@ def analyze_source(
             logger.info("%s: dropped %d likely-hallucinated transcript segments", src.name, dropped)
     else:
         logger.warning("%s has no audio; using scene/vision signals only", src.name)
+        if read_checked is not None:
+            read_checked(info, None)
 
     n = max(1, int(span / DT) + 1)
     sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
@@ -1213,10 +1223,11 @@ class _StepHook:
             self.failed.add(step)
 
 
-def _ocr_options(project: Path) -> tuple[tuple[str, ...], str]:
+def _ocr_options(project: Path, *, log: bool = True) -> tuple[tuple[str, ...], str]:
     """Player tags and HUD game for the OCR layer. Tags: ``player_tags`` in config.json,
     or when it has none those of the last ``cutpoint events`` run (its ``--player``, kept
-    in events.json). Game: that run's ``--game`` when it was not ``auto``."""
+    in events.json). Game: that run's ``--game`` when it was not ``auto``. ``log`` False:
+    no INFO line about what was reused (the OCR prefetch asks before its turn)."""
     from cutpoint.config import player_tags  # noqa: PLC0415
 
     tags, game = player_tags(), "auto"
@@ -1234,16 +1245,44 @@ def _ocr_options(project: Path) -> tuple[tuple[str, ...], str]:
     if isinstance(old_game, str) and old_game and old_game != game:
         game = old_game
         reused.append(f"game {game}")
-    if reused:
+    if reused and log:
         logger.info("Reusing %s from the last `cutpoint events` run", " and ".join(reused))
     return tags, game
 
 
+def _ocr_prefetch(
+    style: Style, sources: Sequence[Path], skip: Collection[str], project: Path, layers: bool
+) -> contextlib.AbstractContextManager[Any]:
+    """The background OCR reader of :mod:`cutpoint.events.ocr_prefetch` when the keyframes
+    step will run HUD OCR (the conditions of :func:`plan_layers`, checked without its log
+    lines, which keep their place) and ``CUTPOINT_ANALYZE_OVERLAP`` is not ``0``; else a
+    context giving None."""
+    if not layers or style.base not in GAME_STYLES or "keyframes" in skip:
+        return contextlib.nullcontext()
+    if any(importlib.util.find_spec(m) is None for m in EVENTS_MODULES):
+        return contextlib.nullcontext()
+    if event_paths.missing_files(("ocr",)):
+        return contextlib.nullcontext()
+    from cutpoint.events import ocr_prefetch  # noqa: PLC0415
+    from cutpoint.events.killfeed import OcrParams  # noqa: PLC0415
+
+    if not ocr_prefetch.enabled():
+        return contextlib.nullcontext()
+    tags, game = _ocr_options(project, log=False)
+    return ocr_prefetch.OcrPrefetch(project, sources, OcrParams(game=game, player_tags=tags))
+
+
 def _run_layers(
-    project: Path, plan: LayerPlan, hl: dict[str, Any], steps: progress.Run, llm: bool
+    project: Path,
+    plan: LayerPlan,
+    hl: dict[str, Any],
+    steps: progress.Run,
+    llm: bool,
+    prefetch: OcrPrefetch | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
-    events.json, as ``cutpoint events`` would; False if they stopped before writing it."""
+    events.json, as ``cutpoint events`` would; False if they stopped before writing it.
+    ``prefetch``: the background OCR reader (:func:`_ocr_prefetch`) or None."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -1254,7 +1293,11 @@ def _run_layers(
     tags, game = _ocr_options(project)
     why = plan.skipped.get("keyframes")
     try:
-        with pending_highlights(project, hl), no_visual_reason(NO_VISUAL_REASON.get(why or "")):
+        with (
+            pending_highlights(project, hl),
+            no_visual_reason(NO_VISUAL_REASON.get(why or "")),
+            prefetch or contextlib.nullcontext(),  # stopped once the layers are done
+        ):
             # The options of a plain `cutpoint events`, so it reuses these caches.
             run_events(
                 project,
@@ -1265,6 +1308,7 @@ def _run_layers(
                 stage=_StepHook(steps),
                 cached_ocr=plan.game,
                 llm=llm,
+                prefetch=prefetch,
             )
     except Exception as err:
         if steps.current == "ranking":
@@ -1475,7 +1519,11 @@ def _analyze(
             f"No video files found in {target} (exclude={list(exclude)}, recursive={recursive})"
         )
     logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
-    with output_dir(out_dir):  # a failed run leaves no empty project folder behind
+    with (
+        output_dir(out_dir),  # a failed run leaves no empty project folder behind
+        # HUD OCR in the background while the GPU steps run; stopped before the folder goes
+        _ocr_prefetch(style, sources, skip, out_dir, layers) as prefetch,
+    ):
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
         ski_ctx = None
@@ -1492,6 +1540,19 @@ def _analyze(
             ski_ctx = ski.prepare(sources, durations, out_dir, taste=Path(taste) if taste else None)
             telemetry_s = round(time.perf_counter() - t0, 2)
         tr = Transcriber(model=model, language=language)
+
+        def read_checked(src: Path, offset: float) -> Callable[..., None] | None:
+            """``analyze_source``'s hook: offer the source to the OCR prefetch, which reads
+            only a whole, clean source while Whisper runs on the GPU."""
+            if prefetch is None:
+                return None
+
+            def offer(info: MediaInfo, rec: dict[str, Any] | None) -> None:
+                ok = not offset and rec is None and tr.device == "cuda"
+                prefetch.offer(src, round(info.duration, 3), ok)
+
+            return offer
+
         timings: dict[str, float] = {}
         if ski_ctx is not None:
             timings["telemetry_s"] = telemetry_s
@@ -1528,6 +1589,7 @@ def _analyze(
                     recover=recover,
                     pick=ski_ctx is None,
                     report=report if steps.active else None,
+                    read_checked=read_checked(src, offset),
                 )
                 results.append(res)
                 name = f"{src.name}@{offset:.0f}" if offset else src.name
@@ -1652,7 +1714,9 @@ def _analyze(
             if plan.layers:
                 hl["candidates"] = records()  # VLM windows cached by `events` follow them
                 t0 = time.perf_counter()
-                events_new = _run_layers(out_dir, plan, hl, steps, llm=bool(vision))
+                events_new = _run_layers(
+                    out_dir, plan, hl, steps, llm=bool(vision), prefetch=prefetch
+                )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
 

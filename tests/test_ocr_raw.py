@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -128,12 +129,23 @@ def _run(
     stop_after: int | None = None,
     starts: list[float] | None = None,
     fail_at: float | None = None,
+    cut_after: int | None = None,
+    on_frame: Any = None,
+    isolated: list[bool] | None = None,
+    exit_after: int | None = None,
+    fail_hw_at: float | None = None,
+    on_cut: Any = None,
     **kwargs: Any,
 ) -> tuple[list[dict], dict]:
     """Detect the OCR events of a 60 s source whose frames are moving gameplay (a new
     grey level every frame) except for the still menu at 8-20 s. The decoder starts
     at ``start`` (logged in ``starts``) and raises :class:`_Stop` after ``stop_after``
-    frames; a decode starting at ``fail_at`` gives no frames."""
+    frames; a decode starting at ``fail_at`` gives no frames. After ``cut_after``
+    frames a pass ends quietly (ffmpeg stopped by the console); ``on_frame`` is called
+    with the number of frames made, and ``isolated`` gets each pass's ``isolate``. After
+    ``exit_after`` frames ffmpeg exits with code 255 that the decode did not cause; a CUDA
+    pass starting at ``fail_hw_at`` gives no frames (the CPU pass does); ``on_cut`` is
+    called when a pass ends after ``cut_after`` frames."""
     data = preset or _preset()
     monkeypatch.setattr(killfeed, "load_preset", lambda *_a, **_k: preset_from_dict(data))
     monkeypatch.setattr(
@@ -141,18 +153,30 @@ def _run(
     )
     made = [0]
 
-    def frames(path, fps, rect, hw, errors, start=0.0, dur=None):
+    def frames(path, fps, rect, hw, errors, start=0.0, dur=None, cancel=None, exit_codes=None):
         _, _, w, h = rect
         if starts is not None:
             starts.append(start)
-        if start == fail_at:
+        if isolated is not None:
+            isolated.append(cancel is not None)
+        if start == fail_at or (hw and start == fail_hw_at):
             raise RuntimeError("no frames")
         end = 60.0 if dur is None else start + dur
         k = 0
         while start + k / fps < end - 1e-6:
             if stop_after is not None and made[0] >= stop_after:
                 raise _Stop
+            if cut_after is not None and made[0] >= cut_after:
+                if on_cut is not None:
+                    on_cut()
+                return
+            if exit_after is not None and made[0] >= exit_after:
+                if exit_codes is not None:  # only a background read asks for them
+                    exit_codes.append(255)  # Ctrl+Break: one frame short at most
+                return
             made[0] += 1
+            if on_frame is not None:
+                on_frame(made[0])
             t = start + k / fps  # as ffmpeg_utils.decode_raw stamps it
             tc = round(t * fps) / fps  # the screen's time, however t was summed up
             made_by = kwargs.get("make_engine")
@@ -391,6 +415,177 @@ def test_interrupted_read_resumes(tmp_path: Path, monkeypatch) -> None:
     # the resumed read replays like an uninterrupted one
     _bump(monkeypatch)
     assert _run(part, monkeypatch, None, avoid=avoid)[0] == ref
+
+
+# ----------------------------------------------------------------- background read (#375)
+def _files(folder: Path) -> dict[str, Any]:
+    """Every cache file under ``folder`` by relative path: the bytes, a raw chunk's decoded
+    content (its zip and gzip headers hold the write time) and the OCR result without its
+    ``elapsed_s`` and source path (each run has its own folder)."""
+    out: dict[str, Any] = {}
+    for p in sorted(folder.rglob("*")):
+        if not p.is_file():
+            continue
+        data: Any = p.read_bytes()
+        if p.name.startswith("events-ocr-"):
+            doc = json.loads(data)
+            doc["stats"].pop("elapsed_s")
+            doc.pop("source")
+            data = doc
+        elif p.suffix == ".zip":
+            chunk = ocr_raw._decode(data)
+            data = (
+                chunk.frames,
+                chunk.state,
+                {k: v.tobytes() for k, v in chunk.images.items()},
+                {k: v.tobytes() for k, v in chunk.arrays.items()},
+            )
+        out[p.relative_to(folder).as_posix()] = data
+    return out
+
+
+def test_background_read_equals_the_serial_read(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ocr_raw, "CHUNK_FRAMES", 50)
+    serial, background = _dirs(tmp_path, "serial", "background")
+    avoid = [(25.0, 27.0)]
+    ref = _run(serial, monkeypatch, _Engine(), avoid=avoid)
+    isolated: list[bool] = []
+    got: list[Any] = []
+    worker = threading.Thread(
+        target=lambda: got.append(
+            _run(
+                background,
+                monkeypatch,
+                _Engine(),
+                avoid=avoid,
+                cancel=threading.Event(),
+                isolated=isolated,
+            )
+        )
+    )
+    worker.start()
+    worker.join()
+    (events, stats) = got[0]
+    assert events == ref[0] and _untimed(stats) == _untimed(ref[1])
+    assert _files(background) == _files(serial)  # the raw chunks and the result
+    assert isolated == [True, True]  # each segment's ffmpeg out of reach of Ctrl+C
+
+
+def test_cancel_stops_the_read_and_commits_nothing_more(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ocr_raw, "CHUNK_FRAMES", 50)
+    whole, part = _dirs(tmp_path, "whole", "part")
+    ref, ref_stats = _run(whole, monkeypatch, _Engine())
+    cancel = threading.Event()
+    with pytest.raises(killfeed.OcrCancelled):
+        _run(
+            part,
+            monkeypatch,
+            _Engine(),
+            cancel=cancel,
+            on_frame=lambda n: n == 120 and cancel.set(),
+        )
+    (folder,) = part.glob("ocr-raw-*")
+    meta = json.loads((folder / "meta.json").read_text())
+    assert meta["chunks"] == 2 and not meta["complete"]  # frames 100-119 are not kept
+    assert not list(part.glob("events-ocr-*.json"))
+    # the rerun resumes and equals an uninterrupted read
+    events, stats = _run(part, monkeypatch, _Engine())
+    assert events == ref and _untimed(stats) == _untimed(ref_stats)
+
+
+class _NoWait(threading.Event):
+    """A cancel event nothing may wait on: a background read never stalls on it."""
+
+    def wait(self, timeout: float | None = None) -> bool:
+        raise AssertionError(f"waited on the cancel ({timeout})")
+
+
+def test_short_pass_without_cancel_still_counts(tmp_path: Path, monkeypatch) -> None:
+    """A normal short last segment (video shorter than the container): no outside exit, no
+    cancel, so it counts at once, with no wait."""
+    _, stats = _run(tmp_path, monkeypatch, _Engine(), cancel=_NoWait(), cut_after=150)
+    assert stats["frames"] == 150
+    (meta,) = tmp_path.glob("ocr-raw-*/meta.json")
+    assert json.loads(meta.read_text())["complete"]
+    assert list(tmp_path.glob("events-ocr-*.json"))
+
+
+def test_pass_killed_by_the_cancel_commits_nothing(tmp_path: Path, monkeypatch) -> None:
+    """The cancel watcher killed ffmpeg: the pass ends short, with ``cancel`` set."""
+    monkeypatch.setattr(ocr_raw, "CHUNK_FRAMES", 50)
+    cancel = threading.Event()
+    with pytest.raises(killfeed.OcrCancelled):
+        _run(tmp_path, monkeypatch, _Engine(), cancel=cancel, cut_after=120, on_cut=cancel.set)
+    (meta,) = tmp_path.glob("ocr-raw-*/meta.json")
+    status = json.loads(meta.read_text())
+    assert status["chunks"] == 2 and not status["complete"]
+    assert not list(tmp_path.glob("events-ocr-*.json"))
+
+
+def test_failed_pass_after_a_cancel_is_not_retried(tmp_path: Path, monkeypatch) -> None:
+    cancel = threading.Event()
+    cancel.set()
+    starts: list[float] = []
+    with pytest.raises(killfeed.OcrCancelled):
+        _run(tmp_path, monkeypatch, _Engine(), cancel=cancel, fail_at=0.0, starts=starts)
+    assert starts == [0.0]  # no CPU retry, no "no frames" failure recorded
+    assert not list(tmp_path.iterdir())
+
+
+def test_ffmpeg_stopped_from_outside_at_the_end_commits_nothing(tmp_path, monkeypatch) -> None:
+    """A Ctrl+Break in the last frame: the pass is not short, but ffmpeg's exit is not the
+    decode's own, so the background read stops at once (no cancel needed, no wait); the
+    read in its turn redoes it."""
+    monkeypatch.setattr(ocr_raw, "CHUNK_FRAMES", 50)
+    with pytest.raises(killfeed.OcrCancelled):
+        _run(tmp_path, monkeypatch, _Engine(), cancel=_NoWait(), exit_after=179)
+    assert not list(tmp_path.glob("events-ocr-*.json"))
+    (meta,) = tmp_path.glob("ocr-raw-*/meta.json")
+    status = json.loads(meta.read_text())
+    assert status["chunks"] == 3 and not status["complete"]  # frames 150-178 not kept
+
+
+def test_inline_read_ignores_ffmpegs_exit_code(tmp_path, monkeypatch) -> None:
+    """Without ``cancel`` nothing changes: no exit codes are asked for, a pass counts."""
+    _, stats = _run(tmp_path, monkeypatch, _Engine(), exit_after=179)
+    assert stats["frames"] == 179
+    assert list(tmp_path.glob("events-ocr-*.json"))
+
+
+def test_a_cancel_stops_the_replay_of_raw_chunks(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(ocr_raw, "CHUNK_FRAMES", 50)
+    with pytest.raises(_Stop):
+        _run(tmp_path, monkeypatch, _Engine(), stop_after=130)
+    cancel = threading.Event()
+    cancel.set()
+    starts: list[float] = []
+    with pytest.raises(killfeed.OcrCancelled):
+        _run(tmp_path, monkeypatch, _Engine(), cancel=cancel, starts=starts)
+    assert starts == []  # stopped in the replay, before any decode
+
+
+def test_background_read_leaves_the_cpu_retry_to_its_turn(tmp_path, monkeypatch) -> None:
+    """A failed CUDA pass in the worker: no CPU retry there; the read in its turn resumes
+    from the raw chunks and gives the result (and ``hwaccel``) of a serial read."""
+    monkeypatch.setattr(ocr_raw, "CHUNK_FRAMES", 50)
+    whole, part = _dirs(tmp_path, "whole", "part")
+    avoid = [(25.0, 27.0)]  # the CUDA pass of the second segment (29 s) fails
+    ref, ref_stats = _run(whole, monkeypatch, _Engine(), avoid=avoid, fail_hw_at=29.0)
+    starts: list[float] = []
+    with pytest.raises(killfeed.OcrCancelled):
+        _run(
+            part,
+            monkeypatch,
+            _Engine(),
+            avoid=avoid,
+            fail_hw_at=29.0,
+            cancel=threading.Event(),
+            starts=starts,
+        )
+    assert starts == [0.0, 29.0]  # no CPU pass in the background
+    assert not list(part.glob("events-ocr-*.json"))
+    events, stats = _run(part, monkeypatch, _Engine(), avoid=avoid, fail_hw_at=29.0)
+    assert events == ref and _untimed(stats) == _untimed(ref_stats)
 
 
 def test_cleanup_keeps_the_most_recently_used(tmp_path: Path) -> None:

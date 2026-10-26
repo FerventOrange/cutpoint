@@ -5,7 +5,8 @@ PANNs (torch) -> freed -> voice (PANNs on high-passed audio + Silero VAD) ->
 visual (CLIP ViT-L/14 + Faster R-CNN, one decode per source) -> freed -> OCR
 (CPU, NVDEC decode) -> crashes (CLIP, handed over by the visual layer when no
 OCR runs in between) -> Ollama unloaded -> llama-server started -> windows
-described -> server stopped.
+described -> server stopped. ``cutpoint analyze`` may have read the OCR in the background
+already (:mod:`cutpoint.events.ocr_prefetch`); its results are taken in the OCR turn.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from cutpoint.events.killfeed import (
     detect_ocr_events,
     link_teamkills,
 )
+from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.events.regions import game_key_for_path, load_preset
 from cutpoint.events.report import normalize, write_outputs
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
@@ -127,6 +129,7 @@ def run_events(
     stage: Callable[[str], AbstractContextManager[Any]] | None = None,
     cached_ocr: bool | None = None,
     llm: bool = True,
+    prefetch: OcrPrefetch | None = None,
     encoder: Any = None,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
@@ -159,6 +162,9 @@ def run_events(
         cached_ocr: Read cached HUD OCR events when the OCR layer does not run
             (None: unless ski, which has no HUD).
         llm: Let the crash layer's activity profile ask the local Ollama models.
+        prefetch: OCR read in the background by ``cutpoint analyze``: a source's result
+            is taken from it in its turn (same events, caches and log lines); what it did
+            not read is read here, after it is stopped, with its engine.
         encoder: A CLIP model loaded by an earlier step (a ``ClipEncoder``, waiting on
             the CPU) for the crash layer's dense confirm, so it is not loaded again
             (``cutpoint 360 analyze``, #376); the visual layer then hands over none.
@@ -304,7 +310,9 @@ def run_events(
             if stats["discovery"]:
                 base = DISCOVERY_PCT
         # the OCR model loads only when a source's footage is read (not for a replay)
-        make_engine = functools.cache(OcrEngine) if "ocr" in layers else None
+        make_engine = None
+        if "ocr" in layers:
+            make_engine = prefetch.make_engine if prefetch else functools.cache(OcrEngine)
         if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
             logger.warning(
                 "No player_tags set, so kills and deaths in the HUD cannot be "
@@ -332,16 +340,26 @@ def run_events(
                         shown[0],
                         f"reading HUD text: source {i + 1}/{len(ocr_sources)}" if base else None,
                     )
-                evs, st = detect_ocr_events(
+                on_progress = (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
+                got = None
+                if prefetch is not None:  # the background read of these exact inputs
+                    plain = "ocr" not in force and not ocr_debug and not bad.get(str(s.path))
+                    if "ocr" in layers and plain:
+                        got = prefetch.take(s, ocr, on_progress)
+                    else:
+                        prefetch.close()
+                    if got is None and prefetch.stuck:  # it outlived close(): not its engine
+                        prefetch.wait_for(s.path)  # nor the raw cache of the source it is on
+                        if make_engine is prefetch.make_engine:
+                            make_engine = functools.cache(OcrEngine)
+                evs, st = got or detect_ocr_events(
                     s,
                     ocr,
                     None,
                     force="ocr" in force,
                     debug_dir=ocr_debug,
                     avoid=bad.get(str(s.path)),
-                    on_progress=(
-                        (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
-                    ),
+                    on_progress=on_progress,
                     make_engine=make_engine,
                 )
                 preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)

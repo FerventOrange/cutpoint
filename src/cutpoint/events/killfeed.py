@@ -17,6 +17,7 @@ import difflib
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -296,6 +297,12 @@ def _small(mask: np.ndarray, k: int = 4) -> np.ndarray:
 # --------------------------------------------------------------------------- decoding
 
 
+class OcrCancelled(BaseException):
+    """A read with a ``cancel`` event was stopped: nothing after the last finished raw
+    chunk is kept. A BaseException, so the read's ``except RuntimeError`` (a failed
+    decode pass) never takes it for a decode error."""
+
+
 def iter_frames(
     path: Path,
     fps: float,
@@ -304,10 +311,15 @@ def iter_frames(
     errors: list[str],
     start: float = 0.0,
     dur: float | None = None,
+    cancel: threading.Event | None = None,
+    exit_codes: list[int] | None = None,
 ):
     """Yield ``(t, frame)`` for the cropped rectangle; stderr lines go to ``errors``.
 
-    Only ``[start, start + dur]`` is decoded when given; ``t`` is source time.
+    Only ``[start, start + dur]`` is decoded when given; ``t`` is source time. With
+    ``cancel`` (a background read), ffmpeg runs out of the console's reach of Ctrl+C and is
+    killed once ``cancel`` is set (``decode_raw(isolate=True)``); ``exit_codes`` gets a
+    non-zero exit of ffmpeg that the decode did not cause.
 
     Raises:
         RuntimeError: If ffmpeg produced no frames at all (an
@@ -326,6 +338,9 @@ def iter_frames(
         hwaccel="cuda" if hw else None,
         fallback_cpu=False,  # the caller switches to the CPU for the remaining segments
         stderr_lines=errors,
+        isolate=cancel is not None,
+        cancel=cancel,
+        exit_codes=exit_codes,
     )
 
 
@@ -1941,6 +1956,7 @@ def detect_ocr_events(
     avoid: list[tuple[float, float]] | None = None,
     on_progress: Callable[[float], None] | None = None,
     make_engine: Callable[[], OcrEngine] | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
 
@@ -1975,9 +1991,21 @@ def detect_ocr_events(
         make_engine: Instead of ``engine``: makes the engine only when the footage is
             read (a replay or a cache hit loads no OCR model). Its engine must use
             :data:`OCR_DET_SIDE`, which the raw cache key assumes.
+        cancel: For a read in a background thread (:mod:`cutpoint.events.ocr_prefetch`):
+            once set, the read stops at the next frame with :class:`OcrCancelled`, its
+            ffmpeg killed and nothing committed after the last finished raw chunk. ffmpeg
+            then runs isolated from Ctrl+C and is killed at once on ``cancel``. A pass
+            that ffmpeg left with an exit the decode did not cause (the console's
+            Ctrl+Break reaches every process group) and a failed CUDA pass also raise
+            :class:`OcrCancelled`, without committing the pass: the caller reads the
+            source itself then, resuming from the raw chunks, as a serial run would.
 
     Returns:
         (events, stats).
+
+    Raises:
+        OcrCancelled: With ``cancel``: when it was set, ffmpeg was stopped from outside or a
+            CUDA pass failed.
     """
     game = game_key_for_path(str(src.path), params.game, params.project)
     preset = load_preset(game, params.project)
@@ -2043,6 +2071,8 @@ def detect_ocr_events(
         if meta.get("complete"):
             raw.touch()  # in use: another process's cleanup keeps it
         for chunk in raw.chunks(meta):
+            if cancel is not None and cancel.is_set():
+                raise OcrCancelled
             for rec in _records(chunk, regions):
                 interp.add(rec)
                 report(rec.t)
@@ -2121,6 +2151,7 @@ def detect_ocr_events(
                 continue
             while True:
                 errors.clear()
+                exits: list[int] = []  # background: an ffmpeg exit it did not cause
                 k = k0
                 try:
                     for t, frame in iter_frames(
@@ -2131,7 +2162,11 @@ def detect_ocr_events(
                         errors,
                         start,
                         None if seg_b >= duration else seg_b - start,
+                        cancel=cancel,
+                        exit_codes=exits if cancel is not None else None,
                     ):
+                        if cancel is not None and cancel.is_set():
+                            raise OcrCancelled
                         if k0:  # resumed: the time stamps of an uninterrupted read
                             t = seg_a + k / params.fps
                         k += 1
@@ -2145,9 +2180,16 @@ def detect_ocr_events(
                             if len(pending) >= ocr_raw.CHUNK_FRAMES:
                                 flush(si, k)
                         report(t)
+                    if cancel is not None and (cancel.is_set() or exits):
+                        raise OcrCancelled  # killed on cancel, or stopped from outside
                     stats["hwaccel"] = hw
                     break
                 except RuntimeError as err:
+                    if cancel is not None and (cancel.is_set() or exits or hw):
+                        # cancelled or stopped from outside, or a failed CUDA pass: the read in
+                        # its turn redoes it from the raw chunks (CPU retry, hwaccel stats) as a
+                        # serial run would
+                        raise OcrCancelled from err
                     if k0 and k == k0 and start > seg_b - 1.0:
                         # resumed at the very end of the segment: nothing was left
                         logger.debug("%s: nothing left after %.1fs: %s", src.name, start, err)
