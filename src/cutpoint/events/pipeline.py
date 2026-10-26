@@ -206,6 +206,13 @@ def run_events(
     # ---- layer 1a: audio
     t0 = time.perf_counter()
     det = None
+    voice_params = None
+    keep = False  # hand PANNs to the voice layer instead of loading it again (#372)
+    if "voice" in layers:
+        from cutpoint.events import voice as voice_layer  # noqa: PLC0415
+
+        voice_params = voice_layer.VoiceParams()
+        keep = voice_layer.needs_run(sources, voice_params, force="voice" in force)
     if "audio" in layers:
         with stage("audio"):
             unload_ollama()
@@ -223,10 +230,15 @@ def run_events(
                             det = det or PannsDetector()
                             evs = detect_audio_events(s, det, audio, force=True)  # miss or forced
                         layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
+                except BaseException:
+                    keep = False  # the layer failed: free the model now
+                    raise
                 finally:
                     if det is not None:
                         stats["audio_device"] = det.device
-                        det.close()
+                        if not keep:
+                            det.close()
+                            det = None
             vram["audio"] = vm.summary()
     else:
         for s in sources:
@@ -237,13 +249,16 @@ def run_events(
 
     # ---- layer 1c/1d: wind-robust voice grids, frame embeddings + people
     if "voice" in layers:
-        from cutpoint.events import voice as voice_layer  # noqa: PLC0415
-
         t0 = time.perf_counter()
-        with stage("voice"), VramMonitor() as vm:
-            stats["voice"] = voice_layer.run_layer(
-                sources, voice_layer.VoiceParams(), force="voice" in force
-            )
+        try:
+            with stage("voice"), VramMonitor() as vm:
+                stats["voice"] = voice_layer.run_layer(
+                    sources, voice_params, force="voice" in force, det=det
+                )
+        finally:
+            if det is not None:  # closed before the next layer loads its model
+                det.close()
+                det = None
         vram["voice"] = vm.summary()
         timings["voice_s"] = round(time.perf_counter() - t0, 1)
     crash_run = "crash" in layers and not only  # project-wide ranking: all sources
