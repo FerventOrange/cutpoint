@@ -17,6 +17,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".m4v", ".avi", ".webm"}
+# Insta360 360 files: not in VIDEO_EXTS, so find_videos never reads raw fisheye as flat video
+PANO_EXTS = frozenset({".insv", ".lrv"})
 
 
 def slugify(text: str, max_len: int | None = 40, default: str = "moment") -> str:
@@ -192,7 +194,11 @@ def find_videos(
             batch = [target.resolve()]
         elif is_dir:
             batch = sorted(
-                (p.resolve() for p in entries if p.suffix.lower() in VIDEO_EXTS and _is_file(p)),
+                (
+                    p.resolve()
+                    for p in entries
+                    if p.suffix.lower() in VIDEO_EXTS and safe_is_file(p)
+                ),
                 key=lambda p: [natural_key(Path(part)) for part in p.parts],
             )
         else:
@@ -264,7 +270,7 @@ def _walk(folder: Path, recursive: bool, exclude: Sequence[str] = ()) -> Iterato
                 stack.append(p)
 
 
-def _is_file(p: Path) -> bool:
+def safe_is_file(p: Path) -> bool:
     """``p.is_file()`` (symlinks followed), but False with a WARNING when ``p`` cannot
     be checked (also on Python 3.13+, where ``is_file()`` hides such errors)."""
     try:

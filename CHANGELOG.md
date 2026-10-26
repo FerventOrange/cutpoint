@@ -264,6 +264,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- New Project in the UI: a folder that has files but no supported videos now says which file
+  types it found (for example "no supported videos found (found 12 .insv, 3 .lrv)") instead of
+  the generic message (#321).
+- Insta360 X3 `.insv` and `.lrv` files are recognised in the UI. The file picker has an
+  "Insta360 360 video" filter, so they show without "All files". A 360 folder or file is refused
+  with a message naming the `cutpoint 360 scan` and `360 analyze` commands until 360 projects
+  come to the UI, and a folder mixing 360 and regular videos is refused with a clear message
+  (#320).
 - With reduced motion on (for example Windows "Animation effects" off), a running analysis
   step showed a frozen spinner and looked stuck. It now shows a still ▶ and an elapsed time that
   counts up, and the indeterminate progress bars show as a still dashed bar. Nothing changes with
