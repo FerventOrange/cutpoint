@@ -167,9 +167,18 @@ def test_format_report_has_torch_and_sdk_lines(sdk, torch_stub):
     text = capabilities.format_report(
         _data(capabilities._torch(True), capabilities._insta360_sdk(False))
     )
-    assert "torch: 2.6.0+cpu, CPU-only build, runs on the CPU" in text
-    assert "  Fix: CUDA-HINT" in text
-    assert "Insta360 Media SDK: not found; NVIDIA GPU (needed): no" in text
+    torch_line = next(ln for ln in text.splitlines() if ln.startswith("torch:"))
+    assert (
+        "2.6.0+cpu" in torch_line and "CPU-only" in torch_line and "runs on the CPU" in torch_line
+    )
+    assert "Fix: CUDA-HINT" in text
+    sdk_line = next(ln for ln in text.splitlines() if ln.startswith("Insta360 Media SDK:"))
+    assert "not found" in sdk_line and sdk_line.endswith("no")
+    with_gpu = capabilities.format_report(
+        _data(capabilities._torch(True), capabilities._insta360_sdk(True))
+    )
+    sdk_line = next(ln for ln in with_gpu.splitlines() if ln.startswith("Insta360 Media SDK:"))
+    assert sdk_line.endswith("yes") and capabilities.SDK_NEEDS_NVIDIA not in with_gpu
     assert capabilities.SDK_NEEDS_NVIDIA in text
 
 

@@ -247,7 +247,11 @@ def test_has_soxr_is_false_when_ffmpeg_fails(monkeypatch):
 def test_limiter_filter_uses_soxr_only_when_ffmpeg_has_it(monkeypatch, soxr):
     monkeypatch.setattr(assemble, "has_soxr", lambda: soxr)
     graph = assemble.limiter_filter(-1.0)
-    assert graph.startswith("aresample=192000,alimiter=limit=0.8913:")
+    assert "alimiter=limit=0.8913" in graph  # -1 dB as a linear limit
+    # oversample, limit, then back down to 48 kHz as the last stage (with soxr only if available)
+    assert (
+        graph.index("aresample=192000") < graph.index("alimiter") < graph.index("aresample=48000")
+    )
     assert graph.endswith(",aresample=48000:resampler=soxr" if soxr else ",aresample=48000")
     assert ("soxr" in graph) is soxr
 

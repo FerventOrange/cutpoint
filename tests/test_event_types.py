@@ -8,17 +8,18 @@ and a self-kill is ``self_kills`` (half a kill), not a player kill.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from cutpoint import paths
+from cutpoint import cache, paths
 from cutpoint.events import eventtypes, regions, scoring, tails
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source
-from cutpoint.events.killfeed import FeedParser, OcrParams, derive_streaks
+from cutpoint.events.killfeed import GENERIC_VERSION, FeedParser, OcrParams, derive_streaks
 from cutpoint.events.regions import GENERIC_BANNERS, load_preset
 from cutpoint.events.report import normalize
 from hud_fixtures import boxfeed, verbfeed, write_preset
@@ -330,19 +331,15 @@ def _src(tmp_path: Path) -> Source:
     return Source(tmp_path / "game.mp4", 30.0, tmp_path, [])
 
 
+HYPE_BOXFEED = boxfeed()["hype"]
+HYPE_GENERIC = "  hype: 0-1 driving/waiting, menus, hangar, loading, vehicle or respawn select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a multi-kill, a big explosion, a close call, a match win; 8-10 several kills in quick succession, a spectacular kill or a spectacular death.\n"
+
+
 QWEN = (
     "You are Qwen, a virtual human developed by the Qwen Team, Alibaba Group, "
     "capable of perceiving auditory and visual inputs, as well as generating text and speech."
 )
-FRAMES = (
-    " recording, starting at 00:00:05.0 in game.mp4. The single audio track mixes game "
-    "sound, the player's microphone and friends on voice chat. 0 frames follow, each "
-    "labelled with seconds from the window start."
-)
-PROMPT_START = "Describe what actually happens in this window, in time order: what the player does, kills and deaths (who kills whom, with what), teamkills, round results, and how the friends react (laughing, shouting, banter, jokes). Do not list transcript lines one by one: summarise a conversation as ONE event and spend the other events on actions and reactions. Connect the talk to the action: if a conversation is followed by a kill, a death, a round win or laughter, say so explicitly ('after the argument, the player gets a kill and the team laughs'). Look at the frames for weapons, kills and deaths, and listen to the audio for laughter and tone. Use on-screen HUD text only as context; do not transcribe it.\nScoring rubric (integers 0-10):\n"
-HYPE_BOXFEED = boxfeed()["hype"]
-HYPE_GENERIC = "  hype: 0-1 driving/waiting, menus, hangar, loading, vehicle or respawn select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a multi-kill, a big explosion, a close call, a match win; 8-10 several kills in quick succession, a spectacular kill or a spectacular death.\n"
-PROMPT_END = '  funny: 0-1 no joke; 3-4 light banter; 6-7 a clear joke or people laughing; 8-10 everyone laughing hard, an absurd mistake, a teamkill followed by laughter.\n  highlight_score: how much this window deserves a place in a highlight montage (max of the best moment\'s hype and funny, plus 1 if both).\nEvent \'t\' is seconds from the window start. Reply with JSON only: {"events": [{"t": number, "what": str, "funny": int, "hype": int}], "summary": str, "funny_score": int, "highlight_score": int, "label": "2-4 word slug"}'
+PROMPT_PIN = (5, "fc82230bf6ad")
 
 
 @pytest.mark.parametrize(
@@ -366,20 +363,39 @@ def test_prompt(tmp_path, home, game, intro, hype, bare):
     msgs = vw.build_messages(
         _src(tmp_path), win, [], vw.VlmParams(), vw.game_prompt(game, load_preset(game)), [], []
     )
-    transcript = (
-        "Speech transcript (automatic, may contain errors; seconds from window start):\n(none)"
+    system, user = msgs
+    assert system == {"role": "system", "content": vw.QWEN_SYSTEM}
+    assert vw.QWEN_SYSTEM == QWEN
+    intro_part, transcript_part, rubric_part = (c["text"] for c in user["content"])
+    assert user["role"] == "user" and all(c["type"] == "text" for c in user["content"])
+    # the parts that vary with the preset: the window intro and the hype rubric
+    assert intro_part.startswith(intro + " recording, starting at 00:00:05.0 in game.mp4.")
+    assert "0 frames follow" in intro_part
+    assert transcript_part.startswith("Speech transcript") and "(none)" in transcript_part
+    assert hype in rubric_part
+    assert (HYPE_GENERIC in rubric_part) == (hype == HYPE_GENERIC)
+    # structure: the instructions, then the rubric (hype before funny), then the JSON reply format
+    order = [rubric_part.index(x) for x in ("Scoring rubric", hype, "  funny:", "highlight_score:")]
+    assert order == sorted(order)
+    assert rubric_part.startswith("Describe what actually happens in this window")
+    assert rubric_part.endswith('"label": "2-4 word slug"}')
+    reply = rubric_part[rubric_part.index("Reply with JSON only") :]
+    props = vw.RESPONSE_SCHEMA["properties"]
+    for name in (*props, *props["events"]["items"]["properties"]):
+        assert f'"{name}"' in reply, name
+    # the fixed text is cached under PROMPT_VERSION only: a change must bump it
+    fixed = "\n".join(
+        [
+            system["content"],
+            intro_part.removeprefix(intro),
+            transcript_part,
+            rubric_part.replace(hype, "<hype>"),
+        ]
     )
-    assert msgs == [
-        {"role": "system", "content": QWEN},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": intro + FRAMES},
-                {"type": "text", "text": transcript},
-                {"type": "text", "text": PROMPT_START + hype + PROMPT_END},
-            ],
-        },
-    ]
+    digest = hashlib.sha1(fixed.encode("utf-8")).hexdigest()[:12]
+    assert (vw.PROMPT_VERSION, digest) == PROMPT_PIN, (
+        "prompt text changed: bump PROMPT_VERSION and update the digest"
+    )
 
 
 @pytest.mark.parametrize("name", list(LAYER))
@@ -422,119 +438,51 @@ def test_vlm_key():
     }
 
 
-VERBFEED_KEY = {
-    "extra": {},
-    "fps": 3.0,
-    "fuzzy": 0.8,
-    "game": "verbfeed",
-    "min_text_score": 0.6,
-    "persist_s": 8.0,
-    "preset": {
-        "bigtext": True,
-        "feed": {"kill_words": {"toppled": "kill"}},
-        "interp": 9,
-        "phrases": ["VERB DONE", *GENERIC_BANNERS],
-        "preset_tags": ["BOXER"],
-    },
-    "regions": [
-        {
-            "h": 160,
-            "kind": "feed",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-            "name": "feed",
-            "w": 500,
-            "x": 1400,
-            "y": 40,
-        },
-        {
-            "h": 120,
-            "kind": "banner",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-            "name": "banner",
-            "w": 700,
-            "x": 600,
-            "y": 100,
-        },
-        {
-            "det_scale": 0.35,
-            "every": 6,
-            "gate": "det",
-            "h": 700,
-            "kind": "bigtext",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-            "min_text_h": 36,
-            "name": "bigtext",
-            "w": 1320,
-            "x": 300,
-            "y": 110,
-        },
-    ],
-    "tags": [],
-    "v": 3,
+KEY_FIELDS = {
+    "v",
+    "game",
+    "fps",
+    "fuzzy",
+    "min_text_score",
+    "persist_s",
+    "extra",
+    "tags",
+    "regions",
 }
+REGION_FIELDS = {"name", "x", "y", "w", "h", "kind", "min_change", "min_fill"}
 
 
-def test_ocr_key(home):
+BUILTIN_KEY_SHA1 = "1589f1e259b5864facdd747664ef08d46a3fdfa7"
+PLAIN_KEY_SHA1 = "8bd31e1301f547575c5570c1945b64ee0e50f7f2"  # the plain preset's key without ``interp`` (its own version)
+
+
+def test_ocr_key(home, tmp_path, monkeypatch):
+    """The OCR cache key: a plain preset adds ``preset``; a ``builtin`` one keeps the original
+    key layout (so its cached results stay valid), wherever it is loaded from."""
     write_preset(paths.presets_dir(), verbfeed())
-    assert OcrParams().key("verbfeed", load_preset("verbfeed")) == VERBFEED_KEY
+    key = OcrParams().key("verbfeed", load_preset("verbfeed"))
+    assert set(key) == KEY_FIELDS | {"preset"}
+    assert (key["v"], key["game"], key["fps"], key["tags"]) == (3, "verbfeed", 3.0, [])
+    preset = key["preset"]
+    assert set(preset) == {"phrases", "feed", "bigtext", "preset_tags", "interp"}
+    assert preset["interp"] == GENERIC_VERSION
+    assert preset["phrases"] == ["VERB DONE", *GENERIC_BANNERS]
+    assert preset["feed"] == {"kill_words": {"toppled": "kill"}}
+    assert preset["preset_tags"] == ["BOXER"]
+    # the region fields are the key too: gate/every/min_text_h/det_scale only on the bigtext region
+    feed, banner, bigtext = key["regions"]
+    assert (feed["name"], banner["name"], bigtext["name"]) == ("feed", "banner", "bigtext")
+    assert set(feed) == set(banner) == REGION_FIELDS
+    assert set(bigtext) == REGION_FIELDS | {"gate", "every", "min_text_h", "det_scale"}
 
-
-BOXFEED_KEY = {
-    "v": 3,
-    "game": "boxfeed",
-    "fps": 3.0,
-    "fuzzy": 0.8,
-    "min_text_score": 0.6,
-    "persist_s": 8.0,
-    "extra": {},
-    "tags": [],
-    "regions": [
-        {
-            "name": "feed",
-            "x": 1400,
-            "y": 40,
-            "w": 500,
-            "h": 160,
-            "kind": "feed",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-        },
-        {
-            "name": "banner",
-            "x": 600,
-            "y": 100,
-            "w": 700,
-            "h": 120,
-            "kind": "banner",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-        },
-        {
-            "name": "bigtext",
-            "x": 300,
-            "y": 110,
-            "w": 1320,
-            "h": 700,
-            "kind": "bigtext",
-            "min_change": 0.015,
-            "min_fill": 0.002,
-            "gate": "det",
-            "every": 6,
-            "min_text_h": 36,
-            "det_scale": 0.35,
-        },
-    ],
-}
-
-
-def test_ocr_key_builtin_has_no_preset_fields(home, tmp_path, monkeypatch):
-    """A ``builtin`` preset keeps the original key layout (no ``preset``), wherever it is loaded from."""
     write_preset(paths.presets_dir(), boxfeed())
     from_user = OcrParams().key("boxfeed", load_preset("boxfeed"))
-    assert from_user == BOXFEED_KEY
+    assert set(from_user) == KEY_FIELDS and from_user["v"] == 3
+    assert from_user["regions"] == key["regions"]
+    # the values count too: any change renames every cache file of the built-in (R6) presets
+    assert cache.params_hash(from_user, 40) == BUILTIN_KEY_SHA1, "never change"
+    no_interp = {**key, "preset": {k: v for k, v in key["preset"].items() if k != "interp"}}
+    assert cache.params_hash(no_interp, 40) == PLAIN_KEY_SHA1, "plain-preset cache file names"
 
     bundled = tmp_path / "bundled"
     write_preset(bundled, boxfeed())

@@ -147,8 +147,9 @@ def _seg(i: int, cat: str, score: float, chapter: int, **kw) -> dict:
     }
 
 
-def test_arc_order_opener_body_and_finale() -> None:
-    day = [
+@pytest.fixture
+def day() -> list[dict]:
+    return [
         _seg(1, "run", 0.9, 1),
         _seg(2, "scenery", 0.5, 1),
         _seg(3, "lift", 0.8, 1),  # best view of the first third: opener
@@ -164,20 +165,66 @@ def test_arc_order_opener_body_and_finale() -> None:
         _seg(13, "social", 0.3, 3),
         _seg(14, "scenery", 0.6, 3),  # late view: outro
     ]
+
+
+def test_arc_order_keeps_every_moment(day) -> None:
     arc = order_moments(day, "arc")
-    ids = [m["id"] for m in arc]
-    cats = [m["category"] for m in arc]
-    assert sorted(ids) == sorted(m["id"] for m in day)
-    assert ids[0] == "m003" and arc[0]["end"] - arc[0]["start"] == 5.0  # trimmed opener
-    assert ids[-3:] == ["m011", "m012", "m014"]
-    assert ids[ids.index("m006") + 1] == "m008"  # crash, then its reaction
+    assert sorted(m["id"] for m in arc) == sorted(m["id"] for m in day)
+
+
+def test_arc_order_opens_with_the_trimmed_best_view(day) -> None:
+    first = order_moments(day, "arc")[0]
+    assert first["id"] == "m003" and first["end"] - first["start"] == 5.0
+
+
+def test_arc_order_ends_with_the_best_crash_its_reaction_and_the_outro(day) -> None:
+    assert [m["id"] for m in order_moments(day, "arc")][-3:] == ["m011", "m012", "m014"]
+
+
+def test_arc_order_puts_a_crash_reaction_right_after_its_crash(day) -> None:
+    ids = [m["id"] for m in order_moments(day, "arc")]
+    assert ids[ids.index("m006") + 1] == "m008"
+
+
+def test_arc_order_does_not_repeat_a_category_three_times_in_a_row(day) -> None:
+    cats = [m["category"] for m in order_moments(day, "arc")]
     assert all(len(set(cats[i : i + 3])) > 1 for i in range(len(cats) - 2))
-    assert ids.index("m002") < ids.index("m004")  # chronological by stretch
+
+
+def test_arc_order_is_chronological_by_stretch() -> None:
+    """A stretch plays whole before the next one, whatever the category order within it."""
+    moments = [
+        _seg(1, "lift", 0.9, 1),  # opener
+        _seg(2, "social", 0.5, 1),  # social normally follows a run, but stretch 1 comes first
+        _seg(3, "run", 0.5, 2),
+        _seg(4, "crash", 0.9, 2),  # finale
+    ]
+    assert [m["id"] for m in order_moments(moments, "arc")] == ["m001", "m002", "m003", "m004"]
+
+
+def test_arc_order_without_categories_is_the_story_order(day) -> None:
     plain = [{k: v for k, v in m.items() if k != "category"} for m in day]
     assert order_moments(plain, "arc") == order_moments(plain, "story")
+
+
+def test_arc_finale_fix_never_joins_two_streaks_of_a_category() -> None:
     runs = [*(_seg(i, "run", 0.5, 1) for i in range(1, 5)), _seg(5, "social", 0.5, 2)]
     cats = [m["category"] for m in order_moments([*runs, _seg(6, "run", 0.9, 2)], "arc")]
-    assert "run,run,run,run" not in ",".join(cats)  # the finale fix never joins two streaks
+    assert "run,run,run,run" not in ",".join(cats)
+
+
+def test_arc_finale_never_makes_a_third_clip_of_a_category_in_a_row() -> None:
+    moments = [
+        _seg(1, "lift", 0.9, 1),  # opener
+        _seg(2, "run", 0.5, 1),
+        _seg(3, "crash", 0.3, 1),
+        _seg(4, "crash", 0.4, 1),
+        _seg(5, "crash", 0.9, 1),  # finale: would be the third crash after the body's two
+    ]
+    arc = order_moments(moments, "arc")
+    cats = [m["category"] for m in arc]
+    assert arc[-1]["id"] == "m005"
+    assert "crash,crash,crash" not in ",".join(cats)
 
 
 def test_content_qa_flags_each_failed_check() -> None:

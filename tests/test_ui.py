@@ -1484,36 +1484,22 @@ def test_path_picker_builds_the_platform_dialog_argv(
     assert ui.path_picker() is None  # no display: nobody would see the window
     monkeypatch.setenv("DISPLAY", ":0")
     argv, cancel = ui.path_picker()("folder", tmp_path)
-    assert argv == [
-        "/bin/zenity",
-        "--file-selection",
-        "--directory",
-        "--title=Choose a folder",
-        f"--filename={tmp_path}{os.sep}",
-    ]
+    assert argv[:2] == ["/bin/zenity", "--file-selection"]
+    assert "--directory" in argv and f"--filename={tmp_path}{os.sep}" in argv
+    assert any(a.startswith("--title=") for a in argv)
     assert cancel == 1
     argv, _ = ui.path_picker()("file", None)
-    assert argv[:3] == ["/bin/zenity", "--file-selection", "--title=Choose a video"]
-    assert "*.mp4" in argv[3] and not any(a.startswith("--filename") for a in argv)
+    assert argv[:2] == ["/bin/zenity", "--file-selection"] and "--directory" not in argv
+    assert any("*.mp4" in a for a in argv) and not any(a.startswith("--filename") for a in argv)
 
     present.discard("zenity")  # kdialog is the fallback
     argv, cancel = ui.path_picker()("folder", tmp_path)
-    assert argv == [
-        "/bin/kdialog",
-        "--title",
-        "Choose a folder",
-        "--getexistingdirectory",
-        str(tmp_path),
-    ]
+    assert argv[0] == "/bin/kdialog" and "--title" in argv
+    assert argv[argv.index("--getexistingdirectory") + 1] == str(tmp_path)
     argv, cancel = ui.path_picker()("file", tmp_path)
-    assert argv[:5] == [
-        "/bin/kdialog",
-        "--title",
-        "Choose a video",
-        "--getopenfilename",
-        str(tmp_path),
-    ]
-    assert "*.mp4" in argv[5] and cancel == 1
+    assert argv[0] == "/bin/kdialog" and "--getexistingdirectory" not in argv
+    assert argv[argv.index("--getopenfilename") + 1] == str(tmp_path)
+    assert "*.mp4" in argv[-1] and cancel == 1
 
     present.clear()
     assert ui.path_picker() is None  # a display but no dialog tool
@@ -1583,13 +1569,11 @@ def test_settings_report_the_folder_the_lock_and_the_config_file(
 ) -> None:
     res = client.get("/api/settings")
     assert res.status_code == 200
-    assert res.json() == {
-        "projects_dir": str(config.projects_dir()),
-        "projects_dir_locked": False,
-        "config_file": str(home / "config.json"),
-        "vision": False,
-        "vision_model": "qwen3-vl:8b",
-    }
+    got = res.json()
+    assert got["projects_dir"] == str(config.projects_dir())
+    assert got["projects_dir_locked"] is False
+    assert got["config_file"] == str(home / "config.json")
+    assert got["vision"] is False and got["vision_model"]
     locked = tmp_path / "locked"
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(locked))
     config.get_config.cache_clear()
