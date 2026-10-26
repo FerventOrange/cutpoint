@@ -230,6 +230,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `highlights.pre-events.json` is written only when the analysis was not ranked with events
   yet.
 - The vision rating (`--vision`) now rates the top candidates after the events ranking.
+- The vision ratings (`--vision`) are cached per source in `cache/<source>/vision-ratings.json`,
+  keyed by the model, the style's prompts and options, the frame size and the frame times (not
+  the Ollama URL). A rerun asks Ollama only about candidates it has not rated, with the same
+  ratings and the same `highlights.json` as the first run, and logs how many ratings came from
+  the cache and how many were asked. Each rating is saved as it arrives, so an interrupted run
+  keeps them; failed or unreadable replies are not cached. A first run is unchanged (#377).
 - Re-running `analyze` keeps the `--game` of the last `cutpoint events` run (read from
   `events.json`), and its `--player` tags when `player_tags` in `config.json` is empty; it logs
   an INFO line when it does.

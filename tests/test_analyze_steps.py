@@ -87,6 +87,8 @@ def run(home, tmp_path, monkeypatch):
         return project / "events.json", project / "events.txt"
 
     class FakeRater:
+        hits = asked = 0
+
         def __init__(self, **_):
             pass
 
