@@ -285,6 +285,12 @@ def pooled_probabilities(
     return grid, 0.0
 
 
+def cached_audio_events(src: Source, params: AudioParams) -> list[dict[str, Any]] | None:
+    """Cached audio events of one source, or None on a cache miss (a hit may be empty)."""
+    hit = cache.load_json(layer_cache_path(src.cdir, "audio", params.key()))
+    return None if hit is None else hit["events"]
+
+
 def detect_audio_events(
     src: Source, det: PannsDetector | None, params: AudioParams, force: bool = False
 ) -> list[dict[str, Any]]:
@@ -300,8 +306,8 @@ def detect_audio_events(
         Events ``{t, end, type: "audio", label, confidence, top_class, ...}``.
     """
     cpath = layer_cache_path(src.cdir, "audio", params.key())
-    if not force and (hit := cache.load_json(cpath)) is not None:
-        return hit["events"]
+    if not force and (hit := cached_audio_events(src, params)) is not None:
+        return hit
     if det is None:
         return []
     if not src.audio_parts:

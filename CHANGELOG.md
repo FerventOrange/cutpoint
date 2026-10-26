@@ -333,6 +333,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A rerun of `events` (or `analyze`) whose audio events are all cached no longer loads the
+  PANNs sound model when a source's cached result is empty, which cost about 6 s; a source
+  without cached audio no longer loads it either. The events are unchanged (#370).
 - `analyze --language` no longer reuses a transcript cached for another language: a
   source transcribed with the detected language returned that cached transcript, and Whisper
   never ran in the forced one. A forced language now has its own cache file,
