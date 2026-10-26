@@ -333,6 +333,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Clips of a recording with the same audio on several tracks (OBS writes its mix to every
+  enabled track) came out 20·log10(N) dB too loud and clipped, because every track was summed.
+  `clips`, `extend` and `edit` now compare the tracks on six 3 s windows across each source
+  (once, cached per source in `audio-tracks.json`, about 1-4 s) and leave out a track that
+  copies an earlier one, with an INFO line naming the tracks kept. Tracks count as copies when
+  their levels match within 0.5 dB and the energy of their difference is at least 15 dB below
+  them. Each clip of such a source then checks the left-out tracks again on its whole span, in
+  one-second chunks, and keeps a track that differs in any chunk, so a mic callout between the
+  windows is not lost. This check reads the clip's span once more: about 0.4 s for a 20 s clip
+  and 3 s for a 3 min clip once the footage has been read, and up to about 8 s for 3 min from a
+  slow network share. Sources with one track, or with no copied track, are not checked again. On
+  a 5-track OBS recording the clip went from -17.8 LUFS and +3.1 dBTP to -31.5 LUFS and -5.9
+  dBTP, as track 1 alone (-31.4 LUFS, -5.8 dBTP). Distinct tracks such as game and mic are still
+  summed at full level, an all-silent extra track is kept, and single-track sources get exactly
+  the same ffmpeg command as before. Copies encoded at a different bitrate, sample rate or
+  channel layout are not always recognised and are still summed (#365).
 - A rerun of `events` (or `analyze`) whose audio events are all cached no longer loads the
   PANNs sound model when a source's cached result is empty, which cost about 6 s; a source
   without cached audio no longer loads it either. The events are unchanged (#370).
