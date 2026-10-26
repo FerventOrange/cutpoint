@@ -45,6 +45,7 @@ def test_step_names_are_the_stable_api():
         "transcribe", "reactions", "keyframes", "crashes", "ranking", "vision",
     )  # fmt: skip
     assert (*progress.ANALYZE_STEPS, "clips", "assemble") == progress.EDIT_STEPS
+    assert progress.PANO_STEPS == ("scan", "views", "analyze", "events")
     assert progress.SKIPPABLE == ("reactions", "keyframes", "crashes")
     assert progress.LABELS == {
         "transcribe": "Transcription",
@@ -55,6 +56,10 @@ def test_step_names_are_the_stable_api():
         "vision": "Vision rating",
         "clips": "Clips",
         "assemble": "Assemble",
+        "scan": "Read 360 clips",
+        "views": "360 views",
+        "analyze": "Transcription and ranking",
+        "events": "Events and re-rank",
     }
 
 

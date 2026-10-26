@@ -5,6 +5,8 @@ import { $, baseName, h } from './util.js';
 
 const SOURCE_HINT = 'Choose a video or a folder of videos, or type or paste its full path.';
 const SOURCE_HINT_TYPED = 'Type or paste the full path of a video, or of a folder of videos, on the computer running cutpoint.';
+// Added for an Insta360 file (a 360 folder cannot be told apart here); the server sets the style.
+const PANO_HINT = 'Insta360 360 footage uses the 360 style (ski unless pano.default_style in config.json says otherwise), not the one chosen below.';
 
 let picking = false; // the server allows one open dialog at a time
 
@@ -54,9 +56,13 @@ export function initNewProject(onCreated, canPick) {
       }
     });
   }
-  $('#newSourceHint').textContent = canPick ? SOURCE_HINT : SOURCE_HINT_TYPED;
+  const hint = canPick ? SOURCE_HINT : SOURCE_HINT_TYPED;
+  $('#newSourceHint').textContent = hint;
   name.addEventListener('input', () => (nameTouched = true));
-  source.addEventListener('input', () => !nameTouched && (name.value = stem(source.value.trim())));
+  source.addEventListener('input', () => {
+    if (!nameTouched) name.value = stem(source.value.trim());
+    $('#newSourceHint').textContent = /\.(insv|lrv)$/i.test(source.value.trim()) ? `${hint} ${PANO_HINT}` : hint;
+  });
   $('#newCancel').addEventListener('click', () => dlg.close());
 
   $('#newForm').addEventListener('submit', async (ev) => {
@@ -81,6 +87,7 @@ export function initNewProject(onCreated, canPick) {
   return function open(styles) {
     nameTouched = false;
     source.value = name.value = '';
+    $('#newSourceHint').textContent = hint;
     setError('');
     style.replaceChildren(...styles.map((s) => h('option', { value: s, text: s })));
     dlg.showModal();

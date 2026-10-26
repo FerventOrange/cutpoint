@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The UI makes projects from Insta360 X3 footage (a folder, or one file for that clip). "Analyze
+  footage" runs `cutpoint 360 analyze --scan` and shows the steps Read 360 clips, 360 views,
+  Transcription and ranking, and Events and re-rank. Exported clips are reframed by the automatic
+  director (ffmpeg `dfisheye` on Linux unless an SDK stitch or Studio export exists). Folders
+  that mix 360 and regular videos are still refused (#341). Vision rating is not used for 360
+  (#320).
+- `cutpoint 360 analyze --scan FOLDER...` scans and analyzes in one command, and with
+  `CUTPOINT_PROGRESS=1` it reports the four 360 steps (#320).
 - `analyze` and `edit` run the reactions (PANNs sound events, and the voice layer when crashes
   run), keyframes (HUD OCR with discovery for `gaming` and `funny`, the CLIP visual layer for
   `action`, `ski` and `sport` with CUDA) and crashes (action-cam) steps, one after another, then
@@ -268,10 +276,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   types it found (for example "no supported videos found (found 12 .insv, 3 .lrv)") instead of
   the generic message (#321).
 - Insta360 X3 `.insv` and `.lrv` files are recognised in the UI. The file picker has an
-  "Insta360 360 video" filter, so they show without "All files". A 360 folder or file is refused
-  with a message naming the `cutpoint 360 scan` and `360 analyze` commands until 360 projects
-  come to the UI, and a folder mixing 360 and regular videos is refused with a clear message
-  (#320).
+  "Insta360 360 video" filter, so they show without "All files", and a folder mixing 360 and
+  regular videos is refused with a clear message (#320).
 - With reduced motion on (for example Windows "Animation effects" off), a running analysis
   step showed a frozen spinner and looked stuck. It now shows a still ▶ and an elapsed time that
   counts up, and the indeterminate progress bars show as a still dashed bar. Nothing changes with

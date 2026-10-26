@@ -1,4 +1,4 @@
-"""Machine-readable step progress of ``cutpoint analyze`` and ``cutpoint edit``.
+"""Machine-readable step progress of ``cutpoint analyze``, ``edit`` and ``360 analyze``.
 
 Active only when ``CUTPOINT_PROGRESS=1``. Every state change of a step is one line on
 stderr::
@@ -8,11 +8,11 @@ stderr::
 
 (one line, compact JSON). ``state`` is ``running``, ``done``, ``skipped`` or ``failed``;
 ``index`` counts from 1; ``pct`` is 0-100 or null; ``detail`` is a short text or null.
-The steps of a run are fixed when it starts (:data:`ANALYZE_STEPS`, :data:`EDIT_STEPS`;
-their names are a stable API) and run in that order. A step that does not apply is
-emitted ``skipped`` with the reason in ``detail``. Updates of a running step (``pct``,
-``detail``) are throttled to two per second and left out when nothing changed; state
-changes never are. A failed write (closed or broken stderr) turns progress off for the
+The steps of a run are fixed when it starts (:data:`ANALYZE_STEPS`, :data:`EDIT_STEPS`,
+:data:`PANO_STEPS`; their names are a stable API) and run in that order. A step that does
+not apply is emitted ``skipped`` with the reason in ``detail``. Updates of a running step
+(``pct``, ``detail``) are throttled to two per second and left out when nothing changed;
+state changes never are. A failed write (closed or broken stderr) turns progress off for the
 rest of the run: emitting never stops the run itself.
 
 A cancelled run (Ctrl+C, exit 130) ends its current step ``failed`` with detail
@@ -33,6 +33,7 @@ from typing import Any
 ENV = "CUTPOINT_PROGRESS"
 ANALYZE_STEPS = ("transcribe", "reactions", "keyframes", "crashes", "ranking", "vision")
 EDIT_STEPS = (*ANALYZE_STEPS, "clips", "assemble")
+PANO_STEPS = ("scan", "views", "analyze", "events")  # ``cutpoint 360 analyze``
 LABELS = {
     "transcribe": "Transcription",
     "reactions": "Reactions",
@@ -42,6 +43,10 @@ LABELS = {
     "vision": "Vision rating",
     "clips": "Clips",
     "assemble": "Assemble",
+    "scan": "Read 360 clips",
+    "views": "360 views",
+    "analyze": "Transcription and ranking",
+    "events": "Events and re-rank",
 }
 # Analysis steps ``analyze --skip`` and the ``analysis.skip`` setting may leave out.
 SKIPPABLE = ("reactions", "keyframes", "crashes")

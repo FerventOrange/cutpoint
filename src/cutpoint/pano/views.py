@@ -39,7 +39,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, state
+from cutpoint import cache, progress, state
 from cutpoint.events.common import params_key
 from cutpoint.pano import geometry as G
 
@@ -903,6 +903,7 @@ def run_layer(
         ):
             V.text_embeddings(pos + neg, models)
         for i, c in enumerate(todo, 1):
+            progress.update(progress.fraction(i - 1, len(todo)), f"clip {c.clip_id}")
             src = Path(c.lrv)
             i00 = imu_source(src)
             if i00 is None:
