@@ -151,7 +151,9 @@ def _analyze_stubs(monkeypatch, tmp_path: Path) -> list[str]:
     monkeypatch.setattr(cli, "_clips", lambda project: [clip])
     monkeypatch.setattr(pipeline, "preflight", lambda layers: order.append("preflight"))
     monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: order.append("events"))
-    monkeypatch.setattr(views, "run_layer", lambda clips, force=False: order.append("views") or {})
+    monkeypatch.setattr(
+        views, "run_layer", lambda clips, force=False, handoff=None: order.append("views") or {}
+    )
     monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: order.append("analyze"))
     monkeypatch.setattr(analyze_mod, "reanalyze", lambda project: None)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "ski")

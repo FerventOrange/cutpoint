@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -869,9 +870,17 @@ def write_standard_visual(src: Path, pv: PanoViews) -> Path:
 
 # --------------------------------------------------------------------------- driver
 def run_layer(
-    clips: list[Any], params: ViewParams | None = None, force: bool = False
+    clips: list[Any],
+    params: ViewParams | None = None,
+    force: bool = False,
+    handoff: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """Compute the view layer for every clip with a proxy that lacks it.
+
+    ``handoff`` is called with the loaded models (a ``VisualModels``) before they are
+    freed, so a later step can keep their CLIP model instead of loading it again (#376);
+    the detector is freed either way. It is not called when every clip's views are
+    cached or a clip fails.
 
     Returns:
         Stats: ``computed``, ``cached``, ``seconds`` and per-clip ``frames`` / ``s``.
@@ -941,6 +950,8 @@ def run_layer(
                 el,
                 c.duration / max(el, 1e-6),
             )
+        if handoff is not None:
+            handoff(models)
     finally:
         models.close()
     stats["seconds"] = round(time.perf_counter() - t0, 1)

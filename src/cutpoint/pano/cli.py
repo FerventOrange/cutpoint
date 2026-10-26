@@ -206,12 +206,18 @@ def cmd_analyze(a: argparse.Namespace) -> None:
     scan of :func:`cmd_scan` first). Steps: :data:`cutpoint.progress.PANO_STEPS`."""
     project = _project(a.project)
     jsonout.set_project(project)
-    with progress.run(progress.PANO_STEPS) as steps:
-        _analyze(a, project, steps)
+    kept: list[Any] = []  # the views' CLIP, reused by the crash dense confirm (#376)
+    try:
+        with progress.run(progress.PANO_STEPS) as steps:
+            _analyze(a, project, steps, kept)
+    finally:
+        for enc in kept:  # a step failed before the crash layer closed it (else a no-op)
+            enc.close()
 
 
-def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run) -> None:
-    """:func:`cmd_analyze`, reporting to ``steps``."""
+def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: list[Any]) -> None:
+    """:func:`cmd_analyze`, reporting to ``steps``. The views' CLIP model goes to ``kept``
+    when the crash layer will use it; the caller closes it."""
     from cutpoint.analyze import (  # noqa: PLC0415
         analyze,
         reanalyze_if_reachable,
@@ -237,9 +243,18 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run) -> None:
     clips = [c for c in clips if c.lrv]
     if a.only:
         clips = [c for c in clips if c.clip_id in a.only]
+    keep = False  # CLIP waits on the CPU only when the crash dense confirm will embed frames
+    if not (a.no_events or a.views_only):
+        from cutpoint.crash import ClipEncoder, dense_needs_run  # noqa: PLC0415
+
+        keep = dense_needs_run([Path(c.lrv) for c in clips])
+
+    def handoff(models: Any) -> None:
+        kept.append(ClipEncoder.from_visual(models))
+
     t0 = time.perf_counter()
     with steps.step("views"):
-        st = views.run_layer(clips, force=a.force_views)
+        st = views.run_layer(clips, force=a.force_views, handoff=handoff if keep else None)
     _timing(project, "views", {**st, "total_s": round(time.perf_counter() - t0, 1)})
     jsonout.output("timings", project / "pano_timings.json")
     jsonout.output("views", {k: st.get(k) for k in ("cached", "computed")})
@@ -268,7 +283,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run) -> None:
 
     t2 = time.perf_counter()
     with steps.step("events"):
-        run_events(project, layers=EVENT_LAYERS)
+        run_events(project, layers=EVENT_LAYERS, encoder=kept[0] if kept else None)
         rescored = reanalyze_if_reachable(project)
     _timing(project, "events_s", round(time.perf_counter() - t2, 1))
     _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
