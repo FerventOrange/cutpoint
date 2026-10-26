@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
@@ -11,29 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from conftest import envelope
 from cutpoint import capabilities, cli, ffmpeg_utils, jsonout
 from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
 
-KEYS = {"ok", "command", "schema", "project", "outputs", "warnings", "error"}
 
-
-def _envelope(out: str) -> dict:
-    """``out`` must be exactly one JSON object (and a newline)."""
-    doc, end = json.JSONDecoder().raw_decode(out)
-    assert out[end:] == "\n"
-    assert isinstance(doc, dict) and set(doc) == KEYS
-    assert doc["schema"] == 1 and isinstance(doc["ok"], bool)
-    assert isinstance(doc["command"], str) and isinstance(doc["outputs"], dict)
-    assert isinstance(doc["warnings"], list)
-    assert doc["project"] is None or isinstance(doc["project"], str)
-    if doc["ok"]:
-        assert doc["error"] is None
-    else:
-        assert set(doc["error"]) == {"code", "message"}
-    return doc
-
-
-def test_envelope_collects_outputs_project_and_warnings(tmp_path, capsys):
+def testenvelope_collects_outputs_project_and_warnings(tmp_path, capsys):
     with jsonout.run("analyze") as result:
         assert jsonout.active()
         jsonout.set_project(tmp_path / "p")
@@ -42,7 +24,7 @@ def test_envelope_collects_outputs_project_and_warnings(tmp_path, capsys):
         jsonout.output("clips", [tmp_path / "a.mp4"])
         jsonout.warn("kept_clips", "kept 1 clip", [tmp_path / "x.mp4"])
     assert not jsonout.active()
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc == result.envelope()
     assert doc["ok"] is True and doc["command"] == "analyze"
     assert doc["project"] == str(tmp_path / "p")
@@ -69,11 +51,11 @@ def test_relative_paths_become_absolute(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     with jsonout.run("x"):
         jsonout.output("file", Path("a.mp4"))
-    assert _envelope(capsys.readouterr().out)["outputs"]["file"] == str(tmp_path / "a.mp4")
+    assert envelope(capsys.readouterr().out)["outputs"]["file"] == str(tmp_path / "a.mp4")
 
 
 @pytest.mark.slow
-def test_stdout_holds_only_the_envelope(capfd):
+def test_stdout_holds_only_theenvelope(capfd):
     """Prints, logs and child processes that inherit stdout go to stderr."""
     with jsonout.run("x"):
         print("stray print")
@@ -81,7 +63,7 @@ def test_stdout_holds_only_the_envelope(capfd):
         logging.getLogger("cutpoint").warning("a log line")
         subprocess.run([sys.executable, "-c", "print('child output')"], check=True)
     out, err = capfd.readouterr()
-    assert _envelope(out)["ok"] is True
+    assert envelope(out)["ok"] is True
     for text in ("stray print", "stray write", "child output"):
         assert text in err
 
@@ -89,12 +71,12 @@ def test_stdout_holds_only_the_envelope(capfd):
 def test_first_error_wins_and_exception_is_reraised(capsys):
     with pytest.raises(KeyError), jsonout.run("x"):
         raise KeyError("boom")
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["ok"] is False and doc["error"] == {"code": "error", "message": "'boom'"}
     with jsonout.run("x"):
         jsonout.fail("not_found", "first")
         jsonout.fail("error", "second")
-    assert _envelope(capsys.readouterr().out)["error"] == {"code": "not_found", "message": "first"}
+    assert envelope(capsys.readouterr().out)["error"] == {"code": "not_found", "message": "first"}
 
 
 @pytest.mark.parametrize(
@@ -139,7 +121,7 @@ def test_output_values_are_always_serializable(tmp_path, capsys):
         jsonout.output("odd", Odd())
         jsonout.output("nested", {"k": [frozenset({2})]})
         jsonout.warn("w", "m", (tmp_path / "c",))
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["outputs"] == {
         "set": [str(tmp_path / "a")],
         "tuple": [1, str(Path("b").absolute())],
@@ -158,7 +140,7 @@ def test_guard_without_stderr(monkeypatch, capsys):
         jsonout.output("x", 1)
     assert sys.stdout is stdout
     out = capsys.readouterr().out
-    assert _envelope(out)["outputs"] == {"x": 1} and "dropped" not in out
+    assert envelope(out)["outputs"] == {"x": 1} and "dropped" not in out
 
 
 def test_systemexit_message_is_bad_args(monkeypatch, capsys):
@@ -167,7 +149,7 @@ def test_systemexit_message_is_bad_args(monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["paths", "--json"])
     assert exc.value.code == "bad --window-at 'x'; use GLOB@START-END"  # exit 1, as before
-    error = _envelope(capsys.readouterr().out)["error"]
+    error = envelope(capsys.readouterr().out)["error"]
     assert error == {"code": "bad_args", "message": "bad --window-at 'x'; use GLOB@START-END"}
 
 
@@ -190,16 +172,16 @@ def test_json_requested(tokens, wanted):
 
 def test_abbreviated_json(home, capsys):
     assert cli.main(["paths", "--js"]) == 0
-    assert _envelope(capsys.readouterr().out)["command"] == "paths"
+    assert envelope(capsys.readouterr().out)["command"] == "paths"
     with pytest.raises(SystemExit) as exc:
         cli.main(["paths", "--jso", "--bogus"])
     assert exc.value.code == 2
-    assert _envelope(capsys.readouterr().out)["error"]["code"] == "bad_args"
+    assert envelope(capsys.readouterr().out)["error"]["code"] == "bad_args"
 
 
 def test_paths_json(home, capsys):
     assert cli.main(["paths", "--json"]) == 0
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["ok"] is True and doc["command"] == "paths" and doc["project"] is None
     outputs = doc["outputs"]
     assert outputs["home"] == str(home)
@@ -237,11 +219,11 @@ def _paths_raising(monkeypatch, err: BaseException) -> None:
         (KeyboardInterrupt(), "interrupted", 130, "interrupted"),
     ],
 )
-def test_cli_error_envelope(monkeypatch, capsys, err, code, exit_code, message):
+def test_cli_errorenvelope(monkeypatch, capsys, err, code, exit_code, message):
     _paths_raising(monkeypatch, err)
     assert cli.main(["paths", "--json"]) == exit_code
     out, stderr = capsys.readouterr()
-    doc = _envelope(out)
+    doc = envelope(out)
     assert doc["ok"] is False and doc["command"] == "paths"
     assert doc["error"]["code"] == code
     assert (message or str(err)) in doc["error"]["message"]
@@ -254,17 +236,17 @@ def test_cli_error_without_json_prints_nothing_on_stdout(monkeypatch, capsys):
     assert capsys.readouterr().out == "noise\n"
 
 
-def test_cli_unexpected_exception_still_writes_envelope(monkeypatch, capsys):
+def test_cli_unexpected_exception_still_writesenvelope(monkeypatch, capsys):
     _paths_raising(monkeypatch, KeyError("bug"))
     with pytest.raises(KeyError):
         cli.main(["paths", "--json"])
-    assert _envelope(capsys.readouterr().out)["error"]["code"] == "error"
+    assert envelope(capsys.readouterr().out)["error"]["code"] == "error"
 
 
 def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_cmd_paths", lambda a: 3)
     assert cli.main(["paths", "--json"]) == 3
-    error = _envelope(capsys.readouterr().out)["error"]
+    error = envelope(capsys.readouterr().out)["error"]
     assert error == {"code": "error", "message": "exit code 3"}
 
 
@@ -276,12 +258,12 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
         (["clips", "p", "--size", "abc", "--json"], "argument --size: 'abc': expected WxH"),
     ],
 )
-def test_bad_args_envelope(capsys, argv, message):
+def test_bad_argsenvelope(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
     out, err = capsys.readouterr()
-    doc = _envelope(out)
+    doc = envelope(out)
     assert doc["error"]["code"] == "bad_args" and doc["error"]["message"].startswith(message)
     assert doc["command"] == argv[0]
     assert "usage: cutpoint" in err and message in err
@@ -300,7 +282,7 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
         cli.main(["paths", "--js", "--n", "x"])
     assert exc.value.code == 2
     out, err = capsys.readouterr()
-    doc = _envelope(out)
+    doc = envelope(out)
     assert doc["command"] == "paths" and doc["error"]["code"] == "bad_args"
     assert "invalid int value" in doc["error"]["message"] and "invalid int value" in err
 
@@ -313,7 +295,7 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
         ["fit", "x", "--json"],  # a command without --json (yet)
     ],
 )
-def test_bad_args_without_envelope(capsys, argv):
+def test_bad_args_withoutenvelope(capsys, argv):
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
@@ -352,7 +334,7 @@ def test_json_subprocess_end_to_end(home, tmp_path):
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert _envelope(proc.stdout)["outputs"] == {"x": 1}
+    assert envelope(proc.stdout)["outputs"] == {"x": 1}
     for text in ("stray print", "child output", "a warning"):
         assert text in proc.stderr
 
@@ -392,7 +374,7 @@ def test_json_subprocess_without_stderr(home, tmp_path, stderr):
         check=False,
     )
     assert proc.returncode == 0
-    doc = _envelope(proc.stdout)
+    doc = envelope(proc.stdout)
     assert doc["ok"] is True and doc["outputs"] == {"x": 1}
 
 
@@ -415,7 +397,7 @@ def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
     assert proc.returncode == 1
     assert "bad override" in proc.stderr
     if json_flag:
-        assert _envelope(proc.stdout)["error"] == {"code": "bad_args", "message": "bad override"}
+        assert envelope(proc.stdout)["error"] == {"code": "bad_args", "message": "bad override"}
     else:
         assert proc.stdout == ""
 
@@ -429,7 +411,7 @@ def test_json_subprocess_bad_args(home):
         check=False,
     )
     assert proc.returncode == 2
-    assert _envelope(proc.stdout)["error"]["code"] == "bad_args"
+    assert envelope(proc.stdout)["error"]["code"] == "bad_args"
 
 
 @pytest.mark.slow
@@ -453,7 +435,7 @@ def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
         check=False,
     )
     assert proc.returncode == 2
-    error = _envelope(proc.stdout)["error"]
+    error = envelope(proc.stdout)["error"]
     assert error == {"code": "bad_args", "message": "unrecognized arguments: --bogus"}
 
 
@@ -461,20 +443,20 @@ def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
 # envelope. 360 qa --json-only (skip the contact sheets) is not a JSON output flag.
 
 
-def test_capabilities_json_is_the_envelope(monkeypatch, capsys):
+def test_capabilities_json_is_theenvelope(monkeypatch, capsys):
     data = {"gpu": {"nvidia": False}, "encoders": ["libx264"]}
     monkeypatch.setattr(capabilities, "report", lambda: data)
     assert cli.main(["capabilities", "--json"]) == 0
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["ok"] is True and doc["command"] == "capabilities"
     assert doc["outputs"] == data and doc["warnings"] == []
 
 
-def test_profile_json_is_the_envelope_with_the_record_keys(home, monkeypatch, capsys):
+def test_profile_json_is_theenvelope_with_the_record_keys(home, monkeypatch, capsys):
     rec = {"name": "ski", "source": "detected", "profile": {"incident": {}}}
     monkeypatch.setattr(cli, "resolve_activity", lambda *a, **k: rec)
     assert cli.main(["profile", "proj", "--json"]) == 0
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["ok"] is True and doc["command"] == "profile"
     activity_file = str(home / "projects" / "proj" / "activity.json")
     assert doc["outputs"] == rec | {"activity_file": activity_file}
@@ -489,12 +471,12 @@ def test_profile_json_is_the_envelope_with_the_record_keys(home, monkeypatch, ca
         (["profile", "p", "--json"], "profile"),
     ],
 )
-def test_migrated_json_flags_use_the_envelope(argv, command):
+def test_migrated_json_flags_use_theenvelope(argv, command):
     args = cli.build_parser().parse_args(argv)
     assert args.json_result is True and args.json_command == command
     assert not hasattr(args, "json")
 
 
-def test_360_qa_json_only_still_skips_the_sheets_without_the_envelope():
+def test_360_qa_json_only_still_skips_the_sheets_without_theenvelope():
     args = cli.build_parser().parse_args(["360", "qa", "p", "--json-only"])
     assert args.json_only is True and args.json_result is False

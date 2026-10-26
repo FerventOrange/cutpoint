@@ -7,22 +7,13 @@ import logging
 import shutil
 import subprocess
 from dataclasses import replace
-from fractions import Fraction
 from pathlib import Path
 
 import pytest
 
+from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, clips, sources, srt
 from cutpoint.ffmpeg_utils import MediaInfo
-
-_skip_without_ffmpeg = pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
-)
-
-
-def needs_ffmpeg(test):
-    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
-    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
 
 
 def _words(*items: tuple[float, float, str]) -> list[dict]:
@@ -30,11 +21,7 @@ def _words(*items: tuple[float, float, str]) -> list[dict]:
 
 
 def _info(path: Path, duration: float) -> MediaInfo:
-    return MediaInfo(
-        path=path, duration=duration, vduration=duration, width=1920, height=1080,
-        fps=Fraction(30), pix_fmt="yuv420p", vcodec="h264", audio_streams=1,
-        acodec="aac", sample_rate=48000, channels=2,
-    )  # fmt: skip
+    return media_info(path, duration)
 
 
 # Source "a.mp4": "hello there." at 101 s, "bye" at 104.5 s (past a 4 s clip from 100 s).

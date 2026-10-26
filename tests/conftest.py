@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import clips, config, paths, reset_state
+from cutpoint import analyze, clips, config, paths, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
 
 
@@ -72,6 +73,49 @@ def media_info(path: Path = Path("v.mp4"), duration: float = 100.0, **over) -> M
         "acodec": "aac", "sample_rate": 48000, "channels": 2,
     }  # fmt: skip
     return MediaInfo(**(fields | over))
+
+
+_skip_without_ffmpeg = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
+)
+
+
+def needs_ffmpeg(test):
+    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
+    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
+
+
+KEYS = {"ok", "command", "schema", "project", "outputs", "warnings", "error"}
+
+
+def envelope(out: str) -> dict:
+    """``out`` must be exactly one JSON object (and a newline)."""
+    doc, end = json.JSONDecoder().raw_decode(out)
+    assert out[end:] == "\n"
+    assert isinstance(doc, dict) and set(doc) == KEYS
+    assert doc["schema"] == 1 and isinstance(doc["ok"], bool)
+    assert isinstance(doc["command"], str) and isinstance(doc["outputs"], dict)
+    assert isinstance(doc["warnings"], list)
+    assert doc["project"] is None or isinstance(doc["project"], str)
+    if doc["ok"]:
+        assert doc["error"] is None
+    else:
+        assert set(doc["error"]) == {"code", "message"}
+    return doc
+
+
+def run_json(capsys, argv: list[str]) -> tuple[int, dict]:
+    """Run ``cutpoint <argv> --json``: exit code and the one envelope on stdout."""
+    from cutpoint import cli  # noqa: PLC0415
+
+    code = cli.main([*argv, "--json"])
+    return code, envelope(capsys.readouterr().out)
+
+
+def warning_codes(doc_or_warnings: dict | list[dict]) -> list[str]:
+    """The ``code`` of each warning in an envelope (or in its ``warnings`` list)."""
+    warnings = doc_or_warnings["warnings"] if isinstance(doc_or_warnings, dict) else doc_or_warnings
+    return [w["code"] for w in warnings]
 
 
 def link_file(link: Path, target: Path) -> None:
@@ -137,3 +181,55 @@ def moved(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         write(new / name)  # the old folder is gone; no stitched file anywhere
     remap(home, monkeypatch, old, new)
     return x3clip(lrv=str(old / LRV), insv=[str(old / n) for n in INSV]), old, new
+
+
+VIDEO_SEGMENTS = [
+    {
+        "start": 3.0,
+        "end": 4.5,
+        "text": " ha ha that was great",
+        "words": [
+            {"start": 3.0, "end": 3.3, "word": " ha"},
+            {"start": 3.3, "end": 3.6, "word": " ha"},
+            {"start": 3.6, "end": 3.9, "word": " that"},
+            {"start": 3.9, "end": 4.1, "word": " was"},
+            {"start": 4.1, "end": 4.5, "word": " great"},
+        ],
+    }
+]
+
+
+class StubTranscriber:
+    """No whisper: every source "says" VIDEO_SEGMENTS."""
+
+    model_name, device = "stub", "cpu"
+
+    def __init__(self, **_kw) -> None:
+        pass
+
+    def transcribe(self, _wav: Path) -> list[dict]:
+        return VIDEO_SEGMENTS
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.fixture
+def video(home, tmp_path, monkeypatch) -> Path:
+    """A 10 s 160x120 video, quiet with two loud bursts; the transcriber stubbed.
+
+    Does not skip by itself: tests using it need ``@needs_ffmpeg``.
+    """
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
+    out = tmp_path / "videos" / "clip.mp4"
+    out.parent.mkdir()
+    loud = "volume=enable='between(t,2,4.5)+between(t,7,8.5)':volume=30"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+         "testsrc=size=160x120:rate=10:duration=10", "-f", "lavfi", "-i",
+         "sine=frequency=440:sample_rate=48000:duration=10", "-af", f"volume=0.02,{loud}",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)],
+        check=True,
+    )  # fmt: skip
+    return out

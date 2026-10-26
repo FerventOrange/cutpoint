@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import write
+from conftest import envelope, run_json, warning_codes, write
 from cutpoint import cache, capabilities, cli, mix, stage
 from cutpoint.events import paths as event_paths
 from cutpoint.events import setup
@@ -26,17 +26,6 @@ from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import views as VW
 from cutpoint.pano import vlcheck, x3
 from pano_helpers import x3clip
-from test_jsonout import _envelope
-
-
-def _json(capsys, argv: list[str]) -> tuple[int, dict]:
-    """Run ``cutpoint <argv> --json``: exit code and the one envelope on stdout."""
-    code = cli.main([*argv, "--json"])
-    return code, _envelope(capsys.readouterr().out)
-
-
-def _codes(doc: dict) -> list[str]:
-    return [w["code"] for w in doc["warnings"]]
 
 
 # ---------------------------------------------------------------------------- capabilities
@@ -47,10 +36,10 @@ def test_capabilities_json_keeps_the_report_keys_and_warns(monkeypatch, capsys):
         "insta360_sdk": {"found": False, "warning": capabilities.SDK_NEEDS_NVIDIA},
     }
     monkeypatch.setattr(capabilities, "report", lambda: data)
-    code, doc = _json(capsys, ["capabilities"])
+    code, doc = run_json(capsys, ["capabilities"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "capabilities"
     assert doc["outputs"] == data and doc["project"] is None
-    assert _codes(doc) == ["torch_no_cuda", "sdk_needs_nvidia"]
+    assert warning_codes(doc) == ["torch_no_cuda", "sdk_needs_nvidia"]
     assert "reinstall" in doc["warnings"][0]["message"]
 
 
@@ -59,7 +48,7 @@ def test_capabilities_json_error(monkeypatch, capsys):
         raise RuntimeError("probe failed")
 
     monkeypatch.setattr(capabilities, "report", boom)
-    code, doc = _json(capsys, ["capabilities"])
+    code, doc = run_json(capsys, ["capabilities"])
     assert code == 1 and doc["ok"] is False
     assert doc["error"] == {"code": "error", "message": "probe failed"}
 
@@ -100,7 +89,7 @@ def mix_project(home, tmp_path, monkeypatch) -> Path:
 
 
 def test_mix_json(mix_project, capsys):
-    code, doc = _json(capsys, ["mix", "ski", "--target", "25"])
+    code, doc = run_json(capsys, ["mix", "ski", "--target", "25"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "mix"
     assert doc["project"] == str(mix_project)
     out = doc["outputs"]
@@ -116,14 +105,14 @@ def test_mix_json(mix_project, capsys):
     report = cache.load_json(mix_project / "mix_report.json")
     assert out["total_seconds"] == report["total_s"] and out["target_seconds"] == 25
     assert out["content_qa_pass"] is report["content_qa"]["pass"]
-    assert set(_codes(doc)) <= {"content_qa_failed"}
-    assert ("content_qa_failed" in _codes(doc)) is not report["content_qa"]["pass"]
+    assert set(warning_codes(doc)) <= {"content_qa_failed"}
+    assert ("content_qa_failed" in warning_codes(doc)) is not report["content_qa"]["pass"]
 
 
 def test_mix_json_sheet_is_none_when_this_run_wrote_none(mix_project, monkeypatch, capsys):
     write(mix_project / "mix_sheet.jpg", "an earlier run's sheet")
     monkeypatch.setattr(mix, "_write_sheet", lambda segs, out: None)  # e.g. no frame decoded
-    code, doc = _json(capsys, ["mix", "ski", "--target", "25"])
+    code, doc = run_json(capsys, ["mix", "ski", "--target", "25"])
     assert code == 0 and doc["outputs"]["sheet"] is None
     assert "sheet" not in cache.load_json(mix_project / "mix_report.json")
 
@@ -131,14 +120,14 @@ def test_mix_json_sheet_is_none_when_this_run_wrote_none(mix_project, monkeypatc
 @pytest.mark.skipif(sys.platform != "win32", reason="drive-relative paths are Windows only")
 def test_mix_json_warns_about_ignored_exclusions(mix_project, capsys):
     cache.save_json(mix_project / "mix_exclude.json", [{"source": "D:a.mp4", "start": 0, "end": 1}])
-    code, doc = _json(capsys, ["mix", "ski", "--target", "25"])
-    assert code == 0 and "exclusions_ignored" in _codes(doc)
-    warning = doc["warnings"][_codes(doc).index("exclusions_ignored")]
+    code, doc = run_json(capsys, ["mix", "ski", "--target", "25"])
+    assert code == 0 and "exclusions_ignored" in warning_codes(doc)
+    warning = doc["warnings"][warning_codes(doc).index("exclusions_ignored")]
     assert warning["files"] == [str(mix_project / "mix_exclude.json")]
 
 
 def test_mix_json_bad_quotas_is_bad_args(mix_project, capsys):
-    code, doc = _json(capsys, ["mix", "ski", "--quotas", "run=x"])
+    code, doc = run_json(capsys, ["mix", "ski", "--quotas", "run=x"])
     assert code == 1 and doc["ok"] is False
     assert doc["error"]["code"] == "bad_args" and "--quotas" in doc["error"]["message"]
     assert not (mix_project / "mix_segments.json").exists()
@@ -155,7 +144,7 @@ def test_stage_json_lists_copied_then_skipped_files(home, tmp_path, plenty_of_sp
     a = write(tmp_path / "footage" / "a.mp4", "aaaa")
     b = write(tmp_path / "footage" / "b.mp4", "bb")
     stage_dir = home / "stage"
-    code, doc = _json(capsys, ["stage", str(tmp_path / "footage")])
+    code, doc = run_json(capsys, ["stage", str(tmp_path / "footage")])
     assert code == 0 and doc["ok"] is True and doc["command"] == "stage"
     out = doc["outputs"]
     assert out["stage_dir"] == str(stage_dir)
@@ -167,35 +156,35 @@ def test_stage_json_lists_copied_then_skipped_files(home, tmp_path, plenty_of_sp
         assert Path(f["staged"]).parent == stage_dir and Path(f["staged"]).is_file()
     assert (out["copied"], out["skipped"], out["bytes"]) == (2, 0, 6)
 
-    code, doc = _json(capsys, ["stage", str(tmp_path / "footage")])
+    code, doc = run_json(capsys, ["stage", str(tmp_path / "footage")])
     out = doc["outputs"]
     assert code == 0 and [f["status"] for f in out["files"]] == ["skipped", "skipped"]
     assert (out["copied"], out["skipped"], out["bytes"], out["mb_per_s"]) == (0, 2, 0, None)
 
-    code, doc = _json(capsys, ["stage", "--list"])
+    code, doc = run_json(capsys, ["stage", "--list"])
     assert code == 0 and sorted(f["source"] for f in doc["outputs"]["files"]) == [str(a), str(b)]
     assert all(Path(f["staged"]).is_file() for f in doc["outputs"]["files"])
 
-    code, doc = _json(capsys, ["stage", "--clear"])
+    code, doc = run_json(capsys, ["stage", "--clear"])
     assert code == 0 and doc["outputs"]["removed"] == 2
 
 
 def test_stage_json_clear_warns_about_an_input_with_no_copies(home, tmp_path, capsys):
     gone = tmp_path / "gone"
-    code, doc = _json(capsys, ["stage", "--clear", str(gone)])
+    code, doc = run_json(capsys, ["stage", "--clear", str(gone)])
     assert code == 0 and doc["outputs"]["removed"] == 0
-    assert _codes(doc) == ["nothing_staged_under_input"]
+    assert warning_codes(doc) == ["nothing_staged_under_input"]
     assert doc["warnings"][0]["files"] == [str(gone)]
 
 
 def test_stage_json_without_inputs_is_bad_args(home, capsys):
-    code, doc = _json(capsys, ["stage"])
+    code, doc = run_json(capsys, ["stage"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert doc["outputs"] == {}
 
 
 def test_stage_json_missing_input(home, tmp_path, plenty_of_space, capsys):
-    code, doc = _json(capsys, ["stage", str(tmp_path / "nope.mp4")])
+    code, doc = run_json(capsys, ["stage", str(tmp_path / "nope.mp4")])
     assert code == 1 and doc["error"]["code"] == "not_found"
 
 
@@ -204,7 +193,7 @@ def test_stage_json_relative_input_is_reported_absolute(
 ):
     a = write(tmp_path / "footage" / "a.mp4", "aaaa")
     monkeypatch.chdir(tmp_path)
-    code, doc = _json(capsys, ["stage", "footage"])
+    code, doc = run_json(capsys, ["stage", "footage"])
     assert code == 0 and [f["source"] for f in doc["outputs"]["files"]] == [str(a)]
 
 
@@ -229,7 +218,7 @@ def fake_installs(monkeypatch) -> list[str]:
 
 def test_setup_json_reports_downloaded_and_found_files(home, fake_installs, capsys):
     labels = write(event_paths.panns_labels(), "labels")  # there before: found
-    code, doc = _json(capsys, ["setup", "--only", "pip", "panns", "voice"])
+    code, doc = run_json(capsys, ["setup", "--only", "pip", "panns", "voice"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "setup"
     assert fake_installs == ["panns", "voice"]
     comps = doc["outputs"]["components"]
@@ -243,7 +232,7 @@ def test_setup_json_reports_downloaded_and_found_files(home, fake_installs, caps
     ]
     pip = comps["pip"]
     assert pip["installed"] is (not pip["missing"])
-    assert ("events_extra_missing" in _codes(doc)) is bool(pip["missing"])
+    assert ("events_extra_missing" in warning_codes(doc)) is bool(pip["missing"])
 
 
 def test_setup_json_failed_step_still_reports_what_is_there(
@@ -253,7 +242,7 @@ def test_setup_json_failed_step_still_reports_what_is_there(
         raise RuntimeError("Could not download silero_vad.onnx")
 
     monkeypatch.setattr(setup, "install_voice", offline)
-    code, doc = _json(capsys, ["setup", "--only", "panns", "voice"])
+    code, doc = run_json(capsys, ["setup", "--only", "panns", "voice"])
     assert code == 1 and doc["ok"] is False
     assert doc["error"] == {"code": "error", "message": "Could not download silero_vad.onnx"}
     comps = doc["outputs"]["components"]
@@ -269,7 +258,7 @@ def test_setup_json_bad_component_is_bad_args(home, capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["setup", "--only", "bogus", "--json"])
     assert exc.value.code == 2
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["command"] == "setup" and doc["error"]["code"] == "bad_args"
 
 
@@ -279,7 +268,7 @@ def test_setup_json_visual_without_events_extra_is_missing_extra(home, monkeypat
     monkeypatch.setattr(
         setup.importlib.util, "find_spec", lambda m, *a: None if m == "torch" else real(m, *a)
     )
-    code, doc = _json(capsys, ["setup", "--only", "visual"])
+    code, doc = run_json(capsys, ["setup", "--only", "visual"])
     assert code == 1 and doc["ok"] is False
     assert doc["error"]["code"] == "missing_extra"
     assert doc["error"]["message"].startswith("torch is not installed; it comes with the 'events'")
@@ -305,7 +294,7 @@ def test_360_scan_json(home, tmp_path, monkeypatch, capsys):
     clip = x3clip(insv=[str(insv)], duration=12.5, frames=375, bytes_insv=7, mode="4k")
     monkeypatch.setattr(x3, "scan", lambda folder: [clip])
     monkeypatch.setattr(x3, "imu_source", lambda src: None)
-    code, doc = _json(capsys, ["360", "scan", str(cam), "--out", "trip"])
+    code, doc = run_json(capsys, ["360", "scan", str(cam), "--out", "trip"])
     project = home / "projects" / "trip"
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 scan"
     assert doc["project"] == str(project)
@@ -328,7 +317,7 @@ def test_360_scan_json(home, tmp_path, monkeypatch, capsys):
 
 
 def test_360_scan_json_missing_folder(home, tmp_path, capsys):
-    code, doc = _json(capsys, ["360", "scan", str(tmp_path / "nope"), "--out", "trip"])
+    code, doc = run_json(capsys, ["360", "scan", str(tmp_path / "nope"), "--out", "trip"])
     assert code == 1 and doc["error"]["code"] == "not_found"
 
 
@@ -336,7 +325,7 @@ def test_360_scan_json_missing_folder(home, tmp_path, capsys):
 def test_360_analyze_json_views_only(pano_project, monkeypatch, capsys):
     project, _ = pano_project
     monkeypatch.setattr(VW, "run_layer", lambda clips, force=False: {"cached": 0, "computed": 1})
-    code, doc = _json(capsys, ["360", "analyze", "trip", "--views-only"])
+    code, doc = run_json(capsys, ["360", "analyze", "trip", "--views-only"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 analyze"
     assert doc["project"] == str(project)
     out = doc["outputs"]
@@ -348,7 +337,7 @@ def test_360_analyze_json_views_only(pano_project, monkeypatch, capsys):
 
 
 def test_360_analyze_json_without_pano(home, capsys):
-    code, doc = _json(capsys, ["360", "analyze", "nothing", "--views-only"])
+    code, doc = run_json(capsys, ["360", "analyze", "nothing", "--views-only"])
     assert code == 1 and doc["error"]["code"] == "not_found"
 
 
@@ -363,7 +352,7 @@ def test_360_status_json(pano_project, no_sdk, monkeypatch, capsys):
     project, _ = pano_project
     monkeypatch.setattr(P, "find_studio_export", lambda c: (None, "no Studio export"))
     monkeypatch.setattr(VW, "load_views", lambda src: None)
-    code, doc = _json(capsys, ["360", "status", "trip"])
+    code, doc = run_json(capsys, ["360", "status", "trip"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 status"
     assert doc["project"] == str(project)
     out = doc["outputs"]
@@ -382,7 +371,7 @@ def test_360_status_json(pano_project, no_sdk, monkeypatch, capsys):
 
 
 def test_360_status_json_unknown_project(home, no_sdk, capsys):
-    code, doc = _json(capsys, ["360", "status", "nothing"])
+    code, doc = run_json(capsys, ["360", "status", "nothing"])
     assert code == 1 and doc["error"]["code"] == "not_found"
     assert doc["outputs"]["sdk"]["found"] is False  # the SDK part ran first
 
@@ -395,7 +384,7 @@ def test_360_director_json(pano_project, monkeypatch, capsys):
     monkeypatch.setattr(
         D, "compute_path", lambda *a, **k: {"version": D.PATH_VERSION, "keys": [], "cuts": []}
     )
-    code, doc = _json(capsys, ["360", "director", "trip", "--segments", str(segments)])
+    code, doc = run_json(capsys, ["360", "director", "trip", "--segments", str(segments)])
     out_dir = project / "pano_paths" / "director"
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 director"
     assert doc["project"] == str(project)
@@ -416,7 +405,7 @@ def test_360_director_json_vl_check_only_when_this_run_saved_it(pano_project, mo
         D, "compute_path", lambda *a, **k: {"version": D.PATH_VERSION, "keys": [], "cuts": []}
     )
     argv = ["360", "director", "trip", "--segments", str(segments), "--force"]
-    code, doc = _json(capsys, argv)
+    code, doc = run_json(capsys, argv)
     assert code == 0 and doc["outputs"]["vl_check"] is None
 
     unloads: list[int] = []
@@ -438,7 +427,7 @@ def test_360_director_json_vl_check_only_when_this_run_saved_it(pano_project, mo
     monkeypatch.setattr(vlcheck, "VLChecker", Checker)
     monkeypatch.setattr(vlcheck, "check_preview", lambda *a, **k: ([], vl))
     monkeypatch.setattr(pano_render, "render_segment", render_segment)
-    code, doc = _json(capsys, [*argv, "--vl-check"])
+    code, doc = run_json(capsys, [*argv, "--vl-check"])
     assert code == 0 and doc["outputs"]["vl_check"] == str(out_dir / "vl_check.json")
     assert cache.load_json(out_dir / "vl_check.json")["segments"][0]["stem"] == "001_jump"
     assert unloads == [1]  # the vision model is freed once, after the last check
@@ -485,15 +474,15 @@ def test_360_director_vl_check_unloads_the_model_on_any_exit(
     monkeypatch.setattr(vlcheck, "check_preview", check_preview)
     monkeypatch.setattr(pano_render, "render_segment", render_segment)
     argv = ["360", "director", "trip", "--segments", str(segments), "--force", "--vl-check"]
-    code, doc = _json(capsys, argv)
+    code, doc = run_json(capsys, argv)
     assert code == (1 if ending == "error" else 0)
-    assert ("vl_check_unavailable" in _codes(doc)) == (ending == "dead")
+    assert ("vl_check_unavailable" in warning_codes(doc)) == (ending == "dead")
     assert checks == [1]  # a dead model is not asked again; an error ends the run
     assert unloads == [1]  # freed anyway, once
 
 
 def test_360_director_json_bad_out_name(pano_project, capsys):
-    code, doc = _json(capsys, ["360", "director", "trip", "--out-name", "../x"])
+    code, doc = run_json(capsys, ["360", "director", "trip", "--out-name", "../x"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
 
 
@@ -509,7 +498,7 @@ def test_360_stitch_json_never_reports_sdk_output(pano_project, monkeypatch, cap
     ]  # fmt: skip
     monkeypatch.setattr(pano_stitch, "stitch_clips", lambda clips, force, dry_run: recs)
     monkeypatch.setattr(capabilities, "nvidia_present", lambda: False)
-    code, doc = _json(capsys, ["360", "stitch", "trip", "--clips", "001", "--dry-run"])
+    code, doc = run_json(capsys, ["360", "stitch", "trip", "--clips", "001", "--dry-run"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 stitch"
     out = doc["outputs"]
     assert out["dry_run"] is True
@@ -519,13 +508,13 @@ def test_360_stitch_json_never_reports_sdk_output(pano_project, monkeypatch, cap
         {"clip": "002", "output": str(project / "b.mp4"), "status": "failed", "seconds": 3.0,
          "log_file": str(log)},
     ]  # fmt: skip
-    assert _codes(doc) == ["sdk_needs_nvidia", "stitch_failed"]
+    assert warning_codes(doc) == ["sdk_needs_nvidia", "stitch_failed"]
     assert doc["warnings"][1]["files"] == [str(log)]
     assert "sdk said no" not in json.dumps(doc) and "sdk line" not in json.dumps(doc)
 
 
 def test_360_stitch_json_nothing_selected(pano_project, capsys):
-    code, doc = _json(capsys, ["360", "stitch", "trip", "--clips", "999", "--dry-run"])
+    code, doc = run_json(capsys, ["360", "stitch", "trip", "--clips", "999", "--dry-run"])
     assert code == 1 and doc["error"]["code"] == "error"
     assert "No 360 clips selected" in doc["error"]["message"]
 
@@ -540,7 +529,7 @@ def test_360_check_json(home, monkeypatch, capsys):
         return [write(check_dir / "sheet_01.jpg", "jpg")]
 
     monkeypatch.setattr(pano_check, "clip_sheets", sheets)
-    code, doc = _json(capsys, ["360", "check", "projects/trip/clips"])
+    code, doc = run_json(capsys, ["360", "check", "projects/trip/clips"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 check"
     assert doc["project"] == str(home / "projects" / "trip")
     assert doc["outputs"] == {
@@ -550,7 +539,7 @@ def test_360_check_json(home, monkeypatch, capsys):
 
 
 def test_360_check_json_missing_folder(home, capsys):
-    code, doc = _json(capsys, ["360", "check", "projects/trip/clips"])
+    code, doc = run_json(capsys, ["360", "check", "projects/trip/clips"])
     assert code == 1 and doc["error"]["code"] == "not_found"
 
 
@@ -578,7 +567,7 @@ def test_360_qa_json(home, monkeypatch, capsys):
 
     monkeypatch.setattr(pano_qa, "run_qa", run_qa)
     monkeypatch.setattr(pano_qa, "log_report", lambda report: None)
-    code, doc = _json(capsys, ["360", "qa", "projects/trip/pano_paths/mix", "--json-only"])
+    code, doc = run_json(capsys, ["360", "qa", "projects/trip/pano_paths/mix", "--json-only"])
     assert seen == {"json_only": True}
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 qa"
     assert doc["project"] == str(home / "projects" / "trip")
@@ -594,12 +583,12 @@ def test_360_qa_json(home, monkeypatch, capsys):
         "pass": False,
         "fails": ["occluded"],
     }
-    assert _codes(doc) == ["qa_clips_skipped"]
+    assert warning_codes(doc) == ["qa_clips_skipped"]
     assert doc["warnings"][0]["files"] == [str(qa_dir / "003_c.mp4")]
 
 
 def test_360_qa_json_missing_folder(home, capsys):
-    code, doc = _json(capsys, ["360", "qa", "projects/trip/clips"])
+    code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips"])
     assert code == 1 and doc["error"]["code"] == "not_found"
 
 
@@ -609,6 +598,6 @@ def test_360_repair_json_missing_qa(home, capsys):
     project = home / "projects" / "trip"
     project.mkdir(parents=True)
     cache.save_json(project / "mix_segments.json", [{"source": "a.mp4", "start": 0, "end": 1}])
-    code, doc = _json(capsys, ["360", "repair", "trip", "--qa", "nope/qa.json"])
+    code, doc = run_json(capsys, ["360", "repair", "trip", "--qa", "nope/qa.json"])
     assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "not_found"
     assert doc["project"] == str(project)

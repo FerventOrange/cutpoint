@@ -23,6 +23,13 @@ from pano_helpers import orientation
 TH = qa.QAThresholds()
 
 
+class Models:
+    """A ``VisualModels`` stand-in that loads nothing."""
+
+    def close(self) -> None:
+        pass
+
+
 def flags_for(
     boxes: list[tuple[float, float, float, float, float, bool]],
     *,
@@ -429,10 +436,6 @@ def test_run_qa_json_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     det = np.array([[i, 1, 0.99, 0.4, 0.3, 0.6, 0.95] for i in range(n)], np.float32)
     det[1] = [1, 1, 0.99, 0.0, 0.1, 0.8, 1.0]  # frame 1: close + edge cut
 
-    class Models:
-        def close(self) -> None:
-            pass
-
     monkeypatch.setattr(V, "VisualModels", Models)
     monkeypatch.setattr(qa, "decode", lambda video, fps, size: (ts, frames))
     monkeypatch.setattr(
@@ -532,10 +535,6 @@ def test_run_qa_skips_failing_clip_resolves_dot_and_clears_sheets(
     out = tmp_path / "preview_qa"
     out.mkdir()
     (out / "flagged_01.jpg").write_bytes(b"old")
-
-    class Models:
-        def close(self) -> None:
-            pass
 
     def boom(video, fps, size):
         raise F.FFmpegError("decode failed")

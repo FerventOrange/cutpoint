@@ -8,76 +8,17 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import cutpoint.analyze
+from conftest import envelope, needs_ffmpeg
 from cutpoint import cli, edit
 from cutpoint.analyze import report_highlights
 from cutpoint.events import cli as events_cli
 from cutpoint.events import pipeline
-from test_jsonout import _envelope
-
-_skip_without_ffmpeg = pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
-)
-
-
-def needs_ffmpeg(test):
-    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
-    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
-
-
-SEGMENTS = [
-    {
-        "start": 3.0,
-        "end": 4.5,
-        "text": " ha ha that was great",
-        "words": [
-            {"start": 3.0, "end": 3.3, "word": " ha"},
-            {"start": 3.3, "end": 3.6, "word": " ha"},
-            {"start": 3.6, "end": 3.9, "word": " that"},
-            {"start": 3.9, "end": 4.1, "word": " was"},
-            {"start": 4.1, "end": 4.5, "word": " great"},
-        ],
-    }
-]
-
-
-class StubTranscriber:
-    """No whisper: every source "says" SEGMENTS."""
-
-    model_name, device = "stub", "cpu"
-
-    def __init__(self, **_kw) -> None:
-        pass
-
-    def transcribe(self, _wav: Path) -> list[dict]:
-        return SEGMENTS
-
-    def close(self) -> None:
-        pass
-
-
-@pytest.fixture
-def video(home, tmp_path, monkeypatch) -> Path:
-    """A 10 s 160x120 video, quiet with two loud bursts; the transcriber stubbed."""
-    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
-    monkeypatch.setattr(cutpoint.analyze, "Transcriber", StubTranscriber)
-    out = tmp_path / "videos" / "clip.mp4"
-    out.parent.mkdir()
-    loud = "volume=enable='between(t,2,4.5)+between(t,7,8.5)':volume=30"
-    subprocess.run(
-        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
-         "testsrc=size=160x120:rate=10:duration=10", "-f", "lavfi", "-i",
-         "sine=frequency=440:sample_rate=48000:duration=10", "-af", f"volume=0.02,{loud}",
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(out)],
-        check=True,
-    )  # fmt: skip
-    return out
 
 
 def _json(capsys, argv: list[str]) -> tuple[int, dict, str]:
@@ -85,7 +26,7 @@ def _json(capsys, argv: list[str]) -> tuple[int, dict, str]:
     caplog)."""
     code = cli.main([*argv, "--json"])
     out, err = capsys.readouterr()
-    return code, _envelope(out), err
+    return code, envelope(out), err
 
 
 def _analyze(video: Path, capsys) -> None:
@@ -315,7 +256,7 @@ EDIT_KEYS = {
 
 @pytest.mark.slow
 @needs_ffmpeg
-def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
+def test_edit_json_is_oneenvelope_with_the_sub_steps_outputs_and_warnings(
     video, home, capsys, caplog, monkeypatch
 ):
     # No loudnorm: its limiter resamples with soxr, which some ffmpeg builds lack.
@@ -455,7 +396,7 @@ def test_edit_events_json_reports_the_re_ranked_highlights(home, tmp_path, capsy
     monkeypatch.setattr(edit, "assemble", assemble)
     assert cli.main(["edit", str(video), "--events", "--no-vision", "--json"]) == 0
     out = capsys.readouterr().out
-    doc = _envelope(out)
+    doc = envelope(out)
     assert doc["ok"] is True and doc["command"] == "edit"
     assert doc["outputs"]["suggested_top"] == 1 and doc["outputs"]["candidates"] == 3
     assert out.count('"suggested_top"') == 1  # replaced, not added twice

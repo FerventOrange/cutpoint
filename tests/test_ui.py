@@ -25,18 +25,20 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from conftest import link_dir, link_file, media_info, remap, set_config, write
+from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
 from cutpoint import cache, cli, config, ui
 
 PORT = 8765
-_skip_without_ffmpeg = pytest.mark.skipif(
-    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="needs ffmpeg"
-)
 
 
-def needs_ffmpeg(test):
-    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
-    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
+def fake_start(captured: list[list[str]]):
+    """A ``Jobs.start`` stand-in that records the CLI args of each job and reports "running"."""
+
+    def start(self, project_id, action, args, *rest, **kw):
+        captured.append(args)
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    return start
 
 
 @pytest.fixture
@@ -345,11 +347,7 @@ def test_reanalyze_passes_recorded_vision_and_ollama_options(
     cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
     captured: list[list[str]] = []
 
-    def fake_start(self, project_id, action, args, *rest, **kw):
-        captured.append(args)
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
     assert client.post("/api/projects/cli-made/jobs", json={"action": "analyze"}).status_code == 200
     args = captured[0]
     assert [a for a in args if a.startswith(("--vision-top", "--ollama"))] == flags
@@ -388,11 +386,7 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
     captured: list[list[str]] = []
 
-    def fake_start(self, project_id, action, args, *rest, **kw):
-        captured.append(args)
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
     res = client.post("/api/projects/cli-made/jobs", json={"action": "analyze", **body})
     assert res.status_code == 200
     assert ("--vision" in captured[0]) is vision
@@ -412,11 +406,7 @@ def test_first_analysis_uses_the_settings_vision(
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     captured: list[list[str]] = []
 
-    def fake_start(self, project_id, action, args, *rest, **kw):
-        captured.append(args)
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
     assert client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"}).status_code == 200
     flag = "--vision" if cfg else "--no-vision"
     assert flag in captured[0] and len({"--vision", "--no-vision"} & set(captured[0])) == 1
@@ -429,11 +419,7 @@ def test_analyze_follows_settings_saved_just_before(
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     captured: list[list[str]] = []
 
-    def fake_start(self, project_id, action, args, *rest, **kw):
-        captured.append(args)
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start)
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
     for value in (True, False, True):
         assert client.put("/api/settings", json={"vision": value}).status_code == 200
         res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})

@@ -14,8 +14,8 @@ import pytest
 import requests
 
 import cutpoint.analyze
+from conftest import needs_ffmpeg
 from cutpoint import cli, vision
-from test_json_commands import needs_ffmpeg, video  # noqa: F401  (fixture)
 
 
 class _Resp:
@@ -126,14 +126,14 @@ def rater(monkeypatch) -> type[_FakeRater]:
     return _FakeRater
 
 
-def _argv(video: Path, *flags: str, style: str = "funny") -> list[str]:  # noqa: F811
+def _argv(video: Path, *flags: str, style: str = "funny") -> list[str]:
     return ["analyze", str(video), "--style", style, "--out", "v", "--no-scenes", *flags]
 
 
 @needs_ffmpeg
 @pytest.mark.parametrize("style", ["funny", "gaming"])
 def test_analyze_does_not_use_vision_by_default_even_when_ollama_is_reachable(
-    video,  # noqa: F811
+    video,
     home,
     rater,
     style,
@@ -145,14 +145,14 @@ def test_analyze_does_not_use_vision_by_default_even_when_ollama_is_reachable(
 
 
 @needs_ffmpeg
-def test_analyze_no_vision_is_still_accepted(video, home, rater):  # noqa: F811
+def test_analyze_no_vision_is_still_accepted(video, home, rater):
     assert cli.main(_argv(video, "--no-vision")) == 0
     assert rater.calls == []
 
 
 @needs_ffmpeg
 @pytest.mark.parametrize("fail", [False, True])
-def test_analyze_vision_rates_then_unloads_the_model(video, home, rater, monkeypatch, fail):  # noqa: F811
+def test_analyze_vision_rates_then_unloads_the_model(video, home, rater, monkeypatch, fail):
     monkeypatch.setattr(_FakeRater, "fail", fail)
     assert (cli.main(_argv(video, "--vision")) == 0) is not fail
     assert rater.calls[:3] == ["init", "available", "rate"]

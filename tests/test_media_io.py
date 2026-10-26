@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 import pytest
 
+from conftest import needs_ffmpeg
 from cutpoint import assemble as asm
 from cutpoint import cache, crash, refmatch, stage
 from cutpoint import ffmpeg_utils as fu
@@ -523,16 +524,6 @@ def test_x3_failed_probe_is_not_cached(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- real ffmpeg
-_skip_without_ffmpeg = pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
-)
-
-
-def needs_ffmpeg(test):
-    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
-    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
-
-
 @pytest.fixture
 def clip(tmp_path) -> Path:
     """2 s, 64x48, 10 fps test pattern with a 440 Hz tone (skips without libx264)."""
