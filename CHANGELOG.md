@@ -320,6 +320,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a narrow column Clip Start and Clip End go above the transcript, then stack.
 - The UI's Moments column header no longer shows the "Moments" title (kept for screen readers);
   after analysis it shows the moment count, "Analyze again" and "Show folder".
+- CI installs a small `ocr-test` dependency group (the OCR engine, no torch), so a new slow test
+  runs real HUD discovery on a generated clip on Linux and Windows (#373).
 - Tests carry `slow`, `ffmpeg` and `hardware` pytest markers. `uv run pytest` still runs everything
   except `hardware`; `uv run pytest -m "not slow and not ffmpeg"` is a faster local run.
 - The `dev` extra is replaced by a `dev` dependency group that `uv sync` and `uv run` install by

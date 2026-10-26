@@ -331,6 +331,10 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+ocr-test = [
+    { name = "onnxruntime" },
+    { name = "rapidocr-onnxruntime" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -369,6 +373,10 @@ dev = [
     { name = "pre-commit", specifier = ">=3.7" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = "==0.17.1" },
+]
+ocr-test = [
+    { name = "onnxruntime", specifier = ">=1.31.0" },
+    { name = "rapidocr-onnxruntime", specifier = ">=1.4.4" },
 ]
 
 [[package]]
