@@ -16,6 +16,8 @@ models/
 tools/llama.cpp/
 stage/
 projects/
+# raw OCR cache (OCR text of the footage): normally under cache/, ignored anywhere
+ocr-raw-*/
 
 # Local, personal config and learned styles (old repo-root layout; now in CUTPOINT_HOME,
 # keys documented in config.example.json)

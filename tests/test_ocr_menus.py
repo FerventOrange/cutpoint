@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -521,6 +522,17 @@ def test_old_cache_is_read_again(tmp_path: Path, monkeypatch) -> None:
     _run(tmp_path, monkeypatch, _Engine())
     assert _run(tmp_path, monkeypatch, None)[1].get("skipped") is None  # cached
     monkeypatch.setattr(killfeed, "GENERIC_VERSION", 8)
+    # interpreted again from the raw OCR cache, without an engine (no OCR)
+    events, stats = _run(tmp_path, monkeypatch, None)
+    assert stats.get("skipped") is None and stats["static_frames"] == 0
+    assert [(e["text"], e["t"]) for e in events if e["type"] == "banner"] == [
+        ("Squad wiped", 5.0),
+        ("Squad wiped", 40.0),
+    ]
+    # without the raw read the footage is read again
+    for folder in tmp_path.glob("ocr-raw-*"):
+        shutil.rmtree(folder)
+    monkeypatch.setattr(killfeed, "GENERIC_VERSION", 9)
     assert _run(tmp_path, monkeypatch, None) == ([], {"skipped": "not cached"})
 
 
