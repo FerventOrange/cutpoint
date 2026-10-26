@@ -584,5 +584,5 @@ def test_an_outside_stop_of_ffmpeg_is_reported(tmp_path, monkeypatch) -> None:
     )
     next(frames)
     os.kill(procs[0].pid, signal.SIGINT)
-    n = len(list(frames))
-    assert n < 599 and codes and codes[0] != 0
+    list(frames)  # how many frames still arrive depends on ffmpeg's internal queues
+    assert codes and codes[0] != 0
