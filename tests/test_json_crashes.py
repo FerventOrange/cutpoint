@@ -15,21 +15,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from conftest import write
+from conftest import envelope, run_json, warning_codes, write
 from cutpoint import activity, analyze, cache, cli, crash, jsonout
-from test_jsonout import _envelope
 
 N = 600  # 60 s on the 0.1 s grid
-
-
-def _json(capsys, argv: list[str]) -> tuple[int, dict]:
-    """Run ``cutpoint <argv> --json``: exit code and the one envelope on stdout."""
-    code = cli.main([*argv, "--json"])
-    return code, _envelope(capsys.readouterr().out)
-
-
-def _codes(doc: dict) -> list[str]:
-    return [w["code"] for w in doc["warnings"]]
 
 
 def _inputs(src: Path, *, imu: bool = True, visual: bool = True) -> crash.SourceInputs:
@@ -69,7 +58,7 @@ CRASHES = ["crashes", "ski", "--activity", "ski", "--no-dense", "--sheets", "0",
 # --------------------------------------------------------------------------------- crashes
 def test_crashes_json(ski, capsys):
     project, src = ski
-    code, doc = _json(capsys, CRASHES)
+    code, doc = run_json(capsys, CRASHES)
     assert code == 0 and doc["ok"] is True and doc["command"] == "crashes"
     assert doc["project"] == str(project) and doc["warnings"] == []
     out = doc["outputs"]
@@ -94,9 +83,9 @@ def test_crashes_json_warnings(ski, tmp_path, monkeypatch, capsys):
         crash, "load_inputs", lambda s, dur, p, tmp: _inputs(s, imu=False, visual=False)
     )
     monkeypatch.setattr(analyze, "reanalyze_if_reachable", lambda project: None)
-    code, doc = _json(capsys, [*CRASHES[:-1], "--reanalyze"])
+    code, doc = run_json(capsys, [*CRASHES[:-1], "--reanalyze"])
     assert code == 0 and doc["ok"] is True
-    assert _codes(doc) == [
+    assert warning_codes(doc) == [
         "footage_unreachable",
         "no_telemetry",
         "no_visual_layer",
@@ -123,7 +112,7 @@ def test_detect_project_warn_unreachable(ski, tmp_path, capsys, caplog, warn_unr
             project, dense=False, sheets=0, activity_name="ski", warn_unreachable=warn_unreachable
         )
     capsys.readouterr()
-    assert _codes_of(result.warnings).count("footage_unreachable") == expected
+    assert warning_codes(result.warnings).count("footage_unreachable") == expected
     lines = [r for r in caplog.records if "footage not reachable" in r.getMessage()]
     assert [r.levelno for r in lines] == [logging.WARNING if warn_unreachable else logging.DEBUG]
 
@@ -156,10 +145,6 @@ def test_detect_project_unreachable_one_warning_line(
     )
 
 
-def _codes_of(warnings: list[dict]) -> list[str]:
-    return [w["code"] for w in warnings]
-
-
 def test_crashes_json_reanalyze_failure_keeps_outputs(ski, monkeypatch, capsys):
     project, _ = ski
 
@@ -167,7 +152,7 @@ def test_crashes_json_reanalyze_failure_keeps_outputs(ski, monkeypatch, capsys):
         raise RuntimeError("reanalyze broke")
 
     monkeypatch.setattr(analyze, "reanalyze_if_reachable", boom)
-    code, doc = _json(capsys, [*CRASHES[:-1], "--reanalyze"])
+    code, doc = run_json(capsys, [*CRASHES[:-1], "--reanalyze"])
     assert code == 1 and doc["ok"] is False and doc["error"]["message"] == "reanalyze broke"
     # crashes.json was written before reanalyze ran; the envelope still names it.
     assert doc["outputs"]["crashes"] == str(project / "crashes.json")
@@ -178,7 +163,7 @@ def test_crashes_json_without_clip_is_missing_extra(ski, monkeypatch, capsys):
     monkeypatch.delenv("TORCH_HOME", raising=False)  # set by the encoder before its imports
     monkeypatch.setitem(sys.modules, "open_clip", None)  # import open_clip fails
     argv = [a for a in CRASHES if a != "--no-dense"]
-    code, doc = _json(capsys, argv)
+    code, doc = run_json(capsys, argv)
     assert code == 1 and doc["ok"] is False and doc["command"] == "crashes"
     assert doc["error"]["code"] == "missing_extra"
     assert doc["error"]["message"].startswith(
@@ -190,18 +175,18 @@ def test_crashes_json_bad_args(home, capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["crashes", "ski", "--dense-top", "many", "--json"])
     assert exc.value.code == 2
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["command"] == "crashes" and doc["error"]["code"] == "bad_args"
 
 
 def test_crashes_json_unknown_activity_is_bad_args(ski, capsys):
-    code, doc = _json(capsys, ["crashes", "ski", "--activity", "curling", "--no-dense"])
+    code, doc = run_json(capsys, ["crashes", "ski", "--activity", "curling", "--no-dense"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert "unknown activity 'curling'" in doc["error"]["message"]
 
 
 def test_crashes_json_missing_project(home, capsys):
-    code, doc = _json(capsys, ["crashes", "nope"])
+    code, doc = run_json(capsys, ["crashes", "nope"])
     assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "not_found"
     assert doc["project"] == str(home / "projects" / "nope")
 
@@ -209,7 +194,7 @@ def test_crashes_json_missing_project(home, capsys):
 # --------------------------------------------------------------------------------- profile
 def test_profile_json_keeps_the_record_keys(ski, capsys):
     project, _ = ski
-    code, doc = _json(capsys, ["profile", "ski", "--activity", "ski"])
+    code, doc = run_json(capsys, ["profile", "ski", "--activity", "ski"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "profile"
     assert doc["project"] == str(project) and doc["warnings"] == []
     rec = json.loads((project / "activity.json").read_text(encoding="utf-8"))
@@ -228,10 +213,10 @@ def test_profile_json_context_never_prints_to_stdout(ski, monkeypatch, capsys):
     monkeypatch.setattr(activity, "default_ask", lambda: (chatty, None))
     code = cli.main(["profile", "ski", "--activity", "ski", "--context", "icy groomer", "--json"])
     captured = capsys.readouterr()
-    doc = _envelope(captured.out)
+    doc = envelope(captured.out)
     assert code == 0 and doc["ok"] is True
     assert "model says hi" in captured.err
-    assert _codes(doc) == ["context_not_applied"]
+    assert warning_codes(doc) == ["context_not_applied"]
     assert doc["outputs"]["request"] == {"activity": "ski", "context": "icy groomer"}
 
 
@@ -239,12 +224,12 @@ def test_profile_json_bad_args(home, capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["profile", "ski", "--json", "--activity"])
     assert exc.value.code == 2
-    doc = _envelope(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert doc["command"] == "profile" and doc["error"]["code"] == "bad_args"
 
 
 def test_profile_json_missing_project(home, capsys):
-    code, doc = _json(capsys, ["profile", "nope"])
+    code, doc = run_json(capsys, ["profile", "nope"])
     assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "not_found"
 
 
@@ -266,9 +251,9 @@ def test_profile_warns_once_for_an_unreachable_source(
     monkeypatch.setattr(activity, "default_ask", lambda: (None, None))  # no Ollama
     with caplog.at_level(logging.DEBUG):
         if json_mode:
-            code, doc = _json(capsys, ["profile", "ski"])
+            code, doc = run_json(capsys, ["profile", "ski"])
             assert code == 0 and doc["ok"] is True, doc
-            assert _codes(doc).count("footage_unreachable") == 1
+            assert warning_codes(doc).count("footage_unreachable") == 1
             assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
                 [str(gone)]
             ]

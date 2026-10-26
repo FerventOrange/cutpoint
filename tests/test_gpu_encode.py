@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import sys
-from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from conftest import write
+from conftest import media_info, write
 from cutpoint import assemble, capabilities, cli, config, encode, ffmpeg_utils, reset_state
 from cutpoint.crop import Crop
 from cutpoint.events import setup
@@ -285,11 +284,7 @@ def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, 
 
 def _clip_job(tmp_path: Path):
     """Arguments for ``encode.export_clip`` of a clip that needs no real source file."""
-    info = ffmpeg_utils.MediaInfo(
-        path=tmp_path / "src.mp4", duration=100.0, vduration=100.0, width=1920, height=1080,
-        fps=Fraction(30), pix_fmt="yuv420p", vcodec="h264", audio_streams=1,
-        acodec="aac", sample_rate=48000, channels=2,
-    )  # fmt: skip
+    info = media_info(tmp_path / "src.mp4")
     return info, encode.OutputFormat(1920, 1080, 30)
 
 

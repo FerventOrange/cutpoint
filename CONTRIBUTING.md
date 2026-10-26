@@ -38,8 +38,8 @@ A `-m` on the command line replaces the default one. Markers (declared in `pypro
 
 - `slow`: spawns real subprocesses or interpreters, or runs longer than about 2 s. Add
   `@pytest.mark.slow`.
-- `ffmpeg`: runs real ffmpeg or ffprobe. Use the test file's `needs_ffmpeg` where it has one (it
-  also skips without ffmpeg); otherwise add `@pytest.mark.ffmpeg`.
+- `ffmpeg`: runs real ffmpeg or ffprobe. Use `needs_ffmpeg` from `conftest` (it also skips
+  without ffmpeg); otherwise add `@pytest.mark.ffmpeg`.
 - `hardware`: needs GPU hardware that CI lacks.
 
 CI runs the same lint and format checks, and the tests on Windows and Linux. Optionally install

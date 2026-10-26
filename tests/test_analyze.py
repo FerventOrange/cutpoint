@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import json
 import sys
-from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from conftest import remap, set_config, write
+from conftest import media_info, remap, set_config, write
 from cutpoint import analyze, config
-from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import get_style
 
 
@@ -125,9 +123,10 @@ def _stub_probe_and_transcriber(monkeypatch) -> list[Path]:
 
     def fake_probe(path):
         probed.append(path)
-        return MediaInfo(
-            path, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
-        )
+        return media_info(
+            path, 60.0, width=640, height=360, audio_streams=0,
+            acodec=None, sample_rate=None, channels=None,
+        )  # fmt: skip
 
     class StubTranscriber:
         model_name, device = "stub", "cpu"

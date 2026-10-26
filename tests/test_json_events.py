@@ -12,21 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import write
+from conftest import run_json, warning_codes, write
 from cutpoint import analyze, cache, cli, crash
 from cutpoint.events import cli as events_cli
 from cutpoint.events import pipeline, scoring
-from test_jsonout import _envelope
-
-
-def _json(capsys, argv: list[str]) -> tuple[int, dict]:
-    """Run ``cutpoint <argv> --json``: exit code and the one envelope on stdout."""
-    code = cli.main([*argv, "--json"])
-    return code, _envelope(capsys.readouterr().out)
-
-
-def _codes(doc: dict) -> list[str]:
-    return [w["code"] for w in doc["warnings"]]
 
 
 @pytest.fixture
@@ -80,7 +69,7 @@ def test_events_json(project, monkeypatch, capsys):
         return 0
 
     monkeypatch.setattr(scoring, "rescore_highlights", rescore)
-    code, doc = _json(capsys, ["events", "ev"])
+    code, doc = run_json(capsys, ["events", "ev"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "events"
     assert doc["project"] == str(project) and doc["warnings"] == []
     out = doc["outputs"]
@@ -103,7 +92,7 @@ def test_events_json_no_rescore(project, monkeypatch, capsys):
     cache.save_json(project / "highlights.pre-events.json", {})  # from an earlier run
     assert cli.main(["events", "ev", "--no-rescore"]) == 0  # without --json: nothing on stdout
     assert capsys.readouterr().out == ""
-    code, doc = _json(capsys, ["events", "ev", "--no-rescore", "--layers", "audio"])
+    code, doc = run_json(capsys, ["events", "ev", "--no-rescore", "--layers", "audio"])
     assert code == 0 and doc["ok"] is True
     assert doc["outputs"]["highlights"] is None and "highlights_backup" not in doc["outputs"]
 
@@ -113,9 +102,9 @@ def test_events_json_ski_rerank_skipped(project, monkeypatch, capsys):
     cache.save_json(project / "highlights.json", hl | {"style_kind": "ski"})
     _fake_run_events(monkeypatch, ["audio", "voice", "visual", "crash", "vlm"])
     monkeypatch.setattr(analyze, "reanalyze_if_reachable", lambda project: None)
-    code, doc = _json(capsys, ["events", "ev"])
+    code, doc = run_json(capsys, ["events", "ev"])
     assert code == 0 and doc["ok"] is True
-    assert _codes(doc) == ["highlights_not_updated"]
+    assert warning_codes(doc) == ["highlights_not_updated"]
     assert doc["warnings"][0]["files"] == [str(project / "highlights.json")]
     out = doc["outputs"]
     assert out["highlights"] is None and out["crashes"] == str(project / "crashes.json")
@@ -123,7 +112,7 @@ def test_events_json_ski_rerank_skipped(project, monkeypatch, capsys):
 
 def test_events_json_missing_extra(project, monkeypatch, capsys):
     monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: None)
-    code, doc = _json(capsys, ["events", "ev", "--layers", "audio"])
+    code, doc = run_json(capsys, ["events", "ev", "--layers", "audio"])
     assert code == 1 and doc["ok"] is False
     assert doc["error"]["code"] == "missing_extra"
     assert "'events' extra" in doc["error"]["message"]
@@ -134,10 +123,10 @@ def test_events_json_footage_unreachable(project, tmp_path, monkeypatch, capsys)
     gone = tmp_path / "gone.mp4"
     cache.save_json(project / "highlights.json", {"sources": [{"path": str(gone)}]})
     monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    code, doc = _json(capsys, ["events", "ev", "--layers", "audio"])
+    code, doc = run_json(capsys, ["events", "ev", "--layers", "audio"])
     assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "error"
     assert "No footage of ev is reachable" in doc["error"]["message"]
-    assert _codes(doc) == ["footage_unreachable"]
+    assert warning_codes(doc) == ["footage_unreachable"]
     assert doc["warnings"][0]["files"] == [str(gone)]
 
 
@@ -159,7 +148,7 @@ def test_events_json_footage_unreachable_warned_once(
     monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
     monkeypatch.setattr("cutpoint.crash.detect_project", detect)
     with caplog.at_level(logging.WARNING):
-        code, doc = _json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
+        code, doc = run_json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
     assert code == 0 and doc["ok"] is True
     assert seen["warn_unreachable"] is False  # detect_project then logs it at DEBUG only
     warns = [
@@ -168,7 +157,7 @@ def test_events_json_footage_unreachable_warned_once(
         if r.levelno == logging.WARNING and "footage not reachable" in r.getMessage()
     ]
     assert len(warns) == 1 and warns[0].startswith(str(gone)), warns
-    assert _codes(doc).count("footage_unreachable") == 1, doc
+    assert warning_codes(doc).count("footage_unreachable") == 1, doc
     assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
         [str(gone)]
     ]
@@ -193,7 +182,7 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
     )
     monkeypatch.setattr("cutpoint.activity.default_ask", lambda: (None, None))
     with caplog.at_level(logging.DEBUG):
-        code, doc = _json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
+        code, doc = run_json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
     assert code == 0 and doc["ok"] is True, doc
     warns = [
         r.getMessage()
@@ -201,4 +190,4 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
         if r.levelno >= logging.WARNING and str(gone) in r.getMessage()
     ]
     assert len(warns) == 1, warns
-    assert _codes(doc).count("footage_unreachable") == 1, doc
+    assert warning_codes(doc).count("footage_unreachable") == 1, doc
