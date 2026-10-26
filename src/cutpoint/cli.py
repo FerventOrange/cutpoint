@@ -30,7 +30,9 @@ from cutpoint.assemble import assemble
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import export_clips
 from cutpoint.config import (
+    COMPRESS_PEAKS,
     analysis_skip,
+    compress_peaks_default,
     get_config,
     projects_dir,
     resolve_project_path,
@@ -59,6 +61,23 @@ def _vision(a: argparse.Namespace) -> bool:
 def _skip(a: argparse.Namespace) -> tuple[str, ...]:
     """``--skip`` as given, else ``analysis.skip`` in config.json (default none)."""
     return analysis_skip() if a.skip is None else tuple(a.skip)
+
+
+def _compress_peaks(a: argparse.Namespace) -> str:
+    """``--compress-peaks`` as given, else ``compress_peaks`` in config.json (default off)."""
+    return compress_peaks_default() if a.compress_peaks is None else a.compress_peaks
+
+
+def _add_compress_peaks_argument(p: argparse.ArgumentParser, what: str) -> None:
+    """``--compress-peaks off|light|strong`` (see cutpoint.encode.PEAK_PRESETS)."""
+    p.add_argument(
+        "--compress-peaks",
+        choices=COMPRESS_PEAKS,
+        default=None,
+        help=f"pull loud peaks (shouts, gunshots, mic bumps) down toward speech level and "
+        f"even out loudness between clips, {what}; light or strong (default: compress_peaks "
+        "in config.json, else off)",
+    )
 
 
 def _add_skip_argument(p: argparse.ArgumentParser) -> None:
@@ -130,6 +149,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         ollama_url=a.ollama_url,
         ollama_model=a.ollama_model,
         skip=_skip(a),
+        compress_peaks=_compress_peaks(a),
     )
 
 
@@ -186,6 +206,7 @@ def _cmd_clips(a: argparse.Namespace) -> None:
         pano_source=a.pano_source,
         pano_cmd_every=a.pano_cmd_every,
         size=a.size,
+        compress_peaks=_compress_peaks(a),
     )
 
 
@@ -476,6 +497,7 @@ def _cmd_assemble(a: argparse.Namespace) -> None:
         captions=a.captions,
         caption_model=a.model,
         audio_fade=a.audio_fade,
+        compress_peaks=_compress_peaks(a),
     )
 
 
@@ -837,6 +859,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ollama_arguments(ed)
     _add_skip_argument(ed)
+    _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit)
 
@@ -987,6 +1010,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_speech_arguments(cl, "on, per style")
     _add_pano_arguments(cl, "auto")
+    _add_compress_peaks_argument(cl, "baked into every clip with a true-peak limiter")
     _add_json_argument(cl)
     cl.set_defaults(func=_cmd_clips)
 
@@ -1271,6 +1295,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="audio fade in/out added to clips that have none baked in "
         "(clips from cutpoint clips / cutpoint extend already do; default "
         "0.25, 0 = off)",
+    )
+    _add_compress_peaks_argument(
+        asm, "for clips not exported with it; the true-peak limiter runs even without --loudnorm"
     )
     _add_json_argument(asm)
     asm.set_defaults(func=_cmd_assemble)
