@@ -55,23 +55,40 @@
           <button type="button" id="toggleBtn" class="btn" hidden></button>
         </div>
         <div class="screen">
-          <video id="video" playsinline preload="metadata"></video>
+          <video id="video" class="active" playsinline preload="metadata"></video>
+          <video id="video2" playsinline preload="auto"></video>
           <p id="screenMsg" class="screen-msg" role="status"></p>
         </div>
         <div class="transport">
           <div class="transport-start">
-            <output id="clock" class="tc"></output>
+            <output id="clock" class="tc" aria-live="off"></output>
             <button type="button" id="retryBtn" class="btn small" hidden>Retry preview</button>
           </div>
           <button type="button" id="playBtn" class="btn icon-btn play" aria-label="Play" title="Play (Space)" aria-keyshortcuts="Space"></button>
           <div class="transport-end"></div>
         </div>
         <div class="rail" id="rail">
-          <div class="rail-orig" id="railOrig"></div>
-          <div class="rail-sel" id="railSel"></div>
-          <input id="seek" type="range" min="0" max="1" step="0.05" value="0" aria-label="Seek within this moment">
+          <div class="rail-marks">
+            <div class="rail-orig" id="railOrig"></div>
+            <div class="rail-sel" id="railSel"></div>
+          </div>
+          <input id="seek" type="range" min="0" max="1" step="0.05" value="0" aria-label="Seek in source">
         </div>
         <div class="rail-ends tc"><span id="winLo"></span><span id="winHi"></span></div>
+        <div class="rail-nav">
+          <div class="rail-zoom" role="group" aria-label="Rail zoom">
+            <button type="button" id="zoomOut" class="btn small">Zoom out</button>
+            <button type="button" id="zoomIn" class="btn small">Zoom in</button>
+            <button type="button" id="zoomFit" class="btn small">Fit clip</button>
+          </div>
+          <div class="overview" id="overview">
+            <div class="rail-marks">
+              <div class="ov-clip" id="ovClip"></div>
+              <div class="ov-view" id="ovView"></div>
+            </div>
+            <input id="pan" type="range" min="0" max="1" step="any" value="0" aria-label="Rail position in source">
+          </div>
+        </div>
         <div class="trim-row">
           <div class="trim" role="group" aria-label="Trim">
             <div class="trim-field" id="startField"></div>
@@ -94,6 +111,8 @@
       <div class="col-head">
         <h2 id="seqTitle" tabindex="-1">Sequence</h2>
         <span id="seqTotal" class="tc muted"></span>
+        <span class="spacer"></span>
+        <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
       </div>
       <div id="seqEmpty" class="empty"></div>
       <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>

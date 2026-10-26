@@ -344,6 +344,9 @@ def test_review_is_validated_and_saved_atomically(client: TestClient, tmp_path: 
     assert put(ok).status_code == 200
     saved = client.get(f"/api/projects/{pid}").json()["review"]["segments"]
     assert saved == [{**ok, "start": 1.0, "end": 4.5}]
+    # #324: the editor plays the whole source, so a trim may reach far past the analyzed moment.
+    assert put({**ok, "end": 9.9}).status_code == 200
+    assert put(ok).status_code == 200
     for broken in (
         {**ok, "start": 5, "end": 5},  # empty
         {**ok, "end": 10.5},  # past the source
@@ -423,8 +426,8 @@ def test_proxy_is_built_only_for_the_chosen_source_and_keeps_every_audio_track(
     """Opening a project builds nothing; preparing one source mixes all its audio tracks."""
     multi, other = tmp_path / "a.mp4", tmp_path / "b.mkv"
     ffmpeg(
-        *("-f", "lavfi", "-i", "testsrc=d=1:s=160x120:r=25"),
-        *("-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "sine=f=880:d=1"),
+        *("-f", "lavfi", "-i", "testsrc=d=3:s=160x120:r=25"),
+        *("-f", "lavfi", "-i", "sine=f=440:d=3", "-f", "lavfi", "-i", "sine=f=880:d=3"),
         *("-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "libx264", "-pix_fmt", "yuv420p"),
         *("-c:a", "aac", str(multi)),
     )  # fmt: skip
@@ -452,6 +455,12 @@ def test_proxy_is_built_only_for_the_chosen_source_and_keeps_every_audio_track(
     assert client.get(url, headers={"Range": "bytes=0-99"}).status_code == 206
     played = tmp_path / "played.mp4"
     played.write_bytes(client.get(url).content)
+    # #324's whole-source scrubbing relies on the proxy covering the full source, not a moment.
+    duration = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(played)],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    assert float(duration) == pytest.approx(3.0, abs=0.15)
     pcm = subprocess.run(
         [
             "ffmpeg",

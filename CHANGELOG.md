@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its cached transcript on a new `analyze`, so its moments show plain text until it is
   re-transcribed (delete its `cache/<source>/transcript-*.json`, or analyze with another
   `--model`) (#327).
+- The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
+  back from their sources or proxies (hard cuts, no export), highlights and announces the playing
+  clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits
+  for a preview that is still being prepared ("Preparing preview of <name>…"), and clicking the
+  next row skips it (#325).
 - The UI makes projects from Insta360 X3 footage (a folder, or one file for that clip). "Analyze
   footage" runs `cutpoint 360 analyze --scan` and shows the steps Read 360 clips, 360 views,
   Transcription and ranking, and Events and re-rank. Exported clips are reframed by the automatic
@@ -170,6 +175,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The UI preview plays and scrubs the whole source; playback no longer stops at the clip end. The
+  clip start and end are markers on a trim rail with Zoom out, Zoom in and Fit clip buttons and an
+  overview strip to pan (keyboard: arrows, PageUp/PageDown, Home/End; the wheel pans, Ctrl+wheel
+  zooms). "Use playhead" and `[` / `]` set the start or end anywhere in the source. A clip longer
+  than 10 minutes shows a note (#324).
 - `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
   ranks with them. `highlights.json` is written once, atomically, at the end: a cancelled run
   leaves the previous file. The analysis score stays in each candidate's `score_pre_events`;
@@ -279,6 +289,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 360 analysis in the UI shows its planned steps as "Waiting" right away, instead of "Waiting for
+  output..." until the first step starts (#320).
 - `--vision`: the Ollama rating no longer outranks the analysis. A rating (0-10) was blended in
   as a 0-100 term next to style scores of about 15-27, so it pulled every rated score toward
   rating × 10: a middling 5/10 lifted a candidate past the unrated ones, and even a 0-2/10
