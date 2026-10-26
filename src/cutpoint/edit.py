@@ -108,6 +108,7 @@ def run_edit(
     ollama_url: str | None = None,
     ollama_model: str | None = None,
     skip: Collection[str] = (),
+    compress_peaks: str = "off",
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
@@ -115,7 +116,9 @@ def run_edit(
     semantics. ``events`` runs ``cutpoint events`` (default options) before the clips; its
     VLM layer reports as the ``keyframes`` step again. ``vision`` is ``analyze --vision``
     (opt-in: None or False rates nothing with Ollama); ``vision_top``, ``ollama_url``,
-    ``ollama_model`` and ``skip`` are analyze's options of those names.
+    ``ollama_model`` and ``skip`` are analyze's options of those names. ``compress_peaks``
+    (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
+    without compressing twice.
 
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
@@ -143,6 +146,7 @@ def run_edit(
             ollama_url=ollama_url,
             ollama_model=ollama_model,
             skip=skip,
+            compress_peaks=compress_peaks,
         )
 
 
@@ -160,6 +164,7 @@ def _run_edit(
     ollama_url: str | None,
     ollama_model: str | None,
     skip: Collection[str],
+    compress_peaks: str,
 ) -> Path:
     """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
@@ -212,6 +217,7 @@ def _run_edit(
             order=kind.order,
             vertical=vertical,
             force=force,
+            compress_peaks=compress_peaks,
         )
     steps.start("assemble")
     srt = (project / final_name).with_suffix(".srt")
@@ -221,6 +227,7 @@ def _run_edit(
         transition=kind.transition,
         loudnorm=kind.loudnorm,
         captions=kind.captions,
+        compress_peaks=compress_peaks,
     )
     _link_or_copy(final, named)
     written = (now := file_stamp(srt)) is not None and now != before

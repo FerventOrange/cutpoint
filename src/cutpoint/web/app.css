@@ -461,6 +461,7 @@ select { max-width: 100%; }
 .panel > h3 { padding: 0; }
 .panel .btn { justify-self: start; }
 .panel:disabled { opacity: 0.6; }
+#peaksHint { margin-top: -6px; font-size: 12px; }
 /* the primary action, then its Show folder; they wrap onto two rows in a narrow side column */
 .panel-acts { display: flex; flex-wrap: wrap; gap: 8px; }
 .panel-acts .btn { white-space: nowrap; }

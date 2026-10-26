@@ -151,6 +151,10 @@
           <select id="optTransition"><option value="cut">Cut</option><option value="fade">Fade</option></select>
         </label>
         <label class="check"><input type="checkbox" id="optLoudnorm"> Normalize loudness</label>
+        <label class="field" title="Evens out loud peaks such as shouts and explosions, and levels the clips.">Compress peaks
+          <select id="optPeaks" aria-describedby="peaksHint"><option value="off">Off</option><option value="light">Light</option><option value="strong">Strong</option></select>
+        </label>
+        <small id="peaksHint" class="muted">Also used by Export clips.</small>
         <label class="check"><input type="checkbox" id="optCaptions"> Burn in captions</label>
         <div class="panel-acts">
           <button type="button" id="assembleBtn" class="btn primary">Assemble</button>

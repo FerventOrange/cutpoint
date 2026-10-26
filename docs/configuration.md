@@ -70,6 +70,7 @@ with `_` are ignored.
   "ollama_url": "http://127.0.0.1:11434",
   "video_encoder": "auto",
   "vision": false,
+  "compress_peaks": "off",
   "analysis": {"skip": []}
 }
 ```
@@ -139,6 +140,13 @@ local Ollama vision model ([getting started](getting-started.md#optional-ollama-
 Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
+
+### compress_peaks
+
+`off` (default), `light` or `strong`: the [peak compression](commands.md#peak-compression)
+that `clips`, `assemble` and `edit` use when `--compress-peaks` is not given. Other values are
+rejected. `cutpoint ui` starts its "Compress peaks" select on this value and passes the choice
+to its exports and assemblies; it does not change the key.
 
 ### analysis
 
