@@ -743,8 +743,9 @@ function follow(t) {
 // ---------- video ----------
 
 function screenMsg(text) {
-  $('#screenMsg').textContent = text;
-  $('#screenMsg').hidden = !text;
+  const el = $('#screenMsg');
+  if (el.textContent !== text) el.textContent = text; // the same text again (a poll): not re-announced
+  el.hidden = !text;
 }
 
 // Source proxies are made on demand: only the focused source is prepared, and only it is polled.
@@ -761,7 +762,9 @@ let resumeAt = null;
 // The wait ``awaitPart`` holds: {source, t, lo, hi}, the source time it waits at and the range it
 // asked a window for. A refresh re-running ``ensureVideo`` during it asks for that range again
 // (the ``lastPart`` dedupe then drops it), never for the moment's: playback waiting at a window's
-// end inside a long moment needs the window there, not one spanning the moment.
+// end inside a long moment needs the window there, not one spanning the moment. ``retried``: it
+// asked once more after the server listed no window for it; ``failed``: that failed too, so the
+// stage shows the error and Retry.
 let waitFor = null;
 /** Drop a pending resume; a paused video then shows Play (a pause on a paused video fires no event). */
 function cancelResume() {
@@ -797,6 +800,7 @@ async function prepareSource(src, range, queue = false) {
   const sid = src.id ?? decodeURIComponent(src.url.split('?')[0].split('/').pop());
   try {
     await api(`/api/projects/${encodeURIComponent(S.id)}/sources/${encodeURIComponent(sid)}/prepare`, { method: 'POST', body: queue ? { ...range, queue } : range });
+    if (k) S.partAck = k; // the server has this window request: listings from now on reflect it
     if (!queue) refreshProject();
   } catch (e) {
     if (!had) prepareRequested.delete(whole);
@@ -853,7 +857,14 @@ function awaitPart(src, t, delay = 0, lo = t, hi = t) {
 function ensureVideo(seekC) {
   clearTimeout(S.prepTimer);
   if (S.expired) return;
-  $('#retryBtn').hidden = true;
+  // shown only when this pass ends in a failure; set once, so a focused Retry keeps its focus
+  const hide = !stageVideo(seekC);
+  if (hide && document.activeElement === $('#retryBtn')) $('#playBtn').focus(); // not lost to <body>
+  $('#retryBtn').hidden = hide;
+}
+
+/** ``ensureVideo``'s work; true when it ends in a failure Retry can fix. */
+function stageVideo(seekC) {
   const c = current();
   const src = c && srcOf(c.source);
   // drop() forgets pending seeks; a moment waiting for its video keeps its start or the user's scrub
@@ -907,13 +918,28 @@ function ensureVideo(seekC) {
     const again = !seekC && !S.seqPlay && waitFor?.source === src.path && Math.abs(at - waitFor.t) <= FRAME;
     const [lo, hi] = again ? [waitFor.lo, waitFor.hi] : moment ? [c.start, c.end] : [at, at];
     const kept = again ? waitFor : null;
+    const wasRetried = !!kept?.retried;
     if (kept && !kept.retried && lastPart === `${k}@${round2(Math.max(0, lo))}-${round2(Math.max(0, hi))}`
       && !(src.pending ?? []).some((w) => w.lo <= round2(Math.max(0, lo)) && w.hi >= round2(Math.max(0, hi)))) {
       // the server listed no window for the range this wait asked for (it failed or was superseded):
       // ask once more, past the lastPart dedupe; once per wait, so a failing encode is not retried forever
       kept.retried = true;
       lastPart = null;
+      S.partAck = null;
     }
+    const range = { lo: round2(Math.max(0, lo)), hi: round2(Math.max(0, hi)) };
+    // failed only once the server took the re-ask: a listing fetched before it still shows the old failure
+    const failed = wasRetried && S.partAck === `${k}@${range.lo}-${range.hi}`
+      && !(src.pending ?? []).some((w) => w.lo <= range.lo && w.hi >= range.hi)
+      && (src.failed ?? []).find((w) => w.lo <= range.lo && w.hi >= range.hi);
+    if (failed) {
+      // the window asked for once more failed too: stop waiting, say so, offer Retry (``retryBtn``)
+      kept.failed = true;
+      cancelResume(); // playback stopped for good: Play, not Pause
+      screenMsg(`This part of the source could not be prepared for preview${failed.reason ? ` (${failed.reason})` : ''}. Retry it, or trim by timecode.`);
+      return true;
+    }
+    if (kept) kept.failed = false;
     if (mine && !S.seqPlay) {
       awaitPart(src, at, 0, lo, hi); // keeps the last frame
       if (kept) waitFor = kept;
@@ -925,8 +951,8 @@ function ensureVideo(seekC) {
     return;
   }
   if (src.status === 'failed') {
-    $('#retryBtn').hidden = false;
-    return wait('The browser-playable preview could not be built for this source. Retry it, or trim by timecode.');
+    wait('The browser-playable preview could not be built for this source. Retry it, or trim by timecode.');
+    return true;
   }
   forgetPrepared(src); // ready: a later change to the file prepares again
   const p = playable(src, 0);
@@ -973,6 +999,14 @@ function seekTo(t, fast = false) {
     follow(t);
     updatePlayhead();
     return;
+  }
+  if (waitFor) { // the target is on playable media: a wait (e.g. at a window's end) is over
+    if (waitFor.failed) {
+      if (document.activeElement === $('#retryBtn')) $('#playBtn').focus(); // not lost to <body>
+      $('#retryBtn').hidden = true;
+      screenMsg('');
+    }
+    waitFor = null;
   }
   if (v.readyState < HTMLMediaElement.HAVE_METADATA) {
     pendingSeek = t; // applied on loadedmetadata
@@ -1182,6 +1216,18 @@ $('#retryBtn').addEventListener('click', () => {
   const c = current();
   const src = c && srcOf(c.source);
   if (!src) return;
+  if (waitFor?.failed && waitFor.source === src.path) { // a window proxy failed twice: ask again
+    const w = waitFor;
+    w.failed = false;
+    w.retried = false;
+    lastPart = null;
+    S.partAck = null;
+    if (document.activeElement === $('#retryBtn')) $('#playBtn').focus(); // not lost to <body>
+    $('#retryBtn').hidden = true;
+    screenMsg(PART_MSG);
+    requestPart(src, w.lo, w.hi);
+    return;
+  }
   prepareRequested.delete(`${S.id}:${src.path}`);
   prepareSource(src);
 });
