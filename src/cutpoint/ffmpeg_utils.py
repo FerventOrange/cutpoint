@@ -562,13 +562,18 @@ def momentary_loudness(wav: Path) -> tuple[list[float], list[float]]:
 
 
 def clip_momentary(
-    src: Path, streams: int, start: float | None = None, duration: float | None = None
+    src: Path,
+    streams: int,
+    start: float | None = None,
+    duration: float | None = None,
+    chain: str = "",
 ) -> list[float]:
     """Momentary loudness (LUFS, 400 ms blocks every 100 ms) of a clip's audio.
 
     ``streams`` audio tracks are mixed as a clip export mixes them (``amix``, no
     normalisation); 1 reads track 0 only. ``start``/``duration`` (s) cut a source span
-    (input seek, as the export). Returns ``[]`` for ``streams`` 0 or no blocks.
+    (input seek, as the export). ``chain`` (filters ending in a comma) is applied before
+    the measurement. Returns ``[]`` for ``streams`` 0 or no blocks.
     """
     if streams < 1:
         return []
@@ -585,7 +590,7 @@ def clip_momentary(
             "-i",
             str(src),
             "-filter_complex",
-            f"{head}ebur128=peak=none",
+            f"{head}{chain}ebur128=peak=none",
             "-vn",
             "-sn",
             "-dn",

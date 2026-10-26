@@ -35,6 +35,7 @@ from cutpoint.encode import (
     SILENCE,
     audio_fade_filter,
     limiter_chain,
+    plan_makeup,
     plan_peaks,
 )
 from cutpoint.ffmpeg_utils import (
@@ -104,7 +105,9 @@ def peak_filters(
     """Per-clip :meth:`~cutpoint.encode.PeakPlan.filter` for ``preset`` (all "" for ``off``).
 
     Clips with compression baked in (:func:`baked_peaks`) count for the typical level and
-    the mean loudness but get no filter. Track 0 is measured, as :func:`_audio_chain` uses.
+    the mean loudness but get no filter and no makeup. Track 0 is measured, as
+    :func:`_audio_chain` uses; the clips that get a filter again through their gain and
+    compressor for the makeup (:func:`~cutpoint.encode.plan_makeup`).
     """
     if preset == "off":
         return [""] * len(files)
@@ -117,11 +120,19 @@ def peak_filters(
     if plan is None:
         logger.info("Compress peaks: no clip has audio above silence")
         return [""] * len(files)
+    compressed = [
+        clip_momentary(f, min(i.audio_streams, 1), chain=chain)
+        if (chain := plan.measure_chain(n))
+        else []
+        for n, (f, i) in enumerate(zip(files, infos, strict=True))
+    ]
+    plan = plan_makeup(plan, series, compressed)
     logger.info(
-        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; %d baked",
+        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; makeup %s; %d baked",
         preset,
         plan.threshold,
         " ".join("-" if g is None else f"{g:+.1f}" for g in plan.gains),
+        " ".join("-" if m is None else f"{m:+.1f}" for m in plan.makeup),
         sum(baked),
     )
     return [plan.filter(i) for i in range(len(files))]
