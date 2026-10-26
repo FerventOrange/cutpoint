@@ -1715,7 +1715,7 @@ def decode_pcm(
         timeout: Seconds before ffmpeg is killed.
 
     Returns:
-        Read-only ``int16`` samples (1-D); divide by 32768 for -1..1 floats.
+        Read-only ``int16`` samples (1-D); ``pcm_float`` turns them into -1..1 floats.
 
     Raises:
         FFmpegError: If ffmpeg exits non-zero or times out.

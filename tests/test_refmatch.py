@@ -47,7 +47,25 @@ def test_old_preset_mask_friends_is_still_read_as_a_hard_mask(home: Path) -> Non
 def test_log_fit_reads_a_preset_saved_with_a_bom(tmp_path: Path, caplog) -> None:
     preset = tmp_path / "learned.json"
     preset.write_bytes(b"\xef\xbb\xbf" + json.dumps({"weights": {"speed": 2.0}}).encode())
-    rep = {"preset": str(preset), "features_fitted": ["speed"], "features": {}}
-    with caplog.at_level("INFO", logger="cutpoint.refmatch"), pytest.raises(KeyError):
-        refmatch._log_fit(rep, {"speed": 1.0})  # stops at the first missing report key
+    pr = {"precision": 0.5, "recall": 0.5}
+    hit = {**pr, "moments_hit": 1, "moments": 2}
+    rep = {
+        "preset": str(preset),
+        "features_fitted": ["speed"],
+        "features": {},
+        "at_edit_duration": {"default": hit, "learned_in_sample": hit},
+        "cv_at_edit_duration": {"default": pr, "learned": pr},
+        "auc": {"default": 0.5, "learned_cv": 0.6},
+        "mask": {
+            "positives_s": 10,
+            "in_lift_or_stop_s": 2,
+            "share_of_footage_masked": 0.1,
+            "unlocked_by_vlm_friends_s": 1,
+            "still_masked_s": 1,
+        },
+        "mask_friends": 0,
+    }
+    with caplog.at_level("INFO", logger="cutpoint.refmatch"):
+        refmatch._log_fit(rep, {"speed": 1.0})
     assert "speed      1.00 -> 2.00" in caplog.text
+    assert "Saved learned preset" in caplog.text

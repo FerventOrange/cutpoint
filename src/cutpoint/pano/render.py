@@ -58,7 +58,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.encode import audio_fade_filter
+from cutpoint.encode import A_FMT, audio_fade_filter
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
@@ -287,10 +287,7 @@ def render_segment(
         stack = "[0:v]"
         v360_in = "input=equirect"
     audio_idx = len(src.inputs)
-    a_fmt = (
-        "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:"
-        "channel_layouts=stereo" + audio_fade_filter(dur, audio_fade)
-    )
+    a_fmt = A_FMT + audio_fade_filter(dur, audio_fade)
     v360 = (
         f"v360@cam={v360_in}:output=flat:rorder=ryp:yaw={init['yaw']:.3f}:"
         f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
