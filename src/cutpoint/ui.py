@@ -73,6 +73,7 @@ from fastapi.staticfiles import StaticFiles
 from cutpoint import cache, paths, progress
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
+    COMPRESS_PEAKS,
     get_config,
     load_config_data,
     projects_dir,
@@ -511,9 +512,11 @@ def require_config() -> None:
 
 
 def settings_view(data: dict[str, Any]) -> dict[str, Any]:
-    """The settings for config ``data``: the projects folder and the vision default, so other
-    invalid keys in ``config.json`` do not hide them; a wrongly typed ``projects_dir`` is shown as
-    is, to replace, and a ``vision`` that is not ``true`` as off."""
+    """The settings for config ``data``: the projects folder, the vision default and the export
+    default of Compress peaks, so other invalid keys in ``config.json`` do not hide them; a wrongly
+    typed ``projects_dir`` is shown as is, to replace, a ``vision`` that is not ``true`` as off and
+    an unknown ``compress_peaks`` as off."""
+    peaks = data.get("compress_peaks")
     try:
         folder = str(resolve_projects_dir(data))
     except TypeError:
@@ -524,6 +527,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "config_file": str(paths.config_file()),
         "vision": data.get("vision") is True,
         "vision_model": default_model(),
+        "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
     }
 
 
@@ -1904,6 +1908,15 @@ def _flag(body: dict[str, Any], key: str) -> bool:
     return v
 
 
+def _compress_peaks(body: dict[str, Any]) -> list[str]:
+    """``--compress-peaks`` with the page's choice, else ``compress_peaks`` in config.json;
+    explicit, so the job does what the page showed even if config.json changes before it runs."""
+    v = body.get("compress_peaks", get_config().compress_peaks)
+    if v not in COMPRESS_PEAKS:
+        raise bad(f"compress_peaks must be one of {', '.join(COMPRESS_PEAKS)}")
+    return ["--compress-peaks", v]
+
+
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
@@ -2246,6 +2259,7 @@ def create_app(port: int) -> FastAPI:
             ):
                 raise bad(f"extend must be 0-{MAX_EXTEND_S:g} seconds")
             vertical = _flag(body, "vertical")
+            peaks = _compress_peaks(body)
             out_name = fresh_name(p, f"clips_ui_{stamp}")
             seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
             _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the export
@@ -2265,6 +2279,7 @@ def create_app(port: int) -> FastAPI:
                 args.append("--vertical")
             if extend:
                 args += ["--extend", f"{float(extend):g}"]
+            args += peaks
 
             def on_success() -> None:
                 if not (p / out_name / "manifest.json").is_file():
@@ -2295,6 +2310,7 @@ def create_app(port: int) -> FastAPI:
                 str(p / f"{stem}.mp4"),
                 "--transition",
                 transition,
+                *_compress_peaks(body),
             )
             if _flag(body, "loudnorm"):
                 args.append("--loudnorm")

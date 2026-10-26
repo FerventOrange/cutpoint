@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The OCR layer keeps a raw read of each source: per frame, the HUD text it read and the few
+  pixel rows its colour rules need, in `cache/<source>/ocr-raw-*` (the two most recently used per
+  source). When an update changes only how HUD text is interpreted, the next run replays it in
+  seconds, with no OCR, instead of reading the footage again, and an interrupted read resumes
+  near where it stopped. The first run after this update still reads the footage once. The raw
+  read holds OCR text, so it is git-ignored and never written inside a git checkout (#315).
+- `--compress-peaks off|light|strong` on `clips`, `assemble` and `edit` (and the
+  `compress_peaks` key in `config.json`; default `off`) pulls sudden loud peaks such as
+  shouts, laughs into the mic, gunshots and mic bumps down toward the speech level, and evens
+  out loudness between clips. One compressor threshold is set from the typical level of all
+  the clips, and each clip gets a capped gain toward their mean. `clips` bakes it into every
+  clip, followed by a true-peak limiter, and records it in `manifest.json`, so `assemble` does
+  not compress those clips again. `assemble` applies it to the other clips and always ends
+  with the true-peak limiter, also without `--loudnorm`. On an R6 montage with commentary and
+  GoPro wind (`assemble --loudnorm`), the loudest moment went from 12.2 dB above speech to
+  7.5 dB (light) or 5.2 dB (strong), and the loudness spread between clips went from 9.9 to
+  4.3 or 4.7 LU. The true peak stays below -1.5 dBTP. With `off`, the output is unchanged
+  (#326).
+- The UI has a "Compress peaks" select (Off, Light, Strong) next to "Normalize loudness". It
+  starts on `compress_peaks` in `config.json` (now also in `GET /api/settings`), and the choice
+  is passed as `--compress-peaks` to the clips export and the assembly; the server refuses other
+  values with 400 (#326).
 - When the browser cannot play a source, the UI previews the selected moment within seconds:
   the server first encodes a short proxy of the moment (10 s before it to 20 s after it) while
   the whole-source proxy builds in a second lane. Scrubbing or playing outside it prepares that
@@ -302,7 +324,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screen for at least half of the still stretch: a menu shows many lines that stay, a notice is
   one line or one box that flashes. A still screen with only one line of new text now has to
   hold still 10 s to count as a menu, as one without new text. The first run with a JSON preset
-  re-reads the footage (new OCR cache).
+  interprets the footage again (replayed from the raw OCR cache when it has one).
 - UI: the arrow keys on the trim rail move the playhead by 0.5% of the visible view (at least
   0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
   button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of

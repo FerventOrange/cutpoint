@@ -70,6 +70,7 @@ with `_` are ignored.
   "ollama_url": "http://127.0.0.1:11434",
   "video_encoder": "auto",
   "vision": false,
+  "compress_peaks": "off",
   "analysis": {"skip": []}
 }
 ```
@@ -139,6 +140,13 @@ local Ollama vision model ([getting started](getting-started.md#optional-ollama-
 Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
+
+### compress_peaks
+
+`off` (default), `light` or `strong`: the [peak compression](commands.md#peak-compression)
+that `clips`, `assemble` and `edit` use when `--compress-peaks` is not given. Other values are
+rejected. `cutpoint ui` starts its "Compress peaks" select on this value and passes the choice
+to its exports and assemblies; it does not change the key.
 
 ### analysis
 
@@ -215,6 +223,13 @@ as a generic JSON preset (generic kill-feed parsing, generic banners added, new 
 
 A builtin preset's `banner_phrases` are not part of the OCR cache key. After editing them, run
 `cutpoint events <project> --force ocr` to read the footage again.
+
+The OCR layer also keeps its raw read of each source (the text it read per frame) in the source's
+cache folder, `ocr-raw-*`. When an update changes only how that text is interpreted, the next run
+replays the raw read in seconds instead of reading the footage again; a change of the preset's
+regions or `feed.newest`, or of the OCR frame rate, reads it again, and an interrupted read resumes
+near where it stopped. `--force ocr` drops the raw read too. It holds OCR text: it is git-ignored and
+never written inside a git checkout.
 
 A preset may list `candidate_phrases`: banner texts mined from the discovery OCR. They are inactive
 and not part of any cache key; to have OCR look for one, move it into `banner_phrases`. They are

@@ -206,6 +206,7 @@ def _reusable(
         old is None
         or not same_format
         or old.get("read_error")
+        or old.get("compress_peaks")
         or old.get("pano")
         or new.get("pano")
     ):
@@ -356,6 +357,13 @@ def extend_clips(
                 pano_cmd_every,
             )
             pano.fmt = Format360(fmt.width, fmt.height, fmt.fps)
+        compressed = sum(1 for p in plans if p.entry.get("compress_peaks"))
+        if compressed:
+            logger.warning(
+                "%d clip(s) were exported with --compress-peaks; extend re-exports them "
+                "without it (assemble --compress-peaks can apply it)",
+                compressed,
+            )
         # Only clips with a manifest entry are written; none may be a file this run reads.
         reads = []
         for plan in plans:
@@ -461,7 +469,7 @@ def extend_clips(
             )
             p0, p1 = plan.keep
             entries.append(
-                {k: v for k, v in e.items() if k not in ("read_from", "srt")}
+                {k: v for k, v in e.items() if k not in ("read_from", "srt", "compress_peaks")}
                 | {
                     **({"read_from": str(src)} if str(src) != e["source"] else {}),
                     "start": start,
@@ -481,7 +489,7 @@ def extend_clips(
             raise ValueError(f"No clips with manifest entries in {clips_dir}")
         cache.save_json(
             work / "manifest.json",
-            manifest
+            {k: v for k, v in manifest.items() if k != "compress_peaks"}
             | {
                 "created": datetime.now().isoformat(timespec="seconds"),
                 "extended_from": str(clips_dir.resolve()),

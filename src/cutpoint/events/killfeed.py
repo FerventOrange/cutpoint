@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.events import ocr_raw
 from cutpoint.events.common import Source, layer_cache_path
 from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_frames
 from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
@@ -57,8 +58,10 @@ class OcrParams:
     def key(self, game: str | None, preset: HudPreset | None = None) -> dict[str, Any]:
         """Cache key (hwaccel does not change results, so it is left out).
 
-        Built-in presets (R6) produce exactly the keys they had before JSON
-        presets existed, so their cached results stay valid.
+        Built-in presets (R6) produce the keys they had before JSON presets
+        existed, but :func:`detect_ocr_events` adds the hash of the raw read's key
+        (``"raw"``, which includes the RapidOCR version), so results cached before
+        the raw OCR cache are read once more, and again after a RapidOCR upgrade.
         """
         regs = self.regions or (preset.all_regions() if preset else ())
         key = {
@@ -451,11 +454,16 @@ class EventTracker:
 # --------------------------------------------------------------------------- OCR logic
 
 
+OCR_DET_SIDE = 960  # the OCR layer's detection size limit (long side, px)
+
+
 class OcrEngine:
     """Thin wrapper around RapidOCR (onnxruntime, CPU)."""
 
-    def __init__(self, det_side: int = 960) -> None:
+    def __init__(self, det_side: int = OCR_DET_SIDE) -> None:
         from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
+
+        self.det_side = det_side  # part of the raw OCR cache key
 
         # Default det config upscales the short side to 736 px ("limit_type: min"),
         # which makes wide HUD strips ~10x slower; cap the long side instead.
@@ -1244,7 +1252,7 @@ LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when th
 # Static screens (rule "static"): hangar, crew and loadout menus show as little text as a busy
 # HUD (6-17 boxes, centre cover 0.04-0.12), so the box rules miss them, but they hold still
 # while gameplay moves. Every OCR frame takes a STATIC_THUMB (w, h) grayscale thumbnail of the
-# HUD area it already decoded (:func:`_thumb`, no extra decode) and :class:`StillRuns` gives it
+# HUD area it already decoded (:func:`_thumb_bgr`, :func:`_grey`; no extra decode) and :class:`StillRuns` gives it
 # the id of its still run (``"still"`` in the frame record; no thumbnail is kept). A run goes
 # on while thumbnails stay within STATIC_MAX_DIFF of its first frame (mean absolute difference
 # in 0-255 grey levels: still video and its compression noise stay below 1, a moving game view
@@ -1277,12 +1285,17 @@ STATIC_TEXT_LINES = 2
 STATIC_TEXT_SHARE = 0.5
 
 
-def _thumb(frame: np.ndarray) -> np.ndarray:
-    """The :data:`STATIC_THUMB` grayscale thumbnail (float32) of a decoded BGR frame."""
+def _thumb_bgr(frame: np.ndarray) -> np.ndarray:
+    """The :data:`STATIC_THUMB` BGR thumbnail (uint8) of a decoded BGR frame, as the raw
+    OCR cache keeps it."""
     import cv2  # noqa: PLC0415
 
-    small = cv2.resize(frame, STATIC_THUMB, interpolation=cv2.INTER_AREA)
-    return small.astype(np.float32).mean(axis=2)
+    return cv2.resize(frame, STATIC_THUMB, interpolation=cv2.INTER_AREA)
+
+
+def _grey(thumb: np.ndarray) -> np.ndarray:
+    """A :func:`_thumb_bgr` thumbnail as the grayscale (float32) :class:`StillRuns` takes."""
+    return thumb.astype(np.float32).mean(axis=2)
 
 
 class StillRuns:
@@ -1511,6 +1524,403 @@ def _log_menu_frames(
         )
 
 
+# --------------------------------------------------------------------------- reader
+
+
+# Region kinds whose interpretation never looks at pixels: their reads keep no band.
+TEXT_ONLY_KINDS = ("counter", "banner", "notice", "log", "bigtext")
+
+
+@dataclass
+class FrameRec:
+    """One decoded frame as :class:`OcrReader` saw it: all :class:`OcrInterpretation`
+    needs, and what the raw OCR cache keeps (:mod:`cutpoint.events.ocr_raw`).
+
+    ``regions`` has a record per region the reader looked at: ``{"g": "det"}`` (a
+    "det" gate call; the layout did not change and has no text rows), ``{"g":
+    "keep"}`` (the layout did not change: the text is still on screen) or ``{"g":
+    "read", "items": [[box, text, score], ...]}`` (an OCR call). Records of "det"
+    gate regions other than feeds carry the gate's ``boxes`` (reference px ``[x0,
+    y0, x1, y1]``, for the menu test); reads in regions whose kind looks at pixels
+    (not :data:`TEXT_ONLY_KINDS`) carry ``rows``, the crop rows ``[a, b]`` their
+    boxes cover, whose pixels are stacked in ``bands``. A region skipped by its
+    ``every``, or that its "mask" gate did not let through, has no record.
+    ``thumb`` is the :func:`_thumb_bgr` thumbnail (None without "det" gates).
+    """
+
+    n: int
+    t: float
+    thumb: np.ndarray | None = None
+    regions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    bands: dict[str, np.ndarray] = field(default_factory=dict)
+
+
+def _plain(v: Any) -> Any:
+    """A numpy number as a Python one (JSON; the same arithmetic live and replayed)."""
+    return v.item() if hasattr(v, "item") else v
+
+
+def _band_rows(items: list[list], h: int) -> list[list[int]]:
+    """The rows of a crop of height ``h`` that the boxes of OCR ``items`` cover,
+    merged: all the rows the colour rules read (:func:`_box_crop`, :func:`colour_runs`
+    and :func:`_merge_adjacent`, whose boxes keep the rows of their parts)."""
+    spans = []
+    for box, _, _ in items:
+        ys = [int(p[1]) for p in box]
+        a, b, _ = slice(max(0, min(ys)), max(ys)).indices(h)
+        if b > a:
+            spans.append([a, b])
+    merged: list[list[int]] = []
+    for a, b in sorted(spans):
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return merged
+
+
+def _band_image(
+    shape: tuple[int, ...], rows: list[list[int]], band: np.ndarray | None
+) -> np.ndarray:
+    """A crop of ``shape``: the pixels of ``band`` at ``rows``, black elsewhere."""
+    img = np.zeros(shape, np.uint8)
+    off = 0
+    for a, b in rows:
+        img[a:b] = band[off : off + b - a]
+        off += b - a
+    return img
+
+
+def _union(rects: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int]:
+    """The decoded rectangle: the bounding box of the region ``rects`` (even size)."""
+    x0 = min(x for x, _, _, _ in rects)
+    y0 = min(y for _, y, _, _ in rects)
+    x1 = max(x + w for x, _, w, _ in rects)
+    y1 = max(y + h for _, y, _, h in rects)
+    return x0, y0, (x1 - x0) // 2 * 2, (y1 - y0) // 2 * 2
+
+
+def _crop_shape(
+    rect: tuple[int, int, int, int], union: tuple[int, int, int, int]
+) -> tuple[int, ...]:
+    """Shape of a region's crop of the decoded ``union`` (cut where it ends)."""
+    x, y, w, h = rect
+    ux, uy, uw, uh = union
+    return len(range(uh)[y - uy : y - uy + h]), len(range(uw)[x - ux : x - ux + w]), 3
+
+
+class OcrReader:
+    """The gates and OCR calls of :func:`detect_ocr_events`: decoded frames in,
+    :class:`FrameRec` records out. Its state (each region's last layout, rows and
+    mask) goes into every raw OCR cache chunk, so a read resumes."""
+
+    def __init__(
+        self,
+        regions: tuple[Region, ...],
+        rects: dict[str, tuple[int, int, int, int]],
+        union: tuple[int, int, int, int],
+        engine: OcrEngine,
+        params: OcrParams,
+        scale: float,
+        newest: str,
+        size: tuple[int, int],
+    ) -> None:
+        self.regions = regions
+        self.rects = rects
+        self.union = union
+        self.engine = engine
+        self.params = params
+        self.scale = scale
+        self.newest = -1 if newest == "bottom" else 0
+        self.sx, self.sy = 1920 / size[0], 1080 / size[1]
+        self.thumbs = any(r.gate == "det" for r in regions)  # the static-screen test
+        self.last_mask: dict[str, np.ndarray | None] = {r.name: None for r in regions}
+        self.last_layout: dict[str, list[tuple[int, ...]] | None] = {r.name: None for r in regions}
+        self.last_rows: dict[str, list[tuple[float, float, float, float, float]]] = {}
+
+    def _det_changed(self, r: Region, crop: np.ndarray, rec: dict[str, Any]) -> bool:
+        """Text-layout gate: True when the detected text *rows* changed.
+
+        Boxes are grouped into rows by vertical centre; a row is (centre y,
+        left x, right x) quantised to ~8 reference px. Detection jitter splits
+        and merges boxes inside a row, so comparing rows instead of boxes
+        keeps recognition to real changes (a new feed entry, a scroll, a new
+        message).
+        """
+        boxes = self.engine.detect(crop, r.det_scale)
+        if r.kind != "feed":  # a full feed is no menu
+            rx, ry, _, _ = self.rects[r.name]
+            sx, sy = self.sx, self.sy
+            rec["boxes"] = [
+                [
+                    _plain((rx + min(p[0] for p in b)) * sx),
+                    _plain((ry + min(p[1] for p in b)) * sy),
+                    _plain((rx + max(p[0] for p in b)) * sx),
+                    _plain((ry + max(p[1] for p in b)) * sy),
+                ]
+                for b in boxes
+            ]
+        rows = group_rows(boxes, r.min_text_h * self.scale, 10 * self.scale)
+        q = 8 * self.scale
+        layout = [tuple(round(v / q) for v in (cy, x0, x1)) for cy, x0, x1, _, _ in rows]
+        prev, self.last_layout[r.name] = self.last_layout[r.name], layout
+        self.last_rows[r.name] = rows
+        if not layout:
+            return False
+        if r.kind == "feed":
+            # Feeds add entries at one end (by default the bottom) and scroll or
+            # fade the rest, which were already read: recognise only when a row
+            # was added or the newest row changed.
+            if not prev or len(layout) > len(prev):
+                return True
+            new = self.newest
+            return max(abs(a - b) for a, b in zip(prev[new], layout[new], strict=True)) > 1
+        if prev is None or len(prev) != len(layout):
+            return True
+        return any(
+            max(abs(a - b) for a, b in zip(pa, pb, strict=True)) > 1
+            for pa, pb in zip(prev, layout, strict=True)
+        )
+
+    def read(self, n: int, t: float, frame: np.ndarray) -> tuple[FrameRec, dict[str, np.ndarray]]:
+        """The record of frame ``n`` (time ``t``) and the crops of the regions read."""
+        rec = FrameRec(n, t, _thumb_bgr(frame) if self.thumbs else None)
+        crops: dict[str, np.ndarray] = {}
+        ux, uy, _, _ = self.union
+        min_score = self.params.min_text_score
+        for r in self.regions:
+            if r.every > 1 and n % r.every:
+                continue
+            x, y, w, h = self.rects[r.name]
+            crop = frame[y - uy : y - uy + h, x - ux : x - ux + w]
+            if r.gate == "det":
+                g: dict[str, Any] = {}
+                rec.regions[r.name] = g
+                if not self._det_changed(r, crop, g):
+                    g["g"] = "keep" if self.last_layout[r.name] else "det"
+                    continue
+                rows = self.last_rows[r.name]
+                if r.det_scale < 1.0:
+                    # the cheap gate's boxes clip the ends of rows: re-detect at
+                    # full resolution for exact row boxes (~35 ms)
+                    rows = group_rows(
+                        self.engine.detect(crop), r.min_text_h * self.scale, 10 * self.scale
+                    )
+                items = self.engine.read_rows(
+                    crop,
+                    [(y0, x0, y1, x1) for _, x0, x1, y0, y1 in rows],
+                    min_score,
+                    pad=6 * self.scale,
+                )
+            else:
+                mask = _small(hud_mask(crop))
+                if mask.mean() < r.min_fill:
+                    self.last_mask[r.name] = mask
+                    continue
+                prev = self.last_mask[r.name]
+                if prev is not None and np.mean(np.abs(mask - prev) > 0.25) < r.min_change:
+                    continue
+                self.last_mask[r.name] = mask
+                items = self.engine(crop, min_score)
+                g = rec.regions[r.name] = {}
+            g["g"] = "read"
+            g["items"] = [
+                [[[_plain(v) for v in p] for p in box], str(text), float(score)]
+                for box, text, score in items
+            ]
+            if r.kind not in TEXT_ONLY_KINDS and (rows := _band_rows(g["items"], crop.shape[0])):
+                g["rows"] = rows
+                rec.bands[r.name] = np.concatenate([crop[a:b] for a, b in rows])
+            crops[r.name] = crop
+        return rec, crops
+
+    def state(self) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+        """The reader's state: JSON (layouts, rows) and arrays (masks)."""
+        masks = {
+            f"mask{i}": m
+            for i, r in enumerate(self.regions)
+            if (m := self.last_mask[r.name]) is not None
+        }
+        return {"layout": self.last_layout, "rows": self.last_rows}, masks
+
+    def restore(self, state: dict[str, Any], arrays: dict[str, np.ndarray]) -> None:
+        """Continue from a :meth:`state`."""
+        layout = state["layout"]
+        self.last_layout = {
+            r.name: None if layout.get(r.name) is None else [tuple(v) for v in layout[r.name]]
+            for r in self.regions
+        }
+        self.last_rows = {k: [tuple(v) for v in rows] for k, rows in state["rows"].items()}
+        self.last_mask = {r.name: arrays.get(f"mask{i}") for i, r in enumerate(self.regions)}
+
+
+def _chunk(
+    recs: list[FrameRec],
+    regions: tuple[Region, ...],
+    state: dict[str, Any],
+    arrays: dict[str, np.ndarray],
+) -> ocr_raw.Chunk:
+    """Frame records (and the reader's state after them) as a raw OCR cache chunk."""
+    index = {r.name: i for i, r in enumerate(regions)}
+    images = {f"{rec.n}-{index[name]}": band for rec in recs for name, band in rec.bands.items()}
+    if recs and recs[0].thumb is not None:
+        arrays = arrays | {"thumbs": np.stack([rec.thumb for rec in recs])}
+    frames = [{"n": rec.n, "t": rec.t, "r": rec.regions} for rec in recs]
+    return ocr_raw.Chunk(frames, state, images, arrays)
+
+
+def _records(chunk: ocr_raw.Chunk, regions: tuple[Region, ...]) -> list[FrameRec]:
+    """The frame records of a raw OCR cache chunk."""
+    index = {r.name: i for i, r in enumerate(regions)}
+    thumbs = chunk.arrays.get("thumbs")
+    return [
+        FrameRec(
+            f["n"],
+            f["t"],
+            None if thumbs is None else thumbs[i],
+            f["r"],
+            {
+                name: chunk.images[f"{f['n']}-{index[name]}"]
+                for name, g in f["r"].items()
+                if "rows" in g
+            },
+        )
+        for i, f in enumerate(chunk.frames)
+    ]
+
+
+# --------------------------------------------------------------------------- interpretation
+
+
+class OcrInterpretation:
+    """The interpretation of :func:`detect_ocr_events`: :class:`FrameRec` records in,
+    events out (counts go into ``stats``). A live read gives it each record as the
+    reader makes it, so a replay of the raw OCR cache is the same by construction."""
+
+    def __init__(
+        self,
+        src_name: str,
+        params: OcrParams,
+        preset: HudPreset | None,
+        regions: tuple[Region, ...],
+        size: tuple[int, int],
+        stats: dict[str, Any],
+    ) -> None:
+        width, height = size
+        self.src_name = src_name
+        self.regions = regions
+        self.interp = Interpreter(params, height / 1080, preset)
+        rects = {r.name: scaled(r, width, height) for r in regions}
+        union = _union(list(rects.values()))
+        self.shapes = {name: _crop_shape(rect, union) for name, rect in rects.items()}
+        self.stats = stats
+        stats |= {"frames": 0, "ocr_calls": {r.name: 0 for r in regions}}
+        det = any(r.gate == "det" for r in regions)
+        if det:
+            stats["det_calls"] = {r.name: 0 for r in regions if r.gate == "det"}
+        # menu test (JSON presets): the det boxes of every region in reference px, per frame
+        self.menus = self.interp.generic and det
+        self.det_boxes: dict[str, list[list[float]]] = {}
+        self.frame_boxes: list[dict[str, Any]] = []
+        # static screens (see STATIC_THUMB): only when the decoded HUD area sees enough of the frame
+        area = union[2] * union[3] / max(1, width * height)
+        self.still_runs = StillRuns(params.fps) if self.menus and area >= STATIC_MIN_AREA else None
+        if self.menus:
+            stats["static_area"] = round(area, 2)
+        self.region_events: dict[str, list[dict[str, Any]]] = {}
+
+    def add(self, rec: FrameRec) -> list[str]:
+        """Interpret one frame; returns the names of the regions whose reading made a
+        new event."""
+        interp, tracker, stats = self.interp, self.interp.tracker, self.stats
+        stats["frames"] += 1
+        new = []
+        for r in self.regions:
+            g = rec.regions.get(r.name)
+            if g is None:
+                continue
+            if r.gate == "det":
+                stats["det_calls"][r.name] += 1
+                if self.menus and r.kind != "feed":
+                    self.det_boxes[r.name] = g.get("boxes", [])
+                if g["g"] == "keep":  # same text still on screen
+                    tracker.keep_alive(self.region_events.get(r.name, []), rec.t)
+                if g["g"] != "read":
+                    continue
+            stats["ocr_calls"][r.name] += 1
+            img = _band_image(self.shapes[r.name], g.get("rows", []), rec.bands.get(r.name))
+            items = [(box, text, score) for box, text, score in g["items"]]
+            n_before = len(tracker.events)
+            if r.gate == "det":
+                tracker.reset_touched()
+                interp.handle(rec.t, r, img, items)
+                self.region_events[r.name] = list(tracker.touched)
+            else:
+                interp.handle(rec.t, r, img, items)
+            if len(tracker.events) > n_before:
+                new.append(r.name)
+        if self.menus:
+            # regions overlap (notices inside the big-text area): one box per ~12 px spot
+            spots = {
+                (round((a + c) / 24), round((b + d) / 24)): (a, b, c, d)
+                for bs in self.det_boxes.values()
+                for a, b, c, d in bs
+            }
+            self.frame_boxes.append(
+                {
+                    "id": rec.n,
+                    "t": rec.t,
+                    "source": self.src_name,
+                    "boxes": [
+                        {"x0": a, "y0": b, "x1": c, "y1": d} for a, b, c, d in spots.values()
+                    ],
+                }
+            )
+            if self.still_runs is not None and rec.thumb is not None:
+                self.frame_boxes[-1]["still"] = self.still_runs.add(rec.t, _grey(rec.thumb))
+        return new
+
+    def finish(self) -> list[dict[str, Any]]:
+        """The events, after the menu frames' sightings are dropped (JSON presets)."""
+        tracker, stats = self.interp.tracker, self.stats
+        if self.menus:
+            feeds = {r.name for r in self.regions if r.kind == "feed"}
+
+            def feed_event(e: dict[str, Any]) -> bool:
+                """Feed sightings and kills (kills come from the feed region): never dropped.
+                This assumes menus do not cover the feed region; a scoreboard drawn over it
+                is kept."""
+                return e.get("region") in feeds or e.get("type") == "kill"
+
+            tracked = tracker.events
+            feed_times = {t for e in tracked if feed_event(e) for t in e["_times"]}
+            # new menu text: when texts that are no preset phrase were first read, until when
+            # shown; ``end`` moves only on the frames a region is read, so it is padded by one
+            # read interval
+            step = {r.name: r.every / self.interp.params.fps for r in self.regions}
+            text_spans = [
+                (e["_times"][0], e["end"] + step.get(e.get("region"), 0.0))
+                for e in tracked
+                if e.get("unknown")
+            ]
+            if self.still_runs is None:
+                feed_times, text_spans = None, None
+            frames = self.frame_boxes
+            rules, menu_info = menu_rules(frames, feed_times=feed_times, text_spans=text_spans)
+            if logger.isEnabledFor(logging.DEBUG):
+                _log_menu_frames(
+                    self.src_name, frames, rules, menu_info, tracked, feed_times, text_spans
+                )
+            menu = {f["t"] for f in frames if rules[f["id"]] != "none"}
+            tracker.drop_sightings(menu, keep=feed_event)
+            stats["menu_frames"] = len(menu)
+            stats["static_frames"] = sum(r == "static" for r in rules.values())
+        events = tracker.finish()
+        for e in events:
+            e["kind"] = "ocr"
+        return events
+
+
 def detect_ocr_events(
     src: Source,
     params: OcrParams,
@@ -1519,6 +1929,7 @@ def detect_ocr_events(
     debug_dir: Path | None = None,
     avoid: list[tuple[float, float]] | None = None,
     on_progress: Callable[[float], None] | None = None,
+    make_engine: Callable[[], OcrEngine] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
 
@@ -1532,15 +1943,27 @@ def detect_ocr_events(
     No OCR runs for this; ``stats["menu_frames"]`` counts them, of which
     ``stats["static_frames"]`` held still.
 
+    The read (:class:`OcrReader`) and its interpretation (:class:`OcrInterpretation`)
+    are apart: the reader's records go into a raw OCR cache
+    (:mod:`cutpoint.events.ocr_raw`), so when only the interpretation changed (a
+    :data:`GENERIC_VERSION` bump) the result is replayed from it in seconds, with
+    no OCR call and no ``engine`` (``stats["replayed"]`` is then True; ``ocr_calls``
+    are those of the cached read), and an interrupted read resumes after its last
+    finished chunk.
+
     Args:
         src: Source video (read once, sequentially).
         params: OCR parameters.
-        engine: Loaded OCR engine, or None to only read the cache.
-        force: Ignore the cache.
-        debug_dir: If set, save the region crop of every new event as a PNG.
+        engine: Loaded OCR engine, or None to only read the caches.
+        force: Ignore the cache and drop the raw OCR cache (read the footage again).
+        debug_dir: If set, save the region crop of every new event as a PNG (the
+            footage is always read then).
         avoid: Time ranges never decoded (bad sectors); part of the cache key.
         on_progress: Called with the share (0-1) of the source decoded so far,
             at most once per percent.
+        make_engine: Instead of ``engine``: makes the engine only when the footage is
+            read (a replay or a cache hit loads no OCR model). Its engine must use
+            :data:`OCR_DET_SIDE`, which the raw cache key assumes.
 
     Returns:
         (events, stats).
@@ -1554,262 +1977,218 @@ def detect_ocr_events(
         )
         return [], {"skipped": "no preset", "game": game}
     avoid = sorted(avoid or [])
+    newest = str(preset.feed.get("newest", "bottom")) if preset is not None else "bottom"
+    raw = ocr_raw.RawStore(
+        src.cdir,
+        ocr_raw.raw_key(
+            params.fps,
+            [r.key() for r in regions],
+            newest,
+            params.min_text_score,
+            avoid,
+            getattr(engine, "det_side", OCR_DET_SIDE),
+        ),
+    )
     key = params.key(game, preset) | ({"avoid": avoid} if avoid else {})
+    key["raw"] = cache.params_hash(raw.key)
     cpath = layer_cache_path(src.cdir, "ocr", key)
     if not force and (hit := cache.load_json(cpath)) is not None:
         return hit["events"], hit.get("stats", {})
-    if engine is None:
+    can_read = engine is not None or make_engine is not None
+    if force and can_read:  # without an engine nothing would read it again
+        raw.drop()
+    meta = None if debug_dir else raw.meta()
+    if meta is not None and meta.get("failed"):
+        meta = None  # a read with a part that gave no frames: read it all again
+    if not can_read and not (meta and meta.get("complete")):
         return [], {"skipped": "not cached"}
 
-    info = probe(src.io_path)
-    rects = {r.name: scaled(r, info.width, info.height) for r in regions}
-    x0 = min(x for x, _, _, _ in rects.values())
-    y0 = min(y for _, y, _, _ in rects.values())
-    x1 = max(x + w for x, _, w, _ in rects.values())
-    y1 = max(y + h for _, y, _, h in rects.values())
-    union = (x0, y0, (x1 - x0) // 2 * 2, (y1 - y0) // 2 * 2)
-    interp = Interpreter(params, info.height / 1080, preset)
-    last_mask: dict[str, np.ndarray | None] = {r.name: None for r in regions}
-    last_layout: dict[str, list[tuple[int, ...]] | None] = {r.name: None for r in regions}
-    last_rows: dict[str, list[tuple[float, float, float, float, float]]] = {}
-    region_events: dict[str, list[dict[str, Any]]] = {}
-    stats: dict[str, Any] = {
-        "frames": 0,
-        "ocr_calls": {r.name: 0 for r in regions},
-        "game": game,
-        "hwaccel": False,
-    }
+    if meta is not None:
+        width, height, duration = (meta["info"][k] for k in ("width", "height", "duration"))
+    else:
+        info = probe(src.io_path)
+        width, height, duration = info.width, info.height, info.duration
+    rects = {r.name: scaled(r, width, height) for r in regions}
+    union = _union(list(rects.values()))
+    stats: dict[str, Any] = {"game": game, "hwaccel": False}
     if preset is not None and preset.path is not None:
         stats["preset"] = str(preset.path)
-    if any(r.gate == "det" for r in regions):
-        stats["det_calls"] = {r.name: 0 for r in regions if r.gate == "det"}
+    interp = OcrInterpretation(src.name, params, preset, regions, (width, height), stats)
     t_start = time.perf_counter()
-    frame_no = [0]
-    # menu test (JSON presets): the det boxes of every region in reference px, per frame
-    menus = interp.generic and any(r.gate == "det" for r in regions)
-    det_boxes: dict[str, list[tuple[float, float, float, float]]] = {}
-    frame_boxes: list[dict[str, Any]] = []
-    # static screens (see STATIC_THUMB): only when the decoded HUD area sees enough of the frame
-    area = union[2] * union[3] / max(1, info.width * info.height)
-    still_runs = StillRuns(params.fps) if menus and area >= STATIC_MIN_AREA else None
-    if menus:
-        stats["static_area"] = round(area, 2)
-    sx, sy = 1920 / info.width, 1080 / info.height
-
-    def det_changed(r: Region, crop: np.ndarray) -> bool:
-        """Text-layout gate: True when the detected text *rows* changed.
-
-        Boxes are grouped into rows by vertical centre; a row is (centre y,
-        left x, right x) quantised to ~8 reference px. Detection jitter splits
-        and merges boxes inside a row, so comparing rows instead of boxes
-        keeps recognition to real changes (a new feed entry, a scroll, a new
-        message).
-        """
-        stats["det_calls"][r.name] += 1
-        boxes = engine.detect(crop, r.det_scale)
-        if menus and r.kind != "feed":  # a full feed is no menu
-            rx, ry, _, _ = rects[r.name]
-            det_boxes[r.name] = [
-                (
-                    (rx + min(p[0] for p in b)) * sx,
-                    (ry + min(p[1] for p in b)) * sy,
-                    (rx + max(p[0] for p in b)) * sx,
-                    (ry + max(p[1] for p in b)) * sy,
-                )
-                for b in boxes
-            ]
-        rows = group_rows(boxes, r.min_text_h * interp.scale, 10 * interp.scale)
-        q = 8 * interp.scale
-        layout = [tuple(round(v / q) for v in (cy, x0, x1)) for cy, x0, x1, _, _ in rows]
-        prev, last_layout[r.name] = last_layout[r.name], layout
-        last_rows[r.name] = rows
-        if not layout:
-            return False
-        if r.kind == "feed":
-            # Feeds add entries at one end (by default the bottom) and scroll or
-            # fade the rest, which were already read: recognise only when a row
-            # was added or the newest row changed.
-            newest = (
-                -1 if (preset is None or preset.feed.get("newest", "bottom") == "bottom") else 0
-            )
-            if not prev or len(layout) > len(prev):
-                return True
-            return max(abs(a - b) for a, b in zip(prev[newest], layout[newest], strict=True)) > 1
-        if prev is None or len(prev) != len(layout):
-            return True
-        return any(
-            max(abs(a - b) for a, b in zip(pa, pb, strict=True)) > 1
-            for pa, pb in zip(prev, layout, strict=True)
-        )
-
-    def save_crop(out: Path, t: float, r: Region, crop: np.ndarray) -> None:
-        """Save the region crop of a new event as a PNG in ``out``."""
-        import cv2  # noqa: PLC0415
-
-        out.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop)
-
-    def process_frame(t: float, frame: np.ndarray) -> None:
-        n = frame_no[0]
-        frame_no[0] += 1
-        for r in regions:
-            if r.every > 1 and n % r.every:
-                continue
-            x, y, w, h = rects[r.name]
-            crop = frame[y - y0 : y - y0 + h, x - x0 : x - x0 + w]
-            if r.gate == "det":
-                if not det_changed(r, crop):
-                    if last_layout[r.name]:  # same text still on screen
-                        interp.tracker.keep_alive(region_events.get(r.name, []), t)
-                    continue
-                stats["ocr_calls"][r.name] += 1
-                rows = last_rows[r.name]
-                if r.det_scale < 1.0:
-                    # the cheap gate's boxes clip the ends of rows: re-detect at
-                    # full resolution for exact row boxes (~35 ms)
-                    rows = group_rows(
-                        engine.detect(crop), r.min_text_h * interp.scale, 10 * interp.scale
-                    )
-                items = engine.read_rows(
-                    crop,
-                    [(y0, x0, y1, x1) for _, x0, x1, y0, y1 in rows],
-                    params.min_text_score,
-                    pad=6 * interp.scale,
-                )
-                n_before = len(interp.tracker.events)
-                interp.tracker.reset_touched()
-                interp.handle(t, r, crop, items)
-                region_events[r.name] = list(interp.tracker.touched)
-                if debug_dir and len(interp.tracker.events) > n_before:
-                    save_crop(debug_dir, t, r, crop)
-                continue
-            mask = _small(hud_mask(crop))
-            if mask.mean() < r.min_fill:
-                last_mask[r.name] = mask
-                continue
-            prev = last_mask[r.name]
-            if prev is not None and np.mean(np.abs(mask - prev) > 0.25) < r.min_change:
-                continue
-            last_mask[r.name] = mask
-            stats["ocr_calls"][r.name] += 1
-            items = engine(crop, params.min_text_score)
-            n_before = len(interp.tracker.events)
-            interp.handle(t, r, crop, items)
-            if debug_dir and len(interp.tracker.events) > n_before:
-                save_crop(debug_dir, t, r, crop)
-        if menus:
-            # regions overlap (notices inside the big-text area): one box per ~12 px spot
-            spots = {
-                (round((a + c) / 24), round((b + d) / 24)): (a, b, c, d)
-                for bs in det_boxes.values()
-                for a, b, c, d in bs
-            }
-            frame_boxes.append(
-                {
-                    "id": n,
-                    "t": t,
-                    "source": src.name,
-                    "boxes": [
-                        {"x0": a, "y0": b, "x1": c, "y1": d} for a, b, c, d in spots.values()
-                    ],
-                }
-            )
-            if still_runs is not None:
-                frame_boxes[-1]["still"] = still_runs.add(t, _thumb(frame))
-
-    errors: list[str] = []
-    all_errors: list[str] = []
-    segments = keep_segments(info.duration, avoid)
+    segments = keep_segments(duration, avoid)
     if avoid:
         stats["skipped_ranges"] = [[round(a, 1), round(b, 1)] for a, b in avoid]
-    hw = params.hwaccel
     shown = [-1]  # the last percent reported to on_progress
 
     def report(t: float) -> None:
-        pct = int(100 * min(1.0, t / info.duration)) if info.duration > 0 else 0
+        pct = int(100 * min(1.0, t / duration)) if duration > 0 else 0
         if on_progress is not None and pct > shown[0]:
             shown[0] = pct
             on_progress(pct / 100)
 
-    for seg_a, seg_b in segments:
-        while True:
-            errors.clear()
-            try:
-                for t, frame in iter_frames(
-                    src.io_path,
-                    params.fps,
-                    union,
-                    hw,
-                    errors,
-                    seg_a,
-                    None if seg_b >= info.duration else seg_b - seg_a,
-                ):
-                    stats["frames"] += 1
-                    process_frame(t, frame)
-                    report(t)
-                stats["hwaccel"] = hw
-                break
-            except RuntimeError as err:
-                if hw:
-                    logger.warning("%s: hwaccel decode failed (%s); retrying on CPU", src.name, err)
-                    hw = False
-                    continue
-                logger.warning("%s: no frames in %.0f-%.0fs: %s", src.name, seg_a, seg_b, err)
-                break
-        all_errors += errors
-    errors = all_errors
-    read_errors = [e for e in errors if READ_ERROR_RE.search(e)]
-    if read_errors:
-        logger.warning(
-            "%s: %d read errors during OCR decode (e.g. %s)",
-            src.name,
-            len(read_errors),
-            read_errors[0],
+    # replay the finished raw chunks: all of a complete read, or those an interrupted one left
+    done, last = 0, None
+    if meta is not None:
+        if meta.get("complete"):
+            raw.touch()  # in use: another process's cleanup keeps it
+        for chunk in raw.chunks(meta):
+            for rec in _records(chunk, regions):
+                interp.add(rec)
+                report(rec.t)
+            done, last = done + 1, chunk
+    if meta is not None and meta.get("complete") and done == meta["chunks"]:
+        raw.touch()
+        stats |= meta.get("stats", {})  # hwaccel and read errors of the read
+        stats["replayed"] = True
+    elif not can_read:  # a damaged raw read
+        return [], {"skipped": "not cached"}
+    else:
+        if engine is None:
+            engine = make_engine()
+        reader = OcrReader(
+            regions, rects, union, engine, params, height / 1080, newest, (width, height)
         )
-    stats["read_errors"] = len(read_errors)
+        # where the read goes on: segment, frame in it, frame number, decoder, read errors
+        pos: dict[str, Any] = {"seg": 0, "idx": 0, "frame_no": 0, "hw": params.hwaccel}
+        pos |= {"hwaccel": False, "read_errors": 0}
+        if last is not None:
+            reader.restore(last.state["reader"], last.arrays)
+            pos = last.state["pos"]
+            stats["hwaccel"] = pos["hwaccel"]
+            logger.info(
+                "%s: resuming the OCR read after %d frames (raw OCR cache)",
+                src.name,
+                stats["frames"],
+            )
+        writer = raw if raw.writable() else None
+        pending: list[FrameRec] = []
+
+        def write(step: Callable[..., None], *args: Any) -> None:
+            """A raw cache write; on a disk error the read goes on without the raw cache."""
+            nonlocal writer
+            try:
+                step(*args)
+            except OSError as err:
+                logger.warning("%s: raw OCR cache not written: %s", src.name, err)
+                writer = None
+
+        frame_no, hw = pos["frame_no"], pos["hw"]
+        failed = bool(pos.get("failed"))  # a segment gave no frames: the read stays incomplete
+        errors: list[str] = []
+        all_errors: list[str] = []
+
+        def flush(seg: int, idx: int) -> None:
+            """Write the pending records as a chunk; the read resumes at frame ``idx`` of
+            segment ``seg``. The first flush starts the raw read (an interrupt before it
+            leaves no folder)."""
+            if writer is not None and not writer.started:
+                write(writer.start, done, {"width": width, "height": height, "duration": duration})
+            if writer is None or not pending:
+                return
+            state, arrays = reader.state()
+            n_errors = sum(bool(READ_ERROR_RE.search(e)) for e in all_errors + errors)
+            at = {"seg": seg, "idx": idx, "frame_no": frame_no, "hw": hw}
+            at |= {"hwaccel": stats["hwaccel"], "read_errors": pos["read_errors"] + n_errors}
+            at["failed"] = failed
+            write(writer.add, _chunk(pending, regions, {"reader": state, "pos": at}, arrays))
+            pending.clear()
+
+        def save_crop(out: Path, t: float, r: Region, crop: np.ndarray) -> None:
+            """Save the region crop of a new event as a PNG in ``out``."""
+            import cv2  # noqa: PLC0415
+
+            out.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop)
+
+        by_name = {r.name: r for r in regions}
+        for si, (seg_a, seg_b) in enumerate(segments):
+            if si < pos["seg"]:
+                continue
+            k0 = pos["idx"] if si == pos["seg"] else 0  # frames of the segment already read
+            start = seg_a + k0 / params.fps
+            if start >= seg_b:
+                continue
+            while True:
+                errors.clear()
+                k = k0
+                try:
+                    for t, frame in iter_frames(
+                        src.io_path,
+                        params.fps,
+                        union,
+                        hw,
+                        errors,
+                        start,
+                        None if seg_b >= duration else seg_b - start,
+                    ):
+                        if k0:  # resumed: the time stamps of an uninterrupted read
+                            t = seg_a + k / params.fps
+                        k += 1
+                        rec, crops = reader.read(frame_no, t, frame)
+                        frame_no += 1
+                        for name in interp.add(rec):
+                            if debug_dir:
+                                save_crop(debug_dir, t, by_name[name], crops[name])
+                        if writer is not None:
+                            pending.append(rec)
+                            if len(pending) >= ocr_raw.CHUNK_FRAMES:
+                                flush(si, k)
+                        report(t)
+                    stats["hwaccel"] = hw
+                    break
+                except RuntimeError as err:
+                    if k0 and k == k0 and start > seg_b - 1.0:
+                        # resumed at the very end of the segment: nothing was left
+                        logger.debug("%s: nothing left after %.1fs: %s", src.name, start, err)
+                        break
+                    if hw:
+                        logger.warning(
+                            "%s: hwaccel decode failed (%s); retrying on CPU", src.name, err
+                        )
+                        hw = False
+                        continue
+                    logger.warning("%s: no frames in %.0f-%.0fs: %s", src.name, seg_a, seg_b, err)
+                    failed = True
+                    break
+            all_errors += errors
+        errors.clear()
+        read_errors = [e for e in all_errors if READ_ERROR_RE.search(e)]
+        if read_errors:
+            logger.warning(
+                "%s: %d read errors during OCR decode (e.g. %s)",
+                src.name,
+                len(read_errors),
+                read_errors[0],
+            )
+        stats["read_errors"] = pos["read_errors"] + len(read_errors)
+        flush(len(segments), 0)
+        if writer is not None and failed:
+            logger.info("%s: raw OCR cache left incomplete (a part gave no frames)", src.name)
+            write(writer.fail)
+        elif writer is not None:
+            write(writer.finish, {k: stats[k] for k in ("hwaccel", "read_errors")})
     stats["decoded_s"] = round(stats["frames"] / params.fps, 1)
     stats["elapsed_s"] = round(time.perf_counter() - t_start, 2)
-    if menus:
-        feeds = {r.name for r in regions if r.kind == "feed"}
-
-        def feed_event(e: dict[str, Any]) -> bool:
-            """Feed sightings and kills (kills come from the feed region): never dropped.
-            This assumes menus do not cover the feed region; a scoreboard drawn over it
-            is kept."""
-            return e.get("region") in feeds or e.get("type") == "kill"
-
-        tracked = interp.tracker.events
-        feed_times = {t for e in tracked if feed_event(e) for t in e["_times"]}
-        # new menu text: when texts that are no preset phrase were first read, until when shown;
-        # ``end`` moves only on the frames a region is read, so it is padded by one read interval
-        step = {r.name: r.every / params.fps for r in regions}
-        text_spans = [
-            (e["_times"][0], e["end"] + step.get(e.get("region"), 0.0))
-            for e in tracked
-            if e.get("unknown")
-        ]
-        if still_runs is None:
-            feed_times, text_spans = None, None
-        rules, menu_info = menu_rules(frame_boxes, feed_times=feed_times, text_spans=text_spans)
-        if logger.isEnabledFor(logging.DEBUG):
-            _log_menu_frames(
-                src.name, frame_boxes, rules, menu_info, tracked, feed_times, text_spans
-            )
-        menu = {f["t"] for f in frame_boxes if rules[f["id"]] != "none"}
-        interp.tracker.drop_sightings(menu, keep=feed_event)
-        stats["menu_frames"] = len(menu)
-        stats["static_frames"] = sum(r == "static" for r in rules.values())
-    events = interp.tracker.finish()
-    for e in events:
-        e["kind"] = "ocr"
-    logger.info(
-        "%s: %d OCR events, %d frames, OCR calls %s, %.1fs",
-        src.name,
-        len(events),
-        stats["frames"],
-        stats["ocr_calls"],
-        stats["elapsed_s"],
-    )
+    events = interp.finish()
+    if stats.get("replayed"):
+        logger.info(
+            "%s: %d OCR events, %d frames, replayed from the raw OCR cache: 0 live OCR calls "
+            "(the cached read made %s), %.1fs",
+            src.name,
+            len(events),
+            stats["frames"],
+            stats["ocr_calls"],
+            stats["elapsed_s"],
+        )
+    else:
+        logger.info(
+            "%s: %d OCR events, %d frames, OCR calls %s, %.1fs",
+            src.name,
+            len(events),
+            stats["frames"],
+            stats["ocr_calls"],
+            stats["elapsed_s"],
+        )
     cache.save_json(
         cpath, {"source": str(src.path), "params": key, "stats": stats, "events": events}
     )

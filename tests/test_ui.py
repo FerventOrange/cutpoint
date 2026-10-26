@@ -1814,6 +1814,76 @@ def test_settings_show_a_wrongly_typed_vision_as_off_and_replace_it(
     assert client.get("/api/projects").status_code == 200
 
 
+@pytest.mark.parametrize(
+    ("cfg", "shown"),
+    [(None, "off"), ("light", "light"), ("strong", "strong"), ("loud", "off"), (3, "off")],
+)
+def test_settings_show_the_compress_peaks_default(
+    client: TestClient, home: Path, cfg: object, shown: str
+) -> None:
+    """The page's Compress peaks select starts on config.json's value; an invalid one shows off."""
+    if cfg is not None:
+        set_config(home, compress_peaks=cfg)
+    assert client.get("/api/settings").json()["compress_peaks"] == shown
+
+
+def peaks_job(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict
+) -> tuple[object, list[list[str]]]:
+    """Start ``body``'s job on a command-line project that has a review and an export."""
+    p, seg = cli_project(tmp_path)
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    (p / "clips_ui_1" / "001_a.mp4").write_bytes(b"x")
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    return client.post("/api/projects/cli/jobs", json=body), captured
+
+
+@pytest.mark.parametrize("action", ["clips", "assemble"])
+@pytest.mark.parametrize(
+    ("body", "cfg", "passed"),
+    [
+        ({"compress_peaks": "strong"}, None, "strong"),
+        ({"compress_peaks": "light"}, "strong", "light"),
+        ({"compress_peaks": "off"}, "strong", "off"),
+        ({}, "light", "light"),  # not sent: config.json's value, explicitly
+        ({}, None, "off"),
+    ],
+)
+def test_clips_and_assemble_jobs_pass_compress_peaks(
+    client: TestClient,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    body: dict,
+    cfg: str | None,
+    passed: str,
+) -> None:
+    if cfg is not None:
+        set_config(home, compress_peaks=cfg)
+    res, captured = peaks_job(client, monkeypatch, tmp_path, {"action": action, **body})
+    assert res.status_code == 200, res.text
+    args = captured[0]
+    assert args.count("--compress-peaks") == 1
+    assert args[args.index("--compress-peaks") + 1] == passed
+
+
+@pytest.mark.parametrize("action", ["clips", "assemble"])
+@pytest.mark.parametrize("value", ["loud", "", None, True, ["light"]])
+def test_clips_and_assemble_jobs_reject_an_unknown_compress_peaks(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str, value: object
+) -> None:
+    body = {"action": action, "compress_peaks": value}
+    res, captured = peaks_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 400, res.text
+    assert "compress_peaks must be one of off, light, strong" in res.json()["detail"]
+    assert not captured
+
+
 def test_put_settings_removes_a_folder_it_created_when_saving_fails(
     client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
