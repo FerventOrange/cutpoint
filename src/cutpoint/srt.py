@@ -96,15 +96,18 @@ def clip_cues(words: list[dict[str, Any]], start: float, end: float) -> list[Cue
     return cues
 
 
-def words_lookup() -> Callable[[str], list[dict[str, Any]] | None]:
+def words_lookup(language: str | None = None) -> Callable[[str], list[dict[str, Any]] | None]:
     """``words(source)``: the cached transcript words of a recorded source (read through
-    ``source_remap``), or None when it has none or cannot be read. Loaded once per source."""
+    ``source_remap``), or None when it has none or cannot be read. Loaded once per source.
+
+    ``language``: the one the project's analysis forced (see
+    :func:`cutpoint.sources.project_language`); None reads the detected language's."""
     loaded: dict[str, list[dict[str, Any]] | None] = {}
 
     def words(source: str) -> list[dict[str, Any]] | None:
         if source not in loaded:
             try:
-                loaded[source] = sources.source_words(remap_source(source))
+                loaded[source] = sources.source_words(remap_source(source), language)
             except OSError:  # the source is gone (moved, drive disconnected)
                 loaded[source] = None
         return loaded[source]
@@ -131,10 +134,11 @@ class ClipSubtitles:
 
     ``protected``: :func:`~cutpoint.config.path_key` of ``.srt`` names in the clips folder
     that an earlier run did not write; a clip with such a name gets no ``.srt``.
+    ``language``: the transcript language, as in :func:`words_lookup`.
     """
 
-    def __init__(self, protected: set[str] | None = None) -> None:
-        self.words = words_lookup()
+    def __init__(self, protected: set[str] | None = None, language: str | None = None) -> None:
+        self.words = words_lookup(language)
         self.protected = protected or set()
         self.no_words: list[str] = []
         self.not_written: list[str] = []
@@ -216,10 +220,17 @@ def final_cues(
 
 
 def write_final_srt(
-    clips_dir: Path, files: list[Path], infos: list[MediaInfo], fade: float, video: Path
+    clips_dir: Path,
+    files: list[Path],
+    infos: list[MediaInfo],
+    fade: float,
+    video: Path,
+    language: str | None = None,
 ) -> Path | None:
     """Write ``<video>.srt`` for the video :func:`cutpoint.assemble.assemble` joined from
-    ``files`` (crossfade ``fade``, 0 for cuts), using ``clips_dir``'s manifest.json.
+    ``files`` (crossfade ``fade``, 0 for cuts), using ``clips_dir``'s manifest.json and
+    the transcripts of ``language`` (as in :func:`words_lookup`; None: the language the
+    analysis of the clips' project used, see :func:`~cutpoint.extend.manifest_project`).
 
     Clips without a manifest entry (and no ``.srt`` of their own) or a cached transcript
     get no cues (one INFO line); when no clip has any, no file is written.
@@ -227,9 +238,13 @@ def write_final_srt(
     Returns:
         The .srt path, or None if none was written.
     """
+    from cutpoint.extend import manifest_project  # noqa: PLC0415 - it imports this module
+
     manifest = cache.load_json(clips_dir / "manifest.json") or {}
     entries = {e.get("file"): e for e in manifest.get("clips", []) if isinstance(e, dict)}
-    cues, missing, missing_sources = final_cues(files, infos, entries, fade, words_lookup())
+    if language is None:
+        language = sources.project_language(manifest_project(manifest, clips_dir))
+    cues, missing, missing_sources = final_cues(files, infos, entries, fade, words_lookup(language))
     srt = video.with_suffix(".srt")
     if len(missing) == len(files):
         skipped_info(video.name, missing_sources)

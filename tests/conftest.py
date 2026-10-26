@@ -204,8 +204,8 @@ class StubTranscriber:
 
     model_name, device = "stub", "cpu"
 
-    def __init__(self, **_kw) -> None:
-        pass
+    def __init__(self, language: str | None = None, **_kw) -> None:
+        self.language = language
 
     def transcribe(self, _wav: Path) -> list[dict]:
         return VIDEO_SEGMENTS

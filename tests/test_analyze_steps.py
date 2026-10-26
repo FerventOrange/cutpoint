@@ -275,6 +275,7 @@ def test_analyze_source_reports_extract_then_whisper(
 
     class Tr:
         model_name = "m"
+        language = None
 
         def transcribe(self, wav, on_progress=None):
             on_progress(0.5)
@@ -382,7 +383,7 @@ def test_whisper_progress_is_passed_only_on_a_transcript_cache_miss(tmp_path):
         on_progress(1.0)
         return [{"start": 0, "end": 1}]
 
-    tr = SimpleNamespace(model_name="m", transcribe=whisper)
+    tr = SimpleNamespace(model_name="m", language=None, transcribe=whisper)
     assert analyze._transcript(tmp_path / "a.wav", tmp_path, tr, calls.append)
     assert calls == [1.0]
     analyze._transcript(tmp_path / "a.wav", tmp_path, tr, calls.append)
@@ -924,7 +925,7 @@ def test_pending_highlights_is_removed_when_the_block_raises(tmp_path):
 
 
 def test_rescore_in_memory_equals_rescore_highlights(tmp_path, monkeypatch):
-    monkeypatch.setattr(scoring, "_segments", lambda src: [])
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
     src = str(tmp_path / "a.mp4")
     cands = [
         {"id": "h001", "source": src, "start": 10.0, "end": 20.0, "score": 40.0, "signals": {}},

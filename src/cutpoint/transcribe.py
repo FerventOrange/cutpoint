@@ -255,6 +255,12 @@ class Transcriber:
         gc.collect()
 
 
+def transcript_name(model: str, language: str | None = None) -> str:
+    """Cache file name of a transcript: ``transcript-<model>.json`` when Whisper detected the
+    language, ``transcript-<model>-<language>.json`` when ``language`` forced it (#371)."""
+    return f"transcript-{model}-{language.lower()}.json" if language else f"transcript-{model}.json"
+
+
 def flat_words(segments: list[Segment]) -> list[dict[str, Any]]:
     """Flatten segments into one chronological word list."""
     return [w for s in segments for w in s.get("words", [])]

@@ -78,7 +78,7 @@ def test_assemble_cut_audio_stays_on_video_when_clip_audio_runs_on(tmp_path, mon
         for n in names
     ]
     (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir)
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(6.6, abs=0.04)
@@ -147,7 +147,7 @@ def test_assemble_short_crossfade_keeps_the_whole_video(tmp_path, monkeypatch):
     clips_dir.mkdir()
     for name in ("001_a.mp4", "002_b.mp4"):
         _clip(clips_dir / name, 2.0, 2.0)
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.02)
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(3.96, abs=0.04)
@@ -164,7 +164,7 @@ def test_assemble_crossfade_length_matches_the_srt_offsets(tmp_path, monkeypatch
     clips_dir.mkdir()
     for name in ("001_a.mp4", "002_b.mp4", "003_c.mp4"):
         _clip(clips_dir / name, 2.0, 2.0, rate)
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
     infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
     fade = assemble.crossfade_duration(infos, 0.25)
@@ -197,7 +197,7 @@ def test_assemble_crossfade_audio_stays_on_video_when_clip_audio_runs_on(tmp_pat
     clips_dir.mkdir()
     _clip(clips_dir / "001_a.mp4", 2.0, 2.3)
     _clip(clips_dir / "002_b.mp4", 2.0, 2.0)
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(3.76, abs=0.02)

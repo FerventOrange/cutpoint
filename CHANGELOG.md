@@ -326,6 +326,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `analyze --language` no longer reuses a transcript cached for another language: a
+  source transcribed with the detected language returned that cached transcript, and Whisper
+  never ran in the forced one. A forced language now has its own cache file,
+  `transcript-<model>-<language>.json`. Without `--language` the name stays
+  `transcript-<model>.json`, so existing transcripts are still used. Subtitles of `clips`,
+  `extend` and `assemble`, the crash words and the reaction rescoring read the transcript of
+  the language the project's analysis used (`settings.language` in `highlights.json`). A
+  transcript made with `--language` before this fix is cached under the plain name, so a run
+  without `--language` still reuses it; delete `cache/<source>/transcript-*.json` to
+  transcribe the source again (#371).
 - A single gameplay notice read in still gameplay (a scoped or binocular view held still for
   over 5 s) no longer makes the OCR layer treat the stretch as a menu and drop the notice
   (#319). New menu text now needs at least 2 text lines that are no preset phrase, each on
