@@ -19,7 +19,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
@@ -303,6 +303,20 @@ class OcrCancelled(BaseException):
     decode pass) never takes it for a decode error."""
 
 
+def ocr_vf(fps: float, rect: tuple[int, int, int, int]) -> str:
+    """The filter chain of the OCR decode: ``fps`` frames a second of ``rect`` (x, y, w, h)."""
+    x, y, w, h = rect
+    return f"fps={fps},crop={w}:{h}:{x}:{y}"
+
+
+# The decode hook of detect_ocr_events (a shared decode, #375): (rect, chain, stderr lines,
+# exit codes) -> the frames as iter_frames yields them, or None to decode as usual.
+DecodeHook = Callable[
+    [tuple[int, int, int, int], str, list[str], list[int]],
+    Iterator[tuple[float, np.ndarray]] | None,
+]
+
+
 def iter_frames(
     path: Path,
     fps: float,
@@ -326,11 +340,11 @@ def iter_frames(
             :class:`~cutpoint.ffmpeg_utils.FFmpegError`; the caller may retry
             without hwaccel).
     """
-    x, y, w, h = rect
+    _x, _y, w, h = rect
     yield from decode_raw(
         path,
         size=(w, h),
-        vf=f"fps={fps},crop={w}:{h}:{x}:{y}",
+        vf=ocr_vf(fps, rect),
         pix_fmt="bgr24",
         start=start if start > 0 else None,
         duration=dur,
@@ -1957,6 +1971,7 @@ def detect_ocr_events(
     on_progress: Callable[[float], None] | None = None,
     make_engine: Callable[[], OcrEngine] | None = None,
     cancel: threading.Event | None = None,
+    decode: DecodeHook | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
 
@@ -1999,6 +2014,9 @@ def detect_ocr_events(
             Ctrl+Break reaches every process group) and a failed CUDA pass also raise
             :class:`OcrCancelled`, without committing the pass: the caller reads the
             source itself then, resuming from the raw chunks, as a serial run would.
+        decode: With ``cancel``: gives the frames of a fresh CUDA read of the whole source
+            instead of :func:`iter_frames` (the shared decode of
+            :mod:`cutpoint.events.ocr_prefetch`), the same frames; asked once at most.
 
     Returns:
         (events, stats).
@@ -2153,8 +2171,13 @@ def detect_ocr_events(
                 errors.clear()
                 exits: list[int] = []  # background: an ffmpeg exit it did not cause
                 k = k0
+                frames = None
+                fresh = si == 0 and not k0 and len(segments) == 1 and seg_b >= duration
+                if decode is not None and cancel is not None and hw and fresh and not start:
+                    frames = decode(union, ocr_vf(params.fps, union), errors, exits)
+                    decode = None  # asked once: a retry decodes as usual
                 try:
-                    for t, frame in iter_frames(
+                    for t, frame in frames or iter_frames(
                         src.io_path,
                         params.fps,
                         union,

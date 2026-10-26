@@ -1792,6 +1792,282 @@ def decode_raw(
         raise FFmpegError(f"ffmpeg decoded no frames from {path} (hw={hw}):\n{log.text()}")
 
 
+# ----------------------------------------------------------------- shared decode (#375)
+SPOOL_DIR = "ocr-spool"  # in a source's cache folder: the raw frames of a split decode
+SPOOL_SEGMENT_FRAMES = 600  # frames per spool file (each is deleted once read)
+SPOOL_READ = 4 << 20  # bytes per read of ffmpeg's raw output
+SPOOL_MARGIN = 1 << 30  # free disk a split decode leaves beyond its worst-case spool
+
+
+def single_video_stream(path: Path | str) -> bool:
+    """Whether ``path`` has exactly one video stream and it is not cover art, so ``[0:v:0]``
+    is the stream a plain ``-vf`` decode picks."""
+    try:
+        data = ffprobe_json(
+            path, entries="stream=index:stream_disposition=attached_pic", streams="v"
+        )
+    except FFmpegError:
+        return False
+    streams = data.get("streams", [])
+    return len(streams) == 1 and not streams[0].get("disposition", {}).get("attached_pic")
+
+
+def spool_fits(folder: Path, need: int) -> bool:
+    """Whether the drive of ``folder`` has ``need`` bytes free plus :data:`SPOOL_MARGIN`."""
+    try:
+        return shutil.disk_usage(folder).free >= need + SPOOL_MARGIN
+    except OSError:
+        return False
+
+
+def split_decode_args(
+    path: Path | str,
+    *,
+    scene_vf: str,
+    scene_enc: Sequence[str],
+    proxy: Path,
+    raw_vf: str,
+    pix_fmt: PixFmt = "bgr24",
+    hw: bool = True,
+) -> list[str]:
+    """ffmpeg arguments (without the executable) for one CUDA pass that writes both the
+    scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use them) to ``proxy`` and
+    the raw frames of ``raw_vf`` (as :func:`decode_raw` gets them) to stdout. ``hw`` False
+    decodes on the CPU (tests)."""
+    graph = f"[0:v:0]split=2[s][o];[s]{scene_vf}[sv];[o]{raw_vf}[ov]"
+    return [
+        *("-hide_banner", "-nostats", "-v", "error", "-y"),
+        *(("-hwaccel", "cuda") if hw else ()),
+        *("-i", str(path), "-filter_complex", graph),
+        *("-map", "[sv]", "-an", *scene_enc, str(proxy)),
+        *("-map", "[ov]", "-an", "-sn", "-dn", "-pix_fmt", pix_fmt, "-f", "rawvideo", "-"),
+    ]
+
+
+def run_cancellable(args: Sequence[str], cancel: threading.Event) -> bool:
+    """Run ffmpeg isolated from Ctrl+C (and, on Windows, ended with Python), killed as soon
+    as ``cancel`` is set; True when it exited 0 by itself. Its progress goes to a pipe drained
+    here, so it never blocks. On POSIX an orphan left by a killed Python finishes its pass
+    (ffmpeg ignores a failed progress write); ``offer()`` sweeps its ``proxy.tmp.mp4``."""
+    cmd = _command("ffmpeg", ["-progress", "pipe:1", *args])
+    logger.debug("exec: %s", subprocess.list2cmdline(cmd))
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, **_isolated())
+        _kill_with_parent(proc)
+        watch = _CancelWatch(proc, cancel)
+        assert proc.stdout is not None
+        try:
+            for _ in proc.stdout:  # drained, so ffmpeg never blocks on it
+                pass
+            proc.wait()
+        finally:
+            proc.stdout.close()
+            watch.finish()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        if proc.returncode != 0 and not watch.fired:
+            err.seek(0)
+            logger.debug("ffmpeg exit %s: %s", exit_code(proc.returncode), _tail(err.read()))
+    return proc.returncode == 0 and not watch.fired
+
+
+class SplitDecode:
+    """One CUDA pass (:func:`split_decode_args`) that writes the scene proxy and spools the
+    raw frames to ``spool`` (files of :data:`SPOOL_SEGMENT_FRAMES` frames, each deleted once
+    :meth:`frames` has read it), so ffmpeg runs at decode speed however slowly the frames are
+    consumed. ffmpeg starts here, isolated from Ctrl+C and killed on ``cancel``.
+
+    The proxy is written to ``proxy.tmp.mp4`` beside ``proxy`` and renamed to ``proxy`` only
+    when ffmpeg exited 0 by itself and the spool took all of its output; otherwise it is
+    deleted. ``on_exit`` then gets that outcome and the spool peak in bytes (from the spool
+    thread).
+    """
+
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        size: tuple[int, int],
+        raw_vf: str,
+        stamp_fps: float,
+        scene_vf: str,
+        scene_enc: Sequence[str],
+        proxy: Path,
+        spool: Path,
+        cancel: threading.Event,
+        on_exit: Callable[[bool, int], None],
+        stderr_lines: list[str] | None = None,
+        hw: bool = True,
+    ) -> None:
+        width, height = size
+        self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
+        self.shape = (height, width, 3)
+        self.seg_bytes = self.frame_bytes * SPOOL_SEGMENT_FRAMES
+        self.stamp_fps = stamp_fps
+        self.proxy = proxy
+        self.tmp = proxy.with_name(proxy.stem + ".tmp" + proxy.suffix)
+        self.spool = spool
+        self.on_exit = on_exit
+        self.peak = 0  # most spool bytes on disk at once
+        self.returncode: int | None = None
+        self._cond = threading.Condition()
+        self._written = 0  # bytes of raw output spooled
+        self._deleted = 0  # bytes of spool files read and deleted
+        self._ended = False  # the spool thread is done (ffmpeg exited)
+        self._error: OSError | None = None  # a spool write failed
+        self._stopped = False  # ffmpeg killed here (spool error, or the consumer stopped)
+        self._closed = False
+        self._seg: IO[bytes] | None = None  # the spool file frames() reads
+        args = split_decode_args(
+            path, scene_vf=scene_vf, scene_enc=scene_enc, proxy=self.tmp, raw_vf=raw_vf, hw=hw
+        )
+        cmd = _command("ffmpeg", args)
+        logger.debug("exec: %s", subprocess.list2cmdline(cmd))
+        self._log = _StderrLog(False, stderr_lines)
+        spool.mkdir(parents=True, exist_ok=True)
+        self._proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_isolated()
+        )
+        _kill_with_parent(self._proc)
+        self._reader = threading.Thread(
+            target=self._log.read, args=(self._proc.stderr,), daemon=True
+        )
+        self._reader.start()
+        self._watch = _CancelWatch(self._proc, cancel)
+        self._cancel = cancel
+        self._thread = threading.Thread(target=self._run, name="ffmpeg-spool", daemon=True)
+        self._thread.start()
+
+    # ---- spool thread
+    def _kill(self) -> None:
+        with self._cond:
+            if self._proc.poll() is None:
+                self._stopped = True
+                self._proc.kill()
+
+    def _run(self) -> None:
+        out: IO[bytes] | None = None
+        filled, idx = 0, 0  # bytes in the current spool file, its number
+        stdout = self._proc.stdout
+        assert stdout is not None
+        try:
+            while data := stdout.read1(SPOOL_READ):
+                view = memoryview(data)
+                while view:
+                    if out is None:
+                        out = (self.spool / f"seg-{idx:05d}.raw").open("wb")
+                    n = min(len(view), self.seg_bytes - filled)
+                    out.write(view[:n])
+                    filled, view = filled + n, view[n:]
+                    if filled == self.seg_bytes:  # closed before the consumer may delete it
+                        out.close()
+                        out, filled, idx = None, 0, idx + 1
+                    else:
+                        out.flush()
+                    with self._cond:
+                        self._written += n
+                        self.peak = max(self.peak, self._written - self._deleted)
+                        self._cond.notify_all()
+        except OSError as err:
+            with self._cond:
+                self._error = err
+            self._kill()
+        finally:
+            if out is not None:
+                with suppress(OSError):
+                    out.close()
+            stdout.close()
+            if self._error is None and self._proc.poll() is None:
+                with suppress(subprocess.TimeoutExpired):
+                    self._proc.wait(SOFT_STOP_S)
+                self._kill()  # stdout closed and still running: never happens
+            self._proc.wait()
+            self._watch.finish()
+            with self._cond:
+                ours = self._stopped or self._watch.fired or self._error is not None
+                ok = self._proc.returncode == 0 and not ours
+            if ok:
+                try:
+                    self.tmp.replace(self.proxy)
+                except OSError as err:
+                    logger.debug("scene proxy not kept: %s", err)
+                    ok = False
+            if not ok:
+                with suppress(OSError):
+                    self.tmp.unlink(missing_ok=True)
+            with self._cond:
+                self.returncode = self._proc.returncode
+                self._ended = True
+                self._cond.notify_all()
+            self.on_exit(ok, self.peak)
+
+    # ---- consumer
+    def frames(self, exit_codes: list[int] | None = None) -> Iterator[tuple[float, np.ndarray]]:
+        """The raw frames, as :func:`decode_raw` yields them (``t = k / stamp_fps``). Stops
+        early when ``cancel`` is set; ``exit_codes`` gets a non-zero exit of ffmpeg that was
+        not caused here.
+
+        Raises:
+            FFmpegError: If a spool write failed (after the frames before it) or ffmpeg
+                gave no frames.
+        """
+        fb, k, pos = self.frame_bytes, 0, 0
+        try:
+            while True:
+                with self._cond:
+                    while (
+                        self._written < pos + fb
+                        and not self._ended
+                        and self._error is None
+                        and not self._cancel.is_set()
+                    ):
+                        self._cond.wait(CANCEL_POLL_S)  # the cancel is checked in between
+                    if self._error is not None or self._written < pos + fb:
+                        break
+                if self._seg is None:
+                    name = f"seg-{pos // self.seg_bytes:05d}.raw"
+                    try:
+                        self._seg = (self.spool / name).open("rb")
+                    except OSError as err:  # held by a scanner: both sides decode as before
+                        raise FFmpegError(f"spool read failed: {err}") from err
+                buf = self._seg.read(fb)
+                pos += fb
+                if pos % self.seg_bytes == 0:
+                    self._seg.close()
+                    self._seg = None
+                    with suppress(OSError):  # held by a scanner: close() removes it later
+                        (self.spool / f"seg-{pos // self.seg_bytes - 1:05d}.raw").unlink()
+                    with self._cond:
+                        self._deleted += self.seg_bytes
+                yield k / self.stamp_fps, np.frombuffer(buf, np.uint8).reshape(self.shape)
+                k += 1
+        finally:
+            self.close()
+        if self._error is not None:
+            raise FFmpegError(f"spool write failed: {self._error}")
+        ours = self._stopped or self._watch.fired
+        if exit_codes is not None and self.returncode not in (0, None) and not ours:
+            exit_codes.append(self.returncode)
+        if not k:
+            raise FFmpegError(f"ffmpeg decoded no frames (shared decode):\n{self._log.text()}")
+
+    def close(self) -> None:
+        """Kill ffmpeg if it still runs (the frames are no longer read), wait for the spool
+        thread and remove the spool. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._seg is not None:  # a paused frames(): its file must close before rmtree
+            with suppress(OSError):
+                self._seg.close()
+            self._seg = None
+        self._kill()
+        self._thread.join()
+        self._reader.join(timeout=5)
+        shutil.rmtree(self.spool, ignore_errors=True)
+
+
 # ----------------------------------------------------------------- stills
 def _split_jpegs(data: bytes) -> list[bytes]:
     """Split concatenated JPEGs (an ``image2pipe`` stream) at their SOI/EOI markers.

@@ -240,6 +240,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines of helper threads and a `resuming the OCR read` line when a background read is handed
   back to its turn; Ctrl+C still exits with 130 and leaves no partial
   files. `CUTPOINT_ANALYZE_OVERLAP=0` turns it off (#375).
+- Experimental and off by default: `CUTPOINT_ANALYZE_SHARED_DECODE=split` makes the scene
+  detection proxy of `analyze` in the same CUDA decode as the background HUD OCR, spooling the
+  OCR frames to the source's cache folder (skipped when the drive lacks room for the
+  worst-case spool plus 1 GB), and `=proxy` runs the proxy's own decode beside the OCR read
+  instead. Both apply to a whole, clean source of up to 30 minutes with one video stream; the
+  scene cuts, `events.json`, `highlights.json` and the OCR caches are the same as with it off,
+  and INFO lines give the timings for comparing the modes (#375).
 - The HUD OCR engine (the OCR layer and HUD discovery) runs on at most 4 CPU threads (fewer on
   a machine with fewer CPUs) instead of one per core. CPU OCR stops scaling at about 4 threads:
   on an 8-core CPU a 1280 px discovery frame took 3.3 s instead of 4.0 s, about 18% faster. The

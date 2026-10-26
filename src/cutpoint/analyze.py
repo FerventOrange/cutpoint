@@ -50,6 +50,7 @@ from cutpoint.ffmpeg_utils import (
     probe,
     read_window_ok,
     run_progress,
+    single_video_stream,
     wav_duration,
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
@@ -277,8 +278,42 @@ def _watch_extract(
         thread.join()
 
 
+def _proxy_args(
+    duration: float, offset: float = 0.0, limit: float | None = None
+) -> tuple[list[str], list[str], str, list[str]]:
+    """The scene proxy's input options, output options, filter chain and encoder arguments."""
+    long_file = duration > LONG_FILE_S
+    pre = ["-skip_frame", "nokey"] if long_file else []
+    if offset > 0:
+        pre += ["-ss", f"{offset:.3f}"]
+    post = ["-t", f"{limit:.3f}"] if limit else []
+    vf = "fps=2,scale=256:-2" if long_file else "fps=10,scale=320:-2"
+    return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
+
+
+def _detect(proxy: Path, path: Path) -> list[float]:
+    """Scene cuts of ``proxy`` (deleted after), saved to ``path``."""
+    from scenedetect import AdaptiveDetector, SceneManager, open_video  # noqa: PLC0415
+
+    video = open_video(str(proxy))
+    manager = SceneManager()
+    manager.auto_downscale = False
+    manager.add_detector(AdaptiveDetector(min_scene_len=5))
+    manager.detect_scenes(video, show_progress=False)
+    cuts = [round(s[0].get_seconds(), 3) for s in manager.get_scene_list()[1:]]
+    del video
+    proxy.unlink(missing_ok=True)
+    cache.save_json(path, cuts)
+    return cuts
+
+
 def scene_cuts(
-    src: Path, cdir: Path, duration: float, offset: float = 0.0, limit: float | None = None
+    src: Path,
+    cdir: Path,
+    duration: float,
+    offset: float = 0.0,
+    limit: float | None = None,
+    shared: Any = None,
 ) -> list[float]:
     """Scene-cut times (s) via PySceneDetect AdaptiveDetector on a tiny proxy.
 
@@ -293,20 +328,18 @@ def scene_cuts(
         offset: Seek here first; returned times are relative to it.
         limit: Stop decoding after this many seconds (stays clear of a known
             unreadable region instead of hitting it again).
+        shared: The :class:`~cutpoint.events.ocr_prefetch.SceneShare` of this source (a
+            shared-decode mode): its proxy, waited for while it is made, replaces the decode.
     """
     path = cdir / "scenes.json"
     cached = cache.load_json(path)
     if cached is not None:
         return cached
-    from scenedetect import AdaptiveDetector, SceneManager, open_video  # noqa: PLC0415
-
+    importlib.import_module("scenedetect")  # not installed: fails before any decode
+    if shared is not None and (made := shared.result()) is not None:
+        return _detect(made, path)
     proxy = cdir / "proxy.mp4"
-    long_file = duration > LONG_FILE_S
-    pre = ["-skip_frame", "nokey"] if long_file else []
-    if offset > 0:
-        pre += ["-ss", f"{offset:.3f}"]
-    post = ["-t", f"{limit:.3f}"] if limit else []
-    vf = "fps=2,scale=256:-2" if long_file else "fps=10,scale=320:-2"
+    pre, post, vf, enc = _proxy_args(duration, offset, limit)
     base = [
         *pre,
         "-i",
@@ -315,12 +348,7 @@ def scene_cuts(
         "-an",
         "-vf",
         vf,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "32",
+        *enc,
         str(proxy),
     ]
     label = f"scene proxy {src.name}"
@@ -328,16 +356,7 @@ def scene_cuts(
         run_progress(["ffmpeg", "-y", "-v", "error", "-hwaccel", "cuda", *base], duration, label)
     except FFmpegError:
         run_progress(["ffmpeg", "-y", "-v", "error", *base], duration, label)
-    video = open_video(str(proxy))
-    manager = SceneManager()
-    manager.auto_downscale = False
-    manager.add_detector(AdaptiveDetector(min_scene_len=5))
-    manager.detect_scenes(video, show_progress=False)
-    cuts = [round(s[0].get_seconds(), 3) for s in manager.get_scene_list()[1:]]
-    del video
-    proxy.unlink(missing_ok=True)
-    cache.save_json(path, cuts)
-    return cuts
+    return _detect(proxy, path)
 
 
 # --------------------------------------------------------------------------- windowing
@@ -751,7 +770,7 @@ def analyze_source(
     ski_ctx: Any = None,
     pick: bool = True,
     report: Callable[[float], None] | None = None,
-    read_checked: Callable[[MediaInfo, dict[str, Any] | None], None] | None = None,
+    read_checked: Callable[[MediaInfo, dict[str, Any] | None], Any] | None = None,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -764,7 +783,8 @@ def analyze_source(
     ``report`` gets the share of the source's transcription done (0-1): the audio
     extract is its first :data:`EXTRACT_SHARE`, Whisper the rest. ``read_checked`` gets
     the probe and the read-error record (None: a clean read) as soon as they are known,
-    before loudness, Whisper and the scene cuts.
+    before loudness, Whisper and the scene cuts; what it returns goes to
+    :func:`scene_cuts` as ``shared`` (a scene proxy made in the background, or None).
     """
 
     def tick(name: str, t0: float) -> None:
@@ -775,6 +795,7 @@ def analyze_source(
     cdir = cache.source_dir(src, offset)
     span = info.duration - offset
     read_error: dict[str, Any] | None = None
+    shared = None  # read_checked's background scene proxy
     segments: list[Segment] = []
     lufs_data: tuple[np.ndarray, np.ndarray] | None = None
     if info.audio_streams:
@@ -803,7 +824,7 @@ def analyze_source(
             warn_read_error(src, read_error, recover)
             span = read_error["audio_s"]  # analyse only what was actually read
         if read_checked is not None:
-            read_checked(info, read_error)
+            shared = read_checked(info, read_error)
 
         t0 = time.perf_counter()
         lufs_data = _loudness(wav, cdir)
@@ -818,7 +839,7 @@ def analyze_source(
     else:
         logger.warning("%s has no audio; using scene/vision signals only", src.name)
         if read_checked is not None:
-            read_checked(info, None)
+            shared = read_checked(info, None)
 
     n = max(1, int(span / DT) + 1)
     sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
@@ -846,9 +867,18 @@ def analyze_source(
     cuts: list[float] = []
     if use_scenes:
         t0 = time.perf_counter()
-        cuts = scene_cuts(io, cdir, span, offset, limit=span if read_error else None)
+        cuts = scene_cuts(io, cdir, span, offset, limit=span if read_error else None, shared=shared)
         sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
         tick("scenes_s", t0)
+        if shared is not None:  # for measuring the shared decode
+            took = time.perf_counter() - t0
+            logger.info(
+                "%s: shared decode (%s): scenes %.1fs, %s",
+                src.name,
+                shared.mode,
+                took,
+                shared.summary(),
+            )
 
     res = SourceResult(
         source=src,
@@ -1272,6 +1302,23 @@ def _ocr_prefetch(
     return ocr_prefetch.OcrPrefetch(project, sources, OcrParams(game=game, player_tags=tags))
 
 
+def _scene_plan(src: Path, duration: float) -> Any:
+    """The :class:`~cutpoint.events.ocr_prefetch.ScenePlan` of a whole source whose scene
+    proxy may be made in the background: up to :data:`LONG_FILE_S` (longer files decode
+    keyframes only), its scene cuts not cached and one video stream (no cover art); else
+    None."""
+    from cutpoint.events.ocr_prefetch import ScenePlan  # noqa: PLC0415
+
+    cdir = cache.source_dir(src)
+    if duration > LONG_FILE_S or cache.load_json(cdir / "scenes.json") is not None:
+        return None
+    io = remap_source(src)
+    if not single_video_stream(io):
+        return None
+    _pre, _post, vf, enc = _proxy_args(duration)
+    return ScenePlan(io, cdir, duration, vf, tuple(enc))
+
+
 def _run_layers(
     project: Path,
     plan: LayerPlan,
@@ -1541,15 +1588,19 @@ def _analyze(
             telemetry_s = round(time.perf_counter() - t0, 2)
         tr = Transcriber(model=model, language=language)
 
-        def read_checked(src: Path, offset: float) -> Callable[..., None] | None:
+        def read_checked(src: Path, offset: float) -> Callable[..., Any] | None:
             """``analyze_source``'s hook: offer the source to the OCR prefetch, which reads
-            only a whole, clean source while Whisper runs on the GPU."""
+            only a whole, clean source while Whisper runs on the GPU (and, in a shared-decode
+            mode, makes its scene proxy; the share is returned for the scene cuts)."""
             if prefetch is None:
                 return None
 
-            def offer(info: MediaInfo, rec: dict[str, Any] | None) -> None:
+            def offer(info: MediaInfo, rec: dict[str, Any] | None) -> Any:
                 ok = not offset and rec is None and tr.device == "cuda"
-                prefetch.offer(src, round(info.duration, 3), ok)
+                plan = None
+                if ok and use_scenes and prefetch.mode is not None:
+                    plan = _scene_plan(src, info.duration)
+                return prefetch.offer(src, round(info.duration, 3), ok, plan)
 
             return offer
 
