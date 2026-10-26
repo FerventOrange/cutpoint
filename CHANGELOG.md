@@ -329,6 +329,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A rerun of `events` (or `analyze`) whose audio events are all cached no longer loads the
   PANNs sound model when a source's cached result is empty, which cost about 6 s; a source
   without cached audio no longer loads it either. The events are unchanged (#370).
+- Mined `candidate_phrases` (profile version 6) no longer include parts of hint and tutorial
+  sentences shown only briefly, which the static hint test misses. A phrase found only inside
+  sentences of more than 5 words (a number, gamertag or separator such as `|`, `/` or `:` ends
+  one; commas and brackets do not), with the same text right around it each time (OCR read the
+  sentence a little differently, so its parts showed without the rest), is left out. Short banners, banners read in one box with a stats line and phrases
+  in log lines with changing names or gamertags around them stay (#313).
 - When the short proxy of a part of the source fails twice, the UI preview stops waiting on
   "Preparing this part of the source…" and shows why, with a Retry button. The server's
   warning now names ffmpeg's last lines (or its exit code), and each source in the project view

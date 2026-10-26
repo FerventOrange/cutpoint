@@ -245,7 +245,11 @@ word. Static hint lines (tutorial and control hints) are left out: a text found 
 of a recording's sampled gameplay frames whose sightings span at least half of the sampled time
 (tested for recordings with at least 8 sampled bursts). An event banner shows for a few seconds
 per event, far below that share; text in at least half of all gameplay frames is a static label
-and left out too. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
+and left out too. A hint shown only briefly is left out when OCR read it a little differently
+each time (words joined in one read): a phrase found only inside sentences of more than 5 words
+(a number, gamertag or separator such as `|`, `/` or `:` ends a sentence; commas and brackets do
+not), with the same text right around it each time, is a part of one sentence. A phrase in log lines with changing names or gamertags around it, one also
+shown on its own, or one OCR reads in a box with a stats line after a separator or number, stays. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
 far more text than the recording usually shows), so a busy game HUD is not mistaken for a menu.
 With a JSON preset, the OCR layer applies the same test to the text it detects in the preset's
 regions other than feeds (a full kill feed is no menu) and drops what menu frames show. It also
