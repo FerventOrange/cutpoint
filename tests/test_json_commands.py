@@ -29,8 +29,18 @@ def _json(capsys, argv: list[str]) -> tuple[int, dict, str]:
     return code, envelope(out), err
 
 
+# The event steps (HUD region discovery, sound models, crash detection) are slow on a real
+# machine and these tests do not look at their results.
+NO_EVENT_STEPS = ["--skip", "reactions", "keyframes", "crashes"]
+
+
+def _analyze_argv(video: Path, *extra: str) -> list[str]:
+    """``analyze`` of the test video: funny style, project ``j``, no scene detection."""
+    return ["analyze", str(video), "--style", "funny", "--out", "j", "--no-scenes", *extra]
+
+
 def _analyze(video: Path, capsys) -> None:
-    argv = ["analyze", str(video), "--style", "funny", "--out", "j", "--no-vision", "--no-scenes"]
+    argv = _analyze_argv(video, "--no-vision", *NO_EVENT_STEPS)
     assert cli.main(argv) == 0
     assert capsys.readouterr().out == ""  # without --json, stdout stays empty (logs: stderr)
 
@@ -60,10 +70,7 @@ def _assert_clips(outputs: dict, clips_dir: Path) -> None:
 # --------------------------------------------------------------------------------- analyze
 @needs_ffmpeg
 def test_analyze_json(video, home, capsys):
-    code, doc, _ = _json(
-        capsys,
-        ["analyze", str(video), "--style", "funny", "--out", "j", "--no-vision", "--no-scenes"],
-    )
+    code, doc, _ = _json(capsys, _analyze_argv(video, "--no-vision", *NO_EVENT_STEPS))
     project = home / "projects" / "j"
     assert code == 0 and doc["ok"] is True and doc["command"] == "analyze"
     assert doc["project"] == str(project)
@@ -246,7 +253,7 @@ def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
 ):
     # No loudnorm: its limiter resamples with soxr, which some ffmpeg builds lack.
     monkeypatch.setitem(edit.KINDS, "clips", replace(edit.KINDS["clips"], loudnorm=False))
-    argv = ["edit", str(video), "--kind", "clips", "--top", "2", "--no-vision"]
+    argv = ["edit", str(video), "--kind", "clips", "--top", "2", "--no-vision", *NO_EVENT_STEPS]
     code, doc, _ = _json(capsys, argv)
     project = home / "projects" / "clip"
     assert code == 0 and doc["ok"] is True and doc["command"] == "edit"
@@ -304,7 +311,7 @@ def test_analyze_json_warns_when_vision_was_wanted_but_unavailable(
     video, home, capsys, caplog, monkeypatch, flags, message
 ):
     monkeypatch.setattr(cutpoint.analyze, "VisionRater", _NoOllama)
-    argv = ["analyze", str(video), "--style", "funny", "--out", "j", "--no-scenes", *flags]
+    argv = _analyze_argv(video, *NO_EVENT_STEPS, *flags)
     code, doc, _ = _json(capsys, argv)
     assert code == 0 and doc["ok"] is True and doc["outputs"]["candidates"] > 0
     expected = [] if message is None else [("vision_unavailable", message, [])]

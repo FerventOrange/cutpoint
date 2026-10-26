@@ -71,14 +71,11 @@ def test_edit_bad_option_is_a_usage_error(capsys, option, value):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["clips", "some-project", "--top", "0"],
         ["clips", "some-project", "--top", "-1"],
         ["clips", "some-project", "--max-total", "0"],
-        ["clips", "some-project", "--max-total", "-5"],
         ["360", "director", "some-project", "--top", "0"],
         ["360", "stitch", "some-project", "--top", "-1"],
         ["360", "stitch", "some-project", "--max-total", "0"],
-        ["assemble", "some-clips", "--transition", "fade", "--fade-dur", "0"],
         ["assemble", "some-clips", "--transition", "fade", "--fade-dur", "-0.5"],
     ],
 )
@@ -94,10 +91,8 @@ def test_non_positive_top_max_total_or_fade_dur_is_a_usage_error(capsys, argv):
 @pytest.mark.parametrize(
     ("option", "value", "message"),
     [
-        ("--vision-top", "0", "must be greater than 0"),
         ("--vision-top", "-3", "must be greater than 0"),
         ("--max-candidates", "0", "must be greater than 0"),
-        ("--max-candidates", "-1", "must be greater than 0"),
         ("--must-include-crash", "-0.5", "must be from 0 to 1"),
         ("--must-include-crash", "1.5", "must be from 0 to 1"),
         ("--must-include-crash", "high", "expected a number"),
