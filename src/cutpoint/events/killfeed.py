@@ -467,7 +467,9 @@ OCR_THREADS = min(4, os.cpu_count() or 1)
 class OcrEngine:
     """Thin wrapper around RapidOCR (onnxruntime, CPU)."""
 
-    def __init__(self, det_side: int = OCR_DET_SIDE) -> None:
+    def __init__(self, det_side: int = OCR_DET_SIDE, threads: int | None = None) -> None:
+        """``threads``: onnxruntime intra-op threads (default :data:`OCR_THREADS`; discovery's
+        OCR workers split the CPUs)."""
         from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
         self.det_side = det_side  # part of the raw OCR cache key
@@ -477,7 +479,7 @@ class OcrEngine:
         self.engine = RapidOCR(
             det_limit_type="max",
             det_limit_side_len=det_side,
-            intra_op_num_threads=OCR_THREADS,
+            intra_op_num_threads=OCR_THREADS if threads is None else threads,
         )
 
     def detect(self, bgr: np.ndarray, scale: float = 1.0) -> list[list]:

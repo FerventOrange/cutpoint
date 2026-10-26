@@ -114,7 +114,7 @@ def test_ocr_frames_report_cached_short_and_new_bursts(tmp_path, monkeypatch):
     from cutpoint.events import killfeed  # noqa: PLC0415
 
     src = SimpleNamespace(name="rec.mp4", io_path=tmp_path / "rec.mp4")
-    params = discover.DiscoverParams()
+    params = discover.DiscoverParams(ocr_workers=1)  # in-process: the fake engine applies
     bursts = [(src, 0.0), (src, 60.0), (src, 120.0)]
     cached = [f"rec.mp4@{k * params.burst_step_s:.1f}" for k in range(4)] + ["rec.mp4@60.0"]
     cache_path = tmp_path / "ocr.jsonl"

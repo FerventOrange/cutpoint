@@ -57,6 +57,9 @@ For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and
 world text, and writes a proposal to `<project>\discovery\<game>\` (`proposal.json`, `overlay.jpg`)
 and installs it as a preset. Check `overlay.jpg`, then edit the preset JSON to calibrate.
+On a machine with 8 or more CPUs the discovery OCR runs in 2 worker processes (`min(2, CPUs // 4)`,
+each with its share of the OCR threads); the result is the same as with one. Each worker loads its
+own OCR engine, so the count stays small to keep memory low.
 A discovered kill feed grows by the oldest rows that show only when the feed is full (up to
 twice its height). With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed.
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a

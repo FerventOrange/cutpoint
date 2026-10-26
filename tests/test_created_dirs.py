@@ -136,7 +136,10 @@ def test_interrupted_discovery_ocr_leaves_no_discovery_folder(
     monkeypatch.setattr(killfeed, "OcrEngine", lambda **_k: interrupt)  # the OCR call
     with pytest.raises(KeyboardInterrupt):
         discover._ocr_frames(
-            [(src, 5.0)], discover.DiscoverParams(), frame_dir, frame_dir.parent / "ocr.jsonl"
+            [(src, 5.0)],
+            discover.DiscoverParams(ocr_workers=1),  # in-process: the fake engine applies
+            frame_dir,
+            frame_dir.parent / "ocr.jsonl",
         )
     assert not frame_dir.exists()
     assert not (tmp_path / "disc").exists()

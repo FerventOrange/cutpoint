@@ -41,3 +41,11 @@ def test_engine_passes_the_thread_cap(monkeypatch: pytest.MonkeyPatch, det_side:
     assert made == [
         {"det_limit_type": "max", "det_limit_side_len": det_side, "intra_op_num_threads": 3}
     ]
+
+
+def test_engine_takes_a_thread_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    made = _fake_rapidocr(monkeypatch)  # a discovery OCR worker's share of the CPUs
+
+    killfeed.OcrEngine(det_side=1280, threads=2)
+
+    assert made[0]["intra_op_num_threads"] == 2

@@ -46,10 +46,12 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import os
 import re
 import time
 from collections import Counter, deque
 from collections.abc import Callable
+from concurrent.futures import Executor, Future
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
@@ -168,6 +170,9 @@ class DiscoverParams:
     notice_readout_chars: int = 8
     notice_readout_share: float = 0.5
     notice_readout_texts: int = 4
+    # OCR worker processes (0: the default, min(2, CPUs // 4), at least 1); see ocr_workers.
+    # The output does not depend on it
+    ocr_workers: int = 0
 
 
 # --------------------------------------------------------------------------- sampling
@@ -244,6 +249,110 @@ def boxes_in(
     ]
 
 
+def ocr_workers(requested: int = 0) -> tuple[int, int]:
+    """Discovery OCR worker processes and onnxruntime threads per worker.
+
+    ``requested`` 0 gives min(2, CPUs // 4), at least 1: each worker loads its own OCR
+    engine (a few hundred MB), and onnxruntime failed with "bad allocation" under load on
+    Windows, so the default stays small. Workers are capped at the CPU count and each gets
+    ``max(1, min(OCR_THREADS, CPUs // workers))`` threads, so workers x threads never
+    exceeds the CPUs (CPU OCR stops scaling at about 4 threads, #374).
+    """
+    from cutpoint.events.killfeed import OCR_THREADS  # noqa: PLC0415
+
+    cpus = os.cpu_count() or 1
+    workers = requested if requested > 0 else min(2, cpus // 4)
+    workers = max(1, min(workers, cpus))
+    return workers, max(1, min(OCR_THREADS, cpus // workers))
+
+
+def _ocr_boxes(items: list[tuple[list, str, float]], sx: float) -> list[dict[str, Any]]:
+    """OCR items (box points, text, score) as boxes in reference pixels (scale ``sx``)."""
+    boxes = []
+    for box, text, score in items:
+        xs = [p[0] * sx for p in box]
+        ys = [p[1] * sx for p in box]
+        boxes.append(
+            {
+                "x0": round(min(xs)),
+                "y0": round(min(ys)),
+                "x1": round(max(xs)),
+                "y1": round(max(ys)),
+                "text": text,
+                "score": round(score, 3),
+            }
+        )
+    return boxes
+
+
+_WORKER: dict[str, Any] = {}  # an OCR worker process's engine settings and engine
+
+
+def _ocr_worker_init(det_side: int, threads: int) -> None:
+    """Set up an OCR worker process: Ctrl+C (Ctrl+Break on Windows) goes to the parent
+    only, which then terminates the workers; a worker exits when the parent dies without
+    that (killed, out of memory: :func:`_exit_with_parent`); the engine loads on the first
+    frame."""
+    import signal  # noqa: PLC0415
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+    _exit_with_parent()
+    _WORKER.update(det_side=det_side, threads=threads)
+
+
+def _exit_with_parent() -> None:
+    """Exit this worker process as soon as its parent ends, from a daemon thread waiting
+    on the parent's sentinel (a pipe on POSIX, the process handle on Windows), so a
+    hard-killed run (SIGKILL, ``taskkill /F``) leaves no worker holding an OCR engine."""
+    import multiprocessing  # noqa: PLC0415
+    import threading  # noqa: PLC0415
+    from multiprocessing.connection import wait  # noqa: PLC0415
+
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        return
+
+    def watch() -> None:
+        wait([parent.sentinel])
+        os._exit(1)
+
+    threading.Thread(target=watch, name="cutpoint-ocr-parent", daemon=True).start()
+
+
+def _ocr_worker(img: np.ndarray, min_score: float) -> list[dict[str, Any]]:
+    """OCR one frame in a worker process: its boxes in reference pixels."""
+    engine = _WORKER.get("engine")
+    if engine is None:
+        from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
+
+        engine = OcrEngine(det_side=_WORKER["det_side"], threads=_WORKER["threads"])
+        _WORKER["engine"] = engine
+    return _ocr_boxes(engine(img, min_score), REF_W / img.shape[1])
+
+
+def _ocr_pool(workers: int, threads: int, det_side: int) -> Executor:
+    """A pool of ``workers`` OCR processes, started with spawn (as on Windows) everywhere."""
+    import multiprocessing  # noqa: PLC0415
+    from concurrent.futures import ProcessPoolExecutor  # noqa: PLC0415
+
+    return ProcessPoolExecutor(
+        workers,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=_ocr_worker_init,
+        initargs=(det_side, threads),
+    )
+
+
+def _stop_pool(pool: Executor) -> None:
+    """Terminate the pool's worker processes at once (an OCR call takes seconds) and shut
+    it down, dropping the frames still queued."""
+    for proc in list((getattr(pool, "_processes", None) or {}).values()):
+        proc.terminate()
+    pool.shutdown(wait=True, cancel_futures=True)
+
+
 def _ocr_frames(
     bursts: list[tuple[Source, float]],
     params: DiscoverParams,
@@ -252,7 +361,16 @@ def _ocr_frames(
     on_frame: Callable[[int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
     """OCR every burst frame (cached in ``cache_path`` as JSON lines); ``on_frame`` is
-    called with (frames done, frames planned) after each frame and each burst."""
+    called with (frames done, frames planned) after each frame and each burst.
+
+    With more than one worker (:func:`ocr_workers`) the frames are OCR'd in worker
+    processes (:func:`_ocr_frames_parallel`); the records, their order and the cache are
+    the same as here."""
+    workers, threads = ocr_workers(params.ocr_workers)
+    if workers > 1:
+        return _ocr_frames_parallel(
+            bursts, params, frame_dir, cache_path, on_frame, workers, threads
+        )
     import cv2  # noqa: PLC0415
 
     from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
@@ -284,22 +402,7 @@ def _ocr_frames(
                 if fid in done:
                     out.append(done[fid])
                     continue
-                sx = REF_W / img.shape[1]
-                items = engine(img, params.min_score)
-                boxes = []
-                for box, text, score in items:
-                    xs = [p[0] * sx for p in box]
-                    ys = [p[1] * sx for p in box]
-                    boxes.append(
-                        {
-                            "x0": round(min(xs)),
-                            "y0": round(min(ys)),
-                            "x1": round(max(xs)),
-                            "y1": round(max(ys)),
-                            "text": text,
-                            "score": round(score, 3),
-                        }
-                    )
+                boxes = _ocr_boxes(engine(img, params.min_score), REF_W / img.shape[1])
                 fname = f"b{bi:03d}_{k}.jpg"
                 cv2.imwrite(str(frame_dir / fname), img, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 rec = {
@@ -320,6 +423,117 @@ def _ocr_frames(
             report((bi + 1) * params.burst_frames, total)  # a short burst counts as done
             if (bi + 1) % 10 == 0:
                 logger.info("  discovery OCR: %d/%d bursts", bi + 1, len(bursts))
+    return out
+
+
+def _ocr_frames_parallel(
+    bursts: list[tuple[Source, float]],
+    params: DiscoverParams,
+    frame_dir: Path,
+    cache_path: Path,
+    on_frame: Callable[[int, int], None] | None,
+    workers: int,
+    threads: int,
+) -> list[dict[str, Any]]:
+    """:func:`_ocr_frames` with the OCR in ``workers`` spawned processes of ``threads``
+    onnxruntime threads each.
+
+    The parent decodes each burst (as the serial run does) and sends the frames to the
+    workers: a decoded frame (2.8 MB at 1280 px) costs milliseconds to pass against
+    seconds of OCR, while decoding by time in the workers would run ffmpeg twice per
+    burst, as the parent still saves each frame as a JPEG. Records are written in burst
+    and frame order, each once its frame and every earlier one is OCR'd, so ``ocr.jsonl``,
+    the frame JPEGs and the ``on_frame`` calls match the serial run. At most about
+    ``2 * workers`` frames wait ahead of the next record (bounded memory). On any error
+    (Ctrl+C included) the workers are terminated and only whole records are left.
+    """
+    import cv2  # noqa: PLC0415
+
+    done = {rec["id"]: rec for rec in read_ocr_samples(cache_path)}
+    total = len(bursts) * params.burst_frames
+    report = on_frame or (lambda _done, _total: None)
+    ahead = 2 * workers
+    out: list[dict[str, Any]] = []
+    # per burst: index, source, start, frame ids, frames (None: all cached), OCR per frame
+    pending: deque[
+        tuple[int, Source, float, list[str], list[np.ndarray] | None, dict[int, Future]]
+    ] = deque()
+    pool: Executor | None = None
+    fh = None
+
+    def finish(bi, src, t, ids, frames, futures) -> None:
+        nonlocal fh
+        if frames is None:
+            out.extend(done[i] for i in ids)
+            report((bi + 1) * params.burst_frames, total)
+            return
+        for k, img in enumerate(frames):
+            fid = ids[k]
+            if fid in done:
+                out.append(done[fid])
+                continue
+            boxes = futures[k].result()
+            fname = f"b{bi:03d}_{k}.jpg"
+            cv2.imwrite(str(frame_dir / fname), img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            rec = {
+                "id": fid,
+                "source": src.name,
+                "t": round(t + k * params.burst_step_s, 2),
+                "burst": bi,
+                "k": k,
+                "frame": fname,
+                "boxes": boxes,
+            }
+            if fh is None:
+                fh = stack.enter_context(cache_path.open("a", encoding="utf-8"))
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            fh.flush()
+            out.append(rec)
+            report(bi * params.burst_frames + k + 1, total)
+        report((bi + 1) * params.burst_frames, total)  # a short burst counts as done
+        if (bi + 1) % 10 == 0:
+            logger.info("  discovery OCR: %d/%d bursts", bi + 1, len(bursts))
+
+    def waiting() -> int:
+        return sum(len(entry[5]) for entry in pending)
+
+    def ready() -> bool:
+        return all(f.done() for f in pending[0][5].values())
+
+    # as _ocr_frames: no empty frames/ (or empty ocr.jsonl) left behind on a failure
+    with output_dir(frame_dir), ExitStack() as stack:
+        try:
+            for bi, (src, t) in enumerate(bursts):
+                ids = [
+                    f"{src.name}@{t + k * params.burst_step_s:.1f}"
+                    for k in range(params.burst_frames)
+                ]
+                if all(i in done for i in ids):
+                    pending.append((bi, src, t, ids, None, {}))
+                else:
+                    frames = _burst_frames(
+                        src.io_path, t, params.burst_frames, params.burst_step_s, params.width
+                    )
+                    todo = [k for k in range(len(frames)) if ids[k] not in done]
+                    if todo and pool is None:
+                        logger.info(
+                            "  discovery OCR: %d worker processes x %d threads", workers, threads
+                        )
+                        pool = _ocr_pool(workers, threads, params.width)
+                    futures = {
+                        k: pool.submit(_ocr_worker, frames[k], params.min_score) for k in todo
+                    }
+                    pending.append((bi, src, t, ids, frames, futures))
+                while pending and (waiting() > ahead or ready()):
+                    finish(*pending.popleft())
+            while pending:
+                finish(*pending.popleft())
+        except BaseException:
+            if pool is not None:
+                _stop_pool(pool)
+            raise
+        if pool is not None:
+            pool.shutdown()
     return out
 
 
