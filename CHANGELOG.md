@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them once it is ready, and HDR sources' proxies are converted to SDR. `POST
   /api/projects/{id}/sources/{sid}/prepare` takes an optional `{lo, hi}` body, and each source
   in the project view lists its ready `windows` and `pending` ones (#323).
+- The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
+  underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
+  Transcripts now store each word's `probability`, and `highlights.json` candidates list those
+  words in `transcript_unsure` (`[index, confidence]`). A source transcribed before this keeps
+  its cached transcript on a new `analyze`, so its moments show plain text until it is
+  re-transcribed (delete its `cache/<source>/transcript-*.json`, or analyze with another
+  `--model`) (#327).
 - The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
   back from their sources or proxies (hard cuts, no export), highlights and announces the playing
   clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits
