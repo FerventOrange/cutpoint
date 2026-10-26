@@ -69,7 +69,6 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import json
 import logging
 import os
 import re
@@ -77,10 +76,9 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
-from typing import NamedTuple
 
 from cutpoint import cache, paths, state
-from cutpoint.utils import matches_glob
+from cutpoint.utils import file_stamp, matches_glob
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +113,11 @@ def load_config_data(path: Path | None = None) -> dict:
     if not path.is_file():
         return {}
     try:
-        # utf-8-sig: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a BOM.
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except UnicodeDecodeError:  # e.g. a UTF-16 file
-        raise ValueError(f"Invalid config file {path}: not UTF-8 text (save it as UTF-8)") from None
-    except (OSError, ValueError) as err:  # ValueError: JSONDecodeError
-        raise ValueError(f"Invalid config file {path}: {err}") from None
+        data = cache.read_json(path)
+    except FileNotFoundError:  # removed since the check
+        return {}
+    except ValueError as err:  # its message names the path and the reason
+        raise ValueError(f"Invalid config file {err}") from None
     if not isinstance(data, dict):
         raise ValueError(f"Invalid config file {path}: expected a JSON object")
     return data
@@ -160,10 +157,6 @@ def _check_type(path: Path, data: dict, key: str, ok: Callable[[object], bool], 
     raise ValueError(f"{path}: {key} must be {what}, not {got}")
 
 
-class _CacheInfo(NamedTuple):
-    currsize: int
-
-
 # The last loaded config, keyed by everything it is read from (see get_config).
 _LOADED: dict[tuple, Config] = {}
 
@@ -171,13 +164,8 @@ _LOADED: dict[tuple, Config] = {}
 def _config_key(path: Path) -> tuple:
     """What :func:`get_config` depends on: the file's identity (one stat; None when missing),
     ``CUTPOINT_HOME`` (the default folders) and the ``CUTPOINT_*`` overrides it reads."""
-    try:
-        st = path.stat()
-        stamp: tuple | None = (st.st_mtime_ns, st.st_size, st.st_ino)
-    except OSError:
-        stamp = None
     env = tuple(paths.env(name) for name in ("PROJECTS_DIR", "STAGE_DIR", "VIDEO_ENCODER"))
-    return (path, stamp, paths.home(), *env)
+    return (path, file_stamp(path), paths.home(), *env)
 
 
 def get_config() -> Config:
@@ -201,9 +189,7 @@ def get_config() -> Config:
     return cfg
 
 
-get_config.cache_clear = _LOADED.clear  # type: ignore[attr-defined]
-get_config.cache_info = lambda: _CacheInfo(len(_LOADED))  # type: ignore[attr-defined]
-state.register_cache(get_config)  # type: ignore[arg-type]
+state.register_dict_cache(get_config, _LOADED)
 
 
 def _load_config(path: Path) -> Config:

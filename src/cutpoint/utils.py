@@ -6,11 +6,13 @@ import argparse
 import errno
 import fnmatch
 import logging
+import math
 import re
 import stat
 import unicodedata
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePath
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -54,37 +56,69 @@ def parse_size(text: str) -> tuple[int, int]:
     return w, h
 
 
+def _number[N: (int, float)](
+    text: str, kind: Callable[[str], N], what: str, ok: Callable[[N], bool], rule: str
+) -> N:
+    """``kind(text)`` if it passes ``ok``; else ``ArgumentTypeError`` saying ``"<text>: expected
+    <what>"`` (not a number) or ``"<text>: <rule>"`` (out of range)."""
+    try:
+        value = kind(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected {what}") from exc
+    if not ok(value):  # also rejects NaN
+        raise argparse.ArgumentTypeError(f"{text!r}: {rule}")
+    return value
+
+
 def positive_float(text: str) -> float:
     """argparse type: a number greater than 0."""
-    try:
-        value = float(text)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{text!r}: expected a number") from exc
-    if not value > 0:
-        raise argparse.ArgumentTypeError(f"{text!r}: must be greater than 0")
-    return value
+    return _number(text, float, "a number", lambda v: v > 0, "must be greater than 0")
 
 
 def positive_int(text: str) -> int:
     """argparse type: a whole number greater than 0."""
-    try:
-        value = int(text)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{text!r}: expected a whole number") from exc
-    if value <= 0:
-        raise argparse.ArgumentTypeError(f"{text!r}: must be greater than 0")
-    return value
+    return _number(text, int, "a whole number", lambda v: v > 0, "must be greater than 0")
 
 
 def unit_float(text: str) -> float:
     """argparse type: a number from 0 to 1."""
+    return _number(text, float, "a number", lambda v: 0 <= v <= 1, "must be from 0 to 1")
+
+
+def seconds_keys(
+    item: Mapping[str, Any], keys: Iterable[str], where: str, *, allow_negative: bool = False
+) -> dict[str, float]:
+    """The ``keys`` of ``item`` that are set (present and not null), as seconds.
+
+    Raises:
+        ValueError: ``"<where>: <key> must be a number of seconds"`` for a value that is not a
+            number or is NaN, and unless ``allow_negative``, ``"<where>: <key> must not be
+            negative"`` for one below 0.
+    """
+    out: dict[str, float] = {}
+    for key in keys:
+        if item.get(key) is None:
+            continue
+        try:
+            val = float(item[key])
+        except (TypeError, ValueError):
+            val = math.nan
+        if math.isnan(val):
+            raise ValueError(f"{where}: {key} must be a number of seconds")
+        if not allow_negative and val < 0:
+            raise ValueError(f"{where}: {key} must not be negative")
+        out[key] = val
+    return out
+
+
+def file_stamp(path: Path) -> tuple[int, int, int] | None:
+    """``(mtime_ns, size, inode)`` of ``path`` (one stat), or None when it cannot be read:
+    changes when the file is rewritten or replaced."""
     try:
-        value = float(text)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{text!r}: expected a number") from exc
-    if not 0 <= value <= 1:
-        raise argparse.ArgumentTypeError(f"{text!r}: must be from 0 to 1")
-    return value
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size, st.st_ino
 
 
 def input_name(target: Path, default: str) -> str:

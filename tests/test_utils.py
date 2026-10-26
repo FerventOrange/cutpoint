@@ -10,7 +10,7 @@ import pytest
 
 from cutpoint.events import regions
 from cutpoint.events.common import parse_clock
-from cutpoint.utils import clock, find_videos, input_name, matches_glob, slugify
+from cutpoint.utils import clock, find_videos, input_name, matches_glob, seconds_keys, slugify
 
 
 @pytest.mark.parametrize(
@@ -71,6 +71,29 @@ def test_input_name_resolves_the_current_folder(tmp_path, monkeypatch):
     folder.mkdir()
     monkeypatch.chdir(folder)
     assert input_name(Path(), "fallback") == "trip.2024"
+
+
+@pytest.mark.parametrize(
+    ("value", "allow_negative", "expected"),
+    [
+        (None, False, {}),
+        (2, False, {"t": 2.0}),
+        (1.5, False, {"t": 1.5}),
+        ("x", False, "t must be a number of seconds"),
+        (float("nan"), False, "t must be a number of seconds"),
+        (-1, False, "t must not be negative"),
+        (-1, True, {"t": -1.0}),
+    ],
+)
+def test_seconds_keys(value, allow_negative, expected):
+    item = {"t": value, "other": "ignored"}
+    if isinstance(expected, str):
+        with pytest.raises(ValueError, match=f"^seg: {expected}$"):
+            seconds_keys(item, ("t", "missing"), "seg", allow_negative=allow_negative)
+    else:
+        assert (
+            seconds_keys(item, ("t", "missing"), "seg", allow_negative=allow_negative) == expected
+        )
 
 
 def test_slugify():

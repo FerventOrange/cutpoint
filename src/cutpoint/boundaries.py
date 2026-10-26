@@ -58,6 +58,7 @@ import numpy as np
 
 from cutpoint.styles import Style
 from cutpoint.tail import is_laugh
+from cutpoint.utils import seconds_keys
 
 logger = logging.getLogger(__name__)
 
@@ -152,18 +153,7 @@ def clip_limits(item: dict[str, Any], where: str = "segment") -> dict[str, float
     Raises:
         ValueError: If a value is not a non-negative number.
     """
-    out: dict[str, float] = {}
-    for key in LIMIT_KEYS:
-        if key not in item or item[key] is None:
-            continue
-        try:
-            val = float(item[key])
-        except (TypeError, ValueError):
-            raise ValueError(f"{where}: {key} must be a number of seconds") from None
-        if not val >= 0:  # also rejects NaN
-            raise ValueError(f"{where}: {key} must not be negative")
-        out[key] = val
-    return out
+    return seconds_keys(item, LIMIT_KEYS, where)
 
 
 @dataclass(frozen=True)

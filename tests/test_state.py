@@ -133,6 +133,23 @@ def test_reset_state_keeps_models_by_default(tmp_path, monkeypatch):
     assert all(e.size() == 0 for e in models)
 
 
+def test_register_dict_cache_gives_cache_api_and_is_reset(monkeypatch):
+    monkeypatch.setattr(state, "_REGISTRY", dict(state._REGISTRY))  # keep the real one clean
+    store = {"a": 1, "b": 2}
+
+    def fn():
+        return store
+
+    assert state.register_dict_cache(fn, store) is fn
+    assert fn.cache_info().currsize == 2
+    reset_state()
+    assert store == {}
+    assert fn.cache_info().currsize == 0
+    store["c"] = 3
+    fn.cache_clear()
+    assert store == {}
+
+
 def test_config_edit_picked_up_without_reset(home, tmp_path):
     """#137: an edited config.json is re-read; a broken one raises every time, not cached."""
     cfg = home / "config.json"

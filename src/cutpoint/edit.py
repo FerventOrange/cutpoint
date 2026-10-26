@@ -22,7 +22,7 @@ from cutpoint.assemble import assemble
 from cutpoint.clips import export_clips
 from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
 from cutpoint.styles import get_style
-from cutpoint.utils import find_videos, input_name
+from cutpoint.utils import file_stamp, find_videos, input_name
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +74,6 @@ def edit_name(target: Path) -> str:
     """Name of an edit of ``target`` (project folder, ``<name>-final.mp4``): a file's stem,
     a folder's full name (``.`` and a drive root resolved), else ``edit``."""
     return input_name(target, "edit")
-
-
-def _identity(path: Path) -> tuple[int, int] | None:
-    """``(inode, mtime ns)`` of ``path``, None if missing: did a step rewrite it?"""
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    return st.st_ino, st.st_mtime_ns
 
 
 def _events_namespace(project: Path) -> argparse.Namespace:
@@ -224,7 +215,7 @@ def _run_edit(
         )
     steps.start("assemble")
     srt = (project / final_name).with_suffix(".srt")
-    before = _identity(srt)  # an earlier run's final.srt is not this run's subtitles
+    before = file_stamp(srt)  # an earlier run's final.srt is not this run's subtitles
     final = assemble(
         clips_dir,
         transition=kind.transition,
@@ -232,7 +223,7 @@ def _run_edit(
         captions=kind.captions,
     )
     _link_or_copy(final, named)
-    written = (now := _identity(srt)) is not None and now != before
+    written = (now := file_stamp(srt)) is not None and now != before
     if written:
         cache.save_bytes(named_srt, srt.read_bytes())
     elif named_srt.exists():

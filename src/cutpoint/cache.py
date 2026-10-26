@@ -72,13 +72,17 @@ def read_json(path: Path, hint: str = "") -> Any:
             message names the path and the reason.
     """
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
     except FileNotFoundError:
         raise
     except OSError as err:  # e.g. permission denied, a directory
         reason = err.strerror or str(err)
         raise ValueError(f"{path} cannot be read: {reason}{hint}") from err
-    except ValueError as err:  # JSONDecodeError, UnicodeDecodeError
+    except UnicodeDecodeError as err:  # e.g. UTF-16 from > / Out-File
+        raise ValueError(
+            f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8){hint}"
+        ) from err
+    except ValueError as err:  # JSONDecodeError
         raise ValueError(f"{path} is not valid JSON: {err}{hint}") from err
 
 

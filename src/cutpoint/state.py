@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sized
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 
 class _Cached(Protocol):
@@ -59,6 +59,24 @@ def register_cache[F: _Cached](fn: F) -> F:
     name = f"{fn.__module__}.{fn.__qualname__}"  # type: ignore[attr-defined]
     register(Entry(name, fn.cache_clear, lambda: fn.cache_info().currsize))
     return fn
+
+
+class _CacheInfo(NamedTuple):
+    currsize: int
+
+
+def register_dict_cache[F: Callable[..., Any]](
+    fn: F, store: dict, size: Callable[[], int] | None = None
+) -> F:
+    """Register ``fn``, memoised by hand in the dict ``store``, like :func:`register_cache`.
+
+    Gives ``fn`` the ``functools`` ``cache_clear()`` (empties ``store``) and
+    ``cache_info().currsize`` (``size()``, default ``len(store)``); returns ``fn``.
+    """
+    count = size or store.__len__
+    fn.cache_clear = store.clear  # type: ignore[attr-defined]
+    fn.cache_info = lambda: _CacheInfo(count())  # type: ignore[attr-defined]
+    return register_cache(fn)  # type: ignore[type-var]
 
 
 def register_container[C: _Clearable](module: str, attr: str, obj: C, *, model: bool = False) -> C:

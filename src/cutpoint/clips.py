@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import ntpath
 import os
@@ -35,7 +34,7 @@ from cutpoint.ffmpeg_utils import (
 from cutpoint.planning import Padding, pad, report_clips, select_moments, speech_pass
 from cutpoint.styles import Style, get_style
 from cutpoint.tail import TailResult, TailSettings, smart_tail
-from cutpoint.utils import clip_files, slugify
+from cutpoint.utils import clip_files, seconds_keys, slugify
 
 if TYPE_CHECKING:
     from cutpoint.pano.render import PanoExporter
@@ -302,18 +301,14 @@ def read_json_file(path: Path, what: str = "segments file") -> Any:
     Raises:
         IsADirectoryError: If ``path`` is a folder.
         FileNotFoundError: If ``path`` is missing.
-        ValueError: If the file is not UTF-8 text or not valid JSON.
+        ValueError: If the file cannot be read, is not UTF-8 text or not valid JSON
+            (see :func:`cutpoint.cache.read_json`).
     """
     if path.is_dir():
         raise IsADirectoryError(f"{path} is a folder, not a {what}")
     if not path.is_file():
         raise FileNotFoundError(f"{what[:1].upper()}{what[1:]} not found: {path}")
-    try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))  # BOM: PowerShell 5.1 UTF8
-    except UnicodeDecodeError:  # e.g. UTF-16 from > / Out-File
-        raise ValueError(f"{path} is not valid JSON: not UTF-8 text (save it as UTF-8)") from None
-    except ValueError as err:  # JSONDecodeError
-        raise ValueError(f"{path} is not valid JSON: {err}") from None
+    return cache.read_json(path)
 
 
 def load_segments(path: Path) -> list[dict[str, Any]]:
@@ -369,13 +364,7 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
                 moment[key] = str(item[key])
         if isinstance(item.get("chapter"), int):
             moment["chapter"] = item["chapter"]
-        if "tail" in item:
-            try:
-                moment["tail"] = float(item["tail"])
-            except (TypeError, ValueError):
-                raise ValueError(f"Segment {i}: tail must be a number of seconds") from None
-            if moment["tail"] < 0:
-                raise ValueError(f"Segment {i}: tail must not be negative")
+        moment.update(seconds_keys(item, ("tail",), f"Segment {i}"))
         for key in ("smart_tail", "speech_aware"):
             if key in item:
                 if not isinstance(item[key], bool):
@@ -384,24 +373,13 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
         if "crop" in item:
             parse_spec(item["crop"])  # validate early
             moment["crop"] = item["crop"]
-        for key in ("extend", "extend_start", "extend_end"):
-            if key in item:
-                try:
-                    moment[key] = float(item[key])
-                except (TypeError, ValueError):
-                    raise ValueError(f"Segment {i}: {key} must be a number of seconds") from None
-                if moment[key] < 0:
-                    raise ValueError(f"Segment {i}: {key} must not be negative")
+        moment.update(seconds_keys(item, ("extend", "extend_start", "extend_end"), f"Segment {i}"))
         moment.update(boundaries.clip_limits(item, f"Segment {i}"))
-        for key in BOUND_KEYS:
-            if item.get(key) is None:
-                continue
-            try:
-                moment[key] = float(item[key])
-            except (TypeError, ValueError):
-                raise ValueError(f"Segment {i}: {key} must be a number of seconds") from None
-            if moment[key] > start if key == "min_start" else moment[key] < end:
+        bounds = seconds_keys(item, BOUND_KEYS, f"Segment {i}", allow_negative=True)
+        for key, val in bounds.items():
+            if val > start if key == "min_start" else val < end:
                 raise ValueError(f"Segment {i}: {key} must not cut into {start}-{end}")
+        moment.update(bounds)
         moments.append(moment)
     return moments
 
