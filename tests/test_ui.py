@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -2370,13 +2371,15 @@ def test_a_proxy_linked_during_the_encode_fails_with_a_warning_and_leaves_nothin
         returncode = 0
 
         def __init__(self, args: list[str]) -> None:
-            self.tmp = Path(args[0])
+            self.tmp = Path(next(a for a in args if a.endswith(".part.mp4")))
 
-        def communicate(self) -> tuple[str, None]:
+        stdout: ClassVar[list[str]] = []
+
+        def wait(self) -> int:
             shutil.rmtree(p / "ui" / "proxy")  # ui/proxy becomes a link while the encode runs
             link_dir(p / "ui" / "proxy", outside)
             self.tmp.write_bytes(b"proxy")
-            return "", None
+            return self.returncode
 
     monkeypatch.setattr(ui, "spawn", Encoder)
     with caplog.at_level(logging.INFO):
@@ -2621,8 +2624,10 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
         def __init__(self, _args: list[str]) -> None:
             pass
 
-        def communicate(self) -> tuple[str, None]:
-            return "encoder failed", None
+        stdout: ClassVar[list[str]] = ["encoder failed\n"]
+
+        def wait(self) -> int:
+            return self.returncode
 
     monkeypatch.setattr(ui, "spawn", Failing)
     media = client.app.state.media
@@ -2732,8 +2737,12 @@ class ProxyEncoder:
         if self.returncode == 0:
             Path(args[-1]).write_bytes(b"proxy")
 
-    def communicate(self) -> tuple[str, None]:
-        return ("" if self.returncode == 0 else "nvenc: driver error"), None
+    @property
+    def stdout(self) -> list[str]:
+        return [] if self.returncode == 0 else ["nvenc: driver error\n"]
+
+    def wait(self) -> int:
+        return self.returncode
 
 
 @pytest.fixture
@@ -2948,6 +2957,14 @@ class FakeWindowProc:
         return "", None
 
     @property
+    def stdout(self) -> list[str]:  # a whole build streams its progress; it ends at once
+        return []
+
+    def wait(self) -> int | None:
+        self.done.wait(10)
+        return self.returncode
+
+    @property
     def start(self) -> float:
         return float(self.args[self.args.index("-ss") + 1])
 
@@ -3009,13 +3026,22 @@ def window_media(
     media.shutdown()
 
 
-def focus(media: ui.Media, p: Path, src: Path, lo: float, hi: float, dur: float | None = None):
+def focus(
+    media: ui.Media,
+    p: Path,
+    src: Path,
+    lo: float,
+    hi: float,
+    dur: float | None = None,
+    *,
+    queue: bool = False,
+):
     real = ui.remap_source(str(src))
     key, res = media._lookup(real)
     assert key is not None and res is not None
     if dur is not None:
         res = (res[0], dur, res[2], res[3])
-    media._focus(p, real, key, res, lo, hi)
+    media._focus(p, real, key, res, lo, hi, queue=queue)
     return key
 
 
@@ -3352,6 +3378,311 @@ def test_the_listing_shows_a_second_overlapping_window_as_queued(
     assert src["id"] == sid
 
 
+# --- whole-build progress and queued windows (#323, part 2) ---
+
+
+class LineProc:
+    """A fake ffmpeg whose merged output is ``lines``; ``seen`` is what ``media.progress[key]``
+    held after each line was read (and once more after the last)."""
+
+    def __init__(self, media: ui.Media, key: str, lines: list[str], returncode: int = 0) -> None:
+        self.returncode = returncode
+        self.seen: list[float | None] = []
+        self._media, self._key, self._lines = media, key, lines
+
+    @property
+    def stdout(self) -> Iterator[str]:
+        for line in self._lines:
+            yield line + "\n"
+            self.seen.append(self._media.progress.get(self._key))
+        self.seen.append(self._media.progress.get(self._key))
+
+    def wait(self) -> int:
+        return self.returncode
+
+
+@pytest.mark.parametrize(
+    ("lines", "duration", "expected"),
+    [
+        (["out_time_us=2500000", "out_time_us=5000000"], 10.0, [0.25, 0.5, 0.5]),
+        (["out_time_us=15000000"], 10.0, [1.0, 1.0]),  # a rounding overshoot is capped
+        (["out_time_us=N/A", "out_time_us=5000000"], 10.0, [0.0, 0.5, 0.5]),
+        (["out_time_us=5000000"], 0.0, [0.0, 0.0]),  # an unknown duration shows nothing
+    ],
+    ids=["updates", "capped", "not-available", "no-duration"],
+)
+def test_read_progress_turns_out_time_into_a_share_of_the_duration(
+    lines: list[str], duration: float, expected: list[float]
+) -> None:
+    media = ui.Media()
+    media.progress["k"] = 0.0
+    proc = LineProc(media, "k", lines)
+    media._read_progress(proc, "k", duration)  # type: ignore[arg-type]
+    assert proc.seen == expected
+
+
+def test_read_progress_keeps_errors_in_the_tail_and_progress_lines_out_of_it() -> None:
+    media = ui.Media()
+    proc = LineProc(
+        media,
+        "k",
+        [
+            "frame=10",
+            "bitrate=   4.1kbits/s",  # ffmpeg pads some values
+            "out_time_us=1000000",
+            "out_time=00:00:01.000000",
+            "progress=continue",
+            "",
+            "[hevc @ 0x1] Invalid NAL unit size",
+            "Error while decoding stream #0:0",
+            "progress=end",
+        ],
+    )
+    tail = media._read_progress(proc, "k", 10.0)  # type: ignore[arg-type]
+    assert tail == "[hevc @ 0x1] Invalid NAL unit size\nError while decoding stream #0:0"
+
+
+def test_a_whole_build_asks_ffmpeg_for_progress_on_stdout(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    proxy_encoder: type[ProxyEncoder],
+) -> None:
+    _, folder, p, _ = hevc_project
+    assert build_proxy(client, p, folder / "a.mp4") == "ready"
+    [args] = proxy_encoder.calls
+    assert args[1:4] == ["-progress", "pipe:1", "-nostats"]
+    assert args[0] == "ffmpeg"
+
+
+class ScriptedEncoder:
+    """Whole-build fake ffmpegs that report ``reports`` in turn: ``(out_time_us, exit code)``.
+    ``started`` holds ``media.progress[key]`` as each one starts to run."""
+
+    media: ui.Media
+    reports: list[tuple[int, int]]
+    started: list[float | None]
+    calls: list[list[str]]
+
+    def __init__(self, args: list[str]) -> None:
+        self.calls.append(args)
+        self.us, self.returncode = self.reports[len(self.calls) - 1]
+        if self.returncode == 0:
+            Path(args[-1]).write_bytes(b"proxy")
+
+    @property
+    def stdout(self) -> Iterator[str]:
+        self.started.append(next(iter(self.media.progress.values()), None))
+        yield f"out_time_us={self.us}\n"
+        self.started.append(next(iter(self.media.progress.values()), None))  # after the report
+
+    def wait(self) -> int:
+        return self.returncode
+
+
+def scripted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, reports: list[tuple[int, int]]
+) -> type[ScriptedEncoder]:
+    monkeypatch.setattr(ScriptedEncoder, "media", client.app.state.media, raising=False)
+    monkeypatch.setattr(ScriptedEncoder, "reports", reports, raising=False)
+    monkeypatch.setattr(ScriptedEncoder, "started", [], raising=False)
+    monkeypatch.setattr(ScriptedEncoder, "calls", [], raising=False)
+    monkeypatch.setattr(ui, "spawn", ScriptedEncoder)
+    return ScriptedEncoder
+
+
+@pytest.mark.parametrize(("code", "status"), [(0, "ready"), (1, "failed")])
+def test_the_whole_build_progress_is_reported_then_cleared_when_it_ends(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+    code: int,
+    status: str,
+) -> None:
+    enc = scripted(client, monkeypatch, [(5_000_000, code)])  # of a 10 s source
+    monkeypatch.setattr(ui, "find_encoder", lambda kind: (None, []))
+    _, folder, p, _ = hevc_project
+    assert build_proxy(client, p, folder / "a.mp4") == status
+    assert enc.started == [0.0, 0.5]
+    assert client.app.state.media.progress == {}
+
+
+def test_the_nvenc_retry_restarts_the_progress_at_zero(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+) -> None:
+    enc = scripted(client, monkeypatch, [(8_000_000, 1), (2_000_000, 0)])
+    monkeypatch.setattr(ui, "find_encoder", lambda kind: (ui.VideoEncoder("nvenc"), []))
+    _, folder, p, _ = hevc_project
+    assert build_proxy(client, p, folder / "a.mp4") == "ready"
+    assert len(enc.calls) == 2
+    assert enc.started == [0.0, 0.8, 0.0, 0.2]  # the libx264 run did not start at 0.8
+    assert client.app.state.media.progress == {}
+
+
+def test_the_listing_shows_proxy_and_progress_only_for_a_source_that_needs_a_proxy(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+    whole_builds: list[tuple],
+) -> None:
+    pid, folder, _p, _ = hevc_project
+    media = client.app.state.media
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+
+    def entry() -> dict:
+        return client.get(f"/api/projects/{pid}").json()["sources"][0]
+
+    assert (entry()["proxy"], entry()["progress"]) == (False, None)  # not probed yet
+    assert prepare(client, pid, sid).json() == {"status": "preparing"}
+    assert (entry()["proxy"], entry()["progress"]) == (True, None)  # queued, not encoding yet
+    key = ui.Media.key(ui.remap_source(str(folder / "a.mp4"))) or ""
+    media.progress[key] = 0.123456
+    assert (entry()["proxy"], entry()["progress"]) == (True, 0.123)
+    media.proxies[key] = "failed"
+    media.progress.pop(key)
+    assert (entry()["proxy"], entry()["progress"]) == (True, None)
+
+
+def test_the_listing_of_a_source_the_browser_plays_has_no_proxy_and_no_progress(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+) -> None:
+    pid, _, _, _ = hevc_project
+    monkeypatch.setattr(ui, "probe", lambda _path: media_info(duration=10.0))  # H.264
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    assert prepare(client, pid, sid).json() == {"status": "ready"}
+    src = client.get(f"/api/projects/{pid}").json()["sources"][0]
+    assert (src["status"], src["proxy"], src["progress"]) == ("ready", False, None)
+
+
+def queued_starts(media: ui.Media) -> list[float]:
+    with media.lock:
+        return [w.lo / 100 for w in media.windows_queue]
+
+
+def test_queued_windows_wait_in_order_behind_the_running_one_and_kill_nothing(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)  # [90, 130]
+    first = window_ffmpeg.next_proc(0)
+    for lo in (300, 500, 700):
+        focus(media, p, src, lo, lo + 10, queue=True)
+    assert queued_starts(media) == [290.0, 490.0, 690.0]
+    assert window_ffmpeg.killed == []
+    first.finish(0)
+    for n, start in enumerate((290.0, 490.0, 690.0), 1):
+        proc = window_ffmpeg.next_proc(n)
+        assert proc.start == start
+        proc.finish(0)
+    wait_until(lambda: lane_idle(media))
+    assert window_ffmpeg.killed == []
+    assert len(media.windows[(p, ui.Media.key(src) or "")]) == 4
+
+
+def test_a_queued_window_covered_by_a_queued_or_running_one_is_not_queued_again(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)  # running: [90, 130]
+    window_ffmpeg.next_proc(0)
+    focus(media, p, src, 102, 108, queue=True)  # inside the running one
+    assert queued_starts(media) == []
+    focus(media, p, src, 300, 310, queue=True)
+    focus(media, p, src, 300, 310, queue=True)  # the same again
+    focus(media, p, src, 302, 308, queue=True)  # inside the queued one
+    assert queued_starts(media) == [290.0]
+    assert window_ffmpeg.killed == []
+
+
+def test_at_most_four_windows_wait_and_the_running_one_is_not_one_of_them(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    assert ui.PROXY_WINDOWS_QUEUED == 4
+    focus(media, p, src, 100, 110)
+    window_ffmpeg.next_proc(0)
+    for lo in (200, 300, 400, 500, 600, 700):
+        focus(media, p, src, lo, lo + 10, queue=True)
+    assert queued_starts(media) == [190.0, 290.0, 390.0, 490.0]  # the later ones were refused
+    assert window_ffmpeg.killed == []
+
+
+def test_a_default_focus_after_queued_windows_clears_them_and_stops_the_running_encode(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)
+    first = window_ffmpeg.next_proc(0)
+    for lo in (300, 500):
+        focus(media, p, src, lo, lo + 10, queue=True)
+    focus(media, p, src, 800, 810)  # the user moved on
+    assert window_ffmpeg.kill_seen.wait(10)
+    assert window_ffmpeg.killed == [first]
+    window_ffmpeg.next_proc(1).finish(0)  # the 300 and 500 windows were dropped, not run
+    wait_until(lambda: lane_idle(media))
+    assert [pr.start for pr in window_ffmpeg.procs] == [90.0, 790.0]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"queue": true}',
+        b'{"queue": true, "lo": 1}',
+        b'{"queue": true, "hi": 5}',
+        b'{"queue": true, "lo": true, "hi": 5}',
+        b'{"queue": true, "lo": "1", "hi": 5}',
+        b'{"queue": true, "lo": NaN, "hi": 5}',
+        b'{"queue": true, "lo": 6, "hi": 5}',
+        b'{"queue": true, "lo": -1, "hi": 5}',
+        b'{"queue": "true", "lo": 1, "hi": 5}',
+        b'{"queue": 1, "lo": 1, "hi": 5}',
+        b'{"queue": null, "lo": 1, "hi": 5}',
+        b'{"queue": "yes"}',
+    ],
+)
+def test_prepare_refuses_a_bad_queue_request_and_queues_nothing(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+    raw: bytes,
+) -> None:
+    pid, _, _, _ = hevc_project
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    url = f"/api/projects/{pid}/sources/{sid}/prepare"
+    res = client.post(url, content=raw, headers={"Content-Type": "application/json"})
+    assert res.status_code == 400, res.text
+    assert not whole_builds
+    assert not window_ffmpeg.procs
+    assert client.app.state.media.proxies == {}
+
+
+def test_prepare_with_queue_waits_behind_the_running_window_instead_of_replacing_it(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+) -> None:
+    pid, folder, p, _ = hevc_project
+    media = client.app.state.media
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    real = ui.remap_source(str(folder / "a.mp4"))
+    key, res = media._lookup(real)
+    media._focus(p, real, key, (res[0], 1000.0, res[2], res[3]), 100, 110)
+    first = window_ffmpeg.next_proc(0)
+    body = {"lo": 500, "hi": 510, "queue": True}
+    assert prepare(client, pid, sid, body).json() == {"status": "preparing"}
+    assert queued_starts(media) == [0.0]  # clamped to the 10 s source: waits, kills nothing
+    assert window_ffmpeg.killed == []
+    first.finish(0)
+    window_ffmpeg.next_proc(1).finish(0)
+    wait_until(lambda: lane_idle(media))
+    assert window_ffmpeg.killed == []
+
+
 def test_window_endpoint_serves_ranges_and_refuses_what_is_not_ready(
     client: TestClient,
     hevc_project: tuple[str, Path, Path, Path],
@@ -3524,6 +3855,46 @@ def test_a_real_window_proxy_keeps_the_flash_and_the_beep_in_sync_from_a_keyfram
     onset = int(np.argmax(samples > 0.3 * 32768))
     assert samples[onset] > 0.3 * 32768, "the beep is missing"
     assert start + onset / 48000 == pytest.approx(2.0, abs=0.025)
+
+
+@pytest.mark.slow
+@needs_ffmpeg
+def test_a_real_whole_build_reports_progress_up_to_the_end_of_the_source(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "src.mp4"
+    ffmpeg(
+        *("-f", "lavfi", "-i", "testsrc=s=160x120:r=25:d=3"),
+        *("-f", "lavfi", "-i", "sine=f=440:d=3"),
+        *("-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)),
+    )  # fmt: skip
+    p = tmp_path / "proj"
+    p.mkdir()
+    key = ui.Media.key(src) or ""
+
+    class Recorder(dict):
+        def __init__(self) -> None:
+            super().__init__()
+            self.values: list[float] = []
+
+        def __setitem__(self, k: str, v: float) -> None:
+            self.values.append(v)
+            super().__setitem__(k, v)
+
+    media = ui.Media()
+    media.progress = Recorder()  # type: ignore[assignment]
+    try:
+        proxy = p / ui.UI_DIR / "proxy" / f"{key}.mp4"
+        proxy.parent.mkdir(parents=True)
+        media._build(p, src, proxy, key, 1, "", 3.0)
+    finally:
+        media.shutdown()
+    assert proxy.is_file()
+    values = media.progress.values  # type: ignore[attr-defined]
+    assert values[0] == 0.0
+    assert values == sorted(values)
+    assert max(values) == pytest.approx(1.0, abs=0.1)
+    assert media.progress == {}
 
 
 # --- source list cache (#129) ---
