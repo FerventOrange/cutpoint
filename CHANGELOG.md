@@ -19,9 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `compress_peaks` key in `config.json`; default `off`) pulls sudden loud peaks such as
   shouts, laughs into the mic, gunshots and mic bumps down toward the speech level, and evens
   out loudness between clips. One compressor threshold is set from the typical level of all
-  the clips, and each clip gets a capped gain toward their mean. `clips` bakes it into every
-  clip, followed by a true-peak limiter, and records it in `manifest.json`, so `assemble` does
-  not compress those clips again. `assemble` applies it to the other clips and always ends
+  the clips, and each clip gets a capped gain toward their mean. A makeup gain after the
+  compressor, one for the whole set, then brings the clips back to the overall loudness they
+  had: without it, Strong left six clips of an R6 round 6.2 LU quieter (-27.1 LUFS against
+  -20.9 with `off`); with it, the set is within 0.1 LU of `off` while its loudness range still
+  drops from 15.3 to 7.0 LU. The makeup is measured on the compressed audio (one more
+  audio-only pass per clip) and capped so that a clip's leveling gain plus its makeup never
+  exceed the preset's maximum boost (6 dB light, 10 dB strong), so near-silent clips are not
+  lifted into their noise. `clips` bakes it into every clip, followed by a true-peak limiter,
+  and records it in `manifest.json` (`compress_peaks` and `compress_peaks_makeup_db`), so
+  `assemble` does not compress those clips again. `assemble` applies it to the other clips and always ends
   with the true-peak limiter, also without `--loudnorm`. On an R6 montage with commentary and
   GoPro wind (`assemble --loudnorm`), the loudest moment went from 12.2 dB above speech to
   7.5 dB (light) or 5.2 dB (strong), and the loudness spread between clips went from 9.9 to

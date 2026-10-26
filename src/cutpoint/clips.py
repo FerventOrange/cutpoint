@@ -18,7 +18,13 @@ from typing import TYPE_CHECKING, Any
 from cutpoint import boundaries, cache, jsonout, sources, srt
 from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
-from cutpoint.encode import OutputFormat, choose_format, export_clip_checked, plan_peaks
+from cutpoint.encode import (
+    OutputFormat,
+    choose_format,
+    export_clip_checked,
+    plan_makeup,
+    plan_peaks,
+)
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
@@ -663,14 +669,17 @@ def render_clips(
     return results
 
 
-def peak_filters(plans: list[ClipPlan], preset: str) -> list[str]:
-    """Per-plan :meth:`~cutpoint.encode.PeakPlan.filter` for ``preset`` (all "" for ``off``).
+def peak_filters(plans: list[ClipPlan], preset: str) -> tuple[list[str], list[float | None]]:
+    """Per-plan :meth:`~cutpoint.encode.PeakPlan.filter` for ``preset`` (all "" for ``off``)
+    and each one's makeup gain (dB, None for a clip left alone).
 
-    Each clip's span of its source is measured with the tracks the export mixes. 360 clips
-    are rendered by the 360 exporter and are not compressed (one INFO line says so).
+    Each clip's span of its source is measured with the tracks the export mixes, then again
+    through its gain and compressor for the makeup (:func:`~cutpoint.encode.plan_makeup`).
+    360 clips are rendered by the 360 exporter and are not compressed (one INFO line says so).
     """
+    none: list[float | None] = [None] * len(plans)
     if preset == "off":
-        return [""] * len(plans)
+        return [""] * len(plans), none
     flat = [not p.pano for p in plans]
     if not all(flat):
         logger.info("Compress peaks: %d 360 clip(s) are not compressed", flat.count(False))
@@ -681,19 +690,34 @@ def peak_filters(plans: list[ClipPlan], preset: str) -> list[str]:
     plan = plan_peaks(preset, series, [p.end - p.start for p in plans], flat)
     if plan is None:
         logger.info("Compress peaks: no clip has audio above silence")
-        return [""] * len(plans)
+        return [""] * len(plans), none
+    compressed = [
+        clip_momentary(p.src, p.info.audio_streams, p.start, p.end - p.start, chain)
+        if (chain := plan.measure_chain(i))
+        else []
+        for i, p in enumerate(plans)
+    ]
+    plan = plan_makeup(plan, series, compressed)
     logger.info(
-        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s",
+        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; makeup %s",
         preset,
         plan.threshold,
         " ".join("-" if g is None else f"{g:+.1f}" for g in plan.gains),
+        " ".join("-" if m is None else f"{m:+.1f}" for m in plan.makeup),
     )
-    return [plan.filter(i) for i in range(len(plans))]
+    return [plan.filter(i) for i in range(len(plans))], list(plan.makeup)
 
 
-def _entry(plan: ClipPlan, res: RenderResult, audio_fade: float, peaks: str = "") -> dict[str, Any]:
+def _entry(
+    plan: ClipPlan,
+    res: RenderResult,
+    audio_fade: float,
+    peaks: str = "",
+    makeup: float | None = None,
+) -> dict[str, Any]:
     """manifest.json record of one rendered clip (``peaks``: its :func:`peak_filters` preset,
-    recorded as ``compress_peaks`` when the clip got compression)."""
+    recorded as ``compress_peaks`` when the clip got compression, with its ``makeup`` gain as
+    ``compress_peaks_makeup_db``)."""
     m, src, start, end = plan.entry, plan.src, plan.start, res.end
     return {
         "file": plan.name,
@@ -716,6 +740,7 @@ def _entry(plan: ClipPlan, res: RenderResult, audio_fade: float, peaks: str = ""
         **{k: m[k] for k in (*boundaries.LIMIT_KEYS, *BOUND_KEYS) if m.get(k) is not None},
         "audio_fade": audio_fade,
         **({"compress_peaks": peaks} if peaks else {}),
+        **({"compress_peaks_makeup_db": makeup or 0.0} if peaks else {}),
         **({"kind": m["kind"]} if m.get("kind") else {}),
         **({"category": m["category"]} if m.get("category") else {}),
         **({"pano": res.pano} if res.pano else {}),
@@ -742,10 +767,12 @@ def write_manifest(
     crop: str | None,
     compress_peaks: str = "off",
     peaks: list[str] | None = None,
+    makeup: list[float | None] | None = None,
 ) -> None:
     """Write ``<out_dir>/manifest.json`` for the rendered clips (and log the tail total).
 
-    ``compress_peaks`` is recorded when not ``off``, and on each clip ``peaks`` gave a filter.
+    ``compress_peaks`` is recorded when not ``off``, and on each clip ``peaks`` gave a filter,
+    with its ``makeup`` (:func:`peak_filters`).
     """
     total_ext = 0.0
     for plan in plans:
@@ -754,9 +781,10 @@ def write_manifest(
         if res.read_error and res.read_error["end"] < plan.end:  # trimmed by a read error
             total_ext -= plan.end - max(res.end, min(plan.end, plan.entry["end"]))
     peaks = peaks or [""] * len(plans)
+    makeup = makeup or [None] * len(plans)
     entries = [
-        _entry(p, r, audio_fade, compress_peaks if f else "")
-        for p, r, f in zip(plans, results, peaks, strict=True)
+        _entry(p, r, audio_fade, compress_peaks if f else "", m)
+        for p, r, f, m in zip(plans, results, peaks, makeup, strict=True)
     ]
     logger.info(
         "Smart tail added %.1fs over %d of %d clips",
@@ -1061,7 +1089,7 @@ def export_clips(
             [p.name for p in plans],
             source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
         )
-        peaks = peak_filters(plans, compress_peaks)
+        peaks, makeup = peak_filters(plans, compress_peaks)
         results = render_clips(
             plans,
             work,
@@ -1089,6 +1117,7 @@ def export_clips(
             crop=crop,
             compress_peaks=compress_peaks,
             peaks=peaks,
+            makeup=makeup,
         )
         if work != out_dir:  # staged, not exported into directly
             swap_in(work, out_dir, [*replace, "manifest.json"])
