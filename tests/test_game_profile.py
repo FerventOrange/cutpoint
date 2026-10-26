@@ -462,6 +462,22 @@ def test_notice_regions_mined() -> None:
     assert mine_phrases(proposal, frames) == []  # outside every mined region
 
 
+def test_outside_notice_region_mined() -> None:
+    # an extra notice region discovery adds where text shows outside the other regions
+    proposal = _proposal()
+    proposal["bigtext"] = False
+    found = {"name": "extra_notice", "x": 700, "y": 0, "w": 520, "h": 60, "kind": "notice"}
+    frames = _burst({0: ["Relay restored"], 3: ["Relay restored"]}, region=found)
+    for f in frames:
+        for b in f["boxes"]:
+            b["y1"] = b["y0"] + 20
+    assert mine_phrases(proposal, frames) == []  # outside every mined region
+    evidence = {"median_text_h": 20.0}
+    proposal["regions"].append(discover.notice_region(found | {"evidence": evidence}))
+    assert proposal["regions"][-1]["origin"] == "outside"
+    assert mine_phrases(proposal, frames) == ["Relay restored"]
+
+
 def test_bigtext_mined_at_the_runtime_minimum_height() -> None:
     # text the OCR layer's big-text check skips is not mined there (notices are mined instead)
     proposal = _proposal()

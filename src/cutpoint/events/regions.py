@@ -34,7 +34,10 @@ Preset JSON::
 added to the phrases of JSON presets.
 
 Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
-...); missing ones use the defaults. ``"builtin": true`` selects the original R6
+...); missing ones use the defaults. Other keys are ignored: region discovery
+marks the extra notice regions it adds where text shows outside every other
+region with ``"origin": "outside"``, which changes neither the region nor its
+cache key. ``"builtin": true`` selects the original R6
 interpretation: ``banner_phrases`` are used as listed, without
 :data:`GENERIC_BANNERS`, :meth:`HudPreset.key` adds no fields and the preset
 records no ``path``. It is honoured only in installed presets (user or
