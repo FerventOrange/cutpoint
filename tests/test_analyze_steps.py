@@ -361,9 +361,12 @@ def test_watch_extract_reports_the_growing_temp_wav(tmp_path, monkeypatch):
     tmp = wav.with_suffix(".tmp.wav")
     got: list[float] = []
     seconds = 10.0
+    tmp.write_bytes(b"\0" * analyze.WAV_HEADER)
     with analyze._watch_extract(wav, seconds, got.append):
         for k in range(1, 5):  # 2.5 s, 5 s, 7.5 s, 10 s of audio written
-            tmp.write_bytes(b"\0" * (analyze.WAV_HEADER + int(k * 2.5 * analyze.WAV_BYTES_PER_S)))
+            # append like ffmpeg does; rewriting the file lets the poller see it truncated
+            with tmp.open("ab") as f:
+                f.write(b"\0" * int(2.5 * analyze.WAV_BYTES_PER_S))
             deadline = time.monotonic() + 2.0
             while (not got or got[-1] < k / 4) and time.monotonic() < deadline:
                 time.sleep(0.005)

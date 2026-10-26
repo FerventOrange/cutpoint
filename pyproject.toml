@@ -59,6 +59,8 @@ all = ["cutpoint[ski,events,gpu,ui]"]
 [dependency-groups]
 # Installed by default by `uv sync` / `uv run`; not part of the published wheel.
 dev = ["pytest>=8", "ruff==0.17.1", "pre-commit>=3.7", "cutpoint[ui]", "httpx>=0.27"]
+# Opt-in (`--group ocr-test`): CPU OCR for the slow discovery e2e test; CI syncs it, no torch.
+ocr-test = ["rapidocr-onnxruntime>=1.4.4", "onnxruntime>=1.31.0"]
 
 [project.scripts]
 cutpoint = "cutpoint.cli:main"

@@ -125,8 +125,9 @@ jobs:
         run: |
           ffmpeg -version
           ffprobe -version
-      # The tests are CPU-only; only the default dev group is synced (no gpu/events extras).
-      - run: uv sync --locked
+      # The tests are CPU-only; the dev group plus ocr-test (rapidocr + onnxruntime, for the discovery
+      # e2e test) are synced (no gpu/events extras, no torch).
+      - run: uv sync --locked --group ocr-test
       - run: uv run --no-sync pytest -q -rs
 
   docker:
