@@ -272,6 +272,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--vision`: the Ollama rating no longer outranks the analysis. A rating (0-10) was blended in
+  as a 0-100 term next to style scores of about 15-27, so it pulled every rated score toward
+  rating × 10: a middling 5/10 lifted a candidate past the unrated ones, and even a 0-2/10
+  rating replaced the clip's label. It now scales the candidate's score instead: 5/10 leaves it
+  as is, 10/10 lifts it and 0/10 lowers it by the style's `vision_weight` (about 20-45%), capped
+  at 100; candidates that were not rated keep their score. The model's label replaces the clip's
+  only from a rating of 7, so low ratings no longer name clips `boring-run-no-action`; every
+  rated candidate keeps the model's label in `vision_label` (#284).
 - An ffmpeg step that reports progress (audio extract, scene proxy) could wait forever after
   ffmpeg had exited, when another process still held ffmpeg's progress output open; an analysis
   then never finished. The step now ends when ffmpeg exits, after reading the rest of the

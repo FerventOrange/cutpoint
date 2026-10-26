@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -233,7 +234,10 @@ def _parse(content: str) -> VisionResult | None:
         data = _json_object(content)
         if not isinstance(data, dict) or "score" not in data:
             return None
-        score = max(0.0, min(10.0, float(data.get("score", 0))))
+        score = float(data.get("score", 0))
     except (ValueError, TypeError):
         return None
+    if math.isnan(score):
+        return None
+    score = max(0.0, min(10.0, score))
     return VisionResult(score=score, label=str(data.get("label", "")).strip())
