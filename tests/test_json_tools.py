@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import envelope, run_json, warning_codes, write
+from conftest import run_json, warning_codes, write
 from cutpoint import cache, capabilities, cli, mix, stage
 from cutpoint.events import paths as event_paths
 from cutpoint.events import setup
@@ -41,6 +41,9 @@ def test_capabilities_json_keeps_the_report_keys_and_warns(monkeypatch, capsys):
     assert doc["outputs"] == data and doc["project"] is None
     assert warning_codes(doc) == ["torch_no_cuda", "sdk_needs_nvidia"]
     assert "reinstall" in doc["warnings"][0]["message"]
+    monkeypatch.setattr(capabilities, "report", lambda: {"gpu": {"nvidia": False}})
+    code, doc = run_json(capsys, ["capabilities"])
+    assert code == 0 and doc["warnings"] == []
 
 
 def test_capabilities_json_error(monkeypatch, capsys):
@@ -183,11 +186,6 @@ def test_stage_json_without_inputs_is_bad_args(home, capsys):
     assert doc["outputs"] == {}
 
 
-def test_stage_json_missing_input(home, tmp_path, plenty_of_space, capsys):
-    code, doc = run_json(capsys, ["stage", str(tmp_path / "nope.mp4")])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-
-
 def test_stage_json_relative_input_is_reported_absolute(
     home, tmp_path, plenty_of_space, monkeypatch, capsys
 ):
@@ -254,14 +252,6 @@ def test_setup_json_failed_step_still_reports_what_is_there(
     }
 
 
-def test_setup_json_bad_component_is_bad_args(home, capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["setup", "--only", "bogus", "--json"])
-    assert exc.value.code == 2
-    doc = envelope(capsys.readouterr().out)
-    assert doc["command"] == "setup" and doc["error"]["code"] == "bad_args"
-
-
 def test_setup_json_visual_without_events_extra_is_missing_extra(home, monkeypatch, capsys):
     real = setup.importlib.util.find_spec
     monkeypatch.setattr(setup, "download", lambda url, dst, *_a, **_k: None)
@@ -316,11 +306,6 @@ def test_360_scan_json(home, tmp_path, monkeypatch, capsys):
     assert (out["count"], out["total_seconds"]) == (1, 12.5)
 
 
-def test_360_scan_json_missing_folder(home, tmp_path, capsys):
-    code, doc = run_json(capsys, ["360", "scan", str(tmp_path / "nope"), "--out", "trip"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-
-
 # ---------------------------------------------------------------------------- 360 analyze
 def test_360_analyze_json_views_only(pano_project, monkeypatch, capsys):
     project, _ = pano_project
@@ -334,11 +319,6 @@ def test_360_analyze_json_views_only(pano_project, monkeypatch, capsys):
         "views": {"cached": 0, "computed": 1},
     }
     assert Path(out["timings"]).is_file()
-
-
-def test_360_analyze_json_without_pano(home, capsys):
-    code, doc = run_json(capsys, ["360", "analyze", "nothing", "--views-only"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
 
 
 # ----------------------------------------------------------------------------- 360 status
@@ -368,12 +348,6 @@ def test_360_status_json(pano_project, no_sdk, monkeypatch, capsys):
             "render_file": None,
         }
     ]
-
-
-def test_360_status_json_unknown_project(home, no_sdk, capsys):
-    code, doc = run_json(capsys, ["360", "status", "nothing"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-    assert doc["outputs"]["sdk"]["found"] is False  # the SDK part ran first
 
 
 # --------------------------------------------------------------------------- 360 director
@@ -538,11 +512,6 @@ def test_360_check_json(home, monkeypatch, capsys):
     }
 
 
-def test_360_check_json_missing_folder(home, capsys):
-    code, doc = run_json(capsys, ["360", "check", "projects/trip/clips"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-
-
 # --------------------------------------------------------------------------------- 360 qa
 def test_360_qa_json(home, monkeypatch, capsys):
     qa_dir = home / "projects" / "trip" / "pano_paths" / "mix"
@@ -587,17 +556,46 @@ def test_360_qa_json(home, monkeypatch, capsys):
     assert doc["warnings"][0]["files"] == [str(qa_dir / "003_c.mp4")]
 
 
-def test_360_qa_json_missing_folder(home, capsys):
-    code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-
-
 # ----------------------------------------------------------------------------- 360 repair
-# The envelope of a repair run: test_pano_repair.test_repair_json_output_shape.
-def test_360_repair_json_missing_qa(home, capsys):
-    project = home / "projects" / "trip"
-    project.mkdir(parents=True)
-    cache.save_json(project / "mix_segments.json", [{"source": "a.mp4", "start": 0, "end": 1}])
-    code, doc = run_json(capsys, ["360", "repair", "trip", "--qa", "nope/qa.json"])
-    assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "not_found"
-    assert doc["project"] == str(project)
+# The envelope of a repair run: test_pano_repair.test_repair_json_output_shape. Its missing
+# --qa file is in test_json_missing_input_is_not_found below.
+
+
+# ------------------------------------------------------------------------ missing input
+# Every command maps a missing input/project/folder to `not_found` (the mapping itself is
+# test_jsonout.test_error_code). `project` is the project the envelope names, relative to
+# projects/; ``...`` = not asserted.
+MISSING_INPUT = {
+    "analyze": (["analyze", "{tmp}/nope.mp4", "--out", "j"], "analyze", ...),
+    "clips": (["clips", "nosuch", "--top", "2"], "clips", "nosuch"),
+    "assemble": (["assemble", "projects/nosuch/clips"], "assemble", "nosuch"),
+    "extend": (["extend", "{tmp}/nope", "--seconds", "1"], "extend", ...),
+    "edit": (["edit", "{tmp}/nope.mp4", "--no-vision"], "edit", ...),
+    "crashes": (["crashes", "nope"], "crashes", "nope"),
+    "profile": (["profile", "nope"], "profile", ...),
+    "stage": (["stage", "{tmp}/nope.mp4"], "stage", ...),
+    "360-scan": (["360", "scan", "{tmp}/nope", "--out", "trip"], "360 scan", ...),
+    "360-analyze": (["360", "analyze", "nothing", "--views-only"], "360 analyze", ...),
+    "360-status": (["360", "status", "nothing"], "360 status", ...),
+    "360-check": (["360", "check", "projects/trip/clips"], "360 check", ...),
+    "360-qa": (["360", "qa", "projects/trip/clips"], "360 qa", ...),
+    "360-repair": (["360", "repair", "trip", "--qa", "nope/qa.json"], "360 repair", "trip"),
+}
+
+
+@pytest.mark.parametrize(
+    ("argv", "command", "project"), list(MISSING_INPUT.values()), ids=list(MISSING_INPUT)
+)
+@pytest.mark.usefixtures("plenty_of_space", "no_sdk")
+def test_json_missing_input_is_not_found(home, tmp_path, capsys, argv, command, project):
+    if command == "360 repair":  # the project exists; its --qa file does not
+        folder = home / "projects" / "trip"
+        folder.mkdir(parents=True)
+        cache.save_json(folder / "mix_segments.json", [{"source": "a.mp4", "start": 0, "end": 1}])
+    code, doc = run_json(capsys, [a.format(tmp=tmp_path) for a in argv])
+    assert code == 1 and doc["ok"] is False and doc["command"] == command
+    assert doc["error"]["code"] == "not_found"
+    if project is not ...:
+        assert doc["project"] == str(home / "projects" / project)
+    if command == "360 status":
+        assert doc["outputs"]["sdk"]["found"] is False  # the SDK part ran first

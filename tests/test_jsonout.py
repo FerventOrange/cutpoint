@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import envelope
-from cutpoint import capabilities, cli, ffmpeg_utils, jsonout
+from cutpoint import cli, ffmpeg_utils, jsonout
 from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
 
 
@@ -141,6 +140,12 @@ def test_guard_without_stderr(monkeypatch, capsys):
     assert sys.stdout is stdout
     out = capsys.readouterr().out
     assert envelope(out)["outputs"] == {"x": 1} and "dropped" not in out
+    # argparse's usage does not fall back to stdout either
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["paths", "--json", "--bogus"])
+    assert exc.value.code == 2
+    error = envelope(capsys.readouterr().out)["error"]
+    assert error == {"code": "bad_args", "message": "unrecognized arguments: --bogus"}
 
 
 def test_systemexit_message_is_bad_args(monkeypatch, capsys):
@@ -191,13 +196,6 @@ def test_paths_json(home, capsys):
     assert all(Path(outputs[k]).is_absolute() for k in keys[:-1])
     assert "home" in outputs["missing"] and "bundled" not in outputs["missing"]
     assert not home.exists()  # creates nothing, as without --json
-
-
-def test_paths_without_json_is_unchanged(home, capsys):
-    assert cli.main(["paths"]) == 0
-    out = capsys.readouterr().out
-    assert not out.startswith("{")
-    assert any(line.startswith("home") and "(missing)" in line for line in out.splitlines())
 
 
 def _paths_raising(monkeypatch, err: BaseException) -> None:
@@ -256,7 +254,11 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
         (["paths", "--json", "--bogus"], "unrecognized arguments: --bogus"),
         (["paths", "extra", "--json"], "unrecognized arguments: extra"),
         (["clips", "p", "--size", "abc", "--json"], "argument --size: 'abc': expected WxH"),
+        (["crashes", "ski", "--dense-top", "many", "--json"], "argument --dense-top: invalid int"),
+        (["profile", "ski", "--json", "--activity"], "argument --activity: expected one argument"),
+        (["setup", "--only", "bogus", "--json"], "argument --only: invalid choice: 'bogus'"),
     ],
+    ids=["paths-unknown-option", "paths-extra", "clips-size", "crashes", "profile", "setup"],
 )
 def test_bad_args_envelope(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:
@@ -267,6 +269,15 @@ def test_bad_args_envelope(capsys, argv, message):
     assert doc["error"]["code"] == "bad_args" and doc["error"]["message"].startswith(message)
     assert doc["command"] == argv[0]
     assert "usage: cutpoint" in err and message in err
+
+
+def test_bad_args_envelope_from_the_real_argv(monkeypatch, capsys):
+    """``cli.main()`` without argv reads ``sys.argv[1:]``."""
+    monkeypatch.setattr(sys, "argv", ["cutpoint", "paths", "--json", "--bogus"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert envelope(capsys.readouterr().out)["error"]["code"] == "bad_args"
 
 
 def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
@@ -301,42 +312,6 @@ def test_bad_args_without_envelope(capsys, argv):
     assert exc.value.code == 2
     out, err = capsys.readouterr()
     assert out == "" and "usage:" in err
-
-
-def test_help_and_version_still_exit_zero(capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["paths", "--help"])
-    assert exc.value.code == 0
-    assert "--json" in capsys.readouterr().out
-
-
-@pytest.mark.slow
-def test_json_subprocess_end_to_end(home, tmp_path):
-    """A real process: fd 1 carries only the envelope, even from a child process."""
-    script = tmp_path / "run.py"
-    script.write_text(
-        "import subprocess, sys\n"
-        "from cutpoint import cli\n"
-        "def noisy(a):\n"
-        "    print('stray print')\n"
-        "    subprocess.run([sys.executable, '-c', 'print(\"child output\")'], check=True)\n"
-        "    cli.logger.warning('a warning')\n"
-        "    cli.jsonout.output('x', 1)\n"
-        "cli._cmd_paths = noisy\n"
-        "sys.exit(cli.main(['paths', '--json']))\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        [sys.executable, str(script)],
-        capture_output=True,
-        text=True,
-        env=os.environ | {"PYTHONUTF8": "1"},
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert envelope(proc.stdout)["outputs"] == {"x": 1}
-    for text in ("stray print", "child output", "a warning"):
-        assert text in proc.stderr
 
 
 @pytest.mark.slow
@@ -386,6 +361,7 @@ def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
         "import sys\n"
         "from cutpoint import cli\n"
         "def bad(a):\n"
+        "    cli.logger.warning('a log line')\n"
         "    raise SystemExit('bad override')\n"
         "cli._cmd_paths = bad\n"
         f"sys.exit(cli.main(['paths', *{json_flag!r}]))\n",
@@ -396,72 +372,15 @@ def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
     )
     assert proc.returncode == 1
     assert "bad override" in proc.stderr
+    assert "a log line" in proc.stderr  # a real process logs to stderr, never to stdout
     if json_flag:
         assert envelope(proc.stdout)["error"] == {"code": "bad_args", "message": "bad override"}
     else:
         assert proc.stdout == ""
 
 
-@pytest.mark.slow
-def test_json_subprocess_bad_args(home):
-    proc = subprocess.run(
-        [sys.executable, "-m", "cutpoint", "paths", "--json", "--bogus"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 2
-    assert envelope(proc.stdout)["error"]["code"] == "bad_args"
-
-
-@pytest.mark.slow
-def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
-    """With stderr closed, argparse's usage does not fall back to stdout."""
-    script = tmp_path / "run.py"
-    script.write_text(
-        "import os, sys\n"
-        "from cutpoint import cli\n"
-        "sys.stderr.flush()\n"
-        "os.close(2)\n"
-        "sys.stderr = None\n"
-        "sys.exit(cli.main(['paths', '--json', '--bogus']))\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        [sys.executable, str(script)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 2
-    error = envelope(proc.stdout)["error"]
-    assert error == {"code": "bad_args", "message": "unrecognized arguments: --bogus"}
-
-
 # capabilities, 360 repair (phase 3a) and profile (phase 3b) moved their own --json to the
 # envelope. 360 qa --json-only (skip the contact sheets) is not a JSON output flag.
-
-
-def test_capabilities_json_is_the_envelope(monkeypatch, capsys):
-    data = {"gpu": {"nvidia": False}, "encoders": ["libx264"]}
-    monkeypatch.setattr(capabilities, "report", lambda: data)
-    assert cli.main(["capabilities", "--json"]) == 0
-    doc = envelope(capsys.readouterr().out)
-    assert doc["ok"] is True and doc["command"] == "capabilities"
-    assert doc["outputs"] == data and doc["warnings"] == []
-
-
-def test_profile_json_is_the_envelope_with_the_record_keys(home, monkeypatch, capsys):
-    rec = {"name": "ski", "source": "detected", "profile": {"incident": {}}}
-    monkeypatch.setattr(cli, "resolve_activity", lambda *a, **k: rec)
-    assert cli.main(["profile", "proj", "--json"]) == 0
-    doc = envelope(capsys.readouterr().out)
-    assert doc["ok"] is True and doc["command"] == "profile"
-    activity_file = str(home / "projects" / "proj" / "activity.json")
-    assert doc["outputs"] == rec | {"activity_file": activity_file}
-
-
 @pytest.mark.parametrize(
     ("argv", "command"),
     [

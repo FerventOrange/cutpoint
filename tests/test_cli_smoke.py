@@ -12,7 +12,12 @@ from cutpoint import cli
 
 @pytest.mark.parametrize(
     ("argv", "word"),
-    [(["--help"], "paths"), (["events", "--help"], "events"), (["edit", "--help"], "--kind")],
+    [
+        (["--help"], "paths"),
+        (["events", "--help"], "events"),
+        (["edit", "--help"], "--kind"),
+        (["paths", "--help"], "--json"),
+    ],
 )
 def test_help_exits_zero(capsys, argv, word):
     with pytest.raises(SystemExit) as exc:
@@ -24,6 +29,7 @@ def test_help_exits_zero(capsys, argv, word):
 def test_paths_command_uses_isolated_home(home, capsys):
     assert cli.main(["paths"]) == 0
     out = capsys.readouterr().out
+    assert not out.startswith("{")  # the text report, not the --json envelope
     assert str(home) in out
     for key in (
         "home",
@@ -37,6 +43,7 @@ def test_paths_command_uses_isolated_home(home, capsys):
         "bundled",
     ):
         assert any(line.startswith(key) for line in out.splitlines())
+    assert any(line.startswith("home") and "(missing)" in line for line in out.splitlines())
     assert not home.exists()  # printing paths creates nothing
 
 
