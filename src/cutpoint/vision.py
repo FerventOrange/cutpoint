@@ -9,10 +9,11 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import requests
 
-from cutpoint import paths
+from cutpoint import cache, paths
 from cutpoint.backends import ollama_url
 from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
 
@@ -64,6 +65,13 @@ _DEFAULT_PROMPTS = (_PROMPT, _RETRY_PROMPT)
 # (num_ctx, num_predict) per attempt. 3 frames at 640 px are ~3300 prompt
 # tokens, so num_ctx must leave room for the reasoning plus the JSON.
 _ATTEMPTS = ((8192, 3072), (12288, 6144))
+_TEMPERATURES = (0.2, 0.4)  # sampling temperature per attempt
+FRAME_WIDTH = 640  # px of each frame sent to the model
+# Ratings cached per source (cache.source_dir), one entry per rating input (rating_key).
+RATINGS_FILE = "vision-ratings.json"
+# Bump when the rating input or the reply parsing changes outside what rating_key hashes
+# (the prompts, attempt options and temperatures, frame width, model, style and frame times).
+RATING_VERSION = 1
 
 
 @dataclass
@@ -83,6 +91,10 @@ class VisionRater:
             self.url = f"http://{self.url}"
         self.model = model or default_model()
         self.used = False  # True once a request went to the model: unload() frees it
+        self.hits = 0  # ratings taken from the cache by rate()
+        self.asked = 0  # ratings rate() asked the model for (failed ones included)
+        # per source: (cache file, its ratings), or None when the source cannot be keyed
+        self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
 
     def available(self) -> bool:
         """True if the server answers and has the model pulled."""
@@ -153,17 +165,57 @@ class VisionRater:
     def rate(
         self, src: Path, start: float, end: float, style: str, n_frames: int = 3
     ) -> VisionResult | None:
-        """Grab ``n_frames`` across [start, end] and ask the model for a rating."""
+        """Grab ``n_frames`` across [start, end] and ask the model for a rating.
+
+        Ratings are cached per source (``RATINGS_FILE`` in :func:`cutpoint.cache.source_dir`)
+        under :func:`rating_key`, each written as soon as the model gives it, so a rerun asks
+        the model only about new frames. A failed grab or request is not cached.
+        """
         span = end - start
         times = [start + span * (i + 1) / (n_frames + 1) for i in range(n_frames)]
+        store = self._store(src)
+        key = rating_key(self.model, style, times)
+        if store is not None and (hit := _cached(store[1].get(key))) is not None:
+            self.hits += 1
+            return hit
+        result = self._rate_frames(src, times, style)
+        if result is not None and store is not None:
+            store[1][key] = {"score": result.score, "label": result.label}
+            try:
+                cache.save_json(store[0], store[1])
+            except OSError as err:  # a cache must not fail the run
+                logger.warning("Could not save the vision rating cache %s: %s", store[0], err)
+        return result
+
+    def _store(self, src: Path) -> tuple[Path, dict[str, Any]] | None:
+        """The cached ratings of ``src`` (loaded once; a missing or corrupt file is empty);
+        None if the source cannot be keyed (e.g. missing: the frame grab reports it)."""
+        if src not in self._ratings:
+            try:
+                path = cache.source_dir(src) / RATINGS_FILE
+            except OSError as err:
+                logger.debug("No vision rating cache for %s: %s", src, err)
+                self._ratings[src] = None
+            else:
+                data = cache.load_json(path)
+                self._ratings[src] = (path, data if isinstance(data, dict) else {})
+        return self._ratings[src]
+
+    def _rate_frames(self, src: Path, times: list[float], style: str) -> VisionResult | None:
+        """Grab the frames at ``times`` and ask the model for a rating (no cache)."""
+        n_frames = len(times)
         try:
-            images = [base64.b64encode(grab_frame_jpeg(src, t)).decode("ascii") for t in times]
+            images = [
+                base64.b64encode(grab_frame_jpeg(src, t, width=FRAME_WIDTH)).decode("ascii")
+                for t in times
+            ]
         except FFmpegError as err:
             logger.warning("Vision frame grab failed: %s", err)
             return None
+        self.asked += 1
         content = ""
-        steps = zip(_PROMPTS.get(style, _DEFAULT_PROMPTS), _ATTEMPTS, strict=True)
-        for attempt, (prompt, (num_ctx, num_predict)) in enumerate(steps, 1):
+        steps = zip(_PROMPTS.get(style, _DEFAULT_PROMPTS), _ATTEMPTS, _TEMPERATURES, strict=True)
+        for attempt, (prompt, (num_ctx, num_predict), temperature) in enumerate(steps, 1):
             payload = {
                 "model": self.model,
                 "messages": [
@@ -177,7 +229,7 @@ class VisionRater:
                 "think": False,
                 "format": "json",
                 "options": {
-                    "temperature": 0.2 if attempt == 1 else 0.4,
+                    "temperature": temperature,
                     "num_ctx": num_ctx,
                     "num_predict": num_predict,
                 },
@@ -221,6 +273,36 @@ class VisionRater:
             return
         self.used = False
         logger.debug("Unloaded Ollama model %s", self.model)
+
+
+def rating_key(model: str, style: str, times: list[float]) -> str:
+    """Cache key of one rating: a hash of everything sent to the model except the frames
+    (``RATING_VERSION``, model, style, both prompts, attempt options and temperatures, frame
+    width), then the frame times to the millisecond (the precision of the grab's seek). The
+    Ollama URL is not part of it: the same model on another server rates the same."""
+    prompts = _PROMPTS.get(style, _DEFAULT_PROMPTS)
+    params = {
+        "version": RATING_VERSION,
+        "model": model,
+        "style": style,
+        "prompts": list(prompts),
+        "attempts": [list(a) for a in _ATTEMPTS],
+        "temperatures": list(_TEMPERATURES),
+        "width": FRAME_WIDTH,
+    }
+    return f"{cache.params_hash(params)}@" + ",".join(f"{t:.3f}" for t in times)
+
+
+def _cached(entry: object) -> VisionResult | None:
+    """A cache entry as a rating; None (a miss) if it is malformed."""
+    if not isinstance(entry, dict):
+        return None
+    score, label = entry.get("score"), entry.get("label")
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not isinstance(label, str):
+        return None
+    if not math.isfinite(score):
+        return None
+    return VisionResult(score=float(score), label=label)
 
 
 def _json_object(content: str) -> object:

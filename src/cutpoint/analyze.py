@@ -1350,6 +1350,7 @@ def _rate_vision(
             )
     finally:  # free the VRAM now, not after Ollama's default 5 min keep_alive
         rater.unload()
+    logger.info("Vision: %d ratings from the cache, %d asked the model", rater.hits, rater.asked)
     return used, n_failed
 
 
