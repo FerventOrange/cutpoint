@@ -81,6 +81,32 @@ enough frames), `ok: varied` (fewer frames, but a different text per burst while
 full) or `stop: <reason>` (`limit`, `screen edge`, `frames`, `bursts` or `variety`)). These lines hold no OCR text, so they can be shared when tuning a preset.
 Force or skip it with `--discover-regions` and `--no-discover`.
 
+OCR reads only inside the preset's regions, so discovery also looks for text that keeps showing
+outside all of them (the discovered regions and the screen-centre big-text check, which reads
+only text at least 36 px tall) but too rarely to be found as changing text, such as a brief
+objective message at the top edge. From the frames it already read, it keeps text lines with
+at least 4 letters (60% of the characters) that are not static labels, groups lines that stay
+at one screen anchor (left edge, right edge or centre) and proposes up to 2 extra `notice`
+regions, `extra_notice` and `extra_notice2`, for lines seen in at least 3 bursts. Left
+out are a line that is, for 80% of its sightings, one or two texts (misreads and
+cut-off reads count as the same text; the same phrase with another name does not) and shows in
+more than 2 bursts per text and in at least 30% of the frames of those bursts, such as a map or
+mode label or a lobby line (a notice that recurs but shows in only one of the 4 frames of each
+burst stays; text in 2 of them is taken for a label, as a name plate that shows now and then
+would otherwise become a region, so a two-frame notice that repeats one text in 3 or more
+bursts is left out); a
+line that is mostly short readouts (at most 8 letters and digits, with a digit or mixed case) of
+at most 4 texts with digits left out, such as a gauge (a column of short player names has more
+texts and stays); stacked lines that are mostly such labels; and a line seen mostly in frames
+with far more text than usual (a partial scoreboard). When the preset already has regions with
+`"origin": "outside"`, they count against the 2. These regions carry `"origin": "outside"`, which the preset loader ignores. A new
+preset gets them with the other regions; the INFO line `Discovery: text shows outside the ...
+regions` gives their rectangles, burst and frame counts, never the text. For a game that already
+has a preset, `--discover-regions` never changes the preset file: the extra regions are listed under
+`suggested_regions` in `proposal.json` (with sample texts in the `proposals` evidence) and an
+INFO line says to copy them into the preset's `regions` to have OCR read them. `overlay.jpg`
+draws them in magenta.
+
 A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`; optional `gate`: `mask` (default, a HUD colour mask) or `det` (text detection, works for any game); optional `every`),
 `banner_phrases`, `player_tags`, `match` hints and optional `feed` settings. Coordinates are in
 1920x1080 reference pixels and are scaled per axis to the video. A small example, saved as
