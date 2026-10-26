@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -205,6 +206,25 @@ def read_trailer_meta(insv00: Path) -> dict[str, Any]:
     }
 
 
+def group_files(paths: Iterable[Path]) -> dict[str, dict[str, Any]]:
+    """X3 files by clip number: ``date``, ``time`` and, if found, ``lens00``, ``lens10``, ``lrv``.
+
+    Pure (names only); paths whose name does not match ``NAME_RE`` are ignored. A clip is usable
+    for 360 analysis when it has both ``lens00`` and ``lrv``.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for p in paths:
+        f = parse_name(p.name)
+        if f is None:
+            continue
+        g = groups.setdefault(f["num"], {"date": f["date"], "time": f["time"]})
+        if f["ext"] == "lrv":
+            g["lrv"] = p
+        else:
+            g[f"lens{f['lens']}"] = p
+    return groups
+
+
 def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
     """Discover the X3 clips in ``folder`` (read-only), paired and probed.
 
@@ -221,16 +241,7 @@ def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
     """
     if not folder.is_dir():
         raise FileNotFoundError(f"Not a folder: {folder}")
-    groups: dict[str, dict[str, Any]] = {}
-    for p in sorted(folder.iterdir()):
-        f = parse_name(p.name)
-        if f is None:
-            continue
-        g = groups.setdefault(f["num"], {"date": f["date"], "time": f["time"]})
-        if f["ext"] == "lrv":
-            g["lrv"] = p
-        else:
-            g[f"lens{f['lens']}"] = p
+    groups = group_files(sorted(folder.iterdir()))
     if not groups:
         raise FileNotFoundError(f"No Insta360 .insv/.lrv files in {folder}")
     clips = []
