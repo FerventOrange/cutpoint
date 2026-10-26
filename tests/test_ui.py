@@ -2370,7 +2370,7 @@ def test_a_proxy_linked_during_the_encode_fails_with_a_warning_and_leaves_nothin
     class Encoder:
         returncode = 0
 
-        def __init__(self, args: list[str]) -> None:
+        def __init__(self, args: list[str], **_kw: object) -> None:
             self.tmp = Path(next(a for a in args if a.endswith(".part.mp4")))
 
         stdout: ClassVar[list[str]] = []
@@ -2621,7 +2621,7 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
     class Failing:
         returncode = 1
 
-        def __init__(self, _args: list[str]) -> None:
+        def __init__(self, _args: list[str], **_kw: object) -> None:
             pass
 
         stdout: ClassVar[list[str]] = ["encoder failed\n"]
@@ -2680,6 +2680,29 @@ def test_spawn_keeps_its_own_process_group_on_windows(monkeypatch: pytest.Monkey
     assert flags & subprocess.BELOW_NORMAL_PRIORITY_CLASS
 
 
+@pytest.mark.parametrize("low", [True, False])
+def test_spawn_lowers_the_priority_unless_asked_not_to(
+    monkeypatch: pytest.MonkeyPatch, low: bool
+) -> None:
+    """Window proxies (the user waits on them) start at normal priority, still in their own group."""
+    seen: dict = {}
+
+    def popen(args: list[str], **kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs, args=args)
+        return SimpleNamespace(pid=1)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(ui, "_join_tree_job", lambda _proc: None)
+    monkeypatch.setattr(ui.shutil, "which", lambda name: f"/usr/bin/{name}")
+    ui.spawn(["ffmpeg"], low_priority=low)
+    if os.name == "nt":
+        assert seen["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+        assert bool(seen["creationflags"] & subprocess.BELOW_NORMAL_PRIORITY_CLASS) is low
+    else:
+        assert seen["start_new_session"]
+        assert seen["args"] == (["/usr/bin/nice", "-n", "10", "ffmpeg"] if low else ["ffmpeg"])
+
+
 @pytest.mark.parametrize(
     ("exc", "passed_on"),
     [
@@ -2731,7 +2754,7 @@ class ProxyEncoder:
     calls: list[list[str]]
     nvenc_fails = False
 
-    def __init__(self, args: list[str]) -> None:
+    def __init__(self, args: list[str], **_kw: object) -> None:
         self.calls.append(args)
         self.returncode = 1 if self.nvenc_fails and "h264_nvenc" in args else 0
         if self.returncode == 0:
@@ -2821,7 +2844,7 @@ def test_a_proxy_failing_with_nvenc_and_libx264_fails(
     monkeypatch.setattr(ui, "find_encoder", lambda kind: (ui.VideoEncoder("nvenc"), []))
 
     class Failing(ProxyEncoder):
-        def __init__(self, args: list[str]) -> None:
+        def __init__(self, args: list[str], **_kw: object) -> None:
             self.calls.append(args)
             self.returncode = 1
 
@@ -2835,7 +2858,7 @@ def test_a_proxy_failing_with_nvenc_and_libx264_fails(
 
 def test_no_proxy_ffmpeg_starts_after_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     spawned: list[list[str]] = []
-    monkeypatch.setattr(ui, "spawn", spawned.append)
+    monkeypatch.setattr(ui, "spawn", lambda args, **_kw: spawned.append(args))
     media = ui.Media()
     media.shutdown()
     code, _ = media._encode(["ffmpeg"])  # e.g. the libx264 retry after a failed NVENC encode
@@ -2851,7 +2874,7 @@ def test_a_proxy_ffmpeg_is_registered_as_it_starts_so_shutdown_kills_it(
     monkeypatch.setattr(ui, "kill_tree", lambda proc, wait=0, *, term=True: killed.append(proc))
 
     class Encode:
-        def __init__(self, args: list[str]) -> None:
+        def __init__(self, args: list[str], **_kw: object) -> None:
             assert media.lock.locked()  # started in the same step as the closing check
             self.returncode = 1
 
@@ -2938,8 +2961,9 @@ def test_whole_proxy_of_an_hlg_source_is_converted_to_sdr(
 class FakeWindowProc:
     """A fake ffmpeg: a window encode stays alive until finished or killed; a whole one ends."""
 
-    def __init__(self, args: list[str], held: bool) -> None:
+    def __init__(self, args: list[str], held: bool, low_priority: bool = True) -> None:
         self.args = args
+        self.low_priority = low_priority
         self.returncode: int | None = None
         self.done = threading.Event()
         if not held:
@@ -2980,8 +3004,8 @@ class FakeWindowFfmpeg:
         monkeypatch.setattr(ui, "spawn", self.spawn)
         monkeypatch.setattr(ui, "kill_tree", self.kill)
 
-    def spawn(self, args: list[str]) -> FakeWindowProc:
-        proc = FakeWindowProc(args, self.hold and "-ss" in args)
+    def spawn(self, args: list[str], *, low_priority: bool = True) -> FakeWindowProc:
+        proc = FakeWindowProc(args, self.hold and "-ss" in args, low_priority)
         self.procs.append(proc)
         return proc
 
@@ -3131,6 +3155,18 @@ def test_a_superseded_queued_window_never_spawns_and_neither_does_a_cancelled_on
     win.cancelled = True
     assert media._encode(["ffmpeg", "-ss", "0"], win)[0] != 0
     assert len(window_ffmpeg.procs) == 2
+
+
+def test_window_encodes_run_at_normal_priority_and_the_whole_proxy_at_low(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    """The whole proxy's encode would starve the window the user waits on: only it yields."""
+    media, p, src = window_media
+    window_ffmpeg.hold = False  # both encodes end at once
+    assert media._encode(["ffmpeg", str(p / "whole.mp4")])[0] == 0
+    win = ui.ProxyWindow(p, src, "k" * 16, 0, 500, 1, "")
+    assert media._encode(["ffmpeg", str(p / "window.mp4")], win)[0] == 0
+    assert [pr.low_priority for pr in window_ffmpeg.procs] == [True, False]
 
 
 def test_shutdown_stops_the_window_encode_and_its_lane_and_starts_no_more(
@@ -3463,7 +3499,7 @@ class ScriptedEncoder:
     started: list[float | None]
     calls: list[list[str]]
 
-    def __init__(self, args: list[str]) -> None:
+    def __init__(self, args: list[str], **_kw: object) -> None:
         self.calls.append(args)
         self.us, self.returncode = self.reports[len(self.calls) - 1]
         if self.returncode == 0:

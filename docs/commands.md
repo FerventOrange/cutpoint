@@ -236,7 +236,9 @@ under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matchi
 While that whole-source proxy builds, a short proxy of the selected moment (10 s before it to
 20 s after it) is encoded first, so the moment can be previewed and trimmed within seconds.
 Scrubbing or playing past it shows "Preparing this part of the source…" and prepares that part
-the same way; the whole-source proxy takes over once it is ready. Moment and sequence rows say
+the same way; playback prepares the next part about 20 s ahead, and when it still has to wait
+there it plays on by itself once the part is ready (a pause or a scrub meanwhile cancels that).
+The whole-source proxy takes over once it is ready. Moment and sequence rows say
 whether their preview is ready, encoding or queued, the trim rail hatches the parts that cannot
 play yet, and "Full preview 42%" shows the whole-source proxy's progress. Play sequence starts a
 clip as soon as a short proxy covers all of it. HDR and BT.2020 sources are previewed converted

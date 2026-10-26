@@ -751,7 +751,19 @@ function screenMsg(text) {
 const prepareRequested = new Set();
 let lastPart = null;
 let nextFor = null; // the window proxy url whose successor ``requestNext`` asked for
-const EARLY = 10; // seconds before a playing window proxy's end the next one is asked for
+// Playback paused itself at a window proxy's end (``partEnd``): {source, t, url}, the source path
+// and time it waits at and the file it stopped in. A file covering ``t`` that loads in its place
+// plays on by itself (``canplay``); a pause, a scrub, a play or any other wait drops it.
+let resumeAt = null;
+/** Drop a pending resume; a paused video then shows Play (a pause on a paused video fires no event). */
+function cancelResume() {
+  if (!resumeAt) return;
+  resumeAt = null;
+  if (v.paused) showPlaying(false);
+}
+// seconds before a playing window proxy's end the next one is asked for: a window encodes in a few
+// seconds, about twice that while the whole proxy builds, and the page polls every 2 s
+const EARLY = 20;
 const PART_MSG = 'Preparing this part of the source…';
 const MOMENT_MSG = 'Preparing this moment\'s preview…';
 
@@ -811,11 +823,13 @@ function loadFile(src, p, t) {
   pendingSeek = t;
   screenMsg('Loading video…');
   v.src = p.url;
-  showPlaying(false); // a new src stops playback without a pause event
+  if (resumeAt && src.path !== resumeAt.source) resumeAt = null; // another source: no resume
+  showPlaying(!!resumeAt); // a new src stops playback without a pause event; a resume plays on
 }
 
 /** Nothing ready covers source time ``t``: hold the playhead there, paused, until a window proxy around [lo, hi] is built. */
 function awaitPart(src, t, delay = 0, lo = t, hi = t) {
+  cancelResume(); // any other wait cancels a resume; ``partEnd`` arms it after this
   v.pause();
   seekWant = null;
   pendingSeek = t;
@@ -905,6 +919,7 @@ function unload(el) {
 }
 
 function drop(msg) {
+  resumeAt = null;
   seekWant = null;
   pendingSeek = null;
   unload(v);
@@ -922,6 +937,7 @@ function seekTo(t, fast = false) {
   if (!c) return;
   const dur = durOf(c);
   t = Math.max(0, dur ? Math.min(t, dur) : t);
+  if (resumeAt && Math.abs(t - resumeAt.t) > FRAME) cancelResume(); // a scrub, not the resume's own seek
   if (!S.seqPlay && !stays(c, t, dur)) {
     wasIn = true;
     follow(t);
@@ -965,7 +981,10 @@ function stays(c, t, dur) {
   return false;
 }
 
-/** Playback reached the end of the window proxy it plays: go on in a ready file covering what follows, else pause there until one is built. */
+/**
+ * Playback reached the end of the window proxy it plays: go on in a ready file covering what
+ * follows, else pause there until one is built, and play on once it loads (``resumeAt``).
+ */
 function partEnd() {
   const c = current();
   const src = c && srcOf(c.source);
@@ -978,7 +997,11 @@ function partEnd() {
   if (p && p.url !== v.dataset.url) {
     loadFile(src, p, t);
     v.play().catch(() => {});
-  } else awaitPart(src, t);
+  } else {
+    awaitPart(src, t);
+    resumeAt = { source: src.path, t, url: v.dataset.url };
+    showPlaying(true); // still playing, waiting: a click pauses (cancels the resume)
+  }
   return true;
 }
 
@@ -1044,6 +1067,10 @@ function togglePlay() {
   const c = current();
   if (!c || !v.src) return;
   if (!v.paused) return v.pause();
+  if (resumeAt) { // paused at a window's end, about to play on: this is a pause
+    resumeAt = null;
+    return showPlaying(false);
+  }
   if (pendingSeek != null && !inLoaded(pendingSeek, durOf(c))) return; // waiting for that part's window proxy
   const dur = durOf(c);
   if (!S.seqPlay && (v.ended || (dur && playhead(c) >= dur - 0.05))) seekTo(c.start); // at the end of the source: replay the clip
@@ -1064,6 +1091,9 @@ onStage('canplay', () => {
   if (S.seqPlay?.wait) { // the clip's video the sequence waited for is ready
     S.seqPlay.wait = false;
     v.play().catch(() => {});
+  } else if (resumeAt && v.dataset.url !== resumeAt.url && current()?.source === resumeAt.source && pendingSeek == null && inLoaded(resumeAt.t, durOf(current()))) {
+    resumeAt = null; // the file after the window playback stopped at: play on
+    v.play().catch(() => showPlaying(false));
   }
 });
 onStage('playing', () => screenMsg(''));
@@ -1096,12 +1126,13 @@ function showPlaying(playing) {
 }
 
 onStage('play', () => {
+  resumeAt = null;
   showPlaying(true);
   follow(playhead()); // Play shows the playhead, also after a pan away from it
   loop();
 });
 onStage('pause', () => {
-  showPlaying(false);
+  showPlaying(!!resumeAt); // waiting at a window's end to play on
   updatePlayhead();
   const src = current() && srcOf(current().source);
   if (v.dataset.hi && src?.status === 'ready' && !S.seqPlay) ensureVideo(null); // the whole proxy is built: switch to it now

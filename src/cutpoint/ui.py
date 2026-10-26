@@ -145,19 +145,22 @@ def bad(detail: str, status: int = 400) -> HTTPException:
 
 
 # --------------------------------------------------------------------------- processes
-def spawn(args: list[str]) -> subprocess.Popen[str]:
+def spawn(args: list[str], *, low_priority: bool = True) -> subprocess.Popen[str]:
     """Start ``args`` (no shell) in its own process group at low priority, stdout+stderr merged.
 
     Low priority keeps the desktop and the browser responsive while a job or proxy encodes; the
     children it starts (ffmpeg, workers) inherit it. Windows: BELOW_NORMAL_PRIORITY_CLASS;
     elsewhere ``nice -n 10`` when there is one (it execs, so the pid and group stay the same).
+    ``low_priority=False``: normal priority, for the short window proxy encodes the user waits on.
     """
     if os.name == "nt":
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP
+        if low_priority:
+            flags |= subprocess.BELOW_NORMAL_PRIORITY_CLASS
         group: dict[str, Any] = {"creationflags": flags}
     else:
         group = {"start_new_session": True}
-        nice = shutil.which("nice")
+        nice = shutil.which("nice") if low_priority else None
         args = [nice, "-n", "10", *args] if nice else args
     proc = subprocess.Popen(
         args,
@@ -1310,7 +1313,8 @@ class Media:
 
         Spawned and registered under ``self.lock`` once ``closing`` (and the ``window``'s
         ``cancelled``) is checked, so ``shutdown`` (or :meth:`_focus`) either kills it or it
-        never starts. ``window.proc`` holds the process while it runs. ``progress``: ``(key,
+        never starts. ``window.proc`` holds the process while it runs; a window encodes at normal
+        priority (the user waits on it, and the whole proxy beside it would starve it). ``progress``: ``(key,
         source duration)``; ffmpeg reports how far it got, kept in ``self.progress[key]``.
         """
         if progress is not None:
@@ -1320,7 +1324,7 @@ class Media:
                 return 1, "the server is shutting down"
             if window is not None and window.cancelled:
                 return 1, "no longer needed"
-            proc = spawn(args)
+            proc = spawn(args, low_priority=window is None)
             self.procs.add(proc)
             if window is not None:
                 window.proc = proc
