@@ -52,6 +52,7 @@
       <div id="stageBody" hidden>
         <div class="screen-bar">
           <span id="stageMeta" class="muted"></span>
+          <span id="stagePrep" class="stage-prep tc" title="The browser-playable preview of the whole source; moments play from short previews meanwhile" hidden></span>
           <button type="button" id="toggleBtn" class="btn" hidden></button>
         </div>
         <div class="screen">
@@ -69,6 +70,7 @@
         </div>
         <div class="rail" id="rail">
           <div class="rail-marks">
+            <div class="rail-gaps" id="railGaps" aria-hidden="true"></div>
             <div class="rail-orig" id="railOrig"></div>
             <div class="rail-sel" id="railSel"></div>
           </div>
@@ -83,6 +85,7 @@
           </div>
           <div class="overview" id="overview">
             <div class="rail-marks">
+              <div class="rail-gaps" id="ovGaps" aria-hidden="true"></div>
               <div class="ov-clip" id="ovClip"></div>
               <div class="ov-view" id="ovView"></div>
             </div>
