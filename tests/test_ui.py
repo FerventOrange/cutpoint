@@ -3191,6 +3191,7 @@ def test_a_running_window_that_does_not_overlap_the_new_focus_is_killed(
     second.finish(0)
     wait_until(lambda: lane_idle(media))
     assert [s for s, _ in media.windows[(p, ui.Media.key(src) or "")]] == [49000]
+    assert media.failed_windows(p, str(src)) == []  # killed, not failed
 
 
 def test_a_running_window_that_overlaps_the_new_focus_is_not_killed(
@@ -3413,6 +3414,7 @@ def test_a_window_encode_for_a_source_whose_whole_proxy_lands_is_stopped(
     assert window_ffmpeg.killed == [running]
     wait_until(lambda: lane_idle(media))
     assert not list(p.rglob("*.mp4"))
+    assert media.failed_windows(p, str(src)) == []  # stopped, not failed
 
 
 def prepare(client: TestClient, pid: str, sid: str, body: object = None) -> object:
@@ -3836,6 +3838,68 @@ def test_prepare_with_queue_waits_behind_the_running_window_instead_of_replacing
     window_ffmpeg.next_proc(1).finish(0)
     wait_until(lambda: lane_idle(media))
     assert window_ffmpeg.killed == []
+
+
+def test_a_failed_window_logs_ffmpeg_s_last_lines_and_is_listed_until_asked_for_again(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning says why (ffmpeg's last lines); the listing tells the page to stop waiting."""
+    pid, _, _, _ = hevc_project
+    base = f"/api/projects/{pid}"
+    sid = client.get(base).json()["sources"][0]["id"]
+    output = [
+        "",
+        "ffmpeg version x",
+        *[f"line {i}" for i in range(1, 6)],
+        "  ",
+        "Conversion failed!  ",
+    ]
+
+    class Failing:
+        returncode = 1
+
+        def __init__(self, args: list[str], **_kw: object) -> None:
+            self.args = args
+
+        def communicate(self) -> tuple[str, None]:
+            return "\n".join(output) + "\n", None
+
+    monkeypatch.setattr(ui, "spawn", Failing)
+    monkeypatch.setattr(ui.Media, "_nvenc", lambda _self: False)
+    entry = lambda: client.get(base).json()["sources"][0]  # noqa: E731
+    with caplog.at_level(logging.WARNING, logger="cutpoint.ui"):
+        assert prepare(client, pid, sid, {"lo": 2, "hi": 4}).status_code == 200
+        wait_until(lambda: entry()["failed"])
+    assert entry()["failed"] == [{"lo": 0.0, "hi": 10.0, "reason": "Conversion failed!"}]
+    assert entry()["pending"] == []
+    [warning] = [r.getMessage() for r in caplog.records if "window proxy" in r.getMessage()]
+    assert warning.endswith("failed: line 2\nline 3\nline 4\nline 5\nConversion failed!")
+
+    monkeypatch.setattr(ui, "spawn", window_ffmpeg.spawn)
+    window_ffmpeg.hold = False
+    assert prepare(client, pid, sid, {"lo": 2, "hi": 4}).status_code == 200
+    assert entry()["failed"] == []  # asked for again
+    wait_until(lambda: entry()["windows"])
+
+
+@pytest.mark.parametrize(
+    ("code", "tail", "reason"),
+    [
+        (1, "Conversion failed!", "Conversion failed!"),
+        (1, "", "ffmpeg exited with code 1"),
+        (-9, "", "ffmpeg exited with code -9 (0xFFFFFFF7)"),
+        (3221225477, "", "ffmpeg exited with code 3221225477 (0xC0000005)"),
+    ],
+)
+def test_a_window_failure_without_output_names_the_exit_code(
+    code: int, tail: str, reason: str
+) -> None:
+    assert ui._exit_reason(code, tail) == reason
 
 
 def test_window_endpoint_serves_ranges_and_refuses_what_is_not_ready(

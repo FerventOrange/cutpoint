@@ -51,7 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queued, the trim rail hatches the parts of the source that cannot play yet, and the preview
   shows "Full preview 42%" while the whole-source proxy builds (`proxy` and `progress` on each
   source). Playing near the end of a short proxy prepares the next part ahead, and playback
-  that still has to wait for it plays on by itself once it is ready (#323).
+  that still has to wait for it plays on by itself once it is ready; inside a long moment it
+  waits only for the part it stopped at, not a proxy of the whole moment (#323).
 - The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
   underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
   Transcripts now store each word's `probability`, and `highlights.json` candidates list those
@@ -332,6 +333,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- When the short proxy of a part of the source fails twice, the UI preview stops waiting on
+  "Preparing this part of the source…" and shows why, with a Retry button. The server's
+  warning now names ffmpeg's last lines (or its exit code), and each source in the project view
+  lists its `failed` windows with a `reason` until they are asked for again (#323).
 - A single gameplay notice read in still gameplay (a scoped or binocular view held still for
   over 5 s) no longer makes the OCR layer treat the stretch as a menu and drop the notice
   (#319). New menu text now needs at least 2 text lines that are no preset phrase, each on
