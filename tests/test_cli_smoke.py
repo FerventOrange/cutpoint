@@ -156,6 +156,18 @@ def test_guide_prints_agents_md(capsys):
     assert capsys.readouterr().out.startswith("# Cutpoint for AI agents")
 
 
+def test_shared_vision_and_source_filter_options_parse_alike():
+    p = cli.build_parser()
+    vision = ["--no-vision", "--vision-top", "5", "--ollama-url", "u", "--ollama-model", "m"]
+    for command in ("edit", "analyze"):
+        a = p.parse_args([command, "v.mp4", *vision])
+        assert (a.vision, a.vision_top, a.ollama_url, a.ollama_model) == (False, 5, "u", "m")
+    for command in ("analyze", "stage"):
+        a = p.parse_args([command, "v.mp4", "--exclude", "*DVR*", "--exclude", "x", "--recursive"])
+        assert (a.exclude, a.recursive) == (["*DVR*", "x"], True)
+        assert p.parse_args([command, "v.mp4"]).recursive is False
+
+
 def test_version_flag_prints_version_without_subcommand(capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["--version"])

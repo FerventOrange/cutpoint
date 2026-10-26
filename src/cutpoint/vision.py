@@ -143,8 +143,7 @@ class VisionRater:
             resp.raise_for_status()
             body = resp.json()
             content = body["response"] if raw else body["message"]["content"]
-            match = re.search(r"\{.*\}", content, re.S)
-            data = json.loads(match.group(0)) if match else None
+            data = _json_object(content)
         except (requests.RequestException, KeyError, ValueError) as err:
             logger.warning("Ollama request failed: %s", err)
             return None
@@ -223,12 +222,15 @@ class VisionRater:
         logger.debug("Unloaded Ollama model %s", self.model)
 
 
-def _parse(content: str) -> VisionResult | None:
+def _json_object(content: str) -> object:
+    """A reply's JSON from its first ``{`` to its last ``}``; None if it has none."""
     match = re.search(r"\{.*\}", content, re.S)
-    if not match:
-        return None
+    return json.loads(match.group(0)) if match else None
+
+
+def _parse(content: str) -> VisionResult | None:
     try:
-        data = json.loads(match.group(0))
+        data = _json_object(content)
         if not isinstance(data, dict) or "score" not in data:
             return None
         score = max(0.0, min(10.0, float(data.get("score", 0))))

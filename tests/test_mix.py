@@ -386,7 +386,10 @@ def test_load_exclusions_drops_a_drive_relative_source_only_on_windows(
     if on_windows:
         assert [e["source"] for e in got] == [str(tmp_path / "b.insv")] * 2
         (msg,) = messages(caplog)
-        assert str(path) in msg
+        assert msg == (
+            f"{path}: exclusion 2 ignored: source 'D:a.insv' is relative to the current folder "
+            "of drive D:; give the full path (D:\\...) or one relative to the file's folder"
+        )
     else:
         assert [e["source"] for e in got][1] == str(tmp_path / "D:a.insv")
         assert not caplog.records

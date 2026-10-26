@@ -94,7 +94,7 @@ def _dir(name: str, default: str) -> Path:
 
 def config_file() -> Path:
     """``config.json``: ``CUTPOINT_CONFIG`` or ``<home>/config.json``."""
-    return env_path("CONFIG") or home() / "config.json"
+    return _dir("CONFIG", "config.json")
 
 
 def cache_dir() -> Path:
@@ -114,8 +114,7 @@ def tools_dir() -> Path:
 
 def styles_dir() -> Path:
     """Learned style presets: ``CUTPOINT_STYLES_DIR`` or ``<home>/styles``."""
-    value = os.environ.get("CUTPOINT_STYLES_DIR")
-    return absolute(value) if value else home() / "styles"
+    return _dir("STYLES_DIR", "styles")
 
 
 def presets_dir() -> Path:

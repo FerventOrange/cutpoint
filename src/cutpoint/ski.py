@@ -412,7 +412,12 @@ def load_taste(path: Path) -> dict[str, Any]:
 
 def taste_frames(vd: Any, taste: dict[str, Any]) -> np.ndarray:
     """Taste probability per frame (mean crop embedding through the logistic head)."""
-    z = vd.mean_emb @ taste["w"] + taste["b"]
+    return taste_prob(vd.mean_emb, taste)
+
+
+def taste_prob(emb: np.ndarray, taste: dict[str, Any]) -> np.ndarray:
+    """Taste head's probability for each row of ``emb``."""
+    z = emb @ taste["w"] + taste["b"]
     return 1 / (1 + np.exp(-np.clip(z, -30, 30)))
 
 

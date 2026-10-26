@@ -157,7 +157,7 @@ def run(
     Raises:
         FFmpegError: If the process exits non-zero or runs longer than ``timeout`` s.
     """
-    cmd = stage_inputs([find_tool(args[0]), *args[1:]])
+    cmd = _command(args[0], args[1:])
     logger.debug("exec: %s", subprocess.list2cmdline(cmd))
     pipe = subprocess.PIPE if capture else None
     proc = subprocess.Popen(
@@ -174,8 +174,7 @@ def run(
         raise
     out = (stdout or "") + (stderr or "")
     if proc.returncode != 0:
-        tail = "\n".join(out.strip().splitlines()[-15:])
-        raise FFmpegError(f"{args[0]} failed (exit {exit_code(proc.returncode)}):\n{tail}")
+        raise FFmpegError(f"{args[0]} failed (exit {exit_code(proc.returncode)}):\n{_tail(out)}")
     return out
 
 
@@ -216,7 +215,7 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
     Raises:
         FFmpegError: If the process exits non-zero.
     """
-    cmd = stage_inputs([find_tool(args[0]), "-progress", "pipe:1", "-nostats", *args[1:]])
+    cmd = _command(args[0], ["-progress", "pipe:1", "-nostats", *args[1:]])
     t0, next_pct, out_time = time.perf_counter(), 10, 0.0
     with tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(
@@ -245,9 +244,8 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
         err.seek(0)
         stderr = err.read().decode("utf-8", "replace")
         if proc.returncode != 0:
-            tail = "\n".join(stderr.strip().splitlines()[-15:])
             code = exit_code(proc.returncode)
-            raise FFmpegError(f"ffmpeg failed during {label} (exit {code}):\n{tail}")
+            raise FFmpegError(f"ffmpeg failed during {label} (exit {code}):\n{_tail(stderr)}")
     return ProgressResult(stderr=stderr, out_time=out_time)
 
 
@@ -392,8 +390,7 @@ def read_window_ok(src: Path, t: float, dur: float = 3.0) -> bool:
     Used to find where a damaged file becomes readable again. It reads only a
     few MB, so probing a bad region a handful of times stays gentle on the disk.
     """
-    cmd = [
-        find_tool("ffmpeg"),
+    args = [
         "-hide_banner",
         "-nostats",
         "-v",
@@ -409,9 +406,8 @@ def read_window_ok(src: Path, t: float, dur: float = 3.0) -> bool:
         "null",
         "-",
     ]
-    proc = subprocess.run(
-        stage_inputs(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
+    cmd = _command("ffmpeg", args)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return proc.returncode == 0 and not READ_ERROR_RE.search(proc.stderr or "")
 
 
@@ -435,8 +431,7 @@ _CROP_RE = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
 
 def cropdetect_at(src: Path, t: float, frames: int = 30) -> tuple[int, int, int, int] | None:
     """Run ``cropdetect`` on ``frames`` frames at ``t``; (w, h, x, y) or None."""
-    cmd = [
-        find_tool("ffmpeg"),
+    args = [
         "-hide_banner",
         "-nostats",
         "-ss",
@@ -452,9 +447,8 @@ def cropdetect_at(src: Path, t: float, frames: int = 30) -> tuple[int, int, int,
         "null",
         "-",
     ]
-    proc = subprocess.run(
-        stage_inputs(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
+    cmd = _command("ffmpeg", args)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     hits = _CROP_RE.findall(proc.stderr or "")
     if proc.returncode != 0 or not hits:
         return None
@@ -1721,7 +1715,7 @@ def decode_pcm(
         timeout: Seconds before ffmpeg is killed.
 
     Returns:
-        Read-only ``int16`` samples (1-D); divide by 32768 for -1..1 floats.
+        Read-only ``int16`` samples (1-D); ``pcm_float`` turns them into -1..1 floats.
 
     Raises:
         FFmpegError: If ffmpeg exits non-zero or times out.
@@ -1737,3 +1731,8 @@ def decode_pcm(
         )
     data = proc.stdout
     return np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2")
+
+
+def pcm_float(pcm: bytes | np.ndarray) -> np.ndarray:
+    """16-bit little-endian PCM (bytes or :func:`decode_pcm` samples) as float32 in -1..1."""
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0

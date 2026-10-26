@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, read_pcm_window, wav_duration
+from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, pcm_float, read_pcm_window, wav_duration
 from cutpoint.transcribe import filter_hallucinations, flat_words
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ def _wav_slice(wav: Path, t0: float, t1: float) -> np.ndarray:
             return np.zeros(0, dtype=np.float32)
         w.setpos(a)
         raw = w.readframes(b - a)
-    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    return pcm_float(raw)
 
 
 def audio_window(src: Path, info: MediaInfo, t0: float, t1: float) -> tuple[np.ndarray, float]:
@@ -123,7 +123,7 @@ def audio_window(src: Path, info: MediaInfo, t0: float, t1: float) -> tuple[np.n
     except FFmpegError as err:
         logger.warning("%s", err)
         return np.zeros(0, dtype=np.float32), t0
-    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0, t0
+    return pcm_float(raw), t0
 
 
 def _transcript_file(cdir: Path) -> Path | None:

@@ -68,6 +68,22 @@ def test_other_styles_keep_the_default_prompts(posts):
     assert retry == vision._RETRY_PROMPT.format(n=3, style="gaming")
 
 
+@pytest.mark.parametrize(
+    ("content", "want"),
+    [
+        ('Sure: {"score": 7, "label": "x"} done', {"score": 7, "label": "x"}),
+        ("no json here", None),
+        ("{not json}", None),
+    ],
+)
+def test_ask_json_and_parse_share_the_reply_json(monkeypatch, content, want):
+    monkeypatch.setattr(
+        vision.requests, "post", lambda *_a, **_k: _Resp({"message": {"content": content}})
+    )
+    assert vision.VisionRater(url="http://x:1", model="m").ask_json("q") == want
+    assert vision._parse(content) == (vision.VisionResult(7.0, "x") if want else None)
+
+
 def test_unload_sends_keep_alive_zero_for_the_model_used(posts):
     rater = vision.VisionRater(url="http://x:1", model="qwen3-vl:8b")
     rater.rate(Path("a.mp4"), 0, 4, "ski")

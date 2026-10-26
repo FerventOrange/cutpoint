@@ -49,6 +49,7 @@ from cutpoint import cache, jsonout, ski
 from cutpoint.clips import (
     REACTION_LABEL,
     drive_relative,
+    drive_relative_error,
     index_sources,
     order_moments,
     segment_source,
@@ -515,13 +516,10 @@ def read_exclusions(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, An
         src = str(e["source"])
         if drive := drive_relative(src):
             logger.warning(
-                "%s: exclusion %d ignored: source %r is relative to the current folder of "
-                "drive %s; give the full path (%s\\...) or one relative to the file's folder",
+                "%s: exclusion %d ignored: %s",
                 path,
                 i,
-                src,
-                drive,
-                drive,
+                drive_relative_error(src, drive, "the file's folder"),
             )
             ignored.append(e)
             continue

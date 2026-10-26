@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 CLIP_SHORT_S = 0.3  # an exported clip this much shorter than asked = truncated read
 SAFE_END_MARGIN_S = 0.3  # trimmed re-encode stops this far before the failure
 
+# Common audio of clips and assembled videos: 48 kHz stereo, AAC 192k.
+A_FMT = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+AUDIO_OUT = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+SILENCE = "anullsrc=r=48000:cl=stereo"
+
 
 def audio_fade_filter(dur: float, fade: float) -> str:
     """``afade`` in/out for a clip of ``dur`` seconds ("" when ``fade`` is 0).
@@ -159,12 +164,9 @@ def _encode(
         str(src),
     ]
     vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop))}[v]"
-    a_fmt = (
-        "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:"
-        "channel_layouts=stereo" + audio_fade_filter(dur, audio_fade)
-    )
+    a_fmt = A_FMT + audio_fade_filter(dur, audio_fade)
     if info.audio_streams == 0:
-        args += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
+        args += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", SILENCE]
         af = f"[1:a]{a_fmt}[a]"
     elif info.audio_streams == 1:
         af = f"[0:a:0]{a_fmt}[a]"
@@ -183,14 +185,7 @@ def _encode(
         "tv",
         "-fps_mode",
         "cfr",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
+        *AUDIO_OUT,
         "-t",
         f"{dur:.3f}",
         "-video_track_timescale",
