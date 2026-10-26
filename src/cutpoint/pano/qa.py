@@ -52,7 +52,6 @@ self boxes red) and ``overview_NN.jpg`` (one frame per 2 s per clip).
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -566,7 +565,7 @@ def load_path(ref: str | None) -> dict[str, Any] | None:
 
     for p in (Path(ref), remap_source(ref)):
         if p.is_file():
-            return json.loads(p.read_text(encoding="utf-8"))
+            return cache.read_json(p)
     return None
 
 
@@ -625,7 +624,7 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
         js = f.with_suffix(".json")
         if not js.is_file():
             continue
-        path = json.loads(js.read_text(encoding="utf-8"))
+        path = cache.read_json(js)
         out.append(
             {
                 "file": f.name,

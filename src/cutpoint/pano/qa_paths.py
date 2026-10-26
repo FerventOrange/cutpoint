@@ -29,7 +29,6 @@ The director uses :func:`path_quality` for the ``quality`` block of every path.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -292,7 +291,7 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
         return out
     for js in sorted(qa_dir.glob("*.json"), key=natural_key):
         try:
-            path = json.loads(js.read_text(encoding="utf-8"))
+            path = cache.read_json(js)
         except (OSError, ValueError):
             continue
         if not isinstance(path, dict) or "keys" not in path or "segment" not in path:

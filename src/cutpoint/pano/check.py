@@ -8,7 +8,6 @@ be checked by eye. Sheets go to ``<clips_dir>_check/``.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -42,7 +41,7 @@ def clip_sheets(
             path = None
             pf = (e.get("pano") or {}).get("path_file")
             if pf and Path(pf).is_file():
-                path = json.loads(Path(pf).read_text(encoding="utf-8"))
+                path = cache.read_json(Path(pf))
             for t in np.linspace(0.3, max(0.4, dur - 0.3), per_clip):
                 cap = f"{f.stem[:22]} {t:.1f}s"
                 if path is not None:
