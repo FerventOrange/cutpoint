@@ -303,6 +303,11 @@ def gpu_memory_used_mib() -> int | None:
 class VramMonitor:
     """Background thread that records peak GPU memory use while active.
 
+    Entering and leaving cost no nvidia-smi call: the baseline is the thread's first
+    reading, and leaving signals the thread without waiting for its poll in flight
+    (that poll still reaps its process, and its result is dropped). A layer shorter
+    than one poll reports None.
+
     Usage::
 
         with VramMonitor() as vm:
@@ -315,29 +320,34 @@ class VramMonitor:
         self.baseline_mib: int | None = None
         self.peak_mib: int | None = None
         self._stop = threading.Event()
+        self._lock = threading.Lock()  # a late poll never changes the stats after exit
         self._thread: threading.Thread | None = None
 
     def _run(self) -> None:
         while not self._stop.is_set():
             used = gpu_memory_used_mib()
-            if used is not None:
-                self.peak_mib = max(self.peak_mib or 0, used)
+            with self._lock:
+                if self._stop.is_set():
+                    return
+                if used is not None:
+                    if self.baseline_mib is None:
+                        self.baseline_mib = used
+                    self.peak_mib = max(self.peak_mib or 0, used)
             self._stop.wait(self.interval_s)
 
     def __enter__(self) -> VramMonitor:
-        self.baseline_mib = gpu_memory_used_mib()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
 
     def __exit__(self, *exc: object) -> None:
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
+        with self._lock:
+            self._stop.set()
 
     def summary(self) -> dict[str, int | None]:
         """``{"baseline_mib", "peak_mib"}`` for timing reports."""
-        return {"baseline_mib": self.baseline_mib, "peak_mib": self.peak_mib}
+        with self._lock:
+            return {"baseline_mib": self.baseline_mib, "peak_mib": self.peak_mib}
 
 
 def free_torch() -> None:

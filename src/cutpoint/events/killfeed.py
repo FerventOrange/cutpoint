@@ -15,6 +15,7 @@ from __future__ import annotations
 import bisect
 import difflib
 import logging
+import os
 import re
 import time
 from collections.abc import Callable
@@ -456,6 +457,12 @@ class EventTracker:
 
 OCR_DET_SIDE = 960  # the OCR layer's detection size limit (long side, px)
 
+# onnxruntime intra-op threads for the OCR models (det, cls, rec). CPU OCR stops scaling at
+# about 4 threads: 8 / 4 / 2 / 1 threads took 4.0 / 3.3 / 6.9 / 8.7 s per 1280 px frame on an
+# 8-core CPU, so 4 is ~18% faster than the default (one per physical core). Capped at the CPU
+# count so small machines are not oversubscribed. The output does not depend on it (#374).
+OCR_THREADS = min(4, os.cpu_count() or 1)
+
 
 class OcrEngine:
     """Thin wrapper around RapidOCR (onnxruntime, CPU)."""
@@ -467,7 +474,11 @@ class OcrEngine:
 
         # Default det config upscales the short side to 736 px ("limit_type: min"),
         # which makes wide HUD strips ~10x slower; cap the long side instead.
-        self.engine = RapidOCR(det_limit_type="max", det_limit_side_len=det_side)
+        self.engine = RapidOCR(
+            det_limit_type="max",
+            det_limit_side_len=det_side,
+            intra_op_num_threads=OCR_THREADS,
+        )
 
     def detect(self, bgr: np.ndarray, scale: float = 1.0) -> list[list]:
         """Text boxes only (no recognition), used by the "det" gate.
