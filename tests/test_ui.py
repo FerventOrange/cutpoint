@@ -215,13 +215,17 @@ def test_360_analyze_job_view_carries_the_step_plan(
     for name in X3_CLIPS:
         (folder / name).write_bytes(b"")
     pid = client.post("/api/projects", json={"name": "T", "source": str(folder)}).json()["id"]
-    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *_a: [sys.executable, "-c", "pass"])
+    # No real interpreter: spawn starts jobs at below-normal priority, and on a busy machine
+    # one took up to ~15 s to exit, close to the old 20 s wait. The plan comes from the real Job.
+    proc = FakeProc()
+    proc.release.set()  # exits at once
+    monkeypatch.setattr(ui, "spawn", lambda args, **_kw: proc)
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     assert [s["step"] for s in res.json()["progress"]["plan"]] == [
         "scan", "views", "analyze", "events",
     ]  # fmt: skip
-    assert client.app.state.jobs.get(res.json()["id"]).done.wait(20)
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
 
 
 def test_create_project_skips_unreadable_folder_entries(
