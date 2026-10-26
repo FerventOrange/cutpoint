@@ -282,6 +282,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- UI: the arrow keys on the trim rail move the playhead by 0.5% of the visible view (at least
+  0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
+  button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
+  <name>…" in "Play sequence", or a preview being prepared on the stage) (#356, #357).
 - 360 analysis in the UI shows its planned steps as "Waiting" right away, instead of "Waiting for
   output..." until the first step starts (#320).
 - `--vision`: the Ollama rating no longer outranks the analysis. A rating (0-10) was blended in

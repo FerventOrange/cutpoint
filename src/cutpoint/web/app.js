@@ -698,6 +698,7 @@ function drop(msg) {
   seekWant = null;
   pendingSeek = null;
   unload(v);
+  showPlaying(false); // load() drops the queued pause event, so a playing video would keep the Pause icon
   screenMsg(msg);
 }
 
@@ -852,9 +853,12 @@ $('#retryBtn').addEventListener('click', () => {
 seek.addEventListener('input', () => seekTo(Number(seek.value), true));
 seek.addEventListener('change', () => seekTo(Number(seek.value))); // released: an exact seek
 seek.addEventListener('keydown', (e) => {
-  if ((e.key !== 'PageUp' && e.key !== 'PageDown') || !S.view) return;
-  e.preventDefault(); // PageUp/PageDown: 10% of the rail
-  seekTo(playhead() + (e.key === 'PageUp' ? 1 : -1) * 0.1 * (S.view.hi - S.view.lo));
+  const d = { ArrowLeft: -0.005, ArrowDown: -0.005, ArrowRight: 0.005, ArrowUp: 0.005, PageDown: -0.1, PageUp: 0.1 }[e.key];
+  if (d == null || !S.view) return;
+  // arrows: 0.5% of the rail (at least 0.05 s), so a zoomed-out long source moves too; PageUp/PageDown: 10%
+  e.preventDefault();
+  const span = S.view.hi - S.view.lo;
+  seekTo(playhead() + Math.sign(d) * Math.max(0.05, Math.abs(d) * span));
 });
 $('#zoomOut').addEventListener('click', () => zoomBy(2));
 $('#zoomIn').addEventListener('click', () => zoomBy(0.5));

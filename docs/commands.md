@@ -242,8 +242,8 @@ the source with the clip (gold) and the analyzed range (dashed) as markers; it o
 plus half its length (at least 10 s) either side. "Zoom out", "Zoom in" and "Fit clip" change
 the view, the overview strip next to them shows the view in the whole source and pans it (drag
 or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
-playhead during playback. On the rail, PageUp and PageDown move the playhead by a tenth of the
-view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
+playhead during playback. On the rail, the arrow keys move the playhead by 0.5% of the view (at
+least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
 rail widens to show it. Clips longer than 10 minutes get a note under the trim fields.
 "Play sequence" in the Sequence header previews the cut without exporting: it plays each clip
 from its current start to its end, in sequence order, from the sources (or their proxies), with
