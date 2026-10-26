@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
+  back from their sources or proxies (hard cuts, no export), highlights and announces the playing
+  clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits
+  for a preview that is still being prepared ("Preparing preview of <name>…"), and clicking the
+  next row skips it (#325).
 - The UI makes projects from Insta360 X3 footage (a folder, or one file for that clip). "Analyze
   footage" runs `cutpoint 360 analyze --scan` and shows the steps Read 360 clips, 360 views,
   Transcription and ranking, and Events and re-rank. Exported clips are reframed by the automatic
