@@ -289,6 +289,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A single gameplay notice read in still gameplay (a scoped or binocular view held still for
+  over 5 s) no longer makes the OCR layer treat the stretch as a menu and drop the notice
+  (#319). New menu text now needs at least 2 text lines that are no preset phrase, each on
+  screen for at least half of the still stretch: a menu shows many lines that stay, a notice is
+  one line or one box that flashes. A still screen with only one line of new text now has to
+  hold still 10 s to count as a menu, as one without new text. The first run with a JSON preset
+  re-reads the footage (new OCR cache).
 - UI: the arrow keys on the trim rail move the playhead by 0.5% of the visible view (at least
   0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
   button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
