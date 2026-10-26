@@ -240,7 +240,8 @@ and the assembly compresses only the clips exported without it. It starts on
 values are refused with 400. Previews do not apply it.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
-under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matching clip export.
+under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, all of them (clip export leaves out tracks that
+copy another one).
 While that whole-source proxy builds, a short proxy of the selected moment (10 s before it to
 20 s after it) is encoded first, so the moment can be previewed and trimmed within seconds.
 Scrubbing or playing past it shows "Preparing this part of the source…" and prepares that part

@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import state
+from cutpoint.audio_tracks import export_tracks
 from cutpoint.crop import Crop
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
@@ -26,6 +27,7 @@ from cutpoint.ffmpeg_utils import (
     encode_with_fallback,
     ffmpeg_filters,
     has_soxr,
+    mix_head,
     probe,
     run,
 )
@@ -492,11 +494,10 @@ def _encode(
     if info.audio_streams == 0:
         args += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", SILENCE]
         af = f"[1:a]{a_fmt}[a]"
-    elif info.audio_streams == 1:
-        af = f"[0:a:0]{a_fmt}[a]"
-    else:  # e.g. ShadowPlay game + separate mic track
-        ins = "".join(f"[0:a:{i}]" for i in range(info.audio_streams))
-        af = f"{ins}amix=inputs={info.audio_streams}:normalize=0,{a_fmt}[a]"
+    else:  # several tracks are summed (e.g. ShadowPlay game + mic), duplicates left out
+        length = info.audio_duration or info.duration
+        tracks = export_tracks(src, info.audio_streams, length, (start, dur))
+        af = f"{mix_head(tracks)}{a_fmt}[a]"
     args += [
         "-filter_complex",
         f"{vf};{af}",
