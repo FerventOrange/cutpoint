@@ -264,6 +264,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With reduced motion on (for example Windows "Animation effects" off), a running analysis
+  step showed a frozen spinner and looked stuck. It now shows a still ▶ and an elapsed time that
+  counts up, and the indeterminate progress bars show as a still dashed bar. Nothing changes with
+  animations on (#322).
 - A discovered kill feed grows by rows seen in fewer frames. A full feed is rare (4 of 59 frames
   in a 10-minute match), so its oldest rows showed in too few frames (a row needed 5% of the
   feed's frames) and a 6-row feed stopped at its common rows. A row seen in 2 or more frames is
