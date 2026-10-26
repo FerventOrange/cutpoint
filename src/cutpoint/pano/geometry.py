@@ -57,6 +57,11 @@ G = 9.80665
 
 
 # --------------------------------------------------------------------------- rotations
+def wrap_deg(d: np.ndarray | float) -> np.ndarray:
+    """Angle(s) in degrees wrapped to ``[-180, 180)``."""
+    return (np.asarray(d, float) + 180.0) % 360.0 - 180.0
+
+
 def rot_y(deg: float) -> np.ndarray:
     """``v360`` yaw: turns +z toward +x."""
     a = math.radians(deg)
@@ -179,10 +184,27 @@ class Orientation:
         return math.degrees(math.acos(max(-1.0, min(1.0, -u[2]))))
 
 
+def _orient_path(source: Path) -> Path:
+    """Cache file of a clip's orientation track (meta in the ``.json`` beside it)."""
+    return cache.source_dir(source) / f"x3-orient-v{ORIENT_VERSION}.npz"
+
+
+def _cached_orientation(z: Any, meta: dict[str, Any]) -> Orientation:
+    """:class:`Orientation` from the arrays of an open orientation ``.npz``."""
+    return Orientation(
+        t=z["t"],
+        up=z["up"],
+        heading=z["heading"],
+        heading_smooth=z["heading_smooth"],
+        meta=meta,
+        q=z["q"],
+    )
+
+
 def load_orientation(source: Path) -> Orientation | None:
     """The cached orientation track of a clip, or None (never parses the IMU)."""
     try:
-        path = cache.source_dir(source) / f"x3-orient-v{ORIENT_VERSION}.npz"
+        path = _orient_path(source)
     except OSError:
         return None
     if not path.exists():
@@ -191,14 +213,7 @@ def load_orientation(source: Path) -> Orientation | None:
         meta = cache.load_json(path.with_suffix(".json")) or {}
         if "fps" not in meta:
             return None
-        return Orientation(
-            t=z["t"],
-            up=z["up"],
-            heading=z["heading"],
-            heading_smooth=z["heading_smooth"],
-            meta=meta,
-            q=z["q"],
-        )
+        return _cached_orientation(z, meta)
 
 
 def wearer_yaw(orient: Orientation, times: np.ndarray, axis: np.ndarray = WEARER_V) -> np.ndarray:
@@ -292,6 +307,17 @@ def quat_track(t: np.ndarray, a_v: np.ndarray, w_v: np.ndarray, gain: float) -> 
     return np.array(out)
 
 
+def gauss_smooth(x: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian low-pass along axis 0 (``sigma`` in samples, +-3 sigma kernel, edge-padded)."""
+    r = int(3 * sigma)
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+    k /= k.sum()
+    if x.ndim == 1:
+        return np.convolve(np.pad(x, r, mode="edge"), k, mode="valid")
+    xp = np.pad(x, [(r, r)] + [(0, 0)] * (x.ndim - 1), mode="edge")
+    return np.apply_along_axis(lambda c: np.convolve(c, k, mode="valid"), 0, xp)
+
+
 def fuse(
     t: np.ndarray,
     acc: np.ndarray,
@@ -367,11 +393,7 @@ def fuse(
     upf = np.stack([np.interp(ft, tb, up[:, k]) for k in range(3)], 1)
     upf /= np.linalg.norm(upf, axis=1, keepdims=True)
     hf = np.degrees(np.interp(ft, tb, head))
-    sigma = max(1, int(heading_smooth_s * fps))
-    ker = np.exp(-0.5 * (np.arange(-3 * sigma, 3 * sigma + 1) / sigma) ** 2)
-    ker /= ker.sum()
-    pad = np.pad(hf, len(ker) // 2, mode="edge")
-    hs = np.convolve(pad, ker, mode="valid")[:n_frames]
+    hs = gauss_smooth(hf, max(1, int(heading_smooth_s * fps)))
     q = quat_interp(t, quat_track(t, a_v, w_v, gain), ft + q_offset_s)
     return Orientation(
         t=ft,
@@ -404,19 +426,12 @@ def orientation(
     ``q_offset_s`` (the renderer's IMU sync) recomputes a track cached with
     another offset; None takes any.
     """
-    path = cache.source_dir(source) / f"x3-orient-v{ORIENT_VERSION}.npz"
+    path = _orient_path(source)
     meta = cache.load_json(path.with_suffix(".json")) or {"fps": fps}
     same = q_offset_s is None or meta.get("q_offset_s", 0.0) == q_offset_s
     if not force and same and path.exists():
         with np.load(path) as z:
-            return Orientation(
-                t=z["t"],
-                up=z["up"],
-                heading=z["heading"],
-                heading_smooth=z["heading_smooth"],
-                meta=meta,
-                q=z["q"],
-            )
+            return _cached_orientation(z, meta)
     t0 = time.perf_counter()
     t, acc, gyr = load_imu(insv00)
     o = fuse(t, acc, gyr, fps, n_frames, q_offset_s=q_offset_s or 0.0)

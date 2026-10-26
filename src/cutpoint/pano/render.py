@@ -103,11 +103,7 @@ def _gauss(x: np.ndarray, sigma: float) -> np.ndarray:
     """Gaussian low-pass along axis 0 (edge-padded)."""
     if sigma <= 0.5:
         return x
-    r = int(3 * sigma)
-    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
-    k /= k.sum()
-    xp = np.pad(x, [(r, r)] + [(0, 0)] * (x.ndim - 1), mode="edge")
-    return np.apply_along_axis(lambda c: np.convolve(c, k, mode="valid"), 0, xp)
+    return G.gauss_smooth(x, sigma)
 
 
 def _slerp(a: np.ndarray, b: np.ndarray, f: float) -> np.ndarray:

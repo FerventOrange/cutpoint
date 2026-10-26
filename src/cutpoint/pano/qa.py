@@ -316,13 +316,6 @@ def frame_flags(
 
 
 # --------------------------------------------------------------------------- path metrics
-def _segment_index(path: dict[str, Any], times: np.ndarray) -> np.ndarray:
-    """Shot index per time (the same split as :func:`director.evaluate`)."""
-    kt = np.array([k["t"] for k in path["keys"]], float)
-    cut_t = kt[[i for i, k in enumerate(path["keys"]) if k.get("cut")]]
-    return np.searchsorted(cut_t, times, side="right") if len(cut_t) else np.zeros(len(times), int)
-
-
 def pan_metrics(
     path: dict[str, Any], start: float, dur: float, fps: float = 30.0
 ) -> dict[str, Any]:
@@ -334,11 +327,11 @@ def pan_metrics(
     (key interpolation can step the velocity at keys, which makes raw second
     differences impulsive).
     """
-    from cutpoint.pano.director import evaluate  # noqa: PLC0415
+    from cutpoint.pano.director import evaluate, shot_index  # noqa: PLC0415
 
     times = start + np.arange(0.0, max(dur, 1.0 / fps), 1.0 / fps)
     yaw, pitch, fov = evaluate(path, times)
-    seg = _segment_index(path, times)
+    seg = shot_index(path, times)
 
     def rate(a: np.ndarray, b: np.ndarray, scale: np.ndarray | None = None) -> np.ndarray:
         da = np.diff(a) * (1.0 if scale is None else scale[1:])
@@ -382,13 +375,18 @@ def pan_metrics(
     }
 
 
+def nearest_keys(keys: list[dict[str, Any]], times: Any) -> list[dict[str, Any]]:
+    """The nearest path key per (source) time (ties: the earlier key)."""
+    kt = np.array([k["t"] for k in keys], float)
+    idx = np.abs(kt[None, :] - np.asarray(times, float)[:, None]).argmin(1)
+    return [keys[int(i)] for i in idx]
+
+
 def targets_at(path: dict[str, Any] | None, times: np.ndarray) -> list[str]:
     """Director target of the nearest path key per (source) time."""
     if path is None or not path.get("keys"):
         return ["unknown"] * len(times)
-    kt = np.array([k["t"] for k in path["keys"]], float)
-    idx = np.abs(kt[None, :] - np.asarray(times)[:, None]).argmin(1)
-    return [path["keys"][int(i)]["target"] for i in idx]
+    return [k["target"] for k in nearest_keys(path["keys"], times)]
 
 
 def horizon_roll(orient: Any, path: dict[str, Any], times: np.ndarray) -> np.ndarray:

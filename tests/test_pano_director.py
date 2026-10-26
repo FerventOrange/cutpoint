@@ -19,6 +19,7 @@ import pytest
 
 import pano_helpers as helpers
 from cutpoint.events import visual as V
+from cutpoint.events.common import nearest_index
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
@@ -74,6 +75,32 @@ def path_of(
 
 def mean_abs_yaw(path: dict, centre: float) -> float:
     return float(np.mean([abs((k["yaw"] - centre + 180) % 360 - 180) for k in path["keys"]]))
+
+
+# --------------------------------------------------------------------------- helpers
+def test_wrap_deg() -> None:
+    d = np.array([-540.0, -180.0, -90.0, 0.0, 179.5, 180.0, 360.0, 540.0])
+    assert G.wrap_deg(d).tolist() == [-180.0, -180.0, -90.0, 0.0, 179.5, -180.0, 0.0, -180.0]
+    assert float(G.wrap_deg(190.0)) == -170.0
+
+
+def test_gauss_smooth_edges_and_axis() -> None:
+    x = np.r_[np.zeros(20), np.ones(20)]
+    y = G.gauss_smooth(x, 2.0)
+    assert len(y) == len(x)
+    assert y[0] == 0.0 and y[-1] == 1.0  # edge-padded: no pull toward 0 at the ends
+    assert y[19] == pytest.approx(1 - y[20])  # symmetric about the step
+    two = G.gauss_smooth(np.stack([x, 3 * x], 1), 2.0)  # columns smoothed along axis 0
+    assert np.array_equal(two[:, 0], y) and np.allclose(two[:, 1], 3 * y)
+
+
+def test_nearest_frame_resampling() -> None:
+    t = np.array([0.0, 1.0, 2.0])
+    assert nearest_index(t, np.array([-1.0, 0.5, 0.6, 1.5, 9.0])).tolist() == [0, 0, 1, 1, 2]
+    assert nearest_index(np.array([2.0]), np.array([0.0, 5.0])).tolist() == [0, 0]
+    # one view frame: held for ``hold`` s, 0 beyond
+    out = D._interp_frames(np.array([2.0]), np.array([7.0]), np.array([0.5, 1.5, 3.0, 3.5]))
+    assert out.tolist() == [0.0, 7.0, 7.0, 0.0]
 
 
 # --------------------------------------------------------------------------- views

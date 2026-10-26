@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from cutpoint.events.regions import HudPreset, game_key_for_path, load_preset
+from cutpoint.events.regions import HudPreset, as_list, game_key_for_path, load_preset
 from cutpoint.styles import style_names
 
 logger = logging.getLogger(__name__)
@@ -192,7 +192,7 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
 
 
 def _strs(v: Any) -> tuple[str, ...]:
-    return tuple(str(x).upper() for x in (v if isinstance(v, list) else [v] if v else []))
+    return tuple(str(x).upper() for x in as_list(v))
 
 
 def _num(v: Any) -> float | None:
@@ -205,7 +205,7 @@ def _clamp(v: float | None, hi: float) -> float | None:
 
 def _styles(v: Any) -> tuple[str, ...] | None:
     """``styles`` from preset JSON: a name or a list of names (empty: every style)."""
-    names = tuple(str(x) for x in (v if isinstance(v, list) else [v] if v else []))
+    names = tuple(str(x) for x in as_list(v))
     unknown = [n for n in names if n not in style_names()]
     if unknown:
         raise ValueError(f"unknown style(s) {unknown}; choose from {style_names()}")

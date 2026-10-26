@@ -68,13 +68,11 @@ def person_rows(pv: Any) -> tuple[np.ndarray, np.ndarray]:
 
 def view_frame_index(pv_t: np.ndarray, times: np.ndarray, hold: float = HOLD_S) -> np.ndarray:
     """Nearest view frame per time (-1 when farther than ``hold``)."""
+    from cutpoint.events.common import nearest_index  # noqa: PLC0415
+
     if not len(pv_t):
         return np.full(len(times), -1)
-    if len(pv_t) == 1:
-        return np.where(np.abs(pv_t[0] - times) <= hold, 0, -1)
-    idx = np.clip(np.searchsorted(pv_t, times), 1, max(1, len(pv_t) - 1))
-    left = np.clip(idx - 1, 0, len(pv_t) - 1)
-    pick = np.where(np.abs(pv_t[left] - times) <= np.abs(pv_t[idx] - times), left, idx)
+    pick = nearest_index(pv_t, times)
     return np.where(np.abs(pv_t[pick] - times) <= hold, pick, -1)
 
 

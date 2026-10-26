@@ -27,6 +27,7 @@ def clip_sheets(
     from cutpoint.events.sheets import contact_sheet  # noqa: PLC0415
     from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
     from cutpoint.pano.director import evaluate  # noqa: PLC0415
+    from cutpoint.pano.qa import nearest_keys  # noqa: PLC0415
 
     manifest = cache.load_json(clips_dir / "manifest.json") or {}
     by_file = {e["file"]: e for e in manifest.get("clips", [])}
@@ -47,7 +48,7 @@ def clip_sheets(
                 if path is not None:
                     src_t = float(e["start"]) + t
                     y, p, _ = evaluate(path, np.array([src_t]))
-                    key = min(path["keys"], key=lambda q: abs(q["t"] - src_t))
+                    key = nearest_keys(path["keys"], [src_t])[0]
                     cap += f" {key['target']} y{y[0]:.0f} p{p[0]:.0f}"
                 items.append({"path": str(f), "t": float(t), "caption": cap})
         out = out_dir / f"sheet_{k // clips_per_sheet + 1:02d}.jpg"
