@@ -121,15 +121,129 @@ def test_top_notice_with_changing_text() -> None:
     assert p["x"] + p["w"] < 1480  # clear of the feed
 
 
-def test_bottom_notice_with_one_text_and_a_low_share() -> None:
+def test_bottom_notice_with_two_texts_in_three_bursts() -> None:
+    texts = ["Hold the line", "Zone lost", "Hold the line"]
     extra = {
-        (b, k): [_centred("Hold the line", 960, 870, h=22)] for b in (5, 18, 30) for k in (0, 1)
+        (b, k): [_centred(t, 960, 870, h=22)]
+        for b, t in zip((5, 18, 30), texts, strict=True)
+        for k in (0, 1)
     }
     found = _extra(_frames(extra))
     assert len(found) == 1
     assert all(_holds(found[0], b) for bs in extra.values() for b in bs)
-    assert found[0]["evidence"]["distinct"] == 1
+    assert found[0]["evidence"]["distinct"] == 2
     assert found[0]["evidence"]["share"] < 0.05
+
+
+def _label(texts: list[str], bursts: range, x: int = 1700, y: int = 20) -> dict[Any, Any]:
+    """Right-aligned text at (x, y) in two frames of each of ``bursts``, ``texts`` in turn."""
+    return {
+        (b, k): [_box(t, x + 140 - 14 * len(t), y, w=14 * len(t))]
+        for i, b in enumerate(bursts)
+        for k in (0, 1)
+        for t in [texts[i % len(texts)]]
+    }
+
+
+def test_labels_that_come_back_give_nothing() -> None:
+    # one text in 3 bursts, or two in 7 (one of them misread now and then): a map or mode
+    # label, not a notice, even in few frames
+    assert _extra(_frames(_label(["Harbor"], range(4, 40, 13)))) == []
+    two = ["Harbor", "Casual", "Harbor", "Casual", "Harb0r", "Casual", "Harbour"]
+    assert _extra(_frames(_label(two, range(2, 40, 5)))) == []
+    # OCR cuts and misreads of one long line still count as one text
+    cuts = ["Custom fonts enabled", "Custom fon", "Custom fonts enab1ed", "Cust"]
+    assert _extra(_frames(_label(cuts * 2, range(1, 40, 5), x=200, y=80))) == []
+
+
+def test_block_of_labels_with_one_changing_line_gives_nothing() -> None:
+    # a menu: three stacked labels in 10 bursts and, under them, a line that changes now
+    # and then; merged, the labels make up most of it
+    rows = ["Server region west", "Party of four", "Mode classic"]
+    news = dict(zip((4, 16, 28), ["Friend joined", "Invite sent", "Friend left"], strict=True))
+    changing = {(b, 0): [_box(t, 60, 150, w=14 * len(t))] for b, t in news.items()}
+    labels = {
+        (b, k): [_box(t, 60, 60 + 30 * r, w=14 * len(t)) for r, t in enumerate(rows)]
+        for b in range(0, 40, 4)
+        for k in (0, 1)
+    }
+    menu = {key: labels.get(key, []) + changing.get(key, []) for key in labels | changing}
+    assert _extra(_frames(menu)) == []
+    assert len(_extra(_frames(changing))) == 1  # on its own, the changing line is a notice
+
+
+def test_fixed_phrase_with_changing_names_stays() -> None:
+    # one long phrase with another name in each of 5 bursts: 5 texts, not OCR variants of one
+    names = ["Boxer", "Quill", "Orrin", "Sable", "Tarn"]
+    extra = {
+        (b, k): [_centred(f"Enemy convoy spotted by {n}", 960, 300)]
+        for b, n in zip(range(2, 40, 8), names, strict=True)
+        for k in (0, 1)
+    }
+    # in 2 frames per burst main discovery finds it too; the preset of a game may not have it
+    found = _extra(_frames(extra), covered=(FEED, bigtext_region()))
+    assert len(found) == 1 and found[0]["evidence"]["distinct"] == 5
+    assert not discover._same_text("enemyconvoyspottedbyboxer", "enemyconvoyspottedbyquill")
+    assert discover._same_text("enemyconvoyspottedbyboxer", "enemyconvoyspottedbyboker")
+
+
+def test_brief_notice_that_recurs_stays() -> None:
+    # one text in 6 bursts but a single frame each time: a notice that recurs, not a label
+    brief = {(b, 1): [_centred("Hold the line", 960, 300)] for b in range(3, 40, 7)}
+    assert len(_extra(_frames(brief))) == 1
+    # in 3 of the 4 frames of each burst it stays: a label
+    stays = {(b, k): bs for (b, _), bs in brief.items() for k in (0, 1, 2)}
+    assert _extra(_frames(stays)) == []
+
+
+def test_column_of_short_names_stays() -> None:
+    # a killer column split off a feed by a wide icon: short camelCase or digit names are
+    # readouts one by one, but a gauge repeats a few texts and these are all different
+    names = ["DarkWolf", "Wren7", "TinFox", "RedOwl9", "IceBat", "SunElk3", "BluJay"]
+    names += ["MossCat", "Vexo42", "OakRam"]
+    column = {
+        (b, 1): [_box(n, 300, 500, w=14 * len(n))]
+        for b, n in zip(range(1, 40, 4), names, strict=True)
+    }
+    assert all(discover._readout(n, DiscoverParams().notice_readout_chars) for n in names)
+    found = _extra(_frames(column))
+    assert len(found) == 1 and found[0]["evidence"]["distinct"] == 10
+
+
+def test_two_texts_that_keep_coming_back_give_nothing() -> None:
+    # two texts in turn over 10 bursts: a menu button, not a notice
+    assert _extra(_frames(_label(["Ready up", "Leave queue"], range(0, 40, 4), y=300))) == []
+
+
+def test_gauge_readouts_give_nothing() -> None:
+    # a gauge: short label-and-number lines that change with every burst
+    texts = ["ALT40ft", "SPD9kt", "FUEL5", "TRIMup", "ALT45ft", "SPD12kt", "FUEL4"]
+    gauge = {
+        (b, k): [_box(texts[(b + k) % 7], 20, 960, w=100)] for b in range(0, 40, 3) for k in (0, 1)
+    }
+    assert not discover._steady(
+        [{"text": t, "bkey": ("rec.mp4", b), "fid": str(b)} for b, t in enumerate(texts)],
+        DiscoverParams(),
+    )
+    assert _extra(_frames(gauge)) == []
+    # plain words in capitals are no readouts: a role list with changing words stays
+    roles = ["PILOT", "MEDIC", "SCOUT", "PILOT"]
+    found = _extra(_frames(_label(roles, range(3, 40, 10), y=300)))
+    assert len(found) == 1 and found[0]["evidence"]["distinct"] == 3
+
+
+def test_readout_rule() -> None:
+    chars = DiscoverParams().notice_readout_chars
+    assert discover._readout("RPM2100", chars) and discover._readout("ALTft", chars)
+    assert not discover._readout("Gunner", chars) and not discover._readout("LOADER", chars)
+    assert not discover._readout("commander", chars)
+    assert not discover._readout("Vexford12 Wren", chars)  # a longer line, such as a feed
+    # letters of any script count: a Cyrillic or CJK notice with a digit is no readout
+    assert not discover._readout("Захвачена точка 2", chars)
+    assert not discover._readout("我方正在占领据点2", chars)
+    assert not discover._readout("Танк", chars)  # a capitalised word
+    # scripts without case have no mixed-case words
+    assert not discover._readout("据点已占领", chars) and not discover._readout("عدو", chars)
 
 
 def test_watermark_and_clock_give_nothing() -> None:
@@ -169,7 +283,8 @@ def test_small_text_inside_big_text_is_outside() -> None:
 
 def test_partial_scoreboard_gives_nothing() -> None:
     def board(b: int) -> list[dict[str, Any]]:
-        return [_box(f"{NAMES[(b + r) % 10]}ford {r + 3}", 60, 70 + r * 80) for r in range(12)]
+        names = [NAMES[(b // 10 + r) % 10] for r in range(12)]
+        return [_box(f"{n}fordson {r + 3}", 60, 70 + r * 80) for r, n in enumerate(names)]
 
     extra = {(b, k): board(b) for b in (4, 14, 24) for k in (0, 1)}
     frames = _frames(extra)
@@ -197,10 +312,11 @@ def _five() -> dict[tuple[int, int], list[dict[str, Any]]]:
     """Five notices one above the other, one frame per burst; (bursts, distinct texts)
     per notice: (3, 1), (3, 2), (3, 3), (4, 2), (4, 3)."""
     plan = [(3, 1), (3, 2), (3, 3), (4, 2), (4, 3)]
+    words = ["Relay lost", "Gate sealed", "Drop inbound"]
     extra: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for i, (n_bursts, n_texts) in enumerate(plan):
         for j in range(n_bursts):
-            text = f"Notice {'ABC'[i % 3]}{'xyz'[j % n_texts]}{'pqrst'[i]}"
+            text = f"{words[j % n_texts]} {['north', 'south', 'east', 'west', 'core'][i]}"
             extra.setdefault((3 + 7 * j + i, 1), []).append(_centred(text, 960, 250 + i * 150))
     return extra
 
@@ -285,6 +401,28 @@ def test_new_preset_gets_the_regions(
     assert [r["name"] for r in extra] == ["extra_notice"]
     assert "suggested_regions" not in installed
     assert any(r["kind"] == "feed" for r in installed["regions"])
+
+
+@pytest.mark.parametrize(("outside", "suggested"), [(1, ["extra_notice2"]), (2, [])])
+def test_preset_outside_regions_count_against_the_cap(
+    home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outside: int,
+    suggested: list[str],
+) -> None:
+    # two notices: a preset with one outside region gets one suggestion, with two none
+    own = [
+        {"name": f"extra_notice{'' if i == 0 else i + 1}", "x": 0, "y": 400 + 60 * i}
+        | {"w": 50, "h": 40, "kind": "notice", "gate": "det", "every": 3, "origin": "outside"}
+        for i in range(outside)
+    ]
+    write_preset(paths.presets_dir(), verbfeed(regions=[*verbfeed()["regions"], *own]))
+    _patch(monkeypatch, _frames(_five()))
+    out = pipeline._discover(
+        tmp_path / "proj", [_source(tmp_path)], OcrParams(game="verbfeed"), True, BURSTS, "user"
+    )
+    assert [r["name"] for r in out["verbfeed"]["suggested_regions"]] == suggested
 
 
 def test_origin_changes_no_cache_key() -> None:

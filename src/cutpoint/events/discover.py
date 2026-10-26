@@ -29,9 +29,11 @@ changes*:
   cells to count as dynamic becomes up to 2 extra ``notice`` regions
   (:func:`notice_proposals`; ``extra_notice``, ``extra_notice2``, marked
   ``"origin": "outside"``): it must recur at a fixed screen anchor (left edge,
-  right edge or centre) in 3+ bursts, with changing text or briefly. A new preset
-  gets them with the rest; for a game with a preset they are only listed under
-  ``suggested_regions`` in the proposal, to be copied into the preset by hand.
+  right edge or centre) in 3+ bursts, and not as one or two texts that come back
+  burst after burst and stay on screen (a label) or a few short readouts (a gauge). A
+  new preset gets them with the rest; for a game with a preset they are only listed
+  under ``suggested_regions`` in the proposal, to be copied into the preset by hand,
+  and its own outside regions count against the 2.
 
 The proposal is written as a preset JSON (see :mod:`cutpoint.events.regions`)
 plus ``discovery/overlay.jpg`` (mean frame, dynamic-text heat map, proposed
@@ -46,10 +48,11 @@ import json
 import logging
 import re
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -93,7 +96,11 @@ FEED_GROW_MAX = 2.0
 # NOTICE_SCOREBOARD_SHARE of them with a box-count jump. Rectangles stacked within
 # NOTICE_MERGE_GAP text heights and overlapping by NOTICE_MERGE_OVERLAP merge; they are padded
 # NOTICE_PAD_Y px and NOTICE_PAD_X of the width, and dropped over NOTICE_MAX_AREA of the frame
-# or NOTICE_MAX_LINES lines. Text of NOTICE_BIG_TEXT_H px is detected at 0.6x.
+# or NOTICE_MAX_LINES lines. Text of NOTICE_BIG_TEXT_H px is detected at 0.6x. Two texts
+# (lower-cased, digits left out) count as one when the shorter one, NOTICE_SAME_MIN characters
+# or more, is part of the longer one or they match by NOTICE_SAME_RATIO (difflib ratio) with
+# at most NOTICE_SAME_EDITS characters of the two unmatched: OCR misreads and cuts one text in
+# many ways, while a fixed phrase with a different name is another text.
 NOTICE_MIN_H = 10
 NOTICE_MAX_H = 0.06
 NOTICE_STATIC_SHARE = 0.45
@@ -111,6 +118,9 @@ NOTICE_MAX_AREA = 0.06
 NOTICE_MAX_LINES = 4
 NOTICE_BIG_TEXT_H = 30
 NOTICE_SAMPLES = 8
+NOTICE_SAME_MIN = 4
+NOTICE_SAME_RATIO = 0.8
+NOTICE_SAME_EDITS = 3
 NOTICE_BAND = 0.5 * NOTICE_MAX_H * REF_H  # cluster lookup band: half the tallest text
 
 
@@ -136,13 +146,28 @@ class DiscoverParams:
     min_burst_share: float = 0.08  # ...and in >= 8% of the gameplay bursts
     min_occupancy: float = 0.03  # ...and in >= 3% of the gameplay frames
     # outside notices (see notice_proposals): a cluster of text outside every covered
-    # region needs notice_min_bursts bursts and, with a single text, at most
-    # notice_max_share of the frames; at most notice_max_regions are proposed (0: off).
+    # region needs notice_min_bursts bursts; at most notice_max_regions are proposed,
+    # counting the preset's own outside regions (0: off).
     # 3 bursts, not 2: world text (signs, name tags) lands within a text height of an
     # earlier sighting in some second burst by chance; in three, rarely
     notice_min_bursts: int = 3
-    notice_max_share: float = 0.35
     notice_max_regions: int = 2
+    # a cluster whose lines are, for notice_steady_share of them, one or two texts (OCR
+    # variants count as one) is a label when it shows in more than notice_steady_bursts
+    # bursts per text (a map name, a lobby line, a gauge label; a notice with two messages
+    # in 3 or 4 bursts stays) and in notice_steady_frames of the frames of those bursts (a
+    # notice that recurs for a frame or so stays); stacked lines merged into one notice
+    # are dropped when labels and gauges make up notice_steady_share of them
+    notice_steady_share: float = 0.8
+    notice_steady_bursts: float = 2.0
+    notice_steady_frames: float = 0.3
+    # ...and a gauge when notice_readout_share of its lines are readouts (at most
+    # notice_readout_chars letters and digits, with a digit or mixed case: "RPM2100",
+    # "ALTft"; plain words in any case, such as role names, are no readouts) of at most
+    # notice_readout_texts texts with digits left out (a column of short names has more)
+    notice_readout_chars: int = 8
+    notice_readout_share: float = 0.5
+    notice_readout_texts: int = 4
 
 
 # --------------------------------------------------------------------------- sampling
@@ -763,6 +788,73 @@ def _notice_letters(text: str) -> bool:
     return letters >= 4 and letters >= 0.6 * len(text.replace(" ", ""))
 
 
+def _same_text(a: str, b: str) -> bool:
+    """Whether two :func:`_static_key` texts are one text read differently: the shorter
+    one (:data:`NOTICE_SAME_MIN` characters or more) is part of the longer one, or they
+    match by :data:`NOTICE_SAME_RATIO` with at most :data:`NOTICE_SAME_EDITS` characters
+    of the two left unmatched (so "<phrase> <name>" with another name is another text)."""
+    short, long = sorted((a, b), key=len)
+    if len(short) >= NOTICE_SAME_MIN and short in long:
+        return True
+    if len(long) - len(short) > NOTICE_SAME_EDITS:  # at least this many left unmatched
+        return False
+    sm = SequenceMatcher(None, a, b, autojunk=False)
+    matched = sum(m.size for m in sm.get_matching_blocks())
+    return sm.ratio() >= NOTICE_SAME_RATIO and len(a) + len(b) - 2 * matched <= NOTICE_SAME_EDITS
+
+
+def _text_groups(keys: list[str]) -> list[int]:
+    """Line counts of the texts among ``keys`` (:func:`_static_key` per line, empty ones
+    left out), with texts that :func:`_same_text` matches counted as one, largest first.
+    Texts join the first group whose most frequent text they match, most frequent first."""
+    reps: list[str] = []
+    sizes: list[int] = []
+    for key, n in sorted(Counter(k for k in keys if k).items(), key=lambda kv: (-kv[1], kv[0])):
+        i = next((i for i, r in enumerate(reps) if _same_text(key, r)), None)
+        if i is None:
+            reps.append(key)
+            sizes.append(n)
+        else:
+            sizes[i] += n
+    return sorted(sizes, reverse=True)
+
+
+def _steady(lines: list[dict[str, Any]], params: DiscoverParams) -> bool:
+    """Whether a cluster's ``lines`` are a label, not a notice: one or two texts
+    (:func:`_text_groups`) make up ``params.notice_steady_share`` of them, the cluster
+    shows in more than ``params.notice_steady_bursts`` bursts per text and it stays: in
+    at least ``params.notice_steady_frames`` of the frames of its bursts (a notice that
+    recurs shows for a frame or so per burst)."""
+    sizes = _text_groups([_static_key(ln["text"]) for ln in lines])
+    total = sum(sizes)
+    if not total:
+        return False
+    texts = next((k for k in (1, 2) if sum(sizes[:k]) >= params.notice_steady_share * total), None)
+    bursts = len({ln["bkey"] for ln in lines})
+    frames = len({ln["fid"] for ln in lines})
+    return (
+        texts is not None
+        and bursts > params.notice_steady_bursts * texts
+        and frames >= params.notice_steady_frames * params.burst_frames * bursts
+    )
+
+
+def _readout(text: str, max_chars: int) -> bool:
+    """Whether a line is a gauge readout: at most ``max_chars`` letters and digits, with
+    a digit or a word in mixed case (both cases, not capitalised; scripts without case
+    have no mixed-case words)."""
+    chars = [ch for ch in text if ch.isalnum()]
+    if not chars or len(chars) > max_chars:
+        return False
+    if any(ch.isdigit() for ch in chars):
+        return True
+    words = re.findall(r"[^\W\d_]+", text)
+    return any(
+        any(c.isupper() for c in w) and any(c.islower() for c in w) and not w.istitle()
+        for w in words
+    )
+
+
 def _frame_lines(boxes: list[dict[str, Any]]) -> list[dict[str, float | str]]:
     """Boxes of one frame joined into text lines: centres within half a text height
     and a gap of at most 1.5 text heights."""
@@ -899,6 +991,7 @@ def notice_proposals(
     covered: tuple[Region, ...],
     params: DiscoverParams,
     static_mask: np.ndarray,
+    existing: int = 0,
 ) -> list[dict[str, Any]]:
     """Extra ``notice`` regions where text keeps appearing outside every covered region.
 
@@ -922,27 +1015,36 @@ def notice_proposals(
       matching cluster with the nearest centre (the first on a tie); clusters are
       looked up in bands of :data:`NOTICE_BAND` px, the most half a text height can
       reach.
-    * A cluster is kept when it shows in ``params.notice_min_bursts`` bursts and
-      :data:`NOTICE_MIN_FRAMES` frames, has 2+ distinct texts or shows in at most
-      ``params.notice_max_share`` of the frames, and fewer than
-      :data:`NOTICE_SCOREBOARD_SHARE` of its frames have ``params.menu_jump`` times
-      the source's median box count (a partial scoreboard).
+    * A cluster needs ``params.notice_min_bursts`` bursts and :data:`NOTICE_MIN_FRAMES`
+      frames, and fewer than :data:`NOTICE_SCOREBOARD_SHARE` of its frames with
+      ``params.menu_jump`` times the source's median box count (a partial scoreboard).
+    * A notice changes text. A cluster is a label (:func:`_steady`) when one or two
+      texts, OCR variants counted as one (:func:`_text_groups`), make up
+      ``params.notice_steady_share`` of its lines and it shows in more than
+      ``params.notice_steady_bursts`` bursts per text, in at least
+      ``params.notice_steady_frames`` of the frames of those bursts; it is a gauge when
+      ``params.notice_readout_share`` of its lines are readouts (:func:`_readout`:
+      ``params.notice_readout_chars`` letters and digits at most, with a digit or mixed
+      case) of at most ``params.notice_readout_texts`` texts (digits left out).
     * Its rectangle spans the 5th to 95th percentile of the line edges; rectangles
       stacked within :data:`NOTICE_MERGE_GAP` text heights that overlap horizontally
-      by :data:`NOTICE_MERGE_OVERLAP` merge. Padding: :data:`NOTICE_PAD_Y` px up and
+      by :data:`NOTICE_MERGE_OVERLAP` merge, labels and gauges too; a merged rectangle
+      is dropped when labels and gauges make up ``params.notice_steady_share`` of its
+      lines (a block of menu labels). Padding: :data:`NOTICE_PAD_Y` px up and
       down, :data:`NOTICE_PAD_X` of the width on the side(s) the text grows to (both
       for centred text, right for left-aligned, left for right-aligned). A rectangle
       over :data:`NOTICE_MAX_AREA` of the frame or taller than
       :data:`NOTICE_MAX_LINES` lines is dropped; overlaps with covered regions that
       are not height-gated are cut off.
-    * The ``params.notice_max_regions`` best (bursts x distinct texts) are named
+    * The ``params.notice_max_regions`` best (bursts x distinct texts), less the
+      ``existing`` outside regions the covered preset already has, are named
       ``extra_notice``, ``extra_notice2``, ... (never a name in ``covered``).
 
     Returns:
         Proposals ``{name, kind: "notice", x, y, w, h, score, evidence}`` (the
         final, padded rectangle; ``evidence["outside"]`` is True), best first.
     """
-    if params.notice_max_regions <= 0 or not game_frames:
+    if params.notice_max_regions <= existing or not game_frames:
         return []
     n_frames = len(game_frames)
     per_source: dict[str, list[dict[str, Any]]] = {}
@@ -1006,23 +1108,41 @@ def notice_proposals(
             for a in means[best]:
                 means[best][a] += (ln[a] - means[best][a]) / n
         bands.setdefault(int(means[best]["cy"] // NOTICE_BAND), set()).add(best)
-    kept: list[list[dict[str, Any]]] = []
+    candidates: list[list[dict[str, Any]]] = []
     why: dict[str, int] = {}
     for c in clusters:
         frames = {ln["fid"] for ln in c}
-        texts = {_static_key(ln["text"]) for ln in c} - {""}
         checks = (
             ("bursts", len({ln["bkey"] for ln in c}) < params.notice_min_bursts),
             ("frames", len(frames) < NOTICE_MIN_FRAMES),
-            ("steady", len(texts) < 2 and len(frames) / n_frames > params.notice_max_share),
             ("scoreboard", len(frames & busy) >= NOTICE_SCOREBOARD_SHARE * len(frames)),
         )
         stop = next((name for name, hit in checks if hit), None)
-        if stop is None:
-            kept.append(c)
-        else:
+        if stop is not None:
             why[stop] = why.get(stop, 0) + 1
-    kept = _merge_stacked(kept)
+            continue
+        # a label or gauge line still merges with a stacked notice (a fixed heading over a
+        # changing line) but is dropped on its own or when labels make up the merged one
+        readouts = [
+            _static_key(str(ln["text"]))
+            for ln in c
+            if _readout(str(ln["text"]), params.notice_readout_chars)
+        ]
+        gauge = (
+            len(readouts) >= params.notice_readout_share * len(c)
+            and len(_text_groups(readouts)) <= params.notice_readout_texts
+        )
+        fail = "steady" if _steady(c, params) else "readout" if gauge else None
+        candidates.append([ln | {"fail": fail} for ln in c])
+    kept: list[list[dict[str, Any]]] = []
+    for c in _merge_stacked(candidates):
+        fails = [ln["fail"] for ln in c if ln["fail"]]
+        if len(fails) == len(c):
+            why[fails[0]] = why.get(fails[0], 0) + 1
+        elif len(fails) >= params.notice_steady_share * len(c):  # a block of labels
+            why["labels"] = why.get("labels", 0) + 1
+        else:
+            kept.append(c)
     trims = tuple(r for r in covered if not _height_gated(r))
     out: list[dict[str, Any]] = []
     for c in kept:
@@ -1064,7 +1184,7 @@ def notice_proposals(
             }
         )
     out.sort(key=lambda p: (-p["score"], p["y"], p["x"]))
-    out = out[: params.notice_max_regions]
+    out = out[: max(0, params.notice_max_regions - existing)]
     taken = {r.name for r in covered}
     k = 1
     for p in out:
@@ -1200,6 +1320,7 @@ def discover_regions(
     params: DiscoverParams | None = None,
     on_frame: Callable[[int, int], None] | None = None,
     covered: tuple[Region, ...] | None = None,
+    outside: int = 0,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -1214,6 +1335,8 @@ def discover_regions(
         covered: The regions of the game's existing preset (with the big-text
             region, :meth:`~cutpoint.events.regions.HudPreset.all_regions`); None
             when it has none.
+        outside: How many ``"origin": "outside"`` regions that preset already has;
+            they count against ``params.notice_max_regions``.
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
@@ -1240,7 +1363,7 @@ def discover_regions(
     regions = proposals_to_regions(proposals)
     game_frames = gameplay_frames(frames, params)
     cover = covered if covered is not None else (*regions, bigtext_region())
-    extra = notice_proposals(game_frames, cover, params, maps["static"])
+    extra = notice_proposals(game_frames, cover, params, maps["static"], outside)
     extra_regions = [notice_region(p) for p in extra]
     proposals += extra
     info = probe(sources[0].io_path) if sources else None

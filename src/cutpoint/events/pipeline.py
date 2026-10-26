@@ -574,8 +574,14 @@ def _discover(
 
         t0 = time.perf_counter()
         # an existing preset's regions (and big-text check) are the covered ones: extra
-        # notice regions outside them are only suggested, the preset file stays as it is
-        covered = {"covered": existing.all_regions()} if existing is not None else {}
+        # notice regions outside them are only suggested, the preset file stays as it is;
+        # the outside regions it already has count against the extra-notice cap
+        covered: dict[str, Any] = {}
+        if existing is not None:
+            data = cache.load_json(existing.path) if existing.path else None
+            regs = data.get("regions") if isinstance(data, dict) else None
+            outside = sum(isinstance(r, dict) and r.get("origin") == "outside" for r in regs or [])
+            covered = {"covered": existing.all_regions(), "outside": outside}
         proposal = discover_regions(
             srcs,
             project / "discovery" / game,

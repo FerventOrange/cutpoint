@@ -13,10 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extra_notice2`) where text keeps showing outside every discovered region, such as a brief
   message at the top edge or small text inside the screen-centre big-text area, which reads
   only tall text. It uses the frames discovery already read, so it adds no OCR. A text line
-  needs to stay at one screen anchor in at least 3 bursts, change or show briefly, and not
-  be a static label or part of a partial scoreboard. A new preset gets these regions, marked
-  `"origin": "outside"`. For a game that already has a preset, `--discover-regions` writes
-  them only to `suggested_regions` in `proposal.json` and never changes the preset file.
+  needs to stay at one screen anchor in at least 3 bursts and change: one or two texts that
+  come back burst after burst and stay on screen (a map or mode label, a lobby line, OCR
+  misreads of either counted as one, a phrase with another name not), a few short readouts
+  such as a gauge, static labels and partial scoreboards are left out. A new preset gets these regions, marked `"origin": "outside"`. For a game that
+  already has a preset, `--discover-regions` writes them only to `suggested_regions` in
+  `proposal.json` and never changes the preset file, and the preset's own `"outside"`
+  regions count against the 2, so a preset that has 2 gets no more suggestions.
   `events --json` reports their number as `suggested` (#314).
 - The OCR layer keeps a raw read of each source: per frame, the HUD text it read and the few
   pixel rows its colour rules need, in `cache/<source>/ocr-raw-*` (the two most recently used per

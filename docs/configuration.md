@@ -272,7 +272,9 @@ text keeps showing outside every other region, including small text inside the b
 loader ignores this key, so it changes neither the region nor any cache key, and you can keep,
 move or delete such a region like any other. For a game that already has a preset, they are
 only written to `suggested_regions` in `<project>\discovery\<game>\proposal.json`: copy the
-entries you want into the preset's `regions`.
+entries you want into the preset's `regions`. Regions in the preset that carry
+`"origin": "outside"` count against the 2, so a preset with 2 of them gets no more
+suggestions.
 
 ### Event types and prompt keys
 
