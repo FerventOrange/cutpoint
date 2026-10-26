@@ -15,7 +15,7 @@ from cutpoint import capabilities, cli, ffmpeg_utils, jsonout
 from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
 
 
-def testenvelope_collects_outputs_project_and_warnings(tmp_path, capsys):
+def test_envelope_collects_outputs_project_and_warnings(tmp_path, capsys):
     with jsonout.run("analyze") as result:
         assert jsonout.active()
         jsonout.set_project(tmp_path / "p")
@@ -55,7 +55,7 @@ def test_relative_paths_become_absolute(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.slow
-def test_stdout_holds_only_theenvelope(capfd):
+def test_stdout_holds_only_the_envelope(capfd):
     """Prints, logs and child processes that inherit stdout go to stderr."""
     with jsonout.run("x"):
         print("stray print")
@@ -219,7 +219,7 @@ def _paths_raising(monkeypatch, err: BaseException) -> None:
         (KeyboardInterrupt(), "interrupted", 130, "interrupted"),
     ],
 )
-def test_cli_errorenvelope(monkeypatch, capsys, err, code, exit_code, message):
+def test_cli_error_envelope(monkeypatch, capsys, err, code, exit_code, message):
     _paths_raising(monkeypatch, err)
     assert cli.main(["paths", "--json"]) == exit_code
     out, stderr = capsys.readouterr()
@@ -236,7 +236,7 @@ def test_cli_error_without_json_prints_nothing_on_stdout(monkeypatch, capsys):
     assert capsys.readouterr().out == "noise\n"
 
 
-def test_cli_unexpected_exception_still_writesenvelope(monkeypatch, capsys):
+def test_cli_unexpected_exception_still_writes_envelope(monkeypatch, capsys):
     _paths_raising(monkeypatch, KeyError("bug"))
     with pytest.raises(KeyError):
         cli.main(["paths", "--json"])
@@ -258,7 +258,7 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
         (["clips", "p", "--size", "abc", "--json"], "argument --size: 'abc': expected WxH"),
     ],
 )
-def test_bad_argsenvelope(capsys, argv, message):
+def test_bad_args_envelope(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
@@ -295,7 +295,7 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
         ["fit", "x", "--json"],  # a command without --json (yet)
     ],
 )
-def test_bad_args_withoutenvelope(capsys, argv):
+def test_bad_args_without_envelope(capsys, argv):
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
@@ -443,7 +443,7 @@ def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
 # envelope. 360 qa --json-only (skip the contact sheets) is not a JSON output flag.
 
 
-def test_capabilities_json_is_theenvelope(monkeypatch, capsys):
+def test_capabilities_json_is_the_envelope(monkeypatch, capsys):
     data = {"gpu": {"nvidia": False}, "encoders": ["libx264"]}
     monkeypatch.setattr(capabilities, "report", lambda: data)
     assert cli.main(["capabilities", "--json"]) == 0
@@ -452,7 +452,7 @@ def test_capabilities_json_is_theenvelope(monkeypatch, capsys):
     assert doc["outputs"] == data and doc["warnings"] == []
 
 
-def test_profile_json_is_theenvelope_with_the_record_keys(home, monkeypatch, capsys):
+def test_profile_json_is_the_envelope_with_the_record_keys(home, monkeypatch, capsys):
     rec = {"name": "ski", "source": "detected", "profile": {"incident": {}}}
     monkeypatch.setattr(cli, "resolve_activity", lambda *a, **k: rec)
     assert cli.main(["profile", "proj", "--json"]) == 0
@@ -471,12 +471,12 @@ def test_profile_json_is_theenvelope_with_the_record_keys(home, monkeypatch, cap
         (["profile", "p", "--json"], "profile"),
     ],
 )
-def test_migrated_json_flags_use_theenvelope(argv, command):
+def test_migrated_json_flags_use_the_envelope(argv, command):
     args = cli.build_parser().parse_args(argv)
     assert args.json_result is True and args.json_command == command
     assert not hasattr(args, "json")
 
 
-def test_360_qa_json_only_still_skips_the_sheets_without_theenvelope():
+def test_360_qa_json_only_still_skips_the_sheets_without_the_envelope():
     args = cli.build_parser().parse_args(["360", "qa", "p", "--json-only"])
     assert args.json_only is True and args.json_result is False

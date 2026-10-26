@@ -256,7 +256,7 @@ EDIT_KEYS = {
 
 @pytest.mark.slow
 @needs_ffmpeg
-def test_edit_json_is_oneenvelope_with_the_sub_steps_outputs_and_warnings(
+def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
     video, home, capsys, caplog, monkeypatch
 ):
     # No loudnorm: its limiter resamples with soxr, which some ffmpeg builds lack.
