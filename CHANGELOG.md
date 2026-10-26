@@ -279,6 +279,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 360 analysis in the UI shows its planned steps as "Waiting" right away, instead of "Waiting for
   output..." until the first step starts (#320).
+- A clip whose source audio ends before the clip does (for example a clip at the very end of a
+  recording whose audio track is shorter than its video) ended with an abrupt cut: the audio
+  fade-out started after the audio had ended. `clips`, `assemble` and `360` renders now end the
+  fade-out where the audio ends. Measured with a 1.0 s tone in a 1.5 s clip and a 0.25 s fade, the
+  last 50 ms drop from -20.8 dB (unfaded) to -31.4 dB. When the audio covers the clip, or its
+  length is unknown (for example MKV without stream durations), nothing changes (#250).
 - An ffmpeg step that reports progress (audio extract, scene proxy) could wait forever after
   ffmpeg had exited, when another process still held ffmpeg's progress output open; an analysis
   then never finished. The step now ends when ffmpeg exits, after reading the rest of the

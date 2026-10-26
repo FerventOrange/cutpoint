@@ -575,7 +575,9 @@ def clip(tmp_path) -> Path:
 def test_real_ffprobe_json(clip):
     data = fu.ffprobe_json(clip, streams="v:0", entries="stream=width,height")
     assert data["streams"][0] == {"width": 64, "height": 48}
-    assert fu.probe(clip).audio_streams == 1
+    info = fu.probe(clip)
+    assert info.audio_streams == 1
+    assert info.audio_duration == pytest.approx(2.0, abs=0.05)
 
 
 @needs_ffmpeg
@@ -638,6 +640,30 @@ def test_real_decode_pcm(clip):
     assert np.abs(pcm).max() > 1000  # the tone, not silence
     window = fu.read_pcm_window(clip, fu.probe(clip), 0.5, 1.5)
     assert abs(len(window) // 2 - 16000) <= 160
+
+
+@pytest.mark.parametrize(
+    ("audios", "f_start", "expected"),
+    [
+        ([{"duration": "1.5"}], None, 1.5),
+        ([{"duration": "1.5"}, {"duration": "2.0"}], None, 2.0),
+        ([{}], None, None),
+        ([{"duration": "1.5"}, {}], None, None),
+        ([], None, None),
+        # -itsoffset 0.3: the audio starts 0.3 s in, so it ends 0.3 s after its duration
+        ([{"start_time": "0.3", "duration": "1.5"}], None, 1.8),
+        ([{"start_time": "0.3", "duration": "1.5"}], "0.1", 1.7),
+        ([{"duration": "1.5"}], "0.1", 1.5),  # no stream start: the container's
+    ],
+    ids=["one", "longest", "mkv", "partly-known", "no-audio", "late", "late-in-container",
+         "no-stream-start"],
+)  # fmt: skip
+def test_probe_audio_duration(monkeypatch, audios, f_start, expected):
+    video = {"codec_type": "video", "width": 64, "height": 48, "avg_frame_rate": "25/1"}
+    fmt = {"duration": "2.0"} | ({"start_time": f_start} if f_start else {})
+    data = {"format": fmt, "streams": [video, *({"codec_type": "audio"} | s for s in audios)]}
+    monkeypatch.setattr(fu, "ffprobe_json", lambda *a, **k: data)
+    assert fu.probe(Path("x.mkv")).audio_duration == pytest.approx(expected)
 
 
 # --------------------------------------------------------------------------- assemble

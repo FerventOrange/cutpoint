@@ -58,12 +58,16 @@ def baked_fades(clips_dir: Path, files: list[Path]) -> list[float]:
 
 
 def _audio_chain(i: int, info: MediaInfo, fade: float, label: int | None = None) -> str:
-    """``[a<label>]`` (default ``label = i``) from input ``i``: common format, edge fade."""
+    """``[a<label>]`` (default ``label = i``) from input ``i``: common format, edge fade.
+
+    Only track 0 is used; a multi-track input whose track 0 is shorter than its longest
+    track (``audio_duration``) keeps the old fade-out, after track 0 ends.
+    """
     label = i if label is None else label
     if info.audio_streams:
         return (
             f"[{i}:a:0]{A_FMT},asetpts=PTS-STARTPTS"
-            f"{audio_fade_filter(info.duration, fade)}[a{label}]"
+            f"{audio_fade_filter(info.duration, fade, info.audio_duration)}[a{label}]"
         )
     return f"{SILENCE},atrim=duration={info.vduration:.3f}[a{label}]"
 
