@@ -24,6 +24,14 @@ changes*:
       appears briefly;
     - ``notice``: other centred text lines (objective messages, hints);
     - ``dynamic``: anything else (reported, OCR'd with the generic vocabulary).
+* Text that keeps appearing outside every covered region (the discovered ones and
+  the big-text region, or an existing preset's regions) but too rarely for its
+  cells to count as dynamic becomes up to 2 extra ``notice`` regions
+  (:func:`notice_proposals`; ``extra_notice``, ``extra_notice2``, marked
+  ``"origin": "outside"``): it must recur at a fixed screen anchor (left edge,
+  right edge or centre) in 3+ bursts, with changing text or briefly. A new preset
+  gets them with the rest; for a game with a preset they are only listed under
+  ``suggested_regions`` in the proposal, to be copied into the preset by hand.
 
 The proposal is written as a preset JSON (see :mod:`cutpoint.events.regions`)
 plus ``discovery/overlay.jpg`` (mean frame, dynamic-text heat map, proposed
@@ -38,6 +46,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
@@ -49,7 +58,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.events.common import Source
-from cutpoint.events.regions import Region
+from cutpoint.events.regions import Region, bigtext_region
 from cutpoint.ffmpeg_utils import FFmpegError, grab_images, output_dir, probe
 
 logger = logging.getLogger(__name__)
@@ -75,6 +84,34 @@ FEED_GROW_MIN_FRAMES = 2
 FEED_GROW_VARIED = 0.75
 FEED_GROW_FULL_SHARE = 0.5
 FEED_GROW_MAX = 2.0
+# Outside notices (notice_proposals): text that keeps appearing outside every covered region.
+# A left-over box is NOTICE_MIN_H px to NOTICE_MAX_H of the frame height tall; text in
+# NOTICE_STATIC_SHARE of its source's frames, or on NOTICE_STATIC_CELLS static cells, is a
+# label. Boxes join into a line across a gap of NOTICE_JOIN_GAP text heights. Lines of
+# different frames cluster at heights within NOTICE_H_TOL and an edge or centre within
+# NOTICE_ANCHOR_PX; a cluster needs NOTICE_MIN_FRAMES frames and fewer than
+# NOTICE_SCOREBOARD_SHARE of them with a box-count jump. Rectangles stacked within
+# NOTICE_MERGE_GAP text heights and overlapping by NOTICE_MERGE_OVERLAP merge; they are padded
+# NOTICE_PAD_Y px and NOTICE_PAD_X of the width, and dropped over NOTICE_MAX_AREA of the frame
+# or NOTICE_MAX_LINES lines. Text of NOTICE_BIG_TEXT_H px is detected at 0.6x.
+NOTICE_MIN_H = 10
+NOTICE_MAX_H = 0.06
+NOTICE_STATIC_SHARE = 0.45
+NOTICE_STATIC_CELLS = 0.5
+NOTICE_JOIN_GAP = 1.5
+NOTICE_H_TOL = 0.25
+NOTICE_ANCHOR_PX = 24
+NOTICE_MIN_FRAMES = 3
+NOTICE_SCOREBOARD_SHARE = 0.5
+NOTICE_MERGE_GAP = 1.5
+NOTICE_MERGE_OVERLAP = 0.5
+NOTICE_PAD_Y = 12
+NOTICE_PAD_X = 0.25
+NOTICE_MAX_AREA = 0.06
+NOTICE_MAX_LINES = 4
+NOTICE_BIG_TEXT_H = 30
+NOTICE_SAMPLES = 8
+NOTICE_BAND = 0.5 * NOTICE_MAX_H * REF_H  # cluster lookup band: half the tallest text
 
 
 @dataclass
@@ -98,6 +135,14 @@ class DiscoverParams:
     min_hits: int = 3  # dynamic cell: text seen in >= this many bursts...
     min_burst_share: float = 0.08  # ...and in >= 8% of the gameplay bursts
     min_occupancy: float = 0.03  # ...and in >= 3% of the gameplay frames
+    # outside notices (see notice_proposals): a cluster of text outside every covered
+    # region needs notice_min_bursts bursts and, with a single text, at most
+    # notice_max_share of the frames; at most notice_max_regions are proposed (0: off).
+    # 3 bursts, not 2: world text (signs, name tags) lands within a text height of an
+    # earlier sighting in some second burst by chance; in three, rarely
+    notice_min_bursts: int = 3
+    notice_max_share: float = 0.35
+    notice_max_regions: int = 2
 
 
 # --------------------------------------------------------------------------- sampling
@@ -684,6 +729,381 @@ def cluster_regions(
     }
 
 
+# --------------------------------------------------------------------------- outside notices
+
+
+def _height_gated(r: Region) -> bool:
+    """Regions the OCR layer reads only text at least ``min_text_h`` tall in: any
+    det-gated region with ``min_text_h`` (its text detection drops shorter boxes) and
+    big-text and banner regions with it (their interpretation skips shorter lines),
+    such as the generic big-text check. Smaller text inside them is not read."""
+    return r.min_text_h > 0 and (r.gate == "det" or r.kind in ("bigtext", "banner"))
+
+
+def _is_covered(b: dict[str, Any], covered: tuple[Region, ...]) -> bool:
+    """Whether a region the OCR layer reads covers box ``b``: its centre lies in the
+    region and, for a height-gated one (:func:`_height_gated`), it is tall enough."""
+    cx, cy, h = (b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2, b["y1"] - b["y0"]
+    return any(
+        r.x <= cx <= r.x + r.w
+        and r.y <= cy <= r.y + r.h
+        and (not _height_gated(r) or h >= r.min_text_h)
+        for r in covered
+    )
+
+
+def _static_key(text: str) -> str:
+    return re.sub(r"[0-9]", "", _norm_text(text))
+
+
+def _notice_letters(text: str) -> bool:
+    """The OCR layer's rule for an unknown notice line: 4+ letters, 60% of the
+    characters (spaces left out)."""
+    letters = sum(ch.isalpha() for ch in text)
+    return letters >= 4 and letters >= 0.6 * len(text.replace(" ", ""))
+
+
+def _frame_lines(boxes: list[dict[str, Any]]) -> list[dict[str, float | str]]:
+    """Boxes of one frame joined into text lines: centres within half a text height
+    and a gap of at most 1.5 text heights."""
+    lines: list[dict[str, Any]] = []
+    for b in sorted(boxes, key=lambda b: (b["x0"], b["y0"], b["text"])):
+        h, cy = b["y1"] - b["y0"], (b["y0"] + b["y1"]) / 2
+        for ln in lines:
+            near = b["x0"] - ln["x1"] <= NOTICE_JOIN_GAP * max(h, ln["h"])
+            if near and abs(cy - ln["cy"]) <= 0.5 * min(h, ln["h"]):
+                ln["x1"] = max(ln["x1"], b["x1"])
+                ln["y0"], ln["y1"] = min(ln["y0"], b["y0"]), max(ln["y1"], b["y1"])
+                ln["hs"].append(h)
+                ln["texts"].append(b["text"])
+                break
+        else:
+            lines.append(
+                {"x0": b["x0"], "x1": b["x1"], "y0": b["y0"], "y1": b["y1"], "cy": cy, "h": h}
+                | {"hs": [h], "texts": [b["text"]]}
+            )
+    return [
+        {
+            "x0": ln["x0"],
+            "x1": ln["x1"],
+            "y0": ln["y0"],
+            "y1": ln["y1"],
+            "cy": (ln["y0"] + ln["y1"]) / 2,
+            "cx": (ln["x0"] + ln["x1"]) / 2,
+            "h": float(np.median(ln["hs"])),
+            "text": " ".join(ln["texts"]).strip(),
+        }
+        for ln in lines
+    ]
+
+
+def _cluster_stats(lines: list[dict[str, Any]], n_frames: int) -> dict[str, Any]:
+    """Evidence of a group of lines (``fid``, ``bkey`` and ``text`` per line)."""
+    frames = {ln["fid"] for ln in lines}
+    texts = {_static_key(ln["text"]) for ln in lines} - {""}
+    spread = {
+        "left": float(np.std([ln["x0"] for ln in lines])),
+        "centre": float(np.std([ln["cx"] for ln in lines])),
+        "right": float(np.std([ln["x1"] for ln in lines])),
+    }
+    # the steadiest edge is the anchor; a tie (one text) counts as centred
+    anchor = min(spread, key=lambda a: (round(spread[a], 1), ("centre", "left", "right").index(a)))
+    return {
+        "bursts": len({ln["bkey"] for ln in lines}),
+        "sources": len({ln["bkey"][0] for ln in lines}),
+        "frames": len(frames),
+        "distinct": len(texts),
+        "share": round(len(frames) / max(1, n_frames), 3),
+        "anchor": anchor,
+        "median_text_h": round(float(np.median([ln["h"] for ln in lines])), 1),
+    }
+
+
+def _core_rect(lines: list[dict[str, Any]]) -> tuple[int, int, int, int]:
+    """The 5th to 95th percentile of the line edges: ``(x0, y0, x1, y1)``."""
+    return _edges_rect(_edges(lines))
+
+
+def _edges(lines: list[dict[str, Any]]) -> np.ndarray:
+    """Line edges and heights as rows ``(x0, y0, x1, y1, h)``."""
+    return np.array([(ln["x0"], ln["y0"], ln["x1"], ln["y1"], ln["h"]) for ln in lines], float)
+
+
+def _edges_rect(edges: np.ndarray) -> tuple[int, int, int, int]:
+    """:func:`_core_rect` of :func:`_edges` rows."""
+    x0, y0 = np.floor(np.percentile(edges[:, :2], 5, axis=0))
+    x1, y1 = np.ceil(np.percentile(edges[:, 2:4], 95, axis=0))
+    return int(x0), int(y0), int(x1), int(y1)
+
+
+def _trim(
+    rect: tuple[int, int, int, int], r: Region, keep: tuple[float, float]
+) -> tuple[int, int, int, int] | None:
+    """``rect`` cut so it no longer overlaps region ``r``: the largest of the four cuts
+    that still holds the point ``keep``; None when none does."""
+    x0, y0, x1, y1 = rect
+    rx0, ry0, rx1, ry1 = r.x, r.y, r.x + r.w, r.y + r.h
+    if rx0 >= x1 or rx1 <= x0 or ry0 >= y1 or ry1 <= y0:
+        return rect
+    cuts = [(x0, y0, x1, ry0), (x0, ry1, x1, y1), (x0, y0, rx0, y1), (rx1, y0, x1, y1)]
+    ok = [
+        c
+        for c in cuts
+        if c[0] < c[2] and c[1] < c[3] and c[0] <= keep[0] <= c[2] and c[1] <= keep[1] <= c[3]
+    ]
+    return max(ok, key=lambda c: (c[2] - c[0]) * (c[3] - c[1])) if ok else None
+
+
+def _merge_stacked(clusters: list[list[dict[str, Any]]]) -> list[list[dict[str, Any]]]:
+    """``clusters`` with the stacked lines of one notice merged: two clusters merge when
+    their rectangles (:func:`_core_rect`) are within :data:`NOTICE_MERGE_GAP` times the
+    larger median text height of each other vertically and overlap by
+    :data:`NOTICE_MERGE_OVERLAP` of the narrower width horizontally.
+
+    Each cluster's rectangle and height are computed once; after a merge (into the
+    earlier cluster, lines in order) only the merged cluster is computed and checked
+    again, so the work grows with the square of the clusters, not the cube. In order.
+    """
+    members = dict(enumerate(clusters))
+    edges = {i: _edges(c) for i, c in members.items()}
+    rect = {i: _edges_rect(e) for i, e in edges.items()}
+    med = {i: float(np.median(e[:, 4])) for i, e in edges.items()}
+
+    def stacked(i: int, j: int) -> bool:
+        a, b = rect[i], rect[j]
+        gap = max(a[1], b[1]) - min(a[3], b[3])
+        overlap = min(a[2], b[2]) - max(a[0], b[0])
+        return gap <= NOTICE_MERGE_GAP * max(med[i], med[j]) and (
+            overlap >= NOTICE_MERGE_OVERLAP * min(a[2] - a[0], b[2] - b[0])
+        )
+
+    todo = deque(members)
+    while todo:
+        i = todo.popleft()
+        if i not in members:
+            continue  # merged into another one
+        j = next((j for j in members if j != i and stacked(i, j)), None)
+        if j is None:
+            continue
+        lo, hi = min(i, j), max(i, j)
+        members[lo] = members[lo] + members.pop(hi)
+        edges[lo] = np.concatenate((edges[lo], edges.pop(hi)))
+        rect[lo] = _edges_rect(edges[lo])
+        med[lo] = float(np.median(edges[lo][:, 4]))
+        todo.appendleft(lo)  # only the merged cluster changed: check it again
+    return list(members.values())
+
+
+def notice_proposals(
+    game_frames: list[dict[str, Any]],
+    covered: tuple[Region, ...],
+    params: DiscoverParams,
+    static_mask: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Extra ``notice`` regions where text keeps appearing outside every covered region.
+
+    Works on the OCR'd gameplay frames discovery already has (no OCR of its own):
+
+    * A box is left over when its centre lies outside every region in ``covered``
+      (inside a height-gated one, :func:`_height_gated`: a det-gated region with
+      ``min_text_h`` or a big-text or banner region with it, such as the big-text
+      check, also when it is shorter than the region's ``min_text_h``: that text is
+      not read there), it is
+      :data:`NOTICE_MIN_H` px to :data:`NOTICE_MAX_H` of the frame height tall, its
+      text (lower-cased, digits left out) is in fewer than
+      :data:`NOTICE_STATIC_SHARE` of its source's gameplay frames and fewer than
+      :data:`NOTICE_STATIC_CELLS` of its cells are static in ``static_mask``.
+    * Left-over boxes on one row of a frame are joined into lines; a line needs the
+      OCR layer's notice letter rule (4+ letters, 60% letters).
+    * Lines of different frames form a cluster when their centres are within half a
+      text height, their heights within :data:`NOTICE_H_TOL` of each other and the
+      left edge, right edge or centre within :data:`NOTICE_ANCHOR_PX` px: a notice
+      stays at a fixed screen anchor while its text changes. A line joins the
+      matching cluster with the nearest centre (the first on a tie); clusters are
+      looked up in bands of :data:`NOTICE_BAND` px, the most half a text height can
+      reach.
+    * A cluster is kept when it shows in ``params.notice_min_bursts`` bursts and
+      :data:`NOTICE_MIN_FRAMES` frames, has 2+ distinct texts or shows in at most
+      ``params.notice_max_share`` of the frames, and fewer than
+      :data:`NOTICE_SCOREBOARD_SHARE` of its frames have ``params.menu_jump`` times
+      the source's median box count (a partial scoreboard).
+    * Its rectangle spans the 5th to 95th percentile of the line edges; rectangles
+      stacked within :data:`NOTICE_MERGE_GAP` text heights that overlap horizontally
+      by :data:`NOTICE_MERGE_OVERLAP` merge. Padding: :data:`NOTICE_PAD_Y` px up and
+      down, :data:`NOTICE_PAD_X` of the width on the side(s) the text grows to (both
+      for centred text, right for left-aligned, left for right-aligned). A rectangle
+      over :data:`NOTICE_MAX_AREA` of the frame or taller than
+      :data:`NOTICE_MAX_LINES` lines is dropped; overlaps with covered regions that
+      are not height-gated are cut off.
+    * The ``params.notice_max_regions`` best (bursts x distinct texts) are named
+      ``extra_notice``, ``extra_notice2``, ... (never a name in ``covered``).
+
+    Returns:
+        Proposals ``{name, kind: "notice", x, y, w, h, score, evidence}`` (the
+        final, padded rectangle; ``evidence["outside"]`` is True), best first.
+    """
+    if params.notice_max_regions <= 0 or not game_frames:
+        return []
+    n_frames = len(game_frames)
+    per_source: dict[str, list[dict[str, Any]]] = {}
+    for f in game_frames:
+        per_source.setdefault(str(f["source"]), []).append(f)
+    median = {s: float(np.median([len(f["boxes"]) for f in fs])) for s, fs in per_source.items()}
+    static_texts: dict[str, set[str]] = {}
+    for s, fs in per_source.items():
+        seen: dict[str, int] = {}
+        for f in fs:
+            for key in {_static_key(b["text"]) for b in f["boxes"]} - {""}:
+                seen[key] = seen.get(key, 0) + 1
+        static_texts[s] = {k for k, c in seen.items() if c >= NOTICE_STATIC_SHARE * len(fs)}
+    busy: set[str] = set()  # frames with a box-count jump (partial scoreboards)
+    lines: list[dict[str, Any]] = []
+    order = sorted(
+        game_frames, key=lambda f: (str(f["source"]), int(f["burst"]), int(f.get("k", 0)))
+    )
+    for f in order:
+        src = str(f["source"])
+        if median[src] > 0 and len(f["boxes"]) >= params.menu_jump * median[src]:
+            busy.add(str(f["id"]))
+        left = []
+        for b in f["boxes"]:
+            h = b["y1"] - b["y0"]
+            if not NOTICE_MIN_H <= h <= NOTICE_MAX_H * REF_H or _is_covered(b, covered):
+                continue
+            if _static_key(b["text"]) in static_texts[src]:
+                continue
+            if static_mask[_cells(b)].mean() >= NOTICE_STATIC_CELLS:
+                continue
+            left.append(b)
+        for ln in _frame_lines(left):
+            if _notice_letters(str(ln["text"])):
+                lines.append(ln | {"fid": str(f["id"]), "bkey": (src, int(f["burst"]))})
+    clusters: list[list[dict[str, Any]]] = []
+    means: list[dict[str, float]] = []
+    # cluster indices by band of their mean centre: a match is within half a text height
+    # (at most NOTICE_BAND px), so only the line's band and its two neighbours can hold one
+    bands: dict[int, set[int]] = {}
+    for ln in lines:
+        best = None
+        band = int(ln["cy"] // NOTICE_BAND)
+        near = sorted(i for d in (-1, 0, 1) for i in bands.get(band + d, ()))
+        for i in near:
+            m = means[i]
+            if (
+                abs(ln["cy"] - m["cy"]) <= 0.5 * m["h"]
+                and abs(ln["h"] - m["h"]) <= NOTICE_H_TOL * max(ln["h"], m["h"])
+                and min(abs(ln[a] - m[a]) for a in ("x0", "x1", "cx")) <= NOTICE_ANCHOR_PX
+            ) and (best is None or abs(ln["cy"] - m["cy"]) < abs(ln["cy"] - means[best]["cy"])):
+                best = i
+        if best is None:
+            best = len(clusters)
+            clusters.append([ln])
+            means.append({a: float(ln[a]) for a in ("cy", "h", "x0", "x1", "cx")})
+        else:
+            bands[int(means[best]["cy"] // NOTICE_BAND)].discard(best)
+            clusters[best].append(ln)
+            n = len(clusters[best])
+            for a in means[best]:
+                means[best][a] += (ln[a] - means[best][a]) / n
+        bands.setdefault(int(means[best]["cy"] // NOTICE_BAND), set()).add(best)
+    kept: list[list[dict[str, Any]]] = []
+    why: dict[str, int] = {}
+    for c in clusters:
+        frames = {ln["fid"] for ln in c}
+        texts = {_static_key(ln["text"]) for ln in c} - {""}
+        checks = (
+            ("bursts", len({ln["bkey"] for ln in c}) < params.notice_min_bursts),
+            ("frames", len(frames) < NOTICE_MIN_FRAMES),
+            ("steady", len(texts) < 2 and len(frames) / n_frames > params.notice_max_share),
+            ("scoreboard", len(frames & busy) >= NOTICE_SCOREBOARD_SHARE * len(frames)),
+        )
+        stop = next((name for name, hit in checks if hit), None)
+        if stop is None:
+            kept.append(c)
+        else:
+            why[stop] = why.get(stop, 0) + 1
+    kept = _merge_stacked(kept)
+    trims = tuple(r for r in covered if not _height_gated(r))
+    out: list[dict[str, Any]] = []
+    for c in kept:
+        st = _cluster_stats(c, n_frames)
+        x0, y0, x1, y1 = _core_rect(c)
+        med_h = st["median_text_h"]
+        if y1 - y0 > NOTICE_MAX_LINES * NOTICE_MERGE_GAP * med_h:
+            why["tall"] = why.get("tall", 0) + 1
+            continue
+        keep = ((x0 + x1) / 2, (y0 + y1) / 2)
+        pad = NOTICE_PAD_X * (x1 - x0)
+        grow_left = pad if st["anchor"] in ("centre", "right") else 0
+        grow_right = pad if st["anchor"] in ("centre", "left") else 0
+        rect: tuple[int, int, int, int] | None = (
+            max(0, round(x0 - grow_left)),
+            max(0, y0 - NOTICE_PAD_Y),
+            min(REF_W, round(x1 + grow_right)),
+            min(REF_H, y1 + NOTICE_PAD_Y),
+        )
+        for r in trims:
+            if rect is not None:
+                rect = _trim(rect, r, keep)
+        if rect is None:
+            why["covered"] = why.get("covered", 0) + 1
+            continue
+        if (rect[2] - rect[0]) * (rect[3] - rect[1]) > NOTICE_MAX_AREA * REF_W * REF_H:
+            why["large"] = why.get("large", 0) + 1
+            continue
+        samples = list(dict.fromkeys(str(ln["text"]) for ln in c))[:NOTICE_SAMPLES]
+        out.append(
+            {
+                "kind": "notice",
+                "x": rect[0],
+                "y": rect[1],
+                "w": rect[2] - rect[0],
+                "h": rect[3] - rect[1],
+                "score": float(st["bursts"] * st["distinct"]),
+                "evidence": {"outside": True, **st, "samples": samples},
+            }
+        )
+    out.sort(key=lambda p: (-p["score"], p["y"], p["x"]))
+    out = out[: params.notice_max_regions]
+    taken = {r.name for r in covered}
+    k = 1
+    for p in out:
+        while (name := "extra_notice" if k == 1 else f"extra_notice{k}") in taken:
+            k += 1
+        p["name"] = name
+        taken.add(name)
+    logger.debug(
+        "Outside notices: %d text lines outside %d covered regions, %d clusters, %d kept "
+        "(dropped: %s), %d proposed",
+        len(lines),
+        len(covered),
+        len(clusters),
+        len(kept),
+        ", ".join(f"{reason} {c}" for reason, c in sorted(why.items())) or "none",
+        len(out),
+    )
+    return out
+
+
+def notice_region(proposal: dict[str, Any]) -> dict[str, Any]:
+    """The preset region entry of a :func:`notice_proposals` proposal: a ``notice``
+    region on the det gate, every 3rd frame, detected at 0.6x for text of
+    :data:`NOTICE_BIG_TEXT_H` px or more, marked ``"origin": "outside"``."""
+    big = proposal["evidence"]["median_text_h"] >= NOTICE_BIG_TEXT_H
+    r = Region(
+        proposal["name"],
+        proposal["x"],
+        proposal["y"],
+        proposal["w"],
+        proposal["h"],
+        "notice",
+        gate="det",
+        every=3,
+        det_scale=0.6 if big else 1.0,
+    )
+    return asdict(r) | {"origin": "outside"}
+
+
 # --------------------------------------------------------------------------- output
 
 
@@ -757,7 +1177,8 @@ def write_overlay(
         "dynamic": (200, 200, 200),
     }
     for p in proposals:
-        c = colors.get(p["kind"], (255, 255, 255))
+        outside = p.get("evidence", {}).get("outside")
+        c = (255, 0, 255) if outside else colors.get(p["kind"], (255, 255, 255))
         cv2.rectangle(base, (p["x"], p["y"]), (p["x"] + p["w"], p["y"] + p["h"]), c, 3)
         cv2.putText(
             base,
@@ -778,6 +1199,7 @@ def discover_regions(
     game: str,
     params: DiscoverParams | None = None,
     on_frame: Callable[[int, int], None] | None = None,
+    covered: tuple[Region, ...] | None = None,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -789,12 +1211,19 @@ def discover_regions(
         params: Sampling / clustering parameters.
         on_frame: Called with (frames OCR'd or read from the cache, frames planned)
             as the sampling goes on.
+        covered: The regions of the game's existing preset (with the big-text
+            region, :meth:`~cutpoint.events.regions.HudPreset.all_regions`); None
+            when it has none.
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
         ``discovery`` stats, per-region evidence and the ids of the OCR records
         the run used, ``frames``, since ``ocr.jsonl`` keeps records of earlier
-        runs).
+        runs). Extra notice regions where text shows outside every covered region
+        (:func:`notice_proposals`, marked ``"origin": "outside"``) are added to
+        ``regions`` when ``covered`` is None (the discovered regions and the
+        big-text region count as covered), else listed in ``suggested_regions``
+        only.
     """
     params = params or DiscoverParams()
     t0 = time.perf_counter()
@@ -809,9 +1238,14 @@ def discover_regions(
     frames = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", on_frame)
     proposals, maps = cluster_regions(frames, params)
     regions = proposals_to_regions(proposals)
+    game_frames = gameplay_frames(frames, params)
+    cover = covered if covered is not None else (*regions, bigtext_region())
+    extra = notice_proposals(game_frames, cover, params, maps["static"])
+    extra_regions = [notice_region(p) for p in extra]
+    proposals += extra
     info = probe(sources[0].io_path) if sources else None
     write_overlay(
-        gameplay_frames(frames, params),
+        game_frames,
         out_dir / "frames",
         maps,
         proposals,
@@ -821,7 +1255,7 @@ def discover_regions(
         "game": game,
         "reference": [REF_W, REF_H],
         "source": "discovered",
-        "regions": [asdict(r) for r in regions],
+        "regions": [asdict(r) for r in regions] + (extra_regions if covered is None else []),
         "banner_phrases": [],
         "discovery": {
             **maps["stats"],
@@ -832,6 +1266,8 @@ def discover_regions(
             "frames": [f["id"] for f in frames],  # this run's OCR records
         },
     }
+    if covered is not None:
+        preset["suggested_regions"] = extra_regions
     out_dir.mkdir(parents=True, exist_ok=True)
     cache.save_json(out_dir / "proposal.json", preset)
     logger.info(
@@ -843,6 +1279,18 @@ def discover_regions(
         time.perf_counter() - t0,
         out_dir / "overlay.jpg",
     )
+    if extra:  # rectangles and counts only: OCR text stays in proposal.json
+        logger.info(
+            "Discovery: text shows outside the %s regions; %s %d extra notice region(s): %s",
+            "preset's" if covered is not None else "discovered",
+            "suggesting" if covered is not None else "adding",
+            len(extra),
+            ", ".join(
+                f"{p['name']}@{p['x']},{p['y']} {p['w']}x{p['h']} "
+                f"({p['evidence']['bursts']} bursts, {p['evidence']['frames']} frames)"
+                for p in extra
+            ),
+        )
     return preset
 
 
@@ -852,5 +1300,7 @@ __all__ = [
     "cluster_regions",
     "discover_regions",
     "gameplay_frames",
+    "notice_proposals",
+    "notice_region",
     "read_ocr_samples",
 ]

@@ -81,6 +81,22 @@ enough frames), `ok: varied` (fewer frames, but a different text per burst while
 full) or `stop: <reason>` (`limit`, `screen edge`, `frames`, `bursts` or `variety`)). These lines hold no OCR text, so they can be shared when tuning a preset.
 Force or skip it with `--discover-regions` and `--no-discover`.
 
+OCR reads only inside the preset's regions, so discovery also looks for text that keeps showing
+outside all of them (the discovered regions and the screen-centre big-text check, which reads
+only text at least 36 px tall) but too rarely to be found as changing text, such as a brief
+objective message at the top edge. From the frames it already read, it keeps text lines with
+at least 4 letters (60% of the characters) that are not static labels, groups lines that stay
+at one screen anchor (left edge, right edge or centre) and proposes up to 2 extra `notice`
+regions, `extra_notice` and `extra_notice2`, for lines seen in at least 3 bursts that change or
+show briefly. A line seen mostly in frames with far more text than usual (a partial scoreboard)
+is left out. These regions carry `"origin": "outside"`, which the preset loader ignores. A new
+preset gets them with the other regions; the INFO line `Discovery: text shows outside the ...
+regions` gives their rectangles, burst and frame counts, never the text. For a game that already
+has a preset, `--discover-regions` never changes the preset file: the extra regions are listed under
+`suggested_regions` in `proposal.json` (with sample texts in the `proposals` evidence) and an
+INFO line says to copy them into the preset's `regions` to have OCR read them. `overlay.jpg`
+draws them in magenta.
+
 A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`; optional `gate`: `mask` (default, a HUD colour mask) or `det` (text detection, works for any game); optional `every`),
 `banner_phrases`, `player_tags`, `match` hints and optional `feed` settings. Coordinates are in
 1920x1080 reference pixels and are scaled per axis to the video. A small example, saved as

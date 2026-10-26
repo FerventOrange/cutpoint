@@ -539,7 +539,9 @@ def _discover(
     """Run region discovery per game where needed; install new presets.
 
     Returns:
-        ``{game: {"preset": path, "installed": bool, "regions": [...], ...}}``.
+        ``{game: {"preset": path, "installed": bool, "regions": [...], ...}}``; for a
+        game with a preset also ``suggested_regions`` (extra notice regions the
+        preset does not have; never written into it).
     """
     from cutpoint.events.discover import DiscoverParams, discover_regions  # noqa: PLC0415
 
@@ -571,12 +573,16 @@ def _discover(
             progress.update(DISCOVERY_PCT * share, f"{first}discovering HUD: {done}/{total} frames")
 
         t0 = time.perf_counter()
+        # an existing preset's regions (and big-text check) are the covered ones: extra
+        # notice regions outside them are only suggested, the preset file stays as it is
+        covered = {"covered": existing.all_regions()} if existing is not None else {}
         proposal = discover_regions(
             srcs,
             project / "discovery" / game,
             game,
             DiscoverParams(bursts=bursts),
             on_frame=on_frame,
+            **covered,
         )
         rec: dict[str, Any] = {
             "proposal": str(project / "discovery" / game / "proposal.json"),
@@ -596,12 +602,24 @@ def _discover(
             )
         else:
             rec["preset"] = str(existing.path or "built-in")
+            rec["suggested_regions"] = list(proposal.get("suggested_regions") or [])
             logger.info(
                 "Kept existing HUD preset for %r (%s); discovery proposal: %s",
                 game,
                 rec["preset"],
                 rec["proposal"],
             )
+            if rec["suggested_regions"]:
+                logger.info(
+                    "Discovery suggests %d extra notice region(s) for %r where text shows "
+                    'outside the preset\'s regions (%s); to OCR them, copy the "suggested_regions" '
+                    'entries of %s into the "regions" of %s',
+                    len(rec["suggested_regions"]),
+                    game,
+                    ", ".join(r["name"] for r in rec["suggested_regions"]),
+                    rec["proposal"],
+                    rec["preset"],
+                )
         out[game] = rec
     return out
 

@@ -83,7 +83,7 @@ def test_events_json(project, monkeypatch, capsys):
     assert out["sheets"] == stats["sheets"]
     assert out["discovery"] == {
         "game": {k: stats["discovery"]["game"][k] for k in ("proposal", "overlay", "preset")}
-        | {"installed": True}
+        | {"installed": True, "suggested": 0}
     }
 
 

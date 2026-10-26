@@ -266,6 +266,14 @@ is not added) and at least half of its frames show the full feed (the feed's row
 all others but one, as OCR misses a box now and then; so a notice or chat line next to the feed
 is not added).
 
+Discovery also proposes up to 2 extra `notice` regions (`extra_notice`, `extra_notice2`) where
+text keeps showing outside every other region, including small text inside the big-text area
+(see [game streams](workflows/game-streams.md)). Their entries carry `"origin": "outside"`; the
+loader ignores this key, so it changes neither the region nor any cache key, and you can keep,
+move or delete such a region like any other. For a game that already has a preset, they are
+only written to `suggested_regions` in `<project>\discovery\<game>\proposal.json`: copy the
+entries you want into the preset's `regions`.
+
 ### Event types and prompt keys
 
 A preset may add these optional keys. Without them, scoring, clip tails and VLM windows behave as
