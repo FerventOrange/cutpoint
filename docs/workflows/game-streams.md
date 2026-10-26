@@ -61,8 +61,9 @@ A discovered kill feed grows by the oldest rows that show only when the feed is 
 twice its height). With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed.
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
 static screen when a small grey thumbnail of the HUD area stays nearly the same, with no feed
-sighting or kill within 2 s, for at least 5 s when new menu text shows (text that is no preset
-phrase, first read in that stretch or just before it) or 10 s without, so still gameplay (scoped,
+sighting or kill within 2 s, for at least 5 s when new menu text shows (at least 2 text lines
+that are no preset phrase, first read in that stretch or just before it, each on screen for at
+least half of it; one gameplay notice is not enough) or 10 s without, so still gameplay (scoped,
 about 6 s) keeps its banners. Kills and other feed sightings are never dropped, even in a menu
 frame. This test
 runs only when the preset's regions span at least a quarter of the frame (`static_area`), since a
