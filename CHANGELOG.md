@@ -163,6 +163,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The UI preview plays and scrubs the whole source; playback no longer stops at the clip end. The
+  clip start and end are markers on a trim rail with Zoom out, Zoom in and Fit clip buttons and an
+  overview strip to pan (keyboard: arrows, PageUp/PageDown, Home/End; the wheel pans, Ctrl+wheel
+  zooms). "Use playhead" and `[` / `]` set the start or end anywhere in the source. A clip longer
+  than 10 minutes shows a note (#324).
 - `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
   ranks with them. `highlights.json` is written once, atomically, at the end: a cancelled run
   leaves the previous file. The analysis score stays in each candidate's `score_pre_events`;
@@ -283,6 +288,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ffmpeg command as before. 10-bit SDR footage that looks log or flat in one small frame gets a
   WARNING suggesting the camera's LUT; no LUT is applied. `probe` now reads the four color tags
   (#289).
+- 360 analysis in the UI shows its planned steps as "Waiting" right away, instead of "Waiting for
+  output..." until the first step starts (#320).
+- `--vision`: the Ollama rating no longer outranks the analysis. A rating (0-10) was blended in
+  as a 0-100 term next to style scores of about 15-27, so it pulled every rated score toward
+  rating × 10: a middling 5/10 lifted a candidate past the unrated ones, and even a 0-2/10
+  rating replaced the clip's label. It now scales the candidate's score instead: 5/10 leaves it
+  as is, 10/10 lifts it and 0/10 lowers it by the style's `vision_weight` (about 20-45%), capped
+  at 100; candidates that were not rated keep their score. The model's label replaces the clip's
+  only from a rating of 7, so low ratings no longer name clips `boring-run-no-action`; every
+  rated candidate keeps the model's label in `vision_label` (#284).
 - A clip whose source audio ends before the clip does (for example a clip at the very end of a
   recording whose audio track is shorter than its video) ended with an abrupt cut: the audio
   fade-out started after the audio had ended. `clips`, `assemble` and `360` renders now end the

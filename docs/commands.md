@@ -236,6 +236,15 @@ under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matchi
 The preview transport has a mute button and a volume slider next to Play. One setting covers every
 preview (moments, clips and final) and is remembered per browser; the default is unmuted at 100%.
 `M` toggles mute, and Space plays or pauses even when the volume controls have focus.
+Playback and scrubbing cover the whole source: playback runs on past the clip end, and Play at
+the end of the source starts the clip again. The trim rail under the video is a zoomable view of
+the source with the clip (gold) and the analyzed range (dashed) as markers; it opens on the clip
+plus half its length (at least 10 s) either side. "Zoom out", "Zoom in" and "Fit clip" change
+the view, the overview strip next to them shows the view in the whole source and pans it (drag
+or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
+playhead during playback. On the rail, PageUp and PageDown move the playhead by a tenth of the
+view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
+rail widens to show it. Clips longer than 10 minutes get a note under the trim fields.
 Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
 remote access is not supported.
 
@@ -321,7 +330,7 @@ an analysed set processes only the new file.
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate top candidates with a local Ollama vision model, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style, so Ollama is never needed unless you ask; `--no-vision` skips it when `config.json` turns it on. The model is unloaded from GPU memory right after the rating |
+| `--vision` / `--no-vision` | Rate top candidates with a local Ollama vision model, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style, so Ollama is never needed unless you ask; `--no-vision` skips it when `config.json` turns it on. The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep theirs, and the model's label names the clip only from a rating of 7. The model is unloaded from GPU memory right after the rating |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `qwen3-vl:8b` |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
@@ -339,8 +348,9 @@ transcript, laughter, scene-cut density and speech continuity. Likely Whisper ha
 scene cuts and never cut a word.
 
 Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` (0-100),
-`signals`, `label` and a `transcript` snippet. `transcript.txt` has one line per pause or
-sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
+`signals`, `label` and a `transcript` snippet; with `--vision`, a rated candidate also has the
+model's own label in `vision_label` (`label` takes it only from a rating of 7).
+`transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
 ### Analysis steps
 
