@@ -219,6 +219,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The HUD OCR engine (the OCR layer and HUD discovery) runs on at most 4 CPU threads (fewer on
+  a machine with fewer CPUs) instead of one per core. CPU OCR stops scaling at about 4 threads:
+  on an 8-core CPU a 1280 px discovery frame took 3.3 s instead of 4.0 s, about 18% faster. The
+  OCR results are unchanged (#374).
 - The UI preview plays and scrubs the whole source; playback no longer stops at the clip end. The
   clip start and end are markers on a trim rail with Zoom out, Zoom in and Fit clip buttons and an
   overview strip to pan (keyboard: arrows, PageUp/PageDown, Home/End; the wheel pans, Ctrl+wheel
