@@ -228,6 +228,13 @@ select { max-width: 100%; }
   color: var(--muted); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden;
 }
+/* preview readiness of a moment whose source plays from a proxy: icon and word, a static icon (no
+   spinner). One width for every state and a line height under the title's, so a change moves nothing. */
+.prep { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 3px; min-width: 6.4em; font-size: 11.5px; line-height: 16px; font-weight: 500; color: var(--muted); }
+.prep .icon { width: 12px; height: 12px; flex: none; }
+.prep[data-state=ready] { color: var(--ok); }
+.prep[data-state=encoding] { color: var(--amber); }
+.seq-dur .prep { margin-left: 8px; min-width: 0; vertical-align: -2px; }
 
 /* preview: meta and add/remove on one row at the top (the title is visually hidden); video, transport bar,
    rail and the trim row all full width. The column is a flex column and the video panel takes the height
@@ -239,6 +246,8 @@ select { max-width: 100%; }
 #stageMeta { flex: 1 1 14em; min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
 /* min-width stops the label swap from jumping */
 .screen-bar .btn { margin-left: auto; min-width: 13.5em; }
+/* "Full preview 42%": room for the widest text, so the percent ticking up moves nothing */
+.stage-prep { flex: none; min-width: 9.5em; color: var(--muted); font-size: 12.5px; }
 /* the panel takes the free height of the column, up to 16:9 of its width and at least 180px;
    the video keeps its aspect ratio, letterboxed on the panel */
 .screen {
@@ -279,6 +288,11 @@ select { max-width: 100%; }
 .rail-marks { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
 .rail-sel.cut-l { border-left-width: 0; }
 .rail-sel.cut-r { border-right-width: 0; }
+/* the parts of the source no ready file plays yet, hatched and dimmed under the markers (static) */
+.rail-gaps > span {
+  position: absolute; top: 0; bottom: 0; background-color: rgba(10, 18, 28, 0.45);
+  background-image: repeating-linear-gradient(135deg, rgba(179, 194, 210, 0.16) 0 2px, transparent 2px 7px);
+}
 .rail-orig { position: absolute; top: 4px; bottom: 4px; border: 1px dashed var(--muted); border-radius: 2px; pointer-events: none; }
 .rail input[type=range] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
@@ -398,7 +412,7 @@ select { max-width: 100%; }
 @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
 .seq-text { display: grid; gap: 1px; min-width: 0; }
 .seq-title { font-weight: 650; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.seq-dur { color: var(--muted); font-size: 12.5px; }
+.seq-dur { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seq-rename { min-height: 26px; padding: 2px 6px; width: 100%; font-weight: 650; }
 .seq-rename[aria-invalid] { border-color: var(--bad); }
 .seq-rename-err { color: var(--bad); font-size: 12px; line-height: 1.2; }

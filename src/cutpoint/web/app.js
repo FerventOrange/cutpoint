@@ -94,6 +94,29 @@ function playable(src, t) {
   const w = (src.windows ?? []).filter((x) => t != null && covers(x, t, dur)).sort((a, b) => b.hi - a.hi)[0];
   return w ? { url: w.url, offset: w.lo, lo: w.lo, hi: w.hi } : null;
 }
+/** The window ``w`` plays all of ``seg`` ({start, end}); one ending with the source covers an end past its centisecond-floored ``hi``. */
+const coversSeg = (w, seg, dur) =>
+  covers(w, seg.start, dur) && (covers(w, seg.end, dur) || (!!dur && w.hi >= dur - FRAME && seg.end <= dur));
+/**
+ * The file "Play sequence" plays ``seg`` of ``src`` from (call once ``readyFor``): the stage player's
+ * own when it covers all of it, so contiguous clips play on without a swap, else ``playable``'s.
+ */
+function fileFor(src, seg) {
+  const r = loaded();
+  if (r && ofSource(src)) {
+    const dur = sourceDur(src.path);
+    if (r.hi == null ? v.dataset.url === src.url : coversSeg(r, seg, dur))
+      return { url: v.dataset.url, offset: r.lo, lo: r.lo, hi: r.hi ?? dur };
+  }
+  return playable(src, seg.start);
+}
+/** ``src`` plays all of ``seg``: as a whole (as is or from its proxy), or from one ready window proxy. */
+function readyFor(src, seg) {
+  if (src?.status === 'ready') return true;
+  if (!src || !seg) return false;
+  const dur = sourceDur(src.path);
+  return (src.windows ?? []).some((w) => coversSeg(w, seg, dur));
+}
 const durOf = (c) => {
   const src = srcOf(c.source);
   return src?.status === 'ready' ? playable(src, 0).hi : sourceDur(c.source);
@@ -307,13 +330,15 @@ function renderMoments() {
   preserveFocus(() => {
     $('#candList').replaceChildren(
       ...items.map(({ c, rank }) => {
-        const picked = S.segments.some((s) => s.id === c.id);
+        const seg = S.segments.find((s) => s.id === c.id);
+        const picked = !!seg;
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
           h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
               h('span', { class: 'cand-title', text: c.label || c.id }),
-              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null),
+              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
+              prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] })),
             h('span', { class: 'cand-time tc' },
               `${fmt(c.start)} to ${fmt(c.end)}, ${(c.end - c.start).toFixed(1)} s`,
               multi ? ` in ${baseName(c.source)}` : ''),
@@ -334,6 +359,31 @@ function renderMoments() {
   if (hadFocus && !empty.contains(document.activeElement))
     ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
+}
+
+/**
+ * How far the preview of ``seg`` ({start, end}) is, for a source the browser plays from a proxy
+ * (#323): 'ready' (the whole proxy or a ready window covers it), 'encoding' (a window covering it,
+ * or the whole proxy, is encoding) or 'queued'. Null for sources that play as is or are not asked for.
+ */
+function prepState(src, seg) {
+  if (!src || (!src.proxy && !['needs-proxy', 'preparing'].includes(src.status))) return null;
+  if (readyFor(src, seg)) return 'ready';
+  const dur = sourceDur(src.path);
+  const mine = (src.pending ?? []).filter((w) => coversSeg(w, seg, dur));
+  if (mine.some((w) => w.state === 'encoding') || src.progress != null) return 'encoding';
+  return mine.length || src.status === 'preparing' ? 'queued' : null;
+}
+
+const PREP = { ready: ['check', 'Ready'], encoding: ['hourglass', 'Encoding'], queued: ['clock', 'Queued'] };
+
+/** The readiness of a row's preview as a small icon and word (never colour alone); null when there is nothing to say. */
+function prepBadge(src, seg) {
+  const state = prepState(src, seg);
+  if (!state) return null;
+  const [name, word] = PREP[state];
+  return h('span', { class: 'prep', 'data-state': state, title: `Preview ${word.toLowerCase()}` },
+    icon(name), h('span', { class: 'vh', text: 'Preview ' }), word);
 }
 
 /** Folder with level bars, flanked by sound waves; decorative. Fixed 158:80 box so CSS cannot distort it. */
@@ -511,6 +561,7 @@ function renderStage(seekToStart, keepVideo = false) {
   $('#stageBody').hidden = !c;
   $('#toggleBtn').hidden = !c;
   $('#stageMeta').textContent = c ? `${c.label} from ${baseName(c.source)}` : '';
+  renderFullPrep(c);
   if (!S.project)
     setEmpty($('#stageEmpty'),
       h('p', {}, 'No project is open.'),
@@ -535,6 +586,16 @@ function renderStage(seekToStart, keepVideo = false) {
   $('#signals').textContent = c.cand ? `${kw}Score ${c.cand.score.toFixed(2)}${bits.length ? `. Signals: ${bits.join(', ')}` : ''}` : '';
   ensureVideo(seekToStart && !keepVideo ? c : null);
   renderTrim(!!seekToStart);
+}
+
+/** "Full preview 42%" beside the moment while its source's whole proxy builds; window proxies play meanwhile. */
+function renderFullPrep(c) {
+  const src = c && srcOf(c.source);
+  const el = $('#stagePrep');
+  let text = '';
+  if (src?.status === 'preparing') text = src.progress != null ? `Full preview ${Math.floor(src.progress * 100)}%` : 'Full preview queued';
+  el.textContent = text;
+  el.hidden = !text;
 }
 
 // Words Whisper was unsure of (analyze lists them as [index in transcript.split(' '), p]) get a
@@ -585,6 +646,7 @@ function drawRail(c = current()) {
   const place = (el, a, b, from, len) =>
     Object.assign(el.style, { left: `${(((a - from) / len) * 100).toFixed(2)}%`, width: `${(((b - a) / len) * 100).toFixed(2)}%` });
   place($('#railSel'), c.start, c.end, lo, span);
+  drawGaps(c, dur, lo, hi, place);
   const o = $('#railOrig');
   o.hidden = !c.cand;
   if (c.cand) place(o, c.cand.start, c.cand.end, lo, span);
@@ -613,6 +675,38 @@ function drawRail(c = current()) {
   if (zIn.disabled && had === zIn) zOut.focus();
   if (zOut.disabled && had === zOut) zIn.focus();
   updatePlayhead();
+}
+
+/**
+ * Hatch the parts of the source no ready file plays yet (#323), on the rail and the overview:
+ * while its proxy builds, all but its ready window proxies. Rebuilt only when they or the view change.
+ */
+function drawGaps(c, dur, lo, hi, place) {
+  const src = srcOf(c.source);
+  const gaps = [];
+  if (src && ['needs-proxy', 'preparing'].includes(src.status)) {
+    const wins = [...(src.windows ?? [])].sort((a, b) => a.lo - b.lo);
+    const end = dur || Math.max(hi, ...wins.map((w) => w.hi));
+    let at = 0;
+    for (const w of wins) {
+      if (w.lo > at) gaps.push([at, w.lo]);
+      at = Math.max(at, w.hi);
+    }
+    if (at < end) gaps.push([at, end]);
+  }
+  const fill = (el, from, to) => {
+    const sig = `${from}|${to}|${gaps.join(';')}`;
+    if (el.dataset.sig === sig) return;
+    el.dataset.sig = sig;
+    el.replaceChildren(...gaps.filter(([a, b]) => b > from && a < to).map(([a, b]) => {
+      const g = h('span');
+      place(g, Math.max(a, from), Math.min(b, to), from, to - from);
+      return g;
+    }));
+  };
+  fill($('#railGaps'), lo, hi);
+  if (dur) fill($('#ovGaps'), 0, dur);
+  else $('#ovGaps').replaceChildren();
 }
 
 /** Move the rail view to [lo, hi] (kept inside the source) and redraw it. */
@@ -656,6 +750,8 @@ function screenMsg(text) {
 // evicted, failed), so asking for an earlier range again must reach it.
 const prepareRequested = new Set();
 let lastPart = null;
+let nextFor = null; // the window proxy url whose successor ``requestNext`` asked for
+const EARLY = 10; // seconds before a playing window proxy's end the next one is asked for
 const PART_MSG = 'Preparing this part of the source…';
 const MOMENT_MSG = 'Preparing this moment\'s preview…';
 
@@ -666,30 +762,40 @@ function forgetPrepared(src) {
   if (lastPart?.startsWith(`${k}@`)) lastPart = null;
 }
 
-/** Queue the proxy of ``src``; with ``range`` ({lo, hi}), a window proxy around it first (the server queues both). */
-async function prepareSource(src, range) {
+/**
+ * Queue the proxy of ``src``; with ``range`` ({lo, hi}), a window proxy around it first (the server
+ * queues both). ``queue``: the window waits behind the queued ones instead of superseding them
+ * ("Play sequence" asks for its next clips so; its poll refreshes the project).
+ */
+async function prepareSource(src, range, queue = false) {
   const whole = `${S.id}:${src.path}`;
-  const k = range ? `${whole}@${range.lo}-${range.hi}` : null;
+  const k = range && !queue ? `${whole}@${range.lo}-${range.hi}` : null;
   const had = prepareRequested.has(whole);
-  if (had && (!range || k === lastPart)) return;
+  if (had && (!range || (k && k === lastPart))) return;
   prepareRequested.add(whole); // a window request queues the whole proxy too
-  if (range) lastPart = k;
+  if (k) lastPart = k;
   const sid = src.id ?? decodeURIComponent(src.url.split('?')[0].split('/').pop());
   try {
-    await api(`/api/projects/${encodeURIComponent(S.id)}/sources/${encodeURIComponent(sid)}/prepare`, { method: 'POST', body: range });
-    refreshProject();
+    await api(`/api/projects/${encodeURIComponent(S.id)}/sources/${encodeURIComponent(sid)}/prepare`, { method: 'POST', body: queue ? { ...range, queue } : range });
+    if (!queue) refreshProject();
   } catch (e) {
     if (!had) prepareRequested.delete(whole);
-    if (range && lastPart === k) lastPart = null;
+    if (k && lastPart === k) lastPart = null;
     fail(e);
   }
 }
 
-/** Ask for a window proxy around [lo, hi] of ``src`` unless one being built covers it; ``delay`` ms debounces scrubbing. */
+/**
+ * Ask for a window proxy around [lo, hi] of ``src`` unless the one encoding covers it; ``delay`` ms
+ * debounces scrubbing. A covering window still queued (behind "Play sequence"'s) is asked for again:
+ * a focus moves it to the front. The ``lastPart`` dedupe still holds: the page's last focus is already
+ * first in the server's queue, and queued requests never set it.
+ */
 function requestPart(src, lo, hi, delay = 0) {
   clearTimeout(S.partTimer);
   const range = { lo: round2(Math.max(0, lo)), hi: round2(Math.max(0, hi)) };
-  if ((src.pending ?? []).some((p) => p.lo <= range.lo && p.hi >= range.hi)) return;
+  const pend = (src.pending ?? []).filter((p) => p.lo <= range.lo && p.hi >= range.hi);
+  if (pend.some((p) => p.state === 'encoding')) return;
   const id = S.id;
   if (delay) S.partTimer = setTimeout(() => S.id === id && prepareSource(src, range), delay);
   else prepareSource(src, range);
@@ -761,15 +867,17 @@ function ensureVideo(seekC) {
     const mine = ofSource(src);
     const at = want ?? (mine ? playhead(c) : c.start);
     const p = playable(src, at);
-    if ((mine && inLoaded(at, durOf(c))) || p) {
+    // "Play sequence" plays a clip only from a file covering all of it: a window ending inside it would cut it short
+    const fits = !S.seqPlay || readyFor(src, c);
+    if (fits && ((mine && inLoaded(at, durOf(c))) || p)) {
       if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src); // no window request brings it
       if (!mine || !inLoaded(at, durOf(c))) loadFile(src, p, at);
       else if (seekC) seekTo(seekC.start);
       return;
     }
-    const moment = at >= c.start && at <= c.end;
+    const moment = !!S.seqPlay || (at >= c.start && at <= c.end);
     const [lo, hi] = moment ? [c.start, c.end] : [at, at];
-    if (mine) return awaitPart(src, at, 0, lo, hi); // keeps the last frame
+    if (mine && !S.seqPlay) return awaitPart(src, at, 0, lo, hi); // keeps the last frame
     requestPart(src, lo, hi);
     return wait(S.seqPlay ? `Preparing preview of ${baseName(c.source)}…` : moment ? MOMENT_MSG : PART_MSG);
   }
@@ -873,6 +981,21 @@ function partEnd() {
   return true;
 }
 
+/**
+ * A window proxy plays within EARLY s of its end (not the source's): ask for the window after it
+ * now, as a focus on its end, so playback goes on there without a stall. Once per window file.
+ */
+function requestNext() {
+  const r = loaded();
+  const c = current();
+  const src = c && srcOf(c.source);
+  if (!src || !r || r.hi == null || src.status === 'ready' || nextFor === v.dataset.url) return;
+  const dur = durOf(c);
+  if ((dur && r.hi >= dur - FRAME) || r.hi - playhead(c) > EARLY) return;
+  nextFor = v.dataset.url;
+  if (!playable(src, r.hi)) requestPart(src, r.hi, r.hi);
+}
+
 /** ``playing``: called every frame during playback, so the slider's spoken value waits for a pause. */
 function updatePlayhead(playing = false) {
   const c = current();
@@ -891,6 +1014,7 @@ const loop = () => {
 function tick() {
   tickId = 0;
   if (v.paused || !seqCheck() || (!S.seqPlay && partEnd())) return;
+  if (!S.seqPlay) requestNext();
   // playback runs on past the clip end; the rail jumps along when the playhead runs off it, not
   // when the user panned away from it
   const t = playhead();
@@ -1108,6 +1232,9 @@ const ICONS = {
   play: [['path', { d: 'M8 5v14l11-7z' }]],
   pause: [['path', { d: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' }]],
   grip: [[9, 5], [15, 5], [9, 12], [15, 12], [9, 19], [15, 19]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.9 }]),
+  check: [['path', { d: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z' }]],
+  hourglass: [['path', { d: 'M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5-4-4V4h8v3.5l-4 4z' }]],
+  clock: [['path', { d: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z' }]],
 };
 const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);
 
@@ -1379,7 +1506,7 @@ const ROW_LABELS = {
 };
 
 const seqDur = (s, range) => h('span', { class: 'seq-dur tc', text: `${(s.end - s.start).toFixed(1)} s` },
-  h('span', { class: 'vh', text: `, ${range}` }));
+  h('span', { class: 'vh', text: `, ${range}` }), prepBadge(srcOf(s.source), s));
 
 /** A row's title button (``head``: its rank and thumbnail) and rename pencil, when not renaming. */
 function seqMain(s, head, name = s.label || s.id, range = `${fmt(s.start)} to ${fmt(s.end)}`) {
@@ -1513,7 +1640,6 @@ function renderSequence() {
 
 const seqSeg = (j) => S.segments.find((s) => s.id === S.seqPlay?.order[j]);
 const seqNow = () => S.seqPlay?.order[S.seqPlay.i];
-const ready = (src) => src?.status === 'ready';
 const nowIcon = () => h('span', { class: 'seq-now', 'aria-hidden': 'true', title: 'Playing' }, icon('play'));
 
 function renderSeqPlay() {
@@ -1603,22 +1729,50 @@ async function seqPrepare() {
     seen.add(src.path);
     if (src.status === 'needs-proxy' || src.status === 'unknown') await prepareSource(src);
   }
+  await seqQueue();
   seqPoll();
 }
 
-/** While a source of the sequence is still being prepared, refresh the project every 2 s (the stage polls only its own). */
+const SEQ_AHEAD = 3; // clips after the playing one whose window proxies "Play sequence" queues
+
+/**
+ * Queue window proxies of the next clips no ready file covers yet, in playback order, behind the
+ * playing clip's (``queue``: they do not supersede each other). Asked again on every poll, as the
+ * server may drop them (a newer focus, or its queue is full).
+ */
+async function seqQueue() {
+  const sp = S.seqPlay;
+  if (!sp) return;
+  let n = 0;
+  for (let j = Math.max(sp.i, 0); j < sp.order.length && n < SEQ_AHEAD; j += 1) {
+    if (S.seqPlay !== sp) return;
+    const seg = seqSeg(j);
+    const src = srcOf(seg?.source);
+    if (!src || !['needs-proxy', 'preparing'].includes(src.status) || readyFor(src, seg)) continue;
+    if (j > sp.i) n += 1;
+    const dur = sourceDur(src.path);
+    if ((src.pending ?? []).some((w) => coversSeg(w, seg, dur))) continue;
+    await prepareSource(src, { lo: round2(seg.start), hi: round2(seg.end) }, true);
+  }
+}
+
+/** While a clip of the sequence has no ready file covering it, refresh the project every 2 s (the stage polls only its own). */
 function seqPoll() {
   clearTimeout(S.seqTimer);
   const sp = S.seqPlay;
   if (!sp || S.expired) return;
-  const busy = (src) => src && !ready(src) && src.status !== 'failed';
-  if (!sp.order.some((id, j) => busy(srcOf(seqSeg(j)?.source)))) return;
+  const busy = (seg) => {
+    const src = srcOf(seg?.source);
+    return src && !readyFor(src, seg) && src.status !== 'failed';
+  };
+  if (!sp.order.some((id, j) => busy(seqSeg(j)))) return;
   S.seqTimer = setTimeout(async () => {
     await refreshProject();
     const now = S.seqPlay;
     if (!now) return;
     if (now.wait && srcOf(seqSeg(now.i)?.source)?.status === 'failed') seqGo(now.i); // skips it
     else cueNext();
+    await seqQueue();
     seqPoll();
   }, 2000);
 }
@@ -1632,18 +1786,20 @@ function cueNext() {
   const cur = seqSeg(sp.i);
   const seg = seqSeg(j);
   const src = srcOf(seg?.source);
-  if (!ready(src) || (cur && seg.source === cur.source && Math.abs(seg.start - cur.end) <= GAP)) {
+  const p = readyFor(src, seg) && fileFor(src, seg); // the whole source, or a window covering the clip
+  if (!p || (cur && seg.source === cur.source && Math.abs(seg.start - cur.end) <= GAP && v.dataset.url === p.url)) {
     cued = null; // not playable yet, or it plays on in the visible player
     return;
   }
-  if (cued?.id === seg.id && cued.start === seg.start) return;
-  const { url, offset } = playable(src, seg.start);
+  if (cued?.id === seg.id && cued.start === seg.start && o.dataset.url === p.url) return;
+  const { url, offset } = p;
   cued = { id: seg.id, start: seg.start, vt: seg.start - offset };
   if (o.dataset.url !== url) {
     o.preload = 'auto'; // buffer it, not only its metadata
     o.dataset.url = url;
     o.dataset.offset = offset;
-    delete o.dataset.hi;
+    if (url === src.url) delete o.dataset.hi;
+    else o.dataset.hi = p.hi; // a window proxy: the stage reads its range after the swap
     o.src = url; // seeks to cued.vt on loadedmetadata
   } else if (o.readyState >= HTMLMediaElement.HAVE_METADATA) o.currentTime = cued.vt;
 }
@@ -1672,7 +1828,7 @@ function seqGo(j) {
   const o = spare();
   sp.i = j;
   sp.wait = false;
-  const url = ready(src) && playable(src, seg.start).url;
+  const url = readyFor(src, seg) && fileFor(src, seg).url; // the whole source, or a window covering the clip
   if (cur && seg.source === cur.source && Math.abs(playhead(cur) - seg.start) <= FRAME + GAP && v.dataset.url === url && !v.paused) {
     showMoment(seg.id, true); // contiguous: plays on without a cut
   } else if (cued?.id === seg.id && o.dataset.url === url && !o.error) {
@@ -1688,9 +1844,8 @@ function seqGo(j) {
     old.pause();
     showMoment(seg.id, true);
   } else {
-    showMoment(seg.id); // loads the source (or a window proxy of the clip), or waits for its proxy
-    const now = url || (src && playable(src, seg.start)?.url);
-    if (now && v.dataset.url === now) v.play().catch(() => {});
+    showMoment(seg.id); // loads the source (or a window proxy covering the clip), or waits for one
+    if (url && v.dataset.url === url) v.play().catch(() => {});
     else sp.wait = true; // canplay starts it
   }
   cued = null;

@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them once it is ready, and HDR sources' proxies are converted to SDR. `POST
   /api/projects/{id}/sources/{sid}/prepare` takes an optional `{lo, hi}` body, and each source
   in the project view lists its ready `windows` and `pending` ones (#323).
+- Play sequence plays a clip as soon as a short proxy covers it, without waiting for the whole
+  source's proxy, and queues the next clips' proxies in playback order (`queue: true` in the
+  `prepare` body). Moment and sequence rows show whether their preview is ready, encoding or
+  queued, the trim rail hatches the parts of the source that cannot play yet, and the preview
+  shows "Full preview 42%" while the whole-source proxy builds (`proxy` and `progress` on each
+  source). Playing near the end of a short proxy prepares the next part ahead (#323).
 - The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
   underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
   Transcripts now store each word's `probability`, and `highlights.json` candidates list those
