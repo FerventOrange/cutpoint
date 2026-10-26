@@ -233,6 +233,11 @@ may leave partial output folders, which are not offered for assembly.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
 under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matching clip export.
+While that whole-source proxy builds, a short proxy of the selected moment (10 s before it to
+20 s after it) is encoded first, so the moment can be previewed and trimmed within seconds.
+Scrubbing or playing past it shows "Preparing this part of the source…" and prepares that part
+the same way; the whole-source proxy takes over once it is ready. HDR and BT.2020 sources are
+previewed converted to SDR, as in exports.
 The preview transport has a mute button and a volume slider next to Play. One setting covers every
 preview (moments, clips and final) and is remembered per browser; the default is unmuted at 100%.
 `M` toggles mute, and Space plays or pauses even when the volume controls have focus.

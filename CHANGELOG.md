@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- When the browser cannot play a source, the UI previews the selected moment within seconds:
+  the server first encodes a short proxy of the moment (10 s before it to 20 s after it) while
+  the whole-source proxy builds in a second lane. Scrubbing or playing outside it prepares that
+  part the same way ("Preparing this part of the source…"). The whole-source proxy replaces
+  them once it is ready, and HDR sources' proxies are converted to SDR. `POST
+  /api/projects/{id}/sources/{sid}/prepare` takes an optional `{lo, hi}` body, and each source
+  in the project view lists its ready `windows` and `pending` ones (#323).
 - The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
   back from their sources or proxies (hard cuts, no export), highlights and announces the playing
   clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits

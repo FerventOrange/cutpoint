@@ -80,6 +80,7 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_values,
 )
+from cutpoint.encode import BT709_TAGS, sdr_filter
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
     FFmpegError,
@@ -769,13 +770,36 @@ PROXY_FPS_MAX = 30
 # about half the CPU time of libx264.
 PROXY_NVENC_CQ = 32
 PROXY_NVENC_RATE = ["-maxrate", "1500k", "-bufsize", "3000k"]
+# Window proxies (#323): while the whole proxy builds, the focused moment plays from a short
+# proxy of [start - BEFORE, end + AFTER], its edges rounded outward to STEP so nearby requests
+# share one. At most WINDOWS_MAX per source are kept; the least recently used go first.
+PROXY_WINDOW_BEFORE = 10.0
+PROXY_WINDOW_AFTER = 20.0
+PROXY_WINDOW_STEP = 5.0
+PROXY_WINDOWS_MAX = 8
+# The page plays a window up to this many centiseconds before its end (app.js ``covers``, FRAME)
+PROXY_WINDOW_FRAME_CS = 4
+# ui/proxy/<content key>.w<lo>-<hi>.mp4, the range in centiseconds of the source
+PROXY_WINDOW_FILE = re.compile(r"([0-9a-f]{16})\.w(\d+)-(\d+)\.mp4")
 
 
-def proxy_args(real: Path, out: Path, audio_streams: int, *, nvenc: bool = False) -> list[str]:
+def proxy_args(
+    real: Path,
+    out: Path,
+    audio_streams: int,
+    *,
+    nvenc: bool = False,
+    color: str = "",
+    lo: float | None = None,
+    hi: float | None = None,
+) -> list[str]:
     """ffmpeg command for a 720p H.264/AAC preview; several audio tracks are mixed as in exports.
 
     ``nvenc``: encode with h264_nvenc, else libx264. Decoding stays on the CPU: ``-hwaccel cuda``
     halved the CPU time but made the build two to three times slower on an RTX 3080.
+    ``color``: the source's :func:`~cutpoint.encode.sdr_filter` (HDR and BT.2020 become SDR
+    Rec.709, tagged so). ``lo``/``hi``: only that part of the source, in seconds (a window
+    proxy, whose 0 is ``lo``).
     """
     mix = audio_mix_filter(audio_streams)
     audio = ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else ["-map", "0:a:0?"]
@@ -784,24 +808,71 @@ def proxy_args(real: Path, out: Path, audio_streams: int, *, nvenc: bool = False
         if nvenc
         else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p"]
     )
+    scale = "scale=-2:min(720\\,ih)"
+    start = ["-ss", f"{lo:.3f}"] if lo is not None else []
+    length = ["-t", f"{hi - (lo or 0.0):.3f}"] if hi is not None else []
     return [
-        "ffmpeg", "-y", "-nostdin", "-v", "error", "-i", str(real), "-map", "0:v:0", *audio,
-        "-vf", "scale=-2:min(720\\,ih)", *video,
+        "ffmpeg", "-y", "-nostdin", "-v", "error", *start, "-i", str(real), "-map", "0:v:0",
+        *audio, "-vf", f"{scale},{color},format=yuv420p" if color else scale, *video,
+        *(BT709_TAGS if color else []), *length,
         "-g", str(PROXY_GOP), "-fpsmax", str(PROXY_FPS_MAX),
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out),
     ]  # fmt: skip
 
 
+def _covers(span: tuple[int, int], want: tuple[int, int], dur_cs: int) -> bool:
+    """The window ``span`` plays all of ``want`` (centiseconds) as the page sees it (app.js
+    ``covers``): not its last frame, unless it ends with the source (``dur_cs``, 0 if unknown)."""
+    lo, hi = span
+    return want[0] >= lo and (
+        want[1] < hi - PROXY_WINDOW_FRAME_CS
+        or (dur_cs > 0 and hi >= dur_cs - PROXY_WINDOW_FRAME_CS and want[1] <= hi)
+    )
+
+
+class ProxyWindow:
+    """One queued or running window proxy encode: ``lo``/``hi`` in centiseconds of the source."""
+
+    def __init__(
+        self, project: Path, real: Path, key: str, lo: int, hi: int, audio_streams: int, color: str
+    ) -> None:
+        self.project, self.real, self.key = project, real, key
+        self.lo, self.hi = lo, hi
+        self.audio_streams, self.color = audio_streams, color
+        self.proc: subprocess.Popen[str] | None = None  # set and cleared under ``Media.lock``
+        self.cancelled = False  # superseded or no longer needed: never starts, or is killed
+
+    @property
+    def name(self) -> str:
+        return f"{self.key}.w{self.lo}-{self.hi}"
+
+
 # --------------------------------------------------------------------------- playable media
 class Media:
-    """Probe cache and on-demand H.264/AAC proxies for sources a browser cannot play."""
+    """Probe cache and on-demand H.264/AAC proxies for sources a browser cannot play.
+
+    Two lanes, one worker each: whole-source proxies (``pool``, first in, first out) and window
+    proxies of the focused moment (``windows_queue``, the latest focus request only), so a
+    moment plays within seconds while its source's whole proxy still builds.
+    """
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.probed: dict[str, tuple[bool, float, int] | None] = {}
+        # key -> (browser plays it as is, duration, audio tracks, sdr_filter of a proxy) or None
+        self.probed: dict[str, tuple[bool, float, int, str] | None] = {}
         self.proxies: dict[str, str] = {}  # key -> "preparing" | "failed"
         self.procs: set[subprocess.Popen[str]] = set()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cutpoint-proxy")
+        # (project, key) -> {(lo, hi) centiseconds: file} of ready windows, least recently used first
+        self.windows: dict[tuple[Path, str], dict[tuple[int, int], Path]] = {}
+        # (project, key) -> windows of a source whose whole proxy landed: no longer listed, but
+        # still served (a page may be playing one) until the next run's prune_proxies deletes them
+        self.retired: dict[tuple[Path, str], dict[tuple[int, int], Path]] = {}
+        self.windows_queue: deque[ProxyWindow] = deque()
+        self.window_running: ProxyWindow | None = None
+        self.window_wake = threading.Condition(self.lock)
+        self.window_lane: threading.Thread | None = None  # started with the first window
+        self.proxies_pruned: set[Path] = set()  # projects whose proxy leftovers went this run
         self.closing = False
         self.nvenc_failed = False  # a proxy failed with NVENC and worked with libx264 this run
         # still file name -> (its builder lock, requests using it); dropped when the last one leaves
@@ -817,8 +888,10 @@ class Media:
             return None
         return hashlib.sha1(f"{real}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:16]
 
-    def info(self, real: Path, key: str) -> tuple[bool, float, int] | None:
-        """``(browser plays it as is, duration, audio tracks)``, or None if unreadable."""
+    def info(self, real: Path, key: str) -> tuple[bool, float, int, str] | None:
+        """``(browser plays it as is, duration, audio tracks, colour filter of its proxy)``, or
+        None if unreadable. The filter is :func:`~cutpoint.encode.sdr_filter`'s, "" for a source
+        that plays as is."""
         if key not in self.probed:
             try:
                 i = probe(real)
@@ -829,18 +902,24 @@ class Media:
                     and i.acodec in BROWSER_AUDIO
                     and i.audio_streams <= 1  # a browser plays one track; exports mix them all
                 )
-                self.probed[key] = (ok, i.duration, i.audio_streams)
+                self.probed[key] = (ok, i.duration, i.audio_streams, "" if ok else sdr_filter(i))
             except (FFmpegError, OSError, ValueError, KeyError):
                 self.probed[key] = None
         return self.probed[key]
 
-    def _lookup(self, real: Path) -> tuple[str | None, tuple[bool, float, int] | None]:
+    def _lookup(self, real: Path) -> tuple[str | None, tuple[bool, float, int, str] | None]:
         """``(content key, info)`` of ``real``; both None if it is missing."""
         key = self.key(real)
         return key, self.info(real, key) if key else None
 
     def duration(self, real: Path) -> float | None:
         res = self._lookup(real)[1]
+        return res[1] if res else None
+
+    def probed_duration(self, path: str) -> float | None:
+        """The duration of ``path`` if it is probed already; never runs ffprobe."""
+        key = self.key(remap_source(path))
+        res = self.probed.get(key) if key else None
         return res[1] if res else None
 
     def status(self, project: Path, path: str) -> tuple[str, Path | None]:
@@ -865,20 +944,258 @@ class Media:
             return "unknown"
         return self.status(project, path)[0]
 
-    def prepare(self, project: Path, path: str) -> str:
-        """Queue the proxy build of one source (also retries a failed build); returns its status."""
+    def prepare(self, project: Path, path: str, window: tuple[float, float] | None = None) -> str:
+        """Queue the proxy build of one source (also retries a failed build); returns its status.
+
+        ``window``: a ``(lo, hi)`` range in seconds the user is looking at; a window proxy around
+        it is queued first, in its own lane (see :meth:`_focus`).
+        """
         real = remap_source(path)
         key, res = self._lookup(real)
         if res is not None and key is not None and not res[0] and not self.closing:
             proxy = _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # never built through a link
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")  # nor its temporary
+            if window is not None and not proxy.is_file():
+                self._focus(project, real, key, res, *window)
             with self.lock:
                 if not proxy.is_file() and self.proxies.get(key) != "preparing":
                     self.proxies[key] = "preparing"
-                    self.pool.submit(self._build, project, real, proxy, key, res[2])
+                    self.pool.submit(self._build, project, real, proxy, key, res[2], res[3])
         return self.status(project, path)[0]
 
-    def _build(self, project: Path, real: Path, proxy: Path, key: str, audio_streams: int) -> None:
+    def _focus(
+        self,
+        project: Path,
+        real: Path,
+        key: str,
+        res: tuple[bool, float, int, str],
+        lo: float,
+        hi: float,
+    ) -> None:
+        """The user looks at ``[lo, hi]`` s of a source: queue a window proxy around it unless a
+        ready or running one covers it. The request goes ahead of (and drops) earlier queued
+        ones, and a running window encode that does not overlap it is killed."""
+        dur = res[1]
+        if dur > 0:
+            lo, hi = min(lo, dur), min(hi, dur)
+        step = PROXY_WINDOW_STEP
+        a = max(0.0, math.floor((lo - PROXY_WINDOW_BEFORE) / step) * step)
+        b = math.ceil((hi + PROXY_WINDOW_AFTER) / step) * step
+        dur_cs = math.floor(dur * 100) if dur > 0 else 0
+        span = (round(a * 100), min(math.floor(b * 100), dur_cs) if dur_cs else math.floor(b * 100))
+        if span[1] <= span[0]:
+            return
+        want = (min(math.floor(lo * 100), span[1]), min(math.ceil(hi * 100), span[1]))
+        win = ProxyWindow(project, real, key, *span, res[2], res[3])
+        _own(project, f"{UI_DIR}/proxy/{win.name}.mp4")  # never built through a link
+        _own(project, f"{UI_DIR}/proxy/{win.name}.part.mp4")  # nor its temporary
+        with self.lock:
+            ready = self.windows.get((project, key), {})
+            covered = {s: f for s, f in ready.items() if _covers(s, want, dur_cs)}
+        gone = [s for s, f in covered.items() if not f.is_file()]  # deleted by hand meanwhile
+        kill = None
+        with self.lock:
+            if self.closing:
+                return
+            for s in gone:
+                ready.pop(s, None)
+            self.windows_queue.clear()  # superseded: the user moved on
+            run = self.window_running
+            mine = run is not None and (run.project, run.key) == (project, key)
+            if mine and not run.cancelled and _covers((run.lo, run.hi), want, dur_cs):
+                pass  # the running encode covers it
+            elif len(covered) == len(gone):
+                self.windows_queue.append(win)
+                if self.window_lane is None:
+                    self.window_lane = threading.Thread(
+                        target=self._window_lane, name="cutpoint-proxy-window", daemon=True
+                    )
+                    self.window_lane.start()
+                self.window_wake.notify()
+            if run is not None and not (mine and run.lo < span[1] and span[0] < run.hi):
+                run.cancelled = True  # does not start if it has not yet
+                kill, run.proc = run.proc, None
+        if kill is not None:
+            threading.Thread(target=kill_tree, args=(kill, SOFT_STOP_S), daemon=True).start()
+
+    def _window_lane(self) -> None:
+        """The window proxies' one worker, beside the whole-source lane."""
+        while True:
+            with self.lock:
+                while not self.windows_queue and not self.closing:
+                    self.window_wake.wait()
+                if self.closing:
+                    return
+                win = self.window_running = self.windows_queue.popleft()
+            try:
+                self._build_window(win)
+            finally:
+                with self.lock:
+                    self.window_running = None
+
+    def _build_window(self, win: ProxyWindow) -> None:
+        p, name = win.project, f"{UI_DIR}/proxy/{win.name}"
+        tmp, out = p / f"{name}.part.mp4", p / f"{name}.mp4"
+        what = f"{win.real.name} {win.lo / 100:.2f}-{win.hi / 100:.2f} s"
+        drop: list[Path] = []
+        try:
+            _ui_folder(p, "proxy")  # ui or ui/proxy a file: a clear refusal, not a traceback
+            _own(p, f"{name}.part.mp4")  # a link made while this window was queued
+            nvenc = self._nvenc()
+
+            def encode(nv: bool) -> tuple[int, str]:
+                args = proxy_args(
+                    win.real, tmp, win.audio_streams, nvenc=nv, color=win.color,
+                    lo=win.lo / 100, hi=win.hi / 100,
+                )  # fmt: skip
+                return self._encode(args, win)
+
+            code, tail = encode(nvenc)
+            if code != 0 and nvenc and not self.closing and not win.cancelled:
+                logger.warning(
+                    "window proxy of %s: h264_nvenc failed (%s); retrying with libx264", what, tail
+                )
+                code, tail = encode(False)
+                self.nvenc_failed = code == 0
+            if code == 0 and not self.closing and not win.cancelled:
+                _own(p, f"{name}.mp4")  # a link made during the encode
+                with self.lock:
+                    # the whole proxy landed meanwhile: this window is not needed
+                    if not (p / UI_DIR / "proxy" / f"{win.key}.mp4").is_file():
+                        tmp.replace(out)
+                        drop = self._keep_window((p, win.key), (win.lo, win.hi), out)
+            elif not win.cancelled and not self.closing:
+                logger.warning("window proxy of %s failed: %s", what, tail)
+        except HTTPException as err:  # refused: the temporary is removed below
+            logger.warning("window proxy of %s failed: %s", what, err.detail)
+        except OSError:
+            logger.exception("window proxy of %s failed", what)
+        finally:
+            with contextlib.suppress(OSError):  # e.g. NotADirectoryError when ui is a file
+                tmp.unlink(missing_ok=True)
+            self._delete(drop)
+
+    def _keep_window(self, pid: tuple[Path, str], span: tuple[int, int], file: Path) -> list[Path]:
+        """Record a ready window (call with ``self.lock`` held); returns the windows evicted for
+        it, least recently used first, for the caller to delete."""
+        ready = self.windows.setdefault(pid, {})
+        ready.pop(span, None)
+        ready[span] = file
+        drop = []
+        while len(ready) > PROXY_WINDOWS_MAX:
+            drop.append(ready.pop(next(iter(ready))))
+        return drop
+
+    @staticmethod
+    def _delete(files: list[Path]) -> None:
+        for f in files:
+            try:
+                f.unlink(missing_ok=True)
+            except OSError as err:  # e.g. still being sent on Windows; pruned next run
+                logger.debug("could not delete %s: %s", f.name, err)
+
+    def _drop_windows(self, project: Path, key: str) -> None:
+        """The whole proxy of ``key`` landed: stop that source's window encodes and retire its
+        windows (still served, no longer listed; the next run's :meth:`prune_proxies` deletes
+        them, so a page playing one is not cut off)."""
+        kill = None
+        with self.lock:
+            done = self.windows.pop((project, key), None)
+            if done:
+                self.retired.setdefault((project, key), {}).update(done)
+            for win in [w for w in self.windows_queue if (w.project, w.key) == (project, key)]:
+                self.windows_queue.remove(win)
+            run = self.window_running
+            if run is not None and (run.project, run.key) == (project, key):
+                run.cancelled = True
+                kill, run.proc = run.proc, None
+        if kill is not None:
+            threading.Thread(target=kill_tree, args=(kill, SOFT_STOP_S), daemon=True).start()
+
+    def window(self, project: Path, path: str, lo: int, hi: int) -> Path | None:
+        """The ready window ``lo``-``hi`` (centiseconds) of a source, else None; marks it used."""
+        key = self.key(remap_source(path))
+        if key is None:
+            return None
+        with self.lock:
+            ready = self.windows.get((project, key))
+            file = ready.pop((lo, hi), None) if ready else None
+            if ready is not None and file is not None:
+                ready[(lo, hi)] = file  # recently used: evicted last
+            elif file is None:
+                file = self.retired.get((project, key), {}).get((lo, hi))
+        if (
+            file is None
+            or not file.is_file()
+            or not _inside(project, f"{UI_DIR}/proxy/{file.name}")
+        ):
+            return None
+        return file
+
+    def windows_of(
+        self, project: Path, path: str
+    ) -> tuple[list[tuple[int, int]], list[tuple[int, int, str]]]:
+        """``(ready windows, pending ones with "encoding" | "queued")`` of a source, in
+        centiseconds, from memory only; no stat at all while the project has none."""
+        with self.lock:
+            busy = [
+                w for w in (self.window_running, *self.windows_queue)
+                if w is not None and w.project == project and not w.cancelled
+            ]  # fmt: skip
+            any_ready = any(p == project and r for (p, _), r in self.windows.items())
+        if not busy and not any_ready:
+            return [], []
+        key = self.key(remap_source(path))
+        with self.lock:
+            ready = sorted(self.windows.get((project, key), {}))
+            run = self.window_running
+        pending = [(w.lo, w.hi, "encoding" if w is run else "queued") for w in busy if w.key == key]
+        return ready, pending
+
+    def prune_proxies(self, project: Path, paths: list[str]) -> None:
+        """Once per run and project: delete leftover temporaries and windows of sources that
+        changed or left or whose whole proxy is built, and adopt the other windows on disk."""
+        folder = project / UI_DIR / "proxy"
+        if project in self.proxies_pruned:
+            return
+        keys = {self.key(remap_source(path)) for path in paths} - {None}
+        drop: list[Path] = []
+        with self.lock:
+            self.proxies_pruned.add(project)
+            if not folder.is_dir() or not _inside(project, f"{UI_DIR}/proxy"):
+                return  # never delete in a folder a link takes outside the project
+            busy = {f"{k}.part.mp4" for k, st in self.proxies.items() if st == "preparing"}
+            busy |= {
+                f"{w.name}.part.mp4"
+                for w in (self.window_running, *self.windows_queue)
+                if w is not None and w.project == project
+            }
+            drop += [f for f in folder.glob("*.part.mp4") if f.name not in busy]
+            found: list[tuple[int, Path, str, tuple[int, int]]] = []
+            for f in folder.glob("*.w*.mp4"):
+                m = PROXY_WINDOW_FILE.fullmatch(f.name)
+                if m is None:
+                    continue
+                k = m.group(1)
+                if k not in keys or (folder / f"{k}.mp4").is_file():
+                    drop.append(f)
+                else:
+                    with contextlib.suppress(OSError):
+                        found.append((f.stat().st_mtime_ns, f, k, (int(m[2]), int(m[3]))))
+            for _, f, k, span in sorted(found):  # oldest first: evicted first
+                if span not in self.windows.get((project, k), {}):
+                    drop += self._keep_window((project, k), span, f)
+        self._delete(drop)
+
+    def _build(
+        self,
+        project: Path,
+        real: Path,
+        proxy: Path,
+        key: str,
+        audio_streams: int,
+        color: str = "",
+    ) -> None:
         tmp = proxy.with_name(f"{key}.part.mp4")
         state = "failed"
         made: list[Path] = []  # ui folders this build created
@@ -888,18 +1205,21 @@ class Media:
             # a link made while this build was queued
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")
             nvenc = self._nvenc()
-            code, tail = self._encode(proxy_args(real, tmp, audio_streams, nvenc=nvenc))
+            code, tail = self._encode(
+                proxy_args(real, tmp, audio_streams, nvenc=nvenc, color=color)
+            )
             if code != 0 and nvenc and not self.closing:
                 # The probe encodes 0.2 s of black: a driver can still fail on real footage.
                 logger.warning(
                     "proxy of %s: h264_nvenc failed (%s); retrying with libx264", real.name, tail
                 )
-                code, tail = self._encode(proxy_args(real, tmp, audio_streams))
+                code, tail = self._encode(proxy_args(real, tmp, audio_streams, color=color))
                 self.nvenc_failed = code == 0
             if code == 0 and not self.closing:
                 _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # a link made during the encode
                 tmp.replace(proxy)
                 state = ""
+                self._drop_windows(project, key)  # the whole proxy replaces them
             else:
                 logger.warning("proxy of %s failed: %s", real.name, tail)
         except HTTPException as err:  # refused: the temporary is removed below
@@ -932,21 +1252,29 @@ class Media:
             return False
         return choice in {"auto", "nvenc"} and find_encoder("nvenc")[0] is not None
 
-    def _encode(self, args: list[str]) -> tuple[int, str]:
+    def _encode(self, args: list[str], window: ProxyWindow | None = None) -> tuple[int, str]:
         """Run one proxy encode; ``(exit code, end of its output)``.
 
-        Spawned and registered under ``self.lock`` once ``closing`` is checked, so ``shutdown``
-        either kills it or it never starts.
+        Spawned and registered under ``self.lock`` once ``closing`` (and the ``window``'s
+        ``cancelled``) is checked, so ``shutdown`` (or :meth:`_focus`) either kills it or it
+        never starts. ``window.proc`` holds the process while it runs.
         """
         with self.lock:
             if self.closing:
                 return 1, "the server is shutting down"
+            if window is not None and window.cancelled:
+                return 1, "no longer needed"
             proc = spawn(args)
             self.procs.add(proc)
+            if window is not None:
+                window.proc = proc
         try:
             tail = (proc.communicate()[0] or "").strip()[-500:]
         finally:
-            self.procs.discard(proc)
+            with self.lock:
+                self.procs.discard(proc)
+                if window is not None and window.proc is proc:
+                    window.proc = None
         return proc.returncode, tail
 
     def frame(self, project: Path, path: str, at: float, width: int) -> Path | None:
@@ -1036,6 +1364,8 @@ class Media:
         with self.lock:  # as in ``_encode``: no proxy ffmpeg starts after this
             self.closing = True
             procs = list(self.procs)
+            self.windows_queue.clear()
+            self.window_wake.notify_all()  # the window lane ends
         self.pool.shutdown(wait=False, cancel_futures=True)
         for proc in procs:
             kill_tree(proc, SOFT_STOP_S)  # a bare ffmpeg: no soft stop of its own to wait for
@@ -1632,6 +1962,9 @@ def create_app(port: int) -> FastAPI:
     def url(pid: str, kind: str, name: str) -> str:
         return f"/api/projects/{quote(pid, safe='')}/{kind}/{quote(name, safe='')}?t={token}"
 
+    def window_url(pid: str, sid: str, lo: int, hi: int) -> str:
+        return url(pid, "sources", sid).replace("?", f"/window/{lo}-{hi}?", 1)
+
     @secure.get("/session")
     def session():
         return {
@@ -1757,14 +2090,28 @@ def create_app(port: int) -> FastAPI:
         for s in listing:
             # Never probes: 200 sources took 11 s of ffprobe. The page prepares the one it plays.
             status = media.cached_status(p, s["path"])
+            ready, pending = media.windows_of(p, s["path"])
+            duration = s["duration"]
+            if duration is None and (ready or pending):  # the page needs it to play windows
+                duration = media.probed_duration(s["path"])
             found.append(
                 {
                     "id": s["id"],
                     "name": s["name"],
                     "path": s["path"],
                     "url": url(pid, "sources", s["id"]),
-                    "duration": s["duration"],
+                    "duration": duration,
+                    # "ready": the whole source plays (as is or from its proxy)
                     "status": status,
+                    # window proxies (#323) that play while the whole proxy builds
+                    "windows": [
+                        {"lo": lo / 100, "hi": hi / 100, "url": window_url(pid, s["id"], lo, hi)}
+                        for lo, hi in ready
+                    ],
+                    "pending": [
+                        {"lo": lo / 100, "hi": hi / 100, "state": state}
+                        for lo, hi, state in pending
+                    ],
                 }
             )
         return {
@@ -2017,6 +2364,21 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"source is {status}", 404 if status == "failed" else 409)
         return send(file, request, entry["name"])
 
+    @served.api_route("/projects/{pid}/sources/{sid}/window/{span}", methods=["GET", "HEAD"])
+    def source_window(pid: str, sid: str, span: str, request: Request):
+        """A ready window proxy of a source; ``span`` is ``<lo>-<hi>`` in centiseconds."""
+        m = re.fullmatch(r"(\d{1,9})-(\d{1,9})", span)
+        if m is None:
+            raise bad("unknown window", 404)
+        p, entry = find_source(pid, sid)
+        file = media.window(p, entry["path"], int(m[1]), int(m[2]))
+        if file is None:
+            status = media.status(p, entry["path"])[0]
+            raise bad(
+                f"window is not ready (source is {status})", 404 if status == "failed" else 409
+            )
+        return send(file, request)
+
     @served.get("/projects/{pid}/sources/{sid}/frame")
     def source_frame(pid: str, sid: str, at: float = 0.0, w: int = FRAME_WIDTH):
         """One still of a source (``at`` seconds in, ``w`` px wide) for thumbnails."""
@@ -2039,9 +2401,26 @@ def create_app(port: int) -> FastAPI:
         )
 
     @owned.post("/projects/{pid}/sources/{sid}/prepare")
-    def prepare_source(pid: str, sid: str):
+    def prepare_source(pid: str, sid: str, body: dict[str, Any] | None = None):
+        """Queue the source's proxy; with ``{lo, hi}`` (seconds), a window proxy around that
+        range first, which plays while the whole proxy builds."""
+        window = None
+        if body and ("lo" in body or "hi" in body):
+            span = [body.get("lo"), body.get("hi")]
+            times = [
+                float(x) for x in span if isinstance(x, (int, float)) and not isinstance(x, bool)
+            ]
+            if (
+                len(times) != 2
+                or not all(map(math.isfinite, times))
+                or not 0 <= times[0] <= times[1]
+            ):
+                raise bad("lo and hi must be times in seconds with 0 <= lo <= hi")
+            window = (times[0], times[1])
         p, entry = find_source(pid, sid)
-        return {"status": media.prepare(p, entry["path"])}
+        if p not in media.proxies_pruned:
+            media.prune_proxies(p, [s["path"] for s in sources.entries(p)])
+        return {"status": media.prepare(p, entry["path"], window)}
 
     @served.api_route("/projects/{pid}/outputs/{name}", methods=["GET", "HEAD"])
     def output_file(pid: str, name: str, request: Request):
