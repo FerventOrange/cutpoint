@@ -145,7 +145,8 @@ moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other value
 
 `off` (default), `light` or `strong`: the [peak compression](commands.md#peak-compression)
 that `clips`, `assemble` and `edit` use when `--compress-peaks` is not given. Other values are
-rejected.
+rejected. `cutpoint ui` starts its "Compress peaks" select on this value and passes the choice
+to its exports and assemblies; it does not change the key.
 
 ### analysis
 

@@ -2013,7 +2013,7 @@ async function startJob(action, extra = {}) {
 function exportOptions() {
   const extend = Number($('#optExtend').value);
   if (!Number.isFinite(extend) || extend < 0 || extend > 30) throw new Error('Padding must be between 0 and 30 seconds.');
-  return { vertical: $('#optVertical').checked, extend };
+  return { vertical: $('#optVertical').checked, extend, compress_peaks: $('#optPeaks').value };
 }
 
 // ---------- jobs ----------
@@ -2397,6 +2397,7 @@ function bind() {
     startJob('assemble', {
       transition: $('#optTransition').value,
       loudnorm: $('#optLoudnorm').checked,
+      compress_peaks: $('#optPeaks').value,
       captions: $('#optCaptions').checked,
     }),
   );
@@ -2473,6 +2474,12 @@ async function main() {
     // e.g. a config.json the server rejects (409 names the file): the banner says what to fix,
     // and Settings stays usable.
     fail(e);
+  }
+  try {
+    // compress_peaks in config.json is the default; the select keeps Off if it cannot be read
+    $('#optPeaks').value = (await api('/api/settings')).compress_peaks ?? 'off';
+  } catch {
+    // the project list has reported a config.json the server rejects
   }
   const wanted = decodeURIComponent(location.hash.slice(1));
   const first = S.projects.find((p) => p.id === wanted) ?? S.projects[0];

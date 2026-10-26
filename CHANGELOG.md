@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   7.5 dB (light) or 5.2 dB (strong), and the loudness spread between clips went from 9.9 to
   4.3 or 4.7 LU. The true peak stays below -1.5 dBTP. With `off`, the output is unchanged
   (#326).
+- The UI has a "Compress peaks" select (Off, Light, Strong) next to "Normalize loudness". It
+  starts on `compress_peaks` in `config.json` (now also in `GET /api/settings`), and the choice
+  is passed as `--compress-peaks` to the clips export and the assembly; the server refuses other
+  values with 400 (#326).
 - When the browser cannot play a source, the UI previews the selected moment within seconds:
   the server first encodes a short proxy of the moment (10 s before it to 20 s after it) while
   the whole-source proxy builds in a second lane. Scrubbing or playing outside it prepares that

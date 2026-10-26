@@ -170,7 +170,8 @@ you already use when installing or running.
 Open the complete printed loopback URL, including `#t=…`; keep it private because it grants access
 to local footage. The workspace can create/open projects, analyze standard video,
 preview and trim candidates, save and reorder a sequence, export clips, and assemble a final
-video with optional fades, loudness normalization and captions. Nothing is uploaded. A camera
+video with optional fades, loudness normalization, [peak compression](#peak-compression) and
+captions. Nothing is uploaded. A camera
 folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 analyze --scan`
 (see [360 video](workflows/360.md#in-the-ui)). It does not expose the action-cam commands or the
 other `360` commands.
@@ -230,6 +231,13 @@ in `/api/jobs`) until its process exits; Cancel is disabled meanwhile. Cancel re
 the job has about 12 s to remove its partial files before its process tree is ended (preview
 proxies: 5 s). Assembly uses the latest successful UI export, not any subsequent unexported sequence changes. Failed/cancelled exports
 may leave partial output folders, which are not offered for assembly.
+
+"Compress peaks" (Off, Light or Strong), next to "Normalize loudness", is passed as
+`--compress-peaks` to both the clips export and the assembly, so an export bakes it into its clips
+and the assembly compresses only the clips exported without it. It starts on
+[`compress_peaks`](configuration.md#compress_peaks) in `config.json` (default off; `GET
+/api/settings` returns it as `compress_peaks`), and a job sent without it uses that value; other
+values are refused with 400. Previews do not apply it.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
 under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matching clip export.
