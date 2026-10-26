@@ -266,10 +266,25 @@ def compute_voice(
     return grids
 
 
+def needs_run(sources: list[Source], params: VoiceParams, force: bool = False) -> bool:
+    """Whether :func:`run_layer` would compute any grids (checks the cache files only)."""
+    if force:
+        return True
+    for s in sources:
+        try:
+            if not cache_path(s, params).exists():
+                return True
+        except OSError:  # load_voice gives None: run_layer tries it
+            return True
+    return False
+
+
 def run_layer(
     sources: list[Source], params: VoiceParams, force: bool = False, det: Any = None
 ) -> dict[str, Any]:
-    """Compute the voice grids for every source that lacks them; returns stats."""
+    """Compute the voice grids for every source that lacks them; returns stats.
+
+    A given ``det`` (PANNs) stays open: the caller closes it."""
     need = [s for s in sources if force or load_voice(s, params) is None]
     stats: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
     if not need:
