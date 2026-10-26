@@ -12,10 +12,12 @@ import pytest
 
 from cutpoint.events import discover
 from cutpoint.events.game_profile import (
+    CLUSTER_MAX_FRAMES,
     HINT_MIN_BURSTS,
     HINT_SHARE,
     MIN_GAP_S,
     VERSION,
+    _after_share,
     build_profile,
     match_hint,
     mine_phrases,
@@ -81,10 +83,11 @@ def test_phrases_capped_and_ordered() -> None:
         "PUMP ONLINE", "RADAR JAMMED", "FLAG DROPPED", "VAULT OPENED", "SIREN ACTIVE",
         "DEPOT BURNING", "LIFT ARRIVED", "SHIELD BROKEN", "CORE EXPOSED",
     ]  # fmt: skip
-    frames = _frames({0: texts, 1: texts, 2: texts[:1]})
+    # shown together in 3 bursts: more moments than a prompt cluster has
+    frames = _frames({0: texts, 1: texts, 3: texts, 2: texts[:1]})
     got = mine_phrases(_proposal(), frames)
     assert len(got) == 12
-    assert got[0] == texts[0]  # three bursts first
+    assert got[0] == texts[0]  # four bursts first
 
 
 def test_rejects_gamertags_chat_static_and_generic() -> None:
@@ -294,7 +297,7 @@ def test_generic_banner_variant() -> None:
 
 
 def test_player_tags() -> None:
-    frames = _frames({b: ["BOXER HAS THE FLAG", "ZONE SECURED"] for b in (0, 2)})
+    frames = _frames({b: ["BOXER HAS THE FLAG", "ZONE SECURED"] for b in (0, 2, 4)})
     assert mine_phrases(_proposal(), frames) == ["BOXER HAS THE FLAG", "ZONE SECURED"]
     prof = build_profile(_proposal(), frames, "zonewar", player_tags=["Boxer"])
     # the tag is split off: the rest of the banner is a candidate
@@ -355,7 +358,8 @@ def test_round_trip_and_superset() -> None:
 
 
 def test_deterministic() -> None:
-    frames = _frames({0: ["ZONE SECURED", "BRIDGE FALLEN"], 2: ["BRIDGE FALLEN", "ZONE SECURED"]})
+    both = ["ZONE SECURED", "BRIDGE FALLEN"]
+    frames = _frames({0: both, 2: both[::-1], 4: both})
     a = build_profile(_proposal(), frames, "zonewar")
     b = build_profile(_proposal(), list(reversed(frames)), "zonewar")
     assert json.dumps(a) == json.dumps(b)
@@ -633,3 +637,121 @@ def test_a_short_source_is_not_tested_for_hints() -> None:
     # 3 of 7 bursts spread over the source: 43% of its frames, too few bursts to tell
     frames = _match({0, 3, 6}, bursts=HINT_MIN_BURSTS - 1)
     assert HINT in mine_phrases(_proposal(), frames)
+
+
+def _sources(texts: dict[str, dict[int, list[str]]]) -> list[dict]:
+    """The burst frames of :func:`_frames` for each source (``source -> texts_by_burst``)."""
+    out = []
+    for src, by_burst in texts.items():
+        for f in _frames(by_burst):
+            out.append(f | {"id": f["id"].replace("rec.mp4", src), "source": src})
+    return out
+
+
+def test_prompt_cluster_dropped() -> None:
+    # invented control prompts, each its own box (one read joined), only ever shown together
+    prompts = ["Grab Rope", "SwingAcross"]
+    texts = {2: prompts, 6: prompts[::-1]} | {0: [BANNER_TEXT], 4: [BANNER_TEXT]}
+    assert mine_phrases(_proposal(), _frames(texts)) == [BANNER_TEXT]
+    # shown together at more moments than a prompt cluster: kept
+    more = texts | {7: prompts}
+    assert CLUSTER_MAX_FRAMES < 3
+    assert sorted(mine_phrases(_proposal(), _frames(more))) == sorted(
+        ["Grab Rope", "Swing Across", BANNER_TEXT]
+    )
+    # one of them also shown alone: no cluster, both kept
+    alone = texts | {8: prompts[:1]}
+    assert sorted(mine_phrases(_proposal(), _frames(alone))) == sorted(
+        ["Grab Rope", "Swing Across", BANNER_TEXT]
+    )
+
+
+def test_parts_of_one_box_are_no_cluster() -> None:
+    # a banner read in one box with a stats line: its parts never make a cluster
+    line = "ZONE SECURED | 30 pts earned"
+    assert "ZONE SECURED" in mine_phrases(_proposal(), _frames({0: [line], 4: [line]}))
+
+
+@pytest.mark.parametrize("mark", [".", "?", "...", "\u2026", "\u3002", "\uff0e", "\uff1f"])
+def test_trailing_sentence_punctuation_dropped(mark: str) -> None:
+    # an invented short hint; one read missed the mark (OCR drops small dots)
+    texts = {0: [f"Mind the gap{mark}"], 3: [f"Mind the gap{mark}"], 6: ["Mind the gap"]}
+    texts |= {1: [BANNER_TEXT], 5: [BANNER_TEXT]}
+    assert mine_phrases(_proposal(), _frames(texts)) == [BANNER_TEXT]
+
+
+def test_fragment_of_two_hint_sentences_dropped() -> None:
+    # two invented hints sharing their opening: the shared part shows without either rest
+    texts = {0: ["Hold Q to vault."], 3: ["Hold Q to climb."], 6: ["Hold Q to vault."]}
+    texts |= {1: [BANNER_TEXT], 5: [BANNER_TEXT]}
+    assert mine_phrases(_proposal(), _frames(texts)) == [BANNER_TEXT]
+
+
+def test_number_with_a_point_is_no_sentence_end() -> None:
+    texts = {0: ["SPEED BOOST x1.5"], 4: ["SPEED BOOST x2.5"]}
+    assert mine_phrases(_proposal(), _frames(texts)) == ["SPEED BOOST"]
+
+
+@pytest.mark.parametrize("mark", ["!", "!!", "\u203c", "\u2049", "\uff01", "?!", "...!"])
+def test_exclamation_banner_kept(mark: str) -> None:
+    # an invented banner ending with an exclamation mark: no hint sentence
+    texts = {0: [f"TRIPLE ZAP{mark}"], 4: [f"TRIPLE ZAP{mark}"]}
+    assert mine_phrases(_proposal(), _frames(texts)) == ["TRIPLE ZAP"]
+
+
+def test_phrase_with_cut_letters_is_not_judged_by_its_punctuation() -> None:
+    # "_words" keeps ASCII letters only: the candidate is not found in its text as such, so the
+    # punctuation rule has no share to decide on and leaves it to the other rules
+    text = "Zon\u00e9 secured."
+    assert _after_share("ZON SECURED", [text], {text: {"f"}}, lambda _: True) is None
+    assert mine_phrases(_proposal(), _frames({0: [text], 4: [text]})) == ["Zon secured"]
+
+
+def test_phrase_in_one_of_several_sources_dropped() -> None:
+    # the banner in both recordings, an invented hint in one of them only
+    texts = {
+        "a.mp4": {0: [BANNER_TEXT], 4: ["Tide Rising Soon"], 7: ["Tide Rising Soon"]},
+        "b.mp4": {2: [BANNER_TEXT], 6: [BANNER_TEXT]},
+    }
+    assert mine_phrases(_proposal(), _sources(texts)) == [BANNER_TEXT]
+
+
+def test_source_without_shared_text_keeps_phrases() -> None:
+    # the second recording has gameplay frames but no banner text: no phrase is in 2 sources,
+    # so the source rule does not apply
+    texts = {
+        "a.mp4": {0: ["ZONE SECURED"], 3: ["ZONE SECURED"], 5: ["BRIDGE FALLEN"]}
+        | {8: ["BRIDGE FALLEN"]},
+        "b.mp4": {},
+    }
+    assert mine_phrases(_proposal(), _sources(texts)) == ["BRIDGE FALLEN", "ZONE SECURED"]
+
+
+def test_dropped_cluster_does_not_count_as_shared() -> None:
+    # a prompt cluster shown in both recordings, the phrases in one only: once the cluster is
+    # dropped no kept phrase is in 2 sources, so the source rule does not apply
+    prompts = ["Grab Rope", "Swing Across"]
+    texts = {
+        "a.mp4": {0: [BANNER_TEXT], 3: [BANNER_TEXT], 5: ["BRIDGE FALLEN"], 8: ["BRIDGE FALLEN"]}
+        | {6: prompts},
+        "b.mp4": {2: prompts},
+    }
+    assert mine_phrases(_proposal(), _sources(texts)) == ["BRIDGE FALLEN", BANNER_TEXT]
+
+
+def test_one_source_keeps_its_phrases() -> None:
+    # with a single source the source rule does not apply: it would leave nothing
+    texts = {"a.mp4": {0: [BANNER_TEXT], 3: [BANNER_TEXT]} | {4: [HINT], 7: [HINT]}}
+    assert mine_phrases(_proposal(), _sources(texts)) == [HINT, BANNER_TEXT]
+
+
+def test_banner_survives_the_hint_rules() -> None:
+    # a short recurring banner, alone in some frames, once next to an invented prompt cluster,
+    # a hint sentence and a hint of one recording, in both recordings: only the banner is kept
+    prompts = ["Grab Rope", "Swing Across"]
+    texts = {
+        "a.mp4": {0: [BANNER_TEXT], 2: [*prompts, BANNER_TEXT], 5: prompts}
+        | {3: ["Mind the gap."], 7: ["Mind the gap."]},
+        "b.mp4": {1: [BANNER_TEXT], 4: ["Tide Rising Soon"], 8: ["Tide Rising Soon"]},
+    }
+    assert mine_phrases(_proposal(), _sources(texts)) == [BANNER_TEXT]

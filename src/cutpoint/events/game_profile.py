@@ -38,7 +38,12 @@ dependency (the ``ocr`` backend):
   hint lines (:func:`_static_hint`: in at least :data:`HINT_SHARE` of a
   source's gameplay frames, spread over at least :data:`HINT_SPREAD` of its
   sampled time) and phrases close to one of
-  :data:`~cutpoint.events.regions.GENERIC_BANNERS` are left out; at most
+  :data:`~cutpoint.events.regions.GENERIC_BANNERS` are left out. So are short hint and
+  control-prompt lines shown briefly (:func:`_after_share`, :func:`_clusters`): a phrase whose
+  sentence ends with ``.``, ``?`` or an ellipsis (:data:`PUNCT_SHARE`; ``!`` does not
+  count), phrases in separate boxes never shown without one another at no more than
+  :data:`CLUSTER_MAX_FRAMES` moments, and, when some kept phrase is found in 2+ sources, a
+  phrase found in only one of them; at most
   :data:`MAX_PHRASES`.
 * ``title`` and ``match`` from the game key. ``title`` is the name the VLM
   prompt already derives from the key; ``match`` is left empty unless the key
@@ -47,7 +52,7 @@ dependency (the ``ocr`` backend):
 Regions are kept exactly as discovery proposed them, and ``feed`` colours,
 ``view`` and ``hype`` are not set: the OCR text alone does not say what they
 should be. The result keeps ``"source": "discovered"`` and records its
-provenance as ``"profile": {"backend": "ocr", "version": 6}``.
+provenance as ``"profile": {"backend": "ocr", "version": 7}``.
 
 Cache keys: ``source``, ``profile``, ``title``, ``match``, ``notes`` and
 ``candidate_phrases`` are not part of the OCR cache key
@@ -66,8 +71,9 @@ from __future__ import annotations
 
 import copy
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import fields
+from itertools import combinations
 from typing import Any
 
 from cutpoint.events.discover import DiscoverParams, boxes_in, gameplay_frames
@@ -75,7 +81,7 @@ from cutpoint.events.killfeed import fuzzy_contains, is_player, norm, similar
 from cutpoint.events.regions import GENERIC_BANNERS, bigtext_region
 
 BACKEND = "ocr"
-VERSION = 6  # bump when the OCR backend's output changes
+VERSION = 7  # bump when the OCR backend's output changes
 MAX_PHRASES = 12
 # a phrase must occur in this many gameplay frames, each at least MIN_GAP_S after the
 # previous one counted in its source: a banner held 3 s counts twice, one reading of a
@@ -101,6 +107,14 @@ MAX_WORDS = 5  # longer texts are sentences (hints, chat), not banners
 MAX_CANDIDATES = 100  # most frequent candidates compared fuzzily (bounds the cost)
 CASE_SHARE = 2 / 3  # a candidate's casing in at least this share of its bursts
 SLOT_WORDS = 4  # an edge word with this many alternatives next to the rest is a slot
+# Short hint and control-prompt lines shown briefly pass the tests above (#313). A phrase whose
+# sentence ends with sentence punctuation in at least PUNCT_SHARE of the frames it is in is a
+# hint sentence ("Hold to sprint."), not a banner; one ending with "!" is no hint ("DOUBLE
+# KILL!"). Phrases in separate boxes that are never shown
+# without one another, at no more than CLUSTER_MAX_FRAMES moments (frames MIN_GAP_S apart, as
+# MIN_OCCURRENCES counts them), are a control-prompt cluster.
+PUNCT_SHARE = 0.5
+CLUSTER_MAX_FRAMES = 2
 NOTES = (
     "candidate_phrases were mined from the discovery OCR and are inactive. To activate one,"
     " move it into banner_phrases."
@@ -113,6 +127,16 @@ _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")  # "blockedShield" -> "blocked", "Sh
 # a number joined to a word: one letter run and one digit run ("ROUND5", "5KILLS")
 _NUMBERED = re.compile(r"([A-Za-z]+)\d+|\d+([A-Za-z]+)")
 _ORDINAL = re.compile(r"\d+(?:ST|ND|RD|TH)")  # "3RD", dropped whole
+# sentence punctuation of a hint line: full stops, question marks and the ellipsis ("..." too),
+# ASCII and their Unicode equivalents (CJK and full-width forms, Arabic and Devanagari)
+_STOP = ".?\u2026\u2047\u061f\u06d4\u0964\u0965\u3002\uff0e\uff1f\uff61"
+# exclamation marks end a sentence too, but a banner may end with one ("DOUBLE KILL!")
+_EXCLAIM = "!\u203c\u2048\u2049\uff01"
+# the rest of a sentence (no separator ends it; "1.5" is a number) up to a _STOP mark
+# and no exclamation mark after the marks: "?!" and "...!" end a banner, not a hint
+_SENTENCE_END = re.compile(
+    rf"(?:[^|:;/\\@#{_STOP}{_EXCLAIM}]|\.(?=\d))*[{_STOP}]+(?![\w{_STOP}{_EXCLAIM}])"
+)
 
 # Words that name a folder of recordings, not a game: a key containing one is
 # no safe path hint.
@@ -255,6 +279,11 @@ def mine_phrases(
     with numbers and tags left out, so labels with changing numbers stay
     static. A kept phrase inside a longer kept one is dropped unless it
     occurs more often.
+
+    Short hint and control-prompt lines are dropped too: a phrase whose sentence ends with
+    ``.``, ``?`` or an ellipsis in :data:`PUNCT_SHARE` of its frames (:func:`_after_share`;
+    ``!`` does not count), and, of the kept phrases, prompt clusters (:func:`_clusters`) and,
+    when some kept phrase is found in 2+ sources, a phrase found in only one.
 
     Sorted by the number of occurrences (most first), then by text.
     """
@@ -402,6 +431,7 @@ def mine_phrases(
     }
     kept: list[tuple[str, int]] = []
     names: dict[str, str] = {}
+    finders: dict[str, Callable[[set[str]], bool]] = {}
     tried = 0
     for c in cands:
         if tried >= MAX_CANDIDATES:
@@ -415,6 +445,10 @@ def mine_phrases(
             continue  # casing varies: not one HUD text
         if _sentence_part(c, sources[c], splits):
             continue  # a part of one longer sentence: a hint line
+        # a share of None: c is found in no text as such (_words cut letters out), no decision
+        share = _after_share(c, sources[c], text_frames, _SENTENCE_END.match)
+        if share is not None and share >= PUNCT_SHARE:
+            continue  # its sentence ends with sentence punctuation: a hint line
         tried += 1
         hits: dict[str, bool] = {}
         cg = _bigrams(c)
@@ -439,11 +473,27 @@ def mine_phrases(
         ):
             kept.append((c, occ))
             names[c] = name
+            finders[c] = occurs
     kept = [
         (c, n)
         for c, n in kept
         if not any(k != c and f" {c} " in f" {k} " and kn >= n for k, kn in kept)
     ]
+    # where each kept phrase occurs: index in ``timed`` -> the texts (boxes) it is in there
+    where = {
+        c: {i: m for i, (*_, texts) in enumerate(timed) if (m := {x for x in texts if find({x})})}
+        for c, _ in kept
+        for find in [finders[c]]
+    }
+    drop = _clusters(where, timed)
+    # Only when some kept phrase is found in 2+ sources: a phrase found in one of them is a hint
+    # of that recording. Otherwise (a single source, or sources whose banner regions share no
+    # text) every phrase is in one source, so the test would leave nothing; the other tests
+    # decide alone then.
+    in_sources = {c: {timed[i][0] for i in w} for c, w in where.items() if c not in drop}
+    if any(len(s) > 1 for s in in_sources.values()):
+        drop |= {c for c, s in in_sources.items() if len(s) < 2}
+    kept = [p for p in kept if p[0] not in drop]
     kept.sort(key=lambda p: (-p[1], p[0]))
     return [names[c] for c, _ in kept[:MAX_PHRASES]]
 
@@ -500,6 +550,79 @@ def _static_hint(
         if len(ts) >= HINT_SHARE * len(times) and span > 0 and ts[-1] - ts[0] >= HINT_SPREAD * span:
             return True
     return False
+
+
+def _clusters(
+    where: dict[str, dict[int, set[str]]], timed: list[tuple[str, float, set[str]]]
+) -> set[str]:
+    """Phrases of control-prompt clusters, of the kept phrases' occurrences ``where``
+    (phrase -> index in ``timed`` -> the texts it is in there).
+
+    A phrase is never alone when every frame it is in has another kept phrase in a text it
+    is not in (a separate box; parts of one box do not count). Never-alone phrases sharing a
+    frame in separate boxes form a cluster; one of 2+ phrases shown at no more than
+    :data:`CLUSTER_MAX_FRAMES` moments (:func:`_occurrences` of its frames) is a set of
+    control prompts shown together, and all of them are returned.
+    """
+
+    def apart(a: str, b: str, i: int) -> bool:  # b in frame i in a text a is not in
+        return bool(where[b].get(i, set()) - where[a][i])
+
+    together = sorted(
+        c for c in where if all(any(apart(c, d, i) for d in where if d != c) for i in where[c])
+    )
+    group = {c: {c} for c in together}
+    for a, b in combinations(together, 2):
+        if group[a] is not group[b] and any(apart(a, b, i) for i in where[a]):
+            merged = group[a] | group[b]
+            for c in merged:
+                group[c] = merged
+    out: set[str] = set()
+    for g in {min(g): g for g in group.values()}.values():
+        frames = sorted({i for c in g for i in where[c]})
+        moments = _occurrences([(*timed[i][:2], set()) for i in frames], lambda _: True)
+        if len(g) > 1 and moments <= CLUSTER_MAX_FRAMES:
+            out |= g
+    return out
+
+
+def _after(c: str, text: str) -> str | None:
+    """The raw ``text`` after the first whole-word reading of candidate ``c`` (upper-case)
+    before any chat message, or None.
+
+    Case is ignored; the words of ``c`` may be joined by spaces, ``_ . - '`` or nothing (a
+    camelCase or space-less read). Each end is at a word boundary: a character that is no
+    letter, an end of the text or a camelCase boundary ("blockedShieldSaver:x1" gives ":x1"
+    for "SHIELD SAVER"). The rest keeps what the chat rule cuts ("YOUR SCORE: 120" gives
+    ": 120").
+    """
+
+    def edge(i: int) -> bool:  # a word boundary between text[i - 1] and text[i]
+        if i <= 0 or i >= len(text):
+            return True
+        a, b = text[i - 1], text[i]
+        return not (a.isalpha() and b.isalpha()) or (a.islower() and b.isupper())
+
+    pattern = r"[\s_.\-']*".join(map(re.escape, c.split()))
+    for m in re.finditer(pattern, _CHAT.sub("", text), re.IGNORECASE):
+        if edge(m.start()) and edge(m.end()):
+            return text[m.end() :]
+    return None
+
+
+def _after_share(
+    c: str, texts: Iterable[str], frames: dict[str, set[str]], test: Callable[[str], Any]
+) -> float | None:
+    """The share of the frames of ``texts`` (``frames``: text -> its frames) whose rest after
+    candidate ``c`` (:func:`_after`) passes ``test``; texts ``c`` is not found in do not count.
+    None when it is found in none (``_words`` cut letters out of its words: "CAF" of "Café")."""
+    hit = total = 0
+    for t in sorted(texts):
+        rest = _after(c, t)
+        if rest is not None:
+            total += len(frames[t])
+            hit += len(frames[t]) if test(rest) else 0
+    return hit / total if total else None
 
 
 def _sentence_part(c: str, texts: dict[str, int], splits: dict[str, str]) -> bool:

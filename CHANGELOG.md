@@ -392,6 +392,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one; commas and brackets do not), with the same text right around it each time (OCR read the
   sentence a little differently, so its parts showed without the rest), is left out. Short banners, banners read in one box with a stats line and phrases
   in log lines with changing names or gamertags around them stay (#313).
+- Mined `candidate_phrases` (profile version 7) also leave out short hint and control-prompt
+  lines: phrases in separate boxes that never show without one another at no more than 2
+  moments (a prompt cluster), a phrase whose sentence ends with `.`, `?` or an ellipsis (`...`,
+  `…`, and their Unicode equivalents such as `。` and `？`) in at least half of the frames it is
+  in, and, when some phrase is found in 2 or more recordings, a phrase found in only one of
+  them. A banner ending with `!` stays. With a single recording, or recordings that share no
+  phrase, the last rule is skipped. No command writes candidate phrases yet, so analysis
+  results do not change (#313).
 - When the short proxy of a part of the source fails twice, the UI preview stops waiting on
   "Preparing this part of the source…" and shows why, with a Retry button. The server's
   warning now names ffmpeg's last lines (or its exit code), and each source in the project view
