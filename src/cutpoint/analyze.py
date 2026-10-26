@@ -72,6 +72,7 @@ PROFANE = {p.rstrip("*") for p in PROFANITY}  # names as keyword_hits reports th
 PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
 VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
+VISION_LABEL_MIN = 7.0  # --vision: from this rating, the model's label names the clip
 SHORTFALL_S, SHORTFALL_FRAC, SHORTFALL_FLOOR_S = 2.0, 0.01, 0.5  # truncation thresholds
 RESUME_STEPS_S = (5, 10, 20, 40, 80, 160, 320)  # probe offsets past a read failure
 EXTRACT_SHARE = 0.1  # the audio extract's share of a source in the transcribe step's pct
@@ -542,9 +543,26 @@ def transcript_text(name: str, segments: list[Segment], pause: float = 0.6) -> l
     return lines
 
 
+def vision_blend(score: float, rating: float | None, weight: float) -> float:
+    """``score`` with a 0-10 vision ``rating`` applied as a bounded multiplier
+    (``1 + weight * (rating - 5) / 5``, ``weight`` being the style's
+    ``vision_weight``), kept within 0-100; an unrated candidate (``rating``
+    None) keeps its score."""
+    if rating is None:
+        return score
+    return round(max(0.0, min(100.0, score * (1 + weight * (rating - 5) / 5))), 1)
+
+
+def vision_label(rating: float, label: str) -> str | None:
+    """The model's ``label`` as a clip label, only for a rating of at least
+    ``VISION_LABEL_MIN``; None keeps the clip's own label."""
+    slug = slugify(label, 30) if label and rating >= VISION_LABEL_MIN else ""
+    return slug or None
+
+
 def _label(c: Candidate, style: Style) -> str:
-    if c.vision and c.vision.get("label"):
-        return slugify(c.vision["label"], 30)
+    if c.vision and (slug := vision_label(c.vision.get("score", 0), c.vision.get("label", ""))):
+        return slug
     if c.label_hint:
         return slugify(c.label_hint, 30)
     if c.signals.get("laughter", 0) > 0.5:
@@ -1284,9 +1302,10 @@ def _rate_vision(
     n_top: int,
     style: Style,
 ) -> tuple[bool, int]:
-    """Rate the first ``n_top`` candidates with Ollama and blend the rating into their
-    analysis score (``score_pre_events`` once events rescored them); returns
-    ``(any rated, failures)``."""
+    """Rate the first ``n_top`` candidates with Ollama and apply the rating to their
+    analysis score (``score_pre_events`` once events rescored them) with
+    :func:`vision_blend` and the style's ``vision_weight``; the model's label replaces a candidate's from
+    ``VISION_LABEL_MIN``. Returns ``(any rated, failures)``."""
     used, n_failed = False, 0
     top = cands[:n_top]
     try:
@@ -1299,11 +1318,11 @@ def _rate_vision(
             used = True
             c["signals"]["vision"] = res.score
             if res.label:
-                c["label"] = slugify(res.label, 30)
+                c["vision_label"] = res.label
+            if label := vision_label(res.score, res.label):
+                c["label"] = label
             key = "score_pre_events" if "score_pre_events" in c else "score"
-            c[key] = round(
-                (1 - style.vision_weight) * c[key] + style.vision_weight * res.score * 10, 1
-            )
+            c[key] = vision_blend(c[key], res.score, style.vision_weight)
             logger.info(
                 "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
             )
