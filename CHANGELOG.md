@@ -637,6 +637,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config.json` saved with a UTF-8 byte order mark (Windows PowerShell 5.1
   `Set-Content -Encoding UTF8`) is now accepted; a UTF-16 file gives the
   "Invalid config file <path>" error.
+- In a segments file, `null` for `tail`, `extend`, `extend_start` or `extend_end` now means
+  unset instead of an error, and NaN is rejected for every seconds key (including `min_start` and
+  `max_end`) with "must be a number of seconds". An unreadable segments or QA JSON file now says
+  `<path> cannot be read: <reason>` instead of a raw `PermissionError`, and a JSON file that is
+  not UTF-8 gives "not UTF-8 text (save it as UTF-8)" in every reader.
+- Config file errors now read `Invalid config file <path> is not valid JSON: ...` or
+  `Invalid config file <path> cannot be read: ...`.
 - JSON files saved with a UTF-8 BOM (Windows Notepad, PowerShell) are read correctly, one in
   another encoding (UTF-16, ANSI) counts as unreadable instead of failing with a traceback, and
   `cutpoint ui` leaves out a learned style that fails to load, with a WARNING naming its file,

@@ -28,7 +28,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path, PureWindowsPath
-from typing import Any, NamedTuple
+from typing import Any
 
 from cutpoint import cache, jsonout, state
 from cutpoint.config import (
@@ -40,7 +40,7 @@ from cutpoint.config import (
     unc_path,
     windows_norm,
 )
-from cutpoint.utils import matches_glob
+from cutpoint.utils import file_stamp, matches_glob
 
 logger = logging.getLogger(__name__)
 
@@ -212,10 +212,6 @@ def _base_key(slot: str, entry: dict[str, Any]) -> str:
     return slot[: -len(suffix)] if suffix and slot.endswith(suffix) else slot
 
 
-class _CacheInfo(NamedTuple):
-    currsize: int
-
-
 # The last loaded stage index and the last staged_path results, each keyed by what it was built
 # from, so a long-lived process (`cutpoint ui`) sees copies staged by another process and an
 # edited stage_dir or source_remap without reload_stage_index().
@@ -227,12 +223,7 @@ _STAGED: dict[tuple, dict[str, tuple[str, int | None]]] = {}
 def _index_stamp(stage_dir: Path) -> tuple:
     """``(stage_dir, (mtime_ns, size, inode) of its index or None when missing)``: what a loaded
     index depends on (one stat; the index is replaced on every write, so its inode changes)."""
-    try:
-        st = (stage_dir / STAGE_INDEX).stat()
-        stamp: tuple | None = (st.st_mtime_ns, st.st_size, st.st_ino)
-    except OSError:
-        stamp = None
-    return (stage_dir, stamp)
+    return (stage_dir, file_stamp(stage_dir / STAGE_INDEX))
 
 
 def _stage_index() -> dict[str, dict]:
@@ -247,9 +238,7 @@ def _stage_index() -> dict[str, dict]:
     return index
 
 
-_stage_index.cache_clear = _INDEX.clear  # type: ignore[attr-defined]
-_stage_index.cache_info = lambda: _CacheInfo(len(_INDEX))  # type: ignore[attr-defined]
-state.register_cache(_stage_index)  # type: ignore[arg-type]
+state.register_dict_cache(_stage_index, _INDEX)
 
 
 def reload_stage_index() -> None:
@@ -290,11 +279,7 @@ def staged_path(path: str) -> str:
     return hit[0]
 
 
-staged_path.cache_clear = _STAGED.clear  # type: ignore[attr-defined]
-staged_path.cache_info = lambda: _CacheInfo(  # type: ignore[attr-defined]
-    sum(len(memo) for memo in _STAGED.values())
-)
-state.register_cache(staged_path)  # type: ignore[arg-type]
+state.register_dict_cache(staged_path, _STAGED, lambda: sum(map(len, _STAGED.values())))
 
 
 def _staged_path(path: str) -> tuple[str, int | None]:

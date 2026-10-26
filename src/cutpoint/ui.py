@@ -90,7 +90,7 @@ from cutpoint.ffmpeg_utils import (
     probe,
 )
 from cutpoint.styles import get_style, learned_styles, style_names
-from cutpoint.utils import VIDEO_EXTS, clip_files, find_videos, slugify
+from cutpoint.utils import VIDEO_EXTS, clip_files, file_stamp, find_videos, slugify
 from cutpoint.vision import default_model
 
 logger = logging.getLogger(__name__)
@@ -1114,15 +1114,6 @@ def source_entries(
     ]
 
 
-def _stamp(path: Path) -> tuple[int, int, int] | None:
-    """``(mtime, size, inode)`` of ``path``, or None when it cannot be read."""
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    return st.st_mtime_ns, st.st_size, st.st_ino
-
-
 class Sources:
     """Each project's :func:`source_entries`, kept while its inputs are unchanged, so media
     requests (each Range request, each still) do not reread and rescan a network share.
@@ -1155,7 +1146,7 @@ class Sources:
             hit is not None
             and time.monotonic() - hit[0] < SOURCES_CACHE_S
             and hit[3] == remap
-            and [_stamp(f) for f in hit[1]] == hit[2]
+            and [file_stamp(f) for f in hit[1]] == hit[2]
         ):
             with self.lock:
                 if self.kept.get(key) is hit:
@@ -1163,10 +1154,10 @@ class Sources:
             return hit[4], None
         # Each file is stamped before it is read: a change made meanwhile shows on the next request.
         files = [p / f"{UI_DIR}/meta.json", p / "highlights.json"]
-        at, stamps = time.monotonic(), [_stamp(f) for f in files]
+        at, stamps = time.monotonic(), [file_stamp(f) for f in files]
         source = read_meta(p).get("source")
         files += [_listed_folder(Path(str(source)))] if source else []
-        stamps += [_stamp(files[2])] if source else []
+        stamps += [file_stamp(files[2])] if source else []
         listed: list[Path | str] = []
         entries = source_entries(p, _highlights(p), listed)
         n = 3 if listed else 2  # the picked source counts only while its folder is listed

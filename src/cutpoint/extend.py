@@ -53,7 +53,7 @@ from cutpoint.ffmpeg_utils import (
     swap_in,
 )
 from cutpoint.planning import Padding, pad, report_clips, speech_pass
-from cutpoint.utils import clip_files
+from cutpoint.utils import clip_files, seconds_keys
 
 logger = logging.getLogger(__name__)
 
@@ -118,22 +118,6 @@ PAD_KEYS = ("extend", "extend_start", "extend_end")
 """``--clip-override`` keys that set a clip's total padding (s) per side."""
 
 
-def _pad_keys(keys: dict[str, Any], where: str) -> dict[str, float]:
-    """Validated padding keys (``extend`` / ``extend_start`` / ``extend_end``)."""
-    out: dict[str, float] = {}
-    for key in PAD_KEYS:
-        if key not in keys or keys[key] is None:
-            continue
-        try:
-            val = float(keys[key])
-        except (TypeError, ValueError):
-            raise ValueError(f"{where}: {key} must be a number of seconds") from None
-        if not val >= 0:  # also rejects NaN
-            raise ValueError(f"{where}: {key} must not be negative")
-        out[key] = val
-    return out
-
-
 def apply_overrides(
     plans: list[ExtendPlan],
     overrides: dict[str, dict[str, Any]] | None,
@@ -169,7 +153,7 @@ def apply_overrides(
             )
         where = f"--clip-override {pattern}"
         limits = boundaries.clip_limits(keys, where)
-        pads = _pad_keys(keys, where)
+        pads = seconds_keys(keys, PAD_KEYS, where)
         hits = [p for p in plans if fnmatch.fnmatch(p.name.lower(), pattern.lower())]
         if not hits:
             raise ValueError(f"--clip-override {pattern}: matches no clip in the folder")

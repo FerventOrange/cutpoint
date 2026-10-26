@@ -50,6 +50,19 @@ def test_load_segments_keeps_plain_ids_without_collision(tmp_path: Path) -> None
     assert [m["id"] for m in load_segments(f)] == ["s001", "intro", "s003"]
 
 
+def test_load_segments_null_tail_is_unset(tmp_path: Path) -> None:
+    f = _write_segments(tmp_path, [{"tail": None}, {"tail": 1.5}])
+    first, second = load_segments(f)
+    assert "tail" not in first
+    assert second["tail"] == 1.5
+
+
+def test_load_segments_rejects_a_nan_bound(tmp_path: Path) -> None:
+    f = _write_segments(tmp_path, [{"max_end": float("nan")}])  # json.dumps writes NaN
+    with pytest.raises(ValueError, match=r"Segment 1: max_end must be a number of seconds"):
+        load_segments(f)
+
+
 @pytest.mark.parametrize("kind", ["relative", "projects", "absolute"])
 def test_missing_segments_file_is_one_error_line(
     kind: str,
