@@ -505,12 +505,14 @@ def post_process(
     ass: Path | None = None,
     dst: Path | None = None,
     limit: bool = False,
+    language: str | None = None,
 ) -> Path | None:
     """Apply loudness normalisation (+ true-peak limiter) and/or burned-in captions.
 
     ``limit`` without ``loudnorm`` runs the limiter alone (compressed peaks, see
     :func:`peak_filters`). ffmpeg writes ``dst`` (default ``out``); the caption files are
-    named after ``out``.
+    named after ``out``. ``language`` forces the captions' transcription language (None:
+    detected).
 
     Returns:
         The caption ASS file (reuse it via ``ass`` when re-running), if any.
@@ -522,7 +524,7 @@ def post_process(
             info = probe(stage)
             wav = out.with_name(f".{out.stem}.captions.wav")
             extract_audio(stage, wav, info)
-            tr = Transcriber(model=model)
+            tr = Transcriber(model=model, language=language)
             try:
                 segments = tr.transcribe(wav)
             finally:
@@ -559,11 +561,12 @@ def normalize_with_ceiling(
     model: str | None,
     dst: Path | None = None,
     loudnorm: bool = True,
+    language: str | None = None,
 ) -> tuple[float, float]:
     """Loudnorm (unless not ``loudnorm``) + limiter, re-run with a lower ceiling until true
     peak <= TP_CEILING.
 
-    ``dst`` as for :func:`post_process`.
+    ``dst`` and ``language`` as for :func:`post_process`.
 
     Returns:
         Measured (integrated LUFS, true peak dBTP) of the final file.
@@ -571,7 +574,16 @@ def normalize_with_ceiling(
     limit_db, ass = LIMIT_START_DB, None
     for attempt in range(1, LIMIT_PASSES + 1):
         ass = post_process(
-            stage, out, loudnorm, captions, model, limit_db, ass, dst, limit=not loudnorm
+            stage,
+            out,
+            loudnorm,
+            captions,
+            model,
+            limit_db,
+            ass,
+            dst,
+            limit=not loudnorm,
+            language=language,
         )
         lufs, tp = measure_loudness(dst or out)
         logger.info(
@@ -683,6 +695,9 @@ def assemble(
 
         peaks = peak_filters(clips_dir, files, infos, compress_peaks)
         limit = loudnorm or compress_peaks != "off"
+        from cutpoint.srt import clips_language  # noqa: PLC0415 - it imports this module
+
+        language = clips_language(clips_dir) if captions else None
         # Written to a temporary name: final.mp4 only appears once complete.
         with atomic_output(out) as part:
             stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or captions) else part
@@ -692,11 +707,13 @@ def assemble(
                 )
                 if limit:
                     lufs, tp = normalize_with_ceiling(
-                        stage, out, captions, caption_model, part, loudnorm
+                        stage, out, captions, caption_model, part, loudnorm, language
                     )
                     logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
                 elif captions:
-                    post_process(stage, out, False, captions, caption_model, dst=part)
+                    post_process(
+                        stage, out, False, captions, caption_model, dst=part, language=language
+                    )
             finally:
                 if stage != part:
                     stage.unlink(missing_ok=True)

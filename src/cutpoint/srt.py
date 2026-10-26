@@ -219,6 +219,15 @@ def final_cues(
     return out, missing, missing_sources
 
 
+def clips_language(clips_dir: Path) -> str | None:
+    """Transcription language the analysis of ``clips_dir``'s project forced (the project
+    of :func:`~cutpoint.extend.manifest_project`), or None: detected, or no analysis."""
+    from cutpoint.extend import manifest_project  # noqa: PLC0415 - it imports this module
+
+    manifest = cache.load_json(clips_dir / "manifest.json") or {}
+    return sources.project_language(manifest_project(manifest, clips_dir))
+
+
 def write_final_srt(
     clips_dir: Path,
     files: list[Path],
@@ -230,7 +239,7 @@ def write_final_srt(
     """Write ``<video>.srt`` for the video :func:`cutpoint.assemble.assemble` joined from
     ``files`` (crossfade ``fade``, 0 for cuts), using ``clips_dir``'s manifest.json and
     the transcripts of ``language`` (as in :func:`words_lookup`; None: the language the
-    analysis of the clips' project used, see :func:`~cutpoint.extend.manifest_project`).
+    analysis of the clips' project used, see :func:`clips_language`).
 
     Clips without a manifest entry (and no ``.srt`` of their own) or a cached transcript
     get no cues (one INFO line); when no clip has any, no file is written.
@@ -238,12 +247,10 @@ def write_final_srt(
     Returns:
         The .srt path, or None if none was written.
     """
-    from cutpoint.extend import manifest_project  # noqa: PLC0415 - it imports this module
-
     manifest = cache.load_json(clips_dir / "manifest.json") or {}
     entries = {e.get("file"): e for e in manifest.get("clips", []) if isinstance(e, dict)}
     if language is None:
-        language = sources.project_language(manifest_project(manifest, clips_dir))
+        language = clips_language(clips_dir)
     cues, missing, missing_sources = final_cues(files, infos, entries, fade, words_lookup(language))
     srt = video.with_suffix(".srt")
     if len(missing) == len(files):
