@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,11 +42,12 @@ def fake_start(captured: list[list[str]]):
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> Iterator[TestClient]:
     app = ui.create_app(PORT)
-    c = TestClient(app, base_url=f"http://127.0.0.1:{PORT}")
-    c.headers["X-Cutpoint-Token"] = app.state.token
-    return c
+    # ``with`` runs the app's shutdown (jobs.shutdown kills any job still running)
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+        c.headers["X-Cutpoint-Token"] = app.state.token
+        yield c
 
 
 @pytest.fixture(autouse=True)
@@ -72,6 +73,9 @@ def wait_job(client: TestClient, timeout: float = 180) -> dict:
         if jobs and jobs[-1]["status"] != "running":
             return jobs[-1]
         time.sleep(0.5)
+    for job in client.get("/api/jobs").json()["jobs"]:
+        if job["status"] == "running":
+            client.post(f"/api/jobs/{job['id']}/cancel")  # do not leave it running past the test
     raise AssertionError("job did not finish")
 
 
@@ -1550,7 +1554,7 @@ def test_put_settings_conflicts(
     cfg.unlink()
     config.get_config.cache_clear()
 
-    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running")
+    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running", proc=None)
     assert client.put("/api/settings", json=body).status_code == 409
     client.app.state.jobs.jobs["j1"].status = "done"
     assert client.put("/api/settings", json=body).status_code == 200
@@ -1600,7 +1604,7 @@ def test_put_settings_vision_needs_a_boolean_and_no_folder_rules(
 
     # Only the projects folder is locked by CUTPOINT_PROJECTS_DIR or a running job.
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(tmp_path / "env"))
-    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running")
+    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running", proc=None)
     assert client.put("/api/settings", json={"vision": True}).status_code == 200
     both = {"vision": False, "projects_dir": str(tmp_path)}
     assert client.put("/api/settings", json=both).status_code == 409
