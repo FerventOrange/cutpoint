@@ -7,7 +7,6 @@ No models or footage: the view layer is synthetic and its CLIP scores are stubbe
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import asdict
 from itertools import pairwise
@@ -184,21 +183,24 @@ def legacy_cases(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict]:
     return out
 
 
-# sha1 of json.dumps(case, sort_keys=True) on commit 6fe1a40 (before the penalties);
-# edge / vertical on 99cc953 (legacy params, before subject framing)
-LEGACY_SHA1 = {
-    "friend": "43095cbf973d3e4129179ebbb03fe20a12b91ff6",
-    "talk": "a725db6dca1bdbc8f781a9ce7718290a0454627c",
-    "tall": "b133849e9b04ca758fb40df08f053f6ba10c3e71",
-    "edge": "67d555af427dd1edb6799109429567a8b9a51b2e",
-    "vertical": "ac736fae602f2717cdb22216d3c59e7b4a79f094",
-}
+# Paths of the legacy parameters, generated on commit 6fe1a40 (before the penalties); "edge" and
+# "vertical" on 99cc953 (before subject framing). The values are rounded to 0.01, so compare
+# with a tolerance of one rounding step instead of hashing the dumped floats.
+LEGACY_PATHS = Path(__file__).with_name("pano_legacy_paths.json")
 
 
 def test_legacy_params_reproduce_the_old_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name, case in legacy_cases(monkeypatch).items():
-        digest = hashlib.sha1(json.dumps(case, sort_keys=True).encode()).hexdigest()
-        assert digest == LEGACY_SHA1[name], name
+    expected = json.loads(LEGACY_PATHS.read_text(encoding="utf-8"))
+    got = legacy_cases(monkeypatch)
+    assert got.keys() == expected.keys()
+    for name, case in got.items():
+        want = expected[name]
+        assert case["cuts"] == pytest.approx(want["cuts"], abs=0.015), name
+        assert case["seconds_by_target"] == pytest.approx(want["seconds_by_target"], abs=0.015)
+        assert len(case["keys"]) == len(want["keys"]), name
+        for i, (key, old) in enumerate(zip(case["keys"], want["keys"], strict=True)):
+            assert key["target"] == old["target"], (name, i)
+            assert key == pytest.approx(old, abs=0.015), (name, i)
 
 
 # --------------------------------------------------------------------------- render

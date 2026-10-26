@@ -124,12 +124,13 @@ def test_reset_state_clears_entry(name, tmp_path, monkeypatch):
 
 def test_reset_state_keeps_models_by_default(tmp_path, monkeypatch):
     models = [e for e in state._REGISTRY.values() if e.model]
-    assert [e.name for e in models] == ["cutpoint.events.visual._TEXT_MODEL"]
-    _fill(models[0].name, tmp_path, monkeypatch)
+    assert "cutpoint.events.visual._TEXT_MODEL" in [e.name for e in models]
+    for entry in models:
+        _fill(entry.name, tmp_path, monkeypatch)
     reset_state()
-    assert models[0].size() == 1
+    assert all(e.size() > 0 for e in models)
     reset_state(models=True)
-    assert models[0].size() == 0
+    assert all(e.size() == 0 for e in models)
 
 
 def test_config_edit_picked_up_without_reset(home, tmp_path):

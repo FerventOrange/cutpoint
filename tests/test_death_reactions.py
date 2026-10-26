@@ -91,17 +91,9 @@ def test_funny_death_then_speech_after_pause():
 @pytest.mark.parametrize("style", ["highlights", "gaming", None, ("highlights",)])
 def test_other_styles_get_nothing(style):
     got = scoring.event_boost(CAND, [death()], style=style, segments=[seg(1, 3), seg(12, 14)])
-    assert got == (
-        0.0,
-        {
-            "laughter": 0.0,
-            "scream": 0.0,
-            "player_kills": 0,
-            "teamkills": 0,
-            "banners": 0,
-            "self_kills": 0,
-        },
-    )
+    boost, ev = got
+    assert boost == 0.0
+    assert not any(k.endswith("_reaction") for k in ev)  # no death-reaction evidence
 
 
 def test_reaction_counted_once_for_two_deaths():

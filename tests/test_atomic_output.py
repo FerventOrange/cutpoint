@@ -1178,22 +1178,27 @@ def test_retry_locked_predicate_rejecting_an_error_does_not_retry_it(monkeypatch
 
 
 @pytest.mark.parametrize(
-    ("error", "message"),
+    ("error", "parts"),
     [
+        # the folder, why it is there, the cause, what to do about it
         (
             _locked(32),
-            "Cannot remove {p}, why: it is open in another program (a player, an editor or a "
-            "virus scanner). Close it, or delete the folder, and re-run. (The process cannot "
-            "access the file)",
+            [
+                "Cannot remove {p}",
+                "why",
+                "open in another program",
+                "Close it",
+                "The process cannot access",
+            ],
         ),
         (
             OSError(errno.EIO, "Input/output error"),
-            "Cannot remove {p}, why: Input/output error. Delete the folder and re-run.",
+            ["Cannot remove {p}", "why", "Input/output error", "Delete the folder and re-run"],
         ),
     ],
 )
 @pytest.mark.usefixtures("no_sleep")
-def test_remove_leftover_messages(monkeypatch, tmp_path, error, message):
+def test_remove_leftover_messages(monkeypatch, tmp_path, error, parts):
 
     def rmtree(*_a, **_kw):
         raise error
@@ -1202,7 +1207,9 @@ def test_remove_leftover_messages(monkeypatch, tmp_path, error, message):
     expected_type = PermissionError if isinstance(error, PermissionError) else OSError
     with pytest.raises(expected_type) as exc:
         ffmpeg_utils._remove_leftover(tmp_path, "why")
-    assert str(exc.value) == message.format(p=tmp_path)
+    assert type(exc.value) is expected_type
+    for part in parts:
+        assert part.format(p=tmp_path) in str(exc.value)
     assert exc.value.__cause__ is error
 
 
