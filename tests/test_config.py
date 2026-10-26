@@ -125,13 +125,13 @@ def test_warn_system_drive(tmp_path, monkeypatch, caplog, pano, drive_is_tmp, wa
     assert f"{2 * 1800 / 3600 * 45 * 1.2:.0f} GB" in msg
 
 
-# -- set_config_value -----------------------------------------------------------------
+# -- set_config_values ----------------------------------------------------------------
 
 
-def test_set_config_value_creates_the_file_and_refreshes_the_cache(home):
+def test_set_config_values_creates_the_file_and_refreshes_the_cache(home):
     target = home / "projects-here"
     assert config.projects_dir() != target  # primes the cache
-    written = config.set_config_value("projects_dir", str(target))
+    written = config.set_config_values({"projects_dir": str(target)})
     assert written == home / "config.json"
     assert json.loads(written.read_text(encoding="utf-8")) == {"projects_dir": str(target)}
     assert config.projects_dir() == target
@@ -145,10 +145,10 @@ def test_set_config_value_creates_the_file_and_refreshes_the_cache(home):
         ('{"b": 1, "a": 2}', "  "),
     ],
 )
-def test_set_config_value_keeps_keys_order_and_indent(home, text, indent):
+def test_set_config_values_keeps_keys_order_and_indent(home, text, indent):
     path = write(home / "config.json", text)
-    config.set_config_value("a", 3)
-    config.set_config_value("c", 4)
+    config.set_config_values({"a": 3})
+    config.set_config_values({"c": 4})
     out = path.read_text(encoding="utf-8")
     assert json.loads(out) == {"b": 1, "a": 3, "c": 4}
     assert list(json.loads(out)) == ["b", "a", "c"]
@@ -156,14 +156,14 @@ def test_set_config_value_keeps_keys_order_and_indent(home, text, indent):
     assert not list(home.glob("*.tmp")) and [p.name for p in home.iterdir()] == ["config.json"]
 
 
-def test_set_config_value_refuses_an_invalid_file_and_leaves_it(home):
+def test_set_config_values_refuses_an_invalid_file_and_leaves_it(home):
     path = write(home / "config.json", "{oops")
     with pytest.raises(ValueError, match="Invalid config file"):
-        config.set_config_value("projects_dir", "x")
+        config.set_config_values({"projects_dir": "x"})
     assert path.read_text(encoding="utf-8") == "{oops"
     write(path, "[1]")
     with pytest.raises(ValueError, match="expected a JSON object"):
-        config.set_config_value("projects_dir", "x")
+        config.set_config_values({"projects_dir": "x"})
     assert path.read_text(encoding="utf-8") == "[1]"
 
 
@@ -172,12 +172,6 @@ def test_set_config_values_writes_several_keys_at_once(home):
     config.set_config_values({"vision": True, "projects_dir": "x"})
     want = {"b": 1, "vision": True, "projects_dir": "x"}
     assert json.loads(path.read_text(encoding="utf-8")) == want
-
-
-def test_set_config_value_writes_an_explicit_path(tmp_path):
-    target = tmp_path / "sub" / "c.json"
-    assert config.set_config_value("k", "v", target) == target
-    assert json.loads(target.read_text(encoding="utf-8")) == {"k": "v"}
 
 
 def test_resolve_projects_dir_prefers_env_then_data_then_default(tmp_path, monkeypatch):

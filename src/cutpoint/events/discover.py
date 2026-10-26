@@ -49,7 +49,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.events.common import Source
-from cutpoint.events.regions import GENERIC_BANNERS, Region
+from cutpoint.events.regions import Region
 from cutpoint.ffmpeg_utils import FFmpegError, grab_images, output_dir, probe
 
 logger = logging.getLogger(__name__)
@@ -847,7 +847,6 @@ def discover_regions(
 
 
 __all__ = [
-    "GENERIC_BANNERS",
     "DiscoverParams",
     "boxes_in",
     "cluster_regions",

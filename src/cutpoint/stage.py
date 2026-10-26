@@ -87,11 +87,6 @@ def _mount(path: Path) -> tuple[str, str]:
     return best, fstype
 
 
-def mount_fstype(path: Path) -> str:
-    """File-system type of the mount holding ``path`` (from ``/proc/mounts``; "" if unknown)."""
-    return _mount(path)[1]
-
-
 def is_remote(path: Path) -> bool:
     """Whether ``path`` is likely on slow or network storage.
 
@@ -101,7 +96,7 @@ def is_remote(path: Path) -> bool:
     """
     if sys.platform == "win32":
         return path.drive.upper() not in ("C:", "D:", "E:")
-    return mount_fstype(path) in _NETWORK_FS
+    return _mount(path)[1] in _NETWORK_FS
 
 
 def storage_label(path: Path) -> str:

@@ -69,11 +69,11 @@ class TestParseSdkOutput:
     def test_progress(self):
         res = _result(f"{_pct(0)}\r{_pct(50)}\r{_pct(100)}\n")
         assert res.progress == 100 and res.finished
-        assert not res.ended and res.errors == []
+        assert res.errors == []
 
     def test_end_marker(self):
         res = _result(f"{stitch.END_MARKER}\n")
-        assert res.ended and not res.finished
+        assert not res.finished and res.errors == [] and res.cost_s is None
 
     def test_cr_separated_progress_gives_separate_lines(self):
         res = _result(f"{_pct(10)}\r{_pct(20)}\r{_pct(30)}\r")
@@ -115,7 +115,7 @@ class TestParseSdkOutput:
     def test_empty(self):
         res = _result("")
         assert res.progress == -1
-        assert not res.finished and not res.ended
+        assert not res.finished
         assert res.errors == [] and res.features == {} and res.export == {}
         assert res.cost_s is None
 

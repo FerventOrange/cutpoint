@@ -461,7 +461,18 @@ POLAR_LINE_MAX_DEG = 80.0  # the yaw line stays this far from the poles (keeps a
 FRONT_Z = 0.1  # visible share: points within ~84 deg of the view axis (others blow up)
 
 
-def project_box(
+def _view_xy(
+    r: np.ndarray, tx: float, ty: float, yaws: np.ndarray, pitches: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Normalised view coordinates (-1..1 inside) and ``z`` of display rays."""
+    d = yaw_pitch_ray(yaws, np.clip(pitches, -90.0, 90.0)) @ r  # rows: r.T @ ray
+    z = np.maximum(d[..., 2], 1e-3)
+    x = np.clip(d[..., 0] / z / tx, -1e3, 1e3)
+    y = np.clip(d[..., 1] / z / ty, -1e3, 1e3)
+    return x, y, d[..., 2]
+
+
+def project_box_visible(
     view_yaw: float,
     view_pitch: float,
     hfov: float,
@@ -473,7 +484,7 @@ def project_box(
     box_h: float,
     steps: int = 9,
     polar_shift: float = 0.5,
-) -> tuple[float, float, float, float] | None:
+) -> tuple[tuple[float, float, float, float], float] | None:
     """Where a display-frame box lands in a rendered flat view (fractions of the frame).
 
     The view is the renderer's: output ray ``d`` of a rectilinear frame
@@ -500,59 +511,18 @@ def project_box(
     points with ``|y| <= 1`` too, or moving an off-frame yaw line into the
     frame, tracked the rendered QA worse: score r 0.80 vs 0.86).
 
-    Returns:
-        ``(x1, y1, x2, y2)`` with 0-1 inside the frame (x right, y down, not
-        clipped), or None when the box centre is behind the camera.
-    """
-    r = project_box_visible(
-        view_yaw,
-        view_pitch,
-        hfov,
-        out_w,
-        out_h,
-        box_yaw,
-        box_pitch,
-        box_w,
-        box_h,
-        steps,
-        polar_shift,
-    )
-    return None if r is None else r[0]
-
-
-def _view_xy(
-    r: np.ndarray, tx: float, ty: float, yaws: np.ndarray, pitches: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Normalised view coordinates (-1..1 inside) and ``z`` of display rays."""
-    d = yaw_pitch_ray(yaws, np.clip(pitches, -90.0, 90.0)) @ r  # rows: r.T @ ray
-    z = np.maximum(d[..., 2], 1e-3)
-    x = np.clip(d[..., 0] / z / tx, -1e3, 1e3)
-    y = np.clip(d[..., 1] / z / ty, -1e3, 1e3)
-    return x, y, d[..., 2]
-
-
-def project_box_visible(
-    view_yaw: float,
-    view_pitch: float,
-    hfov: float,
-    out_w: int,
-    out_h: int,
-    box_yaw: float,
-    box_pitch: float,
-    box_w: float,
-    box_h: float,
-    steps: int = 9,
-    polar_shift: float = 0.5,
-) -> tuple[tuple[float, float, float, float], float] | None:
-    """:func:`project_box` plus the share of the box inside the frame (0-1).
-
-    The share is the clipped box's area over the box's projected extent (both
-    in frame units, the extent clamped to 2 frame widths / heights beyond the
-    edges; its height also counts the centre cross's points within ~84 deg of
-    the view axis, :data:`FRONT_Z`, so parts beside the frame enlarge it but
-    points behind the camera do not).
+    The share of the box inside the frame (0-1) is the clipped box's area over
+    the box's projected extent (both in frame units, the extent clamped to 2
+    frame widths / heights beyond the edges; its height also counts the centre
+    cross's points within ~84 deg of the view axis, :data:`FRONT_Z`, so parts
+    beside the frame enlarge it but points behind the camera do not).
     An angular share (fraction of a yaw / pitch grid inside the frame) was
     tried and tracked the rendered detector worse (score r 0.74 vs 0.84).
+
+    Returns:
+        ``((x1, y1, x2, y2), share)``: the box with 0-1 inside the frame (x right,
+        y down, not clipped) and its visible share, or None when the box centre
+        is behind the camera.
     """
     vfov = flat_fov(hfov, out_w, out_h)
     tx, ty = math.tan(math.radians(hfov) / 2), math.tan(math.radians(vfov) / 2)
