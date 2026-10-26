@@ -758,6 +758,11 @@ let nextFor = null; // the window proxy url whose successor ``requestNext`` aske
 // and time it waits at and the file it stopped in. A file covering ``t`` that loads in its place
 // plays on by itself (``canplay``); a pause, a scrub, a play or any other wait drops it.
 let resumeAt = null;
+// The wait ``awaitPart`` holds: {source, t, lo, hi}, the source time it waits at and the range it
+// asked a window for. A refresh re-running ``ensureVideo`` during it asks for that range again
+// (the ``lastPart`` dedupe then drops it), never for the moment's: playback waiting at a window's
+// end inside a long moment needs the window there, not one spanning the moment.
+let waitFor = null;
 /** Drop a pending resume; a paused video then shows Play (a pause on a paused video fires no event). */
 function cancelResume() {
   if (!resumeAt) return;
@@ -826,6 +831,7 @@ function loadFile(src, p, t) {
   pendingSeek = t;
   screenMsg('Loading video…');
   v.src = p.url;
+  waitFor = null;
   if (resumeAt && src.path !== resumeAt.source) resumeAt = null; // another source: no resume
   showPlaying(!!resumeAt); // a new src stops playback without a pause event; a resume plays on
 }
@@ -839,6 +845,7 @@ function awaitPart(src, t, delay = 0, lo = t, hi = t) {
   seekWant = null;
   pendingSeek = t;
   screenMsg(PART_MSG);
+  waitFor = { source: src.path, t, lo, hi };
   requestPart(src, lo, hi, delay);
   updatePlayhead();
 }
@@ -895,10 +902,27 @@ function ensureVideo(seekC) {
       return;
     }
     const moment = !!S.seqPlay || (at >= c.start && at <= c.end);
-    const [lo, hi] = moment ? [c.start, c.end] : [at, at];
-    if (mine && !S.seqPlay) return awaitPart(src, at, 0, lo, hi); // keeps the last frame
+    // the same wait again (a refresh, not a moment click): its own range, e.g. [at, at] at a
+    // window's end or a scrub, also while no file is loaded yet
+    const again = !seekC && !S.seqPlay && waitFor?.source === src.path && Math.abs(at - waitFor.t) <= FRAME;
+    const [lo, hi] = again ? [waitFor.lo, waitFor.hi] : moment ? [c.start, c.end] : [at, at];
+    const kept = again ? waitFor : null;
+    if (kept && !kept.retried && lastPart === `${k}@${round2(Math.max(0, lo))}-${round2(Math.max(0, hi))}`
+      && !(src.pending ?? []).some((w) => w.lo <= round2(Math.max(0, lo)) && w.hi >= round2(Math.max(0, hi)))) {
+      // the server listed no window for the range this wait asked for (it failed or was superseded):
+      // ask once more, past the lastPart dedupe; once per wait, so a failing encode is not retried forever
+      kept.retried = true;
+      lastPart = null;
+    }
+    if (mine && !S.seqPlay) {
+      awaitPart(src, at, 0, lo, hi); // keeps the last frame
+      if (kept) waitFor = kept;
+      return;
+    }
     requestPart(src, lo, hi);
-    return wait(S.seqPlay ? `Preparing preview of ${baseName(c.source)}…` : moment ? MOMENT_MSG : PART_MSG);
+    wait(S.seqPlay ? `Preparing preview of ${baseName(c.source)}…` : moment && !again ? MOMENT_MSG : PART_MSG);
+    if (kept) waitFor = kept; // drop() forgot it; the wait goes on
+    return;
   }
   if (src.status === 'failed') {
     $('#retryBtn').hidden = false;
@@ -925,6 +949,7 @@ function unload(el) {
 
 function drop(msg) {
   resumeAt = null;
+  waitFor = null;
   seekWant = null;
   pendingSeek = null;
   unload(v);

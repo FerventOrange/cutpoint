@@ -44,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queued, the trim rail hatches the parts of the source that cannot play yet, and the preview
   shows "Full preview 42%" while the whole-source proxy builds (`proxy` and `progress` on each
   source). Playing near the end of a short proxy prepares the next part ahead, and playback
-  that still has to wait for it plays on by itself once it is ready (#323).
+  that still has to wait for it plays on by itself once it is ready; inside a long moment it
+  waits only for the part it stopped at, not a proxy of the whole moment (#323).
 - The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
   underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
   Transcripts now store each word's `probability`, and `highlights.json` candidates list those
@@ -331,6 +332,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one; commas and brackets do not), with the same text right around it each time (OCR read the
   sentence a little differently, so its parts showed without the rest), is left out. Short banners, banners read in one box with a stats line and phrases
   in log lines with changing names or gamertags around them stay (#313).
+- A single gameplay notice read in still gameplay (a scoped or binocular view held still for
+  over 5 s) no longer makes the OCR layer treat the stretch as a menu and drop the notice
+  (#319). New menu text now needs at least 2 text lines that are no preset phrase, each on
+  screen for at least half of the still stretch: a menu shows many lines that stay, a notice is
+  one line or one box that flashes. A still screen with only one line of new text now has to
+  hold still 10 s to count as a menu, as one without new text. The first run with a JSON preset
+  interprets the footage again (replayed from the raw OCR cache when it has one).
 - UI: the arrow keys on the trim rail move the playhead by 0.5% of the visible view (at least
   0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
   button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
