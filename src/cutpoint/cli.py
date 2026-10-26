@@ -601,7 +601,11 @@ def _cmd_guide(a: argparse.Namespace) -> None:
         data = packaged.read_bytes()
     else:
         data = (Path(__file__).resolve().parents[2] / "AGENTS.md").read_bytes()
-    # Bytes as-is, so a non-UTF-8 console encoding cannot fail on non-ASCII text.
+    _write_stdout_bytes(data)
+
+
+def _write_stdout_bytes(data: bytes) -> None:
+    """Bytes to stdout as-is, so a non-UTF-8 console encoding cannot fail on non-ASCII text."""
     sys.stdout.flush()
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
@@ -621,10 +625,7 @@ def _cmd_skill_install(a: argparse.Namespace) -> None:
 def _cmd_skill_print(a: argparse.Namespace) -> None:
     from cutpoint import skill  # noqa: PLC0415
 
-    # Bytes as-is, as for guide.
-    sys.stdout.flush()
-    sys.stdout.buffer.write(skill.skill_bytes())
-    sys.stdout.buffer.flush()
+    _write_stdout_bytes(skill.skill_bytes())
 
 
 def _port(text: str) -> int:
@@ -691,6 +692,49 @@ def _add_pano_arguments(p: argparse.ArgumentParser, default: str | None) -> None
         metavar="N",
         help="360 clips: update the virtual camera every N frames (default 1 = smoothest; "
         "higher = faster, less smooth)",
+    )
+
+
+def _add_vision_arguments(p: argparse.ArgumentParser, lead: str) -> None:
+    """``--vision`` / ``--vision-top``; ``lead`` starts the ``--vision`` help."""
+    p.add_argument(
+        "--vision",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=f"{lead}--no-vision skips it when config.json turns it on "
+        "(default: vision in config.json, else off)",
+    )
+    p.add_argument(
+        "--vision-top",
+        type=positive_int,
+        default=None,
+        metavar="N",
+        help="top candidates sent to vision (default: 1 per 2 min of footage, min 10, max 60)",
+    )
+
+
+def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
+    """``--ollama-url`` / ``--ollama-model`` for the vision step."""
+    p.add_argument(
+        "--ollama-url",
+        help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
+    )
+    p.add_argument("--ollama-model", help="default: qwen3-vl:8b")
+
+
+def _add_source_filter_arguments(p: argparse.ArgumentParser) -> None:
+    """``--exclude`` / ``--recursive``: which files of folder inputs are used."""
+    p.add_argument(
+        "--exclude",
+        action="append",
+        metavar="GLOB",
+        help="skip files whose name or full path matches (repeatable), e.g. --exclude '*DVR*'",
+    )
+    p.add_argument(
+        "--recursive",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="search sub-folders of folder inputs (default: no)",
     )
 
 
@@ -788,26 +832,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run `cutpoint events` to re-rank the moments (needs the events extra and "
         "cutpoint setup)",
     )
-    ed.add_argument(
-        "--vision",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="rate top candidates with a local Ollama vision model, as analyze --vision; "
-        "--no-vision skips it when config.json turns it on (default: vision in config.json, "
-        "else off)",
+    _add_vision_arguments(
+        ed, "rate top candidates with a local Ollama vision model, as analyze --vision; "
     )
-    ed.add_argument(
-        "--vision-top",
-        type=positive_int,
-        default=None,
-        metavar="N",
-        help="top candidates sent to vision (default: 1 per 2 min of footage, min 10, max 60)",
-    )
-    ed.add_argument(
-        "--ollama-url",
-        help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
-    )
-    ed.add_argument("--ollama-model", help="default: qwen3-vl:8b")
+    _add_ollama_arguments(ed)
     _add_skip_argument(ed)
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit)
@@ -816,18 +844,7 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument(
         "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
     )
-    an.add_argument(
-        "--exclude",
-        action="append",
-        metavar="GLOB",
-        help="skip files whose name or full path matches (repeatable), e.g. --exclude '*DVR*'",
-    )
-    an.add_argument(
-        "--recursive",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="search sub-folders of folder inputs (default: no)",
-    )
+    _add_source_filter_arguments(an)
     an.add_argument(
         "--style",
         choices=style_names(),
@@ -841,31 +858,14 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: <projects>/<input name> (a file's name without extension, or the folder's "
         "name), or the common parent folder's name for several inputs",
     )
-    an.add_argument(
-        "--vision",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="rate top candidates with a local Ollama vision model; --no-vision skips it when "
-        "config.json turns it on (default: vision in config.json, else off)",
-    )
-    an.add_argument(
-        "--vision-top",
-        type=positive_int,
-        default=None,
-        metavar="N",
-        help="top candidates sent to vision (default: 1 per 2 min of footage, min 10, max 60)",
-    )
+    _add_vision_arguments(an, "rate top candidates with a local Ollama vision model; ")
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
     an.add_argument("--no-scenes", action="store_true", help="skip scene detection")
     an.add_argument(
         "--max-candidates", type=positive_int, help="per source, pre-merge (default: auto)"
     )
-    an.add_argument(
-        "--ollama-url",
-        help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
-    )
-    an.add_argument("--ollama-model", help="default: qwen3-vl:8b")
+    _add_ollama_arguments(an)
     an.add_argument(
         "--recover",
         action="store_true",
@@ -1051,18 +1051,7 @@ def build_parser() -> argparse.ArgumentParser:
         "local folder once; later reads use the copy",
     )
     st.add_argument("inputs", nargs="*", metavar="input", help="video files and/or folders")
-    st.add_argument(
-        "--exclude",
-        action="append",
-        metavar="GLOB",
-        help="skip files whose name or full path matches (repeatable), e.g. --exclude '*DVR*'",
-    )
-    st.add_argument(
-        "--recursive",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="search sub-folders of folder inputs (default: no)",
-    )
+    _add_source_filter_arguments(st)
     st.add_argument("--list", action="store_true", help="list staged copies")
     st.add_argument(
         "--clear",

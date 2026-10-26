@@ -148,6 +148,17 @@ class Padding:
         return Padding(s, e)
 
 
+def _readable_bounds(src: Path, info: MediaInfo, t: float) -> tuple[float, float]:
+    """Readable ``(lo, hi)`` around ``t`` (:func:`sources.readable_range`)."""
+    lo, hi = sources.readable_range(src, t, info.duration)
+    if t >= hi:
+        # ``t`` lies past the last known readable point (a recovered part
+        # whose cache is not linked): the bad region is somewhere before it, so
+        # never pad backwards, and only the duration bounds the end.
+        lo, hi = t, info.duration
+    return lo, hi
+
+
 def pad(
     src: Path,
     info: MediaInfo,
@@ -164,12 +175,7 @@ def pad(
         the requested and applied padding, the pre-pad in/out points and
         ``clamped`` when a side got less than requested.
     """
-    lo, hi = sources.readable_range(src, start, info.duration)
-    if start >= hi:
-        # The clip lies past the last known readable point (a recovered part
-        # whose cache is not linked): the bad region is somewhere before it, so
-        # never pad backwards, and only the duration bounds the end.
-        lo, hi = start, info.duration
+    lo, hi = _readable_bounds(src, info, start)
     b = entry or {}
     new_start = max(lo, 0.0, start - padding.start, min(start, b.get("min_start", 0.0)))
     # never shorter; never past the entry's bounds
@@ -256,9 +262,7 @@ def speech_pass[P: SpeechPlan](
                 src, words[src], events.get(str(Path(key))), speech
             )
         keep_start, keep_end = plan.keep
-        lo, hi = sources.readable_range(src, keep_start, info.duration)
-        if keep_start >= hi:  # recovered part past the last known readable point
-            lo, hi = keep_start, info.duration
+        lo, hi = _readable_bounds(src, info, keep_start)
         if hi_clamp is not None:
             hi = hi_clamp(plan, hi)
         lo, hi = max(lo, e.get("min_start", lo)), min(hi, e.get("max_end", hi))

@@ -744,6 +744,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different clip; it re-adds the same one, keeping its name.
 - `cutpoint ui` binds the port before printing the URL; on a busy port it exits 1 with an error
   naming the port and suggesting `--port`.
+- `refmatch` and `fit` read the learned preset back for their weights log with a UTF-8 BOM
+  allowed, like the other JSON readers; a broken preset gives `<path> is not valid JSON: ...`
+  instead of a traceback.
 
 ### Security
 

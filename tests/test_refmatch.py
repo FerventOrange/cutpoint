@@ -42,3 +42,12 @@ def test_old_preset_mask_friends_is_still_read_as_a_hard_mask(home: Path) -> Non
     mask, friends = np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 1.0])
     assert ski.effective_mask(mask, friends, style.mask_friends).tolist() == [1.0, 1.0, 0.0]
     assert ski.effective_mask(mask, friends, 0).tolist() == [0.0, 0.0, 0.0]  # soft
+
+
+def test_log_fit_reads_a_preset_saved_with_a_bom(tmp_path: Path, caplog) -> None:
+    preset = tmp_path / "learned.json"
+    preset.write_bytes(b"\xef\xbb\xbf" + json.dumps({"weights": {"speed": 2.0}}).encode())
+    rep = {"preset": str(preset), "features_fitted": ["speed"], "features": {}}
+    with caplog.at_level("INFO", logger="cutpoint.refmatch"), pytest.raises(KeyError):
+        refmatch._log_fit(rep, {"speed": 1.0})  # stops at the first missing report key
+    assert "speed      1.00 -> 2.00" in caplog.text

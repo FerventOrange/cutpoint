@@ -32,7 +32,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import time
 from dataclasses import asdict, dataclass
@@ -45,7 +44,15 @@ import numpy as np
 
 from cutpoint import cache, paths, state
 from cutpoint.config import path_key, source_path
-from cutpoint.ffmpeg_utils import FFmpegError, decode_pcm, decode_raw, output_dir, probe, run
+from cutpoint.ffmpeg_utils import (
+    FFmpegError,
+    decode_pcm,
+    decode_raw,
+    output_dir,
+    pcm_float,
+    probe,
+    run,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +162,7 @@ def audio_8k(path: Path) -> np.ndarray:
     if str(cdir) in _AUDIO_FAILED:
         return np.zeros(0, np.float32)
     try:
-        x = decode_pcm(path, sr=AUDIO_SR).astype(np.float32) / 32768
+        x = pcm_float(decode_pcm(path, sr=AUDIO_SR))
     except FFmpegError as err:
         x = np.zeros(0, np.float32)
         try:
@@ -747,13 +754,11 @@ def _taste_grid(
     fr: dict[str, np.ndarray] | None, n: int, taste: dict[str, Any] | None
 ) -> np.ndarray:
     from cutpoint.events.visual import to_grid  # noqa: PLC0415
-    from cutpoint.ski import DT, smooth3  # noqa: PLC0415
+    from cutpoint.ski import DT, smooth3, taste_prob  # noqa: PLC0415
 
     if fr is None or taste is None or not len(fr["t"]):
         return np.zeros(n)
-    z = fr["emb"] @ taste["w"] + taste["b"]
-    p = 1 / (1 + np.exp(-np.clip(z, -30, 30)))
-    return to_grid(fr["t"], smooth3(p), n, DT)
+    return to_grid(fr["t"], smooth3(taste_prob(fr["emb"], taste)), n, DT)
 
 
 def _with_taste(
@@ -1297,7 +1302,7 @@ def _log_match(res: dict[str, Any]) -> None:
 
 
 def _log_fit(rep: dict[str, Any], default: dict[str, float]) -> None:
-    learned = json.loads(Path(rep["preset"]).read_text(encoding="utf-8"))["weights"]
+    learned = cache.read_json(Path(rep["preset"]))["weights"]
     logger.info(
         "Learned weights (default -> learned; per-feature AUC / Spearman on unmasked 1 s bins):"
     )

@@ -23,7 +23,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from cutpoint import jsonout
-from cutpoint.encode import audio_fade_filter
+from cutpoint.encode import A_FMT, AUDIO_OUT, SILENCE, audio_fade_filter
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
     VideoEncoder,
@@ -41,9 +41,6 @@ from cutpoint.transcribe import Segment, Transcriber, flat_words
 from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
-
-A_FMT = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
-AUDIO_OUT = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 
 
 def list_clips(clips_dir: Path, exclude: set[Path]) -> list[Path]:
@@ -68,7 +65,7 @@ def _audio_chain(i: int, info: MediaInfo, fade: float, label: int | None = None)
             f"[{i}:a:0]{A_FMT},asetpts=PTS-STARTPTS"
             f"{audio_fade_filter(info.duration, fade)}[a{label}]"
         )
-    return f"anullsrc=r=48000:cl=stereo,atrim=duration={info.vduration:.3f}[a{label}]"
+    return f"{SILENCE},atrim=duration={info.vduration:.3f}[a{label}]"
 
 
 def _normalize_inputs(

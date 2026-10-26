@@ -246,11 +246,12 @@ def drive_relative(source: str) -> str:
     return p.drive if p.drive and not p.root else ""
 
 
-def drive_relative_error(source: str, drive: str) -> str:
-    """Why a segments file's drive-relative ``source`` on ``drive`` is refused."""
+def drive_relative_error(source: str, drive: str, base: str = "the segments file") -> str:
+    """Why a drive-relative ``source`` on ``drive`` is refused (``base``: what a relative
+    path is taken against)."""
     return (
         f"source {source!r} is relative to the current folder of drive {drive}; give the "
-        f"full path ({drive}\\...) or one relative to the segments file"
+        f"full path ({drive}\\...) or one relative to {base}"
     )
 
 

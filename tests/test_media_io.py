@@ -194,6 +194,14 @@ def test_decode_pcm_args_variants():
     assert "-ac" not in stereo
 
 
+def test_pcm_float_from_bytes_and_samples():
+    samples = np.array([-32768, 0, 16384, 32767], dtype="<i2")
+    got = fu.pcm_float(samples.tobytes())
+    assert got.dtype == np.float32
+    assert got.tolist() == [-1.0, 0.0, 0.5, 32767 / 32768]
+    assert fu.pcm_float(samples).tobytes() == got.tobytes()
+
+
 def test_ffprobe_args_passes_input_with_dash_i():
     args = fu.ffprobe_args(
         "in.mp4", streams="v:0", entries="frame=pts_time", options=("-read_intervals", "%+12")

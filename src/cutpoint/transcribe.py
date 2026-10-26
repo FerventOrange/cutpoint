@@ -15,9 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from cutpoint.extras import install_hint
+from cutpoint.ffmpeg_utils import pcm_float
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +147,7 @@ def load_wav(path: Path) -> Any:
         if wf.getframerate() != 16000 or wf.getnchannels() != 1 or wf.getsampwidth() != 2:
             raise ValueError(f"{path} must be 16 kHz mono 16-bit PCM")
         pcm = wf.readframes(wf.getnframes())
-    return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    return pcm_float(pcm)
 
 
 def _cuda_libs_hint() -> str:
