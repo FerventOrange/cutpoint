@@ -45,7 +45,7 @@ import numpy as np
 
 from cutpoint import cache, state
 from cutpoint.events import paths
-from cutpoint.events.common import Source, free_torch, params_key
+from cutpoint.events.common import Source, free_torch, nearest_index, params_key
 from cutpoint.ffmpeg_utils import FFmpegError, decode_raw, ffprobe_json, find_tool, probe
 
 logger = logging.getLogger(__name__)
@@ -779,6 +779,21 @@ def self_boxes(data: VisualData, rules: PeopleRules | None = None) -> np.ndarray
     return out
 
 
+def steadiness(e: np.ndarray) -> np.ndarray:
+    """Cosine similarity of consecutive embeddings ``(N, ..., D)`` -> ``(N, ...)``.
+
+    Each frame takes the lower of its similarity to the previous and the next
+    frame (1 = static view; one frame: 1).
+    """
+    steady = np.ones(e.shape[:-1], np.float32)
+    if len(e) > 1:
+        sim = (e[1:] * e[:-1]).sum(-1)
+        steady[1:] = sim
+        steady[0] = sim[0]
+        steady = np.minimum(steady, np.r_[steady[1:], steady[-1:]])
+    return steady
+
+
 def frame_scores(data: VisualData, models: VisualModels | None = None) -> dict[str, np.ndarray]:
     """Per-frame scores (all 0-1 except ``aesthetic``).
 
@@ -789,12 +804,7 @@ def frame_scores(data: VisualData, models: VisualModels | None = None) -> dict[s
     """
     e = data.emb.astype(np.float32)
     centre = e[:, 1]
-    steady = np.ones(len(e), np.float32)
-    if len(e) > 1:
-        sim = (centre[1:] * centre[:-1]).sum(1)
-        steady[1:] = sim
-        steady[0] = sim[0]
-        steady = np.minimum(steady, np.r_[steady[1:], steady[-1]])
+    steady = steadiness(centre)
     return {
         "beauty_zs": prompt_score(e, BEAUTY_POS, BEAUTY_NEG, models).mean(1),
         "group_zs": prompt_score(e, GROUP_POS, GROUP_NEG, models).max(1),
@@ -844,10 +854,7 @@ def to_grid(
     if len(t) == 0:
         return np.zeros(n)
     g = np.arange(n) * dt
-    idx = np.clip(np.searchsorted(t, g), 1, max(1, len(t) - 1))
-    left = np.clip(idx - 1, 0, len(t) - 1)
-    right = np.clip(idx, 0, len(t) - 1)
-    pick = np.where(np.abs(t[left] - g) <= np.abs(t[right] - g), left, right)
+    pick = nearest_index(t, g)
     out = values[pick].astype(float)
     out[np.abs(t[pick] - g) > hold] = 0.0
     return out

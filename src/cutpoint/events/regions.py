@@ -296,6 +296,11 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
     )
 
 
+def as_list(v: Any) -> list[Any]:
+    """A preset value that may be one item or a list, as a list (falsy: empty)."""
+    return v if isinstance(v, list) else [v] if v else []
+
+
 def _event_phrases(events: tuple[dict[str, Any], ...]) -> list[str]:
     """Banner ``prefix`` phrases of event types, so OCR looks for them too."""
     out = []
@@ -303,7 +308,7 @@ def _event_phrases(events: tuple[dict[str, Any], ...]) -> list[str]:
         for m in e.get("when") or []:
             if isinstance(m, dict) and m.get("type") == "banner":
                 p = m.get("prefix")
-                out += [str(x).upper() for x in (p if isinstance(p, list) else [p] if p else [])]
+                out += [str(x).upper() for x in as_list(p)]
     return out
 
 

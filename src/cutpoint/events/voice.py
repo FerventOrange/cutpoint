@@ -22,7 +22,6 @@ explosion/gunfire classes while the camera moves.
 
 from __future__ import annotations
 
-import csv
 import logging
 import time
 from dataclasses import asdict, dataclass
@@ -173,8 +172,9 @@ class SileroVad:
 
 
 def _panns_classes(groups: dict[str, tuple[str, ...]]) -> tuple[list[int], list[str]]:
-    with paths.panns_labels().open(encoding="utf-8") as fh:
-        labels = [row["display_name"] for row in csv.DictReader(fh)]
+    from cutpoint.events.audio_events import load_labels  # noqa: PLC0415
+
+    labels = load_labels()
     idx, owner = [], []
     for g, names in groups.items():
         for name in names:

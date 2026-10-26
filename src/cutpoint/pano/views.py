@@ -446,7 +446,7 @@ def wearer_view_mask(pv: PanoViews) -> np.ndarray | None:
     if o is None:
         return None
     wy = G.wearer_yaw(o, pv.t.astype(float), wearer_axis(pv))
-    d = np.abs((np.asarray(HORIZON_YAWS)[None, :] - wy[:, None] + 180.0) % 360.0 - 180.0)
+    d = np.abs(G.wrap_deg(np.asarray(HORIZON_YAWS)[None, :] - wy[:, None]))
     return d < WEARER_VIEW_DEG
 
 
@@ -470,15 +470,11 @@ def view_scores(pv: PanoViews) -> dict[str, np.ndarray]:
         aesthetic,
         beauty_score,
         prompt_score,
+        steadiness,
     )
 
     e = pv.emb.astype(np.float32)
-    steady = np.ones(e.shape[:2], np.float32)
-    if len(e) > 1:
-        sim = (e[1:] * e[:-1]).sum(-1)
-        steady[1:] = sim
-        steady[0] = sim[0]
-        steady = np.minimum(steady, np.r_[steady[1:], steady[-1:]])
+    steady = steadiness(e)
     cp = CrashParams()
     sc = {
         "beauty_zs": prompt_score(e, BEAUTY_POS, BEAUTY_NEG),
@@ -573,16 +569,22 @@ def frame_features(pv: PanoViews) -> dict[str, np.ndarray]:
     }
 
 
+def _grid_views(src: Path) -> PanoViews | None:
+    """The cached view layer of a 360 source (``.lrv`` / ``.insv``) with frames, or None."""
+    if not str(src).lower().endswith((".lrv", ".insv")):
+        return None
+    pv = load_views(Path(src))
+    return pv if pv is not None and len(pv.t) else None
+
+
 def layer_grids(
     src: Path, n: int, offset: float = 0.0, dt: float = 0.1
 ) -> dict[str, np.ndarray] | None:
     """``beauty`` / ``people`` / ``group`` on the analysis grid, or None (no 360 cache)."""
     from cutpoint.events.visual import to_grid  # noqa: PLC0415
 
-    if not str(src).lower().endswith((".lrv", ".insv")):
-        return None
-    pv = load_views(Path(src))
-    if pv is None or not len(pv.t):
+    pv = _grid_views(src)
+    if pv is None:
         return None
     ff = frame_features(pv)
     t = pv.t.astype(float) - offset
@@ -600,10 +602,8 @@ def lift_grid(src: Path, n: int, offset: float = 0.0, dt: float = 0.1) -> np.nda
     """:func:`lift_scores` on the analysis grid, or None (no 360 cache)."""
     from cutpoint.events.visual import to_grid  # noqa: PLC0415
 
-    if not str(src).lower().endswith((".lrv", ".insv")):
-        return None
-    pv = load_views(Path(src))
-    if pv is None or not len(pv.t):
+    pv = _grid_views(src)
+    if pv is None:
         return None
     return to_grid(pv.t.astype(float) - offset, lift_scores(pv), n, dt, hold=1.5)
 
@@ -709,7 +709,7 @@ def occlusion_bins(
     for k in np.flatnonzero(cand):
         row = d[k]
         lim = th.self_area if is_self[k] else th.close_area
-        dd = np.abs((centres - row[3] + 180.0) % 360.0 - 180.0)
+        dd = np.abs(G.wrap_deg(centres - row[3]))
         for b in np.flatnonzero(dd <= view_fov / 2 + row[5] / 2):
             res = G.project_box_visible(
                 float(centres[b]),
@@ -793,7 +793,7 @@ def direction_scores(
             else:
                 height = float(framing_utility(row[6]))
             sig = max(10.0, float(row[5]) / 2)
-            dd = (centres - row[3] + 180.0) % 360.0 - 180.0
+            dd = G.wrap_deg(centres - row[3])
             bump = height * np.exp(-0.5 * (dd / sig) ** 2)
             if height < 0:
                 worst[f] = np.minimum(worst[f], bump)

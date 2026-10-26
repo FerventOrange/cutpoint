@@ -582,3 +582,10 @@ def test_visual_data_from_frames_assembles_batches() -> None:
     assert data.meta["frames"] == 5
     with pytest.raises(ValueError, match="at least one frame"):
         V.visual_data_from_frames(FakeModels(), [], [])
+
+
+def test_load_path_accepts_a_bom(tmp_path):
+    p = tmp_path / "path.json"
+    p.write_text('{"keys": []}', encoding="utf-8-sig")  # PowerShell 5.1 writes a BOM
+    assert qa.load_path(str(p)) == {"keys": []}
+    assert qa.load_path(None) is None

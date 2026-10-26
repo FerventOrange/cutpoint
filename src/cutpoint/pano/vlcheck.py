@@ -38,6 +38,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, ffmpeg_utils, state
+from cutpoint.pano.qa import nearest_keys
 
 logger = logging.getLogger(__name__)
 
@@ -193,11 +194,6 @@ class VLChecker:
         return None
 
 
-def _key_at(keys: list[dict[str, Any]], t: float) -> dict[str, Any]:
-    ts = np.array([k["t"] for k in keys])
-    return keys[int(np.argmin(np.abs(ts - t)))]
-
-
 def sample_times(path: dict[str, Any], every: float = 3.0, max_frames: int = 4) -> np.ndarray:
     """Preview times to check, at most ``max_frames``: a baseline spread over the whole
     segment (about every ``every`` s, capped so up to half the frames stay free for
@@ -230,7 +226,7 @@ def _cache_file(clip_id: str) -> Path:
 
 def frame_key(path: dict[str, Any], t: float, model: str) -> str:
     """Cache key of the preview frame at source time ``t``: what the view shows there."""
-    k = _key_at(path["keys"], t)
+    k = nearest_keys(path["keys"], [t])[0]
     vert = "v" if path.get("vertical") else "h"
     return (
         f"{VL_VERSION}|{model}|{vert}|{t:.2f}|"

@@ -11,6 +11,19 @@ from cutpoint.config import source_path
 from cutpoint.utils import clock
 
 
+def _kill_flags(ev: dict[str, Any]) -> list[str]:
+    """The set flags of a kill event, in display order."""
+    return [
+        f
+        for f, on in (
+            ("TEAMKILL", ev.get("teamkill")),
+            ("player kill", ev.get("player_kill")),
+            ("player death", ev.get("player_death")),
+        )
+        if on
+    ]
+
+
 def normalize(source: str, ev: dict[str, Any]) -> dict[str, Any]:
     """Convert a layer event into the events.json schema.
 
@@ -41,15 +54,7 @@ def normalize(source: str, ev: dict[str, Any]) -> dict[str, Any]:
     elif kind == "ocr":
         out["label"] = ev.get("text", "")
         if ev.get("type") == "kill":
-            flags = [
-                f
-                for f, on in (
-                    ("TEAMKILL", ev.get("teamkill")),
-                    ("player kill", ev.get("player_kill")),
-                    ("player death", ev.get("player_death")),
-                )
-                if on
-            ]
+            flags = _kill_flags(ev)
             teams = f"{ev.get('killer_team') or '?'}>{ev.get('victim_team') or '?'}"
             out["description"] = (
                 f"kill feed: {ev.get('killer')} killed {ev.get('victim')}"
@@ -85,15 +90,7 @@ def _event_line(name: str, e: dict[str, Any]) -> str:
     if e["kind"] == "ocr":
         if e["type"] == "kill":
             d = e.get("details", {})
-            tags = [
-                f
-                for f, on in (
-                    ("TEAMKILL", d.get("teamkill")),
-                    ("player kill", d.get("player_kill")),
-                    ("player death", d.get("player_death")),
-                )
-                if on
-            ]
+            tags = _kill_flags(d)
             return f"{t} OCR kill: {e['label']}" + (f" ({', '.join(tags)})" if tags else "")
         detail = (e.get("details") or {}).get("detail")
         return f"{t} OCR: {e['label']}" + (f" ({detail})" if detail else "")

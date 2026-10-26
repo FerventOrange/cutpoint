@@ -326,11 +326,11 @@ def _interp_frames(
     pv_t: np.ndarray, values: np.ndarray, times: np.ndarray, hold: float = 1.0
 ) -> np.ndarray:
     """Nearest-frame resampling of ``(N, ...)`` values to ``times`` (0 beyond ``hold``)."""
+    from cutpoint.events.common import nearest_index  # noqa: PLC0415
+
     if not len(pv_t):
         return np.zeros((len(times), *values.shape[1:]))
-    idx = np.clip(np.searchsorted(pv_t, times), 1, max(1, len(pv_t) - 1))
-    left = np.clip(idx - 1, 0, len(pv_t) - 1)
-    pick = np.where(np.abs(pv_t[left] - times) <= np.abs(pv_t[idx] - times), left, idx)
+    pick = nearest_index(pv_t, times)
     out = values[pick].astype(float)
     far = np.abs(pv_t[pick] - times) > hold
     out[far] = 0.0
@@ -340,11 +340,7 @@ def _interp_frames(
 def _gauss(x: np.ndarray, sigma_steps: float) -> np.ndarray:
     if len(x) < 3 or sigma_steps <= 0:
         return x.copy()
-    r = int(3 * sigma_steps)
-    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma_steps) ** 2)
-    k /= k.sum()
-    pad = np.pad(x, r, mode="edge")
-    return np.convolve(pad, k, mode="valid")
+    return G.gauss_smooth(x, sigma_steps)
 
 
 def _limit(y: np.ndarray, dt: float, vmax: float, amax: float) -> np.ndarray:
@@ -440,7 +436,7 @@ def score_grid(
     from cutpoint.pano.views import forward_yaw  # noqa: PLC0415
 
     fy = forward_yaw(pv) if pv is not None else 0.0
-    dyaw = (centres - fy + 180.0) % 360.0 - 180.0
+    dyaw = G.wrap_deg(centres - fy)
     fwd = np.exp(-0.5 * (dyaw / p.forward_width_deg) ** 2)
     yaw_score = (
         p.w_people * people + p.w_group * group + p.w_beauty * beauty + p.w_forward * fwd[None, :]
@@ -484,7 +480,7 @@ def _viterbi(sg: dict[str, Any], p: DirectorParams, start_state: int | None = No
     s = np.concatenate([ys, sf[:, None]], 1)
     ns = nb + 1
     c = sg["centres"]
-    d = np.abs((c[:, None] - c[None, :] + 180.0) % 360.0 - 180.0)
+    d = np.abs(G.wrap_deg(c[:, None] - c[None, :]))
     step = p.max_speed * p.dt
     trans = np.where(d <= step + 1e-6, p.move_cost * d / step, p.cut_cost)
     full = np.full((ns, ns), p.cut_cost)
@@ -530,7 +526,7 @@ def _shots(
             return True
         if a == nb:
             return False
-        d = abs((centres[a] - centres[b] + 180.0) % 360.0 - 180.0)
+        d = abs(G.wrap_deg(centres[a] - centres[b]))
         return d > step + 1e-6
 
     bounds = [0] + [i for i in range(1, len(states)) if is_cut(states[i - 1], states[i])]
@@ -598,10 +594,6 @@ SAFE_SPEED = 1.3  # its re-limit allows max_speed / max_accel times this
 REFRAME_SHARE = 0.35  # its reframing shifts the yaw by up to this share of half the view
 
 
-def _circ(d: np.ndarray | float) -> np.ndarray:
-    return (np.asarray(d, float) + 180.0) % 360.0 - 180.0
-
-
 def _track_subject(
     pv: Any,
     ds_subject: np.ndarray | None,
@@ -634,8 +626,8 @@ def _track_subject(
             cands = np.unique(row[~np.isnan(row).any(1)], axis=0)
             pick = None
             if pts and len(cands):
-                d = np.abs(_circ(cands[:, 0] - pts[-1][1]))
-                off = np.abs(_circ(cands[:, 0] - centres[states[i]]))
+                d = np.abs(G.wrap_deg(cands[:, 0] - pts[-1][1]))
+                off = np.abs(G.wrap_deg(cands[:, 0] - centres[states[i]]))
                 ok = np.flatnonzero((d < LINK_DEG) & (off <= 45.0))
                 if len(ok):
                     pick = cands[ok[d[ok].argmin()]].copy()
@@ -644,7 +636,7 @@ def _track_subject(
             if pick is None:
                 continue
             if pts:  # unwrap against the previous point
-                pick[0] = pts[-1][1] + float(_circ(pick[0] - pts[-1][1]))
+                pick[0] = pts[-1][1] + float(G.wrap_deg(pick[0] - pts[-1][1]))
             pts.append(np.r_[pt[f], pick])
         if not pts:
             continue
@@ -713,7 +705,7 @@ def _refine_shot(
     has = ~np.isnan(subj).any(1)
     friend = people > 0.3
     sy = np.where(has, subj[:, 0], bins_yaw)
-    target = bins_yaw + _circ(sy - bins_yaw)
+    target = bins_yaw + G.wrap_deg(sy - bins_yaw)
     raw_fov = np.where(friend, ff, fw)
     fit = np.clip(fit_fov(subj[:, 2], subj[:, 3], p, size), lo, hi)
     raw_fov = np.where(friend & has, fit, raw_fov)
@@ -761,7 +753,7 @@ def close_edge_share(
     detector on the rendered frame still sees the head or shoulder at the edge.
     """
     vfov = G.flat_fov(hfov, *size)
-    d = float(_circ(box[0] - view_yaw))
+    d = float(G.wrap_deg(box[0] - view_yaw))
     lo, hi = d - box[2] / 2, d + box[2] / 2
     half = hfov / 2
     if not (lo < -half < hi or lo < half < hi):
@@ -804,7 +796,7 @@ def _framing_checks(ctx: dict[str, Any], span: tuple[int, int], p: DirectorParam
                 if r is not None and not wearer_allowed(np.clip(r[0], 0.0, 1.0), th):
                     out.append(float(box[0]))
                 continue
-            if has and abs(_circ(box[0] - subj[i, 0])) < max(5.0, subj[i, 2] / 2):
+            if has and abs(G.wrap_deg(box[0] - subj[i, 0])) < max(5.0, subj[i, 2] / 2):
                 continue  # the subject itself
             if box[3] >= CLOSE_MIN_H_DEG and close_edge_share(vy, vp, vf, size, box) >= (
                 CLOSE_MIN_SHARE
@@ -939,11 +931,11 @@ def _apply_away(ctx: dict[str, Any], c0: int, c1: int, ctr: float, p: DirectorPa
     """Turn steps ``[c0, c1)`` into a wide cut-away at yaw ``ctr`` (in place)."""
     yaw = ctx["yaw"]
     prev_yaw = yaw[c0 - 1] if c0 > 0 else ctr
-    yaw[c0:c1] = prev_yaw + _circ(ctr - prev_yaw)
+    yaw[c0:c1] = prev_yaw + G.wrap_deg(ctr - prev_yaw)
     ctx["pitch"][c0:c1] = p.pitch_default
     ctx["fov"][c0:c1] = ctx["fov_wide"]
     ctx["subj"][c0:c1] = np.nan
-    fwd = abs(_circ(ctr - ctx["forward_yaw"])) <= 30
+    fwd = abs(G.wrap_deg(ctr - ctx["forward_yaw"])) <= 30
     ctx["target"][c0:c1] = ["forward" if fwd else "view"] * (c1 - c0)
 
 
@@ -1009,7 +1001,7 @@ def _cut_away(
         score = ctx["yaw_score"][c0:c1].mean(0)
         away = np.ones(len(cen), bool)
         for y in sy:
-            away &= np.abs(_circ(cen - y)) > ctx["fov_wide"] / 2 + 10.0
+            away &= np.abs(G.wrap_deg(cen - y)) > ctx["fov_wide"] / 2 + 10.0
         away &= ctx["people"][c0:c1].max(0) <= 0.3
         cands = [float(cen[k]) for k in np.flatnonzero(away)[np.argsort(-score[away])]]
         best = _best_away(ctx, chk, c0, c1, cands or [float(ctx["forward_yaw"])], p)
@@ -1036,9 +1028,9 @@ def _suspect_steps(ctx: dict[str, Any], span: tuple[int, int]) -> set[int]:
     for i in range(*span):
         has = ctx["target"][i] == "friend" and not np.isnan(subj[i]).any()
         for box in ctx["near"][i]:
-            if has and abs(_circ(box[0] - subj[i, 0])) < max(5.0, subj[i, 2] / 2):
+            if has and abs(G.wrap_deg(box[0] - subj[i, 0])) < max(5.0, subj[i, 2] / 2):
                 continue  # the subject itself (as in _framing_checks)
-            d, half = abs(_circ(box[0] - ctx["yaw"][i])), ctx["fov"][i] / 2
+            d, half = abs(G.wrap_deg(box[0] - ctx["yaw"][i])), ctx["fov"][i] / 2
             if d - box[2] / 2 < half and d + box[2] / 2 > 0.8 * half:
                 out.add(i)
                 break
@@ -1176,7 +1168,7 @@ def compute_path(
                 y, subj[a:b], pe, pp, p, (ff, fw, lo, hi), size
             )
             has = ~np.isnan(subj[a:b]).any(1)
-            raw_yaw[a:b] = y + _circ(np.where(has, subj[a:b, 0], y) - y)
+            raw_yaw[a:b] = y + G.wrap_deg(np.where(has, subj[a:b, 0], y) - y)
         else:
             yaw[a:b] = _limit(_gauss(y, sm), p.dt, p.max_speed, p.max_accel)
             has = (pp > -900) & (pe > 0.15)
@@ -1188,7 +1180,7 @@ def compute_path(
                 "friend"
                 if pe[i - a] > 0.3
                 else "forward"
-                if abs(((sg["centres"][st[i - a]] - sg["forward_yaw"] + 180) % 360) - 180) <= 30
+                if abs(G.wrap_deg(sg["centres"][st[i - a]] - sg["forward_yaw"])) <= 30
                 else "view"
             )
     if subject_mode and pv is not None:
@@ -1372,6 +1364,13 @@ def _linear_intervals(kx: np.ndarray, yaw: np.ndarray, pitch: np.ndarray) -> np.
     return out
 
 
+def shot_index(path: dict[str, Any], times: np.ndarray) -> np.ndarray:
+    """Shot index per time: the number of keys marked ``cut`` at or before it."""
+    kt = np.array([k["t"] for k in path["keys"]], float)
+    cut_t = kt[[i for i, k in enumerate(path["keys"]) if k.get("cut")]]
+    return np.searchsorted(cut_t, times, side="right") if len(cut_t) else np.zeros(len(times), int)
+
+
 def evaluate(path: dict[str, Any], times: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-frame ``(yaw, pitch, fov)`` from a path's keys (monotone cubic inside shots,
     see :func:`_pchip`, linear on key intervals where the cubic would pan faster than
@@ -1386,9 +1385,7 @@ def evaluate(path: dict[str, Any], times: np.ndarray) -> tuple[np.ndarray, np.nd
     yaw = np.zeros(len(times))
     pitch = np.zeros(len(times))
     fov = np.zeros(len(times))
-    seg_of = (
-        np.searchsorted(kt[cut_idx], times, side="right") if cut_idx else np.zeros(len(times), int)
-    )
+    seg_of = shot_index(path, times)
     for s in range(len(seg_bounds) - 1):
         a, b = seg_bounds[s], seg_bounds[s + 1]
         sel = seg_of == s

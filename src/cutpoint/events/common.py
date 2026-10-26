@@ -36,6 +36,14 @@ def layer_cache_path(cdir: Path, layer: str, params: dict[str, Any]) -> Path:
     return cdir / f"events-{layer}-{params_key(params)}.json"
 
 
+def nearest_index(t: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Index of the nearest of the sorted, non-empty times ``t`` per ``q`` (ties: earlier)."""
+    idx = np.clip(np.searchsorted(t, q), 1, max(1, len(t) - 1))
+    left = np.clip(idx - 1, 0, len(t) - 1)
+    right = np.clip(idx, 0, len(t) - 1)
+    return np.where(np.abs(t[left] - q) <= np.abs(t[right] - q), left, right)
+
+
 @dataclass(frozen=True)
 class AudioPart:
     """A contiguous cached 16 kHz WAV covering ``[offset, offset + duration]``."""

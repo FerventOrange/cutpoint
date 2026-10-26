@@ -29,7 +29,6 @@ The director uses :func:`path_quality` for the ``quality`` block of every path.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -68,13 +67,11 @@ def person_rows(pv: Any) -> tuple[np.ndarray, np.ndarray]:
 
 def view_frame_index(pv_t: np.ndarray, times: np.ndarray, hold: float = HOLD_S) -> np.ndarray:
     """Nearest view frame per time (-1 when farther than ``hold``)."""
+    from cutpoint.events.common import nearest_index  # noqa: PLC0415
+
     if not len(pv_t):
         return np.full(len(times), -1)
-    if len(pv_t) == 1:
-        return np.where(np.abs(pv_t[0] - times) <= hold, 0, -1)
-    idx = np.clip(np.searchsorted(pv_t, times), 1, max(1, len(pv_t) - 1))
-    left = np.clip(idx - 1, 0, len(pv_t) - 1)
-    pick = np.where(np.abs(pv_t[left] - times) <= np.abs(pv_t[idx] - times), left, idx)
+    pick = nearest_index(pv_t, times)
     return np.where(np.abs(pv_t[pick] - times) <= hold, pick, -1)
 
 
@@ -294,7 +291,7 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
         return out
     for js in sorted(qa_dir.glob("*.json"), key=natural_key):
         try:
-            path = json.loads(js.read_text(encoding="utf-8"))
+            path = cache.read_json(js)
         except (OSError, ValueError):
             continue
         if not isinstance(path, dict) or "keys" not in path or "segment" not in path:

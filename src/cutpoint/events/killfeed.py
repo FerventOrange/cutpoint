@@ -1624,6 +1624,13 @@ def detect_ocr_events(
             for pa, pb in zip(prev, layout, strict=True)
         )
 
+    def save_crop(out: Path, t: float, r: Region, crop: np.ndarray) -> None:
+        """Save the region crop of a new event as a PNG in ``out``."""
+        import cv2  # noqa: PLC0415
+
+        out.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop)
+
     def process_frame(t: float, frame: np.ndarray) -> None:
         n = frame_no[0]
         frame_no[0] += 1
@@ -1656,12 +1663,7 @@ def detect_ocr_events(
                 interp.handle(t, r, crop, items)
                 region_events[r.name] = list(interp.tracker.touched)
                 if debug_dir and len(interp.tracker.events) > n_before:
-                    import cv2  # noqa: PLC0415
-
-                    debug_dir.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(
-                        str(debug_dir / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop
-                    )
+                    save_crop(debug_dir, t, r, crop)
                 continue
             mask = _small(hud_mask(crop))
             if mask.mean() < r.min_fill:
@@ -1676,10 +1678,7 @@ def detect_ocr_events(
             n_before = len(interp.tracker.events)
             interp.handle(t, r, crop, items)
             if debug_dir and len(interp.tracker.events) > n_before:
-                import cv2  # noqa: PLC0415
-
-                debug_dir.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(debug_dir / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop)
+                save_crop(debug_dir, t, r, crop)
         if menus:
             # regions overlap (notices inside the big-text area): one box per ~12 px spot
             spots = {
