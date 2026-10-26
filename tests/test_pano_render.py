@@ -290,7 +290,7 @@ class TestRenderSegmentSendcmd:
         )
         args = ffmpeg[0]
         assert ":round=down,zscale=tin=arib-std-b67:" in self._filter(args)
-        assert "tonemap=tonemap=mobius:desat=0,zscale=" in self._filter(args)
+        assert "tonemap=tonemap=hable:desat=0,zscale=" in self._filter(args)
         assert "m=bt709:r=tv,format=yuv420p" in self._filter(args)
         i = args.index("-color_range")
         assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]

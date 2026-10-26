@@ -87,7 +87,7 @@ def color_kind(info: MediaInfo) -> str | None:
 def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
     """Filters converting an HDR or BT.2020 source to SDR Rec.709, "" for any other source.
 
-    HLG and PQ are linearised, tone-mapped (``tonemap=mobius``) and re-encoded as BT.709
+    HLG and PQ are linearised, tone-mapped (``tonemap=hable``) and re-encoded as BT.709
     with ``zscale``; BT.2020 SDR only changes primaries and matrix. They go after the
     scale and before ``format=yuv420p``. ``filters`` is this ffmpeg's filter list (default
     :func:`~cutpoint.ffmpeg_utils.ffmpeg_filters`); without ``zscale`` (or ``tonemap``)
@@ -118,12 +118,17 @@ def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
         return f"zscale=tin={tin}:pin={pin}:min={min_}:t=bt709:p=bt709:m=bt709:r=tv"
     # Every zscale names its input and output: a step reading untagged frames fails
     # ("no path between colorspaces"), and a zscale ``pin`` does not tag its output.
-    # mobius keeps diffuse white (203 nits) near SDR white; hable left a synthetic HLG/PQ
-    # chart about 25 % darker than its SDR original. CPU cost: about 30 fps at 1080p
+    # At npl=100, HLG/PQ diffuse white (203 nits) is linear 2.0. hable rolls it off close
+    # to libplacebo (not used: it needs Vulkan): on real HLG phone clips its median luma
+    # was 0.62-0.66 against libplacebo's 0.54-0.57. mobius (0.81-0.84) kept midtones
+    # linear and squeezed the rest into the top (milky, lifted shadows), npl=203 came out
+    # too dark (0.49-0.52) and desat>0 greys bright colours. The peak is 1000 nits unless
+    # the frames carry light-level metadata, so PQ maps like HLG. A synthetic chart once
+    # suggested hable was too dark; real footage does not. CPU cost: about 30 fps at 1080p
     # (8 threads), so HDR sources export slower; SDR sources never run it.
     return (
         f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl=100:p=bt709,"
-        "format=gbrpf32le,tonemap=tonemap=mobius:desat=0,"
+        "format=gbrpf32le,tonemap=tonemap=hable:desat=0,"
         "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
     )
 

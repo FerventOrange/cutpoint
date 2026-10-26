@@ -57,7 +57,7 @@ def test_filter_names_reads_ffmpeg_filters_output():
 def test_hdr_source_is_tone_mapped_to_bt709(tags, tin):
     vf = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **tags), BOTH)
     assert vf.startswith(f"zscale=tin={tin}:pin=bt2020:min=bt2020nc:t=linear:npl=100:p=bt709,")
-    assert "format=gbrpf32le,tonemap=tonemap=mobius:desat=0," in vf
+    assert "format=gbrpf32le,tonemap=tonemap=hable:desat=0," in vf
     assert vf.endswith("zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv")
 
 
@@ -122,7 +122,7 @@ def _export_args(monkeypatch, info, kind: str = "cpu") -> list[str]:
 def test_hdr_export_tone_maps_and_tags_the_output_bt709(monkeypatch, tags):
     args = _export_args(monkeypatch, media_info(pix_fmt="yuv420p10le", **tags))
     graph = args[args.index("-filter_complex") + 1]
-    assert ",tonemap=tonemap=mobius:desat=0," in graph
+    assert ",tonemap=tonemap=hable:desat=0," in graph
     assert graph.index("tonemap") < graph.index("format=yuv420p")
     i = args.index("-color_range")
     assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]

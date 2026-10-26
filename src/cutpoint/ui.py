@@ -789,7 +789,8 @@ PROXY_WINDOWS_MAX = 8
 PROXY_WINDOWS_QUEUED = 4
 # The page plays a window up to this many centiseconds before its end (app.js ``covers``, FRAME)
 PROXY_WINDOW_FRAME_CS = 4
-# ui/proxy/<content key>.w<lo>-<hi>.mp4, the range in centiseconds of the source
+# ui/proxy/<proxy key>.w<lo>-<hi>.mp4 (see Media._proxy_key), the range in centiseconds of
+# the source
 PROXY_WINDOW_FILE = re.compile(r"([0-9a-f]{16})\.w(\d+)-(\d+)\.mp4")
 # a ``key=value`` line of ffmpeg's ``-progress`` output (frame=, out_time_us=, progress=...)
 PROXY_PROGRESS_LINE = re.compile(r"([a-z0-9_]+)= *(\S*)")  # bitrate= 4.1kbits/s
@@ -939,6 +940,15 @@ class Media:
                 self.probed[key] = None
         return self.probed[key]
 
+    def _proxy_key(self, key: str | None) -> str | None:
+        """The key naming a source's proxies (whole, windows, builds): its content key, mixed
+        with the colour filter of a probed source that has one, so a changed tone map rebuilds
+        HDR proxies while the others keep their names. Never runs ffprobe."""
+        res = self.probed.get(key) if key else None
+        if res is None or not res[3]:
+            return key
+        return hashlib.sha1(f"{key}|{res[3]}".encode()).hexdigest()[:16]
+
     def _lookup(self, real: Path) -> tuple[str | None, tuple[bool, float, int, str] | None]:
         """``(content key, info)`` of ``real``; both None if it is missing."""
         key = self.key(real)
@@ -962,6 +972,7 @@ class Media:
             return "failed", None
         if res[0]:
             return "ready", real
+        key = self._proxy_key(key)
         proxy = project / UI_DIR / "proxy" / f"{key}.mp4"
         if proxy.is_file() and _inside(project, f"{UI_DIR}/proxy/{key}.mp4"):
             return "ready", proxy
@@ -981,8 +992,9 @@ class Media:
             return "unknown", False, None
         status = self.status(project, path)[0]
         res = self.probed.get(key) if key else None
+        pkey = self._proxy_key(key)
         with self.lock:
-            done = self.progress.get((project, key)) if key and status == "preparing" else None
+            done = self.progress.get((project, pkey)) if pkey and status == "preparing" else None
         return status, res is not None and not res[0], done
 
     def prepare(
@@ -1002,6 +1014,7 @@ class Media:
         """
         real = remap_source(path)
         key, res = self._lookup(real)
+        key = self._proxy_key(key)
         if res is not None and key is not None and not res[0] and not self.closing:
             proxy = _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # never built through a link
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")  # nor its temporary
@@ -1167,7 +1180,7 @@ class Media:
         with self.lock:
             if not any(p == project and f for (p, _), f in self.window_failures.items()):
                 return []
-        key = self.key(remap_source(path))
+        key = self._proxy_key(self.key(remap_source(path)))
         with self.lock:
             return [
                 (lo, hi, r) for (lo, hi), r in self.window_failures.get((project, key), {}).items()
@@ -1213,7 +1226,7 @@ class Media:
 
     def window(self, project: Path, path: str, lo: int, hi: int) -> Path | None:
         """The ready window ``lo``-``hi`` (centiseconds) of a source, else None; marks it used."""
-        key = self.key(remap_source(path))
+        key = self._proxy_key(self.key(remap_source(path)))
         if key is None:
             return None
         with self.lock:
@@ -1244,7 +1257,7 @@ class Media:
             any_ready = any(p == project and r for (p, _), r in self.windows.items())
         if not busy and not any_ready:
             return [], []
-        key = self.key(remap_source(path))
+        key = self._proxy_key(self.key(remap_source(path)))
         with self.lock:
             ready = sorted(self.windows.get((project, key), {}))
             run = self.window_running
@@ -1253,11 +1266,27 @@ class Media:
 
     def prune_proxies(self, project: Path, paths: list[str]) -> None:
         """Once per run and project: delete leftover temporaries and windows of sources that
-        changed or left or whose whole proxy is built, and adopt the other windows on disk."""
+        changed or left or whose whole proxy is built, and adopt the other windows on disk.
+
+        A window no known key names may be of an HDR source not probed yet (its proxy key holds
+        the colour filter): sources are then probed, in order, until every such window is
+        matched, so this may run ffprobe."""
         folder = project / UI_DIR / "proxy"
         if project in self.proxies_pruned:
             return
-        keys = {self.key(remap_source(path)) for path in paths} - {None}
+        reals = [remap_source(path) for path in paths]
+        keys = {self._proxy_key(self.key(real)) for real in reals} - {None}
+        windows = [PROXY_WINDOW_FILE.fullmatch(f.name) for f in folder.glob("*.w*.mp4")]
+        left = {m[1] for m in windows if m and m[1] not in keys}
+        for real in reals:
+            if not left:
+                break
+            key, res = self._lookup(real)
+            if res is not None and res[3]:  # only a colour filter changes the key
+                pkey = self._proxy_key(key)
+                keys.discard(key)  # its windows from an earlier tone map go
+                keys.add(pkey)
+                left.discard(pkey)
         drop: list[Path] = []
         with self.lock:
             self.proxies_pruned.add(project)
