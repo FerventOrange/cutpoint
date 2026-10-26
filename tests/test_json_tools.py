@@ -309,7 +309,9 @@ def test_360_scan_json(home, tmp_path, monkeypatch, capsys):
 # ---------------------------------------------------------------------------- 360 analyze
 def test_360_analyze_json_views_only(pano_project, monkeypatch, capsys):
     project, _ = pano_project
-    monkeypatch.setattr(VW, "run_layer", lambda clips, force=False: {"cached": 0, "computed": 1})
+    monkeypatch.setattr(
+        VW, "run_layer", lambda clips, force=False, handoff=None: {"cached": 0, "computed": 1}
+    )
     code, doc = run_json(capsys, ["360", "analyze", "trip", "--views-only"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 analyze"
     assert doc["project"] == str(project)

@@ -354,6 +354,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `events.json`, `vram_mib.<layer>.baseline_mib` is now the monitor's first reading during the
   layer instead of one taken before it, and a layer shorter than one reading reports `null`
   for `baseline_mib` and `peak_mib`. Results are unchanged (#372).
+- `cutpoint 360 analyze` loads the CLIP model once instead of twice (about 4-5 s saved): the
+  model the 360 view layer loaded waits in system memory, not on the GPU, while transcription
+  and the audio layers run, and the crash step's dense check reuses it. It is kept only when
+  the events steps run and a clip has no cached dense check yet; otherwise it is freed after
+  the views as before. Results are unchanged (#376).
 
 ### Removed
 
