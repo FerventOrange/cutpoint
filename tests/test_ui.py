@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -3039,6 +3040,39 @@ def test_whole_proxy_of_an_hlg_source_is_converted_to_sdr(
     assert args[args.index("-colorspace") + 1] == "bt709"
 
 
+def test_proxy_key_mixes_in_the_colour_filter_only_when_the_source_has_one() -> None:
+    media = ui.Media()
+    media.probed["sdr"] = (False, 10.0, 1, "")
+    media.probed["hdr"] = (False, 10.0, 1, "zscale=a")
+    assert media._proxy_key("sdr") == "sdr"  # existing SDR proxies keep their names
+    assert media._proxy_key("unprobed") == "unprobed" and media._proxy_key(None) is None
+    old = media._proxy_key("hdr")
+    assert old and len(old) == 16 and old != "hdr"
+    media.probed["hdr"] = (False, 10.0, 1, "zscale=b")  # a changed tone map
+    assert media._proxy_key("hdr") not in (old, "hdr")
+
+
+def test_hlg_proxy_built_with_another_tone_map_is_not_served_but_rebuilt(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+    proxy_encoder: type[ProxyEncoder],
+) -> None:
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
+    monkeypatch.setattr(ui, "probe", lambda _path: hlg)
+    _, folder, p, _ = hevc_project
+    key = ui.Media.key((folder / "a.mp4").resolve()) or ""
+    (p / "ui" / "proxy").mkdir(parents=True)
+    stale = p / "ui" / "proxy" / f"{key}.mp4"  # named by the content key only, as before
+    stale.write_bytes(b"old tone map")
+    assert client.app.state.media.status(p, str(folder / "a.mp4"))[0] == "needs-proxy"
+    assert build_proxy(client, p, folder / "a.mp4") == "ready"
+    assert len(proxy_encoder.calls) == 1
+    served = client.app.state.media.status(p, str(folder / "a.mp4"))[1]
+    assert served is not None and served != stale and served.name != f"{key}.mp4"
+
+
 class FakeWindowProc:
     """A fake ffmpeg: a window encode stays alive until finished or killed; a whole one ends."""
 
@@ -4000,6 +4034,24 @@ def test_prune_proxies_removes_leftovers_and_adopts_the_windows_that_are_still_w
     (folder / f"{a}.part.mp4").write_bytes(b"x")  # once per run and project
     media.prune_proxies(p, paths)
     assert (folder / f"{a}.part.mp4").exists()
+
+
+def test_prune_proxies_keeps_hdr_windows_of_the_current_tone_map_before_any_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
+    probed: list[str] = []
+    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hlg)
+    media, folder, paths, a, _ = prune_setup(tmp_path)
+    hdr = hashlib.sha1(f"{a}|{encode.sdr_filter(hlg)}".encode()).hexdigest()[:16]
+    (folder / f"{hdr}.w0-500.mp4").write_bytes(b"x")
+    (folder / f"{a}.w0-500.mp4").write_bytes(b"x")  # built with an earlier tone map
+    p = folder.parents[1]
+    media.prune_proxies(p, paths)  # a new run: nothing probed yet
+    assert sorted(f.name for f in folder.iterdir()) == [f"{hdr}.w0-500.mp4"]
+    assert set(media.windows[(p, hdr)]) == {(0, 500)}
+    assert probed == ["a.mp4"]  # matched: b.mp4 is not probed
 
 
 def test_prune_proxies_adopts_at_most_eight_windows_keeping_the_newest(tmp_path: Path) -> None:
