@@ -388,6 +388,17 @@ def audio_mix_filter(n_streams: int, input_idx: int = 0) -> str | None:
     return f"{ins}amix=inputs={n_streams}:normalize=0:duration=longest"
 
 
+def mix_head(tracks: Sequence[int], input_idx: int = 0) -> str:
+    """Start of a filter chain reading ``tracks`` (audio track indices) of input ``input_idx``.
+
+    One track gives its pad (``[0:a:0]``); several are summed (``amix``, no normalisation, so
+    a game and a separate mic track both keep their level), with a trailing comma. Either way
+    the next filter follows directly.
+    """
+    ins = "".join(f"[{input_idx}:a:{i}]" for i in tracks)
+    return f"{ins}amix=inputs={len(tracks)}:normalize=0," if len(tracks) > 1 else ins
+
+
 def extract_audio(src: Path, dst: Path, info: MediaInfo, start: float = 0.0) -> ProgressResult:
     """Extract all audio tracks of ``src`` mixed down to 16 kHz mono WAV.
 
@@ -570,17 +581,21 @@ def clip_momentary(
 ) -> list[float]:
     """Momentary loudness (LUFS, 400 ms blocks every 100 ms) of a clip's audio.
 
-    ``streams`` audio tracks are mixed as a clip export mixes them (``amix``, no
-    normalisation); 1 reads track 0 only. ``start``/``duration`` (s) cut a source span
-    (input seek, as the export). ``chain`` (filters ending in a comma) is applied before
-    the measurement. Returns ``[]`` for ``streams`` 0 or no blocks.
+    ``streams`` audio tracks are mixed as a clip export of the same span mixes them
+    (duplicate tracks left out, see :func:`cutpoint.audio_tracks.export_tracks`); 1 reads
+    track 0 only.
+    ``start``/``duration`` (s) cut a source span (input seek, as the export). ``chain``
+    (filters ending in a comma) is applied before the measurement. Returns ``[]`` for
+    ``streams`` 0 or no blocks.
     """
+    from cutpoint.audio_tracks import export_tracks  # noqa: PLC0415 - it imports this module
+
     if streams < 1:
         return []
     span = [*(["-ss", f"{start:.3f}"] if start is not None else [])]
     span += ["-t", f"{duration:.3f}"] if duration is not None else []
-    ins = "".join(f"[0:a:{i}]" for i in range(streams))
-    head = f"{ins}amix=inputs={streams}:normalize=0," if streams > 1 else "[0:a:0]"
+    clip = (start or 0.0, duration) if duration is not None else None
+    head = mix_head(export_tracks(src, streams, span=clip))
     out = run(
         [
             "ffmpeg",
@@ -1831,6 +1846,42 @@ def decode_pcm(
         )
     data = proc.stdout
     return np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2")
+
+
+def decode_tracks(
+    path: Path | str,
+    streams: int,
+    *,
+    sr: int,
+    start: float,
+    duration: float,
+    timeout: float | None = None,
+) -> np.ndarray:
+    """Decode the first ``streams`` audio tracks of ``path`` side by side, each downmixed to mono.
+
+    Returns:
+        ``int16`` samples of shape ``(streams, samples)``, one row per track.
+
+    Raises:
+        FFmpegError: If ffmpeg exits non-zero or times out.
+    """
+    rows = "".join(
+        f"[0:a:{i}]aformat=sample_fmts=s16:sample_rates={sr}:channel_layouts=mono[t{i}];"
+        for i in range(streams)
+    )
+    merge = "".join(f"[t{i}]" for i in range(streams)) + f"amerge=inputs={streams}[a]"
+    args = ["-hide_banner", "-v", "error", "-ss", f"{start:.3f}", "-i", str(path)]
+    args += ["-t", f"{duration:.3f}", "-vn", "-filter_complex", rows + merge, "-map", "[a]"]
+    proc = _exec("ffmpeg", [*args, "-f", "s16le", "-"], timeout, path)
+    if proc.returncode != 0:
+        code = exit_code(proc.returncode)
+        raise FFmpegError(
+            f"ffmpeg track decode of {path} failed (exit {code}):\n{_tail(proc.stderr)}"
+        )
+    data = proc.stdout
+    frames = len(data) // (2 * streams)
+    pcm = np.frombuffer(data[: frames * 2 * streams], dtype="<i2")
+    return pcm.reshape(frames, streams).T
 
 
 def pcm_float(pcm: bytes | np.ndarray) -> np.ndarray:
