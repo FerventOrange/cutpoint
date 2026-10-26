@@ -39,6 +39,8 @@ const S = {
   renameErr: '',
   expired: false, // the server rejected the session token: nothing polls or retries any more
   stepStates: null, // {job, states: {step: state}}: the analysis steps last announced (renderSteps)
+  stepSince: {}, // "job/step" -> ms the UI first saw the step running (elapsed time under reduced motion)
+  stepTimer: null, // ticks that elapsed time once a second
 };
 
 const v = $('#video');
@@ -96,6 +98,8 @@ whenExpired((e) => {
   S.expired = true;
   clearTimeout(S.prepTimer);
   clearTimeout(S.jobTimer);
+  clearInterval(S.stepTimer);
+  S.stepTimer = null;
   drop(''); // the banner already says why; a second status line would be announced too
   const st = $('#jobStatus'); // an earlier failed poll may have left "Can't reach the server…"
   st.textContent = '';
@@ -1263,17 +1267,49 @@ function stepsJob() {
 
 /** A step's whole pct while it runs, else null. */
 const stepPct = (s) => (s.state === 'running' && s.pct != null ? Math.round(s.pct) : null);
-const stepStateText = (s, pct) => `${STEP_TEXT[s.state] ?? s.state}${pct == null ? '' : ` ${pct}%`}`;
+// Reduced motion stills the spinner, so a running step shows its elapsed time instead: "Running 42% · 1:23".
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const stepElapsed = (job, s) => {
+  if (s.state !== 'running' || !reduceMotion.matches) return '';
+  const since = (S.stepSince[`${job}/${s.step}`] ??= Date.now());
+  return fmtLen(Math.floor((Date.now() - since) / 1000));
+};
+const stepStateText = (s, pct, job) => {
+  const secs = stepElapsed(job, s);
+  return `${STEP_TEXT[s.state] ?? s.state}${pct == null ? '' : ` ${pct}%`}${secs && (pct == null ? ` ${secs}` : ` · ${secs}`)}`;
+};
+
+/** Tick the running steps' elapsed time in place, also while polls bring nothing new; stop when none runs. */
+function stepTick(j) {
+  if (!reduceMotion.matches || !j?.progress.steps.some((s) => s.state === 'running')) {
+    clearInterval(S.stepTimer);
+    S.stepTimer = null;
+    S.stepSince = {};
+  } else S.stepTimer ??= setInterval(() => {
+    const job = stepsJob();
+    const rows = ($('#freshSteps') ?? $('#analyzeSteps')).querySelectorAll('.step-list > .step');
+    const now = job ? stepRows(job) : [];
+    if (rows.length !== now.length) return;
+    now.forEach((s, i) => {
+      if (s.state === 'running') rows[i].querySelector('.step-state').textContent = stepStateText(s, stepPct(s), job.id);
+    });
+  }, 1000);
+}
+// The setting changed mid-run: rebuild the rows, so the elapsed time appears or goes at once.
+reduceMotion.addEventListener('change', () => {
+  for (const box of [$('#freshSteps'), $('#analyzeSteps')]) if (box) delete box.dataset.key;
+  renderSteps();
+});
 
 /** One step row: an icon (decorative), the label, its state in words, pct (running only) and detail when sent. */
-function stepRow(s) {
+function stepRow(s, job) {
   const running = s.state === 'running';
   const pct = stepPct(s);
   return h('li', { class: 'step', 'data-state': s.state },
     running ? h('span', { class: 'step-icon spin', 'aria-hidden': 'true' })
       : h('span', { class: 'step-icon', 'aria-hidden': 'true', text: STEP_ICON[s.state] ?? '•' }),
     h('span', { class: 'step-label', text: s.label }),
-    h('span', { class: 'step-state', text: stepStateText(s, pct) }),
+    h('span', { class: 'step-state', text: stepStateText(s, pct, job) }),
     s.detail ? h('span', { class: 'step-detail', text: s.detail }) : null,
     running ? (pct == null
       ? h('div', { class: 'indeterminate step-bar', 'aria-hidden': 'true' })
@@ -1293,6 +1329,7 @@ function renderSteps() {
   if (fresh) $('#analyzeSteps').hidden = true;
   const j = stepsJob();
   box.hidden = !j;
+  stepTick(j);
   if (!j) {
     box.replaceChildren();
     delete box.dataset.key;
@@ -1311,7 +1348,7 @@ function renderSteps() {
   if (box.dataset.shape === shape && rows.length === steps.length) {
     steps.forEach((s, i) => {
       const pct = stepPct(s);
-      rows[i].querySelector('.step-state').textContent = stepStateText(s, pct);
+      rows[i].querySelector('.step-state').textContent = stepStateText(s, pct, j.id);
       const detail = rows[i].querySelector('.step-detail');
       if (detail) detail.textContent = s.detail;
       const bar = rows[i].querySelector('.step-bar > span');
@@ -1334,7 +1371,7 @@ function renderSteps() {
       .join('. ');
   box.replaceChildren(
     h('p', { class: 'steps-head', id: `${box.id}Head`, text: head }),
-    h('ol', { class: 'step-list', 'aria-labelledby': `${box.id}Head` }, ...steps.map(stepRow)),
+    h('ol', { class: 'step-list', 'aria-labelledby': `${box.id}Head` }, ...steps.map((s) => stepRow(s, j.id))),
   );
 }
 

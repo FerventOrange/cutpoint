@@ -464,9 +464,11 @@ dialog form { display: grid; gap: 14px; }
   .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: none; }
 }
 
+/* reduced motion: static stand-ins that still read as busy, not a frozen ring or a stalled 40% bar */
 @media (prefers-reduced-motion: reduce) {
-  .indeterminate::after { animation: none; width: 40%; }
-  .spin { animation: none; }
-  .seq-thumb.loading::after { animation: none; }
+  .indeterminate::after { animation: none; width: 100%; background: repeating-linear-gradient(90deg, var(--amber) 0 6px, transparent 6px 10px); }
+  .spin { animation: none; width: auto; height: auto; border: 0; border-radius: 0; color: var(--amber); align-self: baseline; }
+  .spin::before { content: "\25B6\FE0E"; } /* ▶, text style (not emoji) */
+  .seq-thumb.loading::after { animation: none; background: var(--panel); }
   * { scroll-behavior: auto !important; transition: none !important; }
 }
