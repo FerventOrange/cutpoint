@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The OCR layer keeps a raw read of each source: per frame, the HUD text it read and the few
+  pixel rows its colour rules need, in `cache/<source>/ocr-raw-*` (the two most recently used per
+  source). When an update changes only how HUD text is interpreted, the next run replays it in
+  seconds, with no OCR, instead of reading the footage again, and an interrupted read resumes
+  near where it stopped. The first run after this update still reads the footage once. The raw
+  read holds OCR text, so it is git-ignored and never written inside a git checkout (#315).
 - When the browser cannot play a source, the UI previews the selected moment within seconds:
   the server first encodes a short proxy of the moment (10 s before it to 20 s after it) while
   the whole-source proxy builds in a second lane. Scrubbing or playing outside it prepares that
