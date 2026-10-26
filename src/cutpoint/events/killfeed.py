@@ -80,8 +80,9 @@ class OcrParams:
 # bump when the generic (JSON preset) interpretation changes; 7: menu frames give no
 # events (:func:`menu_times`), multi-word phrases and feed kill words match whole words only;
 # 8: static screens are menus too (:func:`static_frames`); 9: menu frames keep feed sightings
-# and kills, a static screen without new menu text must hold still STATIC_BARE_MIN_S
-GENERIC_VERSION = 9
+# and kills, a static screen without new menu text must hold still STATIC_BARE_MIN_S;
+# 10: new menu text is STATIC_TEXT_LINES texts that stay for STATIC_TEXT_SHARE of the part
+GENERIC_VERSION = 10
 
 
 # --------------------------------------------------------------------------- text utils
@@ -1252,9 +1253,12 @@ LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when th
 # STATIC_FEED_GUARD_S of feed activity (a feed sighting or a kill) are taken out, so kills in
 # still gameplay (scoped, spectating) are never dropped; the rest of a run is a static screen
 # where at least STATIC_MIN_FRAMES frames hold still for at least STATIC_MIN_S when it shows new
-# menu text, else STATIC_BARE_MIN_S. New menu text is a text the generic interpreter reads that
-# is no preset phrase (an ``unknown`` notice or big text, so not numbers or reticle marks), first
-# read in the part or up to STATIC_FEED_GUARD_S before it: a menu shows its words when it opens.
+# menu text, else STATIC_BARE_MIN_S. New menu text is at least STATIC_TEXT_LINES texts the
+# generic interpreter reads that are no preset phrase (``unknown`` notice or big text lines, so
+# not numbers or reticle marks), first read in the part or up to STATIC_FEED_GUARD_S before it
+# (a menu shows its words when it opens) and each on screen for at least STATIC_TEXT_SHARE of
+# the part: a menu shows many lines that stay, a gameplay notice is one line or one box that
+# flashes, so a notice read in still gameplay never puts it on the STATIC_MIN_S path.
 # Still gameplay (scoped, binoculars) holds still for about 6 s, a result screen 6.7 s and menus
 # 17-56 s on the HUD area, so the 5 s minimum alone has no margin; a phrase banner in still
 # gameplay is no menu text, so it never supports dropping itself (menus show phrases too, so
@@ -1269,6 +1273,8 @@ STATIC_MIN_FRAMES = 3
 STATIC_FEED_GUARD_S = 2.0
 STATIC_MAX_GAP_S = 1.0  # at least; 2 frame intervals at low OCR frame rates
 STATIC_MIN_AREA = 0.25
+STATIC_TEXT_LINES = 2
+STATIC_TEXT_SHARE = 0.5
 
 
 def _thumb(frame: np.ndarray) -> np.ndarray:
@@ -1320,18 +1326,28 @@ def still_stretches(frames: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 
 
 def static_parts(
-    frames: list[dict[str, Any]], feed_times: set[float], text_times: set[float]
+    frames: list[dict[str, Any]],
+    feed_times: set[float],
+    text_spans: list[tuple[float, float]],
 ) -> list[tuple[list[dict[str, Any]], bool]]:
     """The parts of still runs that may be static screens (see :data:`STATIC_THUMB`):
     frames of a still run further than :data:`STATIC_FEED_GUARD_S` from every time
     of ``feed_times`` (feed sightings and kills), each with whether it shows new menu
-    text (a time of ``text_times`` in the part or up to :data:`STATIC_FEED_GUARD_S`
-    before it)."""
-    busy, texts = sorted(feed_times), sorted(text_times)
+    text: at least :data:`STATIC_TEXT_LINES` of the ``text_spans`` (first read, end)
+    first read in the part or up to :data:`STATIC_FEED_GUARD_S` before it, each
+    overlapping at least :data:`STATIC_TEXT_SHARE` of the part."""
+    busy, spans = sorted(feed_times), sorted(text_spans)
+    starts = [s for s, _ in spans]
 
     def any_in(times: list[float], a: float, b: float) -> bool:
         i = bisect.bisect_left(times, a)
         return i < len(times) and times[i] <= b
+
+    def menu_text(a: float, b: float) -> bool:
+        lo = bisect.bisect_left(starts, a - STATIC_FEED_GUARD_S)
+        hi = bisect.bisect_right(starts, b)
+        stay = sum(min(e, b) - max(s, a) >= STATIC_TEXT_SHARE * (b - a) for s, e in spans[lo:hi])
+        return stay >= STATIC_TEXT_LINES
 
     out: list[tuple[list[dict[str, Any]], bool]] = []
     for run in still_stretches(frames):
@@ -1346,20 +1362,22 @@ def static_parts(
                 continue
             if part:
                 a, b = part[0]["t"], part[-1]["t"]
-                out.append((part, any_in(texts, a - STATIC_FEED_GUARD_S, b)))
+                out.append((part, menu_text(a, b)))
             part = []
     return out
 
 
 def static_frames(
-    frames: list[dict[str, Any]], feed_times: set[float], text_times: set[float] | None = None
+    frames: list[dict[str, Any]],
+    feed_times: set[float],
+    text_spans: list[tuple[float, float]] | None = None,
 ) -> set[Any]:
     """Ids of the frames of a static screen: a part of :func:`static_parts` with at
     least :data:`STATIC_MIN_FRAMES` frames that holds still for at least
-    :data:`STATIC_MIN_S` when it shows new menu text (``text_times``), else
+    :data:`STATIC_MIN_S` when it shows new menu text (``text_spans``), else
     :data:`STATIC_BARE_MIN_S`."""
     out: set[Any] = set()
-    for part, text in static_parts(frames, feed_times, text_times or set()):
+    for part, text in static_parts(frames, feed_times, text_spans or []):
         need = STATIC_MIN_S if text else STATIC_BARE_MIN_S
         if len(part) >= STATIC_MIN_FRAMES and part[-1]["t"] - part[0]["t"] >= need:
             out.update(p["id"] for p in part)
@@ -1393,13 +1411,13 @@ def menu_rules(
     frames: list[dict[str, Any]],
     params: DiscoverParams | None = None,
     feed_times: set[float] | None = None,
-    text_times: set[float] | None = None,
+    text_spans: list[tuple[float, float]] | None = None,
 ) -> tuple[dict[Any, str], dict[str, float]]:
     """The :func:`menu_times` decision per frame id: the rule that made it a menu
     (``cover``, ``jump``, ``list`` or ``static``) or ``none``, and the source's
     numbers (``median`` box count, ``min_boxes``, the ``cover``, ``list`` and
     ``jump`` thresholds, inf when off, and the ``static_s`` (with new menu text,
-    ``text_times``), ``static_bare_s`` (without) and ``static_diff`` of the static
+    ``text_spans``), ``static_bare_s`` (without) and ``static_diff`` of the static
     rule, which runs only with ``feed_times``)."""
     params = params or DiscoverParams()
     median = float(np.median([len(f["boxes"]) for f in frames])) if frames else 0.0
@@ -1407,7 +1425,7 @@ def menu_rules(
     if lists:
         params = replace(params, menu_jump=float("inf"))
     keep = {f["id"] for f in gameplay_frames(frames, params)}
-    static = static_frames(frames, feed_times, text_times) if feed_times is not None else set()
+    static = static_frames(frames, feed_times, text_spans) if feed_times is not None else set()
     rules = {}
     for f in frames:
         if f["id"] not in keep:
@@ -1442,7 +1460,7 @@ def _log_menu_frames(
     info: dict[str, float],
     events: list[dict[str, Any]],
     feed_times: set[float] | None = None,
-    text_times: set[float] | None = None,
+    text_spans: list[tuple[float, float]] | None = None,
 ) -> None:
     """One DEBUG line per frame that is a menu or has an OCR sighting: its numbers and
     the rule that fired, no OCR text (logs get shared). ``menu text`` tells whether
@@ -1457,7 +1475,7 @@ def _log_menu_frames(
             still[f["id"]] = run[-1]["t"] - run[0]["t"] if f.get("still") is not None else 0.0
     text: dict[Any, str] = {}
     if feed_times is not None:
-        for part, shown in static_parts(frames, feed_times, text_times or set()):
+        for part, shown in static_parts(frames, feed_times, text_spans or []):
             text.update((p["id"], "yes" if shown else "no") for p in part)
 
     def off(v: float, fmt: str) -> str:
@@ -1762,14 +1780,20 @@ def detect_ocr_events(
 
         tracked = interp.tracker.events
         feed_times = {t for e in tracked if feed_event(e) for t in e["_times"]}
-        # new menu text: where a text that is no preset phrase was first read
-        text_times = {e["_times"][0] for e in tracked if e.get("unknown")}
+        # new menu text: when texts that are no preset phrase were first read, until when shown;
+        # ``end`` moves only on the frames a region is read, so it is padded by one read interval
+        step = {r.name: r.every / params.fps for r in regions}
+        text_spans = [
+            (e["_times"][0], e["end"] + step.get(e.get("region"), 0.0))
+            for e in tracked
+            if e.get("unknown")
+        ]
         if still_runs is None:
-            feed_times = text_times = None
-        rules, menu_info = menu_rules(frame_boxes, feed_times=feed_times, text_times=text_times)
+            feed_times, text_spans = None, None
+        rules, menu_info = menu_rules(frame_boxes, feed_times=feed_times, text_spans=text_spans)
         if logger.isEnabledFor(logging.DEBUG):
             _log_menu_frames(
-                src.name, frame_boxes, rules, menu_info, tracked, feed_times, text_times
+                src.name, frame_boxes, rules, menu_info, tracked, feed_times, text_spans
             )
         menu = {f["t"] for f in frame_boxes if rules[f["id"]] != "none"}
         interp.tracker.drop_sightings(menu, keep=feed_event)

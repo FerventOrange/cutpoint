@@ -297,12 +297,12 @@ def test_kill_words_match_whole_words() -> None:
 
 
 def _quiet_menu(t: float) -> list[tuple[str, float, float]]:
-    """Gameplay, and at 20-30 s a menu of 8 lines (far below the 24 boxes every box
-    rule needs) with a banner phrase on it."""
+    """Gameplay, and at 20-30 s a menu of 8 boxes (far below the 24 boxes every box
+    rule needs) with a banner phrase on it and 2 rows of tabs."""
     if not 20 <= t < 30:
         return [("Hold", 900, 820)]
     out = [("Hull breached", 320, 220)]
-    out += [(f"Tab {chr(65 + i)}", 320 + 180 * i, 860) for i in range(7)]
+    out += [(f"Tab {chr(65 + i)}", 320 + 180 * (i % 4), 760 + 100 * (i // 4)) for i in range(7)]
     return out
 
 
@@ -441,6 +441,38 @@ def test_short_still_screen_with_menu_text_is_static(tmp_path: Path, monkeypatch
     assert not [e for e in events if e["type"] == "banner"]
 
 
+def test_one_notice_in_still_gameplay_is_no_menu_text(tmp_path: Path, monkeypatch) -> None:
+    def screen(t: float) -> list[tuple[str, float, float]]:
+        out = [("Hold", 900, 820)]
+        if 22 <= t < 24:  # one gameplay notice, sliding in (read twice)
+            out.append(("Ridge sighted", 860, 400 if t < 23 else 420))
+        return out
+
+    events, stats = _run(
+        tmp_path, monkeypatch, _Engine(screen), still=lambda t: 20 <= t < 26.5, paint=_minimap
+    )
+    # 6.3 s still with one line of new text: no menu text, below STATIC_BARE_MIN_S
+    assert stats["static_frames"] == stats["menu_frames"] == 0
+    notices = [(e["text"], e["t"], e["sightings"]) for e in events if e["text"] != "Hold"]
+    assert notices == [("Ridge sighted", 22.0, 2)]  # its sighting is kept
+
+
+def test_short_still_menu_in_a_sparsely_read_region_is_static(tmp_path: Path, monkeypatch) -> None:
+    def screen(t: float) -> list[tuple[str, float, float]]:
+        if 20.3 <= t < 25.5:  # a result screen with 2 lines of its own
+            return [("Tally board", 700, 300), ("Proceed", 900, 600)]
+        return [("Hold", 900, 820)]
+
+    preset = _preset()
+    preset["regions"] = [preset["regions"][0] | {"every": 6}]  # read every 2 s at 3 fps
+    _, stats = _run(
+        tmp_path, monkeypatch, _Engine(screen), preset, still=lambda t: 20.3 <= t < 25.4
+    )
+    # 20.33-25.33 s still; its lines are read at 22 s and kept alive at 24 s only, so
+    # their ends are padded by the 2 s read interval to cover half of the part
+    assert stats["static_frames"] == stats["menu_frames"] == 16
+
+
 def test_long_still_menu_without_menu_text_is_static(tmp_path: Path, monkeypatch) -> None:
     def screen(t: float) -> list[tuple[str, float, float]]:
         # a 16 s still menu showing only a banner phrase (no new menu text)
@@ -481,13 +513,30 @@ def test_static_rule_needs_still_runs_and_feed_times() -> None:
     # a small change (a cursor) stays still; a larger one starts a new run
     diff = killfeed.STATIC_MAX_DIFF
     grey = [90.0] * 10 + [90 + 2 * diff] * 10 + [90 + 2.5 * diff] * 5 + [90 + 2 * diff] * 15
-    # menu text read as the cursor's screen opens (3.5 s): 0-3 s is too short; 3.3-13 s
-    # holds still with the cursor
-    rules = menu_rules(_still_records(times, grey), feed_times=set(), text_times={3.5})[0]
+    # 2 menu lines read as the cursor's screen opens (3.5 s), on screen to the end: 0-3 s
+    # is too short; 3.3-13 s holds still with the cursor
+    lines = [(3.5, 13.0), (3.5, 13.0)]
+    rules = menu_rules(_still_records(times, grey), feed_times=set(), text_spans=lines)[0]
     assert [rules[n] for n in (0, 9, 10, 22, 39)] == ["none", "none", "static", "static", "static"]
     # without menu text 9.7 s is below STATIC_BARE_MIN_S
     rules = menu_rules(_still_records(times, grey), feed_times=set())[0]
     assert set(rules.values()) == {"none"}
+
+
+def test_static_menu_text_needs_lines_that_stay() -> None:
+    times = [n / 3 for n in range(19)]  # 0-6.0 s still (a spawn map)
+    records = _still_records(times, [90.0] * 19)
+
+    def rules(spans: list[tuple[float, float]]) -> set[str]:
+        return set(menu_rules(records, feed_times=set(), text_spans=spans)[0].values())
+
+    assert rules([]) == {"none"}  # no menu text: below STATIC_BARE_MIN_S
+    assert rules([(0.0, 6.0), (0.3, 6.0)]) == {"static"}  # 2 menu lines that stay
+    assert rules([(-1.5, 6.0), (-1.5, 6.0)]) == {"static"}  # read as the menu opened
+    assert rules([(0.0, 6.0)]) == {"none"}  # one notice line, however long
+    assert rules([(2.0, 4.0), (2.0, 4.0)]) == {"none"}  # a 2-line notice box flashing 2 s
+    assert rules([(2.0, 2.0), (3.0, 3.0)]) == {"none"}  # one-frame reads
+    assert rules([(-3.0, 6.0), (-3.0, 6.0)]) == {"none"}  # read before the guard window
 
 
 def test_static_runs_end_at_gaps() -> None:
