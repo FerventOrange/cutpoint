@@ -359,6 +359,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the audio layers run, and the crash step's dense check reuses it. It is kept only when
   the events steps run and a clip has no cached dense check yet; otherwise it is freed after
   the views as before. Results are unchanged (#376).
+- When the wearer is not at the default mount, `cutpoint 360 analyze` now recomputes only
+  the selfie view in the 360 view layer's second pass. The person detector and the person
+  crops are reused from the first pass. The second pass still decodes the proxy again and
+  embeds all 9 views together, so the cached views are byte-identical to a full recompute.
+  `-v` logs how long that pass took, and `elapsed_s` / `gpu_s` in the `pano-views-*.json`
+  meta now cover both passes (#376).
 
 ### Removed
 

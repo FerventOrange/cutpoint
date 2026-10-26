@@ -111,6 +111,8 @@ class PanoViews:
         box_emb: CLIP embeddings of person crops ``(K, 768)`` float16.
         box_idx: Row in ``det`` of each ``box_emb`` row.
         meta: Decode info.
+        rays: Float64 centre rays of ``det`` ``(M, 3)``, the exact input of its
+            ``wearer_deg``; set by :func:`compute_views`, not cached.
     """
 
     t: np.ndarray
@@ -119,6 +121,7 @@ class PanoViews:
     box_emb: np.ndarray
     box_idx: np.ndarray
     meta: dict[str, Any] = field(default_factory=dict)
+    rays: np.ndarray | None = None
 
 
 def cache_path(src: Path, params: ViewParams | None = None) -> Path:
@@ -157,8 +160,18 @@ def _selfie_rotation(r_vw: np.ndarray, wearer_v: np.ndarray) -> np.ndarray:
     return G.view_matrix(float(yaw), float(pitch))
 
 
+def _wearer_deg(dv: np.ndarray, wear: np.ndarray) -> float:
+    """Angle (deg) between a det centre ray and the unit wearer axis (camera coordinates)."""
+    return math.degrees(math.acos(max(-1.0, min(1.0, float(dv @ wear)))))
+
+
 def compute_views(
-    clip: Any, models: Any, p: ViewParams, orient: G.Orientation, wearer_v: np.ndarray = G.WEARER_V
+    clip: Any,
+    models: Any,
+    p: ViewParams,
+    orient: G.Orientation,
+    wearer_v: np.ndarray = G.WEARER_V,
+    reuse: PanoViews | None = None,
 ) -> PanoViews | None:
     """Run the view layer on one clip's ``.lrv`` (one sequential keyframe decode).
 
@@ -168,6 +181,11 @@ def compute_views(
         p: Settings.
         orient: The clip's orientation track.
         wearer_v: Wearer axis in camera coordinates.
+        reuse: This clip's result for another wearer axis (same ``p``, with ``rays``):
+            only what depends on the axis is recomputed (#376). The detector, the
+            equirect and the person crops are skipped; their rows are kept and
+            ``wearer_deg`` is recomputed from ``rays``. The 9 views are still embedded
+            as one batch, as in a full run, so the selfie embeddings are byte-equal.
     """
     import torch  # noqa: PLC0415
 
@@ -175,6 +193,9 @@ def compute_views(
     from cutpoint.events.visual import COCO_PERSON, DET_LABELS, iter_frames  # noqa: PLC0415
 
     src = Path(clip.lrv)
+    if reuse is not None and reuse.rays is None:  # loaded from the cache: no float64 rays
+        logger.debug("%s: no rays to reuse; full recompute", src.name)
+        reuse = None
     dev = models.device
     sampler = G.FisheyeSampler(dev, p.fisheye_fov)
     view_rays = sampler.rays(G.flat_rays(p.view_px, p.view_px, p.view_fov, p.view_fov))
@@ -196,6 +217,7 @@ def compute_views(
     ts: list[float] = []
     embs: list[np.ndarray] = []
     dets: list[np.ndarray] = []
+    rays: list[np.ndarray] = []
     crop_rows: list[int] = []
     crop_embs: list[np.ndarray] = []
     batch_t: list[float] = []
@@ -218,13 +240,20 @@ def compute_views(
             )  # (B, 3, S, S)
             allv = torch.cat([views, sel[:, None]], 1).reshape(b * 9, 3, p.view_px, p.view_px)
             e = models._embed(allv).view(b, 9, -1)
+        embs.append(e.cpu().numpy().astype(np.float16))
+        if reuse is not None:  # detections and crops do not depend on the wearer axis
+            ts.extend(batch_t)
+            batch_t.clear()
+            batch_f.clear()
+            gpu_s += time.perf_counter() - g0
+            return
+        with torch.inference_mode():
             eq = sampler.sample(x, rv, eq_rays)  # (B, 3, H, W)
             if dev == "cuda":
                 with torch.autocast("cuda", dtype=torch.float16):
                     outs = det_model(list(eq))
             else:
                 outs = det_model(list(eq))
-        embs.append(e.cpu().numpy().astype(np.float16))
         crops = []
         for i, o in enumerate(outs):
             keep = torch.isin(o["labels"], person_lab)
@@ -243,7 +272,8 @@ def compute_views(
                 wdeg = (x2 - x1) / p.eq_width * 360.0
                 hdeg = (y2 - y1) / eq_h * 180.0
                 dv = rv[i] @ G.yaw_pitch_ray(yaw, pitch)
-                wa = math.degrees(math.acos(max(-1.0, min(1.0, float(dv @ wear)))))
+                wa = _wearer_deg(dv, wear)
+                rays.append(dv)
                 rows.append(
                     [
                         len(ts) + i,
@@ -301,14 +331,26 @@ def compute_views(
     if not ts:
         logger.warning("%s: 360 views decoded no frames", src.name)
         return None
-    det = np.concatenate(dets) if dets else np.zeros((0, len(DET_COLS)), np.float32)
-    data = PanoViews(
-        t=np.asarray(ts, np.float32),
-        emb=np.concatenate(embs),
-        det=det,
-        box_emb=(np.concatenate(crop_embs) if crop_embs else np.zeros((0, 768), np.float16)),
-        box_idx=np.asarray(crop_rows, np.int64),
-    )
+    t_arr = np.asarray(ts, np.float32)
+    if reuse is not None:
+        if not np.array_equal(t_arr, reuse.t):
+            logger.warning("%s: 360 views decoded other frames; full recompute", src.name)
+            return compute_views(clip, models, p, orient, wearer_v)
+        det = reuse.det.copy()
+        det[:, 7] = [_wearer_deg(dv, wear) for dv in reuse.rays]
+        data = replace(reuse, t=t_arr, emb=np.concatenate(embs), det=det)
+        gpu_s += reuse.meta.get("gpu_s", 0.0)
+        t0 -= reuse.meta.get("elapsed_s", 0.0)  # elapsed_s covers both passes
+    else:
+        det = np.concatenate(dets) if dets else np.zeros((0, len(DET_COLS)), np.float32)
+        data = PanoViews(
+            t=t_arr,
+            emb=np.concatenate(embs),
+            det=det,
+            box_emb=(np.concatenate(crop_embs) if crop_embs else np.zeros((0, 768), np.float16)),
+            box_idx=np.asarray(crop_rows, np.int64),
+            rays=np.asarray(rays, np.float64).reshape(-1, 3),
+        )
     elapsed = time.perf_counter() - t0
     data.meta = {
         "source": str(src),
@@ -316,7 +358,7 @@ def compute_views(
         "frames": len(ts),
         "elapsed_s": round(elapsed, 1),
         "gpu_s": round(gpu_s, 1),
-        "person_crops": len(crop_rows),
+        "person_crops": len(data.box_idx),
         "views": list(VIEW_NAMES),
         "wearer_v": [round(float(v), 4) for v in wear],
         "params": p.key(),
@@ -331,6 +373,8 @@ def save_views(src: Path, data: PanoViews, params: ViewParams) -> Path:
         path, t=data.t, emb=data.emb, det=data.det, box_emb=data.box_emb, box_idx=data.box_idx
     )
     cache.save_json(path.with_suffix(".json"), data.meta)
+    _SCORES.clear()  # keyed without emb or axis: drop scores of the clip's old views
+    _OCCL.clear()
     write_standard_visual(src, data)
     return path
 
@@ -935,7 +979,11 @@ def run_layer(
                     c.clip_id,
                     np.round(axis, 2),
                 )
-                data = compute_views(c, models, p, orient, wearer_v=axis) or data
+                s0 = time.perf_counter()
+                data = compute_views(c, models, p, orient, wearer_v=axis, reuse=data) or data
+                logger.debug(
+                    "clip %s: selfie view recomputed in %.1fs", c.clip_id, time.perf_counter() - s0
+                )
             save_views(src, data, p)
             el = time.perf_counter() - c0
             stats["computed"] += 1
