@@ -18,16 +18,17 @@ from cutpoint.pano import project, stitch
 # -- player_tags ----------------------------------------------------------------------
 
 
-def test_player_tags_single_string_becomes_list(home):
-    set_config(home, player_tags="Me")
-    assert config.player_tags() == ("Me",)
-
-
-def test_player_tags_blank_names_dropped(home):
-    set_config(home, player_tags=["Me", "", "   ", "\t", "Other"])
-    assert config.player_tags() == ("Me", "Other")
-    set_config(home, player_tags="   ")
-    assert config.player_tags() == ()
+@pytest.mark.parametrize(
+    ("value", "want"),
+    [
+        ("Me", ("Me",)),  # a single string becomes a list
+        (["Me", "", "   ", "\t", "Other"], ("Me", "Other")),  # blank names dropped
+        ("   ", ()),
+    ],
+)
+def test_player_tags_normalised(home, value, want):
+    set_config(home, player_tags=value)
+    assert config.player_tags() == want
 
 
 # -- vision ---------------------------------------------------------------------------
@@ -122,7 +123,7 @@ def test_warn_system_drive(tmp_path, monkeypatch, caplog, pano, drive_is_tmp, wa
         return
     (msg,) = got
     assert "system drive" in msg and "2 clip(s)" in msg and "stitched_dir" in msg
-    assert f"{2 * 1800 / 3600 * 45 * 1.2:.0f} GB" in msg
+    assert "54 GB" in msg  # 2 clips of 30 min: 1 h at 45 GB/h plus 20 %
 
 
 # -- set_config_values ----------------------------------------------------------------

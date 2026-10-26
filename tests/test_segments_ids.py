@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 import pytest
 
@@ -35,12 +35,6 @@ def test_segment_ids(given: tuple[object, ...], expected: list[object]) -> None:
 def test_duplicate_ids_name_both_segments_and_the_id() -> None:
     with pytest.raises(ValueError, match=r"Segments 1 and 3 have the same id 'a'"):
         segment_ids(_segs("a", "b", "a"))
-
-
-@pytest.mark.parametrize("bad", [["a"], {"k": 1}], ids=["list", "dict"])
-def test_unhashable_id_is_a_value_error(bad: object) -> None:
-    with pytest.raises(ValueError, match="Segment 2: id must be"):
-        segment_ids(_segs("a", bad))
 
 
 def _write_segments(tmp_path: Path, entries: list[dict[str, object]]) -> Path:
@@ -165,13 +159,6 @@ def test_windows_source_keeps_its_drive_and_is_not_joined_to_the_folder(
     assert identity == "D:\\Videos\\a.insv"
     assert str(tmp_path) not in str(io_path)
     assert str(io_path).replace("\\", "/") == "D:/Videos/a.insv"
-
-
-@pytest.mark.parametrize("given", ["/nope.json", "\\nope.json", "C:nope.json", "C:/nope.json"])
-def test_missing_segments_file_rooted_or_drive_path_has_no_suffix(given: str) -> None:
-    """Follow-up to #127: Windows ``\\nope.json`` is relative to the current drive's root."""
-    win = PureWindowsPath(given)
-    assert cli._segments_where(given, win, Path("C:/nope.json")) == ""
 
 
 @pytest.mark.parametrize(

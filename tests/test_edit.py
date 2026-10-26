@@ -15,17 +15,11 @@ from conftest import set_config
 from cutpoint import cli, edit, progress
 
 
-@pytest.mark.parametrize(
-    ("kind", "overrides", "expected"),
-    [
-        ("highlights", {}, ("action", None, 180, "chronological", "fade", False)),
-        ("funny-moments", {}, ("funny", 8, None, "chronological", "cut", True)),
-        ("montage", {"style": "gaming", "top": 5}, ("gaming", 5, 60, "score", "fade", False)),
-    ],
-)
-def test_kind_table_and_overrides(kind, overrides, expected):
-    k = edit.resolve_kind(kind, **overrides)
-    assert (k.style, k.top, k.max_total, k.order, k.transition, k.captions) == expected
+def test_kind_overrides_replace_the_kind_defaults():
+    k = edit.resolve_kind("montage", style="gaming", top=5)
+    assert (k.style, k.top, k.max_total, k.order, k.transition, k.captions) == (
+        "gaming", 5, 60, "score", "fade", False,
+    )  # fmt: skip
     assert k.loudnorm
 
 
@@ -118,29 +112,12 @@ def test_edit_without_new_subtitles_does_not_copy_a_stale_final_srt(pipeline, ho
     assert "none (no transcript)" in caplog.text
 
 
-def test_edit_name_of_a_drive_root_is_edit(tmp_path):
-    """The rule itself is utils.input_name (tests/test_utils.py); edit's fallback is "edit"."""
-    assert edit.edit_name(Path(tmp_path.anchor)) == "edit"
-
-
-@pytest.mark.parametrize(
-    ("cfg", "argv", "vision"),
-    [
-        (None, [], False),  # no config.json key: off (vision is opt-in)
-        (None, ["--no-vision"], False),
-        (None, ["--vision"], True),
-        (True, [], True),  # "vision": true in config.json is the default
-        (True, ["--no-vision"], False),  # ... and --no-vision turns it off
-        (False, ["--vision"], True),
-    ],
-)
-def test_edit_passes_vision_to_analyze(pipeline, home, cfg, argv, vision):
-    """The flag wins; without one, config.json's vision (default off)."""
-    if cfg is not None:
-        set_config(home, vision=cfg)
-    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
+def test_edit_passes_the_config_vision_default_to_analyze(pipeline, home):
+    """The flag/config precedence is test_config's; edit only has to hand the result on."""
+    set_config(home, vision=True)
+    assert cli.main(["edit", str(pipeline.video)]) == 0
     assert pipeline.calls[0][2] == {
-        "vision": vision, "vision_top": None, "ollama_url": None, "ollama_model": None,
+        "vision": True, "vision_top": None, "ollama_url": None, "ollama_model": None,
         "layers": True, "skip": (),
     }  # fmt: skip
 

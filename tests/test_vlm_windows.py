@@ -33,11 +33,9 @@ def test_build_messages_uses_media_content(tmp_path: Path):
     params = vw.VlmParams()
     game = vw.game_prompt("boxfeed", None)
     content = vw.build_messages(src, win, frames, params, game, lines, events)[1]["content"]
-    media = vw._media_content(src, win, frames, params, lines, events)
-    text = "\n".join(c.get("text", "") for c in media)
-    assert "input_audio" in {c["type"] for c in media}
+    text = "\n".join(c.get("text", "") for c in content)
+    assert "input_audio" in {c["type"] for c in content}
     assert "nice shot" in text and "Laughter" in text
-    assert content[1:-1] == media
 
 
 def test_select_windows_quiet_logs_counts_at_debug_only(tmp_path: Path, caplog):

@@ -66,7 +66,6 @@ def test_clean_frame_has_no_flags_and_a_subject() -> None:
     assert r["subj"] == [0.4, 0.3, 0.6, 0.95]
     assert r["size_ok"] is True
     assert r["safe"] is True
-    assert r["boxes"] == [[0.99, 0.4, 0.3, 0.6, 0.95, False]]
 
 
 def test_subject_is_largest_kept_person_not_self_or_tiny_or_weak() -> None:

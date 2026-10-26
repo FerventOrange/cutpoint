@@ -179,6 +179,7 @@ def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_sr
     for n in ("001_a.mp4", "001_a.srt", "002_b.mp4", "002_b.srt"):
         write(out / n, "old")
     write(out / "009_mine.mp4", "mine")  # not listed: added by hand
+    write(out / ".001_x.part.mp4", "partial")  # left by a killed run
     entries = [
         {"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0, "srt": "001_a.srt"},
         {"file": "002_b.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_b.srt"},
@@ -197,7 +198,13 @@ def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_sr
     assert (out / "009_mine.mp4").read_text(encoding="utf-8") == "mine"
     files = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"]
     assert [e["file"] for e in files] == ["001_a.mp4"]
-    assert "009_mine.mp4" in caplog.text and "002_b" not in caplog.text
+    assert "002_b" not in caplog.text
+    assert any(  # the kept clip is named in a WARNING
+        r.levelname == "WARNING"
+        and "009_mine.mp4" in r.message
+        and "the old manifest.json does not list them" in r.message
+        for r in caplog.records
+    )
 
 
 @pytest.mark.parametrize("where", ["in-place", "other-out"])
@@ -251,37 +258,3 @@ def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
     # In place it stays in the folder (and in the edit): a Kept warning, not "skipped".
     assert f"Kept 002_joke.mp4 in {clips.absolute()}: the old manifest.json" in caplog.text
     assert "skipped" not in caplog.text
-
-
-def _out_with_old_manifest(tmp_path: Path, clips: Path) -> Path:
-    out = tmp_path / "proj" / "ext"
-    src = _manifest(clips)["source"]
-    entries = [{"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0}]
-    write(out / "001_a.mp4", "old")
-    write(out / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
-    return out
-
-
-def test_extend_out_force_removes_a_part_file_left_by_a_killed_run(tmp_path, monkeypatch, reads):
-    clips = _srt_clips(tmp_path)
-    out = _out_with_old_manifest(tmp_path, clips)
-    write(out / ".001_x.part.mp4", "partial")
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)
-    _run(clips, out_dir=out, force=True)
-    assert not (out / ".001_x.part.mp4").exists()
-
-
-def test_extend_out_force_warns_that_the_old_manifest_does_not_list_a_kept_clip(
-    tmp_path, monkeypatch, reads, caplog
-):
-    clips = _srt_clips(tmp_path)
-    out = _out_with_old_manifest(tmp_path, clips)
-    write(out / "009_mine.mp4", "mine")
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)
-    _run(clips, out_dir=out, force=True)
-    assert any(
-        r.levelname == "WARNING"
-        and "009_mine.mp4" in r.message
-        and "the old manifest.json does not list them" in r.message
-        for r in caplog.records
-    )

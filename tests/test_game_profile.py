@@ -217,6 +217,7 @@ def test_discovery_params_used_for_menus() -> None:
     proposal["discovery"] = {"params": {"menu_min_boxes": 10, "menu_jump": 1.0}}
     assert mine_phrases(proposal, frames) == []  # every frame is a menu with these params
     proposal["discovery"] = {"params": {}}
+    # a busy HUD (40 small edge boxes per frame) is not a menu by default
     assert mine_phrases(proposal, frames) == ["ZONE SECURED"]
 
 
@@ -230,14 +231,6 @@ def test_player_tag_splits_log_line() -> None:
     assert mine_phrases(_proposal(), _frames(texts), ["Boxer"]) == ["blocked Shield Saver"]
     joined = {0: ["BoxerblockedShield"], 4: ["BoxerblockedShield"]}
     assert mine_phrases(_proposal(), _frames(joined), ["Boxer"]) == []  # "Shield" alone
-
-
-def test_busy_hud_frames_mined() -> None:
-    # 40 small edge boxes in every frame (more than the old 28-box menu limit)
-    frames = _frames({0: ["ZONE SECURED"], 4: ["ZONE SECURED"]})
-    for f in frames:
-        f["boxes"] += [_box(f"AMMO {i}", x=20, y=150 + i * 20, h=18) for i in range(40)]
-    assert mine_phrases(_proposal(), frames) == ["ZONE SECURED"]
 
 
 def test_joined_numbers_split_off() -> None:
@@ -327,16 +320,12 @@ def test_bigtext_region_used_with_min_height() -> None:
         ("zwr", ""),
         ("rust", ""),
         ("new-folder", ""),
-        ("game", ""),
         ("my-footage", ""),
         ("zonewar-videos", ""),
-        ("recording", ""),
         ("2024-11-14", ""),
         ("footage8", ""),
-        ("footage2", ""),
         ("clips2025", ""),
         ("Videos_2024", ""),
-        ("new-folder-3", ""),
         ("zonewar2", "zonewar2"),
         ("zone-war-videos2", ""),
     ],

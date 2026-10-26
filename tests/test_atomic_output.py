@@ -187,9 +187,9 @@ def _fake_export(monkeypatch):
     monkeypatch.setattr(clips, "export_clip_checked", export)
 
 
-@pytest.mark.parametrize("winerror", [32, 5])
 @pytest.mark.usefixtures("no_sleep")
-def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, caplog, winerror):
+def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, caplog):
+    """The hint's wording per winerror is test_lock_hint_mentions_read_only_only_for_access_denied."""
     project, seg = _project(home)
     old = _old_clip(project)
     _fake_export(monkeypatch)
@@ -197,7 +197,7 @@ def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, cap
 
     def replace(self, target):
         if self == old:
-            raise _locked(winerror)
+            raise _locked(32)
         return real_replace(self, target)
 
     monkeypatch.setattr(Path, "replace", replace)
@@ -445,44 +445,7 @@ def test_extend_out_finishes_a_killed_earlier_replace_before_checking_it_is_empt
     assert not bak.exists()
 
 
-@pytest.mark.parametrize("kind", ["mount point", "drive root"])
-def test_extend_out_force_refuses_a_mount_point_or_root_before_exporting(
-    monkeypatch, home, caplog, kind
-):
-    """#147: the staging and backup folders sit next to --out, so a mount point or a drive root
-    (no name, no parent to hold them) cannot be swapped. Only ``out`` is made to look like one."""
-    project = _setup(home, monkeypatch)
-    out = project / "out"
-    shutil.copytree(project / "clips", out)
-    (out / "notes.txt").write_text("keep me", encoding="utf-8")
-    before = _snapshot(out)
-    real_is_mount, real_resolve = Path.is_mount, Path.resolve
-    if kind == "mount point":
-        monkeypatch.setattr(
-            Path, "is_mount", lambda self: self.resolve() == out.resolve() or real_is_mount(self)
-        )
-    else:
-        # A nameless path stands in for the root; nothing is ever opened at the real root.
-        monkeypatch.setattr(
-            Path,
-            "resolve",
-            lambda self, *a, **kw: (
-                Path(out.anchor) if self == out else real_resolve(self, *a, **kw)
-            ),
-        )
-
-    def export(*_a, **_kw):
-        raise AssertionError("exported before the mount point was refused")
-
-    monkeypatch.setattr(extend, "export_clip_checked", export)
-    argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
-    assert cli.main([*argv, "--out", str(out), "--force"]) == 1
-    assert kind in caplog.text
-    assert _snapshot(out) == before
-    assert sorted(p.name for p in project.iterdir()) == ["clips", "out", "seg.json", "src.mp4"]
-
-
-@pytest.mark.parametrize("cmd", ["clips", "extend"])
+@pytest.mark.parametrize("cmd", ["clips", "extend", "extend-out"])
 @pytest.mark.parametrize(
     ("kind", "message"),
     [
@@ -492,14 +455,19 @@ def test_extend_out_force_refuses_a_mount_point_or_root_before_exporting(
         ("bind mount", "is on another file system than its parent folder"),
     ],
 )
-def test_clips_force_and_in_place_extend_refuse_a_root_or_mount_before_exporting(
+def test_force_refuses_a_root_or_mount_before_exporting(
     monkeypatch, home, caplog, cmd, kind, message
 ):
-    """#160: the staging folder sits next to the clips folder, so a drive root (no name, crashed
-    with "empty name"), a mount point or a bind mount (a rename into it fails with EXDEV) is
-    refused with one ERROR line before any export, and nothing is left behind."""
+    """#160, #147: the staging folder sits next to the clips folder (``extend-out``: next to
+    ``--out``), so a drive root (no name, crashed with "empty name"), a mount point or a bind
+    mount (a rename into it fails with EXDEV) is refused with one ERROR line before any export,
+    and nothing is left behind."""
     project = _setup(home, monkeypatch)
     clips_dir = project / "clips"
+    if cmd == "extend-out":  # only the --out folder is made to look like a mount or a root
+        out = project / "out"
+        shutil.copytree(clips_dir, out)
+        clips_dir = out
     (clips_dir / "notes.txt").write_text("keep me", encoding="utf-8")
     before = _snapshot(clips_dir)
     real_is_mount, real_resolve, real_rename = Path.is_mount, Path.resolve, Path.rename
@@ -536,10 +504,15 @@ def test_clips_force_and_in_place_extend_refuse_a_root_or_mount_before_exporting
 
     monkeypatch.setattr(clips, "export_clip_checked", export)
     monkeypatch.setattr(extend, "export_clip_checked", export)
-    assert cli.main(_argv(cmd, project, "--force")) == 1
+    if cmd == "extend-out":
+        argv = [*_argv("extend", project)[:-2], "--out", str(clips_dir), "--force"]
+    else:
+        argv = _argv(cmd, project, "--force")
+    assert cli.main(argv) == 1
     assert message in _errors(caplog)
     assert _snapshot(clips_dir) == before
-    _only_original_folders(project)
+    top = ["clips", "seg.json", "src.mp4"] + (["out"] if cmd == "extend-out" else [])
+    assert sorted(p.name for p in project.iterdir()) == sorted(top)
 
 
 @pytest.mark.parametrize(

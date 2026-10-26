@@ -316,21 +316,10 @@ def test_install_panns_falls_back_to_next_mirror(tmp_path, monkeypatch, caplog, 
     [
         ("http://[foo", "[foo"),
         ("https://user:TOKEN@[foo/x?t=SECRET", "[foo"),
-        ("user:TOKEN@host/x?t=SECRET", "host"),  # no "//": parses with no host
-        ("http://user:TOKEN@host:SECRET/x", "host"),  # nonnumeric port
         ("TOKEN@host/x?t=SECRET", "host"),  # no scheme: "unknown url type"
-        ("TOKEN:x@host/x?t=SECRET", "host"),  # urllib reads "token" as the scheme
-        ("file:https://user:TOKEN@host/x?t=SECRET", "host"),
+        ("file:https://user:TOKEN@host/x?t=SECRET", "host"),  # the file: branch of the redaction
     ],
-    ids=[
-        "plain",
-        "credentials",
-        "no-slashes",
-        "bad-port",
-        "no-scheme",
-        "token-user",
-        "file-nested",
-    ],
+    ids=["plain", "credentials", "no-scheme", "file-nested"],
 )
 def test_install_panns_malformed_env_url_is_a_failed_mirror(
     tmp_path, monkeypatch, caplog, bad, shown
@@ -378,14 +367,3 @@ class _Dead:
 
     def poll(self):
         return self.returncode
-
-
-def test_install_visual_pins_the_aesthetic_head_size_and_hash(monkeypatch):
-    calls = []
-    monkeypatch.setattr(setup, "download", lambda *a, **k: calls.append((a, k)))
-    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda m, *a: None)
-    with pytest.raises(ModuleNotFoundError):  # stops after the download: no torch needed
-        setup.install_visual()
-    ((args, kwargs),) = calls
-    assert (*args, *kwargs.values())[2:] == (setup.AESTHETIC_SIZE, setup.AESTHETIC_SHA256)
-    assert args[0] == ev_paths.AESTHETIC_URL

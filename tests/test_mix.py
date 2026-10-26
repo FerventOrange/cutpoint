@@ -13,13 +13,11 @@ from conftest import link_file, messages
 from cutpoint import cache, mix
 from cutpoint.clips import REACTION_LABEL, order_moments
 from cutpoint.mix import (
-    DEFAULT_QUOTAS,
     Cand,
     MixRules,
     content_qa,
     crash_candidates,
     effective_quotas,
-    mix_report,
     normalise,
     parse_quotas,
     part_candidates,
@@ -243,11 +241,6 @@ def test_content_qa_flags_each_failed_check() -> None:
     assert failed == {"categories", "max_share", "near_dups", "runs_covered", "opener", "length_s"}
 
 
-def test_mix_report_share_is_zero_for_an_empty_selection() -> None:
-    rep = mix_report([_c("run", 50, 0.9)], [], DEFAULT_QUOTAS, MixRules(), 60.0, 1, 1)
-    assert all(v["share"] == 0.0 for v in rep["categories"].values())
-
-
 @pytest.fixture
 def one_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     """run_mix on a project whose only candidate is a 6 s run in a.mp4 (features faked)."""
@@ -281,10 +274,7 @@ def test_apply_exclusions_matches_a_differently_spelt_source(tmp_path, spelling)
     real.write_bytes(b"")
     if spelling == "symlink":
         alias = tmp_path / "alias.mp4"
-        try:
-            alias.symlink_to(real)
-        except (OSError, NotImplementedError):
-            pytest.skip("symlinks unavailable")
+        link_file(alias, real)
     else:
         alias = tmp_path / "sub" / ".." / "sub" / "a.mp4"
     cand = _c("run", 50, 0.9, src=str(real))

@@ -99,9 +99,11 @@ def test_detect_project_skips_offline_source_and_processes_the_rest(tmp_path, mo
 class _FakeClip:
     def __init__(self):
         self.at = "cuda"
+        self.moves = []
 
     def to(self, device):
         self.at = device
+        self.moves.append(device)
         return self
 
 
@@ -115,16 +117,21 @@ class _FakeModels:
         self.closed += 1
 
 
-def test_clip_encoder_from_visual_shares_the_model_and_double_close_is_safe(monkeypatch):
+def test_clip_encoder_from_visual_shares_the_model_parks_it_and_double_close_is_safe(monkeypatch):
     def boom(self, *a, **k):
         raise AssertionError("CLIP must not be loaded again")
 
     monkeypatch.setattr(crash.ClipEncoder, "__init__", boom)
     monkeypatch.setattr("cutpoint.events.common.free_torch", lambda: None)
     models = _FakeModels()
+    models.device = "cuda"
     enc = crash.ClipEncoder.from_visual(models)
-    assert enc.model is models.clip and enc.device == "cpu" and enc.mean == "mean"
-    assert models.clip.at == "cpu" and not enc.on_device  # parked until the first embed
+    assert enc.model is models.clip and enc.device == "cuda" and enc.mean == "mean"
+    assert models.clip.moves == ["cpu"] and not enc.on_device  # parked until the first embed
+    empty = np.zeros((0, 8, 8, 3), np.uint8)  # no torch needed to trigger the move back
+    assert enc.embed(empty).shape == (0, 3, 768)
+    enc.embed(empty)
+    assert models.clip.moves == ["cpu", "cuda"] and enc.on_device  # moved back once
     enc.close()
     enc.close()
     assert enc.model is None
@@ -221,25 +228,3 @@ def test_detect_project_dense_zero_never_lowers_a_speed_drop_bypass(tmp_path, mo
     assert got["drop"]["confirmed"] and got["normal"]["confirmed"]
     assert got["drop"]["confidence"] >= round(pre["drop"], 3)  # the bypass is never penalised
     assert got["normal"]["confidence"] < round(pre["normal"], 3)  # a normal candidate still drops
-
-
-class _TrackedClip(_FakeClip):
-    def __init__(self):
-        super().__init__()
-        self.moves = []
-
-    def to(self, device):
-        self.moves.append(device)
-        return super().to(device)
-
-
-def test_clip_encoder_returns_to_the_device_once_on_first_embed():
-    models = _FakeModels()
-    models.clip, models.device = _TrackedClip(), "cuda"
-    enc = crash.ClipEncoder.from_visual(models)
-    assert models.clip.moves == ["cpu"]  # parked on the CPU after the handoff
-    empty = np.zeros((0, 8, 8, 3), np.uint8)
-    assert enc.embed(empty).shape == (0, 3, 768)
-    assert models.clip.moves == ["cpu", "cuda"] and models.clip.at == "cuda"
-    enc.embed(empty)
-    assert models.clip.moves == ["cpu", "cuda"]  # not moved again

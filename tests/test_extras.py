@@ -35,17 +35,14 @@ class _Dist:
         return self._direct_url
 
 
-def test_install_hint_uv_and_pip(monkeypatch, tmp_path):
-    monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / ".venv"))  # no tool receipt
-    editable = _Dist(_editable_url(tmp_path))
-    monkeypatch.setattr(extras.importlib.metadata, "distribution", lambda name: editable)
+def test_uv_managed_under_uv_run_or_when_pip_is_missing(monkeypatch):
     monkeypatch.setenv("UV", "1")
-    hint = extras.install_hint("events")
-    assert hint.startswith("uv sync --extra events")
-    assert "or use --extra all for everything, a large download with torch and CUDA" in hint
+    assert extras.uv_managed() is True
     monkeypatch.delenv("UV")
     monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: object())
-    assert "-m pip install" in extras.install_hint("events")
+    assert extras.uv_managed() is False
+    monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: None)
+    assert extras.uv_managed() is True
 
 
 def _patch_paths_command(monkeypatch, exc: BaseException) -> None:
@@ -178,23 +175,14 @@ def test_install_hint_regular_install(monkeypatch, tmp_path, direct_url):
         ("/opt/my python/bin/python", "posix", ('"/opt/my python/bin/python"', "")),
     ],
 )
-def test_python_prefix(monkeypatch, exe, os_name, expected):
+def test_python_prefix(monkeypatch, tmp_path, exe, os_name, expected):
     monkeypatch.setattr(extras.sys, "executable", exe)
     monkeypatch.setattr(extras, "os", SimpleNamespace(name=os_name))
     assert extras._python() == expected
-
-
-def test_pip_hints_use_python_prefix(monkeypatch, tmp_path):
-    exe = "C:/Program Files/Python/python.exe"
-    note = "PowerShell: in cmd drop the leading &"
-    monkeypatch.setattr(extras.sys, "executable", exe)
-    monkeypatch.setattr(extras, "os", SimpleNamespace(name="nt"))
-    _set_install(monkeypatch, tmp_path, direct_url='{"dir_info": {"editable": true}}', uv=False)
-    hint = extras.install_hint("ski")
-    assert hint.startswith(f'& "{exe}" -m pip install -e') and hint.endswith(f"; {note})")
+    prefix, note = expected  # and the pip hint carries it, with the shell note
     _set_install(monkeypatch, tmp_path, direct_url=None, uv=False)
-    hint = extras.install_hint("ski")
-    assert hint == f'& "{exe}" -m pip install "cutpoint[ski]" ({note})'
+    want = f'{prefix} -m pip install "cutpoint[ski]"' + (f" ({note})" if note else "")
+    assert extras.install_hint("ski") == want
 
 
 # --- uv tool receipts: reinstall from the original source ---------------------------------
@@ -262,20 +250,20 @@ _ARCHIVE = {"url": "https://example.com/cutpoint.whl", "archive_info": {}}
 
 
 @pytest.mark.parametrize(
-    ("uv", "direct_url", "cpu_torch", "present", "absent"),
+    ("uv", "direct_url", "present", "absent"),
     [
         # uv pip applies cutpoint's [tool.uv.sources] (cu126) to a directory or git install (#71)
-        (True, _DIR, False, [], ["NVIDIA", "--index "]),
-        (True, _GIT, False, [], ["NVIDIA", "--index "]),
-        (True, _ARCHIVE, False, [_UV_INDEX], []),
-        (False, _DIR, False, [f"--extra-index-url {extras.TORCH_INDEX}"], []),
+        (True, _DIR, [], ["NVIDIA", "--index "]),
+        (True, _GIT, [], ["NVIDIA", "--index "]),
+        (True, _ARCHIVE, [_UV_INDEX], []),
+        (False, _DIR, [f"--extra-index-url {extras.TORCH_INDEX}"], []),
     ],
 )
 def test_install_hint_non_editable_events_on_windows_cuda_note(
-    monkeypatch, tmp_path, uv, direct_url, cpu_torch, present, absent
+    monkeypatch, tmp_path, uv, direct_url, present, absent
 ):
     monkeypatch.setattr(extras.sys, "platform", "win32")
-    monkeypatch.setattr(extras, "_cpu_torch", lambda: cpu_torch)
+    monkeypatch.setattr(extras, "_cpu_torch", lambda: False)  # the CPU-torch notes: see below
     _set_install(monkeypatch, tmp_path, direct_url=json.dumps(direct_url), uv=uv)
     hint = extras.install_hint("events")
     assert all(p in hint for p in present)
@@ -378,6 +366,8 @@ def test_install_hint_editable_cpu_torch_adds_reinstall_note(monkeypatch, tmp_pa
     hint = extras.install_hint("events")
     assert hint.count(note) == 1 and hint.endswith("so torch uses CUDA)")
     assert hint.startswith("uv sync --extra events") == in_clone_venv
+    if in_clone_venv:
+        assert "or use --extra all for everything, a large download with torch and CUDA" in hint
 
 
 @pytest.mark.parametrize(

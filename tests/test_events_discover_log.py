@@ -37,14 +37,12 @@ def test_missing_preset_logs_game_and_presets_dir(
     assert "session.mp4" in msgs[0]
 
 
-@pytest.mark.parametrize("force", [True, False])
 def test_existing_preset_does_not_log_missing_notice(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    force: bool,
 ) -> None:
     write_preset(paths.presets_dir(), boxfeed(builtin=False))
     caplog.set_level(logging.INFO)
-    _run(home, monkeypatch, "boxfeed", force)
+    _run(home, monkeypatch, "boxfeed", None)
     assert NOTICE not in caplog.text

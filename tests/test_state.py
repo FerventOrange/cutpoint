@@ -260,26 +260,15 @@ def _non_json() -> object:
     ids=["non-json", "not-an-object"],
 )
 def test_vision_unavailable_when_ollama_reply_is_not_a_json_object(monkeypatch, body):
-    from types import SimpleNamespace  # noqa: PLC0415
-
-    from cutpoint import vision  # noqa: PLC0415
-
     resp = SimpleNamespace(raise_for_status=lambda: None, json=body)
     monkeypatch.setattr(vision.requests, "get", lambda *_a, **_k: resp)
     assert vision.VisionRater(url="http://x:1", model="m").available() is False
 
 
-def test_offline_footage_has_no_voice_data(home, tmp_path, caplog):
-    from cutpoint.events import voice  # noqa: PLC0415
-
+@pytest.mark.parametrize("module", ["voice", "visual"])
+def test_offline_footage_has_no_voice_or_visual_data(home, tmp_path, caplog, module):
+    layer = importlib.import_module(f"cutpoint.events.{module}")
+    load = getattr(layer, f"load_{module}")
     with caplog.at_level("WARNING"):
-        assert voice.load_voice(tmp_path / "gone.mp4") is None
+        assert load(tmp_path / "gone.mp4") is None
     assert caplog.text.count("not reachable") == 1
-
-
-def test_load_visual_offline_footage_is_none_with_warning(home, tmp_path, caplog):
-    from cutpoint.events import visual  # noqa: PLC0415
-
-    with caplog.at_level("WARNING"):
-        assert visual.load_visual(tmp_path / "gone.mp4") is None
-    assert "not reachable" in caplog.text

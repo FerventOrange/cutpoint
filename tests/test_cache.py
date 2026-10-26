@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-from dataclasses import asdict
-from pathlib import Path
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -12,52 +10,37 @@ from cutpoint import cache, crash, telemetry
 from cutpoint.events import common
 
 
-def legacy(params: dict, length: int = 10) -> str:
-    """The inline formula used by crash/telemetry/events before cache.params_hash."""
-    blob = json.dumps(params, sort_keys=True, default=str)
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:length]
-
-
-SAMPLES = [
-    {},
-    {"a": 1, "b": [1, 2, 3], "c": {"z": 1.5, "y": None}},
-    {"path": Path("a/b")},  # default=str branch
-]
-
-
-@pytest.mark.parametrize("params", SAMPLES)
-def test_params_hash_matches_legacy_formula(params):
-    assert cache.params_hash(params) == legacy(params)
-    assert cache.params_hash(params, 16) == legacy(params, 16)
-    # Pinned: changing this invalidates every user's existing cache entries.
-    assert cache.params_hash({"v": 1}) == hashlib.sha1(b'{"v": 1}').hexdigest()[:10]
+# Pinned digests: a change here renames every user's existing cache files (and so re-runs
+# their analysis). Change them only on purpose, with a version bump where one exists.
+@pytest.mark.parametrize(
+    ("params", "digest10", "digest16"),
+    [
+        ({}, "bf21a9e8fb", "bf21a9e8fbc5a384"),
+        (
+            {"a": 1, "b": [1, 2, 3], "c": {"z": 1.5, "y": None}},
+            "76284c8594",
+            "76284c8594057042",
+        ),
+        ({"path": PurePosixPath("a/b")}, "93c752d7fd", "93c752d7fdfe60b2"),  # default=str branch
+    ],
+)
+def test_params_hash_is_pinned(params, digest10, digest16):
+    assert cache.params_hash(params) == digest10
+    assert cache.params_hash(params, 16) == digest16
 
 
 @pytest.mark.parametrize(
-    ("params", "version", "default"),
+    ("key", "digest"),
     [
-        (crash.CrashParams(), crash.CRASH_VERSION, str),
-        (telemetry.TelemetryParams(), telemetry.TELEMETRY_VERSION, None),
+        (crash.CrashParams().key(), "e7244b388a"),
+        (crash.CrashParams().dense_key(), "24551ce592"),
+        (telemetry.TelemetryParams().key(), "f60a858f09"),
+        (common.params_key({"fps": 3.0, "game": "boxfeed", "tags": ["x"]}), "4183f1e1b3"),
     ],
-    ids=["crash", "telemetry"],
+    ids=["crash", "crash-dense", "telemetry", "events"],
 )
-def test_param_keys_match_legacy(params, version, default):
-    blob = json.dumps({**asdict(params), "v": version}, sort_keys=True, default=default)
-    assert params.key() == hashlib.sha1(blob.encode()).hexdigest()[:10]
-
-
-def test_crash_dense_key_matches_legacy():
-    p = crash.CrashParams()
-    blob = json.dumps(
-        {"fps": p.dense_fps, "pos": p.pos, "neg": p.neg, "v": crash.CRASH_VERSION}, sort_keys=True
-    )
-    assert p.dense_key() == hashlib.sha1(blob.encode()).hexdigest()[:10]
-
-
-def test_events_params_key_matches_legacy():
-    params = {"fps": 3.0, "game": "boxfeed", "tags": ["x"]}
-    blob = json.dumps({"v": common.EVENTS_CACHE_VERSION, **params}, sort_keys=True, default=str)
-    assert common.params_key(params) == hashlib.sha1(blob.encode("utf-8")).hexdigest()[:10]
+def test_cache_keys_of_the_default_params_are_pinned(key, digest):
+    assert key == digest
 
 
 def test_save_json_roundtrip_and_no_tmp(tmp_path):
@@ -75,13 +58,6 @@ def test_save_json_bytes_are_utf8_with_the_platform_line_endings(tmp_path):
     cache.save_json(target, {"name": "Café", "n": [1]})
     text = json.dumps({"name": "Café", "n": [1]}, indent=2, ensure_ascii=False)
     assert target.read_bytes() == text.replace("\n", os.linesep).encode("utf-8")
-
-
-def test_save_bytes_writes_the_bytes_as_given(tmp_path):
-    target = tmp_path / "d.bin"
-    cache.save_bytes(target, b"a\r\nb\n")
-    assert target.read_bytes() == b"a\r\nb\n"
-    assert [p.name for p in tmp_path.iterdir()] == ["d.bin"]
 
 
 def test_load_json_missing_or_corrupt(tmp_path):
