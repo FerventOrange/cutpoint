@@ -9,11 +9,12 @@ from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, ffmpeg_utils, sources
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
+from cutpoint import assemble, encode, ffmpeg_utils, sources
+from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, VideoEncoder
 
 
 def _info(duration: float, vduration: float) -> MediaInfo:
@@ -266,3 +267,95 @@ def test_limiter_filter_runs_on_this_ffmpeg():
             "-",
         ]
     )
+
+
+# --------------------------------------------------------------------------- short audio (#250)
+FADE_NORMAL = (
+    ",asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.250:curve=qsin,"
+    "afade=t=out:st=1.250:d=0.250:curve=qsin"
+)
+
+
+@pytest.mark.parametrize("audio", [None, 1.5, 2.0, 1.49], ids=["unknown", "exact", "long", "tol"])
+def test_audio_fade_filter_is_unchanged_when_the_audio_covers_the_clip(audio):
+    assert encode.audio_fade_filter(1.5, 0.25, audio) == FADE_NORMAL
+    assert encode.audio_fade_filter(1.5, 0.25) == FADE_NORMAL
+
+
+def test_audio_fade_filter_fades_out_at_the_end_of_shorter_audio():
+    """A 1.0 s sound in a 1.5 s clip faded out from 1.25 s, after the sound had ended."""
+    assert encode.audio_fade_filter(1.5, 0.25, 1.0) == (
+        ",asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.250:curve=qsin,"
+        "afade=t=out:st=0.750:d=0.250:curve=qsin"
+    )
+    # still at most a quarter, now of the audio; no audio left: no fade
+    assert "afade=t=out:st=0.300:d=0.100" in encode.audio_fade_filter(1.5, 0.25, 0.4)
+    assert encode.audio_fade_filter(1.5, 0.25, 0.0) == ""
+
+
+def _export_graph(monkeypatch, info: MediaInfo, start: float, end: float) -> str:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(encode, "run", lambda args, **_: calls.append(args) or "")
+    fmt = encode.OutputFormat(64, 48, 25)
+    encode._encode(VideoEncoder("cpu"), info.path, info, start, end, Path("o.mp4"), fmt,
+                   False, None, 0.25)  # fmt: skip
+    return calls[0][calls[0].index("-filter_complex") + 1]
+
+
+@pytest.mark.parametrize(
+    ("audio_end", "fade_out"),
+    [(None, "st=1.250"), (20.0, "st=1.250"), (11.0, "st=0.750")],
+    ids=["unknown", "covers", "ends-early"],
+)
+def test_clip_export_fades_out_where_the_source_audio_ends(monkeypatch, audio_end, fade_out):
+    info = media_info(Path("v.mp4"), 12.0, audio_duration=audio_end)
+    assert f"afade=t=out:{fade_out}:d=0.250" in _export_graph(monkeypatch, info, 10.0, 11.5)
+
+
+def test_assemble_fades_out_where_the_clip_audio_ends():
+    chain = assemble._audio_chain(0, _info(1.5, 1.5), 0.25)
+    assert chain.endswith(f"{FADE_NORMAL}[a0]")
+    short = replace(_info(1.5, 1.5), audio_duration=1.0)
+    assert "afade=t=out:st=0.750:d=0.250" in assemble._audio_chain(0, short, 0.25)
+
+
+def _tail_peak_db(path: Path, seconds: float = 0.05) -> float:
+    pcm = ffmpeg_utils.decode_pcm(path, sr=48000).astype(np.float64) / 32768
+    return 20 * np.log10(np.abs(pcm[-int(48000 * seconds) :]).max() + 1e-9)
+
+
+@needs_ffmpeg
+def test_clip_export_fades_out_audio_that_ends_before_the_clip(tmp_path):
+    """#250: a 1.0 s sine (-18.1 dB peak) in a clip of 1.5 s with a 0.25 s fade: its last
+    50 ms were not faded, as the fade-out started at 1.25 s, after the audio."""
+    src = tmp_path / "src.mp4"
+    _clip(src, 1.5, 1.0)
+    info = ffmpeg_utils.probe(src)
+    assert info.audio_duration == pytest.approx(1.0, abs=0.03)
+    out = tmp_path / "001.mp4"
+    fmt = encode.OutputFormat(64, 48, 25)
+    encode.export_clip(src, info, 0.0, 1.5, out, fmt, False, audio_fade=0.25)
+    assert _tail_peak_db(out) < -25.0
+
+
+@needs_ffmpeg
+def test_clip_export_keeps_late_starting_audio_audible_to_its_end(tmp_path):
+    """F1: audio delayed 0.3 s (``-itsoffset``) ends 0.3 s after its stream duration; the last
+    second's audio went silent at 0.72 s when the delay was ignored."""
+    src = tmp_path / "late.mp4"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+         "testsrc=size=64x48:rate=25:duration=5", "-itsoffset", "0.3", "-f", "lavfi", "-i",
+         "sine=frequency=440:sample_rate=48000:duration=5", "-t", "5", "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", str(src)],
+        check=True,
+    )  # fmt: skip
+    info = ffmpeg_utils.probe(src)
+    assert info.audio_duration == pytest.approx(5.0, abs=0.05)
+    out = tmp_path / "001.mp4"
+    encode.export_clip(src, info, 4.0, 5.0, out, encode.OutputFormat(64, 48, 25), False,
+                       audio_fade=0.25)  # fmt: skip
+    pcm = ffmpeg_utils.decode_pcm(out, sr=48000).astype(np.float64) / 32768
+    window = pcm[int(48000 * 0.74) : int(48000 * 0.8)]
+    assert 20 * np.log10(np.abs(window).max() + 1e-9) > -25.0  # still audible before the fade
+    assert _tail_peak_db(out) < -25.0  # and faded out at the end

@@ -281,6 +281,9 @@ class MediaInfo:
     acodec: str | None
     sample_rate: int | None
     channels: int | None
+    # End of the longest audio stream (s, from the container start); None without audio or
+    # when a stream has no duration (MKV).
+    audio_duration: float | None = None
 
     def concat_key(self) -> tuple:
         """Parameters that must match for lossless concat-demuxer joining."""
@@ -333,6 +336,14 @@ def probe(path: Path) -> MediaInfo:
         rate = video.get("r_frame_rate") or "30/1"
     duration = float(data.get("format", {}).get("duration") or video.get("duration") or 0)
     a0 = audios[0] if audios else {}
+    # ``-ss`` seeks from the container start, so a stream starting late ends that much later
+    f_start = float(data.get("format", {}).get("start_time") or 0)
+    a_ends = [
+        float(s.get("start_time") or f_start) - f_start + float(s["duration"])
+        for s in audios
+        if s.get("duration")
+    ]
+    audio_duration = max(a_ends) if audios and len(a_ends) == len(audios) else None
     return MediaInfo(
         path=Path(path),
         duration=duration,
@@ -346,6 +357,7 @@ def probe(path: Path) -> MediaInfo:
         acodec=a0.get("codec_name"),
         sample_rate=int(a0["sample_rate"]) if a0.get("sample_rate") else None,
         channels=a0.get("channels"),
+        audio_duration=audio_duration,
     )
 
 

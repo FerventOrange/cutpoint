@@ -31,14 +31,23 @@ SAFE_END_MARGIN_S = 0.3  # trimmed re-encode stops this far before the failure
 A_FMT = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 AUDIO_OUT = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 SILENCE = "anullsrc=r=48000:cl=stereo"
+# Audio this much shorter than its clip still covers it: below one AAC frame (21 ms at 48 kHz),
+# the ms rounding of ``-t`` and stream ends, which leave the fade as it was. A shortfall of one
+# whole AAC frame (21-23 ms) can cross it; harmless, as the fade then ends at the real audio end.
+AUDIO_SHORT_S = 0.02
 
 
-def audio_fade_filter(dur: float, fade: float) -> str:
+def audio_fade_filter(dur: float, fade: float, audio: float | None = None) -> str:
     """``afade`` in/out for a clip of ``dur`` seconds ("" when ``fade`` is 0).
 
-    The fade is at most a quarter of the clip. Timestamps are reset first so
-    ``st`` is relative to the clip start whatever the input seek produced.
+    ``audio`` is the audio the clip holds (s), None when unknown. Audio more than
+    :data:`AUDIO_SHORT_S` shorter than the clip fades out at its own end (#250), not
+    after it. The fade is at most a quarter of the clip (or of the shorter audio).
+    Timestamps are reset first so ``st`` is relative to the clip start whatever the
+    input seek produced.
     """
+    if audio is not None and audio < dur - AUDIO_SHORT_S:
+        dur = audio
     f = min(fade, dur / 4)
     if f <= 0.005:
         return ""
@@ -164,7 +173,8 @@ def _encode(
         str(src),
     ]
     vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop))}[v]"
-    a_fmt = A_FMT + audio_fade_filter(dur, audio_fade)
+    audio = None if info.audio_duration is None else min(end, info.audio_duration) - start
+    a_fmt = A_FMT + audio_fade_filter(dur, audio_fade, audio)
     if info.audio_streams == 0:
         args += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", SILENCE]
         af = f"[1:a]{a_fmt}[a]"

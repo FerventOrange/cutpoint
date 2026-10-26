@@ -287,7 +287,9 @@ def render_segment(
         stack = "[0:v]"
         v360_in = "input=equirect"
     audio_idx = len(src.inputs)
-    a_fmt = A_FMT + audio_fade_filter(dur, audio_fade)
+    audio_end = probe(remap_source(clip.source)).audio_duration
+    audio = None if audio_end is None else min(end, audio_end) - start
+    a_fmt = A_FMT + audio_fade_filter(dur, audio_fade, audio)
     v360 = (
         f"v360@cam={v360_in}:output=flat:rorder=ryp:yaw={init['yaw']:.3f}:"
         f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
