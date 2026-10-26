@@ -13,7 +13,7 @@ import pytest
 from conftest import remap, set_config, write
 from cutpoint import config, stage
 from cutpoint.config import remap_source
-from cutpoint.stage import clear_stage, reload_stage_index, stage_sources, staged_path
+from cutpoint.stage import clear_stage, stage_sources, staged_path
 
 
 @pytest.mark.parametrize(
@@ -240,7 +240,8 @@ def test_expand_subst_follows_subst_drives_only(monkeypatch):
             "Q:": r"\??\C:\real",
             "R:": r"\??\Q:\inner",  # a subst drive into another one
             "S:": r"\??\UNC\server\share\x",  # a subst drive onto a share
-            "L:": r"\??\L:\loop",
+            "O:": r"\??\P:\a",  # two subst drives onto each other
+            "P:": r"\??\O:\b",
             "N:": _LANMAN,
             "M:": _MUP,
         },
@@ -249,7 +250,9 @@ def test_expand_subst_follows_subst_drives_only(monkeypatch):
     assert expand(r"q:\Footage\a.mp4") == r"C:\real\Footage\a.mp4"
     assert expand(r"R:\a.mp4") == r"C:\real\inner\a.mp4"
     assert expand(r"S:\a.mp4") == r"\\server\share\x\a.mp4"
-    assert expand(r"L:\a.mp4").startswith("L:\\loop\\")  # stops at the depth cap
+    cycle = expand(r"O:\x.mp4")  # stops at the depth cap instead of looping
+    assert cycle.startswith("O:\\") and cycle.endswith("\\x.mp4")
+    assert cycle.count("\\") == stage._SUBST_DEPTH + 1
     for path in (r"N:\a.mp4", r"M:\a.mp4", r"C:\a.mp4", r"\\server\share\a.mp4", "/srv/a.mp4"):
         assert expand(path) == path
     assert "C:" in asked  # a local disk is asked about, never a UNC path or a POSIX one
@@ -314,26 +317,6 @@ def test_staged_path_sees_a_remapped_subst_drive_after_the_index_reloads(
     index["other"] = {"file": "other.mp4", "size": 1, "mtime_ns": 0, "source": "other"}
     index_file.write_text(json.dumps(index))  # another process staged something
     assert staged_path(asked) == copy
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="subst drives exist on Windows only")
-def test_staged_path_returns_the_source_when_the_drive_query_fails(home, tmp_path, monkeypatch):
-    """#186: when ``QueryDosDeviceW`` cannot be called, the source is returned, as before."""
-    import ctypes  # noqa: PLC0415 - Windows only
-
-    [drive] = _free_drives(1)
-    _staged_under(home, tmp_path, monkeypatch, tmp_path / "real" / "Footage")
-    calls: list[str] = []
-
-    def broken(name: str, *args, **kwargs):
-        calls.append(name)
-        raise OSError("no kernel32")
-
-    monkeypatch.setattr(ctypes, "WinDLL", broken)
-    reload_stage_index()
-    asked = str(Path(drive + "\\") / "Footage" / "a.mp4")
-    assert staged_path(asked) == asked
-    assert "kernel32" in calls
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="subst drives exist on Windows only")

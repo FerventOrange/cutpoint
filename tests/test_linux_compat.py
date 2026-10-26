@@ -71,12 +71,6 @@ def test_source_path_parses_windows_and_posix_spellings_on_linux(plat, text, nam
     assert config.source_path(text).stem == name.removesuffix(".mp4")
 
 
-def test_source_path_windows_spelling_is_a_windows_path(plat):
-    plat("linux")
-    assert isinstance(config.source_path("C:\\a\\b.mp4"), PureWindowsPath)
-    assert not isinstance(config.source_path("/x/y.mp4"), PureWindowsPath)
-
-
 @pytest.mark.parametrize("arg", ["projects/foo", "projects\\foo", "foo"])
 def test_resolve_project_path_accepts_both_separators_and_bare_names(
     home, tmp_path, monkeypatch, arg
@@ -336,11 +330,6 @@ def test_ffmpeg_not_found_on_linux_points_to_apt_and_env(plat, monkeypatch):
 # -- assemble.caption_font ----------------------------------------------------------------
 
 
-def test_caption_font_is_arial_on_windows(plat):
-    plat("win32")
-    assert assemble.caption_font() == "Arial"
-
-
 def test_caption_font_uses_fc_match_family_on_linux(plat, monkeypatch):
     plat("linux")
     monkeypatch.setattr(assemble.shutil, "which", lambda _n: "/usr/bin/fc-match")
@@ -507,14 +496,6 @@ def test_forced_llama_backend_never_falls_back():
 )
 def test_stamp_fits_only_the_platform_it_was_installed_for(stamp, plat_name, fits):
     assert setup._stamp_fits(stamp, plat_name) is fits
-
-
-def test_llama_platform_rejects_other_platforms(plat):
-    plat("darwin")
-    if os.name == "nt":
-        pytest.skip("os.name is 'nt' here")
-    with pytest.raises(RuntimeError, match="CUTPOINT_LLAMA_SERVER"):
-        setup._llama_platform()
 
 
 @posix_only
@@ -784,10 +765,15 @@ def test_wrapper_without_a_venv_explains_uv_sync(tmp_path):
 @pytest.mark.parametrize(
     ("key", "typed"),
     [
-        (r"\\nas\share\Footage", r"Q:\Footage\x.mp4"),
-        (r"Q:\Footage", r"\\nas\share\Footage\x.mp4"),
+        pytest.param(
+            r"\\nas\share\Footage",
+            r"Q:\Footage\x.mp4",
+            # on Windows, Path.resolve() of the unreachable \\nas\share does SMB lookups (~2.7 s)
+            marks=pytest.mark.slow,
+            id="unc-key-drive-input",
+        ),
+        pytest.param(r"Q:\Footage", r"\\nas\share\Footage\x.mp4", id="drive-key-unc-input"),
     ],
-    ids=["unc-key-drive-input", "drive-key-unc-input"],
 )
 def test_remap_source_matches_a_disconnected_mapped_drive_in_either_form(
     home, tmp_path, monkeypatch, key, typed

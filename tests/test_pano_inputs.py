@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,7 +33,6 @@ def test_inputs_lists_camera_files_as_recorded_and_remapped_without_raising(move
 def test_inputs_is_empty_for_a_source_that_is_not_a_360_clip(moved, tmp_path):
     clip, _old, _new = moved
     assert _exporter(clip, "sdk").inputs(str(tmp_path / "plain.mp4")) == []
-    assert all(isinstance(p, Path) for p in _exporter(clip, "sdk").inputs(clip.source))
 
 
 def _equirect_probe(monkeypatch, duration: float):

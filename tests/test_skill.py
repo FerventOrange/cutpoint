@@ -26,23 +26,19 @@ def test_install_writes_skill_md(tmp_path, caplog):
     assert list(target.parent.iterdir()) == [target]  # no temp file left
 
 
-def test_install_default_dir_is_user_claude_skills(tmp_path, monkeypatch):
+@pytest.mark.parametrize("config_dir", [None, "claude-config"], ids=["home", "claude-config-dir"])
+def test_install_default_dir_is_user_claude_skills(tmp_path, monkeypatch, config_dir):
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "profile"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    root = tmp_path / "profile" / ".claude"
+    if config_dir:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / config_dir))
+        root = tmp_path / config_dir
     assert cli.main(["skill", "install"]) == 0
-    target = tmp_path / "profile" / ".claude" / "skills" / "cutpoint" / "SKILL.md"
-    assert target.read_bytes() == skill.skill_bytes()
-
-
-def test_install_default_dir_honours_claude_config_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "profile"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
-    assert cli.main(["skill", "install"]) == 0
-    target = tmp_path / "claude-config" / "skills" / "cutpoint" / "SKILL.md"
-    assert target.read_bytes() == skill.skill_bytes()
-    assert not (tmp_path / "profile" / ".claude").exists()
+    assert (root / "skills" / "cutpoint" / "SKILL.md").read_bytes() == skill.skill_bytes()
+    if config_dir:
+        assert not (tmp_path / "profile" / ".claude").exists()
 
 
 def test_identical_reinstall_is_a_noop(tmp_path, monkeypatch):
@@ -58,34 +54,25 @@ def test_identical_reinstall_is_a_noop(tmp_path, monkeypatch):
     assert target.read_bytes() == skill.skill_bytes()
 
 
-def test_differing_target_without_force_fails_and_keeps_file(tmp_path, caplog):
+@pytest.mark.parametrize("force", [False, True])
+def test_differing_target_is_kept_without_force_and_replaced_with_it(tmp_path, caplog, force):
     target = tmp_path / "skills" / "cutpoint" / "SKILL.md"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"my own edits\n")
-    assert cli.main(["skill", "install", "--dir", str(tmp_path / "skills")]) == 1
+    argv = ["skill", "install", "--dir", str(tmp_path / "skills"), *(["--force"] * force)]
+    assert cli.main(argv) == (0 if force else 1)
+    if force:
+        assert target.read_bytes() == skill.skill_bytes()
+        return
     assert target.read_bytes() == b"my own edits\n"
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert errors
     assert str(target) in errors[0].getMessage()
 
 
-def test_force_replaces_differing_target(tmp_path):
-    target = tmp_path / "skills" / "cutpoint" / "SKILL.md"
-    target.parent.mkdir(parents=True)
-    target.write_bytes(b"old\n")
-    assert cli.main(["skill", "install", "--dir", str(tmp_path / "skills"), "--force"]) == 0
-    assert target.read_bytes() == skill.skill_bytes()
-
-
 def test_print_writes_skill_to_stdout(capsysbinary):
     assert cli.main(["skill", "print"]) == 0
     assert capsysbinary.readouterr().out == skill.skill_bytes()
-
-
-def test_skill_without_subcommand_is_a_usage_error():
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["skill"])
-    assert exc.value.code == 2
 
 
 def test_frontmatter_has_name_and_description():

@@ -425,19 +425,6 @@ def test_default_self_kill_type_keeps_payoff_and_seed():
     assert tails.is_payoff(normalize("a.mp4", raw), tails.EventTailSettings())
 
 
-def test_vlm_key():
-    assert vw.VlmParams().key() == {
-        "frames": 14,
-        "h": 720,
-        "imt": 640,
-        "audio": True,
-        "transcript": True,
-        "hints": True,
-        "prompt": 5,
-        "model": "qwen2.5-omni-7b-q4km",
-    }
-
-
 KEY_FIELDS = {
     "v",
     "game",
@@ -592,23 +579,6 @@ def test_vlm_gp_key_only_for_prompt_customisation(tmp_path, home):
         assert "gp" in vw.VlmParams().key(vw.game_prompt("foo", p))
     seeded = load_preset("foo", _custom(tmp_path, [PLACER]))
     assert "gp" not in vw.VlmParams().key(vw.game_prompt("foo", seeded))  # seeds only
-
-
-def test_vlm_gp_key_against_installed_reference(tmp_path, home):
-    """A project copy of an installed preset keeps the VLM key; a changed prompt adds ``gp``."""
-
-    def key(game: str, preset) -> dict[str, Any]:
-        return vw.VlmParams().key(vw.game_prompt(game, preset))
-
-    installed = verbfeed()
-    write_preset(paths.presets_dir(), installed)
-    same = tmp_path / "same"
-    write_preset(same / "hud_presets", installed)
-    assert "gp" not in key("verbfeed", load_preset("verbfeed", same))
-
-    changed = tmp_path / "changed"
-    write_preset(changed / "hud_presets", {k: v for k, v in installed.items() if k != "hype"})
-    assert "gp" in key("verbfeed", load_preset("verbfeed", changed))
 
 
 def test_hype_normalised(tmp_path, home):

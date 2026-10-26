@@ -46,8 +46,12 @@ def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok)
     with pytest.raises(FileNotFoundError) as exc:
         pipeline.preflight(layers)
     msg = str(exc.value)
-    for _, p in paths.missing_files(layers):
-        assert str(p) in msg
+    for name in (
+        "Cnn14_", "class_labels_indices.csv", "silero_vad.onnx", "llama-server",
+        "Qwen2.5-Omni-7B-Q4_K_M.gguf", "mmproj-", "vit_large_patch14", "fasterrcnn_",
+        "sac+logos",
+    ):  # fmt: skip
+        assert name in msg
     # setup order is pip, panns, llama, omni, visual, voice
     assert msg.endswith("cutpoint setup --only panns llama omni visual voice")
 
@@ -80,13 +84,6 @@ def _no_modules(monkeypatch):
     monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: None)
 
 
-def test_missing_module_raises_for_model_layers(monkeypatch):
-    _no_modules(monkeypatch)
-    with pytest.raises(ModuleNotFoundError) as exc:
-        pipeline._require_events_extra(("audio", "vlm"))
-    assert exc.value.name == pipeline.EVENTS_MODULES[0]
-
-
 def test_vlm_only_skips_check(monkeypatch):
     _no_modules(monkeypatch)
     pipeline._require_events_extra(("vlm",))
@@ -95,8 +92,9 @@ def test_vlm_only_skips_check(monkeypatch):
 def test_run_events_fails_before_unloading_ollama(monkeypatch, tmp_path, no_unload):
     _no_modules(monkeypatch)
     monkeypatch.setattr(pipeline, "load_highlights", lambda project: {"sources": []})
-    with pytest.raises(ModuleNotFoundError):
+    with pytest.raises(ModuleNotFoundError) as exc:
         pipeline.run_events(tmp_path)
+    assert exc.value.name == pipeline.EVENTS_MODULES[0]
     assert no_unload == []
 
 

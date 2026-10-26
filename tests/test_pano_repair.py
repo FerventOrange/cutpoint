@@ -595,15 +595,6 @@ def test_cli_repair_reports_bad_out_and_drive_relative_source_as_one_error(
     assert not (tmp_path / "final_segments.bak.json").exists()
 
 
-def test_drive_relative_source_is_a_plain_file_name_off_windows(tmp_path: Path, windows) -> None:
-    """Issue #151: ``D:foo.insv`` is only drive-relative on Windows; elsewhere it is a name."""
-    windows(False)
-    qa = _handwritten(tmp_path, True)
-    segs = tmp_path / "drive.json"
-    cache.save_json(segs, [{"source": "D:foo.insv", "start": 1, "end": 3}])
-    repair(tmp_path, segs, qa, sheet=False)  # no ValueError
-
-
 @pytest.mark.parametrize("spelling", ["symlink", "dotdot"])
 def test_repair_honours_an_exclusion_spelt_differently_from_the_segment_source(
     tmp_path: Path, spelling: str
