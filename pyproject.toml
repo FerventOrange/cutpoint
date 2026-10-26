@@ -100,6 +100,13 @@ explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Only `hardware` is deselected by default; CI runs everything else (slow and ffmpeg included).
+addopts = "-m \"not hardware\" --strict-markers"
+markers = [
+    "slow: real subprocess or interpreter spawns, process trees, or over about 2 s",
+    "ffmpeg: runs the real ffmpeg or ffprobe",
+    "hardware: needs real GPU hardware (for example a VAAPI device), which CI does not have",
+]
 
 [tool.ruff]
 target-version = "py312"

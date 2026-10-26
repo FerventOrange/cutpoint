@@ -14,9 +14,14 @@ import pytest
 from cutpoint import assemble, ffmpeg_utils, sources
 from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
 
-needs_ffmpeg = pytest.mark.skipif(
+_skip_without_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
 )
+
+
+def needs_ffmpeg(test):
+    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
+    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
 
 
 def _info(duration: float, vduration: float) -> MediaInfo:

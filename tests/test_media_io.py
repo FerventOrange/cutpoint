@@ -523,9 +523,14 @@ def test_x3_failed_probe_is_not_cached(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- real ffmpeg
-needs_ffmpeg = pytest.mark.skipif(
+_skip_without_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
 )
+
+
+def needs_ffmpeg(test):
+    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
+    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
 
 
 @pytest.fixture

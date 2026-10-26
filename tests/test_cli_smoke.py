@@ -161,6 +161,7 @@ def test_version_flag_prints_version_without_subcommand(capsys):
     assert capsys.readouterr().out.strip() == f"cutpoint {cutpoint.__version__}"
 
 
+@pytest.mark.ffmpeg
 @pytest.mark.parametrize("preexisting", [None, "empty"])
 def test_analyze_failure_removes_only_folder_it_created(home, tmp_path, preexisting):
     video = tmp_path / "bad.mp4"

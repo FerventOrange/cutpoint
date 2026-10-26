@@ -282,6 +282,7 @@ def safe_ctx(n: int, subj_yaw: float, fov: float) -> dict:
     }
 
 
+@pytest.mark.slow
 def test_safe_area_pass_widens_then_cuts() -> None:
     p = D.DirectorParams()
     n = 30
@@ -359,6 +360,7 @@ def test_wearer_coming_in_from_the_bottom_is_no_intruder() -> None:
     assert D._framing_checks(ctx, (0, n), p).bad(0)
 
 
+@pytest.mark.slow
 def test_cut_away_only_where_it_helps_and_lasts_within_the_segment() -> None:
     p = D.DirectorParams()
     n = 30

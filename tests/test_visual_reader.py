@@ -240,6 +240,7 @@ except ValueError as err:
 """
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "spec",
     [

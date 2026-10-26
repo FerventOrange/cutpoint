@@ -327,6 +327,7 @@ def gated(monkeypatch: pytest.MonkeyPatch, fake):
 
 
 class TestRunSdk:
+    @pytest.mark.slow
     def test_interrupt_raises_with_captured_output(self, fake, tmp_path, gated, monkeypatch):
         monkeypatch.setattr(stitch, "SOFT_STOP_S", 0.2)  # the hung child is killed after this
         gated.interrupt = True
@@ -427,12 +428,14 @@ def help_as(monkeypatch: pytest.MonkeyPatch, fake, tmp_path: Path):
 
 
 class TestProbeSdk:
+    @pytest.mark.slow
     def test_version_line(self, help_as):
         help_as("version")
         got = stitch.probe_sdk(Path("sdk.exe"))
         assert got["runs"] is True and got["version"] == "9.8.7" and got["error"] is None
         assert isinstance(got["seconds"], float) and got["seconds"] >= 0
 
+    @pytest.mark.slow
     def test_hang_times_out(self, help_as):
         help_as("hang")
         got = stitch.probe_sdk(Path("sdk.exe"), timeout_s=0.5)
@@ -474,6 +477,7 @@ def _log(out_dir: Path) -> str:
 
 
 class TestStitchOne:
+    @pytest.mark.slow
     def test_success(self, fake, clip, paths_):
         out_dir, out, part = paths_
         cmd = fake("ok", part, "-enable_flowstate", "-enable_stitchfusion")
@@ -490,6 +494,7 @@ class TestStitchOne:
         assert "日本" in text  # UTF-8 preserved in the log
         assert rec["sdk"]["progress"] == 100 and rec["sdk"]["errors"] == []
 
+    @pytest.mark.slow
     def test_success_writes_sidecar(self, fake, clip, paths_):
         out_dir, out, part = paths_
         cmd = fake("ok", part, "-stitch_type", "optflow", "-enable_stitchfusion")
@@ -504,6 +509,7 @@ class TestStitchOne:
         }
         assert project.equirect_flowstate(out) is False
 
+    @pytest.mark.slow
     def test_verification_notes_become_the_status(self, fake, clip, paths_, monkeypatch):
         out_dir, out, part = paths_
         monkeypatch.setattr(stitch, "_verify", lambda c, p: "not 2:1 (10x10)")
@@ -511,12 +517,14 @@ class TestStitchOne:
         assert rec["status"] == "not 2:1 (10x10)"
         assert out.is_file()
 
+    @pytest.mark.slow
     def test_stale_partial_is_replaced(self, fake, clip, paths_):
         out_dir, out, part = paths_
         part.write_bytes(b"stale")
         rec = stitch._stitch_one(clip, fake("ok", part), part, out, out_dir, None)
         assert rec["status"] == "ok" and out.stat().st_size == 1_200_000
 
+    @pytest.mark.slow
     def test_exit_zero_with_error_line_fails_and_removes_partial(self, fake, clip, paths_):
         out_dir, out, part = paths_
         rec = stitch._stitch_one(clip, fake("error", part), part, out, out_dir, None)
@@ -528,6 +536,7 @@ class TestStitchOne:
         assert "result: FAILED:" in text and "synthetic failure é" in text
         assert not project.equirect_sidecar(out).exists()
 
+    @pytest.mark.slow
     def test_timeout_fails_with_captured_output_in_log(self, fake, clip, paths_, gated):
         out_dir, out, part = paths_
         rec = stitch._stitch_one(clip, fake("hang", part), part, out, out_dir, 0.01)
@@ -539,6 +548,7 @@ class TestStitchOne:
         assert "TIMED OUT" in text
         assert "SYNTHETIC-CAPTURED-LINE é" in text
 
+    @pytest.mark.slow
     def test_interrupt_removes_partial_logs_output_and_reraises(
         self, fake, clip, paths_, gated, monkeypatch
     ):
@@ -572,6 +582,7 @@ class TestStitchOne:
         assert rec["status"] == "failed" and rec["error"].startswith("could not start:")
         assert "could not start" in _log(out_dir)
 
+    @pytest.mark.slow
     def test_low_bitrate_lowers_the_size_floor(self, fake, clip, paths_):
         out_dir, out, part = paths_
         clip.duration = 100.0  # default floor: 12.5 MB > the fake's 1.2 MB
@@ -583,6 +594,7 @@ class TestStitchOne:
         )
         assert rec["status"] == "ok"
 
+    @pytest.mark.slow
     def test_locked_partial_is_left_with_a_warning(self, fake, clip, paths_, monkeypatch, caplog):
         out_dir, out, part = paths_
         real_unlink = Path.unlink
@@ -1027,6 +1039,7 @@ class TestSidecar:
 
 
 class TestSidecarOnRestitch:
+    @pytest.mark.slow
     def test_force_removes_old_sidecar_before_replacing(self, fake, clip, paths_, monkeypatch):
         """An interruption between the rename and the new sidecar leaves no stale record."""
         out_dir, out, part = paths_

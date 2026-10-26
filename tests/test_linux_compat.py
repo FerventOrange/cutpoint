@@ -755,6 +755,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WRAPPER = ROOT / "cutpoint"
 
 
+@pytest.mark.slow
 @posix_only
 def test_wrapper_runs_the_venv_python(tmp_path):
     if not (ROOT / ".venv" / "bin" / "python").exists():
@@ -766,6 +767,7 @@ def test_wrapper_runs_the_venv_python(tmp_path):
     assert "cutpoint" in done.stdout.lower()
 
 
+@pytest.mark.slow
 @posix_only
 def test_wrapper_without_a_venv_explains_uv_sync(tmp_path):
     copy = tmp_path / "cutpoint"

@@ -450,6 +450,7 @@ def test_planning_and_encode_do_not_import_commands():
     assert "cutpoint.clips" not in graph["cutpoint.extend"]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "module", ["cutpoint.extend", "cutpoint.clips", "cutpoint.planning", "cutpoint.encode"]
 )
