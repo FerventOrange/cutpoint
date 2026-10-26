@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
+  underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
+  Transcripts now store each word's `probability`, and `highlights.json` candidates list those
+  words in `transcript_unsure` (`[index, confidence]`). A source transcribed before this keeps
+  its cached transcript on a new `analyze`, so its moments show plain text until it is
+  re-transcribed (delete its `cache/<source>/transcript-*.json`, or analyze with another
+  `--model`) (#327).
 - The UI makes projects from Insta360 X3 footage (a folder, or one file for that clip). "Analyze
   footage" runs `cutpoint 360 analyze --scan` and shows the steps Read 360 clips, 360 views,
   Transcription and ranking, and Events and re-rank. Exported clips are reframed by the automatic

@@ -73,6 +73,8 @@ PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
 VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
 VISION_LABEL_MIN = 7.0  # --vision: from this rating, the model's label names the clip
+SNIPPET_CHARS = 240  # a candidate's transcript snippet
+UNSURE_P = 0.5  # transcript words Whisper heard with less confidence are listed as unsure
 SHORTFALL_S, SHORTFALL_FRAC, SHORTFALL_FLOOR_S = 2.0, 0.01, 0.5  # truncation thresholds
 RESUME_STEPS_S = (5, 10, 20, 40, 80, 160, 320)  # probe offsets past a read failure
 EXTRACT_SHARE = 0.1  # the audio extract's share of a source in the transcribe step's pct
@@ -97,6 +99,7 @@ class Candidate:
     keywords: list[str] = field(default_factory=list)
     label_hint: str = ""
     transcript: str = ""
+    transcript_unsure: list[tuple[int, float]] | None = None  # see _transcript_snippet
     vision: dict[str, Any] | None = None
     score: float = 0.0
     label: str = ""
@@ -901,12 +904,29 @@ def pick_candidates(
         ]  # a bare swear is a useless label
         if not c.label_hint:  # ski picks bring their own ("jump 0.6s", "crash 7g")
             c.label_hint = strong[0] if strong else ""
-        text = " ".join(w["word"] for w in words if c.start <= w["start"] <= c.end)
-        c.transcript = text[:240]
+        said = [w for w in words if c.start <= w["start"] <= c.end]
+        c.transcript, c.transcript_unsure = _transcript_snippet(said)
         if offset:  # back to absolute source time: clips cut the original file
             c.start, c.end = round(c.start + offset, 3), round(c.end + offset, 3)
             c.peak_t += offset
     return cands
+
+
+def _transcript_snippet(
+    words: list[dict[str, Any]],
+) -> tuple[str, list[tuple[int, float]] | None]:
+    """A transcript snippet of ``words`` (at most ``SNIPPET_CHARS``) and the words Whisper was
+    unsure of: ``(index, probability)`` for each word of ``snippet.split(" ")`` (the last one
+    may be cut short) below ``UNSURE_P``. The unsure list is None when no word is unsure or a
+    word has no ``probability`` (transcripts cached before it was stored). Words are split at
+    whitespace, so a word with an inner space counts as several with its probability and an
+    empty one is skipped."""
+    toks = [(part, w.get("probability")) for w in words for part in w["word"].split()]
+    text = " ".join(t for t, _ in toks)[:SNIPPET_CHARS].rstrip()
+    probs = [p for _, p in toks[: len(text.split(" ")) if text else 0]]
+    if any(p is None for p in probs):
+        return text, None
+    return text, [(i, p) for i, p in enumerate(probs) if p < UNSURE_P] or None
 
 
 def _ski_candidates(
@@ -1293,6 +1313,7 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
         **({"kind": c.kind} if c.kind else {}),
         **({"must_include": True, "crash": c.event} if c.must_include else {}),
         "transcript": c.transcript,
+        **({"transcript_unsure": c.transcript_unsure} if c.transcript_unsure else {}),
     }
 
 
