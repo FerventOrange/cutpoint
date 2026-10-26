@@ -18,11 +18,12 @@ from typing import TYPE_CHECKING, Any
 from cutpoint import boundaries, cache, jsonout, sources, srt
 from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
-from cutpoint.encode import OutputFormat, choose_format, export_clip_checked
+from cutpoint.encode import OutputFormat, choose_format, export_clip_checked, plan_peaks
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
     check_not_sources,
+    clip_momentary,
     output_dir,
     probe,
     recover_swap,
@@ -605,10 +606,13 @@ def render_clips(
     audio_fade: float,
     pano: PanoExporter | None = None,
     protected_srts: set[str] | None = None,
+    peaks: list[str] | None = None,
 ) -> list[RenderResult]:
     """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
     its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
     for sources without one; see :mod:`cutpoint.srt`).
+
+    ``peaks``: per-plan peak compression filter (:func:`peak_filters`; 360 clips get none).
 
     ``protected_srts``: :func:`~cutpoint.config.path_key` of ``.srt`` names in the clips
     folder that an earlier run did not write; a clip with such a name gets no ``.srt``
@@ -622,7 +626,8 @@ def render_clips(
     """
     results: list[RenderResult] = []
     subs = srt.ClipSubtitles(protected_srts)
-    for plan in plans:
+    peaks = peaks or [""] * len(plans)
+    for plan, peak in zip(plans, peaks, strict=True):
         m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
         out = out_dir / plan.name
         pano_rec = None
@@ -634,7 +639,7 @@ def render_clips(
             )
         else:
             read_err = export_clip_checked(
-                plan.src, plan.info, start, end, out, fmt, vertical, plan.crop, audio_fade
+                plan.src, plan.info, start, end, out, fmt, vertical, plan.crop, audio_fade, peak
             )
         if read_err and read_err["end"] < end:
             end = read_err["end"]
@@ -658,8 +663,37 @@ def render_clips(
     return results
 
 
-def _entry(plan: ClipPlan, res: RenderResult, audio_fade: float) -> dict[str, Any]:
-    """manifest.json record of one rendered clip."""
+def peak_filters(plans: list[ClipPlan], preset: str) -> list[str]:
+    """Per-plan :meth:`~cutpoint.encode.PeakPlan.filter` for ``preset`` (all "" for ``off``).
+
+    Each clip's span of its source is measured with the tracks the export mixes. 360 clips
+    are rendered by the 360 exporter and are not compressed (one INFO line says so).
+    """
+    if preset == "off":
+        return [""] * len(plans)
+    flat = [not p.pano for p in plans]
+    if not all(flat):
+        logger.info("Compress peaks: %d 360 clip(s) are not compressed", flat.count(False))
+    series = [
+        clip_momentary(p.src, p.info.audio_streams, p.start, p.end - p.start) if f else []
+        for p, f in zip(plans, flat, strict=True)
+    ]
+    plan = plan_peaks(preset, series, [p.end - p.start for p in plans], flat)
+    if plan is None:
+        logger.info("Compress peaks: no clip has audio above silence")
+        return [""] * len(plans)
+    logger.info(
+        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s",
+        preset,
+        plan.threshold,
+        " ".join("-" if g is None else f"{g:+.1f}" for g in plan.gains),
+    )
+    return [plan.filter(i) for i in range(len(plans))]
+
+
+def _entry(plan: ClipPlan, res: RenderResult, audio_fade: float, peaks: str = "") -> dict[str, Any]:
+    """manifest.json record of one rendered clip (``peaks``: its :func:`peak_filters` preset,
+    recorded as ``compress_peaks`` when the clip got compression)."""
     m, src, start, end = plan.entry, plan.src, plan.start, res.end
     return {
         "file": plan.name,
@@ -681,6 +715,7 @@ def _entry(plan: ClipPlan, res: RenderResult, audio_fade: float) -> dict[str, An
         **({"speech_aware": False} if m.get("speech_aware") is False else {}),
         **{k: m[k] for k in (*boundaries.LIMIT_KEYS, *BOUND_KEYS) if m.get(k) is not None},
         "audio_fade": audio_fade,
+        **({"compress_peaks": peaks} if peaks else {}),
         **({"kind": m["kind"]} if m.get("kind") else {}),
         **({"category": m["category"]} if m.get("category") else {}),
         **({"pano": res.pano} if res.pano else {}),
@@ -705,15 +740,24 @@ def write_manifest(
     speech: boundaries.SpeechSettings,
     audio_fade: float,
     crop: str | None,
+    compress_peaks: str = "off",
+    peaks: list[str] | None = None,
 ) -> None:
-    """Write ``<out_dir>/manifest.json`` for the rendered clips (and log the tail total)."""
+    """Write ``<out_dir>/manifest.json`` for the rendered clips (and log the tail total).
+
+    ``compress_peaks`` is recorded when not ``off``, and on each clip ``peaks`` gave a filter.
+    """
     total_ext = 0.0
     for plan in plans:
         total_ext += plan.tail.extension
     for plan, res in zip(plans, results, strict=True):
         if res.read_error and res.read_error["end"] < plan.end:  # trimmed by a read error
             total_ext -= plan.end - max(res.end, min(plan.end, plan.entry["end"]))
-    entries = [_entry(p, r, audio_fade) for p, r in zip(plans, results, strict=True)]
+    peaks = peaks or [""] * len(plans)
+    entries = [
+        _entry(p, r, audio_fade, compress_peaks if f else "")
+        for p, r, f in zip(plans, results, peaks, strict=True)
+    ]
     logger.info(
         "Smart tail added %.1fs over %d of %d clips",
         total_ext,
@@ -744,6 +788,7 @@ def write_manifest(
             "extend": {"start": padding.start, "end": padding.end},
             "speech_aware": speech.to_json(),
             "audio_fade": audio_fade,
+            **({"compress_peaks": compress_peaks} if compress_peaks != "off" else {}),
             "crop": crop,
             "clips": entries,
         },
@@ -843,6 +888,7 @@ def export_clips(
     pano_source: str = "auto",
     pano_cmd_every: int | None = None,
     size: tuple[int, int] | None = None,
+    compress_peaks: str = "off",
 ) -> Path:
     """Export moments as normalised, numbered clips plus manifest.json.
 
@@ -883,6 +929,11 @@ def export_clips(
     may overlap.
 
     ``audio_fade``: seconds of audio fade-in/out baked into every clip (0 = off).
+
+    ``compress_peaks``: ``off``, ``light`` or ``strong``
+    (:data:`~cutpoint.encode.PEAK_PRESETS`): loud peaks are compressed and the clips leveled
+    toward each other, then a true-peak limiter ends each clip's audio (manifest
+    ``compress_peaks``, so ``assemble`` does not compress them again).
 
     360 sources (Insta360 X3 clips registered in ``<project>/pano.json`` by
     ``cutpoint 360 scan``) are rendered to flat video along a director path (see
@@ -1010,6 +1061,7 @@ def export_clips(
             [p.name for p in plans],
             source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
         )
+        peaks = peak_filters(plans, compress_peaks)
         results = render_clips(
             plans,
             work,
@@ -1018,6 +1070,7 @@ def export_clips(
             audio_fade=audio_fade,
             pano=pano,
             protected_srts=protected_srts,
+            peaks=peaks,
         )
         write_manifest(
             work,
@@ -1034,6 +1087,8 @@ def export_clips(
             speech=speech,
             audio_fade=audio_fade,
             crop=crop,
+            compress_peaks=compress_peaks,
+            peaks=peaks,
         )
         if work != out_dir:  # staged, not exported into directly
             swap_in(work, out_dir, [*replace, "manifest.json"])

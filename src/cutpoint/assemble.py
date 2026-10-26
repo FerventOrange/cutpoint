@@ -9,6 +9,10 @@ timeline and final.mp4 all sound the same. ``assemble`` only adds the fade
 (``audio_fade``, default 0.25 s) to clips that do not carry one: older clip
 folders and files added by hand. Clips are never faded twice. The video stays
 a hard cut unless ``transition="fade"``.
+
+Peak compression (``compress_peaks``, see :data:`cutpoint.encode.PEAK_PRESETS`) works the
+same way: clips exported with it (manifest ``compress_peaks``) are left alone, the others
+are measured and get the compressor and leveling gain in the join, before the edge fade.
 """
 
 from __future__ import annotations
@@ -23,11 +27,22 @@ from fractions import Fraction
 from pathlib import Path
 
 from cutpoint import jsonout
-from cutpoint.encode import A_FMT, AUDIO_OUT, SILENCE, audio_fade_filter
+from cutpoint.encode import (
+    A_FMT,
+    AUDIO_OUT,
+    PEAK_PRESETS,
+    PEAK_TAG,
+    SILENCE,
+    audio_fade_filter,
+    limiter_chain,
+    plan_peaks,
+)
 from cutpoint.ffmpeg_utils import (
+    FFmpegError,
     MediaInfo,
     VideoEncoder,
     atomic_output,
+    clip_momentary,
     encode_with_fallback,
     extract_audio,
     has_soxr,
@@ -57,8 +72,66 @@ def baked_fades(clips_dir: Path, files: list[Path]) -> list[float]:
     return [float((by_file.get(f.name) or {}).get("audio_fade") or 0.0) for f in files]
 
 
-def _audio_chain(i: int, info: MediaInfo, fade: float, label: int | None = None) -> str:
-    """``[a<label>]`` (default ``label = i``) from input ``i``: common format, edge fade.
+def _peak_tagged(path: Path) -> bool:
+    """Whether ``path`` carries :data:`~cutpoint.encode.PEAK_TAG` (its container comment)."""
+    try:
+        comment = run(["ffprobe", "-v", "error", "-show_entries", "format_tags=comment",
+                       "-of", "default=nw=1:nk=1", str(path)])  # fmt: skip
+    except FFmpegError:
+        return False
+    return PEAK_TAG in comment
+
+
+def baked_peaks(clips_dir: Path, files: list[Path]) -> list[bool]:
+    """Whether each file already has peak compression baked in: its folder's manifest entry
+    says so, or, for a file without one (renamed or added during review), its own tag. The
+    entry wins: ffmpeg copies a tagged source's comment into a clip exported without it."""
+    from cutpoint import cache  # noqa: PLC0415
+
+    manifest = cache.load_json(clips_dir / "manifest.json") or {}
+    by_file = {e.get("file"): e for e in manifest.get("clips", [])}
+    return [
+        e.get("compress_peaks") in PEAK_PRESETS
+        if (e := by_file.get(f.name)) is not None
+        else _peak_tagged(f)
+        for f in files
+    ]
+
+
+def peak_filters(
+    clips_dir: Path, files: list[Path], infos: list[MediaInfo], preset: str
+) -> list[str]:
+    """Per-clip :meth:`~cutpoint.encode.PeakPlan.filter` for ``preset`` (all "" for ``off``).
+
+    Clips with compression baked in (:func:`baked_peaks`) count for the typical level and
+    the mean loudness but get no filter. Track 0 is measured, as :func:`_audio_chain` uses.
+    """
+    if preset == "off":
+        return [""] * len(files)
+    baked = baked_peaks(clips_dir, files)
+    if all(baked):
+        logger.info("Compress peaks: every clip is already compressed (baked)")
+        return [""] * len(files)
+    series = [clip_momentary(f, min(i.audio_streams, 1)) for f, i in zip(files, infos, strict=True)]
+    plan = plan_peaks(preset, series, [i.duration for i in infos], [not b for b in baked])
+    if plan is None:
+        logger.info("Compress peaks: no clip has audio above silence")
+        return [""] * len(files)
+    logger.info(
+        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; %d baked",
+        preset,
+        plan.threshold,
+        " ".join("-" if g is None else f"{g:+.1f}" for g in plan.gains),
+        sum(baked),
+    )
+    return [plan.filter(i) for i in range(len(files))]
+
+
+def _audio_chain(
+    i: int, info: MediaInfo, fade: float, label: int | None = None, peaks: str = ""
+) -> str:
+    """``[a<label>]`` (default ``label = i``) from input ``i``: common format, ``peaks``
+    (:func:`peak_filters`), edge fade.
 
     Only track 0 is used; a multi-track input whose track 0 is shorter than its longest
     track (``audio_duration``) keeps the old fade-out, after track 0 ends.
@@ -66,18 +139,19 @@ def _audio_chain(i: int, info: MediaInfo, fade: float, label: int | None = None)
     label = i if label is None else label
     if info.audio_streams:
         return (
-            f"[{i}:a:0]{A_FMT},asetpts=PTS-STARTPTS"
+            f"[{i}:a:0]{A_FMT},asetpts=PTS-STARTPTS{peaks}"
             f"{audio_fade_filter(info.duration, fade, info.audio_duration)}[a{label}]"
         )
     return f"{SILENCE},atrim=duration={info.vduration:.3f}[a{label}]"
 
 
 def _normalize_inputs(
-    infos: list[MediaInfo], fades: list[float] | None = None
+    infos: list[MediaInfo], fades: list[float] | None = None, peaks: list[str] | None = None
 ) -> tuple[list[str], Fraction]:
     """Per-input filter chains producing [v<i>]/[a<i>] with identical params."""
     w, h, fps = infos[0].width, infos[0].height, infos[0].fps
     fades = fades or [0.0] * len(infos)
+    peaks = peaks or [""] * len(infos)
     chains = []
     for i, info in enumerate(infos):
         chains.append(
@@ -85,7 +159,7 @@ def _normalize_inputs(
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p,"
             f"settb=AVTB,setpts=PTS-STARTPTS[v{i}]"
         )
-        chains.append(_audio_chain(i, info, fades[i]))
+        chains.append(_audio_chain(i, info, fades[i], peaks=peaks[i]))
     return chains, fps
 
 
@@ -122,17 +196,21 @@ def concat_copy(
     out: Path,
     infos: list[MediaInfo] | None = None,
     fades: list[float] | None = None,
+    peaks: list[str] | None = None,
 ) -> None:
     """Lossless join with the concat demuxer (inputs must share parameters).
 
     With ``fades`` (and ``infos``), the video is still stream-copied but the
-    audio is re-encoded with an edge fade on each clip whose fade is > 0.
+    audio is re-encoded with an edge fade on each clip whose fade is > 0, and
+    with the ``peaks`` filters (:func:`peak_filters`) when any is set.
     """
     listing = out.with_name(f".{out.stem}.concat.txt")
     lines = ["file '" + f.resolve().as_posix().replace("'", "'\\''") + "'" for f in files]
     listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
     args = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing)]
-    if fades and infos and any(f > 0 for f in fades):
+    if infos and ((fades and any(f > 0 for f in fades)) or (peaks and any(peaks))):
+        fades = fades or [0.0] * len(files)
+        peaks = peaks or [""] * len(files)
         for f in files:
             args += ["-i", str(f)]
         chains = []
@@ -141,7 +219,7 @@ def concat_copy(
             # next clip (cut_duration) so the stream-copied video and the
             # re-built audio cannot drift apart.
             chains.append(
-                _audio_chain(i + 1, info, fade, label=i).replace(
+                _audio_chain(i + 1, info, fade, label=i, peaks=peaks[i]).replace(
                     f"[a{i}]",
                     f",apad,atrim=end={cut_duration(info):.6f}[a{i}]"
                     if info.audio_streams
@@ -169,10 +247,14 @@ def concat_copy(
 
 
 def concat_reencode(
-    files: list[Path], infos: list[MediaInfo], out: Path, fades: list[float] | None = None
+    files: list[Path],
+    infos: list[MediaInfo],
+    out: Path,
+    fades: list[float] | None = None,
+    peaks: list[str] | None = None,
 ) -> None:
     """Join clips with differing parameters by normalising and re-encoding."""
-    chains, _ = _normalize_inputs(infos, fades)
+    chains, _ = _normalize_inputs(infos, fades, peaks)
     pairs = "".join(f"[v{i}][a{i}]" for i in range(len(files)))
     _encode(files, ";".join(chains) + f";{pairs}concat=n={len(files)}:v=1:a=1[v][a]", out)
 
@@ -222,9 +304,16 @@ def crossfade_duration(infos: list[MediaInfo], fade: float) -> float:
     return used
 
 
-def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float) -> float:
+def crossfade(
+    files: list[Path],
+    infos: list[MediaInfo],
+    out: Path,
+    fade: float,
+    peaks: list[str] | None = None,
+) -> float:
     """Join clips with xfade/acrossfade over ``fade`` s, as returned by
-    :func:`crossfade_duration` (> 0). Returns ``fade``.
+    :func:`crossfade_duration` (> 0), with the ``peaks`` filters (:func:`peak_filters`).
+    Returns ``fade``.
 
     Times are written to the microsecond, not the millisecond (8 frames at 24 fps are
     0.333333 s), so acrossfade matches the frame-rounded fade. xfade starts at the first
@@ -234,7 +323,7 @@ def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float)
 
     Each clip's audio is padded/trimmed to its video (``vduration``), which xfade and
     :func:`clip_offsets` follow, so audio that runs on cannot push the later clips late."""
-    chains, fps = _normalize_inputs(infos)
+    chains, fps = _normalize_inputs(infos, peaks=peaks)
     for i, info in enumerate(infos):
         chains.append(f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS[at{i}]")
     half_frame = 0.5 / float(fps) if fps > 0 else 0.0
@@ -403,12 +492,7 @@ def limiter_filter(limit_db: float) -> str:
 
     The downsampling uses soxr when the ffmpeg build has it, else ffmpeg's default (swr).
     """
-    lin = max(0.0625, 10 ** (limit_db / 20))
-    resampler = ":resampler=soxr" if has_soxr() else ""
-    return (
-        f"aresample=192000,alimiter=limit={lin:.4f}:attack=1:release=60:level=0:"
-        f"latency=1,aresample=48000{resampler}"
-    )
+    return limiter_chain(limit_db, has_soxr())
 
 
 def post_process(
@@ -420,10 +504,13 @@ def post_process(
     limit_db: float = LIMIT_START_DB,
     ass: Path | None = None,
     dst: Path | None = None,
+    limit: bool = False,
 ) -> Path | None:
     """Apply loudness normalisation (+ true-peak limiter) and/or burned-in captions.
 
-    ffmpeg writes ``dst`` (default ``out``); the caption files are named after ``out``.
+    ``limit`` without ``loudnorm`` runs the limiter alone (compressed peaks, see
+    :func:`peak_filters`). ffmpeg writes ``dst`` (default ``out``); the caption files are
+    named after ``out``.
 
     Returns:
         The caption ASS file (reuse it via ``ass`` when re-running), if any.
@@ -451,6 +538,8 @@ def post_process(
         vf = f"ass={ass.name}"
     if loudnorm:
         a_args = ["-af", f"{loudnorm_filter(stage)},{limiter_filter(limit_db)}", *FINAL_AUDIO_OUT]
+    elif limit:
+        a_args = ["-af", limiter_filter(limit_db), *FINAL_AUDIO_OUT]
     else:
         a_args = ["-c:a", "copy"]
     tail = [*a_args, "-movflags", "+faststart", str((dst or out).resolve())]
@@ -464,9 +553,15 @@ def post_process(
 
 
 def normalize_with_ceiling(
-    stage: Path, out: Path, captions: bool, model: str | None, dst: Path | None = None
+    stage: Path,
+    out: Path,
+    captions: bool,
+    model: str | None,
+    dst: Path | None = None,
+    loudnorm: bool = True,
 ) -> tuple[float, float]:
-    """Loudnorm + limiter, re-run with a lower ceiling until true peak <= TP_CEILING.
+    """Loudnorm (unless not ``loudnorm``) + limiter, re-run with a lower ceiling until true
+    peak <= TP_CEILING.
 
     ``dst`` as for :func:`post_process`.
 
@@ -475,7 +570,9 @@ def normalize_with_ceiling(
     """
     limit_db, ass = LIMIT_START_DB, None
     for attempt in range(1, LIMIT_PASSES + 1):
-        ass = post_process(stage, out, True, captions, model, limit_db, ass, dst)
+        ass = post_process(
+            stage, out, loudnorm, captions, model, limit_db, ass, dst, limit=not loudnorm
+        )
         lufs, tp = measure_loudness(dst or out)
         logger.info(
             "Loudness pass %d: %.1f LUFS, true peak %+.2f dBTP (limiter %.1f dBFS)",
@@ -501,8 +598,10 @@ def _join(
     transition: str,
     fade_dur: float,
     audio_fade: float,
+    peaks: list[str] | None = None,
 ) -> float:
-    """Join ``files`` into ``out`` with cuts or crossfades (see :func:`assemble`).
+    """Join ``files`` into ``out`` with cuts or crossfades (see :func:`assemble`); ``peaks``
+    are the per-clip :func:`peak_filters`.
 
     Returns:
         The crossfade duration used (0 for cuts), for :func:`clip_offsets`.
@@ -526,13 +625,13 @@ def _join(
         )
         uniform = len({i.concat_key() for i in infos}) == 1 and infos[0].audio_streams == 1
         if uniform:
-            concat_copy(files, out, infos, fades)
+            concat_copy(files, out, infos, fades, peaks)
         else:
             logger.info("Clip parameters differ; re-encoding instead of stream copy")
-            concat_reencode(files, infos, out, fades)
+            concat_reencode(files, infos, out, fades, peaks)
         return 0.0
     if transition == "fade":
-        used = crossfade(files, infos, out, fade_dur)
+        used = crossfade(files, infos, out, fade_dur, peaks)
         logger.info("Crossfade duration %.3fs", used)
         return used
     raise ValueError(f"Unknown transition {transition!r}")
@@ -548,6 +647,7 @@ def assemble(
     captions: bool = False,
     caption_model: str | None = None,
     audio_fade: float = 0.25,
+    compress_peaks: str = "off",
 ) -> Path:
     """Assemble ``clips_dir`` into ``out`` and write .otio/.fcpxml timelines next to it.
 
@@ -558,6 +658,10 @@ def assemble(
     baked in by ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored for
     ``transition="fade"``, which crossfades the audio anyway, unless the join falls back to
     cuts (no room for a one-frame crossfade).
+
+    ``compress_peaks``: ``off``, ``light`` or ``strong`` (:data:`~cutpoint.encode.PEAK_PRESETS`)
+    compresses loud peaks and levels the clips that do not have it baked in; the final audio
+    then always ends with the true-peak limiter (with or without ``loudnorm``).
 
     Raises:
         FileNotFoundError: If the folder has no .mp4 clips.
@@ -577,13 +681,19 @@ def assemble(
             "Assembling %d clips (%s): %s", len(files), transition, ", ".join(f.name for f in files)
         )
 
+        peaks = peak_filters(clips_dir, files, infos, compress_peaks)
+        limit = loudnorm or compress_peaks != "off"
         # Written to a temporary name: final.mp4 only appears once complete.
         with atomic_output(out) as part:
-            stage = out.with_name(f".{out.stem}.stage.mp4") if (loudnorm or captions) else part
+            stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or captions) else part
             try:
-                used_fade = _join(files, infos, clips_dir, stage, transition, fade_dur, audio_fade)
-                if loudnorm:
-                    lufs, tp = normalize_with_ceiling(stage, out, captions, caption_model, part)
+                used_fade = _join(
+                    files, infos, clips_dir, stage, transition, fade_dur, audio_fade, peaks
+                )
+                if limit:
+                    lufs, tp = normalize_with_ceiling(
+                        stage, out, captions, caption_model, part, loudnorm
+                    )
                     logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
                 elif captions:
                     post_process(stage, out, False, captions, caption_model, dst=part)

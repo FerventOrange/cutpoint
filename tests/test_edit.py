@@ -69,9 +69,12 @@ def test_edit_runs_the_steps_in_order_and_names_the_final(pipeline, home):
     assert calls[0][1] == ([video], "funny", project)
     assert calls[1][2] == {
         "top": 8, "max_total": None, "order": "chronological", "vertical": False, "force": False,
+        "compress_peaks": "off",
     }  # fmt: skip
     assert calls[2][1] == (project / "clips",)
-    assert calls[2][2] == {"transition": "cut", "loudnorm": True, "captions": True}
+    assert calls[2][2] == {
+        "transition": "cut", "loudnorm": True, "captions": True, "compress_peaks": "off",
+    }  # fmt: skip
     named = project / "My Clip-final.mp4"
     assert named.read_bytes() == b"final video"
     assert named.with_suffix(".srt").read_text(encoding="utf-8").endswith("hi\n\n")

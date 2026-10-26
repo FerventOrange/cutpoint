@@ -453,3 +453,26 @@ def test_load_segments_keeps_kind_category_and_drops_an_empty_one(tmp_path: Path
     first, second = clips.load_segments(seg)
     assert (first["kind"], first["category"]) == ("laughter", "social")
     assert "kind" not in second
+
+
+@pytest.mark.parametrize("preset", ["off", "light"])
+def test_manifest_records_compress_peaks_only_where_applied(plan_env, tmp_path, preset):
+    run, _ = plan_env
+    plans = run([_moment("a", SRC_A, 10.0, 20.0), _moment("b", SRC_B, 5.0, 9.0)])
+    results = [clips.RenderResult(tmp_path / p.name, p.end, None, None, None) for p in plans]
+    peaks = [",acompressor=x", ""] if preset != "off" else ["", ""]
+    clips.write_manifest(
+        tmp_path, tmp_path, plans, results, order="segments", fmt=OutputFormat(1920, 1080, 30),
+        vertical=False, style=get_style("gaming"), tail=TailSettings(enabled=False),
+        event_settings=EventTailSettings(enabled=False), padding=None,
+        speech=boundaries.SpeechSettings(enabled=False), audio_fade=0.25, crop=None,
+        compress_peaks=preset, peaks=peaks,
+    )  # fmt: skip
+    doc = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    entries = doc["clips"]
+    if preset == "off":
+        assert "compress_peaks" not in doc
+        assert all("compress_peaks" not in e for e in entries)
+    else:
+        assert doc["compress_peaks"] == "light"
+        assert entries[0]["compress_peaks"] == "light" and "compress_peaks" not in entries[1]

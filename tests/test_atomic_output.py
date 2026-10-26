@@ -59,7 +59,7 @@ def test_interrupted_assemble_leaves_no_final_video(monkeypatch, tmp_path):
     monkeypatch.setattr(assemble, "probe", media_info)
     monkeypatch.setattr(assemble, "baked_fades", lambda d, files: [0.0] * len(files))
 
-    def concat_copy(files, out, infos, fades):
+    def concat_copy(files, out, infos, fades, peaks=None):
         out.write_bytes(b"truncated")
         raise exc
 

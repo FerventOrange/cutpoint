@@ -289,7 +289,8 @@ See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device 
 cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [--out DIR]
               [--top N] [--max-total S] [--vertical] [--force] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
-              [--ollama-model MODEL] [--skip STEP [STEP ...]] [--json]
+              [--ollama-model MODEL] [--skip STEP [STEP ...]]
+              [--compress-peaks off|light|strong] [--json]
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
@@ -315,6 +316,7 @@ one of them is refused.
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
+| `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 With `CUTPOINT_PROGRESS=1`, `edit` reports 8 [steps](#progress-output): the 6 of `analyze`, then `clips` and `assemble`. `--kind clips` still assembles. With `--events`, `keyframes` is reported again after `vision`, for the VLM layer.
@@ -497,6 +499,7 @@ complete; a failed run there may keep the finished clips.
 | `--extend S`, `--extend-start S`, `--extend-end S` | Padding ("handles") for trimming in an editor |
 | `--speech-aware` / `--no-speech-aware`, `--speech-max-extend`, `--speech-max-lead` | Move in/out points to utterance boundaries |
 | `--audio-fade S` | Audio fade baked into each clip (default 0.25, 0 = off) |
+| `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression) baked into each clip, then a true-peak limiter (default: `compress_peaks` in `config.json`, else off) |
 | `--out DIR`, `--force` | Output folder; replace the clips an earlier run made in a non-empty folder |
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
@@ -597,7 +600,8 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
 
 ```text
 cutpoint assemble <clips_dir> [--out final.mp4] [--transition cut|fade] [--fade-dur 0.25]
-                  [--audio-fade S] [--loudnorm] [--captions] [--model MODEL] [--json]
+                  [--audio-fade S] [--loudnorm] [--compress-peaks off|light|strong]
+                  [--captions] [--model MODEL] [--json]
 ```
 
 Joins the `.mp4` files currently in the folder, in natural filename order (`2_x` before
@@ -612,6 +616,11 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
 - `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
   then measures the result and redoes the pass with a lower ceiling if the true peak is above
   -1.5 dBTP. Very peaky material can land up to about 1 LU below target.
+- `--compress-peaks light|strong` applies [peak compression](#peak-compression) to the clips
+  that were not exported with it (their `manifest.json` entry has no `compress_peaks`), in the
+  join, before the edge fade. The final audio then always ends with the true-peak limiter
+  and its -1.5 dBTP check, with or without `--loudnorm` (without it, the level stays where the
+  speech was). Default: `compress_peaks` in `config.json`, else off.
 - `--captions` transcribes the result and burns in bold lower-third captions in 2-4 word
   chunks. The ASS file is kept next to the output. `--model` picks the Whisper model.
 - `--json` writes the result as one [JSON envelope](#json-output) on stdout.
@@ -627,6 +636,47 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
   its own `.srt` (renamed with it) is used instead. Clips with neither, or whose source has no
   cached transcript, get none; one INFO line names them, and with none at all no `.srt` is
   written.
+
+### Peak compression
+
+`--compress-peaks` (`clips`, `assemble`, `edit`; `compress_peaks` in `config.json`) pulls
+sudden loud moments such as shouts, laughs into the mic, gunshots and mic bumps down toward
+the speech level, and evens out loudness between clips. It is off by default, and with
+`off` the output is unchanged.
+
+1. Every clip is measured (momentary loudness). The typical level is the median of all the
+   clips' audio, ignoring silence and quiet background.
+2. One RMS compressor (attack 5 ms, release 200 ms) starts a fixed amount above that level
+   for every clip (set in LUFS; the compressor measures each channel's RMS, so on stereo it
+   acts about 2-3 dB later than the table says). So a burst is pulled toward the speech of the whole edit, not toward a
+   clip's own quiet background.
+3. Each clip gets a gain, before the compressor, that moves its compressed loudness toward
+   the mean of the clips. The gain is capped, because a boost also raises background noise.
+
+| Preset | Compressor starts | Ratio | Leveling | Max boost / cut |
+|---|---|---|---|---|
+| `light` | 8 dB above the typical level | 3:1 | half way to the mean | 6 / 12 dB |
+| `strong` | 4 dB above it | 6:1 | all the way | 10 / 20 dB |
+
+Measured on 12 clips (an R6 montage with gunfire and shouting, voice-chat commentary and
+GoPro wind), exported and assembled with `--loudnorm`:
+
+| | off | light | strong |
+|---|---|---|---|
+| Loudest moment above speech | 12.2 dB | 7.5 dB | 5.2 dB |
+| 99th-percentile loudness above speech | 10.0 dB | 5.9 dB | 2.8 dB |
+| Loudness spread between clips | 9.9 LU | 4.3 LU | 4.7 LU |
+| True peak of `final.mp4` | -2.2 dBTP | -2.2 dBTP | -2.0 dBTP |
+| Quiet parts of the commentary clips | | +5.5 dB | +9.9 dB |
+
+The quiet parts rise because those clips are boosted to match the others. Use `light` when
+background noise matters more than even loudness.
+
+`clips` bakes it into each clip, followed by a true-peak limiter (clips stay below about
+-1.8 dBTP), records `compress_peaks` in `manifest.json` and tags the file (container comment
+`cutpoint:compress_peaks`). `assemble` does not compress those clips again, also after they
+are renamed. `extend` re-exports clips without compression (one WARNING). 360 clips are not
+compressed.
 
 ## stage
 
