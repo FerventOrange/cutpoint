@@ -26,7 +26,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, cli, config, ui
+from cutpoint import cache, cli, config, encode, ui
 from cutpoint.utils import find_videos
 
 PORT = 8765
@@ -2856,6 +2856,674 @@ def test_a_proxy_ffmpeg_is_registered_as_it_starts_so_shutdown_kills_it(
     assert len(killed) == 1
     assert isinstance(killed[0], Encode)
     assert not media.procs
+
+
+# --- window proxies (#323) ---
+
+HLG = {"color_transfer": "arib-std-b67", "color_primaries": "bt2020", "color_space": "bt2020nc"}
+WINDOW_BYTES = b"0123456789"
+
+
+def test_proxy_args_defaults_are_the_whole_source_command() -> None:
+    assert ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1) == [
+        *("ffmpeg", "-y", "-nostdin", "-v", "error", "-i", "in.mkv", "-map", "0:v:0"),
+        *("-map", "0:a:0?", "-vf", "scale=-2:min(720\\,ih)"),
+        *("-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p"),
+        *("-g", "30", "-fpsmax", "30", "-c:a", "aac", "-b:a", "128k"),
+        *("-movflags", "+faststart", "out.mp4"),
+    ]  # fmt: skip
+
+
+def test_proxy_args_window_seeks_before_the_input_and_limits_after_it() -> None:
+    args = ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1, lo=3.0, hi=33.5)
+    assert args[args.index("-ss") + 1] == "3.000"
+    assert args.index("-ss") < args.index("-i") < args.index("-t")
+    assert args[args.index("-t") + 1] == "30.500"  # the window's length, not hi
+
+
+def test_proxy_args_color_filters_go_between_scale_and_the_pixel_format_with_bt709_tags() -> None:
+    color = "zscale=t=bt709"
+    args = ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1, color=color)
+    assert args[args.index("-vf") + 1] == f"scale=-2:min(720\\,ih),{color},format=yuv420p"
+    tags = ui.BT709_TAGS
+    assert args[args.index(tags[0]) :][: len(tags)] == tags
+    plain = ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1)
+    assert "-colorspace" not in plain
+
+
+def test_info_has_no_color_filter_for_playable_sources_and_the_sdr_filter_for_hlg_hevc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    media = ui.Media()
+    probed = media_info(duration=10.0)
+    monkeypatch.setattr(ui, "probe", lambda _path: probed)
+    assert media.info(src, "k1") == (True, 10.0, 1, "")
+    hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
+    probed = hlg
+    ok, _, _, color = media.info(src, "k2") or (True, 0, 0, "")
+    assert not ok
+    assert color == encode.sdr_filter(hlg)
+    assert color.startswith("zscale=tin=arib-std-b67")
+
+
+def test_whole_proxy_of_an_hlg_source_is_converted_to_sdr(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+    proxy_encoder: type[ProxyEncoder],
+) -> None:
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
+    monkeypatch.setattr(ui, "probe", lambda _path: hlg)
+    _, folder, p, _ = hevc_project
+    assert build_proxy(client, p, folder / "a.mp4") == "ready"
+    [args] = proxy_encoder.calls
+    vf = args[args.index("-vf") + 1]
+    assert vf == f"scale=-2:min(720\\,ih),{encode.sdr_filter(hlg)},format=yuv420p"
+    assert args[args.index("-colorspace") + 1] == "bt709"
+
+
+class FakeWindowProc:
+    """A fake ffmpeg: a window encode stays alive until finished or killed; a whole one ends."""
+
+    def __init__(self, args: list[str], held: bool) -> None:
+        self.args = args
+        self.returncode: int | None = None
+        self.done = threading.Event()
+        if not held:
+            self.finish(0)
+
+    def finish(self, code: int) -> None:
+        if self.returncode is None:
+            self.returncode = code
+            if code == 0:
+                Path(self.args[-1]).write_bytes(WINDOW_BYTES)
+            self.done.set()
+
+    def communicate(self) -> tuple[str, None]:
+        self.done.wait(10)
+        return "", None
+
+    @property
+    def start(self) -> float:
+        return float(self.args[self.args.index("-ss") + 1])
+
+
+class FakeWindowFfmpeg:
+    """Replaces ``spawn`` and ``kill_tree``; ``hold``: window encodes wait for ``finish``."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.hold = True
+        self.procs: list[FakeWindowProc] = []
+        self.killed: list[FakeWindowProc] = []
+        self.kill_seen = threading.Event()
+        monkeypatch.setattr(ui, "spawn", self.spawn)
+        monkeypatch.setattr(ui, "kill_tree", self.kill)
+
+    def spawn(self, args: list[str]) -> FakeWindowProc:
+        proc = FakeWindowProc(args, self.hold and "-ss" in args)
+        self.procs.append(proc)
+        return proc
+
+    def kill(self, proc: FakeWindowProc, wait: float = 0, *, term: bool = True) -> None:
+        self.killed.append(proc)
+        proc.finish(-9)
+        self.kill_seen.set()
+
+    def next_proc(self, n: int) -> FakeWindowProc:
+        """The ``n``-th ffmpeg started (0-based), once it has."""
+        wait_until(lambda: len(self.procs) > n)
+        return self.procs[n]
+
+
+def wait_until(cond: Callable[[], object], timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def lane_idle(media: ui.Media) -> bool:
+    with media.lock:
+        return not media.windows_queue and media.window_running is None
+
+
+@pytest.fixture
+def window_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> FakeWindowFfmpeg:
+    return FakeWindowFfmpeg(monkeypatch)
+
+
+@pytest.fixture
+def window_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window_ffmpeg: FakeWindowFfmpeg
+) -> Iterator[tuple[ui.Media, Path, Path]]:
+    """A Media, a project folder and a 1000 s HEVC source; its windows spawn the fake ffmpeg."""
+    monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=1000.0))
+    media, p, src = ui.Media(), tmp_path / "proj", tmp_path / "a.mp4"
+    p.mkdir()
+    src.write_bytes(b"x")
+    yield media, p, src
+    media.shutdown()
+
+
+def focus(media: ui.Media, p: Path, src: Path, lo: float, hi: float, dur: float | None = None):
+    real = ui.remap_source(str(src))
+    key, res = media._lookup(real)
+    assert key is not None and res is not None
+    if dur is not None:
+        res = (res[0], dur, res[2], res[3])
+    media._focus(p, real, key, res, lo, hi)
+    return key
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "dur", "span"),
+    [
+        (100.0, 110.0, 1000.0, (9000, 13000)),  # 10 s before, 20 s after
+        (103.2, 107.9, 1000.0, (9000, 13000)),  # rounded outward to multiples of 5 s
+        (2.0, 5.0, 1000.0, (0, 2500)),  # clamped to 0
+        (95.0, 99.0, 100.0, (8500, 10000)),  # clamped to the duration
+        (100.0, 100.0, 100.0, (9000, 10000)),  # a request at the duration
+    ],
+)
+def test_focus_rounds_the_window_outward_and_clamps_it(
+    window_media: tuple[ui.Media, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    lo: float,
+    hi: float,
+    dur: float,
+    span: tuple[int, int],
+) -> None:
+    media, p, src = window_media
+    window_ffmpeg.hold = False
+    key = focus(media, p, src, lo, hi, dur)
+    wait_until(lambda: lane_idle(media) and media.windows.get((p, key)))
+    assert list(media.windows[(p, key)]) == [span]
+
+
+def test_a_request_at_the_duration_is_covered_by_a_ready_window(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    window_ffmpeg.hold = False
+    key = focus(media, p, src, 95.0, 99.0, 100.0)
+    wait_until(lambda: lane_idle(media) and media.windows.get((p, key)))
+    focus(media, p, src, 100.0, 100.0, 100.0)  # the end of the source: already inside
+    focus(media, p, src, 96.0, 98.0, 100.0)
+    assert lane_idle(media)
+    assert len(window_ffmpeg.procs) == 1
+
+
+def test_a_running_window_that_does_not_overlap_the_new_focus_is_killed(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)
+    first = window_ffmpeg.next_proc(0)
+    focus(media, p, src, 500, 510)
+    assert window_ffmpeg.kill_seen.wait(10)
+    assert window_ffmpeg.killed == [first]
+    second = window_ffmpeg.next_proc(1)  # the new focus encodes next
+    assert second.start == 490.0
+    second.finish(0)
+    wait_until(lambda: lane_idle(media))
+    assert [s for s, _ in media.windows[(p, ui.Media.key(src) or "")]] == [49000]
+
+
+def test_a_running_window_that_overlaps_the_new_focus_is_not_killed(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)  # [90, 130]
+    first = window_ffmpeg.next_proc(0)
+    focus(media, p, src, 125, 135)  # [115, 155]: overlaps, and past the running one's end
+    first.finish(0)
+    second = window_ffmpeg.next_proc(1)
+    assert second.start == 115.0
+    second.finish(0)
+    wait_until(lambda: lane_idle(media))
+    assert window_ffmpeg.killed == []
+    assert len(media.windows[(p, ui.Media.key(src) or "")]) == 2
+
+
+def test_a_superseded_queued_window_never_spawns_and_neither_does_a_cancelled_one(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)
+    window_ffmpeg.next_proc(0)
+    focus(media, p, src, 125, 135)  # queued behind the running one
+    focus(media, p, src, 700, 710)  # supersedes the queued one and kills the running one
+    window_ffmpeg.next_proc(1).finish(0)
+    wait_until(lambda: lane_idle(media))
+    assert [pr.start for pr in window_ffmpeg.procs] == [90.0, 690.0]
+
+    win = ui.ProxyWindow(p, src, "k" * 16, 0, 500, 1, "")
+    win.cancelled = True
+    assert media._encode(["ffmpeg", "-ss", "0"], win)[0] != 0
+    assert len(window_ffmpeg.procs) == 2
+
+
+def test_shutdown_stops_the_window_encode_and_its_lane_and_starts_no_more(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)
+    running = window_ffmpeg.next_proc(0)
+    focus(media, p, src, 125, 135)  # queued
+    media.shutdown()
+    assert window_ffmpeg.killed == [running]
+    assert media.window_lane is not None
+    media.window_lane.join(10)
+    assert not media.window_lane.is_alive()
+    focus(media, p, src, 400, 410)
+    win = ui.ProxyWindow(p, src, "k" * 16, 0, 500, 1, "")
+    assert media._encode(["ffmpeg", "-ss", "0"], win)[0] != 0
+    assert len(window_ffmpeg.procs) == 1
+    assert not media.windows_queue
+    assert not list(p.rglob("*.part.mp4"))
+
+
+def test_at_most_eight_windows_are_kept_and_the_least_recently_used_goes_first(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    window_ffmpeg.hold = False
+    key = ""
+    for i in range(8):
+        key = focus(media, p, src, i * 100 + 20, i * 100 + 25)
+        wait_until(lambda: lane_idle(media))
+    assert len(media.windows[(p, key)]) == 8
+    oldest, second = sorted(media.windows[(p, key)])[:2]
+    assert media.window(p, str(src), *oldest) is not None  # used again: now the newest
+    focus(media, p, src, 820, 825)
+    wait_until(lambda: lane_idle(media))
+    kept = media.windows[(p, key)]
+    assert len(kept) == 8
+    assert oldest in kept and second not in kept
+    assert not (p / ui.UI_DIR / "proxy" / f"{key}.w{second[0]}-{second[1]}.mp4").exists()
+
+
+def test_windows_are_retired_not_deleted_when_the_whole_proxy_lands_and_pruned_next_run(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    window_ffmpeg.hold = False
+    key = ""
+    for lo in (20, 420):
+        key = focus(media, p, src, lo, lo + 5)
+        wait_until(lambda: lane_idle(media))
+    folder = p / ui.UI_DIR / "proxy"
+    windows = sorted(folder.glob(f"{key}.w*.mp4"))
+    assert len(windows) == 2
+    media._build(p, src, folder / f"{key}.mp4", key, 1)
+    assert (p, key) not in media.windows
+    assert media.windows_of(p, str(src)) == ([], [])  # no longer listed
+    assert sorted(folder.glob(f"{key}.w*.mp4")) == windows  # but a page may still play one
+    # w1000-4500: 10 s before, 20 s after, from 20 s
+    assert media.window(p, str(src), 1000, 4500) == folder / f"{key}.w1000-4500.mp4"
+    media.shutdown()
+
+    fresh = ui.Media()  # the next run
+    fresh.prune_proxies(p, [str(src)])
+    assert [f.name for f in folder.iterdir()] == [f"{key}.mp4"]
+
+
+@pytest.mark.parametrize(
+    ("want", "dur_cs", "covered"),
+    [
+        ((1000, 2000), 10000, True),
+        ((999, 2000), 10000, False),  # starts before the window
+        ((1000, 2995), 10000, True),  # hi - 5 cs: inside
+        ((1000, 2996), 10000, False),  # the window's last frame (4 cs) is not played
+        ((1000, 3000), 10000, False),
+        ((1000, 3000), 3000, True),  # the window ends with the source: all of it plays
+        ((1000, 3001), 3000, False),
+        ((1000, 3000), 0, False),  # duration unknown
+    ],
+)
+def test_a_window_covers_a_request_except_its_last_frame_unless_it_ends_the_source(
+    want: tuple[int, int], dur_cs: int, covered: bool
+) -> None:
+    assert ui._covers((1000, 3000), want, dur_cs) is covered
+
+
+def test_a_request_in_the_last_frame_of_a_ready_window_queues_a_new_one(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    window_ffmpeg.hold = False
+    key = focus(media, p, src, 100, 110)  # [90, 130]
+    wait_until(lambda: lane_idle(media) and media.windows.get((p, key)))
+    focus(media, p, src, 119.9, 129.95)  # inside: nothing new
+    assert len(window_ffmpeg.procs) == 1
+    focus(media, p, src, 120.0, 129.97)  # reaches the last frame: a new window
+    wait_until(lambda: len(window_ffmpeg.procs) == 2 and lane_idle(media))
+    assert window_ffmpeg.procs[1].start == 110.0
+
+
+def test_a_cancelled_running_encode_does_not_count_as_covering_the_focus(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    focus(media, p, src, 100, 110)
+    first = window_ffmpeg.next_proc(0)
+    with media.lock:
+        assert media.window_running is not None
+        media.window_running.cancelled = True  # e.g. its source's whole proxy landed
+    focus(media, p, src, 102, 108)  # inside the running window's range
+    first.finish(0)
+    second = window_ffmpeg.next_proc(1)
+    assert second.start == 90.0
+    second.finish(0)
+    wait_until(lambda: lane_idle(media))
+    assert len(media.windows[(p, ui.Media.key(src) or "")]) == 1
+
+
+def test_a_window_encode_for_a_source_whose_whole_proxy_lands_is_stopped(
+    window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
+) -> None:
+    media, p, src = window_media
+    key = focus(media, p, src, 100, 110)
+    running = window_ffmpeg.next_proc(0)
+    media._drop_windows(p, key)
+    assert window_ffmpeg.kill_seen.wait(10)
+    assert window_ffmpeg.killed == [running]
+    wait_until(lambda: lane_idle(media))
+    assert not list(p.rglob("*.mp4"))
+
+
+def prepare(client: TestClient, pid: str, sid: str, body: object = None) -> object:
+    url = f"/api/projects/{pid}/sources/{sid}/prepare"
+    return client.post(url) if body is None else client.post(url, json=body)
+
+
+@pytest.fixture
+def whole_builds(client: TestClient) -> list[tuple]:
+    """The whole-proxy builds queued; none runs."""
+    queued: list[tuple] = []
+    client.app.state.media.pool.submit = lambda fn, *a: queued.append(a)  # type: ignore[method-assign]
+    return queued
+
+
+@pytest.mark.parametrize("body", [None, {}, {"x": 1}], ids=["no-body", "empty", "unrelated"])
+def test_prepare_without_a_window_keeps_the_whole_source_behaviour(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+    body: object,
+) -> None:
+    pid, _, _, _ = hevc_project
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    res = prepare(client, pid, sid, body)
+    assert (res.status_code, res.json()) == (200, {"status": "preparing"})
+    assert len(whole_builds) == 1
+    assert not window_ffmpeg.procs
+    assert client.app.state.media.window_lane is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"lo": true, "hi": 5}',
+        b'{"lo": "1", "hi": 5}',
+        b'{"lo": NaN, "hi": 5}',
+        b'{"lo": 1, "hi": Infinity}',
+        b'{"lo": 6, "hi": 5}',
+        b'{"lo": -1, "hi": 5}',
+        b'{"lo": 1}',
+        b'{"hi": 5}',
+    ],
+)
+def test_prepare_refuses_an_invalid_window_and_queues_nothing(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+    raw: bytes,
+) -> None:
+    pid, _, _, _ = hevc_project
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    url = f"/api/projects/{pid}/sources/{sid}/prepare"
+    res = client.post(url, content=raw, headers={"Content-Type": "application/json"})
+    assert res.status_code == 400, res.text
+    assert not whole_builds
+    assert not window_ffmpeg.procs
+    assert client.app.state.media.proxies == {}
+
+
+def test_prepare_with_a_window_queues_it_and_the_whole_proxy_and_the_listing_shows_it(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+) -> None:
+    pid, _, _, _ = hevc_project
+    base = f"/api/projects/{pid}"
+    sid = client.get(base).json()["sources"][0]["id"]
+    assert prepare(client, pid, sid, {"lo": 2, "hi": 4.5}).json() == {"status": "preparing"}
+    assert len(whole_builds) == 1
+    proc = window_ffmpeg.next_proc(0)
+    assert (proc.start, proc.args[proc.args.index("-t") + 1]) == (0.0, "10.000")  # clamped to 10 s
+
+    def probing(_path: object) -> None:
+        raise AssertionError("listing a project must not run ffprobe")
+
+    monkeypatch.setattr(ui, "probe", probing)
+    src = client.get(base).json()["sources"][0]
+    assert src["windows"] == []
+    assert src["pending"] == [{"lo": 0.0, "hi": 10.0, "state": "encoding"}]
+    assert src["duration"] == 10.0  # the page needs it to play the window
+
+    proc.finish(0)
+    wait_until(lambda: lane_idle(client.app.state.media))
+    src = client.get(base).json()["sources"][0]
+    assert src["pending"] == []
+    [win] = src["windows"]
+    assert (win["lo"], win["hi"]) == (0.0, 10.0)
+    assert win["url"].split("?")[0].endswith(f"/sources/{sid}/window/0-1000")
+
+
+def test_the_listing_shows_a_second_overlapping_window_as_queued(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+) -> None:
+    pid, folder, p, _ = hevc_project
+    media = client.app.state.media
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    real = ui.remap_source(str(folder / "a.mp4"))
+    key, res = media._lookup(real)
+    res = (res[0], 1000.0, res[2], res[3])
+    media._focus(p, real, key, res, 100, 110)
+    window_ffmpeg.next_proc(0)
+    media._focus(p, real, key, res, 125, 135)
+    src = client.get(f"/api/projects/{pid}").json()["sources"][0]
+    assert [(w["lo"], w["hi"], w["state"]) for w in src["pending"]] == [
+        (90.0, 130.0, "encoding"),
+        (115.0, 155.0, "queued"),
+    ]
+    assert src["id"] == sid
+
+
+def test_window_endpoint_serves_ranges_and_refuses_what_is_not_ready(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+) -> None:
+    pid, _, _, _ = hevc_project
+    media = client.app.state.media
+    base = f"/api/projects/{pid}"
+    token = client.headers["X-Cutpoint-Token"]
+    sid = client.get(base).json()["sources"][0]["id"]
+    ready = f"{base}/sources/{sid}/window/0-1000?t={token}"
+    assert client.get(ready).status_code == 409  # not probed or built yet
+
+    window_ffmpeg.hold = False
+    assert prepare(client, pid, sid, {"lo": 2, "hi": 4}).status_code == 200
+    wait_until(lambda: client.get(base).json()["sources"][0]["windows"])
+    res = client.get(ready, headers={"Range": "bytes=2-5"})
+    assert (res.status_code, res.content) == (206, b"2345")
+    assert res.headers["content-range"] == "bytes 2-5/10"
+    assert client.head(ready).status_code == 200
+    assert client.get(f"{base}/sources/{sid}/window/0-500?t={token}").status_code == 409
+    for bad in ("abc", "0-", "-5", "1-2-3", "xyz-5"):
+        assert client.get(f"{base}/sources/{sid}/window/{bad}?t={token}").status_code == 404, bad
+    assert client.get(f"{base}/sources/{'0' * 12}/window/0-1000?t={token}").status_code == 404
+    assert (
+        client.get(
+            f"{base}/sources/{sid}/window/0-1000", headers={"X-Cutpoint-Token": ""}
+        ).status_code
+        == 403
+    )
+
+    key = ui.Media.key(ui.remap_source(client.get(base).json()["sources"][0]["path"])) or ""
+    media.proxies[key] = "failed"
+    assert client.get(f"{base}/sources/{sid}/window/0-500?t={token}").status_code == 404
+
+
+def test_window_in_a_cache_folder_linked_outside_is_not_served_and_nothing_there_is_deleted(
+    client: TestClient,
+    hevc_project: tuple[str, Path, Path, Path],
+    window_ffmpeg: FakeWindowFfmpeg,
+    whole_builds: list[tuple],
+) -> None:
+    pid, sid, p, outside, key = media_link(client, hevc_project, "proxy")
+    media = client.app.state.media
+    window = outside / f"{key}.w0-1000.mp4"
+    window.write_bytes(b"outside")
+    media.windows[(p, key)] = {(0, 1000): window}  # as if it had been recorded before the link
+    token = client.headers["X-Cutpoint-Token"]
+    assert (
+        client.get(f"/api/projects/{pid}/sources/{sid}/window/0-1000?t={token}").status_code == 409
+    )
+    assert prepare(client, pid, sid, {"lo": 2, "hi": 4}).status_code == 409
+    assert not window_ffmpeg.procs
+    assert sorted(f.name for f in outside.iterdir()) == [window.name]
+
+
+def prune_setup(tmp_path: Path) -> tuple[ui.Media, Path, list[str], str, str]:
+    """A project with two sources; returns (media, ui/proxy folder, their paths, keys...)."""
+    p = tmp_path / "proj"
+    folder = p / ui.UI_DIR / "proxy"
+    folder.mkdir(parents=True)
+    paths = []
+    for name, data in (("a.mp4", b"x"), ("b.mp4", b"xy")):
+        (tmp_path / name).write_bytes(data)
+        paths.append(str(tmp_path / name))
+    keys = [ui.Media.key(ui.remap_source(s)) or "" for s in paths]
+    return ui.Media(), folder, paths, keys[0], keys[1]
+
+
+def test_prune_proxies_removes_leftovers_and_adopts_the_windows_that_are_still_wanted(
+    tmp_path: Path,
+) -> None:
+    media, folder, paths, a, b = prune_setup(tmp_path)
+    stale = "1" * 16
+    keep = [f"{a}.w0-500.mp4", f"{a}.w1000-1500.mp4", "notes.txt", f"{a}.w1-2.txt", f"{b}.mp4"]
+    gone = [f"{a}.part.mp4", f"{a}.w0-500.part.mp4", f"{stale}.w0-500.mp4", f"{b}.w0-500.mp4"]
+    for name in keep + gone:
+        (folder / name).write_bytes(b"x")
+    p = folder.parents[1]
+    media.prune_proxies(p, paths)
+    assert sorted(f.name for f in folder.iterdir()) == sorted(keep)
+    assert set(media.windows[(p, a)]) == {(0, 500), (1000, 1500)}
+    assert (p, b) not in media.windows
+    (folder / f"{a}.part.mp4").write_bytes(b"x")  # once per run and project
+    media.prune_proxies(p, paths)
+    assert (folder / f"{a}.part.mp4").exists()
+
+
+def test_prune_proxies_adopts_at_most_eight_windows_keeping_the_newest(tmp_path: Path) -> None:
+    media, folder, paths, a, _ = prune_setup(tmp_path)
+    for i in range(10):
+        f = folder / f"{a}.w{i * 1000}-{i * 1000 + 500}.mp4"
+        f.write_bytes(b"x")
+        os.utime(f, ns=(10**9 * (i + 1),) * 2)
+    media.prune_proxies(folder.parents[1], paths)
+    assert sorted(s[0] for s in media.windows[(folder.parents[1], a)]) == list(
+        range(2000, 10000, 1000)
+    )
+    assert len(list(folder.iterdir())) == 8
+
+
+def test_prune_proxies_deletes_nothing_through_a_link_to_a_folder_outside(
+    client: TestClient, hevc_project: tuple[str, Path, Path, Path]
+) -> None:
+    _, _, p, outside, key = media_link(client, hevc_project, "proxy")
+    names = [f"{key}.part.mp4", f"{key}.w0-500.mp4", f"{'1' * 16}.w0-500.mp4"]
+    for name in names:
+        (outside / name).write_bytes(b"x")
+    media = ui.Media()
+    media.prune_proxies(p, [str(hevc_project[1] / "a.mp4")])
+    assert sorted(f.name for f in outside.iterdir()) == sorted(names)
+    assert (p, key) not in media.windows
+
+
+@pytest.mark.slow
+@needs_ffmpeg
+def test_a_real_window_proxy_keeps_the_flash_and_the_beep_in_sync_from_a_keyframe(
+    tmp_path: Path,
+) -> None:
+    """A window from lo=3.0 of a source with a flash and a beep at 5.0 s: both land at 2.0 s."""
+    src = tmp_path / "src.mp4"
+    ffmpeg(
+        *("-f", "lavfi", "-i", "color=c=black:s=160x120:r=25:d=12"),
+        *("-f", "lavfi", "-i", "aevalsrc='if(between(t,5,5.1),0.8*sin(2*PI*1000*t),0)':s=48000:d=12"),
+        *("-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='between(t,5,5.03)'"),
+        *("-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "250", "-c:a", "aac", str(src)),
+    )  # fmt: skip
+    p = tmp_path / "proj"
+    p.mkdir()
+    key = ui.Media.key(src) or ""
+    media = ui.Media()
+    try:
+        media._build_window(ui.ProxyWindow(p, src, key, 300, 1000, 1, ""))
+    finally:
+        media.shutdown()
+    out = p / ui.UI_DIR / "proxy" / f"{key}.w300-1000.mp4"
+    assert out.is_file()
+    assert not list(p.rglob("*.part.mp4"))
+
+    def probe_csv(*args: str) -> list[list[str]]:
+        text = subprocess.run(
+            ["ffprobe", "-v", "error", *args, "-of", "csv=p=0", str(out)],
+            capture_output=True, text=True, check=True,
+        ).stdout  # fmt: skip
+        return [line.split(",") for line in text.split()]
+
+    assert float(probe_csv("-show_entries", "format=duration")[0][0]) == pytest.approx(
+        7.0, abs=0.15
+    )
+    frames = probe_csv("-select_streams", "v", "-show_entries", "frame=key_frame,pts_time")
+    assert frames[0][0] == "1"  # the first frame is a keyframe
+    pts = [float(f[1]) for f in frames]
+    gray = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(out), "-an", "-vf", "scale=8:8,format=gray",
+         "-fps_mode", "passthrough", "-f", "rawvideo", "-"],
+        capture_output=True, check=True,
+    ).stdout  # fmt: skip
+    means = np.frombuffer(gray, dtype=np.uint8).reshape(-1, 64).mean(axis=1)
+    bright = [i for i, m in enumerate(means) if m > 128]
+    assert bright, "the flash is missing"
+    assert pts[bright[0]] == pytest.approx(2.0, abs=0.04 + 1e-3)  # within one frame at 25 fps
+
+    start = float(probe_csv("-select_streams", "a", "-show_entries", "stream=start_time")[0][0])
+    pcm = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(out), "-vn", "-f", "s16le", "-ac", "1", "-ar", "48000", "-"],
+        capture_output=True, check=True,
+    ).stdout  # fmt: skip
+    samples = np.abs(np.frombuffer(pcm, dtype=np.int16).astype(float))
+    onset = int(np.argmax(samples > 0.3 * 32768))
+    assert samples[onset] > 0.3 * 32768, "the beep is missing"
+    assert start + onset / 48000 == pytest.approx(2.0, abs=0.025)
 
 
 # --- source list cache (#129) ---
