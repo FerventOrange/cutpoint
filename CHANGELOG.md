@@ -347,6 +347,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
   button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
   <name>…" in "Play sequence", or a preview being prepared on the stage) (#356, #357).
+- UI: on a wide window the page no longer scrolls past the Jobs bar. The screen-reader-only
+  labels in the moment rows were not clipped by their scrolling column, so a long list of
+  moments made the whole page taller than the window (#354).
 - HDR footage (HLG or PQ) and BT.2020 footage came out washed out: it was cut down to 8 bits
   with its HDR or BT.2020 tags kept, so players and editors that ignore those tags showed it
   with faded colors. `clips`, `extend` and `360` renders now convert it to SDR Rec.709 with
