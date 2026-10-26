@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +12,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cutpoint import crash
+from cutpoint import config, crash, stage, telemetry
+from cutpoint.pano import x3
 
 N = 600  # 60 s on the 0.1 s grid
 
@@ -228,3 +231,62 @@ def test_detect_project_dense_zero_never_lowers_a_speed_drop_bypass(tmp_path, mo
     assert got["drop"]["confirmed"] and got["normal"]["confirmed"]
     assert got["drop"]["confidence"] >= round(pre["drop"], 3)  # the bypass is never penalised
     assert got["normal"]["confidence"] < round(pre["normal"], 3)  # a normal candidate still drops
+
+
+# -- IMU parse shared with telemetry ----------------------------------------------------------
+
+
+def test_gravity_is_the_unit_low_passed_accelerometer() -> None:
+    acc = np.tile([0.0, 9.8, 0.0], (50, 1))
+    acc[25] = [0.0, 0.0, 9.8]  # one off-axis sample barely moves a 10-sample mean
+    g = telemetry.gravity(acc, 10)
+    assert np.allclose(np.linalg.norm(g, axis=1), 1.0)
+    assert g[25, 1] > 0.99
+    assert np.allclose(telemetry.gravity(acc, 0)[25], [0.0, 0.0, 1.0])  # k < 1: no smoothing
+
+
+def test_parse_imu_drops_samples_without_both_sensors(monkeypatch) -> None:
+    samples = [
+        {"timestamp_ms": 5.0 * i, "accl": [0.0, 9.8, 0.0], "gyro": [1.0, 2.0, 3.0]}
+        for i in range(12)
+    ]
+    samples[3]["gyro"] = None
+
+    class Parser:
+        def __init__(self, _path):
+            pass
+
+        def telemetry(self):
+            return [{}]
+
+        def normalized_imu(self):
+            return samples
+
+    monkeypatch.setitem(sys.modules, "telemetry_parser", SimpleNamespace(Parser=Parser))
+    _, groups, t, acc, gyr = telemetry.parse_imu(Path("a.mp4"))
+    assert groups == [{}] and acc.shape == gyr.shape == (11, 3)
+    assert t[:4].tolist() == [0.0, 0.005, 0.01, 0.02]
+    samples[4:] = []  # 3 usable samples: too few for the crash grids
+    assert len(telemetry.parse_imu(Path("a.mp4"))[2]) == 3
+    assert crash._compute_imu(Path("a.mp4"), 10.0) is None
+
+
+@pytest.mark.parametrize(
+    ("trailer", "staged", "remote", "read", "unstaged"),
+    [
+        ("/nas/VID_00_.insv", None, True, "/nas/VID_00_.insv", False),  # X3: the IMU trailer
+        (None, "/local/GX01.mp4", True, "/local/GX01.mp4", False),  # the staged copy
+        (None, None, True, "/nas/GX01.mp4", True),  # remote, read in place
+        (None, None, False, "/nas/GX01.mp4", False),
+    ],
+)
+def test_imu_read_path_prefers_the_x3_trailer_then_the_staged_copy(
+    monkeypatch, trailer, staged, remote, read, unstaged
+) -> None:
+    src = Path("/nas/GX01.mp4")
+    monkeypatch.setattr(config, "remap_source", Path)
+    monkeypatch.setattr(x3, "imu_source", lambda _p: trailer and Path(trailer))
+    monkeypatch.setattr(stage, "staged_path", functools.cache(lambda p: staged or p))
+    monkeypatch.setattr(stage, "is_remote", lambda _p: remote)
+    io, x3_imu, read_path, got = telemetry.imu_read_path(src)
+    assert (io, x3_imu, read_path, got) == (src, trailer and Path(trailer), Path(read), unstaged)

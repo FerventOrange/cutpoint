@@ -56,6 +56,7 @@ from cutpoint.clips import (
 )
 from cutpoint.config import is_absolute_any, remap_source, source_path
 from cutpoint.crash import load_crashes
+from cutpoint.dsp import mask_runs
 from cutpoint.events.sheets import contact_sheet
 from cutpoint.events.visual import load_visual
 from cutpoint.pano import views
@@ -337,9 +338,7 @@ def _mean(x: np.ndarray, a: float, b: float) -> float:
 
 def _spans(mask: np.ndarray, min_s: float) -> list[tuple[float, float]]:
     """``(start, end)`` seconds of the runs of ``mask > 0`` lasting ``min_s`` or more."""
-    d = np.diff(np.r_[0, (mask > 0).astype(int), 0])
-    ij = zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1), strict=True)
-    return [(i * DT, j * DT) for i, j in ij if (j - i) * DT >= min_s]
+    return [(i * DT, j * DT) for i, j in mask_runs(mask > 0) if (j - i) * DT >= min_s]
 
 
 def _paint(n: int, spans: list[tuple[float, float]]) -> np.ndarray:

@@ -160,7 +160,7 @@ def proc_mounts(monkeypatch: pytest.MonkeyPatch):
 )
 def test_mount_picks_the_deepest_mount(proc_mounts, path, fstype, remote):
     assert stage._mount(Path(path))[1] == fstype
-    assert crash._is_remote(Path(path)) is remote
+    assert stage.is_remote(Path(path)) is remote
 
 
 @posix_only
@@ -170,13 +170,13 @@ def test_mount_without_proc_mounts_is_local(monkeypatch):
 
     monkeypatch.setattr(Path, "read_text", boom)
     assert stage._mount(Path("/x/v.mp4")) == ("", "")
-    assert crash._is_remote(Path("/x/v.mp4")) is False
+    assert stage.is_remote(Path("/x/v.mp4")) is False
 
 
 @pytest.mark.parametrize(("drive", "remote"), [("C:", False), ("d:", False), ("F:", True)])
 def test_is_remote_windows_uses_the_drive_letter(plat, drive, remote):
     plat("win32")
-    assert crash._is_remote(PureWindowsPath(drive + "\\v.mp4")) is remote  # type: ignore[arg-type]
+    assert stage.is_remote(PureWindowsPath(drive + "\\v.mp4")) is remote  # type: ignore[arg-type]
 
 
 # -- stage: storage label ---------------------------------------------------------------------
@@ -291,14 +291,18 @@ def test_no_readable_telemetry_is_logged_once_at_info(tmp_path, monkeypatch, cap
     video = tmp_path / "plain.mp4"
     with caplog.at_level(logging.DEBUG):
         assert telemetry._compute(video, 10.0, telemetry.TelemetryParams()) is None
-        assert crash._parse_imu(video) is None
+        assert crash._compute_imu(video, 10.0) is None
     hits = [r for r in caplog.records if "no readable GoPro telemetry" in r.message]
     assert [r.levelno for r in hits if r.levelno >= logging.INFO] == [logging.INFO]
     assert len(hits) == 2  # the second one is DEBUG, hidden at the default level
     caplog.clear()
     with caplog.at_level(logging.INFO):
-        crash._parse_imu(video)
+        crash._compute_imu(video, 10.0)
     assert not [r for r in caplog.records if "no readable GoPro" in r.message]
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        crash._compute_imu(video, 10.0, force=True)
+    assert [r.levelno for r in caplog.records if "no readable GoPro" in r.message] == [logging.INFO]
 
 
 def test_forced_crash_run_logs_missing_telemetry_at_info(home, tmp_path, monkeypatch, caplog):

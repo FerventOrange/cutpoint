@@ -61,8 +61,6 @@ from typing import Any
 import numpy as np
 
 from cutpoint import activity, cache, jsonout
-from cutpoint.dsp import conv_same
-from cutpoint.stage import is_remote as _is_remote
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -222,35 +220,6 @@ def _gpmf_copy(src: Path, tmp: Path) -> Path | None:
     return dst if dst.exists() and dst.stat().st_size > 0 else None
 
 
-def _parse_imu(
-    path: Path, force: bool = False
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[Any]] | None:
-    """``(t_s, accel m/s^2 (N, 3), gyro deg/s (N, 3), telemetry groups)`` or None.
-
-    ``force`` (``crashes --force``) logs a parse failure at INFO: the grids are
-    then recomputed before ``telemetry.extract`` runs, which may hit its cache.
-    """
-    import telemetry_parser as tp_mod  # noqa: PLC0415
-
-    try:
-        parser = tp_mod.Parser(str(path))
-        groups = parser.telemetry()
-        imu = parser.normalized_imu()
-    except Exception as err:  # noqa: BLE001 - the Rust parser raises plain Exceptions
-        # Unforced: DEBUG, as telemetry.extract (run first on the same source) logged it
-        # at INFO when it parsed the file.
-        level = logging.INFO if force else logging.DEBUG
-        logger.log(level, "%s: no readable GoPro telemetry (%s)", path.name, err)
-        return None
-    imu = [s for s in imu or [] if s.get("accl") is not None and s.get("gyro") is not None]
-    if len(imu) < 10:
-        return None
-    t = np.array([s["timestamp_ms"] for s in imu]) / 1000.0
-    acc = np.array([s["accl"] for s in imu], dtype=float)
-    gyr = np.array([s["gyro"] for s in imu], dtype=float)
-    return t, acc, gyr, groups
-
-
 def _full_scale(groups: list[Any], key: str) -> float | None:
     """Per-axis full scale of a GPMF stream in its own unit (int16 max / SCAL)."""
     for g in groups:
@@ -293,19 +262,18 @@ def _grav_stream(groups: list[Any]) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(ts), v
 
 
-def _lowpass(x: np.ndarray, k: int) -> np.ndarray:
-
-    k = max(1, k)
-    return np.stack([conv_same(x[:, i], np.ones(k) / k) for i in range(x.shape[1])], 1)
-
-
 def _compute_imu(
     read_path: Path, duration: float, force: bool = False
 ) -> dict[str, np.ndarray] | None:
-    parsed = _parse_imu(read_path, force)
-    if parsed is None:
+    from cutpoint.telemetry import gravity, parse_imu  # noqa: PLC0415
+
+    # ``force`` (``crashes --force``) logs a parse failure at INFO: the grids are then
+    # recomputed before ``telemetry.extract`` runs, which may hit its cache. Unforced:
+    # DEBUG, as telemetry.extract (run first on the same source) logged it at INFO.
+    parsed = parse_imu(read_path, logging.INFO if force else logging.DEBUG)
+    if parsed is None or len(parsed[2]) < 10:
         return None
-    t, acc, gyr, groups = parsed
+    _, groups, t, acc, gyr = parsed
     n = max(1, int(duration / DT) + 1)
     fs = (len(t) - 1) / max(t[-1] - t[0], 1e-6)
     idx = np.clip((t / DT).astype(int), 0, n - 1)
@@ -321,8 +289,7 @@ def _compute_imu(
     # Off-axis rotation: the gyro component perpendicular to gravity (1 s
     # low-pass of the accelerometer). Looking around / turning is yaw about
     # gravity; a fall pitches and rolls the head.
-    grav_lp = _lowpass(acc, int(fs))
-    grav_lp /= np.linalg.norm(grav_lp, axis=1, keepdims=True) + 1e-9
+    grav_lp = gravity(acc, int(fs))
     yaw = (gyr * grav_lp).sum(1)
     perp = np.linalg.norm(gyr - yaw[:, None] * grav_lp, axis=1)
     dt = np.diff(t, prepend=t[0])
@@ -347,8 +314,7 @@ def _compute_imu(
     # while tumbling), else a 0.5 s low-pass of the accelerometer.
     gt, gv = _grav_stream(groups)
     if len(gt) < 10:
-        gt, gv = t, _lowpass(acc, int(fs / 2))
-        gv /= np.linalg.norm(gv, axis=1, keepdims=True) + 1e-9
+        gt, gv = t, gravity(acc, int(fs / 2))
     gi = np.clip((gt / DT).astype(int), 0, n - 1)
     cnt = np.bincount(gi, minlength=n)[:n]
     for k, axis in enumerate("xyz"):
@@ -374,8 +340,7 @@ def imu_grids(
         force: Ignore the cache.
         tmp_dir: Where the GPMF-only remux of a remote file goes.
     """
-    from cutpoint.config import remap_source  # noqa: PLC0415
-    from cutpoint.stage import staged_path  # noqa: PLC0415
+    from cutpoint.telemetry import imu_read_path  # noqa: PLC0415
 
     path = cache.source_dir(src) / f"crashimu-v{IMU_VERSION}.npz"
     if not force and path.exists():
@@ -383,14 +348,10 @@ def imu_grids(
             if "none" in z.files:
                 return None
             return {k: z[k].astype(np.float64) for k in z.files}
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
-
-    io = remap_source(src)
-    x3_imu = imu_source(io)  # Insta360 X3: the _00_.insv trailer (read cheaply)
-    read_path = x3_imu or Path(staged_path(str(io)))
+    io, _, read_path, unstaged = imu_read_path(src)
     t0 = time.perf_counter()
     grids = None
-    if x3_imu is None and read_path == io and _is_remote(io):
+    if unstaged:
         with tempfile.TemporaryDirectory(dir=tmp_dir) as tmp:
             small = _gpmf_copy(io, Path(tmp))
             if small is not None:

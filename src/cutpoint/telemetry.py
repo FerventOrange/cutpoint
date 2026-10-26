@@ -48,7 +48,6 @@ import struct
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +55,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.config import source_path
-from cutpoint.dsp import conv_same
+from cutpoint.dsp import clean_mask, conv_same, mask_runs
 
 logger = logging.getLogger(__name__)
 
@@ -355,24 +354,17 @@ def _rolling_median(x: np.ndarray, k: int) -> np.ndarray:
             return np.nanmedian(win, axis=1)
 
 
-def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
-    """``[start, end)`` index pairs of True runs."""
-    m = np.concatenate([[False], mask.astype(bool), [False]])
-    d = np.flatnonzero(np.diff(m.astype(int)))
-    return list(zip(d[::2], d[1::2], strict=True))  # padded mask: rises and falls pair up
+def paint_spans(n: int, spans: list[tuple[float, float, float]]) -> np.ndarray:
+    """``n`` bins, each the largest value of the ``(start_s, end_s, value)`` spans over it.
 
-
-def _clean_mask(mask: np.ndarray, close_bins: int, min_bins: int) -> np.ndarray:
-    """Close gaps shorter than ``close_bins``, then drop runs shorter than ``min_bins``."""
-    out = mask.astype(bool).copy()
-    runs = _runs(out)
-    for (_, e0), (s1, _) in pairwise(runs):
-        if s1 - e0 <= close_bins:
-            out[e0:s1] = True
-    for s, e in _runs(out):
-        if e - s < min_bins:
-            out[s:e] = False
-    return out
+    Both ends are inclusive (the bin holding ``end_s`` is painted); 0 elsewhere.
+    """
+    x = np.zeros(n)
+    for a, b, v in spans:
+        i, j = max(0, int(a / DT)), min(n, int(b / DT) + 1)
+        if i < j:
+            x[i:j] = np.maximum(x[i:j], v)
+    return x
 
 
 # --------------------------------------------------------------------------- detection
@@ -387,7 +379,7 @@ def _airtime_events(
     k = max(1, round(0.05 * fs))
     ams = conv_same(am, np.ones(k) / k)
     ff = ams < p.freefall_g
-    runs = _runs(ff)
+    runs = mask_runs(ff)
     merged: list[list[int]] = []
     for s, e in runs:  # bridge 60 ms flickers
         if merged and (t[s] - t[merged[-1][1] - 1]) < 0.06:
@@ -516,42 +508,81 @@ def _crash_events(
 def _plateau(
     n: int, events: list[dict[str, Any]], value_key: str | None, pad_s: float = 0.3
 ) -> np.ndarray:
-    x = np.zeros(n)
-    for e in events:
-        a, b = int(max(0.0, e["t"] - pad_s) / DT), int((e["end"] + pad_s) / DT) + 1
-        v = 1.0 if value_key is None else float(e[value_key])
-        x[a : min(n, b)] = np.maximum(x[a : min(n, b)], v)
-    return x
+    spans = [
+        (e["t"] - pad_s, e["end"] + pad_s, 1.0 if value_key is None else float(e[value_key]))
+        for e in events
+    ]
+    return paint_spans(n, spans)
 
 
-# --------------------------------------------------------------------------- main entry
-def _compute(path: Path, duration: float, p: TelemetryParams) -> Telemetry | None:
+# --------------------------------------------------------------------------- IMU (shared)
+def imu_read_path(src: Path) -> tuple[Path, Path | None, Path, bool]:
+    """Where the IMU of ``src`` is read: ``(io, x3_imu, read_path, unstaged)``.
+
+    ``io`` is the remapped source, ``x3_imu`` the Insta360 X3 ``_00_.insv`` (its
+    IMU trailer is cheap to read) or None, ``read_path`` the file to parse (the
+    staged copy when there is one); ``unstaged`` is True for a remote GoPro file
+    read in place.
+    """
+    from cutpoint.config import remap_source  # noqa: PLC0415
+    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+    from cutpoint.stage import is_remote, staged_path  # noqa: PLC0415
+
+    io = remap_source(src)
+    x3_imu = imu_source(io)
+    read_path = x3_imu or Path(staged_path(str(io)))
+    return io, x3_imu, read_path, x3_imu is None and read_path == io and is_remote(io)
+
+
+def parse_imu(
+    path: Path, level: int = logging.INFO
+) -> tuple[Any, list[Any], np.ndarray, np.ndarray, np.ndarray] | None:
+    """``(parser, groups, t_s, accel m/s^2 (N, 3), gyro deg/s (N, 3))``, or None.
+
+    None (logged at ``level``) when telemetry-parser cannot read ``path``; the
+    arrays are empty when no sample has both sensors.
+    """
     import telemetry_parser as tp_mod  # noqa: PLC0415
 
-    t0 = time.perf_counter()
     try:
         parser = tp_mod.Parser(str(path))
         groups = parser.telemetry()
         imu = parser.normalized_imu()
     except Exception as err:  # noqa: BLE001 - the Rust parser raises plain Exceptions
-        logger.info("%s: no readable GoPro telemetry (%s)", path.name, err)
+        logger.log(level, "%s: no readable GoPro telemetry (%s)", path.name, err)
         return None
     # A sample can lack one sensor (seen on HERO13: 1 of 79k with accl None).
     imu = [s for s in imu or [] if s.get("accl") is not None and s.get("gyro") is not None]
-    if not imu or not groups:
-        logger.info("%s: no IMU telemetry", path.name)
-        return None
-    n = max(1, int(duration / DT) + 1)
     t = np.array([s["timestamp_ms"] for s in imu]) / 1000.0
     acc = np.array([s["accl"] for s in imu], dtype=float)
     gyr = np.array([s["gyro"] for s in imu], dtype=float)
+    return parser, groups, t, acc, gyr
+
+
+def gravity(acc: np.ndarray, k: int) -> np.ndarray:
+    """Unit gravity direction per sample: ``k``-sample low-pass of the accelerometer."""
+    k = max(1, k)
+    g = np.stack([conv_same(acc[:, i], np.ones(k) / k) for i in range(acc.shape[1])], 1)
+    g /= np.linalg.norm(g, axis=1, keepdims=True) + 1e-9
+    return g
+
+
+# --------------------------------------------------------------------------- main entry
+def _compute(path: Path, duration: float, p: TelemetryParams) -> Telemetry | None:
+    t0 = time.perf_counter()
+    parsed = parse_imu(path)
+    if parsed is None:
+        return None
+    parser, groups, t, acc, gyr = parsed
+    if not len(t) or not groups:
+        logger.info("%s: no IMU telemetry", path.name)
+        return None
+    n = max(1, int(duration / DT) + 1)
     fs = (len(t) - 1) / max(t[-1] - t[0], 1e-6)
     am = np.linalg.norm(acc, axis=1) / G
 
     # Gravity-aligned yaw rate: project the gyro onto the 1 s low-passed accel.
-    k = max(1, int(fs))
-    grav = np.stack([conv_same(acc[:, i], np.ones(k) / k) for i in range(3)], 1)
-    grav /= np.linalg.norm(grav, axis=1, keepdims=True) + 1e-9
+    grav = gravity(acc, int(fs))
     yaw = (gyr * grav).sum(1)
     gyro_mag = np.linalg.norm(gyr, axis=1)
 
@@ -598,10 +629,10 @@ def _compute(path: Path, duration: float, p: TelemetryParams) -> Telemetry | Non
         a_pad = np.pad(alt, h, mode="edge")
         climb = (a_pad[2 * h :] - a_pad[: -2 * h]) / 30.0
         lift = (np.nan_to_num(climb) >= p.lift_climb_mps) & (spd0 <= p.lift_max_kmh)
-        lift = _clean_mask(lift, int(20 / DT), int(p.lift_min_s / DT))
+        lift = clean_mask(lift, int(20 / DT), int(p.lift_min_s / DT))
     still_gps = (gps_ok > 0) & (spd0 < p.still_kmh)
     still_imu = (gps_ok == 0) & (grid["vibration"] < p.still_vibration_g)
-    still = _clean_mask(still_gps | still_imu, int(1.0 / DT), int(p.still_min_s / DT))
+    still = clean_mask(still_gps | still_imu, int(1.0 / DT), int(p.still_min_s / DT))
     still &= ~lift
     grid["lift_mask"], grid["still_mask"] = lift.astype(float), still.astype(float)
 
@@ -702,8 +733,7 @@ def extract(
         params: Detection thresholds.
         force: Ignore the cache.
     """
-    from cutpoint.config import remap_source  # noqa: PLC0415
-    from cutpoint.stage import is_remote, staged_path, storage_label  # noqa: PLC0415
+    from cutpoint.stage import storage_label  # noqa: PLC0415
 
     p = params or TelemetryParams()
     cdir = cache.source_dir(src)
@@ -723,12 +753,8 @@ def extract(
                 events=data["events"],
                 meta=data["meta"],
             )
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
-
-    io = remap_source(src)
-    x3_imu = imu_source(io)  # Insta360 X3: IMU trailer of the _00_.insv (cheap to read)
-    read_path = x3_imu or Path(staged_path(str(io)))
-    if x3_imu is None and read_path == io and is_remote(io):
+    io, x3_imu, read_path, unstaged = imu_read_path(src)
+    if unstaged:
         logger.warning(
             "%s is not staged: telemetry-parser reads the whole file from %s "
             "(run `cutpoint stage` first for speed)",
@@ -791,7 +817,7 @@ def join_runs(tels: list[Telemetry], max_gap_s: float = 240.0) -> dict[str, Any]
         tel, c = tels[i], clips[i]
         g = tel.grid
         moving = (g["lift_mask"] == 0) & (g["still_mask"] == 0)
-        for s, e in _runs(_clean_mask(moving, int(30 / DT), int(5 / DT))):
+        for s, e in mask_runs(clean_mask(moving, int(30 / DT), int(5 / DT))):
             base = c["start_epoch"]
             segs.append(
                 {

@@ -70,7 +70,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.config import path_key, source_path
-from cutpoint.telemetry import DT, Telemetry, extract, join_runs
+from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
 logger = logging.getLogger(__name__)
 
@@ -248,15 +248,6 @@ def write_telemetry_json(project: Path, ctx: SkiContext) -> Path:
 
 
 # --------------------------------------------------------------------------- features
-def _paint(n: int, spans: list[tuple[float, float, float]]) -> np.ndarray:
-    x = np.zeros(n)
-    for a, b, v in spans:
-        i, j = max(0, int(a / DT)), min(n, int(b / DT) + 1)
-        if i < j:
-            x[i:j] = np.maximum(x[i:j], v)
-    return x
-
-
 def _resize(x: np.ndarray, n: int, fill: float = 0.0) -> np.ndarray:
     if len(x) >= n:
         return x[:n]
@@ -313,7 +304,7 @@ def build_features(
         for e in ctx.audio_events.get(_key(src), [])
         if e.get("label") in norm
     ]
-    f["social"] = np.maximum(social, _paint(n, spans))
+    f["social"] = np.maximum(social, paint_spans(n, spans))
     friends = np.zeros(n)
     wins = ctx.windows.get(_key(src), [])
     if wins:
@@ -328,10 +319,10 @@ def build_features(
             # they are in view for minutes: scaled down by the window's idle tags.
             idle = max(tags.get(t, 0) for t in VLM_IDLE_TAGS) / 10
             fr_ride.append((a, b, tags.get("friends_faces", 0) / 10 * (1 - idle)))
-        f["scenic"], friends = _paint(n, scen), _paint(n, fr)
+        f["scenic"], friends = paint_spans(n, scen), paint_spans(n, fr)
         # ... and only outside the telemetry lift/still mask.
-        f["vlm"] = np.maximum(_paint(n, act), _paint(n, fr_ride) * (1 - mask))
-    f["wipeout"] = _paint(
+        f["vlm"] = np.maximum(paint_spans(n, act), paint_spans(n, fr_ride) * (1 - mask))
+    f["wipeout"] = paint_spans(
         n,
         [
             (c["t0"] - offset, c["t1"] - offset + 3.0, c["confidence"])

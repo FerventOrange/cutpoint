@@ -8,13 +8,13 @@ import numpy as np
 import pytest
 
 from cutpoint import ski
-from cutpoint.telemetry import DT, Telemetry
+from cutpoint.telemetry import DT, Telemetry, paint_spans
 
 N = 900  # 90 s on the 0.1 s grid
 
 
 def _grid(spans: list[tuple[float, float, float]]) -> np.ndarray:
-    return ski._paint(N, spans)
+    return paint_spans(N, spans)
 
 
 def _bump(t: float, height: float, width: float = 1.0) -> np.ndarray:
@@ -114,3 +114,9 @@ def test_friends_raise_a_moving_moment(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_action_tags_still_count_without_friends(monkeypatch: pytest.MonkeyPatch) -> None:
     f, *_ = _features(monkeypatch, [_win(50.0, 60.0, jump_air=9, standing_talking=3)])
     assert f["vlm"][int(55 / DT)] == pytest.approx(0.9)
+
+
+def test_paint_spans_keeps_the_largest_value_and_includes_the_end_bin() -> None:
+    x = paint_spans(10, [(0.25, 0.45, 0.5), (0.35, 0.55, 0.8), (-1.0, 0.05, 0.1), (0.95, 5.0, 0.3)])
+    assert x.tolist() == [0.1, 0.0, 0.5, 0.8, 0.8, 0.8, 0.0, 0.0, 0.0, 0.3]
+    assert paint_spans(5, [(2.0, 3.0, 1.0), (0.25, -0.55, 1.0)]).tolist() == [0.0] * 5  # empty
