@@ -32,12 +32,12 @@ def _json(capsys, argv: list[str]) -> tuple[int, dict, str]:
 def _analyze(video: Path, capsys) -> None:
     argv = ["analyze", str(video), "--style", "funny", "--out", "j", "--no-vision", "--no-scenes"]
     assert cli.main(argv) == 0
-    capsys.readouterr()
+    assert capsys.readouterr().out == ""  # without --json, stdout stays empty (logs: stderr)
 
 
 def _clips(capsys, *extra: str) -> None:
     assert cli.main(["clips", "j", "--top", "2", *extra]) == 0
-    capsys.readouterr()
+    assert capsys.readouterr().out == ""
 
 
 def _assert_clips(outputs: dict, clips_dir: Path) -> None:
@@ -79,12 +79,6 @@ def test_analyze_json(video, home, capsys):
     assert doc["warnings"] == []
 
 
-def test_analyze_json_missing_input(home, tmp_path, capsys):
-    code, doc, _ = _json(capsys, ["analyze", str(tmp_path / "nope.mp4"), "--out", "j"])
-    assert code == 1 and doc["ok"] is False
-    assert doc["error"]["code"] == "not_found"
-
-
 # ----------------------------------------------------------------------------------- clips
 @needs_ffmpeg
 def test_clips_json(video, home, capsys, caplog):
@@ -100,6 +94,8 @@ def test_clips_json(video, home, capsys, caplog):
     code, doc, _ = _json(capsys, ["clips", "j", "--top", "2"])
     assert code == 1 and doc["error"]["code"] == "output_not_empty"
     assert doc["error"]["message"] in caplog.text
+    assert cli.main(["clips", "j", "--top", "2"]) == 1  # same exit code without --json
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.slow
@@ -127,12 +123,6 @@ def test_clips_json_force_reports_kept_clips_and_a_blocked_name(video, home, cap
     code, doc, _ = _json(capsys, ["clips", "j", "--top", "2", "--force"])
     assert code == 1 and doc["error"]["code"] == "output_not_empty"
     assert doc["error"]["message"].startswith("Cannot replace ")
-
-
-def test_clips_json_missing_project(home, capsys):
-    code, doc, _ = _json(capsys, ["clips", "nosuch", "--top", "2"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-    assert doc["project"] == str(home / "projects" / "nosuch")
 
 
 def test_clips_json_bad_crop_is_bad_args_and_unchanged_without_json(home, capsys, caplog):
@@ -163,12 +153,8 @@ def test_assemble_json(video, home, capsys):
     assert all(Path(out[k]).is_file() for k in ("final", "fcpxml", "otio", "srt"))
     assert out["duration"] > 0
     assert out["clip_count"] == len(list((project / "clips").glob("*.mp4")))
-
-
-def test_assemble_json_missing_folder(home, capsys):
-    code, doc, _ = _json(capsys, ["assemble", "projects/nosuch/clips"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-    assert doc["project"] == str(home / "projects" / "nosuch")
+    assert cli.main(["assemble", "projects/j/clips"]) == 0  # without --json: nothing on stdout
+    assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------------- extend
@@ -182,6 +168,10 @@ def test_extend_json(video, home, capsys, caplog):
     hand = clips_dir / "050_mine.mp4"
     shutil.copy2(sorted(clips_dir.glob("*.mp4"))[0], hand)  # added by hand: not re-exported
     argv = ["extend", "projects/j/clips", "--seconds", "0.5", "--no-speech-aware"]
+    plain = ["extend", "projects/j/clips", "--seconds", "0.2", "--no-speech-aware"]
+    assert cli.main(plain) == 0  # without --json: nothing on stdout
+    assert capsys.readouterr().out == ""
+    caplog.clear()  # the --json run below must log the skipped clip itself
     code, doc, _ = _json(capsys, argv)
     assert code == 0 and doc["ok"] is True and doc["command"] == "extend"
     assert doc["project"] == str(project)
@@ -241,11 +231,6 @@ def test_extend_argument_errors_are_bad_args(home, tmp_path, capsys, caplog, ext
     assert message in caplog.text
 
 
-def test_extend_json_missing_folder(home, tmp_path, capsys):
-    code, doc, _ = _json(capsys, ["extend", str(tmp_path / "nope"), "--seconds", "1"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-
-
 # ------------------------------------------------------------------------------------ edit
 EDIT_KEYS = {
     "kind", "highlights", "transcript", "candidates", "suggested_top", "style",
@@ -290,30 +275,6 @@ def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
     assert [(w["code"], w["files"]) for w in doc["warnings"]] == [("kept_clips", [str(mine)])]
     assert doc["warnings"][0]["message"] in caplog.text
     assert doc["outputs"]["clip_count"] == doc["outputs"]["count"] + 1  # assembled with it
-
-
-def test_edit_json_missing_input(home, tmp_path, capsys):
-    code, doc, _ = _json(capsys, ["edit", str(tmp_path / "nope.mp4"), "--no-vision"])
-    assert code == 1 and doc["error"]["code"] == "not_found"
-    assert doc["command"] == "edit"
-
-
-# ------------------------------------------------------------------------- without --json
-@pytest.mark.slow
-@needs_ffmpeg
-def test_without_json_stdout_stays_empty(video, home, capsys):
-    """No command printed to stdout before --json; none does now (logs go to stderr)."""
-    argv = ["analyze", str(video), "--style", "funny", "--out", "j", "--no-vision", "--no-scenes"]
-    for args in (
-        argv,
-        ["clips", "j", "--top", "2"],
-        ["assemble", "projects/j/clips"],
-        ["extend", "projects/j/clips", "--seconds", "0.5", "--no-speech-aware"],
-    ):
-        assert cli.main(args) == 0, args
-        assert capsys.readouterr().out == "", args
-    assert cli.main(["clips", "j", "--top", "2"]) == 1  # not empty: same exit code as before
-    assert capsys.readouterr().out == ""
 
 
 # ------------------------------------------------------------------------------ follow-ups

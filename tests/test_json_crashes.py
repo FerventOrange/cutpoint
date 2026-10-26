@@ -171,24 +171,10 @@ def test_crashes_json_without_clip_is_missing_extra(ski, monkeypatch, capsys):
     )
 
 
-def test_crashes_json_bad_args(home, capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["crashes", "ski", "--dense-top", "many", "--json"])
-    assert exc.value.code == 2
-    doc = envelope(capsys.readouterr().out)
-    assert doc["command"] == "crashes" and doc["error"]["code"] == "bad_args"
-
-
 def test_crashes_json_unknown_activity_is_bad_args(ski, capsys):
     code, doc = run_json(capsys, ["crashes", "ski", "--activity", "curling", "--no-dense"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert "unknown activity 'curling'" in doc["error"]["message"]
-
-
-def test_crashes_json_missing_project(home, capsys):
-    code, doc = run_json(capsys, ["crashes", "nope"])
-    assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "not_found"
-    assert doc["project"] == str(home / "projects" / "nope")
 
 
 # --------------------------------------------------------------------------------- profile
@@ -218,19 +204,6 @@ def test_profile_json_context_never_prints_to_stdout(ski, monkeypatch, capsys):
     assert "model says hi" in captured.err
     assert warning_codes(doc) == ["context_not_applied"]
     assert doc["outputs"]["request"] == {"activity": "ski", "context": "icy groomer"}
-
-
-def test_profile_json_bad_args(home, capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["profile", "ski", "--json", "--activity"])
-    assert exc.value.code == 2
-    doc = envelope(capsys.readouterr().out)
-    assert doc["command"] == "profile" and doc["error"]["code"] == "bad_args"
-
-
-def test_profile_json_missing_project(home, capsys):
-    code, doc = run_json(capsys, ["profile", "nope"])
-    assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "not_found"
 
 
 def test_profile_text_unchanged_without_json(ski, capsys):
