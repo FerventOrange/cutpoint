@@ -522,9 +522,14 @@ class SourceInputs:
 
 
 def load_inputs(
-    src: Path, duration: float, params: CrashParams, tmp_dir: Path | None = None
+    src: Path,
+    duration: float,
+    params: CrashParams,
+    tmp_dir: Path | None = None,
+    language: str | None = None,
 ) -> SourceInputs:
-    """Gather the cached layers of one source (computing only the IMU grids)."""
+    """Gather the cached layers of one source (computing only the IMU grids); its words
+    from the transcript of ``language`` (:func:`cutpoint.sources.source_words`)."""
     from cutpoint.analyze import keyword_hits  # noqa: PLC0415
     from cutpoint.events import visual as V  # noqa: PLC0415
     from cutpoint.events import voice as VO  # noqa: PLC0415
@@ -537,7 +542,7 @@ def load_inputs(
     inp.imu = imu_grids(src, duration, tmp_dir=tmp_dir)
     inp.voice = VO.load_voice(src)
     inp.visual = V.load_visual(src)
-    inp.words = source_words(src)
+    inp.words = source_words(src, language)
     if inp.words:
         inp.hits = keyword_hits(inp.words, dict(params.words))
     if inp.imu is not None:
@@ -1039,6 +1044,13 @@ def write_sheet(
 
 
 # --------------------------------------------------------------------------- project
+def _project_language(project: Path) -> str | None:
+    """Transcription language the analysis of ``project`` (or the one in progress) forced."""
+    from cutpoint.events.common import load_highlights  # noqa: PLC0415
+
+    return (load_highlights(project).get("settings") or {}).get("language")
+
+
 def _project_sources(project: Path) -> list[tuple[Path, float]]:
     from cutpoint.events.common import load_highlights  # noqa: PLC0415
 
@@ -1174,11 +1186,12 @@ def detect_project(
     t_start = time.perf_counter()
     timings: dict[str, float] = {}
     inputs: dict[str, SourceInputs] = {}
+    language = _project_language(project)
     t0 = time.perf_counter()
     for src, dur in sources:
         if force:
             imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
-        inp = inputs[str(src)] = load_inputs(src, dur, p, tmp_dir)
+        inp = inputs[str(src)] = load_inputs(src, dur, p, tmp_dir, language)
         if inp.imu is None:
             jsonout.warn(
                 "no_telemetry",

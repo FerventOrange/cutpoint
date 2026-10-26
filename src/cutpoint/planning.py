@@ -216,6 +216,7 @@ def speech_pass[P: SpeechPlan](
     fit_end: Callable[[dict[str, Any]], bool],
     hi_clamp: Callable[[P, float], float] | None = None,
     words_cache: dict[Path, list[dict[str, Any]] | None] | None = None,
+    language: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Run the speech-aware boundary pass on planned clips (updates their in/out).
 
@@ -233,6 +234,8 @@ def speech_pass[P: SpeechPlan](
             the source duration, e.g. to stay before a recorded read error.
         words_cache: ``{source path: transcript words}`` shared with earlier
             steps (filled as needed).
+        language: Transcript language the analysis forced; None: the detected one
+            (:func:`cutpoint.sources.source_words`).
 
     Returns:
         ``{clip name: manifest record}`` for the clips the pass looked at.
@@ -257,7 +260,7 @@ def speech_pass[P: SpeechPlan](
         key = e["source"]
         if key not in maps:
             if src not in words:
-                words[src] = sources.source_words(src)
+                words[src] = sources.source_words(src, language)
             maps[key] = boundaries.build_speech_map(
                 src, words[src], events.get(str(Path(key))), speech
             )

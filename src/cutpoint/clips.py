@@ -509,6 +509,7 @@ def plan_clips(
     crop: str | None = None,
     project_cfg: dict[str, Any] | None = None,
     pano: PanoExporter | None = None,
+    language: str | None = None,
 ) -> list[ClipPlan]:
     """Plan the clips of ``ordered`` moments: names, tails, padding, speech, crops.
 
@@ -529,6 +530,7 @@ def plan_clips(
         crop: ``--crop`` spec for every source (None: segment / project.json).
         project_cfg: The project's project.json.
         pano: 360 exporter; the moments it handles are not cropped.
+        language: Transcript language the analysis forced (None: the detected one).
 
     Returns:
         One :class:`ClipPlan` per moment, in order.
@@ -556,7 +558,7 @@ def plan_clips(
         if "tail" in m:
             settings = TailSettings(fixed=m["tail"])
         if src not in words_cache and settings.enabled and settings.fixed is None:
-            words_cache[src] = sources.source_words(src)
+            words_cache[src] = sources.source_words(src, language)
 
         def audio(t0: float, t1: float, s: Path = src, i: MediaInfo = info):
             return sources.audio_window(s, i, t0, t1)
@@ -565,7 +567,7 @@ def plan_clips(
         payoffs: list[str] = []
         if event_settings.enabled and m.get("smart_tail") is not False and "tail" not in m:
             if src not in words_cache:
-                words_cache[src] = sources.source_words(src)
+                words_cache[src] = sources.source_words(src, language)
             ev_end, ev_reason, payoffs = event_tail(
                 start,
                 res.end,
@@ -589,7 +591,12 @@ def plan_clips(
         )
 
     speech_recs = speech_pass(
-        plans, speech, project, fit_end=lambda e: "tail" not in e, words_cache=words_cache
+        plans,
+        speech,
+        project,
+        fit_end=lambda e: "tail" not in e,
+        words_cache=words_cache,
+        language=language,
     )
     detected: dict[Path, Crop | None] = {}
     for plan in plans:
@@ -613,6 +620,7 @@ def render_clips(
     pano: PanoExporter | None = None,
     protected_srts: set[str] | None = None,
     peaks: list[str] | None = None,
+    language: str | None = None,
 ) -> list[RenderResult]:
     """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
     its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
@@ -624,6 +632,8 @@ def render_clips(
     folder that an earlier run did not write; a clip with such a name gets no ``.srt``
     (one WARNING names them).
 
+    ``language``: transcript language of the subtitles (None: the detected one).
+
     Returns:
         One :class:`RenderResult` per plan, in order.
 
@@ -631,7 +641,7 @@ def render_clips(
         ValueError: If a 360 plan is given without ``pano``.
     """
     results: list[RenderResult] = []
-    subs = srt.ClipSubtitles(protected_srts)
+    subs = srt.ClipSubtitles(protected_srts, language)
     peaks = peaks or [""] * len(plans)
     for plan, peak in zip(plans, peaks, strict=True):
         m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
@@ -988,6 +998,7 @@ def export_clips(
         except ValueError as err:
             raise jsonout.ArgumentError(str(err)) from None
     highlights = cache.load_json(project / "highlights.json")
+    language = ((highlights or {}).get("settings") or {}).get("language")
     style_name = (highlights or {}).get("style", "gaming")
     if segments is not None:
         ordered = load_segments(segments)
@@ -1082,6 +1093,7 @@ def export_clips(
             crop=crop,
             project_cfg=project_cfg,
             pano=pano,
+            language=language,
         )
         # --force replaces only what an earlier run made, never a file this run reads.
         replace, kept_sources, kept, had_manifest, protected_srts = _replaced_files(
@@ -1099,6 +1111,7 @@ def export_clips(
             pano=pano,
             protected_srts=protected_srts,
             peaks=peaks,
+            language=language,
         )
         write_manifest(
             work,

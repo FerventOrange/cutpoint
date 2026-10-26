@@ -477,7 +477,7 @@ def test_assemble_limits_without_loudnorm_whenever_compress_peaks_is_on(
         out.write_bytes(b"joined")
         return 0.0
 
-    def ceiling(stage, out, captions, model, dst, loudnorm):
+    def ceiling(stage, out, captions, model, dst, loudnorm, language=None):
         calls["ceiling"] = loudnorm
         dst.write_bytes(b"final")
         return -14.0, -2.0
