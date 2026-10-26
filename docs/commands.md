@@ -233,6 +233,11 @@ may leave partial output folders, which are not offered for assembly.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
 under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matching clip export.
+While that whole-source proxy builds, a short proxy of the selected moment (10 s before it to
+20 s after it) is encoded first, so the moment can be previewed and trimmed within seconds.
+Scrubbing or playing past it shows "Preparing this part of the source…" and prepares that part
+the same way; the whole-source proxy takes over once it is ready. HDR and BT.2020 sources are
+previewed converted to SDR, as in exports.
 The preview transport has a mute button and a volume slider next to Play. One setting covers every
 preview (moments, clips and final) and is remembered per browser; the default is unmuted at 100%.
 `M` toggles mute, and Space plays or pauses even when the volume controls have focus.
@@ -242,8 +247,8 @@ the source with the clip (gold) and the analyzed range (dashed) as markers; it o
 plus half its length (at least 10 s) either side. "Zoom out", "Zoom in" and "Fit clip" change
 the view, the overview strip next to them shows the view in the whole source and pans it (drag
 or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
-playhead during playback. On the rail, PageUp and PageDown move the playhead by a tenth of the
-view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
+playhead during playback. On the rail, the arrow keys move the playhead by 0.5% of the view (at
+least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
 rail widens to show it. Clips longer than 10 minutes get a note under the trim fields.
 "Play sequence" in the Sequence header previews the cut without exporting: it plays each clip
 from its current start to its end, in sequence order, from the sources (or their proxies), with
@@ -356,8 +361,11 @@ transcript, laughter, scene-cut density and speech continuity. Likely Whisper ha
 scene cuts and never cut a word.
 
 Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` (0-100),
-`signals`, `label` and a `transcript` snippet; with `--vision`, a rated candidate also has the
-model's own label in `vision_label` (`label` takes it only from a rating of 7).
+`signals`, `label` and a `transcript` snippet; `transcript_unsure` lists the snippet's words
+Whisper heard with confidence below 0.5 as `[index, confidence]`, the index counting words in
+`transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
+`--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
+only from a rating of 7).
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
 ### Analysis steps

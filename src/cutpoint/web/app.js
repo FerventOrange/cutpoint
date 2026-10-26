@@ -80,19 +80,36 @@ function current() {
   return { id, seg, cand, source: base.source, start: base.start, end: base.end, label: base.label || id };
 }
 
+/** A window proxy ``w`` ({lo, hi}) plays source time ``t``: not in its last frame, unless it ends with the source. */
+const covers = (w, t, dur) => t >= w.lo && (t < w.hi - FRAME || (!!dur && w.hi >= dur - FRAME && t <= w.hi));
+
 /**
- * How the preview plays a source: the media url, the source time at its 0 (``offset``) and the
- * source range it covers. Proxies and originals cover the whole source today; partial proxies
- * (#323) change only this helper.
+ * The file the preview plays source time ``t`` of ``src`` from: the media url, the source time at
+ * its 0 (``offset``) and the source range it covers. The whole source once it plays (as is or
+ * from its proxy); before that a ready window proxy covering ``t`` (#323), else null.
  */
-function playable(src) {
+function playable(src, t) {
   const dur = sourceDur(src.path) ?? (v.dataset.url === src.url && Number.isFinite(v.duration) ? v.duration : null);
-  return { url: src.url, offset: 0, lo: 0, hi: dur };
+  if (src.status === 'ready') return { url: src.url, offset: 0, lo: 0, hi: dur };
+  const w = (src.windows ?? []).filter((x) => t != null && covers(x, t, dur)).sort((a, b) => b.hi - a.hi)[0];
+  return w ? { url: w.url, offset: w.lo, lo: w.lo, hi: w.hi } : null;
 }
-const durOf = (c) => (srcOf(c.source) ? playable(srcOf(c.source)).hi : sourceDur(c.source));
-const offsetOf = (c) => (srcOf(c.source) ? playable(srcOf(c.source)).offset : 0);
+const durOf = (c) => {
+  const src = srcOf(c.source);
+  return src?.status === 'ready' ? playable(src, 0).hi : sourceDur(c.source);
+};
+/** The source time at the stage player's 0: a window proxy starts later in its source. */
+const offsetOf = () => Number(v.dataset.offset) || 0;
+/** The source range the stage player's file covers; ``hi`` null: to the end of the source. Null when nothing is loaded. */
+const loaded = () => (v.dataset.url ? { lo: offsetOf(), hi: v.dataset.hi ? Number(v.dataset.hi) : null } : null);
+/** The stage player holds a file of ``src``: its original or whole proxy, or one of its window proxies. */
+const ofSource = (src) => !!v.dataset.url && (v.dataset.url === src.url || v.dataset.url.startsWith(`${src.url.split('?')[0]}/window/`));
+const inLoaded = (t, dur) => {
+  const r = loaded();
+  return !!r && (r.hi == null || covers(r, t, dur));
+};
 /** The playhead in source time: a held scrub target or one waiting for the video (both source time), so the rail does not jump back. */
-const playhead = (c = current()) => seekWant?.t ?? pendingSeek ?? (v.currentTime || 0) + (c ? offsetOf(c) : 0);
+const playhead = (c = current()) => seekWant?.t ?? pendingSeek ?? (v.currentTime || 0) + (c ? offsetOf() : 0);
 
 /** A rail view spanning at least MIN_VIEW, shifted (not cut) to stay inside the source. */
 function clampView(lo, hi, dur) {
@@ -138,6 +155,7 @@ whenExpired((e) => {
   banner(e.message);
   S.expired = true;
   clearTimeout(S.prepTimer);
+  clearTimeout(S.partTimer);
   clearTimeout(S.jobTimer);
   clearTimeout(S.seqTimer);
   clearInterval(S.stepTimer);
@@ -508,7 +526,7 @@ function renderStage(seekToStart, keepVideo = false) {
   if (seekToStart) S.view = null; // a new moment starts on its fit view
   const inSeq = !!c.seg;
   $('#toggleBtn').textContent = inSeq ? 'Remove from sequence' : 'Add to sequence';
-  $('#transcript').textContent = c.cand?.transcript || 'No speech was transcribed for this moment.';
+  renderTranscript(c.cand);
   const sig = c.cand?.signals;
   const bits = sig
     ? Object.entries(sig).filter(([, n]) => typeof n === 'number' && n > 0).map(([k, n]) => `${k} ${n.toFixed(2)}`)
@@ -517,6 +535,25 @@ function renderStage(seekToStart, keepVideo = false) {
   $('#signals').textContent = c.cand ? `${kw}Score ${c.cand.score.toFixed(2)}${bits.length ? `. Signals: ${bits.join(', ')}` : ''}` : '';
   ensureVideo(seekToStart && !keepVideo ? c : null);
   renderTrim(!!seekToStart);
+}
+
+// Words Whisper was unsure of (analyze lists them as [index in transcript.split(' '), p]) get a
+// dotted underline and their confidence; without the list the transcript stays plain text.
+function renderTranscript(cand) {
+  const el = $('#transcript');
+  const text = cand?.transcript;
+  const unsure = new Map(Array.isArray(cand?.transcript_unsure) ? cand.transcript_unsure : []);
+  if (!text || !unsure.size) {
+    el.textContent = text || 'No speech was transcribed for this moment.';
+    return;
+  }
+  el.replaceChildren(...text.split(' ').flatMap((word, i) => {
+    const sep = i ? ' ' : '';
+    const p = unsure.get(i);
+    if (typeof p !== 'number') return [sep + word];
+    const pct = p < 0.005 ? '<1%' : `${Math.round(p * 100)}%`;
+    return [sep, h('span', { class: 'unsure', title: `Whisper confidence ${pct}` }, word, h('span', { class: 'vh' }, ' (unsure)'))];
+  }));
 }
 
 function renderTrim(force = false) {
@@ -614,20 +651,71 @@ function screenMsg(text) {
 }
 
 // Source proxies are made on demand: only the focused source is prepared, and only it is polled.
+// Keys "<project>:<path>": whole proxies asked for. Window requests dedupe only against the last
+// one (``lastPart``, the key plus "@<lo>-<hi>"): the server may drop a window (superseded, stopped,
+// evicted, failed), so asking for an earlier range again must reach it.
 const prepareRequested = new Set();
+let lastPart = null;
+const PART_MSG = 'Preparing this part of the source…';
+const MOMENT_MSG = 'Preparing this moment\'s preview…';
 
-async function prepareSource(src) {
+/** Forget the prepare requests of ``src`` (whole and window), so they are made again. */
+function forgetPrepared(src) {
   const k = `${S.id}:${src.path}`;
-  if (prepareRequested.has(k)) return;
-  prepareRequested.add(k);
+  prepareRequested.delete(k);
+  if (lastPart?.startsWith(`${k}@`)) lastPart = null;
+}
+
+/** Queue the proxy of ``src``; with ``range`` ({lo, hi}), a window proxy around it first (the server queues both). */
+async function prepareSource(src, range) {
+  const whole = `${S.id}:${src.path}`;
+  const k = range ? `${whole}@${range.lo}-${range.hi}` : null;
+  const had = prepareRequested.has(whole);
+  if (had && (!range || k === lastPart)) return;
+  prepareRequested.add(whole); // a window request queues the whole proxy too
+  if (range) lastPart = k;
   const sid = src.id ?? decodeURIComponent(src.url.split('?')[0].split('/').pop());
   try {
-    await api(`/api/projects/${encodeURIComponent(S.id)}/sources/${encodeURIComponent(sid)}/prepare`, { method: 'POST' });
+    await api(`/api/projects/${encodeURIComponent(S.id)}/sources/${encodeURIComponent(sid)}/prepare`, { method: 'POST', body: range });
     refreshProject();
   } catch (e) {
-    prepareRequested.delete(k);
+    if (!had) prepareRequested.delete(whole);
+    if (range && lastPart === k) lastPart = null;
     fail(e);
   }
+}
+
+/** Ask for a window proxy around [lo, hi] of ``src`` unless one being built covers it; ``delay`` ms debounces scrubbing. */
+function requestPart(src, lo, hi, delay = 0) {
+  clearTimeout(S.partTimer);
+  const range = { lo: round2(Math.max(0, lo)), hi: round2(Math.max(0, hi)) };
+  if ((src.pending ?? []).some((p) => p.lo <= range.lo && p.hi >= range.hi)) return;
+  const id = S.id;
+  if (delay) S.partTimer = setTimeout(() => S.id === id && prepareSource(src, range), delay);
+  else prepareSource(src, range);
+}
+
+/** Load ``p`` (from ``playable``) into the stage player, to show source time ``t``. */
+function loadFile(src, p, t) {
+  v.dataset.url = p.url;
+  v.dataset.offset = p.offset;
+  if (p.url === src.url) delete v.dataset.hi;
+  else v.dataset.hi = p.hi;
+  seekWant = null;
+  pendingSeek = t;
+  screenMsg('Loading video…');
+  v.src = p.url;
+  showPlaying(false); // a new src stops playback without a pause event
+}
+
+/** Nothing ready covers source time ``t``: hold the playhead there, paused, until a window proxy around [lo, hi] is built. */
+function awaitPart(src, t, delay = 0, lo = t, hi = t) {
+  v.pause();
+  seekWant = null;
+  pendingSeek = t;
+  screenMsg(PART_MSG);
+  requestPart(src, lo, hi, delay);
+  updatePlayhead();
 }
 
 function ensureVideo(seekC) {
@@ -649,40 +737,52 @@ function ensureVideo(seekC) {
   if (src.status === 'unknown') {
     // not probed yet (the project view never probes): preparing probes it and refreshes. Still
     // unknown after an earlier prepare (the file changed, or the server restarted): prepare again.
+    // A window around the moment comes with it, in case the source needs a proxy.
     const k = `${S.id}:${src.path}`;
-    if (!prepareRequested.has(k)) prepareSource(src);
+    const range = { lo: round2(c.start), hi: round2(c.end) };
+    if (!prepareRequested.has(k)) prepareSource(src, range);
     else
       S.prepTimer = setTimeout(() => {
-        prepareRequested.delete(k);
-        prepareSource(src);
+        forgetPrepared(src);
+        prepareSource(src, range);
       }, 2000);
     return wait('Loading video…');
   }
   if (src.status === 'needs-proxy' || src.status === 'preparing') {
+    // The whole proxy builds; a window proxy around the moment (or the playhead) plays meanwhile.
     const k = `${S.id}:${src.path}`;
-    if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src);
-    else if (src.status === 'needs-proxy')
+    if (src.status === 'needs-proxy' && prepareRequested.has(k))
       // requested before, but not building (the server restarted): prepare again
       S.prepTimer = setTimeout(() => {
-        prepareRequested.delete(k);
+        forgetPrepared(src);
         prepareSource(src);
       }, 2000);
     else S.prepTimer = setTimeout(refreshProject, 2000);
-    return wait(S.seqPlay ? `Preparing preview of ${baseName(c.source)}…` : 'Preparing a browser-playable preview of this source. It will start when ready.');
+    const mine = ofSource(src);
+    const at = want ?? (mine ? playhead(c) : c.start);
+    const p = playable(src, at);
+    if ((mine && inLoaded(at, durOf(c))) || p) {
+      if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src); // no window request brings it
+      if (!mine || !inLoaded(at, durOf(c))) loadFile(src, p, at);
+      else if (seekC) seekTo(seekC.start);
+      return;
+    }
+    const moment = at >= c.start && at <= c.end;
+    const [lo, hi] = moment ? [c.start, c.end] : [at, at];
+    if (mine) return awaitPart(src, at, 0, lo, hi); // keeps the last frame
+    requestPart(src, lo, hi);
+    return wait(S.seqPlay ? `Preparing preview of ${baseName(c.source)}…` : moment ? MOMENT_MSG : PART_MSG);
   }
   if (src.status === 'failed') {
     $('#retryBtn').hidden = false;
     return wait('The browser-playable preview could not be built for this source. Retry it, or trim by timecode.');
   }
-  prepareRequested.delete(`${S.id}:${src.path}`); // ready: a later change to the file prepares again
-  const { url } = playable(src);
-  if (v.dataset.url !== url) {
-    v.dataset.url = url;
-    seekWant = null;
-    pendingSeek = want ?? c?.start ?? 0;
-    screenMsg('Loading video…');
-    v.src = url;
-    showPlaying(false); // a new src stops playback without a pause event
+  forgetPrepared(src); // ready: a later change to the file prepares again
+  const p = playable(src, 0);
+  // A window proxy playing on switches to the whole proxy at the next pause or seek.
+  const playingOn = v.dataset.hi && !v.paused && !v.error && inLoaded(want ?? playhead(c), durOf(c));
+  if (v.dataset.url !== p.url && !playingOn) {
+    loadFile(src, p, want ?? (ofSource(src) ? playhead(c) : c.start));
   } else if (seekC) seekTo(seekC.start);
 }
 
@@ -691,6 +791,8 @@ function unload(el) {
   el.pause();
   el.removeAttribute('src');
   delete el.dataset.url;
+  delete el.dataset.offset;
+  delete el.dataset.hi;
   el.load();
 }
 
@@ -698,6 +800,7 @@ function drop(msg) {
   seekWant = null;
   pendingSeek = null;
   unload(v);
+  showPlaying(false); // load() drops the queued pause event, so a playing video would keep the Pause icon
   screenMsg(msg);
 }
 
@@ -711,6 +814,12 @@ function seekTo(t, fast = false) {
   if (!c) return;
   const dur = durOf(c);
   t = Math.max(0, dur ? Math.min(t, dur) : t);
+  if (!S.seqPlay && !stays(c, t, dur)) {
+    wasIn = true;
+    follow(t);
+    updatePlayhead();
+    return;
+  }
   if (v.readyState < HTMLMediaElement.HAVE_METADATA) {
     pendingSeek = t; // applied on loadedmetadata
     wasIn = true;
@@ -719,15 +828,50 @@ function seekTo(t, fast = false) {
     return;
   }
   wasIn = true;
+  pendingSeek = null; // a target held while no file covered it
+  if ($('#screenMsg').textContent === PART_MSG) screenMsg('');
   if (v.seeking) seekWant = { t, fast };
   else {
     seekWant = null;
-    const vt = t - offsetOf(c);
+    const vt = t - offsetOf();
     if (fast && v.fastSeek) v.fastSeek(vt);
     else v.currentTime = vt;
   }
   follow(t);
   updatePlayhead();
+}
+
+/**
+ * Before a seek to ``t``: when the stage file does not cover it (a window proxy, #323) or the
+ * whole source became playable, load the ready file covering it, else hold the playhead there
+ * and ask for a window around it. True when the loaded file seeks there itself.
+ */
+function stays(c, t, dur) {
+  const src = srcOf(c.source);
+  if (!src || !['ready', 'needs-proxy', 'preparing'].includes(src.status)) return true;
+  if (!v.dataset.url && src.status === 'ready') return true; // ensureVideo is loading it
+  if (v.dataset.url && inLoaded(t, dur) && (src.status !== 'ready' || !v.dataset.hi)) return true;
+  const p = playable(src, t);
+  if (p) loadFile(src, p, t);
+  else awaitPart(src, t, 300);
+  return false;
+}
+
+/** Playback reached the end of the window proxy it plays: go on in a ready file covering what follows, else pause there until one is built. */
+function partEnd() {
+  const c = current();
+  const src = c && srcOf(c.source);
+  const r = loaded();
+  const dur = c && durOf(c);
+  if (!src || !r || r.hi == null || (dur && r.hi >= dur - FRAME)) return false;
+  const t = Math.min(playhead(c), r.hi);
+  if (t < r.hi - FRAME && !v.ended) return false;
+  const p = playable(src, t);
+  if (p && p.url !== v.dataset.url) {
+    loadFile(src, p, t);
+    v.play().catch(() => {});
+  } else awaitPart(src, t);
+  return true;
 }
 
 /** ``playing``: called every frame during playback, so the slider's spoken value waits for a pause. */
@@ -747,7 +891,7 @@ const loop = () => {
 
 function tick() {
   tickId = 0;
-  if (v.paused || !seqCheck()) return;
+  if (v.paused || !seqCheck() || (!S.seqPlay && partEnd())) return;
   // playback runs on past the clip end; the rail jumps along when the playhead runs off it, not
   // when the user panned away from it
   const t = playhead();
@@ -776,6 +920,7 @@ function togglePlay() {
   const c = current();
   if (!c || !v.src) return;
   if (!v.paused) return v.pause();
+  if (pendingSeek != null && !inLoaded(pendingSeek, durOf(c))) return; // waiting for that part's window proxy
   const dur = durOf(c);
   if (!S.seqPlay && (v.ended || (dur && playhead(c) >= dur - 0.05))) seekTo(c.start); // at the end of the source: replay the clip
   v.play().catch(() => {});
@@ -800,7 +945,10 @@ onStage('canplay', () => {
 onStage('playing', () => screenMsg(''));
 onStage('timeupdate', () => document.hidden && seqCheck()); // frames stop in a hidden tab; timeupdate still fires
 onStage('waiting', () => screenMsg('Buffering…'));
-onStage('ended', () => S.seqPlay && !S.seqPlay.wait && seqGo(S.seqPlay.i + 1)); // a source shorter than its clip
+onStage('ended', () => {
+  if (S.seqPlay) !S.seqPlay.wait && seqGo(S.seqPlay.i + 1); // a source shorter than its clip
+  else partEnd(); // a window proxy's end
+});
 onStage('error', () => {
   seekWant = null;
   if (!v.dataset.url) return;
@@ -811,7 +959,8 @@ onStage('error', () => {
   const show = () => {
     if (!S.expired && v.dataset.url === url) screenMsg(msg);
   };
-  startSession().then(show, show);
+  // A window proxy goes once the whole proxy is built: the refresh switches to that instead.
+  (v.dataset.hi ? refreshProject() : startSession()).then(show, show);
 });
 /** The play button is an icon; its name and tooltip say what a click does. */
 function showPlaying(playing) {
@@ -830,6 +979,8 @@ onStage('play', () => {
 onStage('pause', () => {
   showPlaying(false);
   updatePlayhead();
+  const src = current() && srcOf(current().source);
+  if (v.dataset.hi && src?.status === 'ready' && !S.seqPlay) ensureVideo(null); // the whole proxy is built: switch to it now
 });
 onStage('seeked', () => {
   const w = seekWant;
@@ -852,9 +1003,12 @@ $('#retryBtn').addEventListener('click', () => {
 seek.addEventListener('input', () => seekTo(Number(seek.value), true));
 seek.addEventListener('change', () => seekTo(Number(seek.value))); // released: an exact seek
 seek.addEventListener('keydown', (e) => {
-  if ((e.key !== 'PageUp' && e.key !== 'PageDown') || !S.view) return;
-  e.preventDefault(); // PageUp/PageDown: 10% of the rail
-  seekTo(playhead() + (e.key === 'PageUp' ? 1 : -1) * 0.1 * (S.view.hi - S.view.lo));
+  const d = { ArrowLeft: -0.005, ArrowDown: -0.005, ArrowRight: 0.005, ArrowUp: 0.005, PageDown: -0.1, PageUp: 0.1 }[e.key];
+  if (d == null || !S.view) return;
+  // arrows: 0.5% of the rail (at least 0.05 s), so a zoomed-out long source moves too; PageUp/PageDown: 10%
+  e.preventDefault();
+  const span = S.view.hi - S.view.lo;
+  seekTo(playhead() + Math.sign(d) * Math.max(0.05, Math.abs(d) * span));
 });
 $('#zoomOut').addEventListener('click', () => zoomBy(2));
 $('#zoomIn').addEventListener('click', () => zoomBy(0.5));
@@ -1487,11 +1641,13 @@ function cueNext() {
     return;
   }
   if (cued?.id === seg.id && cued.start === seg.start) return;
-  const { url, offset } = playable(src);
+  const { url, offset } = playable(src, seg.start);
   cued = { id: seg.id, start: seg.start, vt: seg.start - offset };
   if (o.dataset.url !== url) {
     o.preload = 'auto'; // buffer it, not only its metadata
     o.dataset.url = url;
+    o.dataset.offset = offset;
+    delete o.dataset.hi;
     o.src = url; // seeks to cued.vt on loadedmetadata
   } else if (o.readyState >= HTMLMediaElement.HAVE_METADATA) o.currentTime = cued.vt;
 }
@@ -1520,7 +1676,7 @@ function seqGo(j) {
   const o = spare();
   sp.i = j;
   sp.wait = false;
-  const url = ready(src) && playable(src).url;
+  const url = ready(src) && playable(src, seg.start).url;
   if (cur && seg.source === cur.source && Math.abs(playhead(cur) - seg.start) <= FRAME + GAP && v.dataset.url === url && !v.paused) {
     showMoment(seg.id, true); // contiguous: plays on without a cut
   } else if (cued?.id === seg.id && o.dataset.url === url && !o.error) {
@@ -1529,15 +1685,16 @@ function seqGo(j) {
     seekWant = null;
     pendingSeek = null;
     if (o.readyState < HTMLMediaElement.HAVE_METADATA) pendingSeek = seg.start; // applied on loadedmetadata
-    else if (Math.abs(o.currentTime - (seg.start - playable(src).offset)) > GAP) o.currentTime = seg.start - playable(src).offset;
+    else if (Math.abs(o.currentTime - (seg.start - offsetOf())) > GAP) o.currentTime = seg.start - offsetOf();
     o.classList.add('active');
     old.classList.remove('active');
     v.play().catch(() => {});
     old.pause();
     showMoment(seg.id, true);
   } else {
-    showMoment(seg.id); // loads the source, or waits for its proxy
-    if (url && v.dataset.url === url) v.play().catch(() => {});
+    showMoment(seg.id); // loads the source (or a window proxy of the clip), or waits for its proxy
+    const now = url || (src && playable(src, seg.start)?.url);
+    if (now && v.dataset.url === now) v.play().catch(() => {});
     else sp.wait = true; // canplay starts it
   }
   cued = null;

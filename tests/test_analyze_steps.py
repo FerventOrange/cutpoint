@@ -312,6 +312,23 @@ def test_whisper_reports_each_segment_end_as_it_is_decoded(tmp_path, monkeypatch
     assert len(tr.transcribe(tmp_path / "a.wav")) == 3  # the callback is optional
 
 
+def test_whisper_stores_each_word_probability(tmp_path, monkeypatch):
+    words = [
+        SimpleNamespace(start=0.0, end=0.4, word=" hello", probability=0.98765),
+        SimpleNamespace(start=0.5, end=0.9, word=" world", probability=0.5),
+    ]
+    seg = SimpleNamespace(start=0.0, end=1.0, text=" hello world", avg_logprob=-0.1,
+                          no_speech_prob=0.0, compression_ratio=1.0, words=words)  # fmt: skip
+    model = SimpleNamespace(
+        transcribe=lambda audio, **kw: (iter([seg]), SimpleNamespace(duration=1.0))
+    )
+    monkeypatch.setattr(transcribe, "load_wav", lambda wav: None)
+    tr = transcribe.Transcriber(model="tiny")
+    tr._model = model
+    got = tr.transcribe(tmp_path / "a.wav")[0]["words"]
+    assert [(w["word"], w["probability"]) for w in got] == [("hello", 0.988), ("world", 0.5)]
+
+
 def test_an_update_that_changes_nothing_writes_no_line(monkeypatch, capsys):
     monkeypatch.setenv(progress.ENV, "1")
     monkeypatch.setattr(progress, "MIN_INTERVAL_S", 0.0)

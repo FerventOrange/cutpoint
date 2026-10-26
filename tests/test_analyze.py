@@ -267,3 +267,91 @@ def test_reanalyze_uses_vision_only_when_the_earlier_run_asked_for_it(
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
     analyze.reanalyze(proj)
     assert seen["vision"] is vision
+
+
+def _words(probs, texts=None):
+    texts = texts or [f"w{i}" for i in range(len(probs))]
+    return [
+        {"start": float(i), "end": i + 0.5, "word": t, **({} if p is None else {"probability": p})}
+        for i, (t, p) in enumerate(zip(texts, probs, strict=True))
+    ]
+
+
+def test_transcript_snippet_lists_unsure_words_by_index():
+    words = _words([0.9, 0.4, 0.25], ["hello", "big", "world"])
+    text, unsure = analyze._transcript_snippet(words)
+    assert text == "hello big world"
+    assert unsure == [(1, 0.4), (2, 0.25)]
+    assert [text.split(" ")[i] for i, _ in unsure] == ["big", "world"]
+
+
+def test_transcript_snippet_threshold_is_exclusive():
+    _, unsure = analyze._transcript_snippet(_words([analyze.UNSURE_P, 0.9]))
+    assert unsure is None
+
+
+def test_transcript_snippet_cut_mid_word_keeps_the_index(monkeypatch):
+    monkeypatch.setattr(analyze, "SNIPPET_CHARS", 8)
+    words = _words([0.9, 0.3, 0.1], ["hello", "big", "world"])
+    text, unsure = analyze._transcript_snippet(words)
+    assert text == "hello bi"
+    assert unsure == [(1, 0.3)]  # "world" is past the snippet
+
+
+def test_transcript_snippet_cut_at_a_space_has_no_empty_word(monkeypatch):
+    monkeypatch.setattr(analyze, "SNIPPET_CHARS", 6)  # "hello " before rstrip
+    text, unsure = analyze._transcript_snippet(_words([0.2, 0.1], ["hello", "big"]))
+    assert text == "hello"
+    assert unsure == [(0, 0.2)]
+
+
+def test_transcript_snippet_splits_spaced_and_skips_empty_words():
+    words = _words([0.9, 0.3, 0.2, 0.1], ["hello", "", "new  york", "now"])
+    text, unsure = analyze._transcript_snippet(words)
+    assert text == "hello new york now"
+    assert unsure == [(1, 0.2), (2, 0.2), (3, 0.1)]
+
+
+@pytest.mark.parametrize(
+    "words",
+    [_words([0.1, None]), [], _words([0.9, 0.8])],
+    ids=["missing-probability", "empty", "all-confident"],
+)
+def test_transcript_snippet_without_unsure_words(words):
+    assert analyze._transcript_snippet(words)[1] is None
+
+
+@pytest.mark.parametrize(
+    ("unsure", "present"),
+    [([(0, 0.3)], True), (None, False), ([], False)],
+    ids=["set", "none", "empty"],
+)
+def test_candidate_record_emits_transcript_unsure_only_when_set(unsure, present):
+    c = analyze.Candidate(
+        Path("a.mp4"), 1.0, 5.0, 3.0, 1.0, {}, transcript="hi", transcript_unsure=unsure
+    )
+    rec = analyze._candidate_record(c, 0, get_style("funny"))
+    assert ("transcript_unsure" in rec) is present
+    if present:
+        assert rec["transcript_unsure"] == unsure
+
+
+def test_pick_candidates_carry_word_confidence():
+    style = get_style("funny")
+    n = 100
+    loud = np.zeros(n)
+    loud[40:50] = 1.0
+    words = [
+        {"start": i * 0.5, "end": 0.4 + i * 0.5, "word": f"w{i}", "probability": 0.3 + i % 2}
+        for i in range(n * 2)
+    ]
+    ps = analyze.PartSignals(n, {"loudness": loud}, [], [], words, [], [])
+    res = analyze.SourceResult(Path("a.mp4"), None, 0.0, float(n), [], [], None, ps)
+    cands = analyze.pick_candidates(res, style, 5, {})
+    assert cands
+    c = next(c for c in cands if c.transcript)
+    assert c.transcript_unsure
+    toks = c.transcript.split(" ")
+    assert all(p == 0.3 for _, p in c.transcript_unsure)
+    whole = [i for i, _ in c.transcript_unsure if i < len(toks) - 1]  # the last may be cut
+    assert all(int(toks[i][1:]) % 2 == 0 for i in whole)

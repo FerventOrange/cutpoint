@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   7.5 dB (light) or 5.2 dB (strong), and the loudness spread between clips went from 9.9 to
   4.3 or 4.7 LU. The true peak stays below -1.5 dBTP. With `off`, the output is unchanged
   (#326).
+- When the browser cannot play a source, the UI previews the selected moment within seconds:
+  the server first encodes a short proxy of the moment (10 s before it to 20 s after it) while
+  the whole-source proxy builds in a second lane. Scrubbing or playing outside it prepares that
+  part the same way ("Preparing this part of the source…"). The whole-source proxy replaces
+  them once it is ready, and HDR sources' proxies are converted to SDR. `POST
+  /api/projects/{id}/sources/{sid}/prepare` takes an optional `{lo, hi}` body, and each source
+  in the project view lists its ready `windows` and `pending` ones (#323).
+- The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
+  underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
+  Transcripts now store each word's `probability`, and `highlights.json` candidates list those
+  words in `transcript_unsure` (`[index, confidence]`). A source transcribed before this keeps
+  its cached transcript on a new `analyze`, so its moments show plain text until it is
+  re-transcribed (delete its `cache/<source>/transcript-*.json`, or analyze with another
+  `--model`) (#327).
 - The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
   back from their sources or proxies (hard cuts, no export), highlights and announces the playing
   clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits
@@ -294,6 +308,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- UI: the arrow keys on the trim rail move the playhead by 0.5% of the visible view (at least
+  0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
+  button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
+  <name>…" in "Play sequence", or a preview being prepared on the stage) (#356, #357).
 - HDR footage (HLG or PQ) and BT.2020 footage came out washed out: it was cut down to 8 bits
   with its HDR or BT.2020 tags kept, so players and editors that ignore those tags showed it
   with faded colors. `clips`, `extend` and `360` renders now convert it to SDR Rec.709 with
