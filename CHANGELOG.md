@@ -335,6 +335,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   qa pan gates are not made worse. Yaw across +-180 degrees stays smooth, shots with 2 keys are
   unchanged and repeated key times still act as a step. Existing `360 director --preview` videos
   are reused and keep the old motion until deleted; paths are not re-planned (#14).
+- Less fixed overhead in the events steps of `analyze` and `cutpoint events`: the voice layer
+  reuses the PANNs model the audio layer loaded instead of loading it again (closed after the
+  voice layer, before the next model loads), and the VRAM monitor around each layer no longer
+  waits on nvidia-smi when it starts and stops (about 0.2 s per layer on Windows). In
+  `events.json`, `vram_mib.<layer>.baseline_mib` is now the monitor's first reading during the
+  layer instead of one taken before it, and a layer shorter than one reading reports `null`
+  for `baseline_mib` and `peak_mib`. Results are unchanged (#372).
 
 ### Removed
 
