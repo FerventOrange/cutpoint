@@ -360,7 +360,7 @@ an analysed set processes only the new file.
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `qwen3-vl:8b` |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
-| `--language en` | Force the transcription language (default: auto-detect) |
+| `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging |

@@ -78,5 +78,9 @@ it. Use `analyze --model small` for a smaller download.
 
 ## Wrong language or poor transcript
 
-Force the language with `analyze --language en`. Music-heavy or very quiet audio produces
-poor transcripts; scoring then relies more on loudness and scene cuts.
+Force the language with `analyze --language en`. It transcribes the footage again in that
+language (an earlier auto-detected transcript stays cached for other projects). A transcript
+made with `--language` by an earlier Cutpoint version was cached under the plain name, so a run
+without `--language` still reuses it; delete `cache\<source>\transcript-*.json` to transcribe
+the source again. Music-heavy or very quiet audio produces poor transcripts; scoring then
+relies more on loudness and scene cuts.

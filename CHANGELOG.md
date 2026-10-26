@@ -333,6 +333,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `analyze --language` no longer reuses a transcript cached for another language: a
+  source transcribed with the detected language returned that cached transcript, and Whisper
+  never ran in the forced one. A forced language now has its own cache file,
+  `transcript-<model>-<language>.json`. Without `--language` the name stays
+  `transcript-<model>.json`, so existing transcripts are still used. Subtitles of `clips`,
+  `extend` and `assemble`, the crash words and the reaction rescoring read the transcript of
+  the language the project's analysis used (`settings.language` in `highlights.json`), and
+  `assemble --captions` transcribes the burned-in captions in that language. A
+  transcript made with `--language` before this fix is cached under the plain name, so a run
+  without `--language` still reuses it; delete `cache/<source>/transcript-*.json` to
+  transcribe the source again (#371).
 - Mined `candidate_phrases` (profile version 6) no longer include parts of hint and tutorial
   sentences shown only briefly, which the static hint test misses. A phrase found only inside
   sentences of more than 5 words (a number, gamertag or separator such as `|`, `/` or `:` ends

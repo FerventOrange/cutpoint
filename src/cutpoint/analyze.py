@@ -60,6 +60,7 @@ from cutpoint.transcribe import (
     Transcriber,
     filter_hallucinations,
     flat_words,
+    transcript_name,
 )
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
 from cutpoint.vision import VisionRater
@@ -236,7 +237,7 @@ def _loudness(wav: Path, cdir: Path) -> tuple[np.ndarray, np.ndarray]:
 def _transcript(
     wav: Path, cdir: Path, tr: Transcriber, on_progress: Callable[[float], None] | None = None
 ) -> list[Segment]:
-    path = cdir / f"transcript-{tr.model_name}.json"
+    path = cdir / transcript_name(tr.model_name, tr.language)
     data = cache.load_json(path)
     if data is None:
         data = tr.transcribe(wav, on_progress) if on_progress else tr.transcribe(wav)
