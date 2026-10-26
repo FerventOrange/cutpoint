@@ -246,6 +246,7 @@ select { max-width: 100%; }
   width: 100%; border: 1px solid var(--card-line); border-bottom: 0; border-radius: 4px 4px 0 0; overflow: hidden;
 }
 .screen video { position: absolute; inset: 0; width: 100%; height: 100%; max-height: 100%; object-fit: contain; display: block; cursor: pointer; }
+.screen video:not(.active) { opacity: 0; pointer-events: none; } /* the spare player preloads the next clip of "Play sequence" */
 .screen-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--muted); pointer-events: none; }
 .screen-msg:empty { display: none; }
 /* one bar: clock (and Retry) left, play centred, sound right */
@@ -363,6 +364,10 @@ select { max-width: 100%; }
 .seq.selected .seq-card { background: var(--picked); }
 .seq[aria-current] .seq-card { border-color: var(--glow); box-shadow: 0 0 0 1px var(--glow), 0 0 10px rgba(255, 174, 25, 0.35); }
 .seq.dragging .seq-card { opacity: 0.55; }
+.seq.playing .seq-card { border-left: 3px solid var(--amber); }
+/* the playing clip: a play icon over its thumbnail, not colour alone */
+.seq-now { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.55); color: var(--amber); }
+.seq-thumb .seq-now .icon { visibility: visible; width: 20px; height: 20px; }
 .seq.drop .seq-card { box-shadow: 0 -3px 0 var(--amber); }
 .seq-main {
   font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer;
