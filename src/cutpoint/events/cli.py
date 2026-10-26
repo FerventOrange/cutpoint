@@ -293,6 +293,7 @@ def _report_events(args: argparse.Namespace, jpath: Path, tpath: Path) -> None:
                     if rec.get("preset") in (None, "built-in")
                     else Path(rec["preset"]),
                     "installed": rec.get("installed"),
+                    "suggested": len(rec.get("suggested_regions") or []),
                 }
                 for game, rec in stats["discovery"].items()
             },
