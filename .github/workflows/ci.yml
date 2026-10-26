@@ -25,6 +25,9 @@ jobs:
 
   test:
     runs-on: ${{ matrix.os }}
+    env:
+      FFMPEG_LINUX_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-25-13-00/ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-9.0.tar.xz
+      FFMPEG_LINUX_SHA256: fdcc15b1ba538ee94c087c1ce9c1efe166cfe392beb362ccb778f595065365cc
     strategy:
       fail-fast: false
       matrix:
@@ -36,16 +39,58 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       # The real-ffmpeg tests skip when ffmpeg/ffprobe are not on PATH, so install them.
-      # Ubuntu 24.04 apt ships ffmpeg 6.1 (libx264, xfade, acrossfade, loudnorm; -fps_mode needs 5.1+).
-      - name: Install ffmpeg (Linux)
+      # Linux: pinned BtbN/FFmpeg-Builds static GPL build (n9.0.2; libx264, xfade, acrossfade,
+      # loudnorm, zscale, tonemap), downloaded from a GitHub release and verified by SHA256, so CI
+      # does not depend on Ubuntu apt mirrors (they failed on many PR runs). BtbN prunes old
+      # autobuild tags, so the verified tarball is cached under the SHA256: a deleted tag only
+      # breaks a cache miss, and then the bounded apt install below (Ubuntu 24.04 ships ffmpeg 6.1)
+      # is the fallback. The cache is saved only after a successful static install, never after
+      # an apt fallback, so a failed download cannot poison the key.
+      # To bump: pick a newer autobuild tag and change only FFMPEG_LINUX_URL and
+      # FFMPEG_LINUX_SHA256 in this job's env (the release API lists `digest: sha256:...` per asset).
+      - name: Restore ffmpeg cache (Linux)
+        id: ffmpeg-cache
         if: runner.os == 'Linux'
-        timeout-minutes: 15
-        # apt hung on the runner twice (no output, no timeout): bound every call and retry.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ffmpeg-cache
+          key: ffmpeg-linux-${{ env.FFMPEG_LINUX_SHA256 }}
+      - name: Install ffmpeg (Linux)
+        id: ffmpeg-linux
+        if: runner.os == 'Linux'
+        timeout-minutes: 25
         run: |
+          install_static() {
+            local dir="$RUNNER_TEMP/ffmpeg-cache" tarball
+            tarball="$dir/ffmpeg.tar.xz"
+            mkdir -p "$dir" || return 1
+            if ! echo "$FFMPEG_LINUX_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
+              rm -f "$tarball"
+              curl -fsSL --retry 3 --retry-delay 5 --retry-max-time 420 --connect-timeout 30 --max-time 300 \
+                -o "$tarball" "$FFMPEG_LINUX_URL" || { rm -f "$tarball"; return 1; }
+              echo "$FFMPEG_LINUX_SHA256  $tarball" | sha256sum -c --status || { echo "ffmpeg checksum mismatch" >&2; rm -f "$tarball"; return 1; }
+            fi
+            rm -rf "$RUNNER_TEMP/ffmpeg"
+            mkdir -p "$RUNNER_TEMP/ffmpeg"
+            tar -xJf "$tarball" -C "$RUNNER_TEMP/ffmpeg" --strip-components=1 || return 1
+            test -x "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" && test -x "$RUNNER_TEMP/ffmpeg/bin/ffprobe" || return 1
+            "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -version >/dev/null || return 1
+            "$RUNNER_TEMP/ffmpeg/bin/ffprobe" -version >/dev/null || return 1
+            echo "$RUNNER_TEMP/ffmpeg/bin" >> "$GITHUB_PATH"
+            "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -version | head -1
+          }
+          if install_static; then
+            echo "static=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rm -rf "$RUNNER_TEMP/ffmpeg-cache"
+          echo "::warning::Static ffmpeg download failed; falling back to apt"
+          # apt hung on the runner twice (no output, no timeout): bound every call and retry.
           apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           for attempt in 1 2 3; do
             if sudo timeout 90 apt-get $apt_opts update \
               && sudo timeout 120 apt-get $apt_opts install -y --no-install-recommends ffmpeg; then
+              ffmpeg -version | head -1
               exit 0
             fi
             echo "apt attempt $attempt failed" >&2
@@ -54,6 +99,12 @@ jobs:
           done
           echo "::error::Installing ffmpeg failed after 3 attempts"
           exit 1
+      - name: Save ffmpeg cache (Linux)
+        if: runner.os == 'Linux' && steps.ffmpeg-linux.outputs.static == 'true' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ffmpeg-cache
+          key: ffmpeg-linux-${{ env.FFMPEG_LINUX_SHA256 }}
       # Windows has no ffmpeg: pinned gyan.dev 9.0.2 essentials build (the version the pano code was
       # measured on), downloaded from the GyanD/codexffmpeg release and verified by SHA256.
       - name: Install ffmpeg (Windows)
