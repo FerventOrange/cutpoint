@@ -1508,6 +1508,35 @@ class _StderrLog:
         return "\n".join(self.tail)
 
 
+class _CancelWatch:
+    """Kill a decode pass's process as soon as ``cancel`` is set (checked every
+    :data:`CANCEL_POLL_S`), so a stalled ffmpeg dies at once instead of at the consumer's
+    next frame. :attr:`fired` tells the pass that the kill was its own."""
+
+    def __init__(self, proc: Any, cancel: threading.Event) -> None:
+        self.fired = False
+        self._proc = proc
+        self._cancel = cancel
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._done.is_set():
+            if self._cancel.wait(CANCEL_POLL_S):
+                if not self._done.is_set() and self._proc.poll() is None:
+                    self.fired = True
+                    self._proc.kill()
+                return
+
+    def finish(self) -> None:
+        """The pass is over: stop watching."""
+        self._done.set()
+
+
+CANCEL_POLL_S = 0.1
+
+
 class _Deadline:
     """Kill a decode pass's process ``timeout`` wall-clock seconds after it started.
 
@@ -1539,6 +1568,82 @@ class _Deadline:
         self._timer.cancel()
 
 
+def _isolated() -> dict[str, Any]:
+    """``Popen`` options that start a child in its own process group (Windows) or session
+    (POSIX), so the console's Ctrl+C (and the terminal's SIGINT) does not reach it: the
+    caller stops it. No stdin, so it never reads the console."""
+    if os.name == "nt":
+        return {"stdin": subprocess.DEVNULL, "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"stdin": subprocess.DEVNULL, "start_new_session": True}
+
+
+_JOB_HANDLE: Any = None
+
+
+def _kill_with_parent(proc: subprocess.Popen) -> None:
+    """Windows: put ``proc`` in a job object that is killed when Python exits.
+
+    An isolated child leaves the console's group, so a ``taskkill /F`` of Python would leave
+    it running until its next write to the closed pipe; the job (KILL_ON_JOB_CLOSE, as
+    :mod:`cutpoint.events.llama_server` uses) ends it at once. POSIX needs nothing: the pipe
+    closes with the parent and ffmpeg exits on EPIPE. No-op if the API is unavailable.
+    """
+    global _JOB_HANDLE
+    if os.name != "nt":
+        return
+    try:
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        if _JOB_HANDLE is None:
+
+            class _Basic(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class _Ext(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _Basic),
+                    ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            k32.CreateJobObjectW.restype = wintypes.HANDLE
+            job = k32.CreateJobObjectW(None, None)
+            if not job:
+                logger.debug("job object not created: error %d", ctypes.get_last_error())
+                return
+            info = _Ext()
+            info.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+            if not k32.SetInformationJobObject(
+                wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info)
+            ):
+                logger.debug("job object limits not set: error %d", ctypes.get_last_error())
+                k32.CloseHandle(wintypes.HANDLE(job))
+                return
+            _JOB_HANDLE = job
+        if not k32.AssignProcessToJobObject(
+            wintypes.HANDLE(_JOB_HANDLE),
+            wintypes.HANDLE(int(proc._handle)),  # type: ignore[attr-defined]
+        ):
+            logger.debug("ffmpeg not put in the job object: error %d", ctypes.get_last_error())
+    except (OSError, AttributeError, ValueError) as err:
+        logger.debug("job object not available: %s", err)
+
+
 def decode_raw(
     path: Path | str,
     *,
@@ -1555,6 +1660,9 @@ def decode_raw(
     fallback_cpu: bool = True,
     stderr_lines: list[str] | None = None,
     timeout: float | None = None,
+    isolate: bool = False,
+    cancel: threading.Event | None = None,
+    exit_codes: list[int] | None = None,
 ) -> Iterator[tuple[float, np.ndarray]]:
     """Stream decoded frames of ``path`` (its staged copy if any) as raw arrays.
 
@@ -1589,6 +1697,15 @@ def decode_raw(
             spends between frames, before ffmpeg is killed. Frames already
             yielded are followed by :class:`FFmpegError`. A pass whose output
             already ended (or whose process exited) never times out.
+        isolate: Start ffmpeg in its own process group (Windows; also in a job object
+            that ends it with Python) or session (POSIX), without stdin, so Ctrl+C does
+            not stop it: for a decode in a background thread, whose owner stops it by
+            closing the generator (ffmpeg is killed) instead of reading a cut-short pass.
+        cancel: Kill ffmpeg as soon as this is set (a watcher thread), even while the
+            consumer is busy or ffmpeg stalls; the pass then ends like a short one.
+        exit_codes: If given, a pass's non-zero exit code is appended when the decode did
+            not cause it (no early stop, timeout or ``cancel``): ffmpeg was stopped from
+            outside, e.g. by a console Ctrl+Break, which reaches every process group.
 
     Yields:
         ``(t, frame)``: ``frame`` is a read-only ``uint8`` array of shape
@@ -1622,16 +1739,26 @@ def decode_raw(
         logger.debug("exec: %s", subprocess.list2cmdline(cmd))
         log = _StderrLog(pts, stderr_lines)
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=frame_bytes * 4
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=frame_bytes * 4,
+            **(_isolated() if isolate else {}),
         )
+        if isolate:
+            _kill_with_parent(proc)
         reader = threading.Thread(target=log.read, args=(proc.stderr,), daemon=True)
         reader.start()
         deadline = _Deadline(proc, timeout) if timeout is not None else None
+        watch = _CancelWatch(proc, cancel) if cancel is not None else None
+        stopped = False  # killed here because the consumer stopped early
+        ended = False  # ffmpeg closed its output
         k = 0
         try:
             while True:
                 buf = proc.stdout.read(frame_bytes)
                 if len(buf) < frame_bytes:
+                    ended = True
                     break
                 t = log.pts_time(k) if pts else (t_base + k / stamp_fps if stamp_fps else float(k))
                 yield t, np.frombuffer(buf, np.uint8).reshape(shape)
@@ -1639,11 +1766,20 @@ def decode_raw(
         finally:
             if deadline is not None:
                 deadline.finish()  # output ended or the consumer stopped: no timeout now
+            if watch is not None:
+                watch.finish()
+            if ended and exit_codes is not None:  # let it exit by itself: its code counts
+                with suppress(subprocess.TimeoutExpired):
+                    proc.wait(SOFT_STOP_S)
             proc.stdout.close()
             if proc.poll() is None:
+                stopped = True
                 proc.kill()  # the consumer stopped early
             proc.wait()
             reader.join(timeout=5)
+        ours = stopped or (watch is not None and watch.fired) or bool(deadline and deadline.expired)
+        if exit_codes is not None and proc.returncode != 0 and not ours:
+            exit_codes.append(proc.returncode)
         if deadline is not None and deadline.expired:
             raise FFmpegError(
                 f"ffmpeg timed out after {timeout:g}s decoding {path} (hw={hw}):\n{log.text()}"

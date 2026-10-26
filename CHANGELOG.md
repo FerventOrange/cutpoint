@@ -231,6 +231,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `analyze` on `gaming` and `funny` footage starts the HUD OCR of the keyframes step in the
+  background while transcription, scene detection and the reactions step use the GPU, instead
+  of after them. It runs only when Whisper runs on CUDA, every game has a HUD preset, a source
+  read without errors and the GPU has at least 2 GB of VRAM free and 8 GB in all (unknown
+  counts as enough). `events.json`, `highlights.json`, the OCR caches and the progress steps
+  are the same as before, and so are the log lines and their order, apart from rare `-v` debug
+  lines of helper threads and a `resuming the OCR read` line when a background read is handed
+  back to its turn; Ctrl+C still exits with 130 and leaves no partial
+  files. `CUTPOINT_ANALYZE_OVERLAP=0` turns it off (#375).
 - The HUD OCR engine (the OCR layer and HUD discovery) runs on at most 4 CPU threads (fewer on
   a machine with fewer CPUs) instead of one per core. CPU OCR stops scaling at about 4 threads:
   on an 8-core CPU a 1280 px discovery frame took 3.3 s instead of 4.0 s, about 18% faster. The

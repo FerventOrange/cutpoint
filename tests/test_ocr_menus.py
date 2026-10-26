@@ -110,7 +110,7 @@ def _run(
         killfeed, "probe", lambda _p: SimpleNamespace(width=1920, height=1080, duration=60.0)
     )
 
-    def frames(path, fps, rect, hw, errors, start=0.0, dur=None):
+    def frames(path, fps, rect, hw, errors, start=0.0, dur=None, cancel=None, exit_codes=None):
         _, _, w, h = rect
         for n in range(int(60 * fps)):
             t = n / fps
