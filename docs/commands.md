@@ -354,8 +354,11 @@ transcript, laughter, scene-cut density and speech continuity. Likely Whisper ha
 scene cuts and never cut a word.
 
 Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` (0-100),
-`signals`, `label` and a `transcript` snippet; with `--vision`, a rated candidate also has the
-model's own label in `vision_label` (`label` takes it only from a rating of 7).
+`signals`, `label` and a `transcript` snippet; `transcript_unsure` lists the snippet's words
+Whisper heard with confidence below 0.5 as `[index, confidence]`, the index counting words in
+`transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
+`--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
+only from a rating of 7).
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
 ### Analysis steps

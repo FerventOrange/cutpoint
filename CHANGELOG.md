@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
+  underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
+  Transcripts now store each word's `probability`, and `highlights.json` candidates list those
+  words in `transcript_unsure` (`[index, confidence]`). A source transcribed before this keeps
+  its cached transcript on a new `analyze`, so its moments show plain text until it is
+  re-transcribed (delete its `cache/<source>/transcript-*.json`, or analyze with another
+  `--model`) (#327).
 - The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
   back from their sources or proxies (hard cuts, no export), highlights and announces the playing
   clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits
@@ -286,6 +293,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
   button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
   <name>…" in "Play sequence", or a preview being prepared on the stage) (#356, #357).
+- HDR footage (HLG or PQ) and BT.2020 footage came out washed out: it was cut down to 8 bits
+  with its HDR or BT.2020 tags kept, so players and editors that ignore those tags showed it
+  with faded colors. `clips`, `extend` and `360` renders now convert it to SDR Rec.709 with
+  `zscale` and `tonemap` (mobius), and tag the clip bt709. On a synthetic HLG chart the mean
+  saturation went from 148 to 236 (out of 255; the SDR original is 250). The tone mapping costs
+  CPU time, about 30 fps at 1080p on 8 threads. Checked on synthetic HLG, PQ and BT.2020 clips,
+  not yet on camera footage. Without `zscale` in the ffmpeg build, a WARNING
+  says so and the clip is exported as before. SDR and untagged sources get exactly the same
+  ffmpeg command as before. 10-bit SDR footage that looks log or flat in one small frame gets a
+  WARNING suggesting the camera's LUT; no LUT is applied. `probe` now reads the four color tags
+  (#289).
 - 360 analysis in the UI shows its planned steps as "Waiting" right away, instead of "Waiting for
   output..." until the first step starts (#320).
 - `--vision`: the Ollama rating no longer outranks the analysis. A rating (0-10) was blended in

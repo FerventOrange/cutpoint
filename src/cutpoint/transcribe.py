@@ -237,7 +237,12 @@ class Transcriber:
                     "no_speech_prob": round(float(seg.no_speech_prob), 3),
                     "compression_ratio": round(float(seg.compression_ratio), 3),
                     "words": [
-                        {"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word.strip()}
+                        {
+                            "start": round(w.start, 3),
+                            "end": round(w.end, 3),
+                            "word": w.word.strip(),
+                            "probability": round(float(w.probability), 3),
+                        }
                         for w in (seg.words or [])
                     ],
                 }

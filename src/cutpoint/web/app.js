@@ -508,7 +508,7 @@ function renderStage(seekToStart, keepVideo = false) {
   if (seekToStart) S.view = null; // a new moment starts on its fit view
   const inSeq = !!c.seg;
   $('#toggleBtn').textContent = inSeq ? 'Remove from sequence' : 'Add to sequence';
-  $('#transcript').textContent = c.cand?.transcript || 'No speech was transcribed for this moment.';
+  renderTranscript(c.cand);
   const sig = c.cand?.signals;
   const bits = sig
     ? Object.entries(sig).filter(([, n]) => typeof n === 'number' && n > 0).map(([k, n]) => `${k} ${n.toFixed(2)}`)
@@ -517,6 +517,25 @@ function renderStage(seekToStart, keepVideo = false) {
   $('#signals').textContent = c.cand ? `${kw}Score ${c.cand.score.toFixed(2)}${bits.length ? `. Signals: ${bits.join(', ')}` : ''}` : '';
   ensureVideo(seekToStart && !keepVideo ? c : null);
   renderTrim(!!seekToStart);
+}
+
+// Words Whisper was unsure of (analyze lists them as [index in transcript.split(' '), p]) get a
+// dotted underline and their confidence; without the list the transcript stays plain text.
+function renderTranscript(cand) {
+  const el = $('#transcript');
+  const text = cand?.transcript;
+  const unsure = new Map(Array.isArray(cand?.transcript_unsure) ? cand.transcript_unsure : []);
+  if (!text || !unsure.size) {
+    el.textContent = text || 'No speech was transcribed for this moment.';
+    return;
+  }
+  el.replaceChildren(...text.split(' ').flatMap((word, i) => {
+    const sep = i ? ' ' : '';
+    const p = unsure.get(i);
+    if (typeof p !== 'number') return [sep + word];
+    const pct = p < 0.005 ? '<1%' : `${Math.round(p * 100)}%`;
+    return [sep, h('span', { class: 'unsure', title: `Whisper confidence ${pct}` }, word, h('span', { class: 'vh' }, ' (unsure)'))];
+  }));
 }
 
 function renderTrim(force = false) {

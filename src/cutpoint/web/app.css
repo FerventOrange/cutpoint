@@ -331,6 +331,13 @@ select { max-width: 100%; }
   font-size: 15px; line-height: 1.6; min-height: 4.5em; padding: 8px 14px; overflow-wrap: anywhere;
   background: var(--deep); border: 1px solid var(--line); border-radius: 14px;
 }
+/* a word Whisper was unsure of: dotted underline (not colour alone) and a faint tint */
+#transcript .unsure {
+  text-decoration: underline dotted var(--gold); text-underline-offset: 3px;
+  background: var(--gold-fill); border-radius: 3px; cursor: help;
+  padding: 0 2px; box-decoration-break: clone; /* so a marked "I" is still easy to spot */
+}
+#transcript .unsure .vh { user-select: none; } /* copying the transcript leaves out "(unsure)" */
 #signals { margin-top: 2px; font-size: 12.5px; text-align: center; }
 /* narrower: Start and End side by side above the transcript, then all stacked */
 @container stage (width < 760px) {

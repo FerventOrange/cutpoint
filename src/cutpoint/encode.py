@@ -7,17 +7,24 @@ Used by ``cutpoint clips`` and ``cutpoint extend`` (and the audio fade by
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from cutpoint import state
 from cutpoint.crop import Crop
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
+    FFmpegError,
     MediaInfo,
     VideoEncoder,
     atomic_output,
+    decode_raw,
     encode_with_fallback,
+    ffmpeg_filters,
     probe,
     run,
 )
@@ -35,6 +42,157 @@ SILENCE = "anullsrc=r=48000:cl=stereo"
 # the ms rounding of ``-t`` and stream ends, which leave the fade as it was. A shortfall of one
 # whole AAC frame (21-23 ms) can cross it; harmless, as the fade then ends at the real audio end.
 AUDIO_SHORT_S = 0.02
+
+
+# Color (#289). HDR transfers (ffprobe ``color_transfer``) are tone-mapped to SDR Rec.709;
+# a BT.2020 SDR source only changes primaries/matrix. Every other source keeps today's chain.
+HDR_TRANSFERS = {"arib-std-b67": "HLG", "smpte2084": "PQ"}
+BT2020_TRANSFERS = ("bt2020-10", "bt2020-12")
+# Probed tags zscale takes as input values (same names as ffprobe's); others fall back to BT.2020.
+_ZSCALE_PRIMARIES = ("bt709", "bt2020")
+_ZSCALE_MATRICES = ("bt709", "bt2020nc", "bt2020c")
+# Output tags of a converted clip, so players do not guess (other clips stay as they were).
+BT709_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+# Log/flat look of a 10-bit SDR source (one small frame, luma 0-1): mean HSV saturation
+# below LOG_MAX_SATURATION, lifted blacks (1 % luma above LOG_MIN_BLACK), no near-white
+# (99 % luma below LOG_MAX_WHITE) and still a picture (spread above LOG_MIN_SPREAD), so
+# a black, white or uniform frame never counts.
+LOG_MAX_SATURATION = 0.18
+LOG_MIN_BLACK = 0.05
+LOG_MAX_WHITE = 0.85
+LOG_MIN_SPREAD = 0.15
+_LOG_FRAME = (64, 36)
+_HIGH_BIT_RE = re.compile(r"p0?1[0-6](?:le|be)?$")  # yuv420p10le, p010le, gbrp12le, ...
+
+# Sources already reported this process (once per source, not once per clip).
+_color_noted: set[str] = state.register_container(__name__, "_color_noted", set())
+
+
+def color_kind(info: MediaInfo) -> str | None:
+    """``"HLG"``, ``"PQ"`` or ``"BT.2020"`` when ``info`` needs an SDR Rec.709 conversion."""
+    if info.color_transfer in HDR_TRANSFERS:
+        return HDR_TRANSFERS[info.color_transfer]
+    if (
+        info.color_transfer in BT2020_TRANSFERS
+        or info.color_primaries == "bt2020"
+        or info.color_space in ("bt2020nc", "bt2020c")
+    ):
+        return "BT.2020"
+    return None
+
+
+def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
+    """Filters converting an HDR or BT.2020 source to SDR Rec.709, "" for any other source.
+
+    HLG and PQ are linearised, tone-mapped (``tonemap=mobius``) and re-encoded as BT.709
+    with ``zscale``; BT.2020 SDR only changes primaries and matrix. They go after the
+    scale and before ``format=yuv420p``. ``filters`` is this ffmpeg's filter list (default
+    :func:`~cutpoint.ffmpeg_utils.ffmpeg_filters`); without ``zscale`` (or ``tonemap``)
+    a WARNING says so once per source and the chain stays as it was.
+    """
+    kind = color_kind(info)
+    if kind is None:
+        return ""
+    have = ffmpeg_filters() if filters is None else filters
+    need = ("zscale", "tonemap") if kind in ("HLG", "PQ") else ("zscale",)
+    missing = [f for f in need if f not in have]
+    if missing:
+        _note(
+            info,
+            logging.WARNING,
+            "%s is %s video but this ffmpeg has no %s filter: exported without conversion to "
+            "SDR (colors may look washed out). Use an ffmpeg build with zscale (libzimg)",
+            info.path.name,
+            kind,
+            " or ".join(missing),
+        )
+        return ""
+    pin = info.color_primaries if info.color_primaries in _ZSCALE_PRIMARIES else "bt2020"
+    min_ = info.color_space if info.color_space in _ZSCALE_MATRICES else "bt2020nc"
+    _note(info, logging.INFO, "%s is %s video: converting to SDR Rec.709", info.path.name, kind)
+    if kind == "BT.2020":
+        tin = info.color_transfer if info.color_transfer in BT2020_TRANSFERS else "bt709"
+        return f"zscale=tin={tin}:pin={pin}:min={min_}:t=bt709:p=bt709:m=bt709:r=tv"
+    # Every zscale names its input and output: a step reading untagged frames fails
+    # ("no path between colorspaces"), and a zscale ``pin`` does not tag its output.
+    # mobius keeps diffuse white (203 nits) near SDR white; hable left a synthetic HLG/PQ
+    # chart about 25 % darker than its SDR original. CPU cost: about 30 fps at 1080p
+    # (8 threads), so HDR sources export slower; SDR sources never run it.
+    return (
+        f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl=100:p=bt709,"
+        "format=gbrpf32le,tonemap=tonemap=mobius:desat=0,"
+        "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
+    )
+
+
+def _note(info: MediaInfo, level: int, msg: str, *args: object) -> None:
+    """Log ``msg`` once per source and level."""
+    key = f"{level}:{info.path}"
+    if key not in _color_noted:
+        _color_noted.add(key)
+        logger.log(level, msg, *args)
+
+
+def log_stats(frame: np.ndarray) -> tuple[float, float, float]:
+    """Mean HSV saturation and the 1 % and 99 % luma (all 0-1) of an RGB uint8 frame."""
+    rgb = frame.reshape(-1, 3).astype(np.float32) / 255.0
+    hi, lo = rgb.max(axis=1), rgb.min(axis=1)
+    sat = np.where(hi > 0, (hi - lo) / np.maximum(hi, 1e-6), 0.0)
+    luma = rgb @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    p1, p99 = np.percentile(luma, [1, 99])
+    return float(sat.mean()), float(p1), float(p99)
+
+
+def looks_log(saturation: float, black: float, white: float) -> bool:
+    """True for flat stats: low saturation and compressed luma (see :func:`log_stats`)."""
+    return (
+        saturation < LOG_MAX_SATURATION
+        and black > LOG_MIN_BLACK
+        and white < LOG_MAX_WHITE
+        and white - black > LOG_MIN_SPREAD
+    )
+
+
+def warn_if_log(src: Path, info: MediaInfo, at: float) -> None:
+    """WARNING once per source when 10-bit SDR footage looks log/flat; never applies a LUT.
+
+    Only 10-bit (or deeper) sources that get no HDR conversion are checked, with one
+    64x36 frame of ``src`` at ``at`` s; a failed grab skips the check.
+    """
+    key = f"log:{src}"
+    if key in _color_noted or color_kind(info) or not _HIGH_BIT_RE.search(info.pix_fmt):
+        return
+    _color_noted.add(key)
+    w, h = _LOG_FRAME
+    frames = decode_raw(
+        src,
+        size=(w, h),
+        vf=f"scale={w}:{h}:flags=area,format=rgb24",
+        start=at,
+        duration=1.0,
+        hwaccel=None,
+        timeout=60,
+    )
+    try:
+        got = next(frames, None)
+    except FFmpegError as err:
+        logger.debug("log check of %s skipped: %s", src.name, err)
+        return
+    finally:
+        frames.close()
+    if got is None:
+        return
+    sat, black, white = log_stats(got[1])
+    logger.debug("%s: saturation %.3f, luma %.3f-%.3f", src.name, sat, black, white)
+    if looks_log(sat, black, white):
+        logger.warning(
+            "%s looks like log/flat footage (10-bit, saturation %.2f, luma %.2f-%.2f): "
+            "clips keep that look; apply your camera's LUT in an editor for normal colors",
+            src.name,
+            sat,
+            black,
+            white,
+        )
 
 
 def audio_fade_filter(dur: float, fade: float, audio: float | None = None) -> str:
@@ -65,11 +223,12 @@ class OutputFormat:
     height: int
     fps: int
 
-    def video_filter(self, vertical: bool, crop: Crop | None = None) -> str:
+    def video_filter(self, vertical: bool, crop: Crop | None = None, color: str = "") -> str:
         """Filter chain producing exactly this format from any input.
 
         ``crop`` is applied first (trimmed to the output aspect when close, so a
-        bordered recording fills the frame), then the usual scale/pad.
+        bordered recording fills the frame), then the usual scale/pad. ``color``
+        (:func:`sdr_filter`) goes just before ``format=yuv420p``.
         """
         w, h = self.width, self.height
         pre = ""
@@ -83,7 +242,8 @@ class OutputFormat:
                 f"scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,"
                 f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
             )
-        return f"{pre}{geo},setsar=1,fps={self.fps},format=yuv420p"
+        color = f"{color}," if color else ""
+        return f"{pre}{geo},setsar=1,fps={self.fps},{color}format=yuv420p"
 
 
 def choose_format(infos: list[MediaInfo], vertical: bool) -> OutputFormat:
@@ -140,6 +300,7 @@ def _export(
     name: str,
 ) -> str:
     """:func:`export_clip` straight into ``out`` (no temporary name); ``name`` is for logs."""
+    warn_if_log(src, info, start)
     return encode_with_fallback(
         lambda enc: _encode(enc, src, info, start, end, out, fmt, vertical, crop, audio_fade),
         name,
@@ -172,7 +333,8 @@ def _encode(
         "-i",
         str(src),
     ]
-    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop))}[v]"
+    color = sdr_filter(info)
+    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop, color))}[v]"
     audio = None if info.audio_duration is None else min(end, info.audio_duration) - start
     a_fmt = A_FMT + audio_fade_filter(dur, audio_fade, audio)
     if info.audio_streams == 0:
@@ -193,6 +355,7 @@ def _encode(
         *enc.args(),
         "-color_range",
         "tv",
+        *(BT709_TAGS if color else []),
         "-fps_mode",
         "cfr",
         *AUDIO_OUT,
