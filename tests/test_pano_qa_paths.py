@@ -1,4 +1,4 @@
-"""Geometric direction QA (``cutpoint 360 qa --paths``), ``project_box`` and the
+"""Geometric direction QA (``cutpoint 360 qa --paths``), ``project_box_visible`` and the
 director plumbing (``--param``, ``pano.director``, ``--out-name``, ``quality``).
 
 No models or footage: view-layer detections and director paths are synthetic.
@@ -35,33 +35,39 @@ WEAR_V = list(G.WEARER_V)
 
 
 # --------------------------------------------------------------------------- project_box
+def project_box(*args) -> tuple[float, float, float, float] | None:
+    """The box of :func:`G.project_box_visible` (None when behind the camera)."""
+    r = G.project_box_visible(*args)
+    return None if r is None else r[0]
+
+
 def test_project_box_centre_lands_at_frame_centre() -> None:
-    b = G.project_box(30.0, -10.0, 86.0, W, H, 30.0, -10.0, 4.0, 4.0)
+    b = project_box(30.0, -10.0, 86.0, W, H, 30.0, -10.0, 4.0, 4.0)
     assert b is not None
     assert (b[0] + b[2]) / 2 == pytest.approx(0.5, abs=1e-6)
     assert (b[1] + b[3]) / 2 == pytest.approx(0.5, abs=1e-3)
 
 
 def test_project_box_directions_follow_display_frame() -> None:
-    right = G.project_box(0.0, 0.0, 86.0, W, H, 20.0, 0.0, 2.0, 2.0)
-    up = G.project_box(0.0, 0.0, 86.0, W, H, 0.0, 15.0, 2.0, 2.0)
+    right = project_box(0.0, 0.0, 86.0, W, H, 20.0, 0.0, 2.0, 2.0)
+    up = project_box(0.0, 0.0, 86.0, W, H, 0.0, 15.0, 2.0, 2.0)
     assert right is not None and up is not None
     assert right[0] > 0.5  # + yaw = right
     assert up[3] < 0.5  # + pitch = up (y down)
-    assert G.project_box(0.0, 0.0, 86.0, W, H, 180.0, 0.0, 10.0, 10.0) is None
+    assert project_box(0.0, 0.0, 86.0, W, H, 180.0, 0.0, 10.0, 10.0) is None
 
 
 def test_project_box_across_the_yaw_seam_mirrors_the_plain_case() -> None:
     # 179 is 3 deg left of -178, as -1 is of 2
-    a = G.project_box(-178.0, -8.0, 86.0, W, H, 179.0, -10.0, 20.0, 30.0)
-    b = G.project_box(2.0, -8.0, 86.0, W, H, -1.0, -10.0, 20.0, 30.0)
+    a = project_box(-178.0, -8.0, 86.0, W, H, 179.0, -10.0, 20.0, 30.0)
+    b = project_box(2.0, -8.0, 86.0, W, H, -1.0, -10.0, 20.0, 30.0)
     assert a is not None and b is not None
     assert a == pytest.approx(b, abs=1e-6)
 
 
 def test_project_box_cut_by_the_frame_edge_keeps_its_visible_height() -> None:
     # F1: the box centre (yaw 60) is outside an 86-deg view; the far part must not stretch y
-    b = G.project_box(0.0, 0.0, 86.0, W, H, 60.0, 0.0, 80.0, 20.0)
+    b = project_box(0.0, 0.0, 86.0, W, H, 60.0, 0.0, 80.0, 20.0)
     assert b is not None
     assert 0.25 <= b[1] <= 0.30 and 0.70 <= b[3] <= 0.75
     assert 0.65 < b[0] < 0.75 and b[2] > 1.0  # left edge: yaw 20
@@ -76,19 +82,19 @@ def test_project_box_cut_by_the_frame_edge_keeps_its_visible_height() -> None:
 
 def test_project_box_near_the_pole_keeps_a_width() -> None:
     # F2: the yaw line is kept off the pole, where every yaw is the same point
-    b = G.project_box(0.0, -70.0, 86.0, W, H, 0.0, -85.0, 20.0, 20.0)
+    b = project_box(0.0, -70.0, 86.0, W, H, 0.0, -85.0, 20.0, 20.0)
     assert b is not None
     assert b[2] - b[0] > 0.01
 
 
 def test_project_box_fov_edges_match_flat_fov() -> None:
     # a box exactly as wide as the hfov spans the frame; one at vfov/2 above touches the top
-    b = G.project_box(0.0, 0.0, 90.0, W, H, 0.0, 0.0, 90.0, 0.0)
+    b = project_box(0.0, 0.0, 90.0, W, H, 0.0, 0.0, 90.0, 0.0)
     assert b is not None
     assert b[0] == pytest.approx(0.0, abs=1e-6)
     assert b[2] == pytest.approx(1.0, abs=1e-6)
     v = G.flat_fov(90.0, W, H)
-    top = G.project_box(0.0, 0.0, 90.0, W, H, 0.0, v / 2, 0.01, 0.0)
+    top = project_box(0.0, 0.0, 90.0, W, H, 0.0, v / 2, 0.01, 0.0)
     assert top is not None
     assert top[1] == pytest.approx(0.0, abs=1e-4)
 
@@ -107,7 +113,7 @@ def test_project_box_inverts_the_renderer_rays(u: float, v: float) -> None:
     )
     world = G.view_matrix(vy, vp) @ (d / np.linalg.norm(d))
     by, bp = G.ray_yaw_pitch(world)
-    b = G.project_box(vy, vp, hfov, W, H, float(by), float(bp), 1e-3, 1e-3)
+    b = project_box(vy, vp, hfov, W, H, float(by), float(bp), 1e-3, 1e-3)
     assert b is not None
     assert (b[0] + b[2]) / 2 == pytest.approx(u, abs=1e-4)
     assert (b[1] + b[3]) / 2 == pytest.approx(v, abs=1e-4)

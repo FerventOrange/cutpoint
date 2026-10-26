@@ -164,18 +164,18 @@ def proc_mounts(monkeypatch: pytest.MonkeyPatch):
         ("/mnt/cloud/v.mp4", "fuse.rclone", True),
     ],
 )
-def test_mount_fstype_picks_the_deepest_mount(proc_mounts, path, fstype, remote):
-    assert stage.mount_fstype(Path(path)) == fstype
+def test_mount_picks_the_deepest_mount(proc_mounts, path, fstype, remote):
+    assert stage._mount(Path(path))[1] == fstype
     assert crash._is_remote(Path(path)) is remote
 
 
 @posix_only
-def test_mount_fstype_without_proc_mounts_is_local(monkeypatch):
+def test_mount_without_proc_mounts_is_local(monkeypatch):
     def boom(self, *args, **kwargs):
         raise FileNotFoundError("/proc/mounts")
 
     monkeypatch.setattr(Path, "read_text", boom)
-    assert stage.mount_fstype(Path("/x/v.mp4")) == ""
+    assert stage._mount(Path("/x/v.mp4")) == ("", "")
     assert crash._is_remote(Path("/x/v.mp4")) is False
 
 

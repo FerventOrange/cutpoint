@@ -203,9 +203,6 @@ def team_color(bgr: np.ndarray) -> str | None:
     return None
 
 
-HUE_NAMES = ("red", "orange", "yellow", "green", "cyan", "blue", "purple")
-
-
 def text_hue(bgr: np.ndarray) -> str | None:
     """Dominant colour name of the text in a box crop ("white" or None if unclear).
 
@@ -562,10 +559,7 @@ def _box_crop(img: np.ndarray, box: list) -> np.ndarray:
 class Interpreter:
     """Turns OCR results of one region into tracked events."""
 
-    def __init__(
-        self, game: str, params: OcrParams, scale: float, preset: HudPreset | None = None
-    ) -> None:
-        self.game = game
+    def __init__(self, params: OcrParams, scale: float, preset: HudPreset | None = None) -> None:
         self.params = params
         self.scale = scale
         self.preset = preset
@@ -843,8 +837,9 @@ class FeedParser:
       Thunder) or two coloured names on one row (``"entry": "one_line"``).
 
     Team colours come from the preset (``"colors": {"red": "enemy", "blue":
-    "ally", ...}``, keyed by :data:`HUE_NAMES`). A kill is the player's when
-    the actor matches one of the player tags (fuzzy, ignoring ``_ . -``).
+    "ally", ...}``, keyed by the colour names :func:`text_hue` returns). A kill
+    is the player's when the actor matches one of the player tags (fuzzy,
+    ignoring ``_ . -``).
     """
 
     def __init__(self, cfg: dict[str, Any], tags: tuple[str, ...], scale: float) -> None:
@@ -1555,7 +1550,7 @@ def detect_ocr_events(
     x1 = max(x + w for x, _, w, _ in rects.values())
     y1 = max(y + h for _, y, _, h in rects.values())
     union = (x0, y0, (x1 - x0) // 2 * 2, (y1 - y0) // 2 * 2)
-    interp = Interpreter(game or "", params, info.height / 1080, preset)
+    interp = Interpreter(params, info.height / 1080, preset)
     last_mask: dict[str, np.ndarray | None] = {r.name: None for r in regions}
     last_layout: dict[str, list[tuple[int, ...]] | None] = {r.name: None for r in regions}
     last_rows: dict[str, list[tuple[float, float, float, float, float]]] = {}

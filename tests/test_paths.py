@@ -199,7 +199,7 @@ def test_interpreter_generic_only_for_non_installed_preset(preset_env):
     write_preset(proj_dir, boxfeed())
     for proj, generic in ((None, False), (project, True)):
         preset = regions.load_preset("boxfeed", proj)
-        assert Interpreter("boxfeed", OcrParams(), 1.0, preset).generic is generic
+        assert Interpreter(OcrParams(), 1.0, preset).generic is generic
 
 
 @pytest.mark.parametrize("path", ["D:/Box Feed 2025.mp4", "/x/BOXES/match.mp4"])

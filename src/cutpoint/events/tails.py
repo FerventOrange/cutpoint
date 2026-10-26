@@ -32,7 +32,6 @@ from cutpoint.events import eventtypes
 
 AUDIO_PAYOFFS = {"Laughter", "Scream", "Cheering"}
 OCR_HOLD_S = 1.0  # an OCR payoff counts as lasting this long from its first sighting
-BANNER_PAYOFFS = eventtypes.BANNER_PAYOFFS  # moved to eventtypes; kept for imports
 
 
 @dataclass(frozen=True)
@@ -96,7 +95,7 @@ def is_payoff(e: dict[str, Any], settings: EventTailSettings) -> bool:
             return bool(d.get("player") or d.get("teamkill"))
         if e.get("type") == "banner":
             label = (e.get("label") or "").upper()
-            return any(label.startswith(b) for b in BANNER_PAYOFFS)
+            return any(label.startswith(b) for b in eventtypes.BANNER_PAYOFFS)
         if e.get("type") == "log":
             return bool((e.get("details") or {}).get("player"))
         return e.get("type") == "multikill"

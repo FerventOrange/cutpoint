@@ -265,11 +265,6 @@ def _analysis_skip(path: Path, data: dict) -> tuple[str, ...]:
     return skip
 
 
-def set_config_value(key: str, value: object, path: Path | None = None) -> Path:
-    """Write ``key`` into ``config.json``; see :func:`set_config_values`."""
-    return set_config_values({key: value}, path)
-
-
 def set_config_values(values: dict[str, object], path: Path | None = None) -> Path:
     """Write ``values`` into ``config.json`` atomically, keeping the other keys, their order and
     the file's indentation; the cached :func:`get_config` is dropped. Returns the file written.
