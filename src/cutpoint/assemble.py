@@ -83,14 +83,17 @@ def _peak_tagged(path: Path) -> bool:
 
 
 def baked_peaks(clips_dir: Path, files: list[Path]) -> list[bool]:
-    """Whether each file already has peak compression baked in: its folder's manifest says so,
-    or the file's own tag (a clip renamed during review has no manifest entry)."""
+    """Whether each file already has peak compression baked in: its folder's manifest entry
+    says so, or, for a file without one (renamed or added during review), its own tag. The
+    entry wins: ffmpeg copies a tagged source's comment into a clip exported without it."""
     from cutpoint import cache  # noqa: PLC0415
 
     manifest = cache.load_json(clips_dir / "manifest.json") or {}
     by_file = {e.get("file"): e for e in manifest.get("clips", [])}
     return [
-        (by_file.get(f.name) or {}).get("compress_peaks") in PEAK_PRESETS or _peak_tagged(f)
+        e.get("compress_peaks") in PEAK_PRESETS
+        if (e := by_file.get(f.name)) is not None
+        else _peak_tagged(f)
         for f in files
     ]
 

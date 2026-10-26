@@ -309,6 +309,13 @@ def test_a_renamed_tagged_clip_counts_as_baked(monkeypatch, tmp_path):
     assert assemble.baked_peaks(tmp_path, files) == [True, False]
 
 
+def test_a_manifest_entry_wins_over_an_inherited_tag(monkeypatch, tmp_path):
+    files = [tmp_path / "001_x.mp4", tmp_path / "002_y.mp4"]
+    _manifest(tmp_path, [{"file": "001_x.mp4"}, {"file": "002_y.mp4", "compress_peaks": "light"}])
+    monkeypatch.setattr(assemble, "_peak_tagged", lambda f: True)
+    assert assemble.baked_peaks(tmp_path, files) == [False, True]
+
+
 @pytest.mark.parametrize(("preset", "baked", "limited"), [
     ("off", False, False), ("light", False, True), ("light", True, True),
 ])  # fmt: skip
