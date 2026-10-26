@@ -56,6 +56,7 @@ from typing import Any
 
 import numpy as np
 
+from cutpoint.dsp import clean_mask, mask_runs
 from cutpoint.styles import Style
 from cutpoint.tail import is_laugh
 from cutpoint.utils import seconds_keys
@@ -181,18 +182,7 @@ def _merge(spans: list[Span], gap: float) -> list[Span]:
 
 def _runs(mask: np.ndarray, close_bins: int, min_bins: int) -> list[tuple[int, int]]:
     """``[i, j)`` runs of True, joining gaps up to ``close_bins``, keeping >= ``min_bins``."""
-    idx = np.flatnonzero(mask)
-    if idx.size == 0:
-        return []
-    runs, a, b = [], int(idx[0]), int(idx[0]) + 1
-    for i in idx[1:]:
-        if i - b <= close_bins:
-            b = int(i) + 1
-        else:
-            runs.append((a, b))
-            a, b = int(i), int(i) + 1
-    runs.append((a, b))
-    return [(a, b) for a, b in runs if b - a >= min_bins]
+    return [(int(a), int(b)) for a, b in mask_runs(clean_mask(mask, close_bins, min_bins))]
 
 
 class SpeechMap:
