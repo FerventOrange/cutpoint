@@ -4,7 +4,9 @@ import { initNewProject, pickPath } from './picker.js';
 import { $, baseName, fmt, fmtLen, h, parseTime, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
-const MARGIN = 10; // seconds of rail context around a moment; trims may use the whole source
+const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
+const MIN_VIEW = 2; // seconds: the rail's deepest zoom
+const LONG_CLIP = 600; // seconds: longer clips get a note under the trim fields
 const LABEL_MAX = 200; // characters; ui.py validate_segments rejects longer labels
 const THUMB_W = 160; // pixels requested for sequence thumbnails
 const JOB_NAMES = { analyze: 'Analysis', clips: 'Clip export', assemble: 'Assembly' };
@@ -41,12 +43,15 @@ const S = {
   stepStates: null, // {job, states: {step: state}}: the analysis steps last announced (renderSteps)
   stepSince: {}, // "job/step" -> ms the UI first saw the step running (elapsed time under reduced motion)
   stepTimer: null, // ticks that elapsed time once a second
+  view: null, // {id, lo, hi}: the part of the source the trim rail shows, separate from the trim
 };
 
 const v = $('#video');
 const seek = $('#seek');
 let openDialog;
 let pendingSeek = null;
+let seekWant = null; // {t, fast}: the latest scrub target while a seek is in flight
+let wasIn = true; // the playhead was on the rail at the last frame or view change (tick follows it off the edge)
 
 // ---------- state helpers ----------
 
@@ -68,12 +73,41 @@ function current() {
   return { id, seg, cand, source: base.source, start: base.start, end: base.end, label: base.label || id };
 }
 
-function win(c) {
-  const dur = sourceDur(c.source);
-  const lo = Math.min(c.start, c.cand?.start ?? c.start);
-  const hi = Math.max(c.end, c.cand?.end ?? c.end) + MARGIN;
-  return { lo: Math.max(0, lo - MARGIN), hi: dur ? Math.min(dur, hi) : hi };
+/**
+ * How the preview plays a source: the media url, the source time at its 0 (``offset``) and the
+ * source range it covers. Proxies and originals cover the whole source today; partial proxies
+ * (#323) change only this helper.
+ */
+function playable(src) {
+  const dur = sourceDur(src.path) ?? (v.dataset.url === src.url && Number.isFinite(v.duration) ? v.duration : null);
+  return { url: src.url, offset: 0, lo: 0, hi: dur };
 }
+const durOf = (c) => (srcOf(c.source) ? playable(srcOf(c.source)).hi : sourceDur(c.source));
+const offsetOf = (c) => (srcOf(c.source) ? playable(srcOf(c.source)).offset : 0);
+/** The playhead in source time: a held scrub target or one waiting for the video (both source time), so the rail does not jump back. */
+const playhead = (c = current()) => seekWant?.t ?? pendingSeek ?? (v.currentTime || 0) + (c ? offsetOf(c) : 0);
+
+/** A rail view spanning at least MIN_VIEW, shifted (not cut) to stay inside the source. */
+function clampView(lo, hi, dur) {
+  let span = Math.max(hi - lo, MIN_VIEW);
+  if (dur) span = Math.min(span, dur);
+  lo = Math.max(0, dur ? Math.min(lo, dur - span) : lo);
+  return { lo, hi: lo + span };
+}
+
+/** The default view: the clip and its analyzed range, padded by half the clip (at least MARGIN). */
+function fitView(c) {
+  const dur = durOf(c);
+  const pad = Math.max(MARGIN, 0.5 * (c.end - c.start));
+  const lo = Math.max(0, Math.min(c.start, c.cand?.start ?? c.start) - pad);
+  const hi = Math.max(c.end, c.cand?.end ?? c.end) + pad;
+  return clampView(lo, dur ? Math.min(dur, hi) : hi, dur);
+}
+
+const hms = (t) => {
+  const s = Math.round(t);
+  return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+};
 
 function validate(s, e, dur) {
   if (!Number.isFinite(s) || !Number.isFinite(e)) return 'Enter a time like 83.5 or 1:23.5.';
@@ -385,7 +419,7 @@ function trimField(which, label) {
       h('button', { type: 'button', class: 'btn small', 'aria-label': `-0.5 s, ${label} earlier by half a second`, onclick: nudge(-0.5), text: '-0.5 s' }),
       h('button', {
         type: 'button', class: 'btn small accent', 'aria-label': `Use playhead as ${label}`, title: `Use playhead as ${label} "${key}"`,
-        'aria-keyshortcuts': key, onclick: () => setRange(which, v.currentTime), text: 'Use playhead',
+        'aria-keyshortcuts': key, onclick: () => setRange(which, playhead()), text: 'Use playhead',
       }),
       h('button', { type: 'button', class: 'btn small', 'aria-label': `+0.5 s, ${label} later by half a second`, onclick: nudge(0.5), text: '+0.5 s' })),
   );
@@ -406,7 +440,7 @@ function setRange(which, t) {
   t = round2(t);
   const s = which === 'start' ? t : c.start;
   const e = which === 'end' ? t : c.end;
-  const err = validate(s, e, sourceDur(c.source));
+  const err = validate(s, e, durOf(c));
   if (err) {
     renderTrim(true);
     setTrimMsg(err, true);
@@ -419,6 +453,11 @@ function setRange(which, t) {
   } else {
     S.drafts[c.id] = { ...S.drafts[c.id], start: s, end: e };
     renderRemoved();
+  }
+  const w = S.view?.id === c.id && S.view;
+  if (w && (s < w.lo || e > w.hi)) { // a trim point left the rail: widen it to show both again
+    const pad = 0.05 * (Math.max(w.hi, e) - Math.min(w.lo, s));
+    S.view = { id: c.id, ...clampView(s < w.lo ? s - pad : w.lo, e > w.hi ? e + pad : w.hi, durOf(c)) };
   }
   renderTrim(true);
   return true;
@@ -441,6 +480,7 @@ function renderStage(seekToStart) {
     v.pause();
     return;
   }
+  if (seekToStart) S.view = null; // a new moment starts on its fit view
   const inSeq = !!c.seg;
   $('#toggleBtn').textContent = inSeq ? 'Remove from sequence' : 'Add to sequence';
   $('#transcript').textContent = c.cand?.transcript || 'No speech was transcribed for this moment.';
@@ -457,24 +497,88 @@ function renderStage(seekToStart) {
 function renderTrim(force = false) {
   const c = current();
   if (!c) return;
-  const w = win(c);
-  $('#winLo').textContent = fmt(w.lo);
-  $('#winHi').textContent = fmt(w.hi);
-  seek.min = w.lo;
-  seek.max = w.hi;
-  const pct = (t) => `${(((t - w.lo) / (w.hi - w.lo || 1)) * 100).toFixed(2)}%`;
-  Object.assign($('#railSel').style, { left: pct(c.start), width: `${(((c.end - c.start) / (w.hi - w.lo || 1)) * 100).toFixed(2)}%` });
-  const o = $('#railOrig');
-  o.hidden = !c.cand;
-  if (c.cand) Object.assign(o.style, { left: pct(c.cand.start), width: `${(((c.cand.end - c.cand.start) / (w.hi - w.lo || 1)) * 100).toFixed(2)}%` });
+  drawRail(c);
   for (const which of ['start', 'end']) {
     const input = trimInputs[which];
     if (force || document.activeElement !== input) input.value = fmt(c[which]);
   }
   const changedFromOrig = c.cand && (c.start !== c.cand.start || c.end !== c.cand.end);
   $('#resetBtn').hidden = !changedFromOrig;
-  setTrimMsg(`Clip length ${(c.end - c.start).toFixed(2)} s${c.cand ? `, analyzed as ${fmt(c.cand.start)} to ${fmt(c.cand.end)}` : ''}.`);
+  const len = c.end - c.start;
+  setTrimMsg(`Clip length ${len.toFixed(2)} s${c.cand ? `, analyzed as ${fmt(c.cand.start)} to ${fmt(c.cand.end)}` : ''}.${
+    len > LONG_CLIP ? ' This clip is longer than 10 minutes, so exporting it takes a while.' : ''}`);
+}
+
+/** The rail (the view, with the clip and analyzed range on it) and the overview strip of the whole source. */
+function drawRail(c = current()) {
+  if (!c) return;
+  const dur = durOf(c);
+  S.view = { id: c.id, ...(S.view?.id === c.id ? clampView(S.view.lo, S.view.hi, dur) : fitView(c)) };
+  const { lo, hi } = S.view;
+  const span = hi - lo;
+  $('#winLo').textContent = fmt(lo);
+  $('#winHi').textContent = fmt(hi);
+  seek.min = lo;
+  seek.max = hi;
+  const place = (el, a, b, from, len) =>
+    Object.assign(el.style, { left: `${(((a - from) / len) * 100).toFixed(2)}%`, width: `${(((b - a) / len) * 100).toFixed(2)}%` });
+  place($('#railSel'), c.start, c.end, lo, span);
+  const o = $('#railOrig');
+  o.hidden = !c.cand;
+  if (c.cand) place(o, c.cand.start, c.cand.end, lo, span);
+  const pan = $('#pan');
+  pan.disabled = !dur;
+  $('#overview').classList.toggle('off', !dur);
+  if (dur) {
+    pan.max = dur;
+    pan.value = lo + span / 2;
+    pan.setAttribute('aria-valuetext', `${hms(lo)} to ${hms(hi)} of ${hms(dur)}`);
+    place($('#ovView'), lo, hi, 0, dur);
+    place($('#ovClip'), c.start, c.end, 0, dur);
+  }
+  const t = playhead(c);
+  wasIn = t >= lo && t <= hi;
+  // a marker the view cuts off loses its edge border on that side
+  const sel = $('#railSel');
+  sel.classList.toggle('cut-l', c.start < lo);
+  sel.classList.toggle('cut-r', c.end > hi);
+  const zIn = $('#zoomIn');
+  const zOut = $('#zoomOut');
+  const had = document.activeElement; // read first: disabling a focused button drops its focus
+  zIn.disabled = span <= MIN_VIEW + 1e-6;
+  zOut.disabled = !!dur && span >= dur - 1e-6;
+  // a button that just reached its limit hands focus to its partner instead of dropping it
+  if (zIn.disabled && had === zIn) zOut.focus();
+  if (zOut.disabled && had === zOut) zIn.focus();
   updatePlayhead();
+}
+
+/** Move the rail view to [lo, hi] (kept inside the source) and redraw it. */
+function setView(lo, hi) {
+  const c = current();
+  if (!c) return;
+  S.view = { id: c.id, ...clampView(lo, hi, durOf(c)) };
+  drawRail(c);
+}
+
+/** Zoom by ``f`` (2: out, 0.5: in), keeping ``at`` (default: the playhead, or the middle when off the rail) in place. */
+function zoomBy(f, at) {
+  const w = S.view;
+  if (!w) return;
+  const t = at ?? playhead();
+  const a = t >= w.lo && t <= w.hi ? t : (w.lo + w.hi) / 2;
+  const dur = durOf(current());
+  const span = Math.max(MIN_VIEW, Math.min((w.hi - w.lo) * f, dur || Infinity));
+  const lo = a - ((a - w.lo) / (w.hi - w.lo)) * span;
+  setView(lo, lo + span);
+}
+
+/** Bring ``t`` onto the rail when it is off it: an instant jump that puts it 10% from the left edge. */
+function follow(t) {
+  const w = S.view;
+  if (!w || (t >= w.lo && t <= w.hi)) return;
+  const span = w.hi - w.lo;
+  setView(t - 0.1 * span, t + 0.9 * span);
 }
 
 // ---------- video ----------
@@ -507,8 +611,14 @@ function ensureVideo(seekC) {
   $('#retryBtn').hidden = true;
   const c = current();
   const src = c && srcOf(c.source);
+  // drop() forgets pending seeks; a moment waiting for its video keeps its start or the user's scrub
+  const want = seekC ? seekC.start : pendingSeek;
+  const wait = (msg) => {
+    drop(msg);
+    pendingSeek = want;
+  };
   if (!src) {
-    drop('This source file is not part of the project, so it cannot be previewed. You can still trim by timecode.');
+    wait('This source file is not part of the project, so it cannot be previewed. You can still trim by timecode.');
     return;
   }
   if (src.status === 'unknown') {
@@ -521,7 +631,7 @@ function ensureVideo(seekC) {
         prepareRequested.delete(k);
         prepareSource(src);
       }, 2000);
-    return drop('Loading video…');
+    return wait('Loading video…');
   }
   if (src.status === 'needs-proxy' || src.status === 'preparing') {
     const k = `${S.id}:${src.path}`;
@@ -533,18 +643,20 @@ function ensureVideo(seekC) {
         prepareSource(src);
       }, 2000);
     else S.prepTimer = setTimeout(refreshProject, 2000);
-    return drop('Preparing a browser-playable preview of this source. It will start when ready.');
+    return wait('Preparing a browser-playable preview of this source. It will start when ready.');
   }
   if (src.status === 'failed') {
     $('#retryBtn').hidden = false;
-    return drop('The browser-playable preview could not be built for this source. Retry it, or trim by timecode.');
+    return wait('The browser-playable preview could not be built for this source. Retry it, or trim by timecode.');
   }
   prepareRequested.delete(`${S.id}:${src.path}`); // ready: a later change to the file prepares again
-  if (v.dataset.url !== src.url) {
-    v.dataset.url = src.url;
-    pendingSeek = seekC ? seekC.start : (c?.start ?? 0);
+  const { url } = playable(src);
+  if (v.dataset.url !== url) {
+    v.dataset.url = url;
+    seekWant = null;
+    pendingSeek = want ?? c?.start ?? 0;
     screenMsg('Loading video…');
-    v.src = src.url;
+    v.src = url;
     showPlaying(false); // a new src stops playback without a pause event
   } else if (seekC) seekTo(seekC.start);
 }
@@ -558,33 +670,61 @@ function unload(el) {
 }
 
 function drop(msg) {
+  seekWant = null;
+  pendingSeek = null;
   unload(v);
   screenMsg(msg);
 }
 
-function seekTo(t) {
+/**
+ * Seek to source time ``t`` (kept inside the source) and bring it onto the rail. One seek is in
+ * flight at a time: while the video seeks, only the latest target is kept and applied on
+ * ``seeked``, so dragging stays smooth. ``fast``: a keyframe seek (fastSeek) while dragging.
+ */
+function seekTo(t, fast = false) {
   const c = current();
   if (!c) return;
-  const w = win(c);
-  v.currentTime = Math.min(Math.max(t, w.lo), w.hi);
+  const dur = durOf(c);
+  t = Math.max(0, dur ? Math.min(t, dur) : t);
+  if (v.readyState < HTMLMediaElement.HAVE_METADATA) {
+    pendingSeek = t; // applied on loadedmetadata
+    wasIn = true;
+    follow(t);
+    updatePlayhead();
+    return;
+  }
+  wasIn = true;
+  if (v.seeking) seekWant = { t, fast };
+  else {
+    seekWant = null;
+    const vt = t - offsetOf(c);
+    if (fast && v.fastSeek) v.fastSeek(vt);
+    else v.currentTime = vt;
+  }
+  follow(t);
   updatePlayhead();
 }
 
-function updatePlayhead() {
+/** ``playing``: called every frame during playback, so the slider's spoken value waits for a pause. */
+function updatePlayhead(playing = false) {
   const c = current();
-  const t = v.currentTime || 0;
+  const t = playhead(c);
   seek.value = t;
+  seek.classList.toggle('off-view', !!S.view && (t < S.view.lo || t > S.view.hi)); // no thumb parked at an edge
+  if (!playing) seek.setAttribute('aria-valuetext', fmt(t));
   $('#clock').textContent = c ? `${fmt(t)} in source` : '';
 }
 
 function tick() {
   if (v.paused) return;
-  const c = current();
-  if (c && v.currentTime >= c.end) {
-    v.pause();
-    v.currentTime = c.end;
-  }
-  updatePlayhead();
+  // playback runs on past the clip end; the rail jumps along when the playhead runs off it, not
+  // when the user panned away from it
+  const t = playhead();
+  const w = S.view;
+  const inV = !w || (t >= w.lo && t <= w.hi);
+  if (!inV && wasIn) follow(t);
+  else wasIn = inV;
+  updatePlayhead(true);
   requestAnimationFrame(tick);
 }
 
@@ -592,18 +732,22 @@ function togglePlay() {
   const c = current();
   if (!c || !v.src) return;
   if (!v.paused) return v.pause();
-  if (v.currentTime >= c.end - 0.05 || v.currentTime < win(c).lo) v.currentTime = c.start;
+  const dur = durOf(c);
+  if (v.ended || (dur && playhead(c) >= dur - 0.05)) seekTo(c.start); // at the end of the source: replay the clip
   v.play().catch(() => {});
 }
 
 v.addEventListener('loadedmetadata', () => {
-  if (pendingSeek != null) seekTo(pendingSeek);
+  drawRail(); // the source length may only be known now
+  const t = pendingSeek;
   pendingSeek = null;
+  if (t != null) seekTo(t);
 });
 v.addEventListener('canplay', () => screenMsg(''));
 v.addEventListener('playing', () => screenMsg(''));
 v.addEventListener('waiting', () => screenMsg('Buffering…'));
 v.addEventListener('error', () => {
+  seekWant = null;
   if (!v.dataset.url) return;
   const url = v.dataset.url;
   const msg = `The browser could not play this video${v.error?.message ? `: ${v.error.message}` : ''}.`;
@@ -625,13 +769,18 @@ function showPlaying(playing) {
 
 v.addEventListener('play', () => {
   showPlaying(true);
+  follow(playhead()); // Play shows the playhead, also after a pan away from it
   requestAnimationFrame(tick);
 });
 v.addEventListener('pause', () => {
   showPlaying(false);
   updatePlayhead();
 });
-v.addEventListener('seeked', updatePlayhead);
+v.addEventListener('seeked', () => {
+  const w = seekWant;
+  if (w) seekTo(w.t, w.fast); // the latest scrub target that waited for this seek
+  else updatePlayhead();
+});
 v.addEventListener('click', togglePlay);
 $('#playBtn').addEventListener('click', togglePlay);
 $('#retryBtn').addEventListener('click', () => {
@@ -641,7 +790,43 @@ $('#retryBtn').addEventListener('click', () => {
   prepareRequested.delete(`${S.id}:${src.path}`);
   prepareSource(src);
 });
-seek.addEventListener('input', () => seekTo(Number(seek.value)));
+seek.addEventListener('input', () => seekTo(Number(seek.value), true));
+seek.addEventListener('change', () => seekTo(Number(seek.value))); // released: an exact seek
+seek.addEventListener('keydown', (e) => {
+  if ((e.key !== 'PageUp' && e.key !== 'PageDown') || !S.view) return;
+  e.preventDefault(); // PageUp/PageDown: 10% of the rail
+  seekTo(playhead() + (e.key === 'PageUp' ? 1 : -1) * 0.1 * (S.view.hi - S.view.lo));
+});
+$('#zoomOut').addEventListener('click', () => zoomBy(2));
+$('#zoomIn').addEventListener('click', () => zoomBy(0.5));
+$('#zoomFit').addEventListener('click', () => {
+  const c = current();
+  const f = c && fitView(c);
+  if (f) setView(f.lo, f.hi);
+});
+const pan = $('#pan');
+const panTo = (mid) => S.view && setView(mid - (S.view.hi - S.view.lo) / 2, mid + (S.view.hi - S.view.lo) / 2);
+pan.addEventListener('input', () => panTo(Number(pan.value)));
+pan.addEventListener('keydown', (e) => {
+  const w = S.view;
+  const dur = Number(pan.max);
+  const span = w ? w.hi - w.lo : 0;
+  const d = { ArrowLeft: -0.1, ArrowDown: -0.1, ArrowRight: 0.1, ArrowUp: 0.1, PageDown: -1, PageUp: 1 }[e.key];
+  if (!w || (d == null && e.key !== 'Home' && e.key !== 'End')) return;
+  e.preventDefault(); // arrows pan by 10% of the view, PageUp/PageDown by a whole view
+  panTo(e.key === 'Home' ? 0 : e.key === 'End' ? dur : (w.lo + w.hi) / 2 + d * span);
+});
+// mouse convenience: the wheel pans the rail, Ctrl+wheel zooms around the pointer
+$('#rail').addEventListener('wheel', (e) => {
+  const w = S.view;
+  if (!w) return;
+  e.preventDefault();
+  const r = e.currentTarget.getBoundingClientRect();
+  const span = w.hi - w.lo;
+  const d = (e.deltaX || e.deltaY) * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.width : 1);
+  if (e.ctrlKey) zoomBy(2 ** Math.max(-1, Math.min(1, d / 100)), w.lo + ((e.clientX - r.left) / r.width) * span); // a wheel notch: x2
+  else setView(w.lo + (d / r.width) * span, w.hi + (d / r.width) * span);
+}, { passive: false });
 
 // ---------- sequence ----------
 
@@ -1265,12 +1450,13 @@ function stepRows(j) {
 /**
  * The analysis whose steps the Moments column shows: this project's running one, or, while it is
  * still the latest job, one that failed or was cancelled (a completed one gives way to its moments).
- * Null when it sent no steps (a CLI without PROGRESS lines).
+ * Null when it sent no steps and has no plan (a CLI without PROGRESS lines); a plan alone shows
+ * its rows, all waiting, before the first step arrives.
  */
 function stepsJob() {
   const j = S.active ?? S.jobs[S.jobs.length - 1];
   if (!S.id || j?.project_id !== S.id || j.action !== 'analyze' || j.status === 'completed') return null;
-  return j.progress?.steps?.length ? j : null;
+  return j.progress?.steps?.length || j.progress?.plan?.length ? j : null;
 }
 
 /** A step's whole pct while it runs, else null. */
@@ -1833,7 +2019,7 @@ function bind() {
     if (e.target.closest('input:not([type=range]),textarea,select,[role=separator],dialog,[popover]')) return;
     if (e.key === '[' || e.key === ']') {
       e.preventDefault();
-      setRange(e.key === '[' ? 'start' : 'end', v.currentTime);
+      setRange(e.key === '[' ? 'start' : 'end', playhead());
     } else if (e.key === ' ' && (!e.target.closest('button,a,summary') || e.target.closest('.vol'))) {
       e.preventDefault();
       togglePlay();

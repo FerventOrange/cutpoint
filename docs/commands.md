@@ -236,6 +236,15 @@ under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, matchi
 The preview transport has a mute button and a volume slider next to Play. One setting covers every
 preview (moments, clips and final) and is remembered per browser; the default is unmuted at 100%.
 `M` toggles mute, and Space plays or pauses even when the volume controls have focus.
+Playback and scrubbing cover the whole source: playback runs on past the clip end, and Play at
+the end of the source starts the clip again. The trim rail under the video is a zoomable view of
+the source with the clip (gold) and the analyzed range (dashed) as markers; it opens on the clip
+plus half its length (at least 10 s) either side. "Zoom out", "Zoom in" and "Fit clip" change
+the view, the overview strip next to them shows the view in the whole source and pans it (drag
+or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
+playhead during playback. On the rail, PageUp and PageDown move the playhead by a tenth of the
+view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
+rail widens to show it. Clips longer than 10 minutes get a note under the trim fields.
 Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
 remote access is not supported.
 

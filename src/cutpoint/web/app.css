@@ -274,6 +274,10 @@ select { max-width: 100%; }
   position: absolute; top: 0; bottom: 0; background: var(--gold-fill);
   border: 1px solid var(--gold); border-left: 3px solid var(--gold-edge);
 }
+/* the markers can reach past the view: clipped here, not on .rail, so the #seek focus outline shows */
+.rail-marks { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.rail-sel.cut-l { border-left-width: 0; }
+.rail-sel.cut-r { border-right-width: 0; }
 .rail-orig { position: absolute; top: 4px; bottom: 4px; border: 1px dashed var(--muted); border-radius: 2px; pointer-events: none; }
 .rail input[type=range] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
@@ -283,7 +287,26 @@ select { max-width: 100%; }
 .rail input[type=range]::-moz-range-track { background: transparent; height: 100%; }
 .rail input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 44px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
 .rail input[type=range]::-moz-range-thumb { width: 4px; height: 44px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
+.rail input.off-view::-webkit-slider-thumb { opacity: 0; }
+.rail input.off-view::-moz-range-thumb { opacity: 0; }
 .rail-ends { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+/* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
+.rail-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 4px; }
+.rail-zoom { display: flex; gap: 4px; }
+.overview { position: relative; flex: 1 1 12em; height: 24px; background: var(--deep); border: 1px solid var(--line); border-radius: 3px; }
+.overview.off { opacity: 0.5; }
+.overview .rail-marks { border-radius: 2px; } /* clips the view box's min-width at the strip's ends */
+.ov-clip { position: absolute; top: 7px; bottom: 7px; min-width: 2px; background: var(--gold); }
+.ov-view { position: absolute; top: 0; bottom: 0; min-width: 4px; border: 2px solid var(--text); border-radius: 2px; pointer-events: none; }
+.overview input[type=range] {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
+  min-height: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: grab;
+}
+.overview input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 100%; }
+.overview input[type=range]::-moz-range-track { background: transparent; height: 100%; }
+/* a hairline thumb, so the pointer lands where the view box centres; the box is what shows */
+.overview input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 1px; height: 22px; background: transparent; border: 0; }
+.overview input[type=range]::-moz-range-thumb { width: 1px; height: 22px; background: transparent; border: 0; }
 
 /* Clip Start | Transcript | Clip End. The trim group spans the row as a subgrid with the
    transcript laid over its middle column, so reading order stays Start, End, Transcript. */
