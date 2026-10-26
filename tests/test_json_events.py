@@ -176,7 +176,7 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
     monkeypatch.setattr(
         crash,
         "load_inputs",
-        lambda s, dur, p, tmp: crash.SourceInputs(
+        lambda s, dur, p, tmp, lang: crash.SourceInputs(
             path=s, duration=dur, tel=None, imu=None, visual=SimpleNamespace(t=[]), kf_crash=None
         ),
     )

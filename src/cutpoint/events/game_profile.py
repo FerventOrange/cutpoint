@@ -31,7 +31,10 @@ dependency (the ``ocr`` backend):
   is ignored for counting and matching, as the OCR layer does; a candidate must have one casing in at least
   :data:`CASE_SHARE` of the bursts it shows in and keeps that casing ("Shield
   Saver"). A sentence repeated whole (a hint) gives nothing, as no part shows
-  without the rest; static labels (fuzzy-found in most gameplay frames), static
+  without the rest, and neither does a part of one OCR read a little differently
+  each time (:func:`_sentence_part`: in every text it is in, its sentence, a word run
+  that commas and brackets do not end, has more than :data:`MAX_WORDS` words, with the
+  same characters around it); static labels (fuzzy-found in most gameplay frames), static
   hint lines (:func:`_static_hint`: in at least :data:`HINT_SHARE` of a
   source's gameplay frames, spread over at least :data:`HINT_SPREAD` of its
   sampled time) and phrases close to one of
@@ -44,7 +47,7 @@ dependency (the ``ocr`` backend):
 Regions are kept exactly as discovery proposed them, and ``feed`` colours,
 ``view`` and ``hype`` are not set: the OCR text alone does not say what they
 should be. The result keeps ``"source": "discovered"`` and records its
-provenance as ``"profile": {"backend": "ocr", "version": 5}``.
+provenance as ``"profile": {"backend": "ocr", "version": 6}``.
 
 Cache keys: ``source``, ``profile``, ``title``, ``match``, ``notes`` and
 ``candidate_phrases`` are not part of the OCR cache key
@@ -72,7 +75,7 @@ from cutpoint.events.killfeed import fuzzy_contains, is_player, norm, similar
 from cutpoint.events.regions import GENERIC_BANNERS, bigtext_region
 
 BACKEND = "ocr"
-VERSION = 5  # bump when the OCR backend's output changes
+VERSION = 6  # bump when the OCR backend's output changes
 MAX_PHRASES = 12
 # a phrase must occur in this many gameplay frames, each at least MIN_GAP_S after the
 # previous one counted in its source: a banner held 3 s counts twice, one reading of a
@@ -104,6 +107,7 @@ NOTES = (
 )
 # a handle ("@name", "#tag") or a separator: ends a word run
 _BREAK = re.compile(r"[@#]\S*|[:;,!?|/\\()\[\]{}<>\"]")
+_SOFT = re.compile(r'[,()\[\]{}<>"]')  # punctuation inside one sentence
 _CHAT = re.compile(r":\s.*", re.DOTALL)  # "name: message": the message is chat
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")  # "blockedShield" -> "blocked", "Shield"
 # a number joined to a word: one letter run and one digit run ("ROUND5", "5KILLS")
@@ -235,7 +239,8 @@ def mine_phrases(
     to the rest, or next to the neighbour of a varying edge word, which has the
     candidate in less than half of its frames). Candidates are compared
     case-folded and need one casing in :data:`CASE_SHARE` of the bursts they
-    show in (see :func:`_casing`).
+    show in (see :func:`_casing`). A part of one longer sentence (a hint line)
+    is not tried either (:func:`_sentence_part`).
 
     Occurrences are fuzzy (:func:`~cutpoint.events.killfeed.fuzzy_contains`,
     aligned to whole words: "QORV" never counts inside "HULLQORVBREACHED") for
@@ -288,6 +293,8 @@ def mine_phrases(
     casings: dict[str, dict[str, set[tuple[str, int]]]] = {}  # candidate -> casing -> bursts
     text_frames: dict[str, set[str]] = {}  # each distinct text is split once
     text_bursts: dict[str, set[tuple[str, int]]] = {}
+    splits: dict[str, str] = {}  # each text's words, upper-case (numbers and tags cut out)
+    sources: dict[str, dict[str, int]] = {}  # candidate -> text -> longest run it is in
     for f in frames:
         fid, bkey = str(f["id"]), (str(f["source"]), int(f["burst"]))
         for text in {b["text"] for rect in rects for b in boxes_in(f, *rect)}:
@@ -300,14 +307,23 @@ def mine_phrases(
         casings.setdefault,
         longer.setdefault,
     )
-    add_left, add_right = left.setdefault, right.setdefault
+    add_left, add_right, add_source = left.setdefault, right.setdefault, sources.setdefault
     for text, fids in text_frames.items():
         runs = _segments(text, tags)
-        if split := " ".join(w for run in runs for w in run).upper():
+        # the length of the sentence each run is in (commas and brackets do not end it)
+        merged = [len(r) for r in _segments(text, tags, soft=True)]
+        slens, m, used = [], 0, 0
+        for run in runs:  # each run is a stretch of one merged run, in order
+            if used == merged[m]:
+                m, used = m + 1, 0
+            slens.append(merged[m])
+            used += len(run)
+        splits[text] = split = " ".join(w for run in runs for w in run).upper()
+        if split:
             for fid in fids:
                 by_frame.setdefault(fid, set()).add(split)
         bks = text_bursts[text]
-        for run in runs:
+        for run, slen in zip(runs, slens, strict=True):
             up = [w.upper() for w in run]
             n = len(run)
             for i in range(n):
@@ -328,6 +344,8 @@ def mine_phrases(
                     if k < 2 or k > MAX_WORDS:
                         continue
                     add_casing(sp, {}).setdefault(raw, set()).update(bks)
+                    src = add_source(sp, {})
+                    src[text] = max(src.get(text, 0), slen)
                     around = add_longer(sp, set())
                     if before:
                         around.add(f"{before} {sp}")
@@ -395,6 +413,8 @@ def mine_phrases(
         name = _casing(casings[c])
         if name is None:
             continue  # casing varies: not one HUD text
+        if _sentence_part(c, sources[c], splits):
+            continue  # a part of one longer sentence: a hint line
         tried += 1
         hits: dict[str, bool] = {}
         cg = _bigrams(c)
@@ -482,6 +502,36 @@ def _static_hint(
     return False
 
 
+def _sentence_part(c: str, texts: dict[str, int], splits: dict[str, str]) -> bool:
+    """Whether candidate ``c`` (upper-case) shows only as a part of one longer sentence.
+
+    In every text it is a span of (``texts``: text -> the longest sentence it is in, a
+    word run of :func:`_segments` with ``soft``), that sentence has more than
+    :data:`MAX_WORDS` words, and the 8
+    characters on each side of it are the same in each (fuzzy, spaces ignored, so words OCR
+    joined in one read still match): a hint line, read a little differently each time, so
+    its parts also show without the rest. The characters around are those of the raw text
+    (:func:`~cutpoint.events.killfeed.norm`, gamertags and numbers kept; the split text of
+    ``splits`` where OCR joined the phrase to a word). A log line has varying names around
+    the phrase, and a banner shows on its own or next to a number or separator (a stats
+    line in the same box), so both stay.
+    """
+    first = None
+    for t in sorted(texts):
+        if texts[t] <= MAX_WORDS:
+            return False
+        r = f" {norm(t)} "
+        if f" {c} " not in r:
+            r = f" {splits[t]} "
+        pre, _, post = r.partition(f" {c} ")
+        around = pre.replace(" ", "")[-8:] + "|" + post.replace(" ", "")[:8]
+        if first is None:
+            first = around
+        elif similar(around, first) < FUZZY:
+            return False
+    return first is not None
+
+
 def _casing(forms: dict[str, set[tuple[str, int]]]) -> str | None:
     """The casing of a candidate seen in the most bursts (then the first by text),
     or None when it has less than :data:`CASE_SHARE` of the bursts the candidate
@@ -491,17 +541,24 @@ def _casing(forms: dict[str, set[tuple[str, int]]]) -> str | None:
     return best if len(forms[best]) >= CASE_SHARE * len(bursts) else None
 
 
-def _segments(text: str, tags: tuple[str, ...] = ()) -> list[list[str]]:
+def _segments(text: str, tags: tuple[str, ...] = (), *, soft: bool = False) -> list[list[str]]:
     """The word runs of an OCR text, case kept.
 
     A chat message after "name: " is dropped. Handles ("@name", "#tag") and
     separators (``: ; , ! ? | / \\ ( ) [ ] { } < > "``) end a run; so do the
     breaks of :func:`_words` (numbers, gamertags, the user's player tags).
     "[12:03] Ash99 blockedShieldSaver:x1" gives ``[["Ash"], ["blocked",
-    "Shield", "Saver"]]`` ("x1" is a number).
+    "Shield", "Saver"]]`` ("x1" is a number). With ``soft``, the punctuation of
+    :data:`_SOFT` (commas, brackets, quotes) does not end a run: the runs are the
+    sentences, each made of whole runs of the default split.
     """
     runs: list[list[str]] = [[]]
-    for tok in _BREAK.sub(" | ", _CHAT.sub("", text)).split():
+    marks = _BREAK.sub(
+        lambda b: " \0 " if soft and _SOFT.fullmatch(b[0]) else " | ", _CHAT.sub("", text)
+    )
+    for tok in marks.split():
+        if tok == "\0":
+            continue  # soft punctuation: the sentence goes on
         for w in [None] if tok == "|" else _words(tok, tags):
             if w is None:
                 runs.append([])

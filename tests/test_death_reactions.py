@@ -293,8 +293,21 @@ def test_rescore_highlights_death_reaction_from_cached_transcript(tmp_path, home
     assert c["score"] == pytest.approx(48.0, abs=0.1)
 
 
+def test_rescore_highlights_reads_the_transcript_of_the_analysis_language(tmp_path, home):
+    """#371: the project analysed with --language de reacts on its German transcript, not on
+    the (silent) detected-language one of the same source."""
+    video = _transcribe(tmp_path, [])
+    cache.save_json(cache.source_dir(video) / "transcript-small-de.json", [seg(1, 3), seg(12, 13)])
+    project = _project(tmp_path, "funny", video, laughter=False)
+    hl = cache.load_json(project / "highlights.json")
+    cache.save_json(project / "highlights.json", {**hl, "settings": {"language": "de"}})
+    scoring.rescore_highlights(project)
+    c = cache.load_json(project / "highlights.json")["candidates"][0]
+    assert c["signals"]["events"]["player_deaths_reaction"] == 1
+
+
 def test_rescore_highlights_gaming_does_not_load_transcript(tmp_path, home, monkeypatch):
-    monkeypatch.setattr(sources, "source_segments", lambda _p: pytest.fail("loaded"))
+    monkeypatch.setattr(sources, "source_segments", lambda _p, _lang=None: pytest.fail("loaded"))
     video = _transcribe(tmp_path, [seg(1, 3), seg(12, 13)])
     project = _project(tmp_path, "gaming", video, laughter=False)
     scoring.rescore_highlights(project)

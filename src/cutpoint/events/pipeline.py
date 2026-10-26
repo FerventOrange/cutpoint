@@ -26,7 +26,12 @@ from cutpoint import cache, jsonout, progress
 from cutpoint import paths as cutpoint_paths
 from cutpoint.config import source_path
 from cutpoint.events import paths
-from cutpoint.events.audio_events import AudioParams, PannsDetector, detect_audio_events
+from cutpoint.events.audio_events import (
+    AudioParams,
+    PannsDetector,
+    cached_audio_events,
+    detect_audio_events,
+)
 from cutpoint.events.common import (
     VramMonitor,
     audio_slice,
@@ -208,12 +213,15 @@ def run_events(
                 try:
                     for i, s in enumerate(sources):
                         progress.update(progress.fraction(i, len(sources)))
-                        need = "audio" in force or not detect_audio_events(s, None, audio)
-                        if need and det is None:
-                            det = PannsDetector()
-                        evs = detect_audio_events(
-                            s, det if need else None, audio, force="audio" in force
-                        )
+                        evs = None if "audio" in force else cached_audio_events(s, audio)
+                        if evs is None and not s.audio_parts:
+                            logger.warning(
+                                "%s: no cached 16 kHz audio; run `cutpoint analyze` first", s.name
+                            )
+                            evs = []  # nothing to detect: no model load
+                        if evs is None:
+                            det = det or PannsDetector()
+                            evs = detect_audio_events(s, det, audio, force=True)  # miss or forced
                         layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
                 finally:
                     if det is not None:

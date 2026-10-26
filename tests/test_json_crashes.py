@@ -48,7 +48,7 @@ def ski(home, tmp_path, monkeypatch) -> tuple[Path, Path]:
     project = home / "projects" / "ski"
     project.mkdir(parents=True)
     cache.save_json(project / "highlights.json", {"sources": [{"path": str(src), "duration": 60}]})
-    monkeypatch.setattr(crash, "load_inputs", lambda s, dur, p, tmp: _inputs(s))
+    monkeypatch.setattr(crash, "load_inputs", lambda s, dur, p, tmp, lang: _inputs(s))
     return project, src
 
 
@@ -74,13 +74,30 @@ def test_crashes_json(ski, capsys):
     assert c["clip"]["start"] < c["t0"] <= c["t1"] < c["clip"]["end"]
 
 
+@pytest.mark.parametrize("language", [None, "de"])
+def test_crashes_read_the_transcript_of_the_analysis_language(ski, monkeypatch, capsys, language):
+    """#371: the words layer reads the transcript of the language the analysis forced."""
+    project, src = ski
+    hl = {"sources": [{"path": str(src), "duration": 60}], "settings": {"language": language}}
+    cache.save_json(project / "highlights.json", hl)
+    langs = []
+
+    def inputs(s, dur, p, tmp, lang):
+        langs.append(lang)
+        return _inputs(s)
+
+    monkeypatch.setattr(crash, "load_inputs", inputs)
+    code, _ = run_json(capsys, CRASHES)
+    assert code == 0 and langs == [language]
+
+
 def test_crashes_json_warnings(ski, tmp_path, monkeypatch, capsys):
     project, src = ski
     gone = tmp_path / "gone.mp4"
     sources = [{"path": str(gone), "duration": 60}, {"path": str(src), "duration": 60}]
     cache.save_json(project / "highlights.json", {"sources": sources})
     monkeypatch.setattr(
-        crash, "load_inputs", lambda s, dur, p, tmp: _inputs(s, imu=False, visual=False)
+        crash, "load_inputs", lambda s, dur, p, tmp, lang: _inputs(s, imu=False, visual=False)
     )
     monkeypatch.setattr(analyze, "reanalyze_if_reachable", lambda project: None)
     code, doc = run_json(capsys, [*CRASHES[:-1], "--reanalyze"])
@@ -257,7 +274,7 @@ def test_profile_warns_once_for_an_unreachable_source(
 def test_no_visual_layer_says_why_inside_analyze(ski, monkeypatch, reason, expected):
     """Inside analyze (no_visual_reason), the warning keeps its code and gives the reason."""
     project, src = ski
-    monkeypatch.setattr(crash, "load_inputs", lambda s, dur, p, tmp: _inputs(s, visual=False))
+    monkeypatch.setattr(crash, "load_inputs", lambda s, dur, p, tmp, lang: _inputs(s, visual=False))
     with jsonout.run("crashes") as result, crash.no_visual_reason(reason):
         crash.detect_project(project, dense=False, sheets=0, activity_name="ski")
     (w,) = [w for w in result.warnings if w["code"] == "no_visual_layer"]

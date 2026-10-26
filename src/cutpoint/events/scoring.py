@@ -124,11 +124,11 @@ def best_window(cand: dict[str, Any], windows: list[dict[str, Any]]) -> dict[str
     return best if best_ov >= 2.0 else None
 
 
-def _segments(source: str) -> list[dict[str, Any]]:
-    """:func:`cutpoint.sources.source_segments`, or [] when the source has none or
-    cannot be read."""
+def _segments(source: str, language: str | None = None) -> list[dict[str, Any]]:
+    """:func:`cutpoint.sources.source_segments` (of the transcript ``language``), or []
+    when the source has none or cannot be read."""
     try:
-        return sources.source_segments(Path(source)) or []
+        return sources.source_segments(Path(source), language) or []
     except OSError as err:  # the source is gone (moved, drive disconnected)
         logger.debug("No transcript for %s (%s)", source, err)
         return []
@@ -181,6 +181,7 @@ def rescore(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int:
     windows = ev.get("windows", [])
     types = resolve(project, ev)
     style = style_and_base(hl.get("style"))
+    language = (hl.get("settings") or {}).get("language")
     segments: dict[str, list[dict[str, Any]] | None] = {}
     changed = 0
     for c in hl.get("candidates", []):
@@ -189,7 +190,7 @@ def rescore(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int:
         src_types = types.get(src, DEFAULT_EVENT_TYPES)
         if src not in segments:
             reacts = any(t.reaction is not None and t.applies(*style) for t in src_types)
-            segments[src] = _segments(src) if reacts else None
+            segments[src] = _segments(src, language) if reacts else None
         boost, evidence = event_boost(
             c, by_src.get(src, []), src_types, style=style, segments=segments[src]
         )

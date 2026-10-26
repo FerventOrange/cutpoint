@@ -509,6 +509,54 @@ def test_repeated_sentence_gives_nothing() -> None:
     assert mine_phrases(_proposal(), _frames({b: [line] for b in (0, 3, 6)})) == []
 
 
+def test_parts_of_a_hint_read_differently_not_mined() -> None:
+    # an invented hint line; OCR joined other words in each read, so its parts show without
+    # the rest, but the words around them are the same sentence: a hint, not a banner
+    reads = [
+        "Hold the lever to raise the bridge before the tide",
+        "Holdthe lever to raise the bridge beforethe tide",
+        "Hold the lever toraise the bridge before thetide",
+    ]
+    texts = {0: reads[:1], 4: reads[1:2], 8: reads[2:]} | {2: ["ZONE SECURED"], 6: ["ZONE SECURED"]}
+    assert mine_phrases(_proposal(), _frames(texts)) == ["ZONE SECURED"]
+
+
+def test_part_of_sentences_also_shown_alone_kept() -> None:
+    # the same phrase is also a short text of its own: a banner, kept (the rest of the
+    # sentence is not)
+    reads = ["Hold the lever to raise the bridge before the tide"]
+    reads.append("Holdthe lever to raise the bridge beforethe tide")
+    texts = {0: reads[:1], 4: reads[1:], 7: ["raise the bridge"]}
+    assert mine_phrases(_proposal(), _frames(texts)) == ["raise the bridge"]
+
+
+def test_parts_of_a_comma_hint_not_mined() -> None:
+    # an invented hint whose clauses are 5 words or fewer: the comma does not end the sentence
+    reads = [
+        "Pull the lever to drop the gate, then wait for the tide",
+        "Pullthe lever to drop the gate, thenwait for the tide",
+        "Pull the lever todrop the gate, then wait forthe tide",
+    ]
+    assert mine_phrases(_proposal(), _frames({0: reads[:1], 4: reads[1:2], 8: reads[2:]})) == []
+
+
+def test_log_lines_with_gamertags_kept() -> None:
+    # 6+ word log lines whose names are gamertags (cut out of the split text): the fixed
+    # phrase between them is mined, not taken for a hint
+    tags = ["N0VA", "A1B2", "R3X", "K9T"]
+    texts = {
+        b: [f"{tags[b % 4]} was taken out by the {tags[(b + 1) % 4]} crew near the gate"]
+        for b in (0, 3, 6)
+    }
+    assert "was taken out by the" in mine_phrases(_proposal(), _frames(texts))
+
+
+def test_banner_in_one_box_with_a_stats_line_kept() -> None:
+    # OCR reads the banner in one box with a stats line: a separator and a number end its run
+    line = "ZONE SECURED | 30 pts earned by your whole squad"
+    assert "ZONE SECURED" in mine_phrases(_proposal(), _frames({0: [line], 4: [line]}))
+
+
 def test_heavy_log_cost() -> None:
     # 160 frames of 12 notice lines of 12 invented words each, most of them unique
     rng = random.Random(5)
