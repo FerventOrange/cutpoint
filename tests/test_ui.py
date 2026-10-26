@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import socket
@@ -307,6 +308,16 @@ def test_a_refused_request_says_whether_the_token_or_the_host_was_wrong(
     assert (res.status_code, res.json()) == (403, host_detail)
     res = client.get("/api/session", headers={"Origin": "http://evil.example"})
     assert (res.status_code, res.json()) == (403, host_detail)
+
+
+def test_the_scrolling_columns_clip_their_visually_hidden_labels() -> None:
+    """Contract pin (#354): .vh labels are position: absolute. Unless .col is positioned, their
+    containing block is the page, the column's overflow does not clip them, and a long moments
+    list makes the page scroll past the Jobs bar on a wide window."""
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    assert re.search(r"^\.vh \{[^}]*position: absolute;", css, re.M)
+    col = re.search(r"^\.col \{([^}]*)\}", css, re.M)
+    assert col and "position: relative;" in col[1] and "overflow: auto;" in col[1]
 
 
 def test_project_ids_cannot_leave_the_projects_folder(client: TestClient, tmp_path: Path) -> None:
