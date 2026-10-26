@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import functools
 import importlib.util
 import logging
 import time
@@ -273,7 +274,8 @@ def run_events(
             timings["discovery_s"] = round(time.perf_counter() - t0, 1)
             if stats["discovery"]:
                 base = DISCOVERY_PCT
-        engine = OcrEngine() if "ocr" in layers else None
+        # the OCR model loads only when a source's footage is read (not for a replay)
+        make_engine = functools.cache(OcrEngine) if "ocr" in layers else None
         if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
             logger.warning(
                 "No player_tags set, so kills and deaths in the HUD cannot be "
@@ -304,13 +306,14 @@ def run_events(
                 evs, st = detect_ocr_events(
                     s,
                     ocr,
-                    engine,
+                    None,
                     force="ocr" in force,
                     debug_dir=ocr_debug,
                     avoid=bad.get(str(s.path)),
                     on_progress=(
                         (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
                     ),
+                    make_engine=make_engine,
                 )
                 preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
                 link_teamkills(

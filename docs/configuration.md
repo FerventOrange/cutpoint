@@ -251,8 +251,9 @@ With a JSON preset, the OCR layer applies the same test to the text it detects i
 regions other than feeds (a full kill feed is no menu) and drops what menu frames show. It also
 treats a screen that holds still as a menu (hangar and crew screens show as little text as a busy
 HUD): a 32x18 grey thumbnail of the HUD area within 3 grey levels of the first frame, more than 2 s
-from any feed sighting or kill, for at least 5 s when new menu text shows (text that is no preset
-phrase, first read in the still stretch or up to 2 s before it) and at least 10 s otherwise, so
+from any feed sighting or kill, for at least 5 s when new menu text shows (at least 2 text lines
+that are no preset phrase, first read in the still stretch or up to 2 s before it, each on screen
+for at least half of it) and at least 10 s otherwise, so
 still gameplay (scoped, about 6 s) keeps its banners; it runs only when the bounding box of the
 preset's regions is at least a quarter of the frame. Feed sightings and kills are never dropped,
 by any menu test. A discovered kill feed takes in the rows above and below

@@ -832,6 +832,20 @@ def proxy_args(
     ]  # fmt: skip
 
 
+def _tail(output: str, lines: int = 5) -> str:
+    """The last ``lines`` non-empty lines of an encode's output, trimmed: why it failed."""
+    kept = [line.strip() for line in output.splitlines() if line.strip()]
+    return "\n".join(kept[-lines:])[-500:]
+
+
+def _exit_reason(code: int, tail: str) -> str:
+    """``tail``, or the exit code when the encode printed nothing (e.g. it was killed)."""
+    if tail:
+        return tail
+    hexa = f" (0x{code & 0xFFFFFFFF:08X})" if code < 0 or code > 255 else ""  # Windows NTSTATUS
+    return f"ffmpeg exited with code {code}{hexa}"
+
+
 def _covers(span: tuple[int, int], want: tuple[int, int], dur_cs: int) -> bool:
     """The window ``span`` plays all of ``want`` (centiseconds) as the page sees it (app.js
     ``covers``): not its last frame, unless it ends with the source (``dur_cs``, 0 if unknown)."""
@@ -883,6 +897,9 @@ class Media:
         # (project, key) -> windows of a source whose whole proxy landed: no longer listed, but
         # still served (a page may be playing one) until the next run's prune_proxies deletes them
         self.retired: dict[tuple[Path, str], dict[tuple[int, int], Path]] = {}
+        # (project, key) -> {(lo, hi) centiseconds: short reason} of window encodes that failed,
+        # oldest first; listed so the page stops waiting, cleared when one is asked for again
+        self.window_failures: dict[tuple[Path, str], dict[tuple[int, int], str]] = {}
         self.windows_queue: deque[ProxyWindow] = deque()
         self.window_running: ProxyWindow | None = None
         self.window_wake = threading.Condition(self.lock)
@@ -1054,6 +1071,9 @@ class Media:
                 pass  # a queued one covers it, or the queue is full
             elif len(covered) == len(gone):
                 self.windows_queue.append(win)
+                failed = self.window_failures.get((project, key), {})
+                for sp in [sp for sp in failed if sp[0] < win.hi and win.lo < sp[1]]:
+                    del failed[sp]  # asked for again: no longer a failure to show
                 if self.window_lane is None:
                     self.window_lane = threading.Thread(
                         target=self._window_lane, name="cutpoint-proxy-window", daemon=True
@@ -1117,15 +1137,41 @@ class Media:
                         tmp.replace(out)
                         drop = self._keep_window((p, win.key), (win.lo, win.hi), out)
             elif not win.cancelled and not self.closing:
-                logger.warning("window proxy of %s failed: %s", what, tail)
+                reason = _exit_reason(code, tail)
+                logger.warning("window proxy of %s failed: %s", what, reason)
+                self._window_failed(win, reason)
         except HTTPException as err:  # refused: the temporary is removed below
             logger.warning("window proxy of %s failed: %s", what, err.detail)
-        except OSError:
+            self._window_failed(win, str(err.detail))
+        except OSError as err:
             logger.exception("window proxy of %s failed", what)
+            self._window_failed(win, str(err))
         finally:
             with contextlib.suppress(OSError):  # e.g. NotADirectoryError when ui is a file
                 tmp.unlink(missing_ok=True)
             self._delete(drop)
+
+    def _window_failed(self, win: ProxyWindow, reason: str) -> None:
+        """Record a failed window encode for the listing: its last line is the reason shown."""
+        last = reason.splitlines()[-1] if reason else ""
+        with self.lock:
+            failed = self.window_failures.setdefault((win.project, win.key), {})
+            failed.pop((win.lo, win.hi), None)
+            failed[(win.lo, win.hi)] = last[:200]
+            while len(failed) > PROXY_WINDOWS_MAX:
+                del failed[next(iter(failed))]
+
+    def failed_windows(self, project: Path, path: str) -> list[tuple[int, int, str]]:
+        """``(lo, hi, reason)`` of a source's failed window encodes, in centiseconds; no stat
+        while the project has none."""
+        with self.lock:
+            if not any(p == project and f for (p, _), f in self.window_failures.items()):
+                return []
+        key = self.key(remap_source(path))
+        with self.lock:
+            return [
+                (lo, hi, r) for (lo, hi), r in self.window_failures.get((project, key), {}).items()
+            ]
 
     def _keep_window(self, pid: tuple[Path, str], span: tuple[int, int], file: Path) -> list[Path]:
         """Record a ready window (call with ``self.lock`` held); returns the windows evicted for
@@ -1155,6 +1201,7 @@ class Media:
             done = self.windows.pop((project, key), None)
             if done:
                 self.retired.setdefault((project, key), {}).update(done)
+            self.window_failures.pop((project, key), None)
             for win in [w for w in self.windows_queue if (w.project, w.key) == (project, key)]:
                 self.windows_queue.remove(win)
             run = self.window_running
@@ -1343,7 +1390,7 @@ class Media:
                 self.progress[progress[0]] = 0.0
         try:
             if progress is None:
-                tail = (proc.communicate()[0] or "").strip()[-500:]
+                tail = _tail(proc.communicate()[0] or "")  # stderr is merged into it
             else:
                 tail = self._read_progress(proc, *progress)
         finally:
@@ -2195,6 +2242,7 @@ def create_app(port: int) -> FastAPI:
             # Never probes: 200 sources took 11 s of ffprobe. The page prepares the one it plays.
             status, proxied, done = media.cached_view(p, s["path"])
             ready, pending = media.windows_of(p, s["path"])
+            failed = media.failed_windows(p, s["path"])
             duration = s["duration"]
             if duration is None and (ready or pending):  # the page needs it to play windows
                 duration = media.probed_duration(s["path"])
@@ -2218,6 +2266,11 @@ def create_app(port: int) -> FastAPI:
                     "pending": [
                         {"lo": lo / 100, "hi": hi / 100, "state": state}
                         for lo, hi, state in pending
+                    ],
+                    # window encodes that failed (until asked for again): the page stops waiting
+                    "failed": [
+                        {"lo": lo / 100, "hi": hi / 100, "reason": reason}
+                        for lo, hi, reason in failed
                     ],
                 }
             )

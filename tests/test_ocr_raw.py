@@ -4,6 +4,7 @@ interrupted read resumes (fake decoder and OCR engine, invented HUD texts)."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -15,7 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.events import killfeed, ocr_raw
+from cutpoint.events import killfeed, ocr_raw, pipeline
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrParams, detect_ocr_events
 from cutpoint.events.regions import preset_from_dict
@@ -154,8 +155,10 @@ def _run(
             made[0] += 1
             t = start + k / fps  # as ffmpeg_utils.decode_raw stamps it
             tc = round(t * fps) / fps  # the screen's time, however t was summed up
-            if engine:
-                engine.t = tc
+            made_by = kwargs.get("make_engine")
+            current = engine or (made_by.engines[-1] if made_by and made_by.engines else None)
+            if current:
+                current.t = tc
             frame = np.full((h, w, 3), 90 if 8 <= tc < 20 else round(t * fps) * 53 % 256, np.uint8)
             _paint(tc, frame)
             yield t, frame
@@ -168,7 +171,8 @@ def _run(
 
 
 def _untimed(stats: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in stats.items() if k != "elapsed_s"}
+    """``stats`` without timing and the replay flag."""
+    return {k: v for k, v in stats.items() if k not in ("elapsed_s", "replayed")}
 
 
 def _dirs(tmp_path: Path, *names: str) -> list[Path]:
@@ -213,6 +217,7 @@ def test_replay_equals_the_live_read(tmp_path: Path, monkeypatch) -> None:
     _bump(monkeypatch)
     replay, replay_stats = _run(tmp_path, monkeypatch, None)  # no engine: no OCR
     assert replay == events
+    assert replay_stats["replayed"] and "replayed" not in stats
     assert _untimed(replay_stats) == _untimed(stats)
     # and once more from the new result's own cache
     assert _run(tmp_path, monkeypatch, None) == (replay, replay_stats)
@@ -252,6 +257,63 @@ def test_force_and_debug_read_again(tmp_path: Path, monkeypatch) -> None:
     engine = _Engine()
     assert _run(tmp_path, monkeypatch, engine, force=True)[0] == ref
     assert engine.calls > 0
+
+
+class _Factory:
+    """``make_engine`` for :func:`detect_ocr_events`: counts the engines it makes."""
+
+    def __init__(self) -> None:
+        self.engines: list[_Engine] = []
+
+    def __call__(self) -> _Engine:
+        self.engines.append(_Engine())
+        return self.engines[-1]
+
+
+def test_lazy_engine_is_made_only_for_a_live_read(tmp_path: Path, monkeypatch, caplog) -> None:
+    make = _Factory()
+    ref, _ = _run(tmp_path, monkeypatch, None, make_engine=make)
+    assert len(make.engines) == 1 and make.engines[0].calls > 0
+    _bump(monkeypatch)
+    caplog.set_level(logging.INFO, logger="cutpoint.events.killfeed")
+    events, stats = _run(tmp_path, monkeypatch, None, make_engine=make)
+    assert events == ref and stats["replayed"]
+    assert len(make.engines) == 1  # a replay makes no engine
+    (line,) = [r.getMessage() for r in caplog.records if " OCR events, " in r.getMessage()]
+    assert "replayed from the raw OCR cache: 0 live OCR calls (the cached read made {" in line
+    assert _run(tmp_path, monkeypatch, None, make_engine=make) == (events, stats)  # cache hit
+    assert len(make.engines) == 1
+    # force reads again: the engine is made then
+    _run(tmp_path, monkeypatch, None, make_engine=make, force=True)
+    assert len(make.engines) == 2 and make.engines[1].calls > 0
+
+
+def test_pipeline_loads_no_ocr_model_for_a_replay(tmp_path: Path, monkeypatch) -> None:
+    srcs = [SimpleNamespace(path=tmp_path / f"{n}.mp4", name=f"{n}.mp4") for n in "ab"]
+    monkeypatch.setattr(
+        pipeline, "load_highlights", lambda p: {"sources": [{"path": str(s.path)} for s in srcs]}
+    )
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: srcs["ab".index(path.stem)])
+    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
+    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
+    made: list[object] = []
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda: made.append(object()) or made[-1])
+    engines = []
+
+    def ocr_events(s, params, engine, *, make_engine=None, **_k):
+        assert engine is None
+        if s.name == "b.mp4":  # a live read; a.mp4 is a replay (no engine wanted)
+            engines.extend([make_engine(), make_engine()])
+            raise _Stop  # the rest of the run is not needed
+        return [], {}
+
+    monkeypatch.setattr(pipeline, "detect_ocr_events", ocr_events)
+    with pytest.raises(_Stop):
+        pipeline.run_events(tmp_path, layers=("ocr",), discover=False)
+    assert len(made) == 1 and engines == [made[0], made[0]]  # made once, for b.mp4
 
 
 def test_force_without_engine_keeps_the_raw_read(tmp_path: Path, monkeypatch) -> None:
