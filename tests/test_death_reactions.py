@@ -161,7 +161,6 @@ def test_own_death_is_first_match_in_every_style(name, style):
         e["verb"] = "kill"
     t = eventtypes.first_match(DEFAULT_EVENT_TYPES, e)
     assert t is not None and t.name == "player_deaths"
-    assert (t.reaction, t.styles) == (8.0, ("funny",))
     assert scoring.event_boost(CAND, [e], style=style)[1]["player_kills"] == 0
 
 

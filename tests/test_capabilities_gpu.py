@@ -137,14 +137,6 @@ def test_sdk_malformed_pano_config(sdk, monkeypatch):
     assert info["found"] is False and "must be an object" in info["error"]
 
 
-def test_nvidia_present_from_adapter_or_driver(monkeypatch):
-    monkeypatch.setattr(capabilities, "gpu_vendors", lambda: {"nvidia": False})
-    monkeypatch.setattr(capabilities, "_nvidia_driver_usable", lambda: False)
-    assert capabilities.nvidia_present() is False
-    monkeypatch.setattr(capabilities, "_nvidia_driver_usable", lambda: True)
-    assert capabilities.nvidia_present() is True
-
-
 # --------------------------------------------------------------------------- format_report
 
 

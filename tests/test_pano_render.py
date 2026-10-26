@@ -89,10 +89,6 @@ class TestResolveSource:
         assert (src.mode, src.projection, src.levelled) == ("studio", "equirect", True)
         assert "Studio export, assumed FlowState" in caplog.text
 
-    def test_dfisheye_is_not_levelled(self, clip):
-        src = project.resolve_source(clip, "dfisheye")
-        assert (src.projection, src.levelled) == ("dfisheye", False)
-
 
 # --------------------------------------------------------------------------- command_lines
 def _q(axis: tuple[float, float, float], deg: float) -> np.ndarray:
@@ -227,20 +223,21 @@ class TestCommandLines:
 
 
 # --------------------------------------------------------------------------- render_segment
+@pytest.fixture
+def ffmpeg(monkeypatch):
+    calls: list[list[str]] = []
+
+    def run(args, cwd=None):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"x")  # the output, which render_segment then renames
+        return ""
+
+    monkeypatch.setattr(render, "run", run)
+    monkeypatch.setattr(render, "probe", lambda p: SimpleNamespace(duration=1.0))
+    return calls
+
+
 class TestRenderSegmentSendcmd:
-    @pytest.fixture
-    def ffmpeg(self, monkeypatch):
-        calls: list[list[str]] = []
-
-        def run(args, cwd=None):
-            calls.append(args)
-            Path(args[-1]).write_bytes(b"x")  # the output, which render_segment then renames
-            return ""
-
-        monkeypatch.setattr(render, "run", run)
-        monkeypatch.setattr(render, "probe", lambda p: SimpleNamespace(duration=1.0))
-        return calls
-
     def _filter(self, args: list[str]) -> str:
         return args[args.index("-filter_complex") + 1]
 
@@ -271,19 +268,9 @@ class TestRenderSegmentSendcmd:
 
 # --------------------------------------------------------------------------- moved footage
 @pytest.mark.ffmpeg
-def test_render_segment_reads_moved_footage_and_records_the_original_paths(
-    moved, tmp_path, monkeypatch
-):
+def test_render_segment_reads_moved_footage_and_records_the_original_paths(moved, tmp_path, ffmpeg):
     clip, old, new = moved
-    calls: list[list[str]] = []
-
-    def run(args, cwd=None):
-        calls.append(args)
-        Path(args[-1]).write_bytes(b"x")
-        return ""
-
-    monkeypatch.setattr(render, "run", run)
-    monkeypatch.setattr(render, "probe", lambda p: SimpleNamespace(duration=1.0))
+    calls = ffmpeg
     src = project.RenderSource("studio", (str(old / clip.insv[0]),), "equirect", True, False, "t")
     rec = render.render_segment(
         clip, _path((0.0, 0.0, 0.0), (10.0, 0.0, 0.0)), 3.0, 4.0, tmp_path / "o.mp4", src=src

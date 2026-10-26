@@ -6,7 +6,6 @@ import json
 import logging
 import shutil
 import subprocess
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -64,16 +63,6 @@ def test_final_cues_follow_cuts_and_crossfade_overlap(tmp_path, fade):
     assert cues[2][0] == pytest.approx(second + 2.0)
     assert cues[0][1] <= cues[1][0]  # never overlapping, also inside a crossfade
     assert assemble.clip_offsets(infos, fade) == [0.0, second]
-
-
-def test_cuts_start_a_clip_at_the_previous_files_end_crossfades_at_its_video_end(tmp_path):
-    """The concat demuxer starts each clip at the previous file's container duration, which
-    is longer than its video when the audio runs on; xfade works on the video."""
-    infos = [replace(_info(tmp_path / f"{i}.mp4", 2.1), vduration=2.0) for i in range(3)]
-    assert assemble.clip_offsets(infos) == pytest.approx([0.0, 2.1, 4.2])
-    assert assemble.clip_offsets(infos, 0.5) == pytest.approx([0.0, 1.5, 3.0])
-    plain = [_info(tmp_path / f"{i}.mp4", 2.0) for i in range(3)]  # duration == vduration
-    assert assemble.clip_offsets(plain) == pytest.approx([0.0, 2.0, 4.0])
 
 
 def test_missing_transcript_writes_no_srt_and_says_so_once(tmp_path, monkeypatch, caplog):

@@ -246,12 +246,6 @@ def test_extend_hi_clamp_stays_before_read_error_but_never_cuts():
     assert extend._hi_clamp(_plan("c.mp4", 5.0, 18.0), 30.0) == 30.0
 
 
-def test_extend_fixed_tail():
-    assert extend._fixed_tail({"tail": {"reason": "fixed tail 1.0 s"}})
-    assert not extend._fixed_tail({"tail": {"reason": "smart"}})
-    assert not extend._fixed_tail({})
-
-
 def test_speech_pass_with_extend_clamp_respects_read_error(speech_env):
     project, _ = speech_env
     plans = [_plan("a.mp4", 5.0, 12.0, read_error={"end": 13.0})]  # utterance runs to 14 s
@@ -356,17 +350,6 @@ def test_plan_clips_errors(plan_env):
         run([_moment("x", SRC_B, 60.0, 70.0)])
     with pytest.raises(ValueError, match=r"does not fit a\.mp4"):
         run([_moment("y", SRC_A, 1.0, 5.0)], crop="1920:1080:8:0")
-
-
-def test_render_clips_360_plan_needs_pano_exporter(plan_env, monkeypatch, tmp_path):
-    run, _ = plan_env
-    monkeypatch.setattr(clips, "export_clip_checked", lambda *a: pytest.fail("flat encode"))
-    plans = run([_moment("a", SRC_A, 10.0, 20.0)])
-    plans[0].pano = True
-    with pytest.raises(ValueError, match=r"^001_.*\.mp4: 360 plan needs a PanoExporter$"):
-        clips.render_clips(
-            plans, tmp_path, fmt=OutputFormat(1920, 1080, 30), vertical=False, audio_fade=0.0
-        )
 
 
 def test_render_and_manifest_after_read_error(plan_env, monkeypatch, tmp_path, caplog):

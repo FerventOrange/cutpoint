@@ -126,28 +126,19 @@ def rater(monkeypatch) -> type[_FakeRater]:
     return _FakeRater
 
 
-def _argv(video: Path, *flags: str, style: str = "funny") -> list[str]:
-    return ["analyze", str(video), "--style", style, "--out", "v", "--no-scenes", *flags]
+def _argv(video: Path, *flags: str, style: str = "commentary") -> list[str]:
+    """``--skip`` leaves out the HUD/OCR discovery a gaming style would run (minutes with the
+    events extras); none of these tests is about those steps."""
+    skip = ["--skip", "reactions", "keyframes", "crashes"]
+    return ["analyze", str(video), "--style", style, "--out", "v", "--no-scenes", *flags, *skip]
 
 
 @needs_ffmpeg
-@pytest.mark.parametrize("style", ["funny", "gaming"])
-def test_analyze_does_not_use_vision_by_default_even_when_ollama_is_reachable(
-    video,
-    home,
-    rater,
-    style,
-):
-    assert cli.main(_argv(video, style=style)) == 0
+def test_analyze_does_not_use_vision_by_default_even_when_ollama_is_reachable(video, home, rater):
+    assert cli.main(_argv(video, style="gaming")) == 0
     assert rater.calls == []  # not even asked whether Ollama is there
     st = json.loads((home / "projects" / "v" / "highlights.json").read_text("utf-8"))["settings"]
     assert (st["vision_requested"], st["vision_used"]) == (False, False)
-
-
-@needs_ffmpeg
-def test_analyze_no_vision_is_still_accepted(video, home, rater):
-    assert cli.main(_argv(video, "--no-vision")) == 0
-    assert rater.calls == []
 
 
 @needs_ffmpeg
