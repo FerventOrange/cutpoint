@@ -233,7 +233,9 @@ def ffmpeg(monkeypatch):
         return ""
 
     monkeypatch.setattr(render, "run", run)
-    monkeypatch.setattr(render, "probe", lambda p: SimpleNamespace(duration=1.0))
+    monkeypatch.setattr(
+        render, "probe", lambda p: SimpleNamespace(duration=1.0, audio_duration=None)
+    )
     return calls
 
 
@@ -264,6 +266,20 @@ class TestRenderSegmentSendcmd:
         assert "sendcmd=f=pan.cmd," in self._filter(ffmpeg[0])
         assert rec["commands"] > 0 and rec["cmd_file"] == "pan.cmd"
         assert (tmp_path / "pan.cmd").read_text(encoding="utf-8").strip()
+
+    @pytest.mark.parametrize(("audio_end", "fade_out"), [(None, "st=0.750"), (3.6, "st=0.450")])
+    def test_fade_out_ends_with_the_source_audio(
+        self, clip, tmp_path, ffmpeg, monkeypatch, audio_end, fade_out
+    ):
+        """#250: audio ending 0.6 s into a 1 s render fades out by 0.6 s, not after it."""
+        info = SimpleNamespace(duration=1.0, audio_duration=audio_end)
+        monkeypatch.setattr(render, "probe", lambda p: info)
+        path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
+        out = tmp_path / "a.mp4"
+        render.render_segment(
+            clip, path, 3.0, 4.0, out, src=_src("equirect", True), work_dir=tmp_path
+        )
+        assert f"afade=t=out:{fade_out}:" in self._filter(ffmpeg[0])
 
 
 # --------------------------------------------------------------------------- moved footage
