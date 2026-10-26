@@ -16,6 +16,7 @@ import requests
 import cutpoint.analyze
 from conftest import needs_ffmpeg
 from cutpoint import cli, vision
+from cutpoint.styles import get_style
 
 
 class _Resp:
@@ -110,6 +111,127 @@ def test_unload_failure_is_not_fatal(monkeypatch, caplog):
         rater.unload()  # no exception
     assert [r.levelno for r in caplog.records] == [logging.DEBUG]
     assert "Could not unload Ollama model m" in caplog.text
+
+
+@pytest.mark.parametrize(("weight", "high", "low"), [(0.25, 50.0, 30.0), (0.45, 58.0, 22.0)])
+def test_vision_blend_is_a_bounded_multiplier(weight, high, low):
+    """#284: 5/10 is neutral, 10/10 lifts by ``weight`` (the style's vision_weight), 0/10
+    lowers by as much."""
+    blend = cutpoint.analyze.vision_blend
+    assert blend(40.0, 5.0, weight) == 40.0
+    assert blend(40.0, 10.0, weight) == high
+    assert blend(40.0, 0.0, weight) == low
+
+
+def test_vision_blend_keeps_an_unrated_score():
+    assert cutpoint.analyze.vision_blend(23.4, None, 0.3) == 23.4
+
+
+@pytest.mark.parametrize("score", [0.0, 0.1, 50.0, 80.0, 99.9, 100.0])
+@pytest.mark.parametrize("rating", [0.0, 2.0, 5.0, 7.5, 10.0])
+@pytest.mark.parametrize("weight", [0.2, 0.45])
+def test_vision_blend_stays_within_0_100(score, rating, weight):
+    assert 0.0 <= cutpoint.analyze.vision_blend(score, rating, weight) <= 100.0
+
+
+@pytest.mark.parametrize(
+    ("rating", "want"),
+    [(0.0, None), (2.0, None), (6.9, None), (7.0, "big-jump"), (10.0, "big-jump")],
+)
+def test_vision_label_only_from_a_good_rating(rating, want):
+    assert cutpoint.analyze.vision_label(rating, "Big jump") == want
+    assert cutpoint.analyze.vision_label(10.0, "") is None
+
+
+class _ByStartRater:
+    """Rates each candidate by its start time; records nothing."""
+
+    def __init__(self, ratings: dict[float, tuple[float, str]]) -> None:
+        self.ratings = ratings
+
+    def rate(self, _src, start, _end, _style):
+        return vision.VisionResult(*self.ratings[start])
+
+    def unload(self) -> None:
+        pass
+
+
+def test_rate_vision_low_rating_no_longer_outranks_an_unrated_candidate():
+    """#284: the rating (0-10) is a multiplier on the score, not a 0-100 term mixed into a
+    ~15-27 style score: 2/10 lowers it and keeps the clip's label, unrated scores stay put."""
+    style = get_style("ski")
+    cands = [
+        {"source": "a.mp4", "start": 0.0, "end": 5.0, "score": 22.0, "label": "ski-moment",
+         "signals": {}},
+        {"source": "a.mp4", "start": 10.0, "end": 15.0, "score": 20.0, "label": "ski-moment",
+         "signals": {}},
+        {"source": "a.mp4", "start": 20.0, "end": 25.0, "score": 26.0, "label": "fast-run",
+         "signals": {}},
+    ]  # fmt: skip
+    rater = _ByStartRater({0.0: (2.0, "boring run no action"), 10.0: (10.0, "big jump")})
+    used, failed = cutpoint.analyze._rate_vision(cands, rater, 2, style)  # type: ignore[arg-type]
+    assert (used, failed) == (True, 0)
+    low, high, unrated = cands
+    assert low["score"] == 19.4 and low["label"] == "ski-moment"  # ski: vision_weight 0.2
+    assert low["signals"]["vision"] == 2.0
+    assert high["score"] == 24.0 and high["label"] == "big-jump"
+    assert unrated["score"] == 26.0 and unrated["label"] == "fast-run"
+    assert unrated["score"] > low["score"]
+
+
+def test_rate_vision_mid_rating_does_not_lift_a_score_past_an_unrated_one():
+    """#284: a middling 5/10 leaves the score as it was (the old 0-100 blend gave 22.0 -> 27.6,
+    above an unrated 26.0)."""
+    cands = [
+        {"source": "a.mp4", "start": 30.0, "end": 35.0, "score": 22.0, "label": "ski-moment",
+         "signals": {}},
+        {"source": "a.mp4", "start": 40.0, "end": 45.0, "score": 26.0, "label": "fast-run",
+         "signals": {}},
+    ]  # fmt: skip
+    rater = _ByStartRater({30.0: (5.0, "ok run")})
+    cutpoint.analyze._rate_vision(cands, rater, 1, get_style("ski"))  # type: ignore[arg-type]
+    mid, unrated = cands
+    assert mid["score"] == 22.0 < unrated["score"] == 26.0
+
+
+def test_rate_vision_keeps_the_model_label_apart_from_the_clip_label():
+    """The model's label is recorded as ``vision_label`` even for a low rating; ``label``
+    only takes it from a good rating."""
+    cands = [
+        {"source": "a.mp4", "start": 0.0, "end": 5.0, "score": 22.0, "label": "ski-moment",
+         "signals": {}},
+        {"source": "a.mp4", "start": 10.0, "end": 15.0, "score": 20.0, "label": "ski-moment",
+         "signals": {}},
+    ]  # fmt: skip
+    rater = _ByStartRater({0.0: (2.0, "boring run"), 10.0: (9.0, "big jump")})
+    cutpoint.analyze._rate_vision(cands, rater, 2, get_style("ski"))  # type: ignore[arg-type]
+    low, high = cands
+    assert low["vision_label"] == "boring run" and low["label"] == "ski-moment"
+    assert high["vision_label"] == "big jump" and high["label"] == "big-jump"
+
+
+@pytest.mark.parametrize(
+    ("content", "want"),
+    [
+        ('{"score": NaN, "label": "x"}', None),
+        ('{"score": Infinity, "label": "x"}', 10.0),
+        ('{"score": -Infinity, "label": "x"}', 0.0),
+    ],
+)
+def test_parse_treats_a_non_finite_score_as_no_rating(content, want):
+    res = vision._parse(content)
+    assert (res.score if res else None) == want
+
+
+@pytest.mark.parametrize(("style_name", "want"), [("commentary", 24.0), ("action", 29.0)])
+def test_rate_vision_uses_the_style_vision_weight(style_name, want):
+    """The style's vision_weight sets the multiplier strength: 10/10 on 20.0 gives
+    20 * (1 + vision_weight)."""
+    style = get_style(style_name)
+    cand = {"source": "a.mp4", "start": 0.0, "end": 5.0, "score": 20.0, "label": "x",
+            "signals": {}}  # fmt: skip
+    cutpoint.analyze._rate_vision([cand], _ByStartRater({0.0: (10.0, "")}), 1, style)  # type: ignore[arg-type]
+    assert cand["score"] == want == round(20.0 * (1 + style.vision_weight), 1)
 
 
 class _FakeRater:
