@@ -73,7 +73,7 @@ def _audio_chain(i: int, info: MediaInfo, fade: float, label: int | None = None)
 
 def _normalize_inputs(
     infos: list[MediaInfo], fades: list[float] | None = None
-) -> tuple[list[str], int, int, Fraction]:
+) -> tuple[list[str], Fraction]:
     """Per-input filter chains producing [v<i>]/[a<i>] with identical params."""
     w, h, fps = infos[0].width, infos[0].height, infos[0].fps
     fades = fades or [0.0] * len(infos)
@@ -85,7 +85,7 @@ def _normalize_inputs(
             f"settb=AVTB,setpts=PTS-STARTPTS[v{i}]"
         )
         chains.append(_audio_chain(i, info, fades[i]))
-    return chains, w, h, fps
+    return chains, fps
 
 
 def _encode(files: list[Path], graph: str, out: Path) -> None:
@@ -171,7 +171,7 @@ def concat_reencode(
     files: list[Path], infos: list[MediaInfo], out: Path, fades: list[float] | None = None
 ) -> None:
     """Join clips with differing parameters by normalising and re-encoding."""
-    chains, *_ = _normalize_inputs(infos, fades)
+    chains, _ = _normalize_inputs(infos, fades)
     pairs = "".join(f"[v{i}][a{i}]" for i in range(len(files)))
     _encode(files, ";".join(chains) + f";{pairs}concat=n={len(files)}:v=1:a=1[v][a]", out)
 
@@ -233,7 +233,7 @@ def crossfade(files: list[Path], infos: list[MediaInfo], out: Path, fade: float)
 
     Each clip's audio is padded/trimmed to its video (``vduration``), which xfade and
     :func:`clip_offsets` follow, so audio that runs on cannot push the later clips late."""
-    chains, *_, fps = _normalize_inputs(infos)
+    chains, fps = _normalize_inputs(infos)
     for i, info in enumerate(infos):
         chains.append(f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS[at{i}]")
     half_frame = 0.5 / float(fps) if fps > 0 else 0.0

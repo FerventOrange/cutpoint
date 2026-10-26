@@ -363,7 +363,9 @@ def test_prompt(tmp_path, home, game, intro, hype, bare):
     for preset in (boxfeed(), verb):
         write_preset(paths.presets_dir(), preset)
     win = vw.Window("game.mp4", 5.0, 20.0, 1.0, [])
-    msgs = vw.build_messages(_src(tmp_path), win, [], vw.VlmParams(), game, [], [])
+    msgs = vw.build_messages(
+        _src(tmp_path), win, [], vw.VlmParams(), vw.game_prompt(game, load_preset(game)), [], []
+    )
     transcript = (
         "Speech transcript (automatic, may contain errors; seconds from window start):\n(none)"
     )

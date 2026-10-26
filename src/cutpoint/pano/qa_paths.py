@@ -2,7 +2,7 @@
 
 No rendering and no models: the view layer's person detections (equirect
 boxes in the display frame, :mod:`cutpoint.pano.views`) are projected into
-the path's virtual camera (:func:`cutpoint.pano.geometry.project_box`) at the
+the path's virtual camera (:func:`cutpoint.pano.geometry.project_box_visible`) at the
 rendered QA's rate (2 fps: the path at each time, the detections of the
 nearest view frame, ~0.8 fps), clipped to the frame, and go through the rendered QA's
 :func:`cutpoint.pano.qa.frame_flags` and :func:`~cutpoint.pano.qa.aggregate_clip`:

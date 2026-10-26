@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
-from cutpoint.ffmpeg_utils import SOFT_STOP_S
+from cutpoint.ffmpeg_utils import SOFT_STOP_S, exit_code
 from cutpoint.pano.project import (
     EQUIRECT_META_VERSION,
     SDK_EXE_NAME,
@@ -133,7 +133,6 @@ class SdkResult:
 
     Attributes:
         progress: Highest ``process = N%`` seen (-1 when none).
-        ended: The end marker was seen.
         errors: Text of each ``error:`` line.
         cost_s: The reported run time in seconds, or None.
         export: Reported export fields.
@@ -142,7 +141,6 @@ class SdkResult:
     """
 
     progress: int = -1
-    ended: bool = False
     errors: list[str] = field(default_factory=list)
     cost_s: float | None = None
     export: dict[str, str] = field(default_factory=dict)
@@ -219,7 +217,6 @@ def parse_sdk_output(text: str) -> SdkResult:
             res.errors.append(m.group(1).strip())
             continue
         if line.startswith(END_MARKER):
-            res.ended = True
             continue
         m = _COST_RE.match(line)
         if m:
@@ -266,8 +263,6 @@ def failure_reasons(
         output_bytes: Size of the output file, or None if it is missing.
         min_bytes: Smallest plausible output size.
     """
-    from cutpoint.ffmpeg_utils import exit_code  # noqa: PLC0415
-
     reasons = []
     if returncode is None:
         reasons.append("process killed")

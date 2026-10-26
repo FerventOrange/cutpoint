@@ -20,11 +20,6 @@ logger = logging.getLogger(__name__)
 FALLBACK_MODEL = "qwen3-vl:8b"
 
 
-def default_url() -> str:
-    """Ollama URL (see :func:`cutpoint.backends.ollama_url`)."""
-    return ollama_url()
-
-
 def default_model() -> str:
     """Vision model: ``CUTPOINT_VISION_MODEL`` or qwen3-vl:8b."""
     return paths.env("VISION_MODEL") or FALLBACK_MODEL
@@ -82,7 +77,7 @@ class VisionRater:
     """Client for Ollama's /api/chat endpoint with images."""
 
     def __init__(self, url: str | None = None, model: str | None = None) -> None:
-        self.url = (url or default_url()).rstrip("/")
+        self.url = (url or ollama_url()).rstrip("/")
         if not self.url.startswith("http"):
             self.url = f"http://{self.url}"
         self.model = model or default_model()
