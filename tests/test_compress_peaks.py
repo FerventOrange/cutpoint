@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -60,6 +61,92 @@ def test_filter_is_gain_then_rms_compressor_with_the_preset(preset):
     assert f":ratio={p.ratio:g}:attack={p.attack:g}:release={p.release:g}:" in chain
     assert chain.endswith("detection=rms:link=maximum")
     assert plan.filter(1).startswith(",acompressor=")  # no 0 dB volume step
+
+
+# Speech-level clips with short peaks 14 dB up: the makeup they need is below the caps.
+MILD = [SPEECH, [-30.0] * 45 + [-16.0] * 5, [-28.0] * 45 + [-14.0] * 5, [-33.0] * 50]
+
+
+def _static(plan: encode.PeakPlan, series: list[list[float]]) -> list[list[float]]:
+    """``series`` through each clip's gain and the compressor's static curve (``compressed``
+    for :func:`~cutpoint.encode.plan_makeup`, as the second measurement would give)."""
+    ratio = encode.PEAK_PRESETS[plan.preset].ratio
+    return [
+        list(encode._compressed(np.asarray(s) + g, plan.threshold, ratio)) if g is not None else []
+        for s, g in zip(series, plan.gains, strict=True)
+    ]
+
+
+def _pooled(series: list[list[float]], makeup: tuple = ()) -> float:
+    shift = makeup or (0.0,) * len(series)
+    return encode.gated_loudness(
+        np.concatenate(
+            [np.asarray(s, dtype=float) + (m or 0.0) for s, m in zip(series, shift, strict=True)]
+        )
+    )
+
+
+@pytest.mark.parametrize("preset", ["light", "strong"])
+def test_makeup_brings_the_set_back_to_its_loudness(preset):
+    series = MILD
+    plan = encode.plan_peaks(preset, series, [5.0] * 4)
+    assert plan is not None and plan.makeup == ()
+    compressed = _static(plan, series)
+    assert _pooled(compressed) < _pooled(series) - 1  # compression alone makes the set quieter
+    made = encode.plan_makeup(plan, series, compressed)
+    assert made.gains == plan.gains and made.threshold == plan.threshold
+    assert all(m is not None and m > 0 for m in made.makeup)
+    assert _pooled(compressed, made.makeup) == pytest.approx(_pooled(series), abs=0.25)
+    assert encode.plan_makeup(plan, series, compressed) == made  # deterministic
+
+
+@pytest.mark.parametrize("preset", ["light", "strong"])
+def test_makeup_is_capped_by_max_boost_with_the_leveling_gain(preset):
+    p = encode.PEAK_PRESETS[preset]
+    # a near-silent clip next to very loud ones: its leveling gain alone reaches max_boost
+    series = [[-60.0] * 50, [-10.0] * 40 + [-2.0] * 10, [-12.0] * 50]
+    plan = encode.plan_peaks(preset, series, [5.0] * 3)
+    assert plan is not None and plan.gains[0] == p.max_boost
+    made = encode.plan_makeup(plan, series, [list(np.asarray(s) - 30) for s in series])
+    assert made.makeup[0] == 0.0  # no room left: not boosted into noise
+    assert all(m <= p.max_boost for m in made.makeup)
+    assert all(g + m <= p.max_boost + 1e-9 for g, m in zip(made.gains, made.makeup, strict=True))
+    assert max(made.makeup) == p.max_boost  # 30 dB down: the cap, not the loudness, decides
+
+
+def test_clips_left_alone_get_no_makeup_and_count_as_they_are():
+    series = MILD
+    plan = encode.plan_peaks("strong", series, [5.0] * 4, [True, True, True, False])
+    assert plan is not None and plan.gains[3] is None
+    compressed = _static(plan, series)
+    made = encode.plan_makeup(plan, series, compressed)
+    assert made.makeup[3] is None and made.filter(3) == ""
+    after = [*compressed[:3], series[3]]
+    assert _pooled(after, made.makeup) == pytest.approx(_pooled(series), abs=0.25)
+
+
+def test_makeup_goes_after_the_compressor_and_is_not_measured():
+    plan = encode.PeakPlan("strong", -22.0, (-3.5, 2.0, None), (6.25, 0.0, None))
+    chain = plan.filter(0)
+    assert chain.startswith(",volume=-3.50dB,acompressor=")
+    assert chain.endswith("link=maximum,volume=6.25dB")
+    assert plan.filter(1).endswith("link=maximum")  # no 0 dB makeup step
+    assert plan.measure_chain(0) == encode.A_FMT + chain.removesuffix(",volume=6.25dB") + ","
+    assert plan.measure_chain(2) == plan.filter(2) == ""
+    without = encode.PeakPlan("strong", -22.0, (-3.5, 2.0, None))  # before plan_makeup
+    assert without.filter(0) == chain.removesuffix(",volume=6.25dB")
+
+
+def test_clip_momentary_applies_the_chain_before_the_meter(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(ffmpeg_utils, "run", lambda args, **_: calls.append(args) or "")
+    ffmpeg_utils.clip_momentary(Path("v.mp4"), 1, chain="acompressor=x,")
+    ffmpeg_utils.clip_momentary(Path("v.mp4"), 2, chain="acompressor=x,")
+    ffmpeg_utils.clip_momentary(Path("v.mp4"), 1)
+    graphs = [c[c.index("-filter_complex") + 1] for c in calls]
+    assert graphs[0] == "[0:a:0]acompressor=x,ebur128=peak=none"
+    assert graphs[1].endswith("normalize=0,acompressor=x,ebur128=peak=none")
+    assert graphs[2] == "[0:a:0]ebur128=peak=none"
 
 
 def test_presets_match_the_config_choices():
@@ -144,8 +231,12 @@ def _manifest(d: Path, entries: list[dict]) -> None:
 
 def test_peak_filters_skip_baked_clips_and_measure_nothing_when_off(monkeypatch, tmp_path):
     measured: list[Path] = []
+    chains: list[tuple[str, str]] = []
 
-    def momentary(f, streams):
+    def momentary(f, streams, chain=""):
+        if chain:
+            chains.append((f.name, chain))
+            return list(np.asarray(BURST) - 4)
         measured.append(f)
         return BURST if f.name == "2.mp4" else SPEECH
 
@@ -158,6 +249,9 @@ def test_peak_filters_skip_baked_clips_and_measure_nothing_when_off(monkeypatch,
     got = assemble.peak_filters(tmp_path, files, infos, "strong")
     assert got[0] == "" and "acompressor" in got[1]
     assert measured == files  # the baked clip still counts for the typical level
+    # only the compressed clip is measured again (without makeup), then gets its makeup
+    assert [n for n, _ in chains] == ["2.mp4"]
+    assert chains[0][1] == encode.A_FMT + got[1].rsplit(",volume=", 1)[0] + ","
     _manifest(tmp_path, [{"file": f.name, "compress_peaks": "strong"} for f in files])
     assert assemble.peak_filters(tmp_path, files, infos, "strong") == ["", ""]
 
@@ -175,9 +269,9 @@ def test_extend_does_not_reuse_or_keep_compressed_clips():
 def test_clips_peak_filters_measure_each_span_with_the_export_tracks(monkeypatch):
     seen: list[tuple] = []
 
-    def momentary(src, streams, start, duration):
-        seen.append((src.name, streams, start, duration))
-        return BURST
+    def momentary(src, streams, start, duration, chain=""):
+        seen.append((src.name, streams, start, duration, bool(chain)))
+        return list(np.asarray(BURST) - 3) if chain else BURST
 
     monkeypatch.setattr(clips, "clip_momentary", momentary)
     info = media_info(Path("s.mp4"), 100.0, audio_streams=2)
@@ -192,10 +286,28 @@ def test_clips_peak_filters_measure_each_span_with_the_export_tracks(monkeypatch
                 pano,
             )
 
-    got = clips.peak_filters([Plan(10.0), Plan(50.0, pano=True)], "light")
-    assert seen == [("s.mp4", 2, 10.0, 5.0)]  # the 360 clip is not measured
+    got, makeup = clips.peak_filters([Plan(10.0), Plan(50.0, pano=True)], "light")
+    # the 360 clip is not measured; the other again through its compressor for the makeup
+    assert seen == [("s.mp4", 2, 10.0, 5.0, False), ("s.mp4", 2, 10.0, 5.0, True)]
     assert "acompressor" in got[0] and got[1] == ""
-    assert clips.peak_filters([Plan(10.0)], "off") == [""]
+    assert makeup[0] == pytest.approx(3.0, abs=0.25) and makeup[1] is None
+    assert got[0].endswith(f",volume={makeup[0]:.2f}dB")
+    assert clips.peak_filters([Plan(10.0)], "off") == ([""], [None])
+
+
+def test_manifest_records_the_makeup_of_compressed_clips_only():
+    plan = SimpleNamespace(
+        entry={"id": "h1", "source": "s.mp4", "end": 2.0, "score": 50},
+        src=Path("s.mp4"), start=1.0, keep=(1.0, 2.0), name="001_x.mp4", crop=None,
+        crop_source=None, pad_rec=None, speech=None, payoffs=None,
+        tail=SimpleNamespace(to_json=lambda: {"extension": 0.0}),
+    )  # fmt: skip
+    res = SimpleNamespace(end=2.0, read_error=None, pano=None, srt=None)
+    on = clips._entry(plan, res, 0.25, "strong", 6.5)
+    assert on["compress_peaks"] == "strong" and on["compress_peaks_makeup_db"] == 6.5
+    assert clips._entry(plan, res, 0.25, "light", 0.0)["compress_peaks_makeup_db"] == 0.0
+    off = clips._entry(plan, res, 0.25)
+    assert "compress_peaks" not in off and "compress_peaks_makeup_db" not in off
 
 
 # -- config and CLI ---------------------------------------------------------------------
@@ -245,29 +357,57 @@ def _momentary_peak_over_bed(path: Path) -> float:
     return float(m.max() - np.median(m))
 
 
+def _real_set(tmp_path: Path, preset: str, burst: float, layout: str = "stereo") -> tuple:
+    """8 s of a speech-level tone with a 1 s burst ``burst`` (amplitude) louder, next to a
+    plain tone clip (both ``layout``), exported as ``clips`` does with ``preset``:
+    (series, plan, outputs)."""
+    expr = f"(0.05+{burst}*between(t\\,4\\,5))*sin(2*PI*440*t)"
+    srcs = [tmp_path / "loud.wav", tmp_path / "bed.wav"]
+    for path, e in zip(srcs, (expr, "0.04*sin(2*PI*330*t)"), strict=True):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"aevalsrc=exprs='{e}':s=48000:d=8:c={layout}", str(path)], check=True)  # fmt: skip
+    series = [clip_momentary(f, 1) for f in srcs]
+    plan = encode.plan_peaks(preset, series, [8.0, 8.0])
+    assert plan is not None
+    compressed = [clip_momentary(f, 1, chain=plan.measure_chain(i)) for i, f in enumerate(srcs)]
+    plan = encode.plan_makeup(plan, series, compressed)
+    limiter = encode.limiter_chain(encode.CLIP_LIMIT_DB, has_soxr())
+    outs = [tmp_path / "out.m4a", tmp_path / "bed.m4a"]
+    for i, (src, out) in enumerate(zip(srcs, outs, strict=True)):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-af",
+                        f"{encode.A_FMT}{plan.filter(i)},{limiter}", *encode.AUDIO_OUT, str(out)],
+                       check=True)  # fmt: skip
+    return series, plan, outs
+
+
 @needs_ffmpeg
 @pytest.mark.parametrize("preset", ["light", "strong"])
 def test_real_burst_is_pulled_toward_the_bed_and_true_peak_stays_under_the_ceiling(
     tmp_path, preset
 ):
-    # 8 s of a speech-level tone with a 1 s burst 20 dB louder, next to a plain tone clip.
-    expr = "(0.05+0.45*between(t\\,4\\,5))*sin(2*PI*440*t)"
-    loud, bed = tmp_path / "loud.wav", tmp_path / "bed.wav"
-    for path, e in ((loud, expr), (bed, "0.04*sin(2*PI*330*t)")):
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-                        f"aevalsrc=exprs='{e}':s=48000:d=8:c=stereo", str(path)], check=True)  # fmt: skip
-    plan = encode.plan_peaks(preset, [clip_momentary(loud, 1), clip_momentary(bed, 1)], [8.0, 8.0])
-    assert plan is not None
-    out = tmp_path / "out.m4a"
-    chain = (
-        f"{encode.A_FMT}{plan.filter(0)},{encode.limiter_chain(encode.CLIP_LIMIT_DB, has_soxr())}"
+    _, plan, outs = _real_set(tmp_path, preset, 0.45)  # a burst 20 dB up
+    before, after = (
+        _momentary_peak_over_bed(tmp_path / "loud.wav"),
+        _momentary_peak_over_bed(outs[0]),
     )
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(loud), "-af", chain,
-                    *encode.AUDIO_OUT, str(out)], check=True)  # fmt: skip
-    before, after = _momentary_peak_over_bed(loud), _momentary_peak_over_bed(out)
     assert before > 18
     assert after < before - (6 if preset == "light" else 12)
-    assert measure_loudness(out)[1] <= assemble.TP_CEILING
+    # the makeup reaches its cap here, and still never pushes the peaks past the ceiling
+    assert plan.makeup[0] == encode.PEAK_PRESETS[preset].max_boost
+    assert all(measure_loudness(out)[1] <= assemble.TP_CEILING for out in outs)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("layout", ["stereo", "mono"])
+@pytest.mark.parametrize("preset", ["light", "strong"])
+def test_real_makeup_keeps_the_set_loudness(tmp_path, preset, layout):
+    # mono: the export upmixes before the compressor, so the makeup is measured the same way
+    series, plan, outs = _real_set(tmp_path, preset, 0.15, layout)  # a burst about 10 dB up
+    assert all(m is not None and 0 < m < encode.PEAK_PRESETS[preset].max_boost for m in plan.makeup)
+    assert _pooled([clip_momentary(out, 1) for out in outs]) == pytest.approx(
+        _pooled(series), abs=0.5
+    )
+    assert all(measure_loudness(out)[1] <= assemble.TP_CEILING for out in outs)
 
 
 # -- review fixes -----------------------------------------------------------------------

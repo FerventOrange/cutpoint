@@ -469,7 +469,11 @@ def extend_clips(
             )
             p0, p1 = plan.keep
             entries.append(
-                {k: v for k, v in e.items() if k not in ("read_from", "srt", "compress_peaks")}
+                {
+                    k: v
+                    for k, v in e.items()
+                    if k not in ("read_from", "srt", "compress_peaks", "compress_peaks_makeup_db")
+                }
                 | {
                     **({"read_from": str(src)} if str(src) != e["source"] else {}),
                     "start": start,
