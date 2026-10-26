@@ -282,6 +282,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HDR footage (HLG or PQ) and BT.2020 footage came out washed out: it was cut down to 8 bits
+  with its HDR or BT.2020 tags kept, so players and editors that ignore those tags showed it
+  with faded colors. `clips`, `extend` and `360` renders now convert it to SDR Rec.709 with
+  `zscale` and `tonemap` (mobius), and tag the clip bt709. On a synthetic HLG chart the mean
+  saturation went from 148 to 236 (out of 255; the SDR original is 250). The tone mapping costs
+  CPU time, about 30 fps at 1080p on 8 threads. Checked on synthetic HLG, PQ and BT.2020 clips,
+  not yet on camera footage. Without `zscale` in the ffmpeg build, a WARNING
+  says so and the clip is exported as before. SDR and untagged sources get exactly the same
+  ffmpeg command as before. 10-bit SDR footage that looks log or flat in one small frame gets a
+  WARNING suggesting the camera's LUT; no LUT is applied. `probe` now reads the four color tags
+  (#289).
 - 360 analysis in the UI shows its planned steps as "Waiting" right away, instead of "Waiting for
   output..." until the first step starts (#320).
 - `--vision`: the Ollama rating no longer outranks the analysis. A rating (0-10) was blended in

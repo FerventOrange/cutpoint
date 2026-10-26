@@ -58,7 +58,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.encode import A_FMT, audio_fade_filter
+from cutpoint.encode import A_FMT, BT709_TAGS, audio_fade_filter, sdr_filter
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
@@ -287,9 +287,13 @@ def render_segment(
         stack = "[0:v]"
         v360_in = "input=equirect"
     audio_idx = len(src.inputs)
-    audio_end = probe(remap_source(clip.source)).audio_duration
+    info = probe(remap_source(clip.source))
+    audio_end = info.audio_duration
     audio = None if audio_end is None else min(end, audio_end) - start
     a_fmt = A_FMT + audio_fade_filter(dur, audio_fade, audio)
+    # HDR / BT.2020 footage is converted to SDR Rec.709 before the 8-bit format (#289).
+    same = Path(src.inputs[0]) == Path(clip.source)
+    color = sdr_filter(info if same else probe(remap_source(src.inputs[0])))
     v360 = (
         f"v360@cam={v360_in}:output=flat:rorder=ryp:yaw={init['yaw']:.3f}:"
         f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
@@ -297,7 +301,7 @@ def render_segment(
     )
     body = (
         f"{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
-        f"setsar=1,fps={fmt.fps}:round=down,format=yuv420p"
+        f"setsar=1,fps={fmt.fps}:round=down,{color + ',' if color else ''}format=yuv420p"
     )
     af = f"[{audio_idx}:a:0]{a_fmt}[a]"
 
@@ -318,6 +322,7 @@ def render_segment(
             *enc.args(19),
             "-color_range",
             "tv",
+            *(BT709_TAGS if color else []),
             "-fps_mode",
             "cfr",
             "-c:a",

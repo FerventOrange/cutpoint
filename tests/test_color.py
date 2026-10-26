@@ -1,0 +1,289 @@
+"""Color handling of exports (#289): probed tags, HDR/BT.2020 to SDR Rec.709, log warning."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from conftest import media_info, needs_ffmpeg
+from cutpoint import encode, ffmpeg_utils
+from cutpoint.crop import Crop
+from cutpoint.ffmpeg_utils import FFmpegError, VideoEncoder
+
+BOTH = frozenset({"zscale", "tonemap", "scale"})
+HLG = {"color_transfer": "arib-std-b67", "color_primaries": "bt2020", "color_space": "bt2020nc"}
+PQ = {"color_transfer": "smpte2084", "color_primaries": "bt2020", "color_space": "bt2020nc"}
+BT709 = {"color_transfer": "bt709", "color_primaries": "bt709", "color_space": "bt709"}
+TODAY = (
+    "scale=1920:1080:force_original_aspect_ratio=decrease:out_range=tv,"
+    "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
+)
+
+
+# -- probe ---------------------------------------------------------------------------------------
+
+
+def test_probe_reads_the_color_tags_and_treats_unknown_or_missing_as_none(monkeypatch):
+    video = {
+        "codec_type": "video", "width": 3840, "height": 2160, "avg_frame_rate": "30/1",
+        "pix_fmt": "yuv420p10le", "codec_name": "hevc", "color_transfer": "arib-std-b67",
+        "color_primaries": "bt2020", "color_space": "unknown",
+    }  # fmt: skip
+    data = {"streams": [video], "format": {"duration": "5.0"}}
+    monkeypatch.setattr(ffmpeg_utils, "ffprobe_json", lambda *a, **k: data)
+
+    info = ffmpeg_utils.probe(Path("hlg.mp4"))
+
+    assert (info.color_transfer, info.color_primaries) == ("arib-std-b67", "bt2020")
+    assert info.color_space is None and info.color_range is None
+
+
+def test_filter_names_reads_ffmpeg_filters_output():
+    listing = (
+        "Filters:\n  T.. = Timeline support\n  ------\n"
+        " TS aap               AA->A      Apply Affine Projection.\n"
+        " .S zscale            V->V       Apply resizing, colorspace and bit depth conversion.\n"
+        " .. buffer            |->V       Buffer video frames.\n"
+    )
+    assert ffmpeg_utils.filter_names(listing) == {"aap", "zscale", "buffer"}
+
+
+# -- the conversion chain ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("tags", "tin"), [(HLG, "arib-std-b67"), (PQ, "smpte2084")])
+def test_hdr_source_is_tone_mapped_to_bt709(tags, tin):
+    vf = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **tags), BOTH)
+    assert vf.startswith(f"zscale=tin={tin}:pin=bt2020:min=bt2020nc:t=linear:npl=100:p=bt709,")
+    assert "format=gbrpf32le,tonemap=tonemap=mobius:desat=0," in vf
+    assert vf.endswith("zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv")
+
+
+def test_hdr_source_without_primaries_or_matrix_tags_is_read_as_bt2020():
+    vf = encode.sdr_filter(media_info(color_transfer="smpte2084"), BOTH)
+    assert vf.startswith("zscale=tin=smpte2084:pin=bt2020:min=bt2020nc:")
+
+
+def test_bt2020_sdr_source_only_changes_primaries_and_matrix():
+    info = media_info(color_transfer="bt2020-10", color_primaries="bt2020", color_space="bt2020nc")
+    assert encode.sdr_filter(info, BOTH) == (
+        "zscale=tin=bt2020-10:pin=bt2020:min=bt2020nc:t=bt709:p=bt709:m=bt709:r=tv"
+    )
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        {},
+        BT709,
+        {"color_transfer": "smpte170m", "color_primaries": "smpte170m"},
+        {"color_range": "pc"},
+    ],
+)
+def test_sdr_and_untagged_sources_get_no_conversion(tags):
+    assert encode.color_kind(media_info(**tags)) is None
+    assert encode.sdr_filter(media_info(**tags), BOTH) == ""
+
+
+def test_without_zscale_hdr_keeps_todays_chain_and_warns_once_per_source(caplog):
+    caplog.set_level("WARNING")
+    info = media_info(Path("hdr.mp4"), **HLG)
+    for _ in range(3):
+        assert encode.sdr_filter(info, frozenset({"tonemap"})) == ""
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "hdr.mp4 is HLG video" in warnings[0] and "no zscale filter" in warnings[0]
+
+
+def test_video_filter_puts_the_conversion_just_before_the_8_bit_format():
+    fmt = encode.OutputFormat(1920, 1080, 30)
+    assert fmt.video_filter(False) == TODAY
+    assert fmt.video_filter(False, color="X") == TODAY.replace("format=yuv420p", "X,format=yuv420p")
+    vertical = fmt.video_filter(True, Crop(0, 0, 1000, 1000), "X")
+    assert vertical.endswith("setsar=1,fps=30,X,format=yuv420p")
+
+
+# -- the export command line ---------------------------------------------------------------------
+
+
+def _export_args(monkeypatch, info, kind: str = "cpu") -> list[str]:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(encode, "run", lambda args, **_kw: calls.append(args) or "")
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: BOTH)
+    fmt = encode.OutputFormat(1920, 1080, 30)
+    encode._encode(VideoEncoder(kind, "/dev/dri/renderD128" if kind == "vaapi" else None),
+                   info.path, info, 1.0, 5.0, Path("o.mp4"), fmt, False, None, 0.0)  # fmt: skip
+    return calls[0]
+
+
+@pytest.mark.parametrize("tags", [HLG, PQ])
+def test_hdr_export_tone_maps_and_tags_the_output_bt709(monkeypatch, tags):
+    args = _export_args(monkeypatch, media_info(pix_fmt="yuv420p10le", **tags))
+    graph = args[args.index("-filter_complex") + 1]
+    assert ",tonemap=tonemap=mobius:desat=0," in graph
+    assert graph.index("tonemap") < graph.index("format=yuv420p")
+    i = args.index("-color_range")
+    assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
+
+
+def test_hdr_export_with_vaapi_converts_before_the_upload(monkeypatch):
+    args = _export_args(monkeypatch, media_info(**HLG), "vaapi")
+    graph = args[args.index("-filter_complex") + 1]
+    assert "r=tv,format=yuv420p,format=nv12,hwupload[v]" in graph
+
+
+@pytest.mark.parametrize("tags", [{}, BT709, {"color_transfer": "smpte170m"}])
+def test_sdr_export_command_is_unchanged(monkeypatch, tags):
+    args = _export_args(monkeypatch, media_info(**tags))
+    assert args[args.index("-filter_complex") + 1].startswith(f"[0:v:0]{TODAY}[v];")
+    assert not {"-color_primaries", "-color_trc", "-colorspace"} & set(args)
+    assert args[args.index("-color_range") : args.index("-color_range") + 3] == [
+        "-color_range", "tv", "-fps_mode",
+    ]  # fmt: skip
+
+
+# -- log/flat footage ----------------------------------------------------------------------------
+
+
+def _frame(lo: float, hi: float, sat: float) -> np.ndarray:
+    """36x64 RGB: a luma ramp from ``lo`` to ``hi`` (0-1), tinted red by ``sat``."""
+    v = np.linspace(lo, hi, 64 * 36, dtype=np.float32).reshape(36, 64)
+    rgb = np.stack([v, v * (1 - sat), v * (1 - sat)], axis=-1)
+    return (rgb * 255).round().astype(np.uint8)
+
+
+def test_log_stats_measure_saturation_and_the_luma_range():
+    sat, black, white = encode.log_stats(_frame(0.2, 0.7, 0.1))
+    assert sat == pytest.approx(0.1, abs=0.01)
+    assert black == pytest.approx(0.2, abs=0.02) and white == pytest.approx(0.65, abs=0.05)
+
+
+@pytest.mark.parametrize(
+    ("stats", "flat"),
+    [
+        ((0.08, 0.15, 0.65), True),  # lifted blacks, no white, grey: log
+        ((0.40, 0.15, 0.65), False),  # saturated
+        ((0.08, 0.00, 0.65), False),  # real blacks
+        ((0.08, 0.15, 0.95), False),  # real whites
+        ((0.00, 0.30, 0.32), False),  # uniform frame (fade, grey card)
+        ((0.00, 0.00, 0.00), False),  # black frame
+    ],
+)
+def test_looks_log_needs_low_saturation_and_compressed_luma(stats, flat):
+    assert encode.looks_log(*stats) is flat
+
+
+@pytest.fixture
+def grabs(monkeypatch):
+    """``encode.decode_raw`` yields one flat frame; returns the paths it was asked for."""
+    asked: list[Path] = []
+
+    def fake(path, **_kw):
+        asked.append(path)
+        yield 0.0, _frame(0.15, 0.7, 0.05)
+
+    monkeypatch.setattr(encode, "decode_raw", fake)
+    return asked
+
+
+def test_flat_10_bit_source_warns_once_and_suggests_a_lut(grabs, caplog):
+    caplog.set_level("WARNING")
+    src = Path("GX010001.MP4")
+    for at in (1.0, 20.0):
+        encode.warn_if_log(src, media_info(src, pix_fmt="yuv420p10le", **BT709), at)
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert grabs == [src] and len(warnings) == 1
+    assert "GX010001.MP4 looks like log/flat footage" in warnings[0] and "LUT" in warnings[0]
+
+
+def test_export_clip_checks_the_source_for_log_footage(grabs, caplog, monkeypatch, tmp_path):
+    def fake_run(args, **_kw):
+        Path(args[-1]).write_bytes(b"x")  # the clip ffmpeg would write
+        return ""
+
+    monkeypatch.setattr(encode, "run", fake_run)
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: BOTH)
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    caplog.set_level("WARNING")
+    src = Path("GX010002.MP4")
+    info = media_info(src, pix_fmt="yuv420p10le", **BT709)
+
+    encode.export_clip(
+        src, info, 1.0, 2.0, tmp_path / "o.mp4", encode.OutputFormat(1920, 1080, 30), False
+    )
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert grabs == [src]
+    assert any("GX010002.MP4 looks like log/flat footage" in w for w in warnings)
+
+
+@pytest.mark.parametrize(
+    "info",
+    [media_info(pix_fmt="yuv420p"), media_info(pix_fmt="yuvj420p"),
+     media_info(pix_fmt="yuv420p10le", **HLG)],
+)  # fmt: skip
+def test_8_bit_and_hdr_sources_are_not_checked_for_log(grabs, info):
+    encode.warn_if_log(info.path, info, 0.0)
+    assert grabs == []
+
+
+def test_failed_log_grab_skips_the_check(monkeypatch, caplog):
+    def broken(path, **_kw):
+        raise FFmpegError("no frames")
+        yield  # a generator, like decode_raw
+
+    monkeypatch.setattr(encode, "decode_raw", broken)
+    caplog.set_level("WARNING")
+    encode.warn_if_log(Path("a.mp4"), media_info(pix_fmt="p010le"), 0.0)
+    assert not caplog.records
+
+
+# -- real ffmpeg ---------------------------------------------------------------------------------
+
+
+def _hlg_source(path: Path) -> None:
+    """1 s, 320x180 colour bars as tagged 10-bit HLG / BT.2020 (FFV1, so any build has it)."""
+    to_hlg = (
+        "format=yuv444p,zscale=tin=bt709:pin=bt709:min=bt709:rin=pc:t=linear:npl=203:p=bt709,"
+        "format=gbrpf32le,zscale=tin=linear:pin=bt709:t=linear:p=bt2020,"
+        "zscale=tin=linear:pin=bt2020:p=bt2020:t=arib-std-b67:m=bt2020nc:r=tv:npl=203,"
+        "format=yuv420p10le"
+    )
+    ffmpeg_utils.run(
+        [
+            *("ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "smptebars=s=320x180:d=1:r=30"),
+            *("-vf", to_hlg, "-c:v", "ffv1"),
+            *("-color_primaries", "bt2020", "-color_trc", "arib-std-b67"),
+            *("-colorspace", "bt2020nc", str(path)),
+        ]
+    )
+
+
+def _saturation(path: Path) -> float:
+    frames = ffmpeg_utils.decode_raw(
+        path, size=(64, 36), vf="scale=64:36,format=rgb24", start=0.5, hwaccel=None
+    )
+    return encode.log_stats(next(iter(frames))[1])[0]
+
+
+@needs_ffmpeg
+def test_real_hlg_export_is_tone_mapped_and_tagged_bt709(tmp_path, monkeypatch):
+    if not {"zscale", "tonemap"} <= ffmpeg_utils.ffmpeg_filters():
+        pytest.skip("this ffmpeg has no zscale/tonemap")
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    src = tmp_path / "hlg.mkv"
+    _hlg_source(src)
+    info = ffmpeg_utils.probe(src)
+    assert encode.color_kind(info) == "HLG"
+    out = tmp_path / "001.mp4"
+
+    encode.export_clip(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
+
+    got = ffmpeg_utils.probe(out)
+    assert (got.pix_fmt, got.color_transfer, got.color_primaries, got.color_space) == (
+        "yuv420p", "bt709", "bt709", "bt709",
+    )  # fmt: skip
+    # Read as SDR, the HLG source looks washed out; the converted clip keeps the bars' colour.
+    assert _saturation(out) > _saturation(src) + 0.1
