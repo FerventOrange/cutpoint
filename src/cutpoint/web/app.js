@@ -533,7 +533,7 @@ function renderTranscript(cand) {
     const sep = i ? ' ' : '';
     const p = unsure.get(i);
     if (typeof p !== 'number') return [sep + word];
-    const pct = `${Math.round(p * 100)}%`;
+    const pct = p < 0.005 ? '<1%' : `${Math.round(p * 100)}%`;
     return [sep, h('span', { class: 'unsure', title: `Whisper confidence ${pct}` }, word, h('span', { class: 'vh' }, ' (unsure)'))];
   }));
 }
