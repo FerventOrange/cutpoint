@@ -122,7 +122,9 @@ select { max-width: 100%; }
 .splitter:hover::after, .splitter.dragging::after, .splitter:focus-visible::after { background: var(--amber); }
 .splitter:focus-visible { outline: none; }
 .splitter:focus-visible::after { width: 4px; } /* a thicker amber bar is the focus indicator */
-.col { overflow: auto; padding: 12px 14px 20px; min-height: 0; }
+/* position: the column is the containing block of the absolute .vh labels in its rows, so its overflow
+   clips them; otherwise they sit at their place far down the list and make the page itself scroll */
+.col { position: relative; overflow: auto; padding: 12px 14px 20px; min-height: 0; }
 .col-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; min-height: 34px; flex-wrap: wrap; }
 .moments, .side { background: var(--panel); }
 .moments { border-right: 1px solid var(--line); }

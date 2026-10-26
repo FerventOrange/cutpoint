@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -298,18 +298,29 @@ class PeakPlan:
     preset: str
     threshold: float  # dB (RMS, dBFS) where the compressor starts
     gains: tuple[float | None, ...]  # dB per clip; None = the clip is left alone
+    makeup: tuple[float | None, ...] = ()  # dB per clip after the compressor (:func:`plan_makeup`)
 
     def filter(self, i: int) -> str:
-        """``,volume=...,acompressor=...`` for clip ``i`` ("" when it is left alone)."""
+        """``,volume=...,acompressor=...[,volume=...]`` for clip ``i`` ("" when it is left
+        alone); the last ``volume`` is its makeup gain."""
         gain = self.gains[i]
         if gain is None:
             return ""
         p = PEAK_PRESETS[self.preset]
         volume = f",volume={gain:.2f}dB" if gain else ""
+        makeup = self.makeup[i] if self.makeup else None
         return (
             f"{volume},acompressor=threshold={10 ** (self.threshold / 20):.6f}:ratio={p.ratio:g}:"
             f"attack={p.attack:g}:release={p.release:g}:detection=rms:link=maximum"
+            + (f",volume={makeup:.2f}dB" if makeup else "")
         )
+
+    def measure_chain(self, i: int) -> str:
+        """Clip ``i``'s gain and compressor, no makeup, after :data:`A_FMT` as in the export (a
+        mono source reaches the compressor upmixed, 3 dB lower per channel), as a filter prefix
+        ending in a comma (:func:`~cutpoint.ffmpeg_utils.clip_momentary` ``chain``; "" when it
+        is left alone)."""
+        return f"{A_FMT}{replace(self, makeup=()).filter(i)}," if self.gains[i] is not None else ""
 
 
 def plan_peaks(
@@ -354,6 +365,39 @@ def plan_peaks(
     if all(g is None for g in gains):
         return None
     return PeakPlan(preset, round(threshold, 2), tuple(gains))
+
+
+def plan_makeup(
+    plan: PeakPlan, series: list[list[float]], compressed: list[list[float]]
+) -> PeakPlan:
+    """``plan`` with one makeup gain for the whole set, so the set keeps its loudness.
+
+    ``series`` is each clip's momentary loudness as in :func:`plan_peaks`, ``compressed`` the
+    same measured through :meth:`PeakPlan.measure_chain` (ignored for clips left alone). The
+    makeup is the gain, after the compressor, that brings the set's integrated loudness (all
+    clips pooled, so weighted by duration) back to that of ``series``. It is at most the
+    preset's ``max_boost`` and at most ``max_boost`` minus the clip's own leveling gain, so the
+    quiet parts of a clip never rise more than ``max_boost`` in all; at least ``-max_cut``.
+    """
+    p = PEAK_PRESETS[plan.preset]
+    before = [np.asarray(s, dtype=float) for s in series]
+    target = gated_loudness(np.concatenate([np.zeros(0), *before]))
+    applied = [g is not None for g in plan.gains]
+    if target is None or not any(applied):
+        return replace(plan, makeup=tuple(None if g is None else 0.0 for g in plan.gains))
+    after = [np.asarray(c if a else s, dtype=float)
+             for s, c, a in zip(series, compressed, applied, strict=True)]  # fmt: skip
+
+    def gains(m: float) -> list[float | None]:
+        return [None if g is None else min(m, p.max_boost - g) for g in plan.gains]
+
+    def loudness(m: float) -> float:
+        shifted = [b + (g or 0.0) for b, g in zip(after, gains(m), strict=True)]
+        return gated_loudness(np.concatenate([np.zeros(0), *shifted])) or -120.0
+
+    grid = np.arange(-p.max_cut, p.max_boost + _GAIN_STEP / 2, _GAIN_STEP)
+    best = float(grid[int(np.argmin([abs(loudness(m) - target) + 0.01 * abs(m) for m in grid]))])
+    return replace(plan, makeup=tuple(None if g is None else round(g, 2) for g in gains(best)))
 
 
 @dataclass(frozen=True)

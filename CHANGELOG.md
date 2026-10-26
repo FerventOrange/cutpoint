@@ -19,9 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `compress_peaks` key in `config.json`; default `off`) pulls sudden loud peaks such as
   shouts, laughs into the mic, gunshots and mic bumps down toward the speech level, and evens
   out loudness between clips. One compressor threshold is set from the typical level of all
-  the clips, and each clip gets a capped gain toward their mean. `clips` bakes it into every
-  clip, followed by a true-peak limiter, and records it in `manifest.json`, so `assemble` does
-  not compress those clips again. `assemble` applies it to the other clips and always ends
+  the clips, and each clip gets a capped gain toward their mean. A makeup gain after the
+  compressor, one for the whole set, then brings the clips back to the overall loudness they
+  had: without it, Strong left six clips of an R6 round 6.2 LU quieter (-27.1 LUFS against
+  -20.9 with `off`); with it, the set is within 0.1 LU of `off` while its loudness range still
+  drops from 15.3 to 7.0 LU. The makeup is measured on the compressed audio (one more
+  audio-only pass per clip) and capped so that a clip's leveling gain plus its makeup never
+  exceed the preset's maximum boost (6 dB light, 10 dB strong), so near-silent clips are not
+  lifted into their noise. `clips` bakes it into every clip, followed by a true-peak limiter,
+  and records it in `manifest.json` (`compress_peaks` and `compress_peaks_makeup_db`), so
+  `assemble` does not compress those clips again. `assemble` applies it to the other clips and always ends
   with the true-peak limiter, also without `--loudnorm`. On an R6 montage with commentary and
   GoPro wind (`assemble --loudnorm`), the loudest moment went from 12.2 dB above speech to
   7.5 dB (light) or 5.2 dB (strong), and the loudness spread between clips went from 9.9 to
@@ -329,6 +336,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A rerun of `events` (or `analyze`) whose audio events are all cached no longer loads the
   PANNs sound model when a source's cached result is empty, which cost about 6 s; a source
   without cached audio no longer loads it either. The events are unchanged (#370).
+- `analyze --language` no longer reuses a transcript cached for another language: a
+  source transcribed with the detected language returned that cached transcript, and Whisper
+  never ran in the forced one. A forced language now has its own cache file,
+  `transcript-<model>-<language>.json`. Without `--language` the name stays
+  `transcript-<model>.json`, so existing transcripts are still used. Subtitles of `clips`,
+  `extend` and `assemble`, the crash words and the reaction rescoring read the transcript of
+  the language the project's analysis used (`settings.language` in `highlights.json`), and
+  `assemble --captions` transcribes the burned-in captions in that language. A
+  transcript made with `--language` before this fix is cached under the plain name, so a run
+  without `--language` still reuses it; delete `cache/<source>/transcript-*.json` to
+  transcribe the source again (#371).
 - Mined `candidate_phrases` (profile version 6) no longer include parts of hint and tutorial
   sentences shown only briefly, which the static hint test misses. A phrase found only inside
   sentences of more than 5 words (a number, gamertag or separator such as `|`, `/` or `:` ends
@@ -350,6 +368,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
   button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
   <name>…" in "Play sequence", or a preview being prepared on the stage) (#356, #357).
+- UI: on a wide window the page no longer scrolls past the Jobs bar. The screen-reader-only
+  labels in the moment rows were not clipped by their scrolling column, so a long list of
+  moments made the whole page taller than the window (#354).
 - HDR footage (HLG or PQ) and BT.2020 footage came out washed out: it was cut down to 8 bits
   with its HDR or BT.2020 tags kept, so players and editors that ignore those tags showed it
   with faded colors. `clips`, `extend` and `360` renders now convert it to SDR Rec.709 with

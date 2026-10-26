@@ -88,7 +88,9 @@ def test_detect_project_skips_offline_source_and_processes_the_rest(tmp_path, mo
     project = _project(tmp_path, tmp_path / "gone.mp4", here)
     loaded = []
     monkeypatch.setattr(
-        crash, "load_inputs", lambda src, dur, p, tmp: loaded.append(src) or _inputs(spike=False)
+        crash,
+        "load_inputs",
+        lambda src, dur, p, tmp, lang: loaded.append(src) or _inputs(spike=False),
     )
     monkeypatch.setattr(crash, "candidate_events", lambda inp, p: [])
     own_words = replace(crash.CrashParams(), words=())  # keeps the activity profile out of it

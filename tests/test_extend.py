@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info, remap, write
-from cutpoint import extend, planning, sources, srt
+from cutpoint import cache, extend, planning, sources, srt
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 
@@ -110,7 +110,7 @@ def _manifest(folder: Path) -> dict:
 @pytest.mark.parametrize("where", ["in-place", "other-out"])
 def test_extend_writes_each_clips_srt_for_its_new_range(tmp_path, monkeypatch, reads, where):
     clips = _srt_clips(tmp_path)
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     out = clips if where == "in-place" else tmp_path / "proj" / "ext"
     _run(clips, out_dir=out, force=True)
     # padded by 1 s on each side (9-21 s): both words are in, timed from 9 s
@@ -125,7 +125,7 @@ def test_extend_writes_each_clips_srt_for_its_new_range(tmp_path, monkeypatch, r
 
 def test_extend_in_place_without_a_transcript_removes_its_old_srt(tmp_path, monkeypatch, reads):
     clips = _srt_clips(tmp_path)
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
     _run(clips, out_dir=clips, force=True)
     assert not (clips / "001_a.srt").exists()  # listed, so an earlier run's: stale timing
     assert "srt" not in _manifest(clips)
@@ -135,7 +135,7 @@ def test_extend_never_overwrites_an_srt_the_manifest_does_not_list(
     tmp_path, monkeypatch, reads, caplog
 ):
     clips = _srt_clips(tmp_path, srt_file=None)  # 001_a.srt made by hand
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     _run(clips, out_dir=clips, force=True)
     assert "stale" in (clips / "001_a.srt").read_text(encoding="utf-8")
     assert "srt" not in _manifest(clips)
@@ -157,7 +157,7 @@ def test_extend_removes_the_listed_srt_of_a_clip_deleted_during_review(
         {"file": "002_b.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_b.srt"},
     ]
     write(out / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
 
     _run(clips, out_dir=out, force=True)
 
@@ -185,7 +185,7 @@ def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_sr
         {"file": "002_b.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_b.srt"},
     ]
     write(out / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
 
     _run(clips, out_dir=out, force=True)
 
@@ -225,7 +225,7 @@ def test_extend_without_a_transcript_removes_the_listed_srt_renamed_in_case(
         write(out / "001_A.mp4", "old")
         write(out / "001_A.srt", "old")
         write(out / "manifest.json", (clips / "manifest.json").read_text(encoding="utf-8"))
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
 
     _run(clips, out_dir=out, force=True)
 
@@ -249,7 +249,7 @@ def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
         {"file": "002_Joke.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_Joke.srt"}
     )
     write(clips / "manifest.json", json.dumps(data))
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
 
     _run(clips, out_dir=clips, force=True)
 
@@ -258,3 +258,19 @@ def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
     # In place it stays in the folder (and in the edit): a Kept warning, not "skipped".
     assert f"Kept 002_joke.mp4 in {clips.absolute()}: the old manifest.json" in caplog.text
     assert "skipped" not in caplog.text
+
+
+@pytest.mark.parametrize(("language", "word"), [(None, "hello"), ("de", "hallo")])
+def test_extend_subtitles_from_the_transcript_of_the_analysis_language(
+    home, tmp_path, reads, language, word
+):
+    """#371: the project's highlights.json settings.language picks the cached transcript."""
+    clips = _srt_clips(tmp_path)
+    src = tmp_path / "a.mp4"
+    for name, text in (("transcript-small.json", "hello"), ("transcript-small-de.json", "hallo")):
+        segment = {"start": 12.0, "end": 12.4, "text": text,
+                   "words": [{"start": 12.0, "end": 12.4, "word": text}]}  # fmt: skip
+        cache.save_json(cache.source_dir(src) / name, [segment])
+    write(clips.parent / "highlights.json", json.dumps({"settings": {"language": language}}))
+    _run(clips, out_dir=tmp_path / "proj" / "ext")
+    assert word in (tmp_path / "proj" / "ext" / "001_a.srt").read_text(encoding="utf-8")

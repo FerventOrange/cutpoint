@@ -78,7 +78,7 @@ def test_assemble_cut_audio_stays_on_video_when_clip_audio_runs_on(tmp_path, mon
         for n in names
     ]
     (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir)
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(6.6, abs=0.04)
@@ -147,7 +147,7 @@ def test_assemble_short_crossfade_keeps_the_whole_video(tmp_path, monkeypatch):
     clips_dir.mkdir()
     for name in ("001_a.mp4", "002_b.mp4"):
         _clip(clips_dir / name, 2.0, 2.0)
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.02)
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(3.96, abs=0.04)
@@ -164,7 +164,7 @@ def test_assemble_crossfade_length_matches_the_srt_offsets(tmp_path, monkeypatch
     clips_dir.mkdir()
     for name in ("001_a.mp4", "002_b.mp4", "003_c.mp4"):
         _clip(clips_dir / name, 2.0, 2.0, rate)
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
     infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
     fade = assemble.crossfade_duration(infos, 0.25)
@@ -197,7 +197,7 @@ def test_assemble_crossfade_audio_stays_on_video_when_clip_audio_runs_on(tmp_pat
     clips_dir.mkdir()
     _clip(clips_dir / "001_a.mp4", 2.0, 2.3)
     _clip(clips_dir / "002_b.mp4", 2.0, 2.0)
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)  # no final.srt
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(3.76, abs=0.02)
@@ -359,3 +359,40 @@ def test_clip_export_keeps_late_starting_audio_audible_to_its_end(tmp_path):
     window = pcm[int(48000 * 0.74) : int(48000 * 0.8)]
     assert 20 * np.log10(np.abs(window).max() + 1e-9) > -25.0  # still audible before the fade
     assert _tail_peak_db(out) < -25.0  # and faded out at the end
+
+
+class _Transcribed(Exception):
+    """Raised by the stub Transcriber once its arguments are recorded."""
+
+
+@pytest.mark.parametrize("loudnorm", [False, True], ids=["captions", "loudnorm-captions"])
+@pytest.mark.parametrize("language", [None, "de"], ids=["auto", "forced"])
+def test_burned_in_captions_transcribe_in_the_analysis_language(
+    tmp_path, monkeypatch, language, loudnorm
+):
+    """#371: ``assemble --captions`` transcribes in the language the project's analysis
+    forced (highlights.json ``settings.language``); an auto-detect project passes None."""
+    project = tmp_path / "proj"
+    clips_dir = project / "clips"
+    clips_dir.mkdir(parents=True)
+    (clips_dir / "001_a.mp4").write_bytes(b"x")
+    hl = {"settings": {"language": language}}
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    seen: list[dict] = []
+
+    def transcriber(**kw):
+        seen.append(kw)
+        raise _Transcribed
+
+    def join(files, infos, clips_dir, out, *a):
+        out.write_bytes(b"joined")
+        return 0.0
+
+    monkeypatch.setattr(assemble, "probe", lambda p: media_info(Path(p), 3.0))
+    monkeypatch.setattr(assemble, "peak_filters", lambda _d, files, *_a: [""] * len(files))
+    monkeypatch.setattr(assemble, "_join", join)
+    monkeypatch.setattr(assemble, "extract_audio", lambda *a, **k: None)
+    monkeypatch.setattr(assemble, "Transcriber", transcriber)
+    with pytest.raises(_Transcribed):
+        assemble.assemble(clips_dir, captions=True, loudnorm=loudnorm)
+    assert seen == [{"model": None, "language": language}]

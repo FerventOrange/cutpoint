@@ -7,11 +7,12 @@ import logging
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, clips, sources, srt
+from cutpoint import assemble, cache, clips, sources, srt
 from cutpoint.ffmpeg_utils import MediaInfo
 
 
@@ -69,7 +70,7 @@ def test_missing_transcript_writes_no_srt_and_says_so_once(tmp_path, monkeypatch
     clips_dir = tmp_path / "clips"
     clips_dir.mkdir()
     files = [clips_dir / "001_a.mp4", clips_dir / "002_b.mp4"]  # hand-made: no manifest
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
     caplog.set_level(logging.INFO)
     out = tmp_path / "final.mp4"
     infos = [_info(f, 2.0) for f in files]
@@ -100,7 +101,7 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     assert (out / "001_a.srt").read_text(encoding="utf-8").startswith("1\n00:00:01,000 --> ")
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
@@ -109,7 +110,7 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
     # --force: the old run's .srt goes even when the new run has no transcript for the
     # clip; an .srt the old manifest does not list (made by hand) stays.
     (out / "notes.srt").write_text("mine", encoding="utf-8")
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
     caplog.set_level(logging.INFO)
     clips.export_clips(project, segments=seg, force=True)
     assert not (out / "001_a.srt").exists()
@@ -119,7 +120,7 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
 
     # an .srt under the new clip's name that the old manifest does not list is not overwritten
     (out / "001_a.srt").write_text("mine too", encoding="utf-8")
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     caplog.clear()
     clips.export_clips(project, segments=seg, force=True)
     assert (out / "001_a.srt").read_text(encoding="utf-8") == "mine too"
@@ -147,7 +148,7 @@ def test_clips_force_removes_the_listed_srt_of_a_clip_deleted_during_review(home
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     (out / "001_a.mp4").unlink()  # rejected during review
     pick = json.loads(seg.read_text(encoding="utf-8"))[0] | {"label": "b"}
@@ -163,7 +164,7 @@ def test_clips_force_keeps_a_clip_renamed_in_case_only_and_its_srt(home, monkeyp
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     if not (out / "001_A.mp4").exists():
         pytest.skip("case-sensitive file system")
@@ -192,13 +193,13 @@ def test_clips_force_replaces_the_listed_srt_of_a_replaced_clip_renamed_in_case(
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
-    monkeypatch.setattr(sources, "source_words", lambda _src: WORDS)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     if not (out / "001_A.mp4").exists():
         pytest.skip("case-sensitive file system")
     for n in renamed:
         (out / n).rename(out / n.replace("_a", "_A"))
-    monkeypatch.setattr(sources, "source_words", lambda _src: None)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
     clips.export_clips(project, segments=seg, force=True)
     assert sorted(p.name for p in out.iterdir()) == ["001_a.mp4", "manifest.json"]
 
@@ -241,7 +242,7 @@ def test_assemble_writes_final_srt_on_the_crossfaded_timeline(tmp_path, monkeypa
         encoding="utf-8",
     )  # fmt: skip
     by_source = {"a.mp4": _words((0.2, 0.6, "one")), "b.mp4": _words((51.0, 51.4, "two"))}
-    monkeypatch.setattr(sources, "source_words", lambda src: by_source.get(src.name))
+    monkeypatch.setattr(sources, "source_words", lambda src, _lang=None: by_source.get(src.name))
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.5)
     text = (tmp_path / "final.srt").read_text(encoding="utf-8")
     assert final == tmp_path / "final.mp4"
@@ -267,7 +268,7 @@ def test_assemble_cut_srt_follows_where_concat_starts_each_clip(tmp_path, monkey
     ]
     (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
     words = _words((1.0, 1.4, "word"))
-    monkeypatch.setattr(sources, "source_words", lambda _src: words)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: words)
     assemble.assemble(clips_dir)
     keyframes = subprocess.run(
         [shutil.which("ffprobe"), "-v", "error", "-select_streams", "v", "-skip_frame", "nokey",
@@ -278,3 +279,83 @@ def test_assemble_cut_srt_follows_where_concat_starts_each_clip(tmp_path, monkey
     assert starts == pytest.approx([0.0, 2.1, 4.2], abs=0.03)
     cues = srt.read_srt(tmp_path / "final.srt")
     assert [c[0] for c in cues] == pytest.approx([s + 1.0 for s in starts], abs=0.01)
+
+
+def _two_language_projects(home: Path, **seg: Any) -> dict[str | None, Path]:
+    """One source with a cached detected-language ("hello") and German ("hallo")
+    transcript, and a project of it per analysis language, each with seg.json (its one
+    segment's tails and speech pass off unless ``seg`` turns them on)."""
+    src = home / "footage" / "src.mp4"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"x")
+    for name, word in (("transcript-small.json", "hello"), ("transcript-small-de.json", "hallo")):
+        segment = {"start": 101.0, "end": 101.4, "text": word,
+                   "words": [{"start": 101.0, "end": 101.4, "word": word}]}  # fmt: skip
+        cache.save_json(cache.source_dir(src) / name, [segment])
+    projects = {}
+    for language in (None, "de"):
+        project = home / "projects" / (language or "auto")
+        project.mkdir(parents=True)
+        hl = {"style": "gaming", "settings": {"language": language}, "sources": []}
+        (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+        entry = {"source": str(src), "start": 100.0, "end": 104.0, "label": "a",
+                 "speech_aware": False, "smart_tail": False} | seg  # fmt: skip
+        (project / "seg.json").write_text(json.dumps([entry]), encoding="utf-8")
+        projects[language] = project
+    return projects
+
+
+def _export(project: Path, monkeypatch, **kw: Any) -> Path:
+    monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
+    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    clips.export_clips(project, segments=project / "seg.json", **kw)
+    return project / "clips"
+
+
+def test_clips_srt_uses_the_transcript_of_the_analysis_language(home, monkeypatch):
+    """#371: a project analysed with --language de subtitles from transcript-small-de.json;
+    an auto-detect project of the same source keeps transcript-small.json."""
+    projects = _two_language_projects(home)
+    for language, word in ((None, "hello"), ("de", "hallo")):
+        out = _export(projects[language], monkeypatch)
+        assert word in (out / "001_a.srt").read_text(encoding="utf-8")
+
+
+@needs_ffmpeg
+def test_final_srt_uses_the_transcript_of_the_analysis_language(home, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    projects = _two_language_projects(home)
+    for language, word in ((None, "hello"), ("de", "hallo")):
+        out = _export(projects[language], monkeypatch)
+        (out / "001_a.mp4").unlink()  # a real clip in place of the fake export
+        _lavfi_clip(out / "001_a.mp4", 4.0)
+        assemble.assemble(out)
+        assert word in (projects[language] / "final.srt").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("seg", "kw"),
+    [
+        ({"smart_tail": True}, {"smart_tail_on": True}),  # the smart tail reads the words
+        ({"smart_tail": True}, {"smart_tail_on": False, "event_tails": True}),  # event tail
+        ({"speech_aware": True}, {"smart_tail_on": False}),  # the speech pass
+    ],
+    ids=["smart-tail", "event-tail", "speech-pass"],
+)
+def test_clips_planning_reads_the_transcript_of_the_analysis_language(home, monkeypatch, seg, kw):
+    """#371: the words for the tails and the speech pass come from transcript-small-de.json
+    too, not only the subtitles."""
+    projects = _two_language_projects(home, **seg)
+    project = projects["de"]
+    if kw.get("event_tails"):
+        (project / "events.json").write_text(json.dumps({"events": []}), encoding="utf-8")
+    langs = []
+    real = sources.source_words
+
+    def spy(src, language=None):
+        langs.append(language)
+        return real(src, language)
+
+    monkeypatch.setattr(sources, "source_words", spy)
+    _export(project, monkeypatch, **kw)
+    assert langs == ["de", "de"]  # one read to plan the clip, one for its subtitles

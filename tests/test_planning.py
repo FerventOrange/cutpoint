@@ -151,15 +151,16 @@ class _Plan:
 @pytest.fixture
 def speech_env(monkeypatch, readable, tmp_path):
     """One utterance 10-14 s in every source; records the speech-map and words calls."""
-    calls: dict[str, list[Any]] = {"maps": [], "words": []}
+    calls: dict[str, list[Any]] = {"maps": [], "words": [], "languages": []}
 
     def fake_map(src, words, events, settings):
         calls["maps"].append((src, words, events))
         span = boundaries.Span(10.0, 14.0, frozenset({"word"}), "a long sentence here")
         return boundaries.SpeechMap([span], settings)
 
-    def fake_words(src):
+    def fake_words(src, language=None):
         calls["words"].append(src)
+        calls["languages"].append(language)
         return [{"start": 10.0, "end": 14.0, "word": "sentence"}]
 
     monkeypatch.setattr(planning.boundaries, "build_speech_map", fake_map)
@@ -180,6 +181,15 @@ def test_speech_pass_moves_end_out_of_an_utterance(speech_env):
     assert plans[0].end == pytest.approx(14.4)  # utterance end + breath
     assert recs["a.mp4"]["end"]["moved"] > 0
     assert len(calls["maps"]) == 1 and calls["words"] == [Path("v.mp4")]
+
+
+def test_speech_pass_reads_the_words_of_the_given_language(speech_env):
+    """#371: the transcript language of the analysis reaches the words read."""
+    project, calls = speech_env
+    plans = [_plan("a.mp4", 5.0, 12.0)]
+    speech_pass(plans, boundaries.SpeechSettings(), project, fit_end=lambda e: True)
+    speech_pass(plans, boundaries.SpeechSettings(), project, fit_end=lambda e: True, language="de")
+    assert calls["languages"] == [None, "de"]
 
 
 def test_speech_pass_respects_opt_outs_and_fixed_ends(speech_env):

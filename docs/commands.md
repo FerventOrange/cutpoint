@@ -360,7 +360,7 @@ an analysed set processes only the new file.
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `qwen3-vl:8b` |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
-| `--language en` | Force the transcription language (default: auto-detect) |
+| `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging |
@@ -665,6 +665,12 @@ the speech level, and evens out loudness between clips. It is off by default, an
    clip's own quiet background.
 3. Each clip gets a gain, before the compressor, that moves its compressed loudness toward
    the mean of the clips. The gain is capped, because a boost also raises background noise.
+4. Each clip is measured again through its gain and compressor (audio only, about as long as
+   the first measurement), and one makeup gain for the whole set goes after the compressor.
+   It brings the set's integrated loudness (all clips together, so weighted by duration) back
+   to what it was, so the edit is not quieter than with `off`. A clip's gain plus its makeup
+   is at most the preset's max boost, so a near-silent clip that is already boosted gets
+   little or no makeup. The makeup goes before the limiter, so the ceiling still holds.
 
 | Preset | Compressor starts | Ratio | Leveling | Max boost / cut |
 |---|---|---|---|---|
@@ -685,8 +691,22 @@ GoPro wind), exported and assembled with `--loudnorm`:
 The quiet parts rise because those clips are boosted to match the others. Use `light` when
 background noise matters more than even loudness.
 
+Without `--loudnorm` the makeup keeps the level. Measured on six 10 s clips of an R6 round
+(gunfire) and six of another gameplay recording, exported with `clips`:
+
+| Set | off | light, before the makeup | light | strong, before the makeup | strong |
+|---|---|---|---|---|---|
+| R6: loudness / true peak / range | -20.9 LUFS / +0.2 dBTP / 15.3 LU | -24.1 / -5.2 / 8.9 | -20.9 / -3.0 / 8.9 | -27.1 / -9.4 / 5.7 | -20.8 / -3.0 / 7.0 |
+| Both (12 clips) | -19.3 / +0.2 / 18.0 | -23.9 / -4.9 / 13.2 | -19.3 / -3.0 / 14.6 | -27.3 / -9.4 / 15.1 | -19.4 / -2.9 / 13.9 |
+| Other gameplay | -16.1 / -2.1 / 23.0 | -23.7 / -9.3 / 18.7 | -18.0 / -3.2 / 19.0 | -27.3 / -12.4 / 21.2 | -18.9 / -3.1 / 16.6 |
+
+On the other gameplay set alone the makeup reaches its cap (6 dB light, 10 dB strong), so it ends
+1.9 and 2.8 LU below `off`. With `--loudnorm`, `assemble` sets the final level anyway: the
+result is the same within 0.1 LU (-14.0 LUFS, -2.2 dBTP).
+
 `clips` bakes it into each clip, followed by a true-peak limiter (clips stay below about
--1.8 dBTP), records `compress_peaks` in `manifest.json` and tags the file (container comment
+-1.8 dBTP), records `compress_peaks` and the clip's makeup (`compress_peaks_makeup_db`, dB) in
+`manifest.json` and tags the file (container comment
 `cutpoint:compress_peaks`). `assemble` does not compress those clips again, also after they
 are renamed. `extend` re-exports clips without compression (one WARNING). 360 clips are not
 compressed.

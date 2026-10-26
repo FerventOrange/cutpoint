@@ -53,6 +53,7 @@ from cutpoint.ffmpeg_utils import (
     swap_in,
 )
 from cutpoint.planning import Padding, pad, report_clips, speech_pass
+from cutpoint.sources import project_language
 from cutpoint.utils import clip_files, seconds_keys
 
 logger = logging.getLogger(__name__)
@@ -342,8 +343,14 @@ def extend_clips(
             reuse_by_file = {x["file"]: x for x in reuse_manifest.get("clips", [])}
             reuse_same_format = (reuse_manifest.get("format") or {}) == fmt_d
         project = manifest_project(manifest, clips_dir)
+        language = project_language(project)
         speech_recs = speech_pass(
-            plans, speech, project, fit_end=lambda e: not _fixed_tail(e), hi_clamp=_hi_clamp
+            plans,
+            speech,
+            project,
+            fit_end=lambda e: not _fixed_tail(e),
+            hi_clamp=_hi_clamp,
+            language=language,
         )
         pano = None
         if any(p.entry.get("pano") for p in plans):
@@ -385,7 +392,7 @@ def extend_clips(
         # ``.<name>.part.mp4`` files of a hard-killed run go too, as with clips --force.
         listed = srt.listed_files(out_dir)
         srt.check_unlisted_clips(out_dir, names, listed)
-        subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed))
+        subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed), language)
         present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
         on_disk = {path_key(n): n for n in present}
         parts = [p.name for p in out_dir.glob(".*.part.mp4")] if out_dir.is_dir() else []
@@ -469,7 +476,11 @@ def extend_clips(
             )
             p0, p1 = plan.keep
             entries.append(
-                {k: v for k, v in e.items() if k not in ("read_from", "srt", "compress_peaks")}
+                {
+                    k: v
+                    for k, v in e.items()
+                    if k not in ("read_from", "srt", "compress_peaks", "compress_peaks_makeup_db")
+                }
                 | {
                     **({"read_from": str(src)} if str(src) != e["source"] else {}),
                     "start": start,
