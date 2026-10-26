@@ -72,6 +72,7 @@ def test_relative_paths_become_absolute(tmp_path, monkeypatch, capsys):
     assert _envelope(capsys.readouterr().out)["outputs"]["file"] == str(tmp_path / "a.mp4")
 
 
+@pytest.mark.slow
 def test_stdout_holds_only_the_envelope(capfd):
     """Prints, logs and child processes that inherit stdout go to stderr."""
     with jsonout.run("x"):
@@ -327,6 +328,7 @@ def test_help_and_version_still_exit_zero(capsys):
     assert "--json" in capsys.readouterr().out
 
 
+@pytest.mark.slow
 def test_json_subprocess_end_to_end(home, tmp_path):
     """A real process: fd 1 carries only the envelope, even from a child process."""
     script = tmp_path / "run.py"
@@ -355,6 +357,7 @@ def test_json_subprocess_end_to_end(home, tmp_path):
         assert text in proc.stderr
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("stderr", ["closed", "devnull"])
 def test_json_subprocess_without_stderr(home, tmp_path, stderr):
     """With stderr closed (fd 2 invalid, sys.stderr None) or the null device: one envelope.
@@ -393,6 +396,7 @@ def test_json_subprocess_without_stderr(home, tmp_path, stderr):
     assert doc["ok"] is True and doc["outputs"] == {"x": 1}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("json_flag", [[], ["--json"]])
 def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
     script = tmp_path / "run.py"
@@ -416,6 +420,7 @@ def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
         assert proc.stdout == ""
 
 
+@pytest.mark.slow
 def test_json_subprocess_bad_args(home):
     proc = subprocess.run(
         [sys.executable, "-m", "cutpoint", "paths", "--json", "--bogus"],
@@ -427,6 +432,7 @@ def test_json_subprocess_bad_args(home):
     assert _envelope(proc.stdout)["error"]["code"] == "bad_args"
 
 
+@pytest.mark.slow
 def test_json_subprocess_bad_args_without_stderr(home, tmp_path):
     """With stderr closed, argparse's usage does not fall back to stdout."""
     script = tmp_path / "run.py"

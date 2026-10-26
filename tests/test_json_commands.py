@@ -21,9 +21,15 @@ from cutpoint.events import cli as events_cli
 from cutpoint.events import pipeline
 from test_jsonout import _envelope
 
-needs_ffmpeg = pytest.mark.skipif(
+_skip_without_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
 )
+
+
+def needs_ffmpeg(test):
+    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
+    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
+
 
 SEGMENTS = [
     {
@@ -155,6 +161,7 @@ def test_clips_json(video, home, capsys, caplog):
     assert doc["error"]["message"] in caplog.text
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 def test_clips_json_force_reports_kept_clips_and_a_blocked_name(video, home, capsys, caplog):
     _analyze(video, capsys)
@@ -224,6 +231,7 @@ def test_assemble_json_missing_folder(home, capsys):
 
 
 # ---------------------------------------------------------------------------------- extend
+@pytest.mark.slow
 @needs_ffmpeg
 def test_extend_json(video, home, capsys, caplog):
     _analyze(video, capsys)
@@ -248,6 +256,7 @@ def test_extend_json(video, home, capsys, caplog):
     assert code == 1 and doc["error"]["code"] == "output_not_empty"
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 def test_extend_in_place_json_warns_kept_with_absolute_paths(
     video, home, capsys, monkeypatch, caplog
@@ -304,6 +313,7 @@ EDIT_KEYS = {
 }  # fmt: skip
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
     video, home, capsys, caplog, monkeypatch
@@ -348,6 +358,7 @@ def test_edit_json_missing_input(home, tmp_path, capsys):
 
 
 # ------------------------------------------------------------------------- without --json
+@pytest.mark.slow
 @needs_ffmpeg
 def test_without_json_stdout_stays_empty(video, home, capsys):
     """No command printed to stdout before --json; none does now (logs go to stderr)."""

@@ -29,9 +29,14 @@ from conftest import link_dir, link_file, media_info, remap, set_config, write
 from cutpoint import cache, cli, config, ui
 
 PORT = 8765
-needs_ffmpeg = pytest.mark.skipif(
+_skip_without_ffmpeg = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="needs ffmpeg"
 )
+
+
+def needs_ffmpeg(test):
+    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
+    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
 
 
 @pytest.fixture
@@ -221,6 +226,7 @@ def ffmpeg(*args: str) -> None:
     subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 def test_proxy_is_built_only_for_the_chosen_source_and_keeps_every_audio_track(
     client: TestClient, tmp_path: Path
@@ -282,6 +288,7 @@ def test_proxy_is_built_only_for_the_chosen_source_and_keeps_every_audio_track(
         assert spectrum[abs(freqs - tone) < 5].max() > 20 * np.median(spectrum), tone
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 def test_reanalyze_keeps_recorded_excludes_and_recursion(
     client: TestClient, tmp_path: Path
@@ -438,6 +445,7 @@ def test_analyze_follows_settings_saved_just_before(
     ]
 
 
+@pytest.mark.slow
 def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) -> None:
     script = (
         "import subprocess, sys, time\n"
@@ -634,6 +642,7 @@ def _pid_alive(pid: int) -> bool:
         k32.CloseHandle(ctypes.c_void_p(handle))
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(os.name != "nt", reason="Windows job objects and CTRL_BREAK")
 def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
     grandchild = (
@@ -694,6 +703,7 @@ def test_assemble_ignores_a_hidden_part_file_left_by_a_killed_export(
     assert "export clips before assembling" in res.text
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 def test_export_keeps_saved_order_and_each_assembly_is_kept(
     client: TestClient, tmp_path: Path
@@ -1890,6 +1900,7 @@ def test_a_broken_learned_style_is_left_out_with_a_warning(
 SLEEP_JOB = [sys.executable, "-c", "import time; time.sleep(60)"]
 
 
+@pytest.mark.slow
 def test_put_settings_refuses_a_job_that_started_during_the_check_and_removes_the_new_folder(
     client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1914,6 +1925,7 @@ def test_put_settings_refuses_a_job_that_started_during_the_check_and_removes_th
             jobs.cancel(job.id)
 
 
+@pytest.mark.slow
 def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
     client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2132,6 +2144,7 @@ def test_frames_folder_linked_outside_is_not_used_and_nothing_there_is_deleted(
     assert sorted(f.name for f in outside.iterdir()) == sorted(f.name for f in stale)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("refused", [False, True], ids=["crash", "refused-write"])
 def test_a_failing_post_processing_step_fails_the_job_with_a_clean_message(
     caplog: pytest.LogCaptureFixture, refused: bool
@@ -2160,6 +2173,7 @@ def cli_project(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return p, seg
 
 
+@pytest.mark.slow
 def test_a_command_line_project_without_a_ui_folder_can_be_reviewed_and_exported(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2234,6 +2248,7 @@ def test_an_unusable_ui_is_a_409_and_nothing_is_created(
     assert not (p / "gone").exists()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("why", ["folder changed", "job running", "cannot start"])
 def test_a_clips_job_that_does_not_start_leaves_no_segments_file(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, why: str
@@ -2333,6 +2348,7 @@ def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
     assert media.status(p, str(folder / "a.mp4"))[0] == "failed"
 
 
+@pytest.mark.slow
 def test_assemble_picks_a_fresh_name_when_only_a_caption_file_is_left(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2580,6 +2596,7 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
 # --- strain: priority, connection resets, proxy encoder ---
 
 
+@pytest.mark.slow
 def test_spawn_runs_children_below_normal_priority() -> None:
     """Jobs and proxy encodes (and what they start) yield the CPU to the desktop."""
     if os.name == "nt":
@@ -2822,6 +2839,7 @@ def source_names(client: TestClient, pid: str) -> list[str]:
     return sorted(s["name"] for s in res.json()["sources"])
 
 
+@pytest.mark.ffmpeg
 def test_media_requests_list_an_unanalyzed_folder_once(
     client: TestClient, tmp_path: Path, folder_listings: list[int]
 ) -> None:
@@ -3008,6 +3026,7 @@ def progress_job(lines: list[str], code: int = 0) -> ui.Job:
     return job
 
 
+@pytest.mark.slow
 def test_progress_lines_become_steps_and_stay_out_of_the_log() -> None:
     job = progress_job(SAMPLE_PROGRESS)
     view = job.view()
@@ -3086,6 +3105,7 @@ def test_odd_progress_fields_are_tidied() -> None:
     assert nan is not None and nan["pct"] is None
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("code", [0, 1])
 def test_a_step_still_running_when_the_job_fails_reads_interrupted(code: int) -> None:
     job = progress_job([*SAMPLE_PROGRESS[:1], "12:00:03 ERROR boom"], code)
@@ -3113,6 +3133,7 @@ def test_a_cancelled_job_interrupts_its_running_step(monkeypatch: pytest.MonkeyP
     assert [s["state"] for s in job.view()["progress"]["steps"]] == ["interrupted", "skipped"]
 
 
+@pytest.mark.slow
 def test_api_jobs_carries_the_progress(client: TestClient) -> None:
     script = f"for ln in {SAMPLE_PROGRESS!r}:\n    print(ln)"
     job = client.app.state.jobs.start("p", "analyze", [sys.executable, "-c", script])
@@ -3129,6 +3150,7 @@ def test_api_jobs_carries_the_progress(client: TestClient) -> None:
     assert not any("PROGRESS" in ln for ln in seen["logs"])
 
 
+@pytest.mark.slow
 def test_spawn_asks_the_cli_for_progress_lines() -> None:
     code = "import os; print(os.environ.get('CUTPOINT_PROGRESS'))"
     proc = ui.spawn([sys.executable, "-c", code])

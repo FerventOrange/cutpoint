@@ -250,6 +250,8 @@ def _assert_red_letterboxed(frame: np.ndarray) -> None:
     assert picture[..., 0].min() > 150 and picture[..., 1:].max() < 90
 
 
+@pytest.mark.ffmpeg
+@pytest.mark.hardware
 def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, tmp_path):
     src = _blue_source_with_red_corner(tmp_path)
     fmt = encode.OutputFormat(320, 240, 30)

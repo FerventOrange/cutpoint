@@ -25,6 +25,23 @@ uvx ruff@0.17.1 check src tests
 uvx ruff@0.17.1 format --check src tests
 ```
 
+`uv run pytest` is the full suite as CI runs it; it deselects only tests marked `hardware`. For a
+quicker local run, skip the slow and ffmpeg tests (about a third of the time):
+
+```powershell
+uv run pytest -m "not slow and not ffmpeg"
+uv run pytest -m hardware
+```
+
+The second command runs the hardware tests (real GPU, such as the VAAPI encode), which CI lacks.
+A `-m` on the command line replaces the default one. Markers (declared in `pyproject.toml`):
+
+- `slow`: spawns real subprocesses or interpreters, or runs longer than about 2 s. Add
+  `@pytest.mark.slow`.
+- `ffmpeg`: runs real ffmpeg or ffprobe. Use the test file's `needs_ffmpeg` where it has one (it
+  also skips without ffmpeg); otherwise add `@pytest.mark.ffmpeg`.
+- `hardware`: needs GPU hardware that CI lacks.
+
 CI runs the same lint and format checks, and the tests on Windows and Linux. Optionally install
 the hooks with `uv run pre-commit install`; they run ruff on commit. Ruff settings
 (line length 100, rule set) are in `pyproject.toml`.

@@ -244,6 +244,7 @@ class TestRenderSegmentSendcmd:
     def _filter(self, args: list[str]) -> str:
         return args[args.index("-filter_complex") + 1]
 
+    @pytest.mark.ffmpeg
     def test_still_path_skips_sendcmd(self, clip, tmp_path, ffmpeg):
         path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
         out = tmp_path / "still.mp4"
@@ -256,6 +257,7 @@ class TestRenderSegmentSendcmd:
         assert rec["commands"] == 0 and rec["cmd_file"] is None
         assert not list(tmp_path.glob("*.cmd"))
 
+    @pytest.mark.ffmpeg
     def test_moving_path_uses_sendcmd(self, clip, tmp_path, ffmpeg):
         path = _path((0.0, 0.0, -5.0), (10.0, 90.0, -5.0))
         out = tmp_path / "pan.mp4"
@@ -268,6 +270,7 @@ class TestRenderSegmentSendcmd:
 
 
 # --------------------------------------------------------------------------- moved footage
+@pytest.mark.ffmpeg
 def test_render_segment_reads_moved_footage_and_records_the_original_paths(
     moved, tmp_path, monkeypatch
 ):
