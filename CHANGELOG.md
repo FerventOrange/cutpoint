@@ -53,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queued, the trim rail hatches the parts of the source that cannot play yet, and the preview
   shows "Full preview 42%" while the whole-source proxy builds (`proxy` and `progress` on each
   source). Playing near the end of a short proxy prepares the next part ahead, and playback
-  that still has to wait for it plays on by itself once it is ready (#323).
+  that still has to wait for it plays on by itself once it is ready; inside a long moment it
+  waits only for the part it stopped at, not a proxy of the whole moment (#323).
 - The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
   underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
   Transcripts now store each word's `probability`, and `highlights.json` candidates list those
