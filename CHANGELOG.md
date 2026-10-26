@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--compress-peaks off|light|strong` on `clips`, `assemble` and `edit` (and the
+  `compress_peaks` key in `config.json`; default `off`) pulls sudden loud peaks such as
+  shouts, laughs into the mic, gunshots and mic bumps down toward the speech level, and evens
+  out loudness between clips. One compressor threshold is set from the typical level of all
+  the clips, and each clip gets a capped gain toward their mean. `clips` bakes it into every
+  clip, followed by a true-peak limiter, and records it in `manifest.json`, so `assemble` does
+  not compress those clips again. `assemble` applies it to the other clips and always ends
+  with the true-peak limiter, also without `--loudnorm`. On an R6 montage with commentary and
+  GoPro wind (`assemble --loudnorm`), the loudest moment went from 12.2 dB above speech to
+  7.5 dB (light) or 5.2 dB (strong), and the loudness spread between clips went from 9.9 to
+  4.3 or 4.7 LU. The true peak stays below -1.5 dBTP. With `off`, the output is unchanged
+  (#326).
 - The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
   back from their sources or proxies (hard cuts, no export), highlights and announces the playing
   clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits

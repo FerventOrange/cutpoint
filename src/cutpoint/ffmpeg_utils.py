@@ -561,6 +561,42 @@ def momentary_loudness(wav: Path) -> tuple[list[float], list[float]]:
     return times, values
 
 
+def clip_momentary(
+    src: Path, streams: int, start: float | None = None, duration: float | None = None
+) -> list[float]:
+    """Momentary loudness (LUFS, 400 ms blocks every 100 ms) of a clip's audio.
+
+    ``streams`` audio tracks are mixed as a clip export mixes them (``amix``, no
+    normalisation); 1 reads track 0 only. ``start``/``duration`` (s) cut a source span
+    (input seek, as the export). Returns ``[]`` for ``streams`` 0 or no blocks.
+    """
+    if streams < 1:
+        return []
+    span = [*(["-ss", f"{start:.3f}"] if start is not None else [])]
+    span += ["-t", f"{duration:.3f}"] if duration is not None else []
+    ins = "".join(f"[0:a:{i}]" for i in range(streams))
+    head = f"{ins}amix=inputs={streams}:normalize=0," if streams > 1 else "[0:a:0]"
+    out = run(
+        [
+            "ffmpeg",
+            "-nostats",
+            "-hide_banner",
+            *span,
+            "-i",
+            str(src),
+            "-filter_complex",
+            f"{head}ebur128=peak=none",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    return [-120.0 if m.group(2) == "-inf" else float(m.group(2)) for m in _EBUR_RE.finditer(out)]
+
+
 class EncoderUnavailableError(FFmpegError):
     """A video encoder the user asked for cannot encode on this machine."""
 

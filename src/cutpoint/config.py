@@ -52,6 +52,11 @@ documents every key.
     Ollama vision model unless ``--no-vision`` is given (``--vision`` turns it on for one run).
     Default ``false``: vision is opt-in. ``cutpoint ui`` changes it in Settings.
 
+``compress_peaks``
+    ``off`` (default), ``light`` or ``strong``: peak compression and clip leveling of
+    ``cutpoint clips``, ``assemble`` and ``edit`` when ``--compress-peaks`` is not given
+    (see :data:`cutpoint.encode.PEAK_PRESETS`).
+
 ``analysis``
     ``{"skip": [...]}``: analysis steps ``cutpoint analyze`` and ``cutpoint edit`` leave out
     by default, any of ``reactions``, ``keyframes`` and ``crashes`` (``--skip`` overrides it
@@ -83,6 +88,7 @@ from cutpoint.utils import file_stamp, matches_glob
 logger = logging.getLogger(__name__)
 
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
+COMPRESS_PEAKS = ("off", "light", "strong")
 
 
 @dataclass(frozen=True)
@@ -98,6 +104,7 @@ class Config:
     video_encoder: str = "auto"
     vision: bool = False
     analysis_skip: tuple[str, ...] = ()
+    compress_peaks: str = "off"
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -195,7 +202,7 @@ state.register_dict_cache(get_config, _LOADED)
 def _load_config(path: Path) -> Config:
     """:func:`get_config` without the cache."""
     data = load_config_data(path)
-    for key in ("projects_dir", "stage_dir", "ollama_url", "video_encoder"):
+    for key in ("projects_dir", "stage_dir", "ollama_url", "video_encoder", "compress_peaks"):
         _check_type(path, data, key, _is_str, "a string")
     _check_type(path, data, "source_remap", _is_str_map, "an object mapping strings to strings")
     _check_type(path, data, "source_remap_exclude", _is_str_list, "a list of strings")
@@ -216,6 +223,11 @@ def _load_config(path: Path) -> Config:
     if encoder not in VIDEO_ENCODERS:
         where = "CUTPOINT_VIDEO_ENCODER" if paths.env("VIDEO_ENCODER") else f"{path}: video_encoder"
         raise ValueError(f"{where} is {encoder!r}; expected one of {', '.join(VIDEO_ENCODERS)}")
+    peaks = data.get("compress_peaks") or "off"
+    if peaks not in COMPRESS_PEAKS:
+        raise ValueError(
+            f"{path}: compress_peaks is {peaks!r}; expected one of {', '.join(COMPRESS_PEAKS)}"
+        )
     return Config(
         projects,
         pairs,
@@ -226,6 +238,7 @@ def _load_config(path: Path) -> Config:
         encoder,
         data.get("vision") is True,
         skip,
+        peaks,
     )
 
 
@@ -299,6 +312,12 @@ def analysis_skip() -> tuple[str, ...]:
     """Analysis steps left out when ``--skip`` is not given (``analysis.skip`` in
     ``config.json``; default none)."""
     return get_config().analysis_skip
+
+
+def compress_peaks_default() -> str:
+    """Peak compression preset when ``--compress-peaks`` is not given (``compress_peaks`` in
+    ``config.json``; default ``off``)."""
+    return get_config().compress_peaks
 
 
 def player_tags() -> tuple[str, ...]:
