@@ -363,16 +363,19 @@ function renderMoments() {
 
 /**
  * How far the preview of ``seg`` ({start, end}) is, for a source the browser plays from a proxy
- * (#323): 'ready' (the whole proxy or a ready window covers it), 'encoding' (a window covering it,
- * or the whole proxy, is encoding) or 'queued'. Null for sources that play as is or are not asked for.
+ * (#323): 'ready' (the whole proxy or a ready window covers it), 'encoding' (its own window is
+ * encoding, or it has none queued and this project's whole proxy is) or 'queued' (its window
+ * waits, or the whole proxy does). Null for sources that play as is or are not asked for.
  */
 function prepState(src, seg) {
   if (!src || (!src.proxy && !['needs-proxy', 'preparing'].includes(src.status))) return null;
   if (readyFor(src, seg)) return 'ready';
   const dur = sourceDur(src.path);
   const mine = (src.pending ?? []).filter((w) => coversSeg(w, seg, dur));
-  if (mine.some((w) => w.state === 'encoding') || src.progress != null) return 'encoding';
-  return mine.length || src.status === 'preparing' ? 'queued' : null;
+  if (mine.some((w) => w.state === 'encoding')) return 'encoding';
+  if (mine.length) return 'queued';
+  if (src.progress != null) return 'encoding';
+  return src.status === 'preparing' ? 'queued' : null;
 }
 
 const PREP = { ready: ['check', 'Ready'], encoding: ['hourglass', 'Encoding'], queued: ['clock', 'Queued'] };
@@ -829,7 +832,9 @@ function loadFile(src, p, t) {
 
 /** Nothing ready covers source time ``t``: hold the playhead there, paused, until a window proxy around [lo, hi] is built. */
 function awaitPart(src, t, delay = 0, lo = t, hi = t) {
-  cancelResume(); // any other wait cancels a resume; ``partEnd`` arms it after this
+  // A wait elsewhere (a scrub, another moment) cancels a resume; the same wait again (a refresh
+  // re-running ensureVideo) keeps it. ``partEnd`` arms it after this.
+  if (resumeAt && (src.path !== resumeAt.source || Math.abs(t - resumeAt.t) > FRAME)) cancelResume();
   v.pause();
   seekWant = null;
   pendingSeek = t;

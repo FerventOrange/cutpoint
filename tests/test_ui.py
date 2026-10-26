@@ -3157,6 +3157,53 @@ def test_a_superseded_queued_window_never_spawns_and_neither_does_a_cancelled_on
     assert len(window_ffmpeg.procs) == 2
 
 
+def test_a_whole_proxy_build_and_its_progress_belong_to_its_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each project builds its own proxy file: another project on the same footage does not show
+    the first one's encode as its own, and its prepare queues its own build."""
+    release = threading.Event()
+
+    class Held:
+        returncode = 0
+
+        def __init__(self, args: list[str], **_kw: object) -> None:
+            self.out = Path(args[-1])
+
+        @property
+        def stdout(self) -> list[str]:
+            release.wait(10)
+            self.out.write_bytes(b"proxy")
+            return []
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(ui, "spawn", Held)
+    monkeypatch.setattr(ui.Media, "_nvenc", lambda _self: False)
+    monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=100.0))
+    src, a, b = tmp_path / "a.mp4", tmp_path / "A", tmp_path / "B"
+    src.write_bytes(b"x")
+    a.mkdir()
+    b.mkdir()
+    key = ui.Media.key(ui.remap_source(str(src))) or ""
+    media = ui.Media()
+    try:
+        assert media.prepare(a, str(src)) == "preparing"
+        wait_until(lambda: (a, key) in media.progress)
+        assert media.cached_view(a, str(src)) == ("preparing", True, 0.0)
+        assert media.cached_view(b, str(src)) == ("needs-proxy", True, None)
+        assert media.prepare(b, str(src)) == "preparing"  # queued behind A's build
+        assert media.cached_view(b, str(src)) == ("preparing", True, None)
+        release.set()
+        wait_until(lambda: media.cached_view(b, str(src))[0] == "ready")
+        assert media.cached_view(a, str(src))[0] == "ready"
+        wait_until(lambda: media.proxies == {} and media.progress == {})
+    finally:
+        release.set()
+        media.shutdown()
+
+
 def test_window_encodes_run_at_normal_priority_and_the_whole_proxy_at_low(
     window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
 ) -> None:
@@ -3421,7 +3468,9 @@ class LineProc:
     """A fake ffmpeg whose merged output is ``lines``; ``seen`` is what ``media.progress[key]``
     held after each line was read (and once more after the last)."""
 
-    def __init__(self, media: ui.Media, key: str, lines: list[str], returncode: int = 0) -> None:
+    def __init__(
+        self, media: ui.Media, key: tuple[Path, str], lines: list[str], returncode: int = 0
+    ) -> None:
         self.returncode = returncode
         self.seen: list[float | None] = []
         self._media, self._key, self._lines = media, key, lines
@@ -3450,10 +3499,10 @@ class LineProc:
 def test_read_progress_turns_out_time_into_a_share_of_the_duration(
     lines: list[str], duration: float, expected: list[float]
 ) -> None:
-    media = ui.Media()
-    media.progress["k"] = 0.0
-    proc = LineProc(media, "k", lines)
-    media._read_progress(proc, "k", duration)  # type: ignore[arg-type]
+    media, pk = ui.Media(), (Path("p"), "k")
+    media.progress[pk] = 0.0
+    proc = LineProc(media, pk, lines)
+    media._read_progress(proc, pk, duration)  # type: ignore[arg-type]
     assert proc.seen == expected
 
 
@@ -3461,7 +3510,7 @@ def test_read_progress_keeps_errors_in_the_tail_and_progress_lines_out_of_it() -
     media = ui.Media()
     proc = LineProc(
         media,
-        "k",
+        (Path("p"), "k"),
         [
             "frame=10",
             "bitrate=   4.1kbits/s",  # ffmpeg pads some values
@@ -3474,7 +3523,7 @@ def test_read_progress_keeps_errors_in_the_tail_and_progress_lines_out_of_it() -
             "progress=end",
         ],
     )
-    tail = media._read_progress(proc, "k", 10.0)  # type: ignore[arg-type]
+    tail = media._read_progress(proc, (Path("p"), "k"), 10.0)  # type: ignore[arg-type]
     assert tail == "[hevc @ 0x1] Invalid NAL unit size\nError while decoding stream #0:0"
 
 
@@ -3573,10 +3622,10 @@ def test_the_listing_shows_proxy_and_progress_only_for_a_source_that_needs_a_pro
     assert prepare(client, pid, sid).json() == {"status": "preparing"}
     assert (entry()["proxy"], entry()["progress"]) == (True, None)  # queued, not encoding yet
     key = ui.Media.key(ui.remap_source(str(folder / "a.mp4"))) or ""
-    media.progress[key] = 0.123456
+    media.progress[_p, key] = 0.123456
     assert (entry()["proxy"], entry()["progress"]) == (True, 0.123)
-    media.proxies[key] = "failed"
-    media.progress.pop(key)
+    media.proxies[_p, key] = "failed"
+    media.progress.pop((_p, key))
     assert (entry()["proxy"], entry()["progress"]) == (True, None)
 
 
@@ -3725,7 +3774,7 @@ def test_window_endpoint_serves_ranges_and_refuses_what_is_not_ready(
     window_ffmpeg: FakeWindowFfmpeg,
     whole_builds: list[tuple],
 ) -> None:
-    pid, _, _, _ = hevc_project
+    pid, _, proj, _ = hevc_project
     media = client.app.state.media
     base = f"/api/projects/{pid}"
     token = client.headers["X-Cutpoint-Token"]
@@ -3752,7 +3801,7 @@ def test_window_endpoint_serves_ranges_and_refuses_what_is_not_ready(
     )
 
     key = ui.Media.key(ui.remap_source(client.get(base).json()["sources"][0]["path"])) or ""
-    media.proxies[key] = "failed"
+    media.proxies[proj, key] = "failed"
     assert client.get(f"{base}/sources/{sid}/window/0-500?t={token}").status_code == 404
 
 
