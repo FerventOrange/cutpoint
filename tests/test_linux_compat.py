@@ -299,6 +299,10 @@ def test_no_readable_telemetry_is_logged_once_at_info(tmp_path, monkeypatch, cap
     with caplog.at_level(logging.INFO):
         crash._compute_imu(video, 10.0)
     assert not [r for r in caplog.records if "no readable GoPro" in r.message]
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        crash._compute_imu(video, 10.0, force=True)
+    assert [r.levelno for r in caplog.records if "no readable GoPro" in r.message] == [logging.INFO]
 
 
 def test_forced_crash_run_logs_missing_telemetry_at_info(home, tmp_path, monkeypatch, caplog):
