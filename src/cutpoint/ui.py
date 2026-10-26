@@ -57,7 +57,7 @@ import tempfile
 import threading
 import time
 import weakref
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -89,8 +89,17 @@ from cutpoint.ffmpeg_utils import (
     grab_images,
     probe,
 )
+from cutpoint.pano import x3
 from cutpoint.styles import get_style, learned_styles, style_names
-from cutpoint.utils import VIDEO_EXTS, clip_files, file_stamp, find_videos, slugify
+from cutpoint.utils import (
+    PANO_EXTS,
+    VIDEO_EXTS,
+    clip_files,
+    file_stamp,
+    find_videos,
+    safe_is_file,
+    slugify,
+)
 from cutpoint.vision import default_model
 
 logger = logging.getLogger(__name__)
@@ -269,7 +278,7 @@ def folder_opener() -> Callable[[Path], None] | None:
 # owner keeps them above the browser. Runs as ``python -I -c`` (no current folder on sys.path).
 TK_PICK = """\
 import sys
-kind, start, exts = sys.argv[1], sys.argv[2] or None, sys.argv[3]
+kind, start, exts, pano = sys.argv[1], sys.argv[2] or None, sys.argv[3], sys.argv[4]
 try:
     import ctypes
     ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text on scaled displays
@@ -289,7 +298,7 @@ try:
     else:
         out = filedialog.askopenfilename(
             parent=root, initialdir=start, title="Choose a video",
-            filetypes=[("Videos", exts), ("All files", "*.*")],
+            filetypes=[("Videos", exts), ("Insta360 360 video", pano), ("All files", "*.*")],
         )
     root.destroy()
 except Exception as err:
@@ -334,6 +343,7 @@ def path_picker() -> Callable[[str, Path | None], tuple[list[str], int | None]] 
     desktop, if any, and keep the one-dialog lock until someone closes it there).
     """
     exts = sorted(e.lstrip(".") for e in VIDEO_EXTS)
+    pano = sorted(e.lstrip(".") for e in PANO_EXTS)  # a second filter: VIDEO_EXTS stays flat-only
     if sys.platform in ("win32", "darwin") and (
         os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")
     ):
@@ -341,16 +351,16 @@ def path_picker() -> Callable[[str, Path | None], tuple[list[str], int | None]] 
     if sys.platform == "win32":
         if importlib.util.find_spec("_tkinter") is None:
             return None
-        patterns = " ".join(f"*.{e}" for e in exts)
+        patterns, pano_patterns = (" ".join(f"*.{e}" for e in x) for x in (exts, pano))
         return lambda kind, start: (
-            [sys.executable, "-I", "-c", TK_PICK, kind, str(start or ""), patterns],
+            [sys.executable, "-I", "-c", TK_PICK, kind, str(start or ""), patterns, pano_patterns],
             None,
         )
     if sys.platform == "darwin":
         osa = shutil.which("osascript")
         if osa is None:
             return None
-        script = OSA_PICK % ((", ".join(f'"{e}"' for e in exts),) * 2)
+        script = OSA_PICK % ((", ".join(f'"{e}"' for e in exts + pano),) * 2)
         return lambda kind, start: (
             [osa, "-e", script, kind, *([str(start)] if start else [])],
             None,
@@ -358,7 +368,9 @@ def path_picker() -> Callable[[str, Path | None], tuple[list[str], int | None]] 
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         return None
     if zenity := shutil.which("zenity"):
-        globs = " ".join(f"*.{x}" for e in exts for x in (e, e.upper()))
+        globs, pano_globs = (
+            " ".join(f"*.{x}" for e in g for x in (e, e.upper())) for g in (exts, pano)
+        )
 
         def zenity_args(kind: str, start: Path | None) -> tuple[list[str], int | None]:
             args = [zenity, "--file-selection"]
@@ -368,6 +380,7 @@ def path_picker() -> Callable[[str, Path | None], tuple[list[str], int | None]] 
                 else [
                     "--title=Choose a video",
                     f"--file-filter=Videos | {globs}",
+                    f"--file-filter=Insta360 360 video | {pano_globs}",
                     "--file-filter=All files | *",
                 ]
             )
@@ -377,7 +390,11 @@ def path_picker() -> Callable[[str, Path | None], tuple[list[str], int | None]] 
 
         return zenity_args
     if kdialog := shutil.which("kdialog"):
-        kfilter = f"{' '.join(f'*.{e}' for e in exts)}|Videos\n*|All files"
+        kfilter = "\n".join(
+            f"{' '.join(f'*.{e}' for e in x)}|{label}"
+            for x, label in ((exts, "Videos"), (pano, "Insta360 360 video"))
+        )
+        kfilter += "\n*|All files"
 
         def kdialog_args(kind: str, start: Path | None) -> tuple[list[str], int | None]:
             where = str(start or Path.home())
@@ -1380,6 +1397,96 @@ def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
     return name
 
 
+def inspect_source(src: Path) -> tuple[list[Path], dict[str, dict[str, Any]], Counter[str]]:
+    """Split a picked source into flat videos, Insta360 X3 clips and the suffixes of other files.
+
+    One non-recursive listing of regular files (sub-folders are skipped); nothing is read or
+    written. A folder gives its files; a file gives itself or, when it has an X3 camera name, the
+    files of its clip next to it (one 360 file means that clip). Clips come from
+    ``x3.group_files``; ``other`` counts the remaining suffixes, lower-cased ("no extension" when
+    there is none).
+    """
+    f = x3.parse_name(src) if src.is_file() else None
+    if src.is_file() and f is None:
+        files = [src]
+    else:
+        listed = sorted(p for p in (src.parent if f else src).iterdir() if safe_is_file(p))
+        files = [p for p in listed if not f or (x3.parse_name(p) or {}).get("num") == f["num"]]
+    videos = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
+    other = Counter(
+        p.suffix.lower() or "no extension"
+        for p in files
+        if p.suffix.lower() not in VIDEO_EXTS and not x3.NAME_RE.match(p.name)
+    )
+    return videos, x3.group_files(files), other
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _suffix_counts(counts: Counter[str], limit: int = 5) -> str:
+    """Counts such as "12 .insv, 3 .lrv": most first, then by name; at most ``limit`` types."""
+    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    text = ", ".join(
+        f"{n} {'without extension' if k == 'no extension' else k}" for k, n in items[:limit]
+    )
+    rest = len(items) - limit
+    return f"{text} and {_plural(rest, 'more type')}" if rest > 0 else text
+
+
+def source_problem(src: Path) -> str | None:
+    """Why ``src`` cannot become a UI project, or None when it can (flat videos only).
+
+    360 footage is recognised but refused for now: its projects are made with ``cutpoint 360``.
+
+    Raises:
+        OSError: If the source cannot be listed.
+    """
+    if src.is_file() and src.suffix.lower() not in VIDEO_EXTS | PANO_EXTS:
+        return "source is not a video file"
+    if not src.is_file() and not src.is_dir():
+        return "source must be a video file or a folder containing videos"
+    videos, clips, other = inspect_source(src)
+    names = "Insta360 files must keep their camera names (VID_..._00_NNN.insv)."
+    if not clips and not videos:
+        if not other:
+            return "source must be a video file or a folder containing videos"
+        if src.is_file():
+            return names
+        hint = f". {names}" if PANO_EXTS & other.keys() else ""
+        return f"no supported videos found (found {_suffix_counts(other)}){hint}"
+    if not clips:
+        return None
+    if videos:
+        flat = _suffix_counts(Counter(p.suffix.lower() for p in videos))
+        return (
+            f"This folder mixes 360 footage ({_plural(len(clips), 'Insta360 clip')}) and regular "
+            f"videos ({flat}). Put them in separate folders and make one project for each."
+        )
+    usable = sorted(n for n, g in clips.items() if "lens00" in g and "lrv" in g)
+    if not usable:
+        parts = Counter(k for g in clips.values() for k in ("lens00", "lens10", "lrv") if k in g)
+        label = {"lens00": "_00_.insv", "lens10": "_10_.insv", "lrv": ".lrv"}
+        found = " and ".join(f"{parts[k]} {label[k]}" for k in label if parts[k])
+        missing = " or ".join(
+            label[k] for k in ("lens00", "lrv") if any(k not in g for g in clips.values())
+        )
+        return (
+            f"Found {found} but no matching {missing}: 360 analysis needs both files of each clip."
+        )
+    what, only = (
+        (f"This file is Insta360 360 footage (clip {usable[0]})", f" --only {usable[0]}")
+        if src.is_file()
+        else (f"This folder holds Insta360 360 footage ({_plural(len(usable), 'clip')})", "")
+    )
+    return (
+        f"{what}. 360 projects can't be made in the UI yet: run `cutpoint 360 scan <folder> "
+        f"--out <name>` and `cutpoint 360 analyze <name>{only}` (see "
+        "https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/360.md)."
+    )
+
+
 def new_project(name: str, source: str, style: str) -> dict[str, str]:
     root = projects_dir()
     with cache.created_dirs() as made:  # a failed request leaves no empty folder behind
@@ -1574,13 +1681,11 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"unknown style {style!r}")
         src = Path(source)
         try:
-            if src.is_file():
-                if src.suffix.lower() not in VIDEO_EXTS:
-                    raise bad("source is not a video file")
-            elif not src.is_dir() or not find_videos([src]):
-                raise bad("source must be a video file or a folder containing videos")
-        except (OSError, FileNotFoundError) as err:
+            problem = source_problem(src)
+        except OSError as err:
             raise bad(f"source is not readable: {err}") from err
+        if problem:
+            raise bad(problem)
         return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
 
     @owned.get("/projects/{pid}")

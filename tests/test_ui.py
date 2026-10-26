@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
 from cutpoint import cache, cli, config, ui
+from cutpoint.utils import find_videos
 
 PORT = 8765
 
@@ -63,6 +64,86 @@ def make_project(client: TestClient, tmp_path: Path, files: dict[str, bytes]) ->
     res = client.post("/api/projects", json={"name": "My Trip", "source": str(folder)})
     assert res.status_code == 200, res.text
     return res.json()["id"], folder
+
+
+X3_00 = "VID_20260101_100000_00_001.insv"
+X3_10 = "VID_20260101_100000_10_001.insv"
+X3_LRV = "LRV_20260101_100000_11_001.lrv"
+
+
+@pytest.mark.parametrize(
+    ("files", "folders", "pick", "status", "expect"),
+    [
+        (
+            {"a.insv": b"", "notes.txt": b""},
+            ["sub"],
+            None,
+            400,
+            ["no supported videos found (found 1 .insv, 1 .txt)", "camera names"],
+        ),
+        ({X3_00: b"", X3_LRV: b"", "a.mp4": b""}, [], None, 400, ["mixes 360 footage"]),
+        ({X3_00: b"", X3_10: b"", X3_LRV: b""}, [], None, 400, ["yet", "cutpoint 360 scan"]),
+        ({X3_00: b"", X3_LRV: b""}, [], X3_00, 400, ["--only 001"]),
+        ({X3_10: b"", X3_LRV: b""}, [], None, 400, ["needs both files", "_00_.insv"]),
+    ],
+    ids=[
+        "unnamed-insv",
+        "mixed",
+        "x3-folder",
+        "x3-file",
+        "lrv-without-00",
+    ],
+)
+def test_create_project_recognises_360_sources_and_refuses_them_clearly(
+    client: TestClient,
+    tmp_path: Path,
+    files: dict[str, bytes],
+    folders: list[str],
+    pick: str | None,
+    status: int,
+    expect: list[str],
+) -> None:
+    """Regression for #321: a folder of .insv files said "no videos", not what was wrong."""
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name, data in files.items():
+        (folder / name).write_bytes(data)
+    for name in folders:
+        (folder / name).mkdir()
+    source = folder / pick if pick else folder
+    res = client.post("/api/projects", json={"name": "Trip", "source": str(source)})
+    assert res.status_code == status, res.text
+    for part in expect:
+        assert part in res.json()["detail"]
+    if status != 200:
+        assert client.get("/api/projects").json() == {"projects": []}
+
+
+def test_create_project_skips_unreadable_folder_entries(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An entry whose is_file() raises PermissionError must not make a good folder fail."""
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(b"x")
+    (folder / "locked").mkdir()
+    real = Path.is_file
+
+    def is_file(self: Path) -> bool:
+        if self.name == "locked":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    res = client.post("/api/projects", json={"name": "Trip", "source": str(folder)})
+    assert res.status_code == 200, res.text
+
+
+def test_find_videos_never_returns_raw_360_files(tmp_path: Path) -> None:
+    """analyze must not read dual-fisheye .insv or .lrv proxies as flat video."""
+    for name in (X3_00, X3_10, X3_LRV, "a.mp4"):
+        (tmp_path / name).write_bytes(b"")
+    assert [p.name for p in find_videos([tmp_path])] == ["a.mp4"]
 
 
 def wait_job(client: TestClient, timeout: float = 180) -> dict:
@@ -1405,6 +1486,7 @@ def test_path_picker_builds_the_platform_dialog_argv(
     argv, _ = ui.path_picker()("file", None)
     assert argv[:2] == ["/bin/zenity", "--file-selection"] and "--directory" not in argv
     assert any("*.mp4" in a for a in argv) and not any(a.startswith("--filename") for a in argv)
+    assert any(a.startswith("--file-filter=Insta360") and "*.insv" in a for a in argv)
 
     present.discard("zenity")  # kdialog is the fallback
     argv, cancel = ui.path_picker()("folder", tmp_path)
