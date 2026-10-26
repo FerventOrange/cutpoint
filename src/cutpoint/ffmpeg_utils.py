@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from functools import cache, partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 
 import numpy as np
 
@@ -46,6 +46,7 @@ from cutpoint.config import get_config, path_key
 logger = logging.getLogger(__name__)
 
 SOFT_STOP_S = 5.0  # a stopped child (ffmpeg; a UI job after CTRL_BREAK) gets this long
+PROGRESS_DRAIN_S = 5.0  # run_progress reads the rest of the progress pipe this long after exit
 
 
 class FFmpegError(RuntimeError):
@@ -217,13 +218,11 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
     """
     cmd = _command(args[0], ["-progress", "pipe:1", "-nostats", *args[1:]])
     t0, next_pct, out_time = time.perf_counter(), 10, 0.0
-    with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8", errors="replace"
-        )
-        assert proc.stdout is not None
+
+    def read_progress(stream: IO[str]) -> None:
+        nonlocal next_pct, out_time
         try:
-            for line in proc.stdout:
+            for line in stream:
                 if not line.startswith("out_time_us="):
                     continue
                 try:
@@ -235,12 +234,29 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
                     elapsed = time.perf_counter() - t0
                     logger.info("  %s: %d%% (%.0fs elapsed)", label, int(pct), elapsed)
                     next_pct = (int(pct) // 10 + 1) * 10
+        finally:  # here, not in the caller: closing a pipe another thread reads blocks too
+            with suppress(OSError):  # unread progress must not block ffmpeg's exit
+                stream.close()
+
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8", errors="replace"
+        )
+        assert proc.stdout is not None
+        # The pipe reaches EOF only when every copy of its write end is closed, which a process
+        # other than ffmpeg can delay forever (#338); so the exit of ffmpeg ends the run.
+        reader = threading.Thread(
+            target=read_progress, args=(proc.stdout,), name="ffmpeg-progress", daemon=True
+        )
+        reader.start()
+        try:
             proc.wait()
+            reader.join(PROGRESS_DRAIN_S)
         except BaseException as exc:
-            with suppress(OSError):  # unread progress must not block its exit
-                proc.stdout.close()
             _stop_child(proc, exc)
             raise
+        if reader.is_alive():
+            logger.debug("%s: progress pipe still open after ffmpeg exited; not waiting", label)
         err.seek(0)
         stderr = err.read().decode("utf-8", "replace")
         if proc.returncode != 0:

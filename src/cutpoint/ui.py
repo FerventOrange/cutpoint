@@ -70,7 +70,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from cutpoint import cache, paths
+from cutpoint import cache, paths, progress
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     get_config,
@@ -90,6 +90,7 @@ from cutpoint.ffmpeg_utils import (
     probe,
 )
 from cutpoint.pano import x3
+from cutpoint.pano.project import default_style as pano_style
 from cutpoint.styles import get_style, learned_styles, style_names
 from cutpoint.utils import (
     PANO_EXTS,
@@ -598,10 +599,13 @@ def parse_progress(line: str) -> dict[str, Any] | None:
 class Job:
     """One child process and what it said."""
 
-    def __init__(self, project_id: str, action: str) -> None:
+    def __init__(
+        self, project_id: str, action: str, plan: list[dict[str, str]] | None = None
+    ) -> None:
         self.id = secrets.token_hex(6)
         self.project_id = project_id
         self.action = action
+        self.plan = plan  # the steps the command will report (``{step, label}``), if known
         self.status = "running"
         self.logs: deque[str] = deque(maxlen=MAX_LOG_LINES)
         # Latest update per step (``parse_progress``), keyed by step: the CLI's PROGRESS lines.
@@ -644,6 +648,8 @@ class Job:
             "progress": {"total": self.steps_total, "steps": steps},
             "started": self.started,
         }
+        if self.plan:
+            out["progress"]["plan"] = self.plan
         if self.error:
             out["error"] = self.error
         return out
@@ -663,14 +669,16 @@ class Jobs:
         args: list[str],
         on_success: Callable[[], None] | None = None,
         check: Callable[[], None] | None = None,
+        plan: list[dict[str, str]] | None = None,
     ) -> Job:
-        """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it."""
+        """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it.
+        ``plan``: the steps it will report, shown as waiting before their first update."""
         with self.lock:
             if any(j.status == "running" for j in self.jobs.values()):
                 raise bad("another job is already running", 409)
             if check:
                 check()
-            job = Job(project_id, action)
+            job = Job(project_id, action, plan)
             try:
                 job.proc = spawn(args)
             except OSError as err:
@@ -1085,6 +1093,12 @@ def _listed_folder(folder: Path) -> Path:
     return folder if os.path.exists(folder) else remap_source(folder)  # noqa: PTH110 - any OSError: missing
 
 
+def _pano_folder(source: str | Path) -> Path:
+    """The camera folder of a 360 project's picked source: the folder, or a picked file's."""
+    src = Path(str(source))
+    return src.parent if src.suffix.lower() in PANO_EXTS else src
+
+
 def source_entries(
     p: Path, hl: dict[str, Any] | None, listed: list[Path | str] | None = None
 ) -> list[dict[str, Any]]:
@@ -1092,8 +1106,9 @@ def source_entries(
     it lists itself (a picked folder before its analysis) is added to ``listed``, followed by
     the error message when that listing failed."""
     meta = read_meta(p)
+    pano = meta.get("kind") == "360"
     if meta.get("source"):
-        roots = [str(meta["source"])]
+        roots = [str(_pano_folder(meta["source"]) if pano else meta["source"])]
     else:  # command-line project: the inputs its analysis recorded
         roots = [str(x) for x in ((hl or {}).get("settings") or {}).get("inputs") or []]
     paths: dict[str, float | None] = {}
@@ -1106,13 +1121,20 @@ def source_entries(
         if listed is not None:
             listed.append(folder)
         try:
-            io = _listed_folder(folder)
-            found = find_videos([io])
-            if io != folder:  # read at its remap target: videos keep the original spelling
-                base, orig = io.resolve(), folder.resolve()
-                found = [orig / f.relative_to(base) if f.is_relative_to(base) else f for f in found]
-                # source_remap_exclude: they would be read at the missing original
-                found = [f for f in found if remap_source(f) != f]
+            if pano:  # one .lrv per clip 360 analysis can use (those of meta.clips, if set)
+                only = meta.get("clips") or None
+                _, clips, _ = inspect_source(folder)
+                found = [clips[n]["lrv"] for n in _usable(clips) if not only or n in only]
+            else:
+                io = _listed_folder(folder)
+                found = find_videos([io])
+                if io != folder:  # read at its remap target: videos keep the original spelling
+                    base, orig = io.resolve(), folder.resolve()
+                    found = [
+                        orig / f.relative_to(base) if f.is_relative_to(base) else f for f in found
+                    ]
+                    # source_remap_exclude: they would be read at the missing original
+                    found = [f for f in found if remap_source(f) != f]
             paths = dict.fromkeys(map(str, found))
         except OSError as err:  # find_videos: missing, unreadable, stale mount
             if listed is not None:
@@ -1126,7 +1148,7 @@ def source_entries(
         }
         for path, dur in paths.items()
         if Path(path).is_absolute()
-        and Path(path).suffix.lower() in VIDEO_EXTS
+        and Path(path).suffix.lower() in (VIDEO_EXTS | {".lrv"} if pano else VIDEO_EXTS)
         and _under(path, roots)
     ]
 
@@ -1172,7 +1194,10 @@ class Sources:
         # Each file is stamped before it is read: a change made meanwhile shows on the next request.
         files = [p / f"{UI_DIR}/meta.json", p / "highlights.json"]
         at, stamps = time.monotonic(), [file_stamp(f) for f in files]
-        source = read_meta(p).get("source")
+        meta = read_meta(p)
+        source = meta.get("source")
+        if source and meta.get("kind") == "360":
+            source = _pano_folder(source)  # its .lrv files are listed, a picked file's too
         files += [_listed_folder(Path(str(source)))] if source else []
         stamps += [file_stamp(files[2])] if source else []
         listed: list[Path | str] = []
@@ -1196,7 +1221,8 @@ def source_folder(p: Path) -> Path | None:
         if source:
             # A picked folder that is gone must not fall back to its parent; only files step up.
             x = remap_source(Path(str(source)))
-            is_file = x.is_file() or (not x.exists() and x.suffix.lower() in VIDEO_EXTS)
+            missing_file = not x.exists() and x.suffix.lower() in VIDEO_EXTS | PANO_EXTS
+            is_file = x.is_file() or missing_file
             folders = [x.parent if is_file else x]
         else:
             entries = source_entries(p, _highlights(p))
@@ -1421,6 +1447,11 @@ def inspect_source(src: Path) -> tuple[list[Path], dict[str, dict[str, Any]], Co
     return videos, x3.group_files(files), other
 
 
+def _usable(clips: dict[str, dict[str, Any]]) -> list[str]:
+    """Numbers of the X3 clips 360 analysis can use: those with a ``_00_.insv`` and a ``.lrv``."""
+    return sorted(n for n, g in clips.items() if "lens00" in g and "lrv" in g)
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
@@ -1436,9 +1467,8 @@ def _suffix_counts(counts: Counter[str], limit: int = 5) -> str:
 
 
 def source_problem(src: Path) -> str | None:
-    """Why ``src`` cannot become a UI project, or None when it can (flat videos only).
-
-    360 footage is recognised but refused for now: its projects are made with ``cutpoint 360``.
+    """Why ``src`` cannot become a UI project, or None when it can: flat videos, or Insta360 X3
+    footage with at least one clip 360 analysis can use (never both in one folder).
 
     Raises:
         OSError: If the source cannot be listed.
@@ -1464,30 +1494,25 @@ def source_problem(src: Path) -> str | None:
             f"This folder mixes 360 footage ({_plural(len(clips), 'Insta360 clip')}) and regular "
             f"videos ({flat}). Put them in separate folders and make one project for each."
         )
-    usable = sorted(n for n, g in clips.items() if "lens00" in g and "lrv" in g)
-    if not usable:
+    if not _usable(clips):
         parts = Counter(k for g in clips.values() for k in ("lens00", "lens10", "lrv") if k in g)
         label = {"lens00": "_00_.insv", "lens10": "_10_.insv", "lrv": ".lrv"}
         found = " and ".join(f"{parts[k]} {label[k]}" for k in label if parts[k])
         missing = " or ".join(
             label[k] for k in ("lens00", "lrv") if any(k not in g for g in clips.values())
         )
+        nums = sorted(clips)
+        named = ", ".join(nums[:5]) + (f" and {len(nums) - 5} more" if len(nums) > 5 else "")
         return (
-            f"Found {found} but no matching {missing}: 360 analysis needs both files of each clip."
+            f"Found {found} but no matching {missing} (clip{'s' if len(nums) > 1 else ''} "
+            f"{named}): 360 analysis needs both files of each clip."
         )
-    what, only = (
-        (f"This file is Insta360 360 footage (clip {usable[0]})", f" --only {usable[0]}")
-        if src.is_file()
-        else (f"This folder holds Insta360 360 footage ({_plural(len(usable), 'clip')})", "")
-    )
-    return (
-        f"{what}. 360 projects can't be made in the UI yet: run `cutpoint 360 scan <folder> "
-        f"--out <name>` and `cutpoint 360 analyze <name>{only}` (see "
-        "https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/360.md)."
-    )
+    return None
 
 
-def new_project(name: str, source: str, style: str) -> dict[str, str]:
+def new_project(name: str, source: str, style: str, **extra: Any) -> dict[str, str]:
+    """Create the project folder and its ``ui/meta.json`` (``extra``: e.g. ``kind`` and
+    ``clips`` of a 360 project)."""
     root = projects_dir()
     with cache.created_dirs() as made:  # a failed request leaves no empty folder behind
         cache.make_dirs(root, made)
@@ -1504,7 +1529,13 @@ def new_project(name: str, source: str, style: str) -> dict[str, str]:
         made.insert(0, root / pid / UI_DIR)
         cache.save_json(
             root / pid / UI_DIR / "meta.json",
-            {"name": name, "source": source, "style": style, "created": datetime.now().isoformat()},
+            {
+                "name": name,
+                "source": source,
+                "style": style,
+                "created": datetime.now().isoformat(),
+                **extra,
+            },
         )
     return {"id": pid, "name": name}
 
@@ -1525,6 +1556,14 @@ def ui_styles() -> list[str]:
         if style.kind != "ski":
             names.append(n)
     return names
+
+
+def _ski_style(name: str) -> bool:
+    """``name`` is a telemetry-driven action-cam style (``kind`` ski), accepted for 360 sources."""
+    try:
+        return get_style(name).kind == "ski"
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 # --------------------------------------------------------------------------- app
@@ -1659,7 +1698,10 @@ def create_app(port: int) -> FastAPI:
         found = []
         for d in sorted(root.iterdir()) if root.is_dir() else []:
             try:
-                if not d.is_dir() or (d / "pano.json").exists():
+                # a command-line 360 project (pano.json, no UI meta) is not listed
+                if not d.is_dir() or (
+                    (d / "pano.json").exists() and not (d / UI_DIR / "meta.json").is_file()
+                ):
                     continue
                 project_dir(d.name)  # listed only if it opens: the same name, folder and link rules
             except HTTPException:
@@ -1677,16 +1719,29 @@ def create_app(port: int) -> FastAPI:
             raise bad("name must be 1-100 characters")
         if not isinstance(source, str) or not Path(source).is_absolute():
             raise bad("source must be an absolute path")
-        if style not in ui_styles():
+        ski = isinstance(style, str) and _ski_style(style)
+        if style not in ui_styles() and not ski:
             raise bad(f"unknown style {style!r}")
         src = Path(source)
         try:
             problem = source_problem(src)
+            usable = None if problem else _usable(inspect_source(src)[1])
         except OSError as err:
             raise bad(f"source is not readable: {err}") from err
         if problem:
             raise bad(problem)
-        return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
+        if not usable:
+            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
+                raise bad(f"unknown style {style!r}")
+            return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
+        # 360: the ski styles as given, any other the 360 default (pano.default_style)
+        try:
+            style = style if ski else pano_style()
+        except ValueError as err:  # config.json's pano section is not an object
+            raise bad(str(err), 409) from err
+        clips = {"clips": usable} if src.is_file() else {}  # one file: just that clip
+        full = os.path.abspath(source)  # noqa: PTH100
+        return new_project(name.strip(), full, style, kind="360", **clips)
 
     @owned.get("/projects/{pid}")
     def get_project(pid: str):
@@ -1716,6 +1771,7 @@ def create_app(port: int) -> FastAPI:
             "id": pid,
             "name": meta.get("name") or pid,
             "style": meta.get("style") or (hl or {}).get("style") or "",
+            "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
             "highlights": moments_view(hl),
             "review": review if isinstance(review, dict) else None,
@@ -1783,7 +1839,22 @@ def create_app(port: int) -> FastAPI:
         on_success: Callable[[], None] | None = None
         prepare: Callable[[], None] | None = None
         written: list[Path] = []  # files ``prepare`` wrote, removed if the job does not start
-        if action == "analyze":
+        plan: list[dict[str, str]] | None = None
+        if action == "analyze" and meta.get("kind") == "360":
+            # The CLI's 360 flow: scan, views, analysis of the .lrv, events (no vision rating)
+            style = meta.get("style")
+            if not meta.get("source") or not style:
+                raise bad("project has no recorded source to analyze")
+            _own(p, "highlights.json")  # the analysis rewrites it
+            _own(p, "pano.json")  # and the scan this
+            args = cutpoint_cmd(
+                "360", "analyze", str(p), "--scan", str(_pano_folder(meta["source"]))
+            )
+            args += ["--style", str(style)]
+            if only := [c for c in meta.get("clips") or [] if isinstance(c, str)]:
+                args += ["--only", *only]
+            plan = [{"step": s, "label": progress.LABELS[s]} for s in progress.PANO_STEPS]
+        elif action == "analyze":
             inputs = (
                 [meta["source"]]
                 if meta.get("source")
@@ -1904,7 +1975,7 @@ def create_app(port: int) -> FastAPI:
                 prepare()  # only once the job may start: a refused one leaves no file behind
 
         try:
-            return jobs.start(pid, action, args, on_success, same_folder).view()
+            return jobs.start(pid, action, args, on_success, same_folder, plan).view()
         except HTTPException:  # for example the command could not be started
             for f in written:
                 with contextlib.suppress(OSError):

@@ -9,6 +9,8 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1209,9 +1211,10 @@ def test_extract_audio_leaves_no_temp_wav_when_it_fails_or_is_interrupted_midway
 class _Child:
     """Stand-in for the ffmpeg ``Popen`` of ``run`` and ``run_progress``; it never sleeps.
 
-    ``communicate`` or iterating ``stdout`` raises ``raises`` once (then it is running). The
-    child exits ``exits_after`` s into a ``wait`` (None: only when killed, never when
-    ``unkillable``); ``on_exit`` runs as it exits. ``calls`` records wait/kill/close.
+    ``communicate`` or a ``wait`` without timeout (``run_progress`` reads ``stdout`` in a thread
+    and waits) raises ``raises`` once (then it is running). The child exits ``exits_after`` s
+    into a ``wait`` (None: only when killed, never when ``unkillable``); ``on_exit`` runs as it
+    exits. ``calls`` records wait/kill/close.
     """
 
     def __init__(self, raises=None, exits_after=0.0, unkillable=False, on_exit=None) -> None:
@@ -1227,7 +1230,6 @@ class _Child:
             raise err
 
     def __iter__(self):
-        self._raise_once()
         return iter(["out_time_us=1000000\n"])
 
     def close(self) -> None:
@@ -1242,6 +1244,8 @@ class _Child:
         return self.returncode
 
     def wait(self, timeout=None):
+        if timeout is None:
+            self._raise_once()
         self.calls.append(("wait", timeout))
         if self.returncode is None:
             if self.exits_after is None or (timeout is not None and timeout < self.exits_after):
@@ -1321,11 +1325,37 @@ def test_ffmpeg_is_killed_at_once_on_other_errors(child, runner):
     assert _waits_and_kills(child.proc) == [("kill",), _SOFT]
 
 
-def test_run_progress_stops_reading_progress_before_waiting(child):
-    child.proc = _Child(raises=KeyboardInterrupt())
-    with pytest.raises(KeyboardInterrupt):
-        _RUNNERS["run_progress"]()
-    assert child.proc.calls[0] == ("close",)
+_HOLDS_STDOUT = """\
+import subprocess, sys
+sys.stdout.write("out_time_us=2500000\\nprogress=end\\n")
+sys.stdout.flush()
+# A grandchild that inherits stdout and outlives this process, until the test lets it go.
+subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2]], stdout=sys.stdout)
+"""
+_WAITS_FOR_FLAG = """\
+import os, sys, time
+deadline = time.monotonic() + 60
+while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline:
+    time.sleep(0.05)
+"""
+
+
+@pytest.mark.slow
+def test_run_progress_returns_when_ffmpeg_exits_while_another_process_holds_its_stdout(
+    monkeypatch, tmp_path
+):
+    """#338: EOF on the progress pipe waits for every holder; the exit of ffmpeg is enough."""
+    flag = tmp_path / "release"
+    argv = [sys.executable, "-c", _HOLDS_STDOUT, _WAITS_FOR_FLAG, str(flag)]
+    monkeypatch.setattr(ffmpeg_utils, "_command", lambda tool, args: argv)
+    t0 = time.monotonic()
+    try:
+        res = ffmpeg_utils.run_progress(["ffmpeg", "out.wav"], 2.5, "t")
+        elapsed = time.monotonic() - t0
+    finally:
+        flag.touch()  # the grandchild exits
+    assert res.out_time == 2.5
+    assert elapsed < ffmpeg_utils.PROGRESS_DRAIN_S + 20  # it held the pipe for up to 60 s
 
 
 def test_interrupted_extract_audio_removes_its_temp_wav_after_ffmpeg_exits(

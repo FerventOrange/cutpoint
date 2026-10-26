@@ -106,7 +106,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
 | `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`), and `version` for `llama`; for `pip`, `installed` and `missing` |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
-| `360 analyze` | `timings`, `views` (`cached`, `computed`); unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events` |
+| `360 analyze` | `timings`, `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events` |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
 | `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
@@ -121,7 +121,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 
 ## Progress output
 
-With `CUTPOINT_PROGRESS=1` in the environment, `analyze` and `edit` print one line per state change on stderr:
+With `CUTPOINT_PROGRESS=1` in the environment, `analyze`, `edit` and `360 analyze` print one line per state change on stderr:
 
 ```text
 PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"running","pct":40,"detail":null}
@@ -149,6 +149,10 @@ Running updates come at most 2 per second. Steps run in table order. The `pct` o
 | `clips` | | 7 |
 | `assemble` | | 8 |
 
+`360 analyze` has its own 4 steps: `scan` (Read 360 clips; skipped without `--scan`), `views`
+(360 views), `analyze` (Transcription and ranking) and `events` (Events and re-rank; skipped with
+`--no-events`). `scan` and `views` report `pct` and the clip as `detail`.
+
 On Ctrl+C the current step ends `failed` with detail `cancelled`. After a cancel or a fatal
 error, steps after the failed one are not emitted. A first-time HUD discovery shows
 `first run for <game>: discovering HUD regions` as the detail of `keyframes`.
@@ -166,7 +170,10 @@ you already use when installing or running.
 Open the complete printed loopback URL, including `#t=…`; keep it private because it grants access
 to local footage. The workspace can create/open projects, analyze standard video,
 preview and trim candidates, save and reorder a sequence, export clips, and assemble a final
-video with optional fades, loudness normalization and captions. Nothing is uploaded. It does not expose action-cam or 360 commands.
+video with optional fades, loudness normalization and captions. Nothing is uploaded. A camera
+folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 analyze --scan`
+(see [360 video](workflows/360.md#in-the-ui)). It does not expose the action-cam commands or the
+other `360` commands.
 
 New Project's Source field takes a full path that you type or paste; it always accepts one.
 "Choose video…" and "Choose folder…" open the operating system's own file or folder dialog on the
@@ -181,7 +188,7 @@ which case it is created; it must be writable. Existing projects are not moved. 
 read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a job is running.
 Settings also has "Rate frames with a local vision model (Ollama)" (off by default; saved as
 [`vision`](configuration.md#vision) in `config.json`): every analysis the UI starts, a first
-one or "Analyze again", uses it (passed as `--vision` or `--no-vision`), and it is the default of
+one or "Analyze again", uses it (passed as `--vision` or `--no-vision`; 360 analyses never rate frames), and it is the default of
 `analyze` and `edit` on the command line. The UI has no per-run vision checkbox. "Analyze again"
 keeps the Ollama model, URL and vision-top the last analysis recorded.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
@@ -195,14 +202,15 @@ folder, `clips_ui_*`) and next to "Assemble" (the project folder, which holds th
 their `.srt` subtitles and `.fcpxml` and `.otio` timelines), once that folder exists.
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
-Crashes, Ranking, Vision rating) under "Analyze footage", or under the column header for "Analyze
+Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
 again": each with its state (waiting, running with a progress bar and a percentage when the step
 reports one, done, skipped with the reason, failed with the error). A step still running when
 the job fails reads "interrupted", one stopped by Cancel reads "cancelled", and the steps that
 never started read "not run". The list stays after a failed or cancelled analysis
 until another job runs, and gives way to the moments once the analysis completes. The UI asks for
 the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` returns them per job as
-`progress` (`total` and `steps`, ordered by step). A Cutpoint version that sends no steps shows
+`progress` (`total` and `steps`, ordered by step; for a 360 analysis also `plan`, the steps the
+job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
