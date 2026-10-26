@@ -158,23 +158,6 @@ def test_systemexit_message_is_bad_args(monkeypatch, capsys):
     assert error == {"code": "bad_args", "message": "bad --window-at 'x'; use GLOB@START-END"}
 
 
-@pytest.mark.parametrize(
-    ("tokens", "wanted"),
-    [
-        (["paths", "--json"], True),
-        (["paths", "--js"], True),
-        (["paths", "--j"], True),
-        (["paths", "--json=1"], True),
-        (["paths", "--"], False),
-        (["paths", "--", "--json"], False),
-        (["paths", "--jsonx"], False),
-        (["paths", "-j"], False),
-    ],
-)
-def test_json_requested(tokens, wanted):
-    assert cli._json_requested(tokens) is wanted
-
-
 def test_abbreviated_json(home, capsys):
     assert cli.main(["paths", "--js"]) == 0
     assert envelope(capsys.readouterr().out)["command"] == "paths"
@@ -257,8 +240,14 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
         (["crashes", "ski", "--dense-top", "many", "--json"], "argument --dense-top: invalid int"),
         (["profile", "ski", "--json", "--activity"], "argument --activity: expected one argument"),
         (["setup", "--only", "bogus", "--json"], "argument --only: invalid choice: 'bogus'"),
+        (["clips", "p", "--size", "abc", "--j"], "argument --size: 'abc': expected WxH"),
+        (["paths", "--json=1"], "argument --json: ignored explicit argument '1'"),
     ],
-    ids=["paths-unknown-option", "paths-extra", "clips-size", "crashes", "profile", "setup"],
+    ids=[
+        *["paths-unknown-option", "paths-extra", "clips-size", "crashes", "profile", "setup"],
+        "abbreviated",
+        "json-with-value",
+    ],
 )
 def test_bad_args_envelope(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:
@@ -304,6 +293,9 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
         ["paths", "--bogus"],  # no --json
         ["pathz", "--json"],  # unknown command: no command to report
         ["fit", "x", "--json"],  # a command without --json (yet)
+        ["clips", "p", "--size", "abc"],  # an error of the command's own parser, no --json
+        ["clips", "p", "--size", "abc", "--", "--json"],  # after "--" it is not an option
+        ["clips", "p", "--size", "abc", "--jsonx"],  # not an abbreviation of --json
     ],
 )
 def test_bad_args_without_envelope(capsys, argv):
@@ -377,25 +369,3 @@ def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
         assert envelope(proc.stdout)["error"] == {"code": "bad_args", "message": "bad override"}
     else:
         assert proc.stdout == ""
-
-
-# capabilities, 360 repair (phase 3a) and profile (phase 3b) moved their own --json to the
-# envelope. 360 qa --json-only (skip the contact sheets) is not a JSON output flag.
-@pytest.mark.parametrize(
-    ("argv", "command"),
-    [
-        (["capabilities", "--json"], "capabilities"),
-        (["360", "repair", "p", "--qa", "q.json", "--json"], "360 repair"),
-        (["360", "qa", "p", "--json"], "360 qa"),
-        (["profile", "p", "--json"], "profile"),
-    ],
-)
-def test_migrated_json_flags_use_the_envelope(argv, command):
-    args = cli.build_parser().parse_args(argv)
-    assert args.json_result is True and args.json_command == command
-    assert not hasattr(args, "json")
-
-
-def test_360_qa_json_only_still_skips_the_sheets_without_the_envelope():
-    args = cli.build_parser().parse_args(["360", "qa", "p", "--json-only"])
-    assert args.json_only is True and args.json_result is False

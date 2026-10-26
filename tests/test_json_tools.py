@@ -554,6 +554,9 @@ def test_360_qa_json(home, monkeypatch, capsys):
     }
     assert warning_codes(doc) == ["qa_clips_skipped"]
     assert doc["warnings"][0]["files"] == [str(qa_dir / "003_c.mp4")]
+    # --json-only (no contact sheets) is not the JSON output flag: no envelope without --json
+    assert cli.main(["360", "qa", "projects/trip/pano_paths/mix", "--json-only"]) == 0
+    assert capsys.readouterr().out == ""
 
 
 # ----------------------------------------------------------------------------- 360 repair

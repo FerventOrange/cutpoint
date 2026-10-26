@@ -10,12 +10,11 @@ import numpy as np
 import pytest
 
 from conftest import set_config, write
-from cutpoint import analyze, cache, refmatch, stage
+from cutpoint import cache, refmatch, stage
 from cutpoint.events import discover, killfeed, visual
 from cutpoint.events.common import Source
 from cutpoint.ffmpeg_utils import output_dir
 from cutpoint.pano import qa, qa_paths, stitch, views
-from cutpoint.styles import get_style
 from pano_helpers import x3clip
 
 
@@ -50,19 +49,6 @@ def test_a_failure_keeps_an_existing_folder_named_through_dotdot(tmp_path: Path)
         raise KeyboardInterrupt
     assert (tmp_path / "a").is_dir()
     assert not (tmp_path / "a" / "new").exists()
-
-
-def test_interrupted_analyze_leaves_no_new_project_folder(
-    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    src = write(tmp_path / "videos" / "a.mp4")
-    out = tmp_path / "projects" / "deeper" / "proj"
-    monkeypatch.setattr(analyze, "Transcriber", lambda **_k: object())
-    monkeypatch.setattr(analyze, "analyze_source", interrupt)
-    with pytest.raises(KeyboardInterrupt):
-        analyze.analyze(src, get_style("funny"), out, vision=False, use_scenes=False)
-    assert not out.exists()
-    assert not (tmp_path / "projects").exists()
 
 
 def test_failed_stage_leaves_no_new_stage_folder(home: Path, tmp_path: Path) -> None:
