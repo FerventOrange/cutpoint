@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- When the browser cannot play a source, the UI previews the selected moment within seconds:
+  the server first encodes a short proxy of the moment (10 s before it to 20 s after it) while
+  the whole-source proxy builds in a second lane. Scrubbing or playing outside it prepares that
+  part the same way ("Preparing this part of the source…"). The whole-source proxy replaces
+  them once it is ready, and HDR sources' proxies are converted to SDR. `POST
+  /api/projects/{id}/sources/{sid}/prepare` takes an optional `{lo, hi}` body, and each source
+  in the project view lists its ready `windows` and `pending` ones (#323).
 - The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
   underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
   Transcripts now store each word's `probability`, and `highlights.json` candidates list those
