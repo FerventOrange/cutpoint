@@ -50,8 +50,10 @@ class Style:
         weights: Weight per signal (loudness, speech, laughter, scene,
             continuity); the combined score is their weighted sum, normalised
             to 0-100. ``continuity`` is the fraction of time someone is talking.
-        vision_weight: Fraction of the final score taken from the vision model
-            rating when vision is requested (``--vision``; opt-in for every style).
+        vision_weight: The most a vision model rating can raise or lower a
+            candidate's score, as a fraction, when vision is requested
+            (``--vision``; opt-in for every style): 0.3 means +30% at 10/10,
+            -30% at 0/10 and no change at 5/10.
         pre_roll: Seconds of context kept before a peak.
         post_roll: Seconds kept after a peak.
         min_len: Minimum clip length in seconds.
