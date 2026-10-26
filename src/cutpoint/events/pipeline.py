@@ -130,6 +130,7 @@ def run_events(
     cached_ocr: bool | None = None,
     llm: bool = True,
     prefetch: OcrPrefetch | None = None,
+    encoder: Any = None,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -164,6 +165,11 @@ def run_events(
         prefetch: OCR read in the background by ``cutpoint analyze``: a source's result
             is taken from it in its turn (same events, caches and log lines); what it did
             not read is read here, after it is stopped, with its engine.
+        encoder: A CLIP model loaded by an earlier step (a ``ClipEncoder``, waiting on
+            the CPU) for the crash layer's dense confirm, so it is not loaded again
+            (``cutpoint 360 analyze``, #376); the visual layer then hands over none.
+            Closed after the crash layer; the caller closes it if this raises before
+            or the crash layer does not run.
 
     Returns:
         Paths of events.json and events.txt.
@@ -274,7 +280,7 @@ def run_events(
         from cutpoint.events import visual as visual_layer  # noqa: PLC0415
 
         # Hand CLIP over only when no OCR runs in between: one model resident at a time.
-        handoff = crash_run and "ocr" not in layers
+        handoff = crash_run and "ocr" not in layers and encoder is None
         t0 = time.perf_counter()
         with stage("visual"), VramMonitor() as vm:
             stats["visual"] = visual_layer.run_layer(
@@ -374,7 +380,7 @@ def run_events(
         from cutpoint.crash import detect_project  # noqa: PLC0415
 
         t0 = time.perf_counter()
-        enc = kept.pop() if kept else None
+        enc = kept.pop() if kept else encoder
         try:
             with stage("crash"), VramMonitor() as vm:
                 detect_project(

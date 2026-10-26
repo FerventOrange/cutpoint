@@ -32,6 +32,7 @@ nvidia-smi                      # driver and GPU are visible (NVIDIA)
 | Results look stale after a code or setting change | Analysis is cached per source file in `<CUTPOINT_HOME>\cache`. The cache is safe to delete, or recompute layers with `events --force LAYER` |
 | Wrong clips in `highlights.json` for silent footage | Scoring is heuristic and works best with voice or mic audio. Silent gameplay relies on loudness, scene cuts and vision only. Pick segments yourself with `clips --segments` |
 | Whisper hallucinated text such as "Yeah. Yeah. Yeah." | Obvious repeats are filtered. Delete `cache\<source>\transcript-*.json` to re-transcribe with the full filter |
+| `--vision` ratings stay the same on every rerun | Ratings are cached per source and per frame times, model and prompt. Delete `cache\<source>\vision-ratings.json` to ask Ollama again |
 
 If none of this helps, open an issue with the command, the log lines around the error, your OS
 and GPU, and the output of `cutpoint paths`. Remove private paths first. Do not paste Insta360

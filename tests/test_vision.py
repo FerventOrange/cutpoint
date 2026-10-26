@@ -15,7 +15,7 @@ import requests
 
 import cutpoint.analyze
 from conftest import needs_ffmpeg
-from cutpoint import cli, vision
+from cutpoint import cache, cli, vision
 from cutpoint.styles import get_style
 
 
@@ -45,7 +45,7 @@ def posts(monkeypatch) -> list[tuple[str, dict]]:
         return _Resp({"done": True})
 
     monkeypatch.setattr(vision.requests, "post", post)
-    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t: b"jpeg")
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
     return seen
 
 
@@ -146,6 +146,8 @@ def test_vision_label_only_from_a_good_rating(rating, want):
 class _ByStartRater:
     """Rates each candidate by its start time; records nothing."""
 
+    hits = asked = 0
+
     def __init__(self, ratings: dict[float, tuple[float, str]]) -> None:
         self.ratings = ratings
 
@@ -239,6 +241,7 @@ class _FakeRater:
 
     calls: ClassVar[list[str]] = []
     fail = False
+    hits = asked = 0
 
     def __init__(self, **_kw) -> None:
         _FakeRater.calls.append("init")
@@ -286,3 +289,167 @@ def test_analyze_vision_rates_then_unloads_the_model(video, home, rater, monkeyp
     assert (cli.main(_argv(video, "--vision")) == 0) is not fail
     assert rater.calls[:3] == ["init", "available", "rate"]
     assert rater.calls[-1] == "unload" and rater.calls.count("unload") == 1
+
+
+# ---- #377: ratings cached per source and rating input
+
+
+@pytest.fixture
+def src(home, tmp_path) -> Path:
+    """A source file to key the cache by (frames are stubbed); the cache under ``home``."""
+    path = tmp_path / "videos" / "a.mp4"
+    path.parent.mkdir()
+    path.write_bytes(b"not really a video")
+    return path
+
+
+def _chats(posts: list[tuple[str, dict]]) -> int:
+    return sum(u.endswith("/api/chat") for u, _ in posts)
+
+
+def test_rerun_asks_the_model_nothing_and_gives_the_same_ratings(posts, src, caplog):
+    """A second run (a new rater, as a new `analyze` would make) takes every rating from the
+    cache: no request at all, not even the unload, and the same scores and labels."""
+
+    def cands() -> list[dict]:
+        return [
+            {"source": str(src), "start": float(s), "end": s + 5.0, "score": 20.0 + s,
+             "label": "x", "signals": {}}
+            for s in (0, 10, 20)
+        ]  # fmt: skip
+
+    style = get_style("gaming")
+    first = cands()
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    assert cutpoint.analyze._rate_vision(first, rater, 3, style) == (True, 0)
+    assert (rater.hits, rater.asked) == (0, 3) and _chats(posts) == 6
+    posts.clear()
+    again = cands()
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
+        assert cutpoint.analyze._rate_vision(again, rater, 3, style) == (True, 0)
+    assert posts == []
+    assert again == first
+    assert (rater.hits, rater.asked) == (3, 0)
+    assert "Vision: 3 ratings from the cache, 0 asked the model" in caplog.text
+
+
+def test_the_ollama_url_is_not_part_of_the_key(posts, src):
+    vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "ski")
+    posts.clear()
+    res = vision.VisionRater(url="http://other:2", model="m").rate(src, 0, 4, "ski")
+    assert res == vision.VisionResult(7.0, "big jump") and posts == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["model", "version", "prompt", "temperature", "times", "frames", "style"],
+)
+def test_a_changed_rating_input_misses(posts, src, monkeypatch, change):
+    vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "gaming")
+    posts.clear()
+    model, start, n_frames, style = "m", 0.0, 3, "gaming"
+    if change == "model":
+        model = "m2"
+    elif change == "version":
+        monkeypatch.setattr(vision, "RATING_VERSION", vision.RATING_VERSION + 1)
+    elif change == "prompt":
+        monkeypatch.setattr(
+            vision, "_DEFAULT_PROMPTS", (vision._PROMPT + " ", vision._RETRY_PROMPT)
+        )
+    elif change == "temperature":
+        monkeypatch.setattr(vision, "_TEMPERATURES", (0.2, 0.5))
+    elif change == "times":
+        start = 0.5
+    elif change == "frames":
+        n_frames = 4
+    else:
+        style = "action"
+    rater = vision.VisionRater(url="http://x:1", model=model)
+    assert rater.rate(src, start, 4, style, n_frames=n_frames) is not None
+    assert _chats(posts) == 2 and (rater.hits, rater.asked) == (0, 1)
+
+
+def test_a_failed_cache_write_keeps_the_rating(posts, src, monkeypatch, caplog):
+    def locked(*_a, **_k):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(vision.cache, "save_json", locked)
+    res = vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "ski")
+    assert res == vision.VisionResult(7.0, "big jump")
+    assert "Could not save the vision rating cache" in caplog.text
+
+
+def test_a_failed_request_is_not_cached(posts, src, monkeypatch):
+    """Ollama down mid-run: no rating, nothing cached; the next run asks again."""
+    working = vision.requests.post
+
+    def down(*_a, **_k):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr(vision.requests, "post", down)
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    assert rater.rate(src, 0, 4, "ski") is None
+    assert (rater.hits, rater.asked) == (0, 1)
+    assert not (cache.source_dir(src) / vision.RATINGS_FILE).exists()
+    monkeypatch.setattr(vision.requests, "post", working)
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert (rater.hits, rater.asked) == (0, 1) and _chats(posts) == 2
+
+
+def test_an_unparseable_reply_is_not_cached(monkeypatch, src):
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    monkeypatch.setattr(
+        vision.requests, "post", lambda *_a, **_k: _Resp({"message": {"content": "no json"}})
+    )
+    assert vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "ski") is None
+    assert not (cache.source_dir(src) / vision.RATINGS_FILE).exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{not json",
+        "[1, 2]",
+        "\xff\xfe",
+        None,  # a valid file whose entry is malformed
+    ],
+)
+def test_a_corrupt_cache_file_is_a_miss(posts, src, text):
+    path = cache.source_dir(src) / vision.RATINGS_FILE
+    if text is None:
+        key = vision.rating_key("m", "ski", [1.0, 2.0, 3.0])
+        path.write_text(json.dumps({key: {"score": "high", "label": "x"}}), "utf-8")
+    else:
+        path.write_bytes(text.encode("latin-1"))
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert (rater.hits, rater.asked) == (0, 1)
+    posts.clear()
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")  # rewritten
+    assert posts == [] and rater.hits == 1
+
+
+def test_a_missing_source_still_reports_the_grab_failure(
+    posts, home, tmp_path, monkeypatch, caplog
+):
+    """No cache key for a source that is not there: the frame grab reports it, as before."""
+
+    def grab(_src, _t, **_k):
+        raise vision.FFmpegError("no such file")
+
+    monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    assert rater.rate(tmp_path / "gone.mp4", 0, 4, "ski") is None
+    assert "Vision frame grab failed" in caplog.text and posts == []
+    assert (rater.hits, rater.asked) == (0, 0)
+
+
+def test_the_attempts_keep_their_temperatures(posts):
+    """Moving the temperatures into ``_TEMPERATURES`` keeps the request payloads: 0.2 for the
+    first attempt, 0.4 for the retry."""
+    vision.VisionRater(url="http://x:1", model="m").rate(Path("a.mp4"), 0, 4, "gaming")
+    temps = [p["options"]["temperature"] for u, p in posts if u.endswith("/api/chat")]
+    assert temps == [0.2, 0.4]

@@ -255,6 +255,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `highlights.pre-events.json` is written only when the analysis was not ranked with events
   yet.
 - The vision rating (`--vision`) now rates the top candidates after the events ranking.
+- The vision ratings (`--vision`) are cached per source in `cache/<source>/vision-ratings.json`,
+  keyed by the model, the style's prompts and options, the frame size and the frame times (not
+  the Ollama URL). A rerun asks Ollama only about candidates it has not rated, with the same
+  ratings and the same `highlights.json` as the first run, and logs how many ratings came from
+  the cache and how many were asked. Each rating is saved as it arrives, so an interrupted run
+  keeps them; failed or unreadable replies are not cached. A first run is unchanged (#377).
 - Re-running `analyze` keeps the `--game` of the last `cutpoint events` run (read from
   `events.json`), and its `--player` tags when `player_tags` in `config.json` is empty; it logs
   an INFO line when it does.
@@ -357,6 +363,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `events.json`, `vram_mib.<layer>.baseline_mib` is now the monitor's first reading during the
   layer instead of one taken before it, and a layer shorter than one reading reports `null`
   for `baseline_mib` and `peak_mib`. Results are unchanged (#372).
+- `cutpoint 360 analyze` loads the CLIP model once instead of twice (about 4-5 s saved): the
+  model the 360 view layer loaded waits in system memory, not on the GPU, while transcription
+  and the audio layers run, and the crash step's dense check reuses it. It is kept only when
+  the events steps run and a clip has no cached dense check yet; otherwise it is freed after
+  the views as before. Results are unchanged (#376).
+- When the wearer is not at the default mount, `cutpoint 360 analyze` now recomputes only
+  the selfie view in the 360 view layer's second pass. The person detector and the person
+  crops are reused from the first pass. The second pass still decodes the proxy again and
+  embeds all 9 views together, so the cached views are byte-identical to a full recompute.
+  `-v` logs how long that pass took, and `elapsed_s` / `gpu_s` in the `pano-views-*.json`
+  meta now cover both passes (#376).
 
 ### Removed
 
@@ -432,10 +449,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HDR footage (HLG or PQ) and BT.2020 footage came out washed out: it was cut down to 8 bits
   with its HDR or BT.2020 tags kept, so players and editors that ignore those tags showed it
   with faded colors. `clips`, `extend` and `360` renders now convert it to SDR Rec.709 with
-  `zscale` and `tonemap` (mobius), and tag the clip bt709. On a synthetic HLG chart the mean
-  saturation went from 148 to 236 (out of 255; the SDR original is 250). The tone mapping costs
-  CPU time, about 30 fps at 1080p on 8 threads. Checked on synthetic HLG, PQ and BT.2020 clips,
-  not yet on camera footage. Without `zscale` in the ffmpeg build, a WARNING
+  `zscale` and `tonemap` (hable), and tag the clip bt709. The tone mapping costs CPU time,
+  about 30 fps at 1080p on 8 threads. On real HLG phone clips the median luma is 0.62-0.66,
+  against 0.54-0.57 for libplacebo's tone mapping (not used: ffmpeg runs it on Vulkan). PQ and
+  BT.2020 were checked on synthetic clips. Without `zscale` in the ffmpeg build, a WARNING
   says so and the clip is exported as before. SDR and untagged sources get exactly the same
   ffmpeg command as before. 10-bit SDR footage that looks log or flat in one small frame gets a
   WARNING suggesting the camera's LUT; no LUT is applied. `probe` now reads the four color tags

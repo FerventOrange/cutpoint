@@ -929,6 +929,22 @@ def _dense_cache(src: Path, p: CrashParams) -> Path:
     return cache.source_dir(src) / f"crashdense-{p.dense_key()}.json"
 
 
+def dense_needs_run(srcs: list[Path]) -> bool:
+    """Whether the dense confirm of :func:`detect_project` will likely embed frames: a
+    source has no dense cache yet (for any activity profile, whose prompts are only known
+    then). Checks the cache folders only; unreachable footage is skipped there too.
+    A source without crash candidates never gets a dense cache, so it always counts as
+    needing a run: the kept model then only costs RAM until the crash step frees it."""
+    for src in srcs:
+        try:
+            cdir = cache.source_dir(src)
+        except OSError:
+            continue
+        if not any(cdir.glob("crashdense-*.json")):
+            return True
+    return False
+
+
 def dense_window(c: dict[str, Any], p: CrashParams) -> tuple[float, float]:
     """Decode range of the confirm step (at most 24 s)."""
     a = max(0.0, c["t0"] - p.dense_pre_s)
