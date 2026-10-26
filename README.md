@@ -54,8 +54,9 @@ uv run --extra ui cutpoint ui
 Open the complete URL printed in the terminal (including its session token). Pick a source
 file or folder, analyze it, trim and reorder moments, export clips, then assemble and preview
 the final video. Footage stays on your
-computer; each export gets a new folder so previous exports are retained. The UI does not
-expose the specialized action-cam or 360 workflows.
+computer; each export gets a new folder so previous exports are retained. The UI also makes
+360 projects from Insta360 X3 footage ([360 video](docs/workflows/360.md#in-the-ui)) but does not
+expose the action-cam workflows.
 
 For a tool install, use `uv tool install "cutpoint[ui]" --reinstall`, then `cutpoint ui`.
 See the [command reference](docs/commands.md#ui) for details.

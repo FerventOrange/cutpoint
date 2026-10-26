@@ -227,7 +227,7 @@ function renderMoments() {
   const hadFocus = empty.contains(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
   empty.classList.toggle('fresh', !!p && !hl);
   if (!p) setEmpty(empty);
-  else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0, p.source_error ? sourceErrorText(p) : '');
+  else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0, p.source_error ? sourceErrorText(p) : '', p.kind === '360');
   else if (!list.length)
     setEmpty(empty, h('p', {}, 'Analysis found no moments. Try another style, or add footage and analyze again.'));
   else setEmpty(empty);
@@ -296,9 +296,9 @@ function folderArt() {
 const sourceErrorText = (p) =>
   `The source folder cannot be found or read (${p.source_error}). Reconnect the drive, or set a source remap in Settings.`;
 
-/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis. */
-function renderUnanalyzed(el, n, error) {
-  const state = `${n}|${error}`;
+/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its clips). */
+function renderUnanalyzed(el, n, error, pano) {
+  const state = `${n}|${error}|${pano}`;
   if (el.dataset.n === state) return; // polling re-renders; keep the button (and its focus)
   el.dataset.n = state;
   setEmpty(el,
@@ -306,9 +306,15 @@ function renderUnanalyzed(el, n, error) {
     error
       ? h('p', { class: 'fresh-error', text: error })
       : h('p', { class: `fresh-count${n ? '' : ' none'}` },
-        n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory'),
+        pano
+          ? (n ? `${n} 360 clip${n === 1 ? '' : 's'} found` : 'No 360 clips found')
+          : (n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory')),
     h('h3', { text: 'No moments analyzed yet' }),
-    h('p', { text: 'Analyze footage to transcribe audio and rank the strongest moments.' }),
+    h('p', {
+      text: pano
+        ? 'Analyze footage to read the 360 clips, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
+        : 'Analyze footage to transcribe audio and rank the strongest moments.',
+    }),
     h('button', {
       type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
       onclick: async (e) => {
@@ -1231,23 +1237,25 @@ const STEP_LABELS = {
 const STEP_NAMES = Object.keys(STEP_LABELS);
 
 /**
- * The rows to show: the steps sent, plus, when ``total`` is a known step count (6 or 8), the ones
- * not sent yet: "waiting" while the job runs, "not run" after it ended (a cancel or fatal error).
+ * The rows to show: the steps sent, plus the ones not sent yet, from the job's ``plan`` (the
+ * server's list of the command's steps) or, without one, when ``total`` is a known step count (6
+ * or 8): "waiting" while the job runs, "not run" after it ended (a cancel or fatal error).
  * Each row gets a display ``state``: a failed or interrupted step of a cancel reads "cancelled".
  */
 function stepRows(j) {
-  const { steps, total } = j.progress;
+  const { steps, total, plan } = j.progress;
   const cancel = (s) => s.detail === 'cancelled' || (s.state === 'interrupted' && j.status === 'cancelled');
   const rows = steps.map((s) => ({
     ...s,
     state: (s.state === 'failed' || s.state === 'interrupted') && cancel(s) ? 'cancelled' : s.state,
     detail: s.detail === 'cancelled' ? null : s.detail, // the state says it
   }));
-  if (total === 6 || total === 8) {
+  const planned = plan ?? (total === 6 || total === 8 ? STEP_NAMES.slice(0, total).map((step) => ({ step, label: STEP_LABELS[step] })) : null);
+  if (planned) {
     const sent = new Set(steps.map((s) => s.step));
-    STEP_NAMES.slice(0, total).forEach((name, i) => {
-      if (!sent.has(name))
-        rows.push({ step: name, index: i + 1, label: STEP_LABELS[name], state: live(j.status) ? 'waiting' : 'notrun', pct: null, detail: null });
+    planned.forEach(({ step, label }, i) => {
+      if (!sent.has(step))
+        rows.push({ step, index: i + 1, label, state: live(j.status) ? 'waiting' : 'notrun', pct: null, detail: null });
     });
     rows.sort((a, b) => a.index - b.index);
   }
@@ -1500,7 +1508,7 @@ async function openSettings() {
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
   box.checked = st.vision === true;
   box.dataset.saved = String(box.checked);
-  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.`;
+  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
   d.showModal();
   // a locked folder cannot be edited: start on the first control that can
   (st.projects_dir_locked ? box : input).focus();

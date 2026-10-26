@@ -57,8 +57,8 @@ to the sequence. Reorder and save the sequence, export clips, then assemble a fi
 The final preview includes download links for the MP4, FCPXML and OTIO files.
 
 The workspace is local-only and supports standard video. Source files are never modified.
-Insta360 360 folders and files (`.insv`, `.lrv`) are recognised, but 360 projects are made with
-the CLI for now ([360 video](workflows/360.md)); a folder mixing 360 and regular videos is refused.
+Insta360 X3 folders and files (`.insv`, `.lrv`) make 360 projects, analyzed and reframed as by
+the CLI ([360 video](workflows/360.md#in-the-ui)); a folder mixing 360 and regular videos is refused.
 Analysis can download a Whisper model when speech transcription first needs it, just as the
 CLI does; the UI does not run `cutpoint setup`. Selecting a browser-incompatible source prepares
 a cached preview conversion, which may take time and extra disk space.

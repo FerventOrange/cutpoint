@@ -15,6 +15,7 @@ On Windows, paths such as ``D:\\Videos\\360`` and ``projects\\trip-360\\clips`` 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
@@ -23,7 +24,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, jsonout
+from cutpoint import cache, jsonout, progress
 from cutpoint.utils import parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
@@ -103,23 +104,43 @@ def _timing(project: Path, key: str, value: Any) -> None:
 # --------------------------------------------------------------------------- commands
 def cmd_scan(a: argparse.Namespace) -> None:
     """Discover clips, read trailers and IMU orientation, write pano.json."""
+    project = _project(a.out)
+    jsonout.set_project(project)
+    _scan(project, a.folders, force=a.force)
+
+
+def _scan(
+    project: Path,
+    folders: list[str],
+    force: bool = False,
+    only: list[str] | None = None,
+    allow_empty: bool = True,
+) -> int:
+    """:func:`cmd_scan` into ``project``; with ``only``, just those clip numbers (their
+    orientation alone is read). Returns the number of clips.
+
+    Raises:
+        FileNotFoundError: If no clip matches and not ``allow_empty`` (nothing is written).
+    """
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano import project as P  # noqa: PLC0415
     from cutpoint.pano.x3 import imu_source, scan  # noqa: PLC0415
 
-    project = _project(a.out)
-    jsonout.set_project(project)
     t0 = time.perf_counter()
     clips, dirs = [], []
-    for d in a.folders:
+    for d in folders:
         found = scan(Path(d))
-        clips += found
+        clips += [c for c in found if not only or c.clip_id in only]
         dirs.append(Path(d))
-    for c in clips:
+    if not clips and not allow_empty:
+        what = f"clip {', '.join(only)}" if only else "clips"
+        raise FileNotFoundError(f"no Insta360 X3 {what} found in {', '.join(folders)}")
+    for i, c in enumerate(clips):
+        progress.update(progress.fraction(i, len(clips)), f"clip {c.clip_id}")
         i00 = imu_source(Path(c.source))
         if i00 is None:
             continue
-        o = G.orientation(Path(c.source), i00, c.fps, max(c.frames, 1), force=a.force)
+        o = G.orientation(Path(c.source), i00, c.fps, max(c.frames, 1), force=force)
         tilt = [o.tilt_deg(t) for t in o.t[:: max(1, len(o.t) // 50)]]
         c.meta["orientation"] = {
             "imu_hz": o.meta.get("imu_hz"),
@@ -177,10 +198,20 @@ def cmd_scan(a: argparse.Namespace) -> None:
         path,
         el,
     )
+    return len(clips)
 
 
 def cmd_analyze(a: argparse.Namespace) -> None:
-    """Proxy views, then the normal ski analysis + events on the .lrv files."""
+    """Proxy views, then the normal ski analysis + events on the .lrv files (``--scan``: the
+    scan of :func:`cmd_scan` first). Steps: :data:`cutpoint.progress.PANO_STEPS`."""
+    project = _project(a.project)
+    jsonout.set_project(project)
+    with progress.run(progress.PANO_STEPS) as steps:
+        _analyze(a, project, steps)
+
+
+def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run) -> None:
+    """:func:`cmd_analyze`, reporting to ``steps``."""
     from cutpoint.analyze import (  # noqa: PLC0415
         analyze,
         reanalyze_if_reachable,
@@ -189,42 +220,56 @@ def cmd_analyze(a: argparse.Namespace) -> None:
     from cutpoint.pano import views  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
-    project = _project(a.project)
-    jsonout.set_project(project)
-    clips = [c for c in _clips(project) if c.lrv]
-    if a.only:
-        clips = [c for c in clips if c.clip_id in a.only]
+    if a.scan:  # the IMU orientation needs telemetry_parser (ski extra): fail before the scan
+        if importlib.util.find_spec("telemetry_parser") is None:
+            raise ModuleNotFoundError("No module named 'telemetry_parser'", name="telemetry_parser")
+    else:
+        steps.skip("scan", "pano.json from an earlier scan")
+    clips = [] if a.scan else _clips(project)
     if not (a.no_events or a.views_only):  # fail on a missing extra / model before the long steps
         from cutpoint.events.pipeline import preflight  # noqa: PLC0415
 
         preflight(EVENT_LAYERS)
+    if a.scan:
+        with steps.step("scan"):
+            _scan(project, a.scan, only=a.only, allow_empty=False)
+        clips = _clips(project)
+    clips = [c for c in clips if c.lrv]
+    if a.only:
+        clips = [c for c in clips if c.clip_id in a.only]
     t0 = time.perf_counter()
-    st = views.run_layer(clips, force=a.force_views)
+    with steps.step("views"):
+        st = views.run_layer(clips, force=a.force_views)
     _timing(project, "views", {**st, "total_s": round(time.perf_counter() - t0, 1)})
     jsonout.output("timings", project / "pano_timings.json")
     jsonout.output("views", {k: st.get(k) for k in ("cached", "computed")})
     if a.views_only:
+        for step in ("analyze", "events"):
+            steps.skip(step, "--views-only")
         return
     t1 = time.perf_counter()
     from cutpoint.pano.project import default_style  # noqa: PLC0415
 
-    analyze(
-        [Path(c.lrv) for c in clips],
-        get_style(a.style or default_style()),
-        project,
-        vision=False,
-        model=a.model,
-        language=a.language,
-        use_scenes=False,
-    )
+    with steps.step("analyze"):
+        analyze(
+            [Path(c.lrv) for c in clips],
+            get_style(a.style or default_style()),
+            project,
+            vision=False,
+            model=a.model,
+            language=a.language,
+            use_scenes=False,
+        )
     _timing(project, "analyze_s", round(time.perf_counter() - t1, 1))
     if a.no_events:
+        steps.skip("events", "--no-events")
         return
     from cutpoint.events.pipeline import run_events  # noqa: PLC0415
 
     t2 = time.perf_counter()
-    run_events(project, layers=EVENT_LAYERS)
-    rescored = reanalyze_if_reachable(project)
+    with steps.step("events"):
+        run_events(project, layers=EVENT_LAYERS)
+        rescored = reanalyze_if_reachable(project)
     _timing(project, "events_s", round(time.perf_counter() - t2, 1))
     _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
     jsonout.output("events", project / "events.json")
@@ -826,6 +871,13 @@ def add_parser(sub: Any) -> None:
         "on the .lrv",
     )
     an.add_argument("project")
+    an.add_argument(
+        "--scan",
+        nargs="+",
+        metavar="FOLDER",
+        help="first scan these camera folders into the project, as 360 scan FOLDER --out "
+        "PROJECT (with --only: just those clips)",
+    )
     an.add_argument(
         "--style",
         choices=style_names(),

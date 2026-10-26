@@ -83,15 +83,11 @@ X3_LRV = "LRV_20260101_100000_11_001.lrv"
             ["no supported videos found (found 1 .insv, 1 .txt)", "camera names"],
         ),
         ({X3_00: b"", X3_LRV: b"", "a.mp4": b""}, [], None, 400, ["mixes 360 footage"]),
-        ({X3_00: b"", X3_10: b"", X3_LRV: b""}, [], None, 400, ["yet", "cutpoint 360 scan"]),
-        ({X3_00: b"", X3_LRV: b""}, [], X3_00, 400, ["--only 001"]),
         ({X3_10: b"", X3_LRV: b""}, [], None, 400, ["needs both files", "_00_.insv"]),
     ],
     ids=[
         "unnamed-insv",
         "mixed",
-        "x3-folder",
-        "x3-file",
         "lrv-without-00",
     ],
 )
@@ -118,6 +114,112 @@ def test_create_project_recognises_360_sources_and_refuses_them_clearly(
         assert part in res.json()["detail"]
     if status != 200:
         assert client.get("/api/projects").json() == {"projects": []}
+
+
+X3_CLIPS = {X3_00: b"", X3_10: b"", X3_LRV: b""}
+
+
+@pytest.mark.parametrize(
+    ("pick", "style", "meta"),
+    [
+        (None, None, {"kind": "360", "style": "ski"}),
+        (X3_00, None, {"kind": "360", "style": "ski", "clips": ["001"]}),
+        (None, "ski", {"kind": "360", "style": "ski"}),
+    ],
+    ids=["folder-flat-style-becomes-pano-default", "file-keeps-its-clip", "ski-style"],
+)
+def test_create_project_makes_a_360_project_from_x3_footage(
+    client: TestClient, tmp_path: Path, pick: str | None, style: str | None, meta: dict
+) -> None:
+    """#320: X3 sources become 360 projects; ``clips`` only for one picked file."""
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in X3_CLIPS:
+        (folder / name).write_bytes(b"")
+    body = {"name": "Trip", "source": str(folder / pick if pick else folder)}
+    if style:
+        body["style"] = style
+    res = client.post("/api/projects", json=body)
+    assert res.status_code == 200, res.text
+    saved = ui.read_meta(ui.project_dir(res.json()["id"]))
+    assert {k: saved.get(k) for k in meta} == meta
+    assert ("clips" in saved) == ("clips" in meta)
+
+
+def test_create_project_refuses_a_ski_style_on_flat_footage(
+    client: TestClient, tmp_path: Path
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "T", "source": str(folder), "style": "ski"})
+    assert res.status_code == 400 and "unknown style" in res.json()["detail"]
+    assert client.get("/api/projects").json() == {"projects": []}
+
+
+def test_360_project_lists_one_lrv_per_usable_clip_before_analysis(
+    client: TestClient, tmp_path: Path
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in (*X3_CLIPS, "VID_20260101_110000_10_002.insv", "LRV_20260101_110000_11_002.lrv"):
+        (folder / name).write_bytes(b"")  # clip 002 has no _00_ lens: not usable
+    res = client.post("/api/projects", json={"name": "T", "source": str(folder)})
+    p = ui.project_dir(res.json()["id"])
+    assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [X3_LRV]
+
+
+def test_list_projects_shows_ui_360_projects_but_hides_command_line_ones(
+    client: TestClient, tmp_path: Path
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in X3_CLIPS:
+        (folder / name).write_bytes(b"")
+    pid = client.post("/api/projects", json={"name": "T", "source": str(folder)}).json()["id"]
+    cache.save_json(ui.project_dir(pid) / "pano.json", {"clips": {}})  # as after the scan
+    cli_only = ui.projects_dir() / "cli-360"
+    cli_only.mkdir()
+    cache.save_json(cli_only / "pano.json", {"clips": {}})
+    assert [p["id"] for p in client.get("/api/projects").json()["projects"]] == [pid]
+
+
+@pytest.mark.parametrize("only", [None, "001"], ids=["folder", "file"])
+def test_360_analyze_job_runs_the_360_command_with_a_plan(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, only: str | None
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in X3_CLIPS:
+        (folder / name).write_bytes(b"")
+    source = folder / X3_00 if only else folder
+    pid = client.post("/api/projects", json={"name": "T", "source": str(source)}).json()["id"]
+    seen: list[list[str]] = []
+    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    p = ui.project_dir(pid)
+    want = ["cutpoint", "360", "analyze", str(p), "--scan", str(folder), "--style", "ski"]
+    assert seen == [want + (["--only", only] if only else [])]
+    assert "--vision" not in seen[0] and "--no-vision" not in seen[0]
+
+
+def test_360_analyze_job_view_carries_the_step_plan(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in X3_CLIPS:
+        (folder / name).write_bytes(b"")
+    pid = client.post("/api/projects", json={"name": "T", "source": str(folder)}).json()["id"]
+    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *_a: [sys.executable, "-c", "pass"])
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert [s["step"] for s in res.json()["progress"]["plan"]] == [
+        "scan", "views", "analyze", "events",
+    ]  # fmt: skip
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(20)
 
 
 def test_create_project_skips_unreadable_folder_entries(

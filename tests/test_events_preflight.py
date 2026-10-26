@@ -15,6 +15,7 @@ from cutpoint import activity, crash
 from cutpoint import analyze as analyze_mod
 from cutpoint.events import common, paths, pipeline, visual
 from cutpoint.pano import cli, views
+from cutpoint.pano import geometry as G
 
 
 def _create(items: list[tuple[str, Path]]) -> None:
@@ -162,6 +163,7 @@ def _args(**kw) -> argparse.Namespace:
     base = {
         "project": "p",
         "only": None,
+        "scan": None,
         "no_events": False,
         "views_only": False,
         "force_views": False,
@@ -190,6 +192,85 @@ def test_cmd_analyze_skips_preflight(monkeypatch, tmp_path: Path, flag: str):
     cli.cmd_analyze(_args(**{flag: True}))
     assert "preflight" not in order
     assert "events" not in order
+
+
+def _progress_steps(capsys) -> list[tuple[str, str]]:
+    out = []
+    for line in capsys.readouterr().err.splitlines():
+        if line.startswith("PROGRESS "):
+            d = json.loads(line[len("PROGRESS ") :])
+            out.append((d["step"], d["state"]))
+    return out
+
+
+def test_cmd_analyze_scan_runs_before_views_and_reports_the_four_steps(
+    monkeypatch, tmp_path: Path, capsys
+):
+    order = _analyze_stubs(monkeypatch, tmp_path)
+    monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
+    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(cli, "_scan", lambda *a, **k: order.append("scan"))
+    cli.cmd_analyze(_args(scan=["cam"]))
+    assert order == ["preflight", "scan", "views", "analyze", "events"]
+    steps = [s for s in _progress_steps(capsys) if s[1] in ("running", "done")]
+    assert [s for s, st in steps if st == "running"] == ["scan", "views", "analyze", "events"]
+
+
+def test_cmd_analyze_without_scan_skips_the_scan_step(monkeypatch, tmp_path: Path, capsys):
+    _analyze_stubs(monkeypatch, tmp_path)
+    monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
+    cli.cmd_analyze(_args())
+    assert ("scan", "skipped") in _progress_steps(capsys)
+
+
+def test_scan_only_reads_and_records_just_the_named_clips(monkeypatch, tmp_path: Path):
+    from cutpoint.pano import x3  # noqa: PLC0415
+    from pano_helpers import orientation, x3clip  # noqa: PLC0415
+
+    clips = [
+        x3clip(clip_id="001", lrv=str(tmp_path / "a.lrv")),
+        x3clip(clip_id="002", lrv=str(tmp_path / "b.lrv")),
+    ]
+    oriented: list[str] = []
+
+    def fake_orientation(source, *a, **k):
+        oriented.append(Path(source).name)
+        return orientation(n=60)
+
+    monkeypatch.setattr(x3, "scan", lambda folder: clips)
+    monkeypatch.setattr(x3, "imu_source", lambda source: Path("imu.insv"))
+    monkeypatch.setattr(G, "orientation", fake_orientation)
+    project = tmp_path / "proj"
+    cli._scan(project, [str(tmp_path)], only=["001"])
+    saved = json.loads((project / "pano.json").read_text(encoding="utf-8"))
+    assert [c["clip_id"] for c in saved["clips"]] == ["001"]
+    assert oriented == ["a.lrv"]
+
+
+def test_cmd_analyze_scan_only_naming_a_missing_clip_says_so(monkeypatch, tmp_path: Path):
+    from cutpoint.pano import x3  # noqa: PLC0415
+    from pano_helpers import x3clip  # noqa: PLC0415
+
+    order = _analyze_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(x3, "scan", lambda folder: [x3clip(clip_id="001")])
+    monkeypatch.setattr(x3, "imu_source", lambda source: None)
+    with pytest.raises(FileNotFoundError, match=r"no Insta360 X3 clip 009 found") as e:
+        cli.cmd_analyze(_args(scan=[str(tmp_path)], only=["009"]))
+    assert "scan first" not in str(e.value)
+    assert "views" not in order
+    assert not (tmp_path / "pano.json").exists()
+
+
+def test_cmd_analyze_scan_without_telemetry_parser_fails_before_the_scan(
+    monkeypatch, tmp_path: Path
+):
+    order = _analyze_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(cli, "_scan", lambda *a, **k: order.append("scan"))
+    with pytest.raises(ModuleNotFoundError, match="telemetry_parser"):
+        cli.cmd_analyze(_args(scan=["cam"]))
+    assert order == []
 
 
 def test_cmd_analyze_footage_gone_before_rescoring_keeps_highlights(
