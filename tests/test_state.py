@@ -99,7 +99,7 @@ def _fill(name: str, tmp: Path, mp: pytest.MonkeyPatch) -> None:
 
 
 def test_every_module_cache_is_registered():
-    names = set(state.registered())
+    names = set(state._REGISTRY)
     unregistered = [
         f"{mod.__name__}.{obj.__qualname__}"
         for mod in list(sys.modules.values())
@@ -113,9 +113,9 @@ def test_every_module_cache_is_registered():
     assert [n for n in unregistered if n not in names] == []
 
 
-@pytest.mark.parametrize("name", sorted(state.registered()))
+@pytest.mark.parametrize("name", sorted(state._REGISTRY))
 def test_reset_state_clears_entry(name, tmp_path, monkeypatch):
-    entry = state.registered()[name]
+    entry = state._REGISTRY[name]
     _fill(name, tmp_path, monkeypatch)
     assert entry.size() > 0
     reset_state(models=True)
@@ -123,7 +123,7 @@ def test_reset_state_clears_entry(name, tmp_path, monkeypatch):
 
 
 def test_reset_state_keeps_models_by_default(tmp_path, monkeypatch):
-    models = [e for e in state.registered().values() if e.model]
+    models = [e for e in state._REGISTRY.values() if e.model]
     assert [e.name for e in models] == ["cutpoint.events.visual._TEXT_MODEL"]
     _fill(models[0].name, tmp_path, monkeypatch)
     reset_state()
@@ -203,7 +203,7 @@ def test_vision_and_unload_use_the_same_url(monkeypatch):
     monkeypatch.setattr(common.requests, "get", fake_get)
     assert common.unload_ollama() == []
     assert seen == ["http://gpu-box:1234/api/ps"]
-    assert vision.default_url() == "http://gpu-box:1234"
+    assert vision.VisionRater().url == "http://gpu-box:1234"
 
 
 # -- F11: refmatch audio failures keyed by cache folder ------------------------------

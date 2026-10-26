@@ -31,7 +31,8 @@ def test_build_messages_uses_media_content(tmp_path: Path):
     lines = [{"name": src.name, "start": 6.0, "end": 8.0, "text": "nice shot"}]
     events = [{"kind": "audio", "t": 7.0, "label": "Laughter", "confidence": 0.9}]
     params = vw.VlmParams()
-    content = vw.build_messages(src, win, frames, params, "boxfeed", lines, events)[1]["content"]
+    game = vw.game_prompt("boxfeed", None)
+    content = vw.build_messages(src, win, frames, params, game, lines, events)[1]["content"]
     media = vw._media_content(src, win, frames, params, lines, events)
     text = "\n".join(c.get("text", "") for c in media)
     assert "input_audio" in {c["type"] for c in media}

@@ -67,11 +67,6 @@ def register_container[C: _Clearable](module: str, attr: str, obj: C, *, model: 
     return obj
 
 
-def registered() -> dict[str, Entry]:
-    """All registered entries by dotted name (only of modules imported so far)."""
-    return dict(_REGISTRY)
-
-
 def reset_state(*, models: bool = False) -> None:
     """Forget every per-process cache of the imported Cutpoint modules.
 

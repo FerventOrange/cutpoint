@@ -311,7 +311,10 @@ def test_reanalyze_keeps_recorded_excludes_and_recursion(
     p = ui.projects_dir() / "cli-made"
     p.mkdir(parents=True)
     settings = {"inputs": [str(footage.resolve())], "exclude": ["*DVR*"], "recursive": True}
-    cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
+    # Not a game or action style: those run HUD OCR with region discovery (about 80 s a source)
+    # or CLIP keyframes, which this source-set check does not need.
+    style = "commentary"
+    cache.save_json(p / "highlights.json", {"style": style, "settings": settings, "sources": []})
 
     assert client.post("/api/projects/cli-made/jobs", json={"action": "analyze"}).status_code == 200
     assert wait_job(client)["status"] == "completed"
@@ -1961,7 +1964,7 @@ def test_a_job_is_refused_when_the_projects_folder_changed_after_the_project_was
     real_cmd = ui.cutpoint_cmd
 
     def cmd_while_the_folder_changes(*args: str) -> list[str]:
-        config.set_config_value("projects_dir", str(other))  # a second tab saves the settings
+        config.set_config_values({"projects_dir": str(other)})  # a second tab saves the settings
         return real_cmd(*args)
 
     monkeypatch.setattr(ui, "cutpoint_cmd", cmd_while_the_folder_changes)
@@ -2247,7 +2250,7 @@ def test_a_clips_job_that_does_not_start_leaves_no_segments_file(
         real_cmd = ui.cutpoint_cmd
 
         def cmd_while_the_folder_changes(*args: str) -> list[str]:
-            config.set_config_value("projects_dir", str(tmp_path / "other"))
+            config.set_config_values({"projects_dir": str(tmp_path / "other")})
             return real_cmd(*args)
 
         monkeypatch.setattr(ui, "cutpoint_cmd", cmd_while_the_folder_changes)

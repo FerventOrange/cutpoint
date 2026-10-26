@@ -525,19 +525,18 @@ def build_messages(
     win: Window,
     frames: list[bytes],
     params: VlmParams,
-    game: GamePrompt | str | None,
+    game: GamePrompt | None,
     transcript_lines: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """OpenAI-style messages for one window.
 
-    ``game`` is the window's :class:`GamePrompt`, or a game key whose preset is
-    looked up (bundled and user presets).
+    ``game`` is the window's :class:`GamePrompt`; None uses the generic "video game" prompt.
     """
     if params.ski:
         return build_messages_ski(src, win, frames, params, transcript_lines, events)
-    if not isinstance(game, GamePrompt):
-        game = game_prompt(game, load_preset(game))
+    if game is None:
+        game = game_prompt(None, None)
     dur = win.end - win.start
     view = f"{game.view} " if game.view else ""
     content: list[dict[str, Any]] = [

@@ -46,7 +46,7 @@ import numpy as np
 from cutpoint import cache, state
 from cutpoint.events import paths
 from cutpoint.events.common import Source, free_torch, params_key
-from cutpoint.ffmpeg_utils import FFmpegError, decode_raw, ffprobe_json, find_tool
+from cutpoint.ffmpeg_utils import FFmpegError, decode_raw, ffprobe_json, find_tool, probe
 
 logger = logging.getLogger(__name__)
 
@@ -476,8 +476,6 @@ def compute_visual(
         return hit
     if models is None:
         return None
-    from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
-
     t0 = time.perf_counter()
     info = probe(src.io_path)
     width = params.width
