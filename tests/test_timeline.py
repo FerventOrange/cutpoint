@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import media_info
 from cutpoint.assemble import clip_offsets
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.timeline import write_fcpxml, write_otio, write_timelines
@@ -18,15 +19,11 @@ XF = 15
 
 
 def _info(i: int, audio: bool = True, vdur: float = 4.0, dur: float | None = None) -> MediaInfo:
-    return MediaInfo(
-        path=Path(f"/media/c{i}.mp4"),
-        duration=vdur + 0.1 if dur is None else dur,
+    return media_info(
+        Path(f"/media/c{i}.mp4"),
+        vdur + 0.1 if dur is None else dur,
         vduration=vdur,
-        width=1920,
-        height=1080,
         fps=FPS,
-        pix_fmt="yuv420p",
-        vcodec="h264",
         audio_streams=1 if audio else 0,
         acodec="aac" if audio else None,
         sample_rate=48000 if audio else None,

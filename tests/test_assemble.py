@@ -11,25 +11,15 @@ from pathlib import Path
 
 import pytest
 
+from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, ffmpeg_utils, sources
 from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
 
-_skip_without_ffmpeg = pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg not on PATH"
-)
-
-
-def needs_ffmpeg(test):
-    """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
-    return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
-
 
 def _info(duration: float, vduration: float) -> MediaInfo:
-    return MediaInfo(
-        path=Path("x.mp4"), duration=duration, vduration=vduration, width=64, height=48,
-        fps=Fraction(25), pix_fmt="yuv420p", vcodec="h264", audio_streams=1, acodec="aac",
-        sample_rate=48000, channels=2,
-    )  # fmt: skip
+    return media_info(
+        Path("x.mp4"), duration, vduration=vduration, width=64, height=48, fps=Fraction(25)
+    )
 
 
 def test_cut_duration_is_the_container_duration_used_for_offsets():
