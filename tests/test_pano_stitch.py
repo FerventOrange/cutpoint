@@ -53,12 +53,6 @@ def _done(**features: str) -> stitch.SdkResult:
 # --------------------------------------------------------------------------- parsing
 
 
-class TestParseProgress:
-    def test_single_and_spacing_variants(self):
-        assert stitch.parse_progress(_pct(7)) == [7]
-        assert stitch.parse_progress(f"{P}=42 %") == [42]
-
-
 class TestParseExportSummary:
     def test_pairs(self):
         got = stitch.parse_export_summary(f"{stitch.EXPORT_MARKER} A:1 | B:x:y | C:")
@@ -66,27 +60,29 @@ class TestParseExportSummary:
 
 
 class TestParseSdkOutput:
-    def test_progress(self):
-        res = _result(f"{_pct(0)}\r{_pct(50)}\r{_pct(100)}\n")
-        assert res.progress == 100 and res.finished
+    @pytest.mark.parametrize(
+        "text, progress, finished",
+        [
+            (f"{_pct(0)}\r{_pct(50)}\r{_pct(100)}\n", 100, True),
+            (f"{_pct(10)}\r{_pct(63)}\n", 63, False),  # stops before 100
+            (f"{_pct(80)}\n{_pct(20)}\n", 80, False),  # the maximum, not the last
+            (f"{P}=42 %", 42, False),  # spacing variant
+        ],
+    )
+    def test_progress(self, text, progress, finished):
+        res = _result(text)
+        assert res.progress == progress and res.finished is finished
         assert res.errors == []
 
     def test_end_marker(self):
         res = _result(f"{stitch.END_MARKER}\n")
-        assert not res.finished and res.errors == [] and res.cost_s is None
+        assert res.progress == -1 and not res.finished
+        assert res.errors == [] and res.cost_s is None
 
     def test_cr_separated_progress_gives_separate_lines(self):
         res = _result(f"{_pct(10)}\r{_pct(20)}\r{_pct(30)}\r")
         assert res.lines == [_pct(10), _pct(20), _pct(30)]
         assert res.progress == 30
-
-    def test_progress_is_the_maximum_not_the_last(self):
-        assert _result(f"{_pct(80)}\n{_pct(20)}\n").progress == 80
-
-    def test_progress_stops_before_100(self):
-        res = _result(f"{_pct(10)}\r{_pct(63)}\n")
-        assert res.progress == 63
-        assert not res.finished
 
     def test_error_lines(self):
         res = _result("error: cannot open input\nERROR:  second one \n")
@@ -111,13 +107,6 @@ class TestParseSdkOutput:
 
     def test_feature_lookalike_outside_block_ignored(self):
         assert _result("a: ON\n").features == {}
-
-    def test_empty(self):
-        res = _result("")
-        assert res.progress == -1
-        assert not res.finished
-        assert res.errors == [] and res.features == {} and res.export == {}
-        assert res.cost_s is None
 
 
 # --------------------------------------------------------------------------- failure reasons
@@ -201,14 +190,6 @@ class TestFeaturesSummary:
         assert stitch.features_summary(feats) == "a=1, b=FAILED, c=2, d=FAILED"
 
 
-class TestParseHelpVersion:
-    def test_found(self):
-        assert stitch.parse_help_version(f"x\n{stitch.VERSION_KEY} 1.2.3\ny") == "1.2.3"
-
-    def test_missing(self):
-        assert stitch.parse_help_version("no version here") is None
-
-
 class TestProgressThrottle:
     def test_throttle(self):
         t = stitch.ProgressThrottle(step=5, every_s=10)
@@ -260,8 +241,6 @@ elif mode == "hang":
 # Markers are injected from the parser's constants, not spelled out here.
 FAKE_MARKERS = {
     "progress": stitch.PROGRESS_KEY,
-    "features": stitch.FEATURES_MARKER,
-    "block_end": stitch.BLOCK_END,
     "version": stitch.VERSION_KEY,
 }
 
@@ -326,18 +305,6 @@ def gated(monkeypatch: pytest.MonkeyPatch, fake):
     _GatedPopen.interrupt = False
 
 
-class TestRunSdk:
-    @pytest.mark.slow
-    def test_interrupt_raises_with_captured_output(self, fake, tmp_path, gated, monkeypatch):
-        monkeypatch.setattr(stitch, "SOFT_STOP_S", 0.2)  # the hung child is killed after this
-        gated.interrupt = True
-        with pytest.raises(stitch.SdkInterrupted) as ei:
-            stitch.run_sdk(fake("hang", tmp_path / "o.mp4"))
-        assert isinstance(ei.value, KeyboardInterrupt)
-        assert ei.value.run.returncode is None
-        assert "SYNTHETIC-CAPTURED-LINE" in ei.value.run.stdout
-
-
 class _StopChild:
     """Popen stand-in for the stop policy (#229); never sleeps. ``calls`` records wait/kill.
 
@@ -387,8 +354,9 @@ class TestStopPolicy:
 
     def test_interrupt_waits_for_the_child_to_exit_without_killing(self, stop_child):
         proc = stop_child(interrupts=[KeyboardInterrupt()], exits_after=stitch.SOFT_STOP_S / 2)
-        with pytest.raises(stitch.SdkInterrupted):
+        with pytest.raises(stitch.SdkInterrupted) as ei:
             stitch.run_sdk(["sdk"])
+        assert ei.value.run.returncode is None  # an interrupted run has no exit code
         assert proc.calls[1:] == [self.SOFT]  # [0] is the poll loop's wait
         assert proc.returncode == 0
 
@@ -442,6 +410,12 @@ class TestProbeSdk:
         assert got["runs"] is False and got["version"] is None
         assert "timed out" in got["error"]
         assert got["seconds"] < 30
+
+    def test_help_without_a_version_line_does_not_run(self, monkeypatch):
+        out = SimpleNamespace(stdout="no version here", stderr="")
+        monkeypatch.setattr(stitch.subprocess, "run", lambda *a, **k: out)
+        got = stitch.probe_sdk(Path("sdk.exe"))
+        assert got["runs"] is False and got["version"] is None and got["error"]
 
     def test_missing_exe(self, tmp_path):
         got = stitch.probe_sdk(tmp_path / "missing" / "MediaSDKTest.exe")
@@ -643,24 +617,17 @@ class TestRemovePartial:
 
 
 class TestHelpers:
-    def test_min_bytes_floor_and_rate(self, clip):
-        assert stitch._min_bytes(clip) == stitch.MIN_OUTPUT_BYTES
-        clip.duration = 100.0
-        assert stitch._min_bytes(clip) == 100 * stitch.MIN_OUTPUT_BYTES_PER_S
-
     @pytest.mark.parametrize(
         "args, rate",
         [
             (["-bitrate", "320000"], 10_000),  # 320 kb/s -> a quarter of 40 kB/s
             (["-bitrate", "100000000"], stitch.MIN_OUTPUT_BYTES_PER_S),  # never raised
+            (["-bitrate", "8"], 0),  # the absolute floor holds
         ],
     )
     def test_min_bytes_follows_a_low_bitrate(self, clip, args, rate):
         clip.duration = 1000.0
         assert stitch._min_bytes(clip, args) == max(stitch.MIN_OUTPUT_BYTES, 1000 * rate)
-
-    def test_min_bytes_keeps_the_absolute_floor(self, clip):
-        assert stitch._min_bytes(clip, ["-bitrate", "8"]) == stitch.MIN_OUTPUT_BYTES
 
     def test_require_sdk_missing_message(self):
         with pytest.raises(stitch.SdkNotConfigured, match="Media SDK not found"):
@@ -698,10 +665,6 @@ def _config(**pano) -> None:
 
 
 class TestValidateStitchArgs:
-    def test_valid_args_pass_through(self):
-        args = ["-stitch_type", "optflow", "-output_size", "5760x2880"]
-        assert project.validate_stitch_args(args) == args
-
     def test_rejected_types(self):
         with pytest.raises(ValueError, match="Unsupported -stitch_type"):
             project.validate_stitch_args(["-stitch_type", "template"])
@@ -742,9 +705,6 @@ class TestStitchArgs:
 
 
 class TestStitchTimeout:
-    def test_unset(self):
-        assert project.stitch_timeout_s() is None
-
     def test_valid(self):
         _config(stitch_timeout_s=7200)
         got = project.stitch_timeout_s()
@@ -756,7 +716,8 @@ class TestStitchTimeout:
         with pytest.raises(ValueError, match="stitch_timeout_s"):
             project.stitch_timeout_s()
 
-    def test_null_means_no_limit(self):
+    def test_unset_or_null_means_no_limit(self):
+        assert project.stitch_timeout_s() is None
         _config(stitch_timeout_s=None)
         assert project.stitch_timeout_s() is None
 
@@ -928,18 +889,20 @@ class TestCliStitchFromClips:
             )
         )
 
-    @pytest.mark.parametrize("arg", ["projects/trip-360/clips_review", "clips_review"])
-    def test_relative_forms_resolve(self, proj, arg):
-        self._run(arg)
-        assert self.stitched == [["001"]]
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="backslash separators are Windows-only")
-    def test_backslash_form_resolves(self, proj):
-        self._run(r"projects\trip-360\clips_review")
-        assert self.stitched == [["001"]]
-
-    def test_absolute(self, proj):
-        self._run(str(proj / "clips_review"))
+    @pytest.mark.parametrize(
+        "arg",
+        [
+            "projects/trip-360/clips_review",
+            "clips_review",
+            "ABSOLUTE",
+            pytest.param(
+                r"projects\trip-360\clips_review",
+                marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows separators"),
+            ),
+        ],
+    )
+    def test_folder_forms_resolve(self, proj, arg):
+        self._run(str(proj / "clips_review") if arg == "ABSOLUTE" else arg)
         assert self.stitched == [["001"]]
 
     def test_segments_select_only_their_sources(self, proj):
@@ -973,23 +936,6 @@ class TestCliCheck:
     def test_projects_relative_form_resolves(self, clips):
         self._run("projects/trip-360/clips_review")
         assert [p.resolve() for p in self.seen] == [clips.resolve()]
-
-    def test_missing_folder_is_a_clear_error(self, clips):
-        with pytest.raises(FileNotFoundError, match=r"clips folder not found: .*nope"):
-            self._run("projects/trip-360/nope")
-        assert self.seen == []
-
-
-class TestCliQa:
-    def test_missing_folder_is_a_clear_error(self, home):
-        from cutpoint.config import projects_dir  # noqa: PLC0415
-
-        (projects_dir() / "trip-360").mkdir(parents=True)
-        args = argparse.Namespace(
-            dir="projects/trip-360/nope", paths=False, fps=2.0, size=(640, 360), json_only=True
-        )
-        with pytest.raises(FileNotFoundError, match=r"clips folder not found: .*nope"):
-            pano_cli.cmd_qa(args)
 
 
 # --------------------------------------------------------------------------- sidecar

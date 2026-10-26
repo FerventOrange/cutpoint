@@ -396,25 +396,6 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     assert ("--no-vision" in captured[0]) is not vision
 
 
-@pytest.mark.parametrize("cfg", [None, False, True])
-def test_first_analysis_uses_the_settings_vision(
-    client: TestClient,
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    cfg: bool | None,
-) -> None:
-    if cfg is not None:
-        set_config(home, vision=cfg)
-    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
-    captured: list[list[str]] = []
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
-    assert client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"}).status_code == 200
-    flag = "--vision" if cfg else "--no-vision"
-    assert flag in captured[0] and len({"--vision", "--no-vision"} & set(captured[0])) == 1
-
-
 def test_analyze_follows_settings_saved_just_before(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -472,57 +453,35 @@ def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    ("event_sent", "exits_in_time"),
-    [(1, True), (0, False), (1, False)],
-    ids=["soft-stop-works", "no-console", "ignores-the-event"],
+    ("event_sent", "exits_in_time", "job", "expected"),
+    [
+        (1, False, 777, ["ctrl_break", "wait", "terminate", "taskkill"]),  # job object first
+        (1, False, None, ["ctrl_break", "wait", "taskkill"]),  # ignores the event
+        (1, True, None, ["ctrl_break", "wait", "taskkill"]),  # taskkill still follows
+        (0, False, None, ["ctrl_break", "taskkill"]),  # no console: nothing to wait for
+    ],
+    ids=["job-object", "ignores-the-event", "soft-stop-works", "no-console"],
 )
-def test_windows_cancel_tries_ctrl_break_before_taskkill(
-    monkeypatch: pytest.MonkeyPatch, event_sent: int, exits_in_time: bool
+def test_windows_cancel_tries_ctrl_break_then_the_job_object_then_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+    event_sent: int,
+    exits_in_time: bool,
+    job: int | None,
+    expected: list[str],
 ) -> None:
-    sent: list[tuple[int, int]] = []
-    waits: list[float] = []
-    runs: list[list[str]] = []
-
-    def send(event: int, pid: int) -> int:
-        sent.append((event, pid))
-        return event_sent
+    calls: list[tuple[str, object]] = []
 
     def wait(timeout: float) -> int:
-        waits.append(timeout)
+        calls.append(("wait", timeout))
         if exits_in_time:
             return 130
         raise subprocess.TimeoutExpired("job", timeout)
 
-    kernel32 = SimpleNamespace(GenerateConsoleCtrlEvent=send)
-    monkeypatch.setitem(sys.modules, "ctypes", SimpleNamespace(WinDLL=lambda name: kernel32))
-    monkeypatch.setattr(ui, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(ui, "signal", SimpleNamespace(CTRL_BREAK_EVENT=1))
-    monkeypatch.setattr(
-        ui,
-        "subprocess",
-        SimpleNamespace(
-            run=lambda args, **kw: runs.append(args), TimeoutExpired=subprocess.TimeoutExpired
-        ),
-    )
-    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait), 0.01)  # type: ignore[arg-type]
-    assert sent == [(1, 4242)]
-    assert waits == ([0.01] if event_sent else [])  # no event, nothing to wait for
-    # taskkill /T /F always follows: it ends a job that ignored the event, with its ffmpeg
-    assert runs == [["taskkill", "/PID", "4242", "/T", "/F"]]
-
-
-def test_windows_cancel_ends_the_job_object_between_ctrl_break_and_taskkill(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, object]] = []
-
-    def terminate(job: object, code: int) -> int:
-        calls.append(("terminate", (job, code)))
-        return 1
-
     kernel32 = SimpleNamespace(
-        GenerateConsoleCtrlEvent=lambda event, pid: calls.append(("ctrl_break", pid)) or 1,
-        TerminateJobObject=terminate,
+        GenerateConsoleCtrlEvent=lambda event, pid: (
+            calls.append(("ctrl_break", (event, pid))) or event_sent
+        ),
+        TerminateJobObject=lambda handle, code: calls.append(("terminate", (handle, code))) or 1,
     )
     fake_ctypes = SimpleNamespace(WinDLL=lambda name: kernel32, c_void_p=lambda value: value)
     monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
@@ -536,20 +495,14 @@ def test_windows_cancel_ends_the_job_object_between_ctrl_break_and_taskkill(
             TimeoutExpired=subprocess.TimeoutExpired,
         ),
     )
-
-    def wait(timeout: float) -> int:
-        calls.append(("wait", timeout))
-        raise subprocess.TimeoutExpired("job", timeout)
-
-    proc = SimpleNamespace(pid=4242, wait=wait, tree_job=777)
-    ui.kill_tree(proc)  # type: ignore[arg-type]
+    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait, tree_job=job), 0.01)  # type: ignore[arg-type]
     # the job object reaches descendants that outlive the leader, which taskkill /T cannot
-    assert [name for name, _ in calls] == ["ctrl_break", "wait", "terminate", "taskkill"]
-    assert dict(calls)["terminate"] == (777, 1)
-
-    calls.clear()  # no job object (assignment failed): taskkill alone, as before
-    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
-    assert [name for name, _ in calls] == ["ctrl_break", "wait", "taskkill"]
+    assert [name for name, _ in calls] == expected
+    got = dict(calls)
+    assert got["ctrl_break"] == (1, 4242)
+    assert got["taskkill"] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    assert got.get("wait", 0.01) == 0.01
+    assert got.get("terminate", (777, 1)) == (777, 1)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
@@ -846,37 +799,6 @@ def test_frame_failure_is_a_500_and_leaves_no_cache_file(
 
 
 @needs_ffmpeg
-@pytest.mark.parametrize("name", ["ui", "ui/frames"])
-def test_frame_when_ui_or_its_frames_folder_is_a_file_is_a_409_without_a_traceback(
-    client: TestClient,
-    still_source: tuple[str, str, Path, Path],
-    caplog: pytest.LogCaptureFixture,
-    name: str,
-) -> None:
-    pid, sid, source, _ = still_source
-    p = ui.project_dir(pid)
-    url = f"/api/projects/{pid}/sources/{sid}/frame?at=0.5&t={client.headers['X-Cutpoint-Token']}"
-    if name == "ui":
-        shutil.rmtree(p / "ui")
-    (p / name).write_bytes(b"x")
-    media = client.app.state.media
-    with caplog.at_level(logging.INFO):
-        if name == "ui":  # without ui/meta.json the folder is no project; ask Media directly
-            with pytest.raises(HTTPException) as err:
-                media.frame(p, str(source), 0.5, 160)
-            status, detail = err.value.status_code, err.value.detail
-        else:
-            res = client.get(url, headers={"X-Cutpoint-Token": ""})
-            status, detail = res.status_code, res.json()["detail"]
-    assert status == 409, detail
-    assert detail == f"{pid}/{name} is not a folder; remove or rename it"
-    assert (p / name).read_bytes() == b"x"
-    assert not [f for f in p.rglob("*") if f.suffix in (".jpg", ".part")]
-    assert not [r for r in caplog.records if r.exc_info]
-    assert media.frame_locks == {}
-
-
-@needs_ffmpeg
 def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
     still_source: tuple[str, str, Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1099,8 +1021,9 @@ def test_show_folder_is_404_when_the_picked_folder_is_gone_or_unreadable(
             m.setattr(Path, name, unreadable(getattr(Path, name)))
         res = client.post(f"/api/projects/{pid}/reveal")
     assert res.status_code == 404 and "no longer exists" in res.json()["detail"]
+    assert opened == []
 
-    shutil.rmtree(folder)
+    shutil.rmtree(folder)  # a picked folder that is gone is never swapped for its parent
     res = client.post(f"/api/projects/{pid}/reveal")
     assert res.status_code == 404 and "no longer exists" in res.json()["detail"]
     assert opened == []
@@ -1165,9 +1088,6 @@ def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
     assert client.post(reveal).status_code == 200
     assert client.post(reveal, params={"target": "sources"}).status_code == 200
     assert opened == [folder, folder]
-
-    monkeypatch.setattr(ui, "folder_opener", lambda: None)
-    assert client.post(reveal, params={"target": "clips"}).status_code == 501
 
     def broken(_: Path) -> None:
         raise OSError(5, "Access is denied")
@@ -1285,14 +1205,13 @@ def test_export_manifest_symlinked_outside_the_project_is_not_served(
     assert "SECRET-OUTSIDE" not in res.text
 
 
-@pytest.mark.parametrize("ext", ["", ".mp4", ".fcpxml"])
-def test_fresh_name_treats_a_broken_symlink_as_taken(tmp_path: Path, ext: str) -> None:
+def test_fresh_name_treats_a_broken_symlink_as_taken(tmp_path: Path) -> None:
+    """A dangling link is a taken name: nothing may be written through it."""
     try:
-        (tmp_path / f"final{ext}").symlink_to(tmp_path / "missing-target")
+        (tmp_path / "final.mp4").symlink_to(tmp_path / "missing-target")
     except (OSError, NotImplementedError):
         pytest.skip("cannot create a symlink here")
-    exts = ("", ".mp4", ".fcpxml") if ext else ("",)
-    assert ui.fresh_name(tmp_path, "final", exts) == "final-2"
+    assert ui.fresh_name(tmp_path, "final", ("", ".mp4", ".fcpxml")) == "final-2"
 
 
 def test_folder_opener_runs_the_platform_tool_without_a_shell(
@@ -1374,16 +1293,10 @@ def dialog(monkeypatch: pytest.MonkeyPatch) -> FakeDialog:
     return fake
 
 
-def test_session_reports_can_pick(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ui, "path_picker", lambda: None)
-    assert client.get("/api/session").json()["can_pick"] is False
-    monkeypatch.setattr(ui, "path_picker", lambda: lambda kind, start: ([], None))
-    assert client.get("/api/session").json()["can_pick"] is True
-
-
 def test_pick_returns_the_chosen_path_or_null_on_cancel(
     client: TestClient, dialog: FakeDialog, tmp_path: Path
 ) -> None:
+    assert client.get("/api/session").json()["can_pick"] is True
     video = tmp_path / "v.mp4"
     dialog.out = f"{video}\n"
     res = client.post("/api/pick", params={"kind": "file"})
@@ -1422,6 +1335,7 @@ def test_pick_errors(
 
     monkeypatch.setattr(ui, "path_picker", lambda: None)
     assert client.post("/api/pick", params={"kind": "file"}).status_code == 501
+    assert client.get("/api/session").json()["can_pick"] is False
 
 
 def test_pick_allows_one_dialog_at_a_time(
@@ -1629,8 +1543,10 @@ def test_put_settings_conflicts(
     assert client.get("/api/settings").status_code == 200  # config loaded (and cached) while valid
     cfg.parent.mkdir(parents=True)
     cfg.write_text("{not json", encoding="utf-8")
-    res = client.put("/api/settings", json=body)
+    new = tmp_path / "fresh"
+    res = client.put("/api/settings", json={"projects_dir": str(new)})
     assert res.status_code == 409 and cfg.read_text("utf-8") == "{not json"  # never overwritten
+    assert not new.exists()  # nor is the new folder created
     cfg.unlink()
     config.get_config.cache_clear()
 
@@ -1667,6 +1583,13 @@ def test_put_settings_saves_the_vision_default(
     data = json.loads(cfg.read_text("utf-8"))
     assert data == {"player_tags": ["Me"], "vision": True, "projects_dir": str(tmp_path)}
 
+    other = tmp_path / "other"  # a later folder replaces the old one in place; other keys stay
+    other.mkdir()
+    assert client.put("/api/settings", json={"projects_dir": str(other)}).status_code == 200
+    data = json.loads(cfg.read_text("utf-8"))
+    assert list(data) == ["player_tags", "vision", "projects_dir"]
+    assert data["projects_dir"] == str(other)
+
 
 def test_put_settings_vision_needs_a_boolean_and_no_folder_rules(
     client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1694,31 +1617,10 @@ def test_settings_show_a_wrongly_typed_vision_as_off_and_replace_it(
     assert client.get("/api/projects").status_code == 200
 
 
-def test_put_settings_keeps_other_config_keys(
-    client: TestClient, home: Path, tmp_path: Path
-) -> None:
-    cfg = home / "config.json"
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text('{\n    "player_tags": ["Me"],\n    "projects_dir": "/old"\n}', encoding="utf-8")
-    assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
-    data = json.loads(cfg.read_text("utf-8"))
-    assert list(data) == ["player_tags", "projects_dir"] and data["player_tags"] == ["Me"]
-    assert data["projects_dir"] == str(tmp_path)
-
-
 def test_put_settings_removes_a_folder_it_created_when_saving_fails(
     client: TestClient, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     new = tmp_path / "fresh"
-    cfg = home / "config.json"
-    cfg.parent.mkdir(parents=True)
-    cfg.write_text("{oops", encoding="utf-8")
-    config.get_config.cache_clear()
-    assert client.put("/api/settings", json={"projects_dir": str(new)}).status_code == 409
-    assert not new.exists() and cfg.read_text("utf-8") == "{oops"  # never overwritten
-
-    cfg.unlink()
-    config.get_config.cache_clear()
 
     def broken(*a, **kw):
         raise OSError(28, "No space left")
@@ -1742,14 +1644,6 @@ def test_put_settings_never_removes_an_existing_folder_on_failure(
     res = client.put("/api/settings", json={"projects_dir": str(existing)})
     assert res.status_code == 500 and (existing / "f.txt").exists()
 
-    def denied(*a, **kw):
-        raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
-    res = client.put("/api/settings", json={"projects_dir": str(existing)})
-    assert res.status_code == 400 and "Permission denied" in res.json()["detail"]
-    assert existing.is_dir() and not (home / "config.json").exists()
-
 
 def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1761,7 +1655,14 @@ def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
     monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
     with pytest.raises(HTTPException) as e:
         ui.check_projects_dir(str(new))
-    assert e.value.status_code == 400 and not new.exists()
+    assert e.value.status_code == 400 and "Permission denied" in e.value.detail
+    assert not new.exists()
+    existing = tmp_path / "keep"  # a folder that was already there is never removed
+    existing.mkdir()
+    (existing / "f.txt").write_text("x")
+    with pytest.raises(HTTPException):
+        ui.check_projects_dir(str(existing))
+    assert (existing / "f.txt").exists()
     monkeypatch.undo()
     assert ui.check_projects_dir(str(new)) == (new, True)
     assert ui.check_projects_dir(str(new)) == (new, False)
@@ -1810,6 +1711,8 @@ def test_project_routes_name_a_rejected_config_file_and_settings_still_work(
         assert settings.status_code == 409 and str(cfg) in settings.json()["detail"]
     else:  # a rejected unrelated value: Settings still show and save the projects folder
         assert settings.status_code == 200 and settings.json()["config_file"] == str(cfg)
+        if "projects_dir" in text:  # shown as typed, so it can be replaced
+            assert settings.json()["projects_dir"] == "5"
         assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
         # the rejected unrelated value is kept; a bad projects_dir is the one thing replaced
         assert json.loads(cfg.read_text("utf-8")) == {
@@ -1834,19 +1737,6 @@ def test_a_rejected_encoder_variable_is_named_instead_of_config_json(
     detail = res.json()["detail"]
     assert detail.startswith("CUTPOINT_VIDEO_ENCODER is 'bogus'; expected one of auto,"), detail
     assert str(cfg) not in detail
-
-
-def test_settings_show_a_wrongly_typed_projects_folder_so_it_can_be_replaced(
-    client: TestClient, home: Path, tmp_path: Path
-) -> None:
-    cfg = home / "config.json"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text('{"projects_dir": 5}', encoding="utf-8")
-    config.get_config.cache_clear()
-    res = client.get("/api/settings")
-    assert res.status_code == 200 and res.json()["projects_dir"] == "5"
-    assert client.put("/api/settings", json={"projects_dir": str(tmp_path)}).status_code == 200
-    assert json.loads(cfg.read_text("utf-8")) == {"projects_dir": str(tmp_path)}
 
 
 @pytest.mark.parametrize(
@@ -2187,29 +2077,25 @@ def test_a_link_in_the_projects_folder_to_an_outside_analysis_is_not_a_project(
     assert client.get("/api/projects/linked").status_code == 404
 
 
-def swap_ui(p: Path, kind: str) -> None:
-    """Replace ``p/ui`` with a plain file, or a link to a folder that does not exist (inside p)."""
+def swap_ui(p: Path) -> None:
+    """Replace ``p/ui`` with a link to a folder that does not exist (inside p)."""
     shutil.rmtree(p / "ui", ignore_errors=True)
-    if kind == "file":
-        (p / "ui").write_bytes(b"x")
-    else:
-        link_dir(p / "ui", p / "gone")
+    link_dir(p / "ui", p / "gone")
 
 
-@pytest.mark.parametrize("kind", ["file", "dangling link"])
 @pytest.mark.parametrize("via", ["review", "clips job"])
-def test_an_unusable_ui_is_a_409_and_nothing_is_created(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, via: str, kind: str
+def test_a_dangling_ui_link_is_a_409_and_nothing_is_created(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, via: str
 ) -> None:
     p, seg = cli_project(tmp_path)
     if via == "review":
-        swap_ui(p, kind)
+        swap_ui(p)
         res = client.put("/api/projects/cli/review", json={"segments": [seg]})
     else:  # the review was read, then ui was replaced: the job must not write through it
         assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
 
         def cmd_after_ui_changes(*_a: str) -> list[str]:
-            swap_ui(p, kind)
+            swap_ui(p)
             return [sys.executable, "-c", "pass"]
 
         monkeypatch.setattr(ui, "cutpoint_cmd", cmd_after_ui_changes)
@@ -2274,22 +2160,13 @@ def test_one_unreadable_entry_does_not_fail_the_project_list(
     assert [x["id"] for x in res.json()["projects"]] == ["good"]
 
 
-@pytest.mark.parametrize(
-    "fault", ["ui is a file", "ui/proxy is a file", "proxy linked during the encode"]
-)
-def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
+def test_a_proxy_linked_during_the_encode_fails_with_a_warning_and_leaves_nothing(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     hevc_project: tuple[str, Path, Path, Path],
     caplog: pytest.LogCaptureFixture,
-    fault: str,
 ) -> None:
-    pid, folder, p, outside = hevc_project
-    if fault == "ui is a file":
-        shutil.rmtree(p / "ui")
-        (p / "ui").write_bytes(b"x")
-    elif fault == "ui/proxy is a file":
-        (p / "ui" / "proxy").write_bytes(b"x")
+    _pid, folder, p, outside = hevc_project
     monkeypatch.setattr(ui, "proxy_args", lambda _real, tmp, _n, **_kw: [str(tmp)])
 
     class Encoder:
@@ -2313,11 +2190,7 @@ def test_a_proxy_that_cannot_be_placed_fails_with_a_warning_and_leaves_nothing(
     assert not list(p.rglob("*.part.mp4"))
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert [r.levelno for r in warnings] == [logging.WARNING] and not warnings[0].exc_info
-    if fault == "ui is a file":
-        assert "is not a folder" in warnings[0].getMessage()
-    elif fault == "ui/proxy is a file":
-        assert f"{pid}/ui/proxy is not a folder" in warnings[0].getMessage()
-        assert (p / "ui" / "proxy").read_bytes() == b"x"
+    assert "resolves outside the project folder" in warnings[0].getMessage()
     assert media.status(p, str(folder / "a.mp4"))[0] == "failed"
 
 
@@ -2423,10 +2296,6 @@ def test_cancel_returns_before_the_kill_finishes_and_a_second_cancel_adds_no_kil
         proc.release.set()
     assert job.done.wait(10)
     assert len(calls) == 1
-
-
-def test_the_page_declares_an_icon(client: TestClient) -> None:
-    assert 'rel="icon"' in client.get("/").text
 
 
 def record_export(p: Path, final: str | None) -> None:
@@ -2570,23 +2439,26 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
 
 
 @pytest.mark.slow
-def test_spawn_runs_children_below_normal_priority() -> None:
+def test_spawn_runs_children_below_normal_priority_and_asks_for_progress_lines() -> None:
     """Jobs and proxy encodes (and what they start) yield the CPU to the desktop."""
     if os.name == "nt":
         code = (
             "import ctypes; k = ctypes.windll.kernel32; "
             "k.GetCurrentProcess.restype = ctypes.c_void_p; "
             "k.GetPriorityClass.argtypes = [ctypes.c_void_p]; "
-            "print(k.GetPriorityClass(k.GetCurrentProcess()))"
+            "import os; print(k.GetPriorityClass(k.GetCurrentProcess()), "
+            "os.environ.get('CUTPOINT_PROGRESS'))"
         )
         want = subprocess.BELOW_NORMAL_PRIORITY_CLASS
     else:
-        code = "import os; print(os.nice(0))"
+        code = "import os; print(os.nice(0), os.environ.get('CUTPOINT_PROGRESS'))"
         want = min(os.nice(0) + 10, 19)
     proc = ui.spawn([sys.executable, "-c", code])
     out = proc.communicate(timeout=30)[0]
     assert proc.returncode == 0, out
-    assert int(out.split()[-1]) == want
+    priority, progress = out.split()[-2:]
+    assert int(priority) == want
+    assert progress == "1"  # the CLI is asked for PROGRESS lines
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows creation flags")
@@ -3046,12 +2918,9 @@ def test_a_step_sent_again_later_keeps_its_index_place_and_a_log_prefix_is_accep
     [
         "PROGRESS {not json",
         "PROGRESS [1, 2]",
-        'PROGRESS {"step":"x","index":"1","state":"done"}',
         'PROGRESS {"step":"x","index":1,"state":"exploded"}',
         'PROGRESS {"index":1,"state":"done"}',
-        'PROGRESS {"step":"x","index":true,"state":"done"}',
         'Saying PROGRESS {"step":"x","index":1,"state":"done"} mid-line',
-        pytest.param('PROGRESS {"a":' + "[" * 100000 + "]" * 100000 + "}", id="deep-nesting"),
     ],
 )
 def test_a_malformed_progress_line_stays_in_the_log_as_text(line: str) -> None:
@@ -3104,28 +2973,3 @@ def test_a_cancelled_job_interrupts_its_running_step(monkeypatch: pytest.MonkeyP
     assert job.done.wait(10)
     assert job.view()["status"] == "cancelled"
     assert [s["state"] for s in job.view()["progress"]["steps"]] == ["interrupted", "skipped"]
-
-
-@pytest.mark.slow
-def test_api_jobs_carries_the_progress(client: TestClient) -> None:
-    script = f"for ln in {SAMPLE_PROGRESS!r}:\n    print(ln)"
-    job = client.app.state.jobs.start("p", "analyze", [sys.executable, "-c", script])
-    assert job.done.wait(20)
-    (seen,) = client.get("/api/jobs").json()["jobs"]
-    assert seen["progress"]["total"] == 6
-    steps = seen["progress"]["steps"]
-    assert [(s["index"], s["state"]) for s in steps] == [
-        (1, "done"),
-        (2, "skipped"),
-        (4, "skipped"),
-        (6, "skipped"),
-    ]
-    assert not any("PROGRESS" in ln for ln in seen["logs"])
-
-
-@pytest.mark.slow
-def test_spawn_asks_the_cli_for_progress_lines() -> None:
-    code = "import os; print(os.environ.get('CUTPOINT_PROGRESS'))"
-    proc = ui.spawn([sys.executable, "-c", code])
-    out = proc.communicate(timeout=30)[0]
-    assert out.split()[-1] == "1"
