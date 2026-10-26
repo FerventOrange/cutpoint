@@ -264,6 +264,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An ffmpeg step that reports progress (audio extract, scene proxy) could wait forever after
+  ffmpeg had exited, when another process still held ffmpeg's progress output open; an analysis
+  then never finished. The step now ends when ffmpeg exits, after reading the rest of the
+  progress for up to 5 s (#338).
 - New Project in the UI: a folder that has files but no supported videos now says which file
   types it found (for example "no supported videos found (found 12 .insv, 3 .lrv)") instead of
   the generic message (#321).
