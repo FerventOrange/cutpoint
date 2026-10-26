@@ -264,6 +264,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An ffmpeg step that reports progress (audio extract, scene proxy) could wait forever after
+  ffmpeg had exited, when another process still held ffmpeg's progress output open; an analysis
+  then never finished. The step now ends when ffmpeg exits, after reading the rest of the
+  progress for up to 5 s (#338).
 - With reduced motion on (for example Windows "Animation effects" off), a running analysis
   step showed a frozen spinner and looked stuck. It now shows a still ▶ and an elapsed time that
   counts up, and the indeterminate progress bars show as a still dashed bar. Nothing changes with
