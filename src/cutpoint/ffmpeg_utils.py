@@ -44,6 +44,7 @@ import numpy as np
 from cutpoint import paths, state
 from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import get_config, path_key
+from cutpoint.winjob import kill_with_parent
 
 logger = logging.getLogger(__name__)
 
@@ -1834,72 +1835,11 @@ def _isolated() -> dict[str, Any]:
     return {"stdin": subprocess.DEVNULL, "start_new_session": True}
 
 
-_JOB_HANDLE: Any = None
-
-
-def _kill_with_parent(proc: subprocess.Popen) -> None:
-    """Windows: put ``proc`` in a job object that is killed when Python exits.
-
-    An isolated child leaves the console's group, so a ``taskkill /F`` of Python would leave
-    it running until its next write to the closed pipe; the job (KILL_ON_JOB_CLOSE, as
-    :mod:`cutpoint.events.llama_server` uses) ends it at once. POSIX does nothing: the pipe
-    closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first); either way
-    the next run's sweep removes the spool and the tmp proxy. No-op if the API is unavailable.
-    """
-    global _JOB_HANDLE
-    if os.name != "nt":
-        return
-    try:
-        import ctypes  # noqa: PLC0415
-        from ctypes import wintypes  # noqa: PLC0415
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-        if _JOB_HANDLE is None:
-
-            class _Basic(ctypes.Structure):
-                _fields_ = [
-                    ("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD),
-                ]
-
-            class _Ext(ctypes.Structure):
-                _fields_ = [
-                    ("BasicLimitInformation", _Basic),
-                    ("IoInfo", ctypes.c_uint64 * 6),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t),
-                ]
-
-            k32.CreateJobObjectW.restype = wintypes.HANDLE
-            job = k32.CreateJobObjectW(None, None)
-            if not job:
-                logger.debug("job object not created: error %d", ctypes.get_last_error())
-                return
-            info = _Ext()
-            info.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
-            if not k32.SetInformationJobObject(
-                wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info)
-            ):
-                logger.debug("job object limits not set: error %d", ctypes.get_last_error())
-                k32.CloseHandle(wintypes.HANDLE(job))
-                return
-            _JOB_HANDLE = job
-        if not k32.AssignProcessToJobObject(
-            wintypes.HANDLE(_JOB_HANDLE),
-            wintypes.HANDLE(int(proc._handle)),  # type: ignore[attr-defined]
-        ):
-            logger.debug("ffmpeg not put in the job object: error %d", ctypes.get_last_error())
-    except (OSError, AttributeError, ValueError) as err:
-        logger.debug("job object not available: %s", err)
+# Isolated children also go in a Windows job object (:func:`cutpoint.winjob.kill_with_parent`):
+# out of the console's group, a ``taskkill /F`` of Python would leave ffmpeg running until its
+# next write to the closed pipe; the job (KILL_ON_JOB_CLOSE) ends it at once. POSIX does nothing:
+# the pipe closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first);
+# either way the next run's sweep removes the spool and the tmp proxy.
 
 
 def decode_raw(
@@ -2004,7 +1944,7 @@ def decode_raw(
             **(_isolated() if isolate else {}),
         )
         if isolate:
-            _kill_with_parent(proc)
+            kill_with_parent(proc)
         reader = threading.Thread(target=log.read, args=(proc.stderr,), daemon=True)
         reader.start()
         deadline = _Deadline(proc, timeout) if timeout is not None else None
@@ -2184,7 +2124,7 @@ class SplitDecode:
         self._proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_isolated()
         )
-        _kill_with_parent(self._proc)
+        kill_with_parent(self._proc)
         self._reader = threading.Thread(
             target=self._log.read, args=(self._proc.stderr,), daemon=True
         )
