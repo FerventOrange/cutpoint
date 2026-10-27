@@ -394,6 +394,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ctrl+C during an `analyze` step after the transcription (reactions, keyframes, crashes,
+  ranking or vision) left a new `transcript.txt` next to the previous `highlights.json`, or in
+  an otherwise empty new project folder. `analyze` now writes `transcript.txt` with
+  `highlights.json` at the end (same content), and its event layers read the transcript from
+  memory, so a cancelled run leaves both files as they were.
 - Clips of a recording with the same audio on several tracks (OBS writes its mix to every
   enabled track) came out 20·log10(N) dB too loud and clipped, because every track was summed.
   `clips`, `extend` and `edit` now compare the tracks on six 3 s windows across each source

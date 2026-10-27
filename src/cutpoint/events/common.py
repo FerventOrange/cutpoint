@@ -175,12 +175,16 @@ def parse_clock(s: str) -> float:
 
 
 def load_transcript_lines(project: Path) -> list[dict[str, Any]]:
-    """Parse ``transcript.txt`` into ``{source_name, start, end, text, line}`` dicts."""
-    path = project / "transcript.txt"
-    if not path.exists():
-        return []
+    """Parse ``transcript.txt`` into ``{source_name, start, end, text, line}`` dicts (the
+    text of the analysis in progress, see :func:`pending_highlights`)."""
+    text = _PENDING_TRANSCRIPTS.get(project.resolve()) if _PENDING_TRANSCRIPTS else None
+    if text is None:
+        path = project / "transcript.txt"
+        if not path.exists():
+            return []
+        text = path.read_text(encoding="utf-8")
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         m = _TRANSCRIPT_RE.match(line)
         if m:
             out.append(
@@ -207,23 +211,32 @@ def transcript_excerpt(
     return "\n".join(parts)[:max_chars]
 
 
-# Analyses in progress: project folder -> the highlights.json they will write.
+# Analyses in progress: project folder -> the highlights.json and transcript.txt they will
+# write.
 _PENDING: dict[Path, dict[str, Any]] = {}
+_PENDING_TRANSCRIPTS: dict[Path, str] = {}
 
 
 @contextlib.contextmanager
-def pending_highlights(project: Path, data: dict[str, Any]) -> Iterator[None]:
-    """Let :func:`load_highlights` return ``data`` for ``project`` in the block.
+def pending_highlights(
+    project: Path, data: dict[str, Any], transcript: str | None = None
+) -> Iterator[None]:
+    """Let :func:`load_highlights` return ``data`` for ``project`` in the block (and
+    :func:`load_transcript_lines` parse ``transcript``, unless None).
 
     ``cutpoint analyze`` runs the event layers and crash detection before it writes
-    highlights.json (once, at the end); they read the analysis from here meanwhile.
+    highlights.json and transcript.txt (at the end, so a cancelled run leaves neither);
+    they read the analysis from here meanwhile.
     """
     key = project.resolve()
     _PENDING[key] = data
+    if transcript is not None:
+        _PENDING_TRANSCRIPTS[key] = transcript
     try:
         yield
     finally:
         _PENDING.pop(key, None)
+        _PENDING_TRANSCRIPTS.pop(key, None)
 
 
 def load_highlights(project: Path) -> dict[str, Any]:
