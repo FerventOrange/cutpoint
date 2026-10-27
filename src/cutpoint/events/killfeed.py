@@ -13,13 +13,16 @@ Events: ``{t, end, type, text, confidence, region, ...}`` with type one of
 from __future__ import annotations
 
 import bisect
+import contextlib
 import difflib
 import logging
 import os
+import queue
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
@@ -491,23 +494,58 @@ OCR_DET_SIDE = 960  # the OCR layer's detection size limit (long side, px)
 # 8-core CPU, so 4 is ~18% faster than the default (one per physical core). Capped at the CPU
 # count so small machines are not oversubscribed. The output does not depend on it (#374).
 OCR_THREADS = min(4, os.cpu_count() or 1)
+# OCR lanes (#403): the thread budget split over engines that run at once. Crops and row strips
+# are small and use intra-op threads poorly: on 4 vCPUs, 2 engines x 2 threads read a 300 s
+# clip's HUD in 286 s instead of 345 s with 1 x 4 (4 x 1 was slower). The output does not
+# depend on it.
+OCR_LANES = 2 if OCR_THREADS >= 4 else 1
 
 
 class OcrEngine:
-    """Thin wrapper around RapidOCR (onnxruntime, CPU)."""
+    """Thin wrapper around RapidOCR (onnxruntime, CPU).
 
-    def __init__(self, det_side: int = OCR_DET_SIDE) -> None:
+    With ``lanes`` > 1 it holds that many RapidOCR engines, which share the
+    :data:`OCR_THREADS` budget, and :meth:`map` and :meth:`read_rows` run OCR calls on
+    them at once. Each call runs on one engine, which gives the same result on any of
+    them, so the output does not depend on the lanes.
+    """
+
+    def __init__(self, det_side: int = OCR_DET_SIDE, lanes: int | None = None) -> None:
         from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
         self.det_side = det_side  # part of the raw OCR cache key
+        self.lanes = OCR_LANES if lanes is None else lanes
 
         # Default det config upscales the short side to 736 px ("limit_type: min"),
         # which makes wide HUD strips ~10x slower; cap the long side instead.
-        self.engine = RapidOCR(
-            det_limit_type="max",
-            det_limit_side_len=det_side,
-            intra_op_num_threads=OCR_THREADS,
-        )
+        engines = [
+            RapidOCR(
+                det_limit_type="max",
+                det_limit_side_len=det_side,
+                intra_op_num_threads=max(1, OCR_THREADS // self.lanes),
+            )
+            for _ in range(self.lanes)
+        ]
+        self._free: queue.SimpleQueue[Any] = queue.SimpleQueue()  # the engines not in use
+        for e in engines:
+            self._free.put(e)
+        self._pool = ThreadPoolExecutor(self.lanes, "ocr-lane") if self.lanes > 1 else None
+
+    @contextlib.contextmanager
+    def _lane(self) -> Iterator[Any]:
+        """An engine no other thread uses meanwhile."""
+        e = self._free.get()
+        try:
+            yield e
+        finally:
+            self._free.put(e)
+
+    def map(self, fn: Callable[[Any], Any], items: Sequence[Any]) -> list[Any]:
+        """``fn`` of every item, in order; on the lanes at once when there are several.
+        ``fn`` may make OCR calls of this engine but not call :meth:`map` again."""
+        if self._pool is None or len(items) < 2:
+            return [fn(x) for x in items]
+        return list(self._pool.map(fn, items))
 
     def detect(self, bgr: np.ndarray, scale: float = 1.0) -> list[list]:
         """Text boxes only (no recognition), used by the "det" gate.
@@ -520,7 +558,8 @@ class OcrEngine:
             import cv2  # noqa: PLC0415
 
             img = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        result, _ = self.engine(np.ascontiguousarray(img), use_cls=False, use_rec=False)
+        with self._lane() as e:
+            result, _ = e(np.ascontiguousarray(img), use_cls=False, use_rec=False)
         boxes = [b.tolist() if hasattr(b, "tolist") else b for b in (result or [])]
         if scale < 1.0:
             boxes = [[[p[0] / scale, p[1] / scale] for p in b] for b in boxes]
@@ -539,15 +578,23 @@ class OcrEngine:
         Returns items shaped like :meth:`__call__` (box = padded row rectangle).
         """
         h, w = bgr.shape[:2]
-        out = []
+        strips = []
         for y0, x0, y1, x1 in rows:
             a, b = int(max(0, y0 - pad / 2)), int(min(h, y1 + pad / 2))
             c, d = int(max(0, x0 - 2 * pad)), int(min(w, x1 + pad))
-            if b - a < 6 or d - c < 6:
-                continue
-            res, _ = self.engine(
-                np.ascontiguousarray(bgr[a:b, c:d]), use_det=False, use_cls=False, use_rec=True
-            )
+            if b - a >= 6 and d - c >= 6:
+                strips.append((a, b, c, d))
+
+        def recognise(strip: tuple[int, int, int, int]) -> Any:
+            a, b, c, d = strip
+            with self._lane() as e:
+                res, _ = e(
+                    np.ascontiguousarray(bgr[a:b, c:d]), use_det=False, use_cls=False, use_rec=True
+                )
+            return res
+
+        out = []
+        for (a, b, c, d), res in zip(strips, self.map(recognise, strips), strict=True):
             for item in res or []:
                 text, score = str(item[0]), float(item[1])
                 if score >= min_score and text.strip():
@@ -555,7 +602,8 @@ class OcrEngine:
         return out
 
     def __call__(self, bgr: np.ndarray, min_score: float) -> list[tuple[list, str, float]]:
-        result, _ = self.engine(np.ascontiguousarray(bgr), use_cls=False)
+        with self._lane() as e:
+            result, _ = e(np.ascontiguousarray(bgr), use_cls=False)
         return [
             (box, text, float(score))
             for box, text, score in (result or [])
@@ -1722,47 +1770,64 @@ class OcrReader:
             for pa, pb in zip(prev, layout, strict=True)
         )
 
+    def _look(
+        self, r: Region, crop: np.ndarray
+    ) -> tuple[dict[str, Any] | None, list[tuple[float, float, float, float]] | None, list | None]:
+        """The gate of region ``r`` and its OCR calls but the row recognition: ``(record,
+        rows, items)``. ``record`` is None when the "mask" gate did not let it through;
+        a det-gated region to read has its ``rows`` (``y0, x0, y1, x1``), a mask-gated one
+        its ``items``; neither when the layout did not change."""
+        if r.gate == "det":
+            g: dict[str, Any] = {}
+            if not self._det_changed(r, crop, g):
+                g["g"] = "keep" if self.last_layout[r.name] else "det"
+                return g, None, None
+            rows = self.last_rows[r.name]
+            if r.det_scale < 1.0:
+                # the cheap gate's boxes clip the ends of rows: re-detect at
+                # full resolution for exact row boxes (~35 ms)
+                rows = group_rows(
+                    self.engine.detect(crop), r.min_text_h * self.scale, 10 * self.scale
+                )
+            return g, [(y0, x0, y1, x1) for _, x0, x1, y0, y1 in rows], None
+        mask = _small(hud_mask(crop))
+        if mask.mean() < r.min_fill:
+            self.last_mask[r.name] = mask
+            return None, None, None
+        prev = self.last_mask[r.name]
+        if prev is not None and np.mean(np.abs(mask - prev) > 0.25) < r.min_change:
+            return None, None, None
+        self.last_mask[r.name] = mask
+        return {}, None, self.engine(crop, self.params.min_text_score)
+
     def read(self, n: int, t: float, frame: np.ndarray) -> tuple[FrameRec, dict[str, np.ndarray]]:
         """The record of frame ``n`` (time ``t``) and the crops of the regions read."""
         rec = FrameRec(n, t, _thumb_bgr(frame) if self.thumbs else None)
         crops: dict[str, np.ndarray] = {}
         ux, uy, _, _ = self.union
-        min_score = self.params.min_text_score
-        for r in self.regions:
-            if r.every > 1 and n % r.every:
-                continue
+        due = [r for r in self.regions if r.every <= 1 or not n % r.every]
+        cut = {}
+        for r in due:
             x, y, w, h = self.rects[r.name]
-            crop = frame[y - uy : y - uy + h, x - ux : x - ux + w]
+            cut[r.name] = frame[y - uy : y - uy + h, x - ux : x - ux + w]
+        # the regions' gates at once (each region's state is its own), then the rows in order;
+        # the rows of new regions are keyed in region order, as the state is saved as is
+        for r in due:
             if r.gate == "det":
-                g: dict[str, Any] = {}
-                rec.regions[r.name] = g
-                if not self._det_changed(r, crop, g):
-                    g["g"] = "keep" if self.last_layout[r.name] else "det"
-                    continue
-                rows = self.last_rows[r.name]
-                if r.det_scale < 1.0:
-                    # the cheap gate's boxes clip the ends of rows: re-detect at
-                    # full resolution for exact row boxes (~35 ms)
-                    rows = group_rows(
-                        self.engine.detect(crop), r.min_text_h * self.scale, 10 * self.scale
-                    )
+                self.last_rows.setdefault(r.name, [])
+        each = getattr(self.engine, "map", None) or (lambda fn, xs: [fn(x) for x in xs])
+        looks = each(lambda r: self._look(r, cut[r.name]), due)
+        for r, (g, text_rows, items) in zip(due, looks, strict=True):
+            if g is None:
+                continue
+            rec.regions[r.name] = g
+            crop = cut[r.name]
+            if text_rows is not None:
                 items = self.engine.read_rows(
-                    crop,
-                    [(y0, x0, y1, x1) for _, x0, x1, y0, y1 in rows],
-                    min_score,
-                    pad=6 * self.scale,
+                    crop, text_rows, self.params.min_text_score, pad=6 * self.scale
                 )
-            else:
-                mask = _small(hud_mask(crop))
-                if mask.mean() < r.min_fill:
-                    self.last_mask[r.name] = mask
-                    continue
-                prev = self.last_mask[r.name]
-                if prev is not None and np.mean(np.abs(mask - prev) > 0.25) < r.min_change:
-                    continue
-                self.last_mask[r.name] = mask
-                items = self.engine(crop, min_score)
-                g = rec.regions[r.name] = {}
+            elif items is None:
+                continue
             g["g"] = "read"
             g["items"] = [
                 [[[_plain(v) for v in p] for p in box], str(text), float(score)]

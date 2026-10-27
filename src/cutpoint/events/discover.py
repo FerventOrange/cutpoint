@@ -278,7 +278,8 @@ def _ocr_frames(
                 src.io_path, t, params.burst_frames, params.burst_step_s, params.width
             )
             if engine is None:
-                engine = OcrEngine(det_side=params.width)
+                # full frames, one at a time: all the threads on one engine
+                engine = OcrEngine(det_side=params.width, lanes=1)
             for k, img in enumerate(frames):
                 fid = ids[k]
                 if fid in done:
