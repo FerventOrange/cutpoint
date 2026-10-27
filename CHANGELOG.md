@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/pipeline.md`: diagrams of the flow from source footage to the finished video, and the
+  `edit --kind` presets.
 - HUD region discovery proposes up to 2 extra `notice` regions (`extra_notice`,
   `extra_notice2`) where text keeps showing outside every discovered region, such as a brief
   message at the top edge or small text inside the screen-centre big-text area, which reads

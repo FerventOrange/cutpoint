@@ -18,7 +18,8 @@ sources --> analyze --> highlights.json, transcript.txt
 
 Each stage reads the previous stage's files in the project folder, so any stage can be re-run
 or replaced by hand-edited input (`clips --segments`). Per-source results are cached in
-`<CUTPOINT_HOME>\cache`, keyed by path, size and modification time.
+`<CUTPOINT_HOME>\cache`, keyed by path, size and modification time. [Pipeline](pipeline.md) has
+a detailed diagram of each analyze step, the background OCR and the `edit --kind` presets.
 
 ## Modules
 
