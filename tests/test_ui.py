@@ -4270,6 +4270,57 @@ def test_prune_proxies_keeps_the_proxies_while_a_source_is_offline(
     assert probed == []
 
 
+def test_prune_proxies_deletes_proxies_idle_a_month_while_a_source_is_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probed: list[str] = []
+    sdr = media_info(duration=10.0)
+    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or sdr)
+    media, folder, paths, a, b = prune_setup(tmp_path)
+    paths.append(str(tmp_path / "offline" / "c.mp4"))  # a drive that stays offline
+    month = [f"{'1' * 16}.mp4", f"{'2' * 16}.w0-500.mp4"]  # also an HDR window
+    recent = [f"{'3' * 16}.mp4", f"{'4' * 16}.w0-500.mp4"]  # may be the offline source's
+    for name in [*month, *recent, f"{a}.mp4", f"{b}.w0-500.mp4"]:
+        (folder / name).write_bytes(b"x")
+    age(*folder.iterdir())
+    for name in [*month, *recent]:
+        then = time.time() - 29 * 86400 - 60
+        os.utime(folder / name, (then, then))
+    os.utime(folder / f"{a}.mp4", (time.time() - 40 * 86400,) * 2)  # a reachable source's
+    everything = sorted(f.name for f in folder.iterdir())
+    media.prune_proxies(folder.parents[1], paths)
+    assert sorted(f.name for f in folder.iterdir()) == everything
+    assert probed == []  # nothing idle a month: nothing to probe for
+    for name in month:
+        then = time.time() - 30 * 86400 - 60
+        os.utime(folder / name, (then, then))
+    ui.Media().prune_proxies(folder.parents[1], paths)  # a later run
+    assert sorted(f.name for f in folder.iterdir()) == sorted(
+        [*recent, f"{a}.mp4", f"{b}.w0-500.mp4"]
+    )
+    assert probed == ["a.mp4", "b.mp4"]  # neither is HDR: no source names them
+
+
+@pytest.mark.parametrize("window", [False, True])
+def test_prune_proxies_keeps_a_reachable_hdr_sources_proxy_idle_a_month_while_one_is_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window: bool
+) -> None:
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
+    probed: list[str] = []
+    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hlg)
+    media, folder, paths, a, _ = prune_setup(tmp_path)
+    paths.append(str(tmp_path / "offline" / "c.mp4"))  # a drive that stays offline
+    hdr = hashlib.sha1(f"{a}|{encode.sdr_filter(hlg)}".encode()).hexdigest()[:16]
+    name = f"{hdr}.w0-500.mp4" if window else f"{hdr}.mp4"  # a whole proxy retires windows
+    (folder / name).write_bytes(b"x")
+    then = time.time() - 31 * 86400
+    os.utime(folder / name, (then, then))
+    media.prune_proxies(folder.parents[1], paths)
+    assert [f.name for f in folder.iterdir()] == [name]  # not rebuilt for an hour
+    assert probed == ["a.mp4"]  # matched: b.mp4 is not probed
+
+
 def test_prune_proxies_deletes_stale_whole_proxies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

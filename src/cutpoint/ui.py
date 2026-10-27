@@ -802,6 +802,9 @@ PROXY_FILE = re.compile(r"([0-9a-f]{16})(?:\.w\d+-\d+)?\.mp4")
 # encoding one (a temporary grows as it encodes), or about to serve or serving one
 # (Media.window and the proxy routes touch what they serve, see _mark_used)
 PROXY_PRUNE_GRACE_S = 3600.0
+# while a source cannot be read, a proxy or window that names no other source goes only once
+# it has been idle this long (a drive that stays offline must not keep them forever)
+PROXY_OFFLINE_PRUNE_S = 30 * 86400.0
 # a ``key=value`` line of ffmpeg's ``-progress`` output (frame=, out_time_us=, progress=...)
 PROXY_PROGRESS_LINE = re.compile(r"([a-z0-9_]+)= *(\S*)")  # bitrate= 4.1kbits/s
 
@@ -1324,8 +1327,9 @@ class Media:
         is built; adopt the other windows on disk. A file written or used in the last
         PROXY_PRUNE_GRACE_S stays (another run may be encoding or serving it), as does one that
         cannot be deleted (open on Windows); a later run deletes it. While a source cannot be
-        read (an offline drive), no proxy goes for naming no current source, and no source is
-        probed.
+        read (an offline drive), a proxy or window naming no current source goes only once idle
+        for PROXY_OFFLINE_PRUNE_S (it may be the offline source's), and the readable sources are
+        probed only when such a proxy has been idle that long.
 
         A proxy no known key names may be of an HDR source not probed yet (its proxy key holds
         the colour filter): sources are then probed, in order, until every such proxy is
@@ -1335,12 +1339,24 @@ class Media:
         if project in self.proxies_pruned:
             return
         cutoff = time.time_ns() - int(PROXY_PRUNE_GRACE_S * 1e9)
+        offline_cutoff = time.time_ns() - int(PROXY_OFFLINE_PRUNE_S * 1e9)
         reals = [remap_source(path) for path in paths]
         keys = {self._proxy_key(self.key(real)) for real in reals}
         unsure = None in keys  # a source is unreachable: its proxies' names are unknown
         keys.discard(None)
-        named = {m[1] for m in (PROXY_FILE.fullmatch(f.name) for f in folder.glob("*.mp4")) if m}
-        left = set() if unsure else named - keys
+        if unsure:  # probe only for a proxy idle long enough to go if no source names it
+            left = {
+                m[1]
+                for f in folder.glob("*.mp4")
+                if (m := PROXY_FILE.fullmatch(f.name))
+                and m[1] not in keys
+                and _idle(f, offline_cutoff)
+            }
+        else:
+            named = {
+                m[1] for m in (PROXY_FILE.fullmatch(f.name) for f in folder.glob("*.mp4")) if m
+            }
+            left = named - keys
         for real in reals:
             if not left:
                 break
@@ -1366,14 +1382,14 @@ class Media:
                 if w is not None and w.project == project
             }
             drop += [f for f in folder.glob("*.part.mp4") if f.name not in busy]
-            if not unsure:
-                drop += [
-                    f
-                    for f in folder.glob("*.mp4")
-                    if (m := PROXY_FILE.fullmatch(f.name))
-                    and ".w" not in f.name
-                    and m[1] not in keys
-                ]  # whole proxies
+            drop += [
+                f
+                for f in folder.glob("*.mp4")
+                if (m := PROXY_FILE.fullmatch(f.name))
+                and ".w" not in f.name
+                and m[1] not in keys
+                and (not unsure or _idle(f, offline_cutoff))
+            ]  # whole proxies
             found: list[tuple[int, Path, str, tuple[int, int]]] = []
             for f in folder.glob("*.w*.mp4"):
                 m = PROXY_WINDOW_FILE.fullmatch(f.name)
@@ -1383,7 +1399,7 @@ class Media:
                 if (folder / f"{k}.mp4").is_file():
                     drop.append(f)
                 elif k not in keys:
-                    if not unsure:
+                    if not unsure or _idle(f, offline_cutoff):
                         drop.append(f)
                 else:
                     with contextlib.suppress(OSError):
