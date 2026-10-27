@@ -247,6 +247,8 @@ def run_events(
                     raise
                 finally:
                     if det is not None:
+                        # the device of this run, as voice and visual record theirs: a run
+                        # that only reads cached events loads no PANNs and leaves it out
                         stats["audio_device"] = det.device
                         if not keep:
                             det.close()
