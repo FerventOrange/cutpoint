@@ -249,6 +249,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another extension, a LUT ffmpeg cannot load or a strength outside 0-1). `clips/manifest.json`
   records `lut` (absolute path) and `lut_strength` per clip, and `extend` grades its
   re-exports the same way. Without `--lut` the output is unchanged (#290).
+- `CUTPOINT_VIDEO_DECODER=cpu` decodes every video on the CPU instead of NVDEC or VAAPI, an
+  escape hatch for a GPU decoder that passes its test decode but misbehaves on real footage.
+  Unset, the GPU decoder is detected as before.
 
 ### Changed
 
@@ -457,6 +460,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `assemble --captions` (and `edit` kinds with captions) tags the re-encoded final video
+  BT.709 (`-color_range tv` and BT.709 primaries, transfer and matrix) when the joined video is
+  BT.709, instead of relying on the tags ffmpeg carries over.
+- UI: a trim handle drag is ended as soon as another moment or project opens (or Play sequence
+  moves on), so the handle no longer stays amber until the next pointer event.
+- `AGENTS.md`: `bad_args` exits 2 only for command-line errors; option values a command checks
+  itself (a `--lut` file, `--clip-override`, ...) exit 1, as `docs/commands.md` says. That
+  list now names a `--lut` file that is not `.cube`/`.3dl`, unreadable or that ffmpeg cannot
+  load, and `--lut-strength` without `--lut` (a missing `--lut` file is `not_found`).
 - UI: thumbnails of HDR (HLG, PQ) and BT.2020 sources are converted to SDR Rec.709 as exports
   are, so they no longer look washed out (#412). On a PQ sample the mean saturation went from
   0.38 to 0.64 (the SDR copy: 0.67). Without `zscale` they stay as before, with the same

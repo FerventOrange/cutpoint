@@ -853,7 +853,11 @@ def decoder_candidates() -> list[HwDecoder]:
 def gpu_decoder() -> HwDecoder | None:
     """The GPU decoder ``hwaccel="auto"`` uses: the first of :func:`decoder_candidates` that
     really decodes; ``None`` = CPU. Logged once at INFO, like the video encoder; a failed NVIDIA
-    probe too, since it moves every decode to the CPU (a failed VAAPI node is tried next)."""
+    probe too, since it moves every decode to the CPU (a failed VAAPI node is tried next).
+    ``CUTPOINT_VIDEO_DECODER=cpu`` skips the GPU decoders (escape hatch)."""
+    if (paths.env("VIDEO_DECODER") or "").strip().lower() == "cpu":
+        logger.info("Video decoder: CPU (CUTPOINT_VIDEO_DECODER=cpu)")
+        return None
     for dec in decoder_candidates():
         error = decoder_error(dec)
         if error is None:

@@ -385,6 +385,10 @@ def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
     assert "step * 10" in js  # Shift+arrows: 1 s
     assert "return t === c[which] || setRange(which, t, widen);" in js
     assert "el.setPointerCapture(e.pointerId);" in js
+    # a drag whose clip changed is dropped when the stage renders, not on the next pointer event
+    at = js.index("function renderStage(")
+    stage = js[at : js.index("const c = current();", at)]
+    assert "if (trimDrag && dragStale(trimDrag)) dropDrag();" in stage
     assert (
         "' '"
         not in js[js.index("const HANDLE_STEPS") : js.index("el.addEventListener('pointerdown'")]

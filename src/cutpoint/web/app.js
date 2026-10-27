@@ -564,6 +564,7 @@ function setRange(which, t, widen = true) {
 }
 
 function renderStage(seekToStart, keepVideo = false) {
+  if (trimDrag && dragStale(trimDrag)) dropDrag(); // the reused handle loses its amber drag state at once
   const c = current();
   $('#stageBody').hidden = !c;
   $('#toggleBtn').hidden = !c;
