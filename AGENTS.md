@@ -49,8 +49,9 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
   the Status table) also writes one JSON object to stdout, with the file paths and warnings:
   `ok`, `command`, `schema`, `project`, `outputs`, `warnings` (`code`, `message`, `files`) and
   `error` (`code`, `message`, or `null`). `error.code` is `bad_args` (exit 2), `not_found`,
-  `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `interrupted` (130) or `error`.
-  Read `warnings` such as `kept_clips` and `step_failed` and tell the user. With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step ([docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output)). Keys:
+  `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `folder_busy` (another run holds the folder's lock: wait or retry),
+  `interrupted` (130) or `error`.
+  Read `warnings` such as `kept_clips`, `kept_sources` and `step_failed` and tell the user. With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step ([docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output)). Keys:
   [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output).
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
   `clips` refuses a non-empty output folder without `--force`, which replaces only the clips its
@@ -59,6 +60,11 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
   user, and move them out only if they are clips you exported, never delete a file you did not
   export). If such a clip has the name of a new clip, the run stops before exporting with an
   `ERROR` naming it; tell the user to move or rename it.
+- One run at a time works on a clips folder (lock file `.<folder>.cutpoint-lock`). If `clips`,
+  `extend` or `assemble` stops with an `ERROR` that another run holds the lock, wait for it;
+  delete the lock file only if you are sure no run is active. If `clips --force` or `extend`
+  refuses a `manifest.json` Cutpoint did not write (or cannot read), tell the user; never delete
+  or overwrite their manifest.
 - Transcription, `analyze` steps, `events` and export can take minutes to hours. Run them in the background or
   with a long timeout.
 - Never modify or delete the user's source videos. You may delete or rename clips in a project's

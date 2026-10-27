@@ -32,6 +32,7 @@ NOT_FOUND = "not_found"  # FileNotFoundError: an input, project or file is missi
 FFMPEG_MISSING = "ffmpeg_missing"  # FFmpegNotFoundError: ffmpeg / ffprobe not found
 MISSING_EXTRA = "missing_extra"  # an optional extra is not installed
 OUTPUT_NOT_EMPTY = "output_not_empty"  # FileExistsError: an output is in the way (--force)
+FOLDER_BUSY = "folder_busy"  # FolderBusyError: another run holds the folder's lock
 INTERRUPTED = "interrupted"  # Ctrl+C, Ctrl+Break, SIGTERM (exit 130)
 ERROR = "error"  # anything else
 
@@ -120,10 +121,12 @@ def fail(code: str, message: str) -> None:
 
 def error_code(err: BaseException) -> str:
     """The ``error.code`` for an exception the CLI turns into an exit code."""
-    from cutpoint.ffmpeg_utils import FFmpegNotFoundError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import FFmpegNotFoundError, FolderBusyError  # noqa: PLC0415
 
     if isinstance(err, KeyboardInterrupt):
         return INTERRUPTED
+    if isinstance(err, FolderBusyError):
+        return FOLDER_BUSY
     if isinstance(err, FFmpegNotFoundError):
         return FFMPEG_MISSING
     if isinstance(err, FileExistsError):

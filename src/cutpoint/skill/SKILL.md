@@ -71,6 +71,10 @@ Choosing the moments yourself:
   `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
   `profile` and every `360` subcommand.
+- If `clips`, `extend` or `assemble` stops with an `ERROR` that another run holds the folder's
+  lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or retry; delete the lock file only if no run is active. If
+  `clips --force` or `extend` refuses a `manifest.json` Cutpoint did not write, tell the user;
+  never delete it.
 - Check `cutpoint <command> --help`; never invent options.
 - When done, report the absolute paths of `final.mp4` (and the `<name>-final.mp4` copy after
   `cutpoint edit`), its `.srt` and the clips folder, exactly as the last log lines print them;

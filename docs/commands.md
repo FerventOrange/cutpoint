@@ -64,14 +64,15 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
 | `missing_extra` | 1 | An optional extra is not installed |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
+| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
 
 | `warnings[].code` | Command | Meaning |
 |---|---|---|
-| `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder; `assemble` includes them |
-| `kept_sources` | `clips` | A file the run reads as a source was not replaced |
-| `skipped_clips` | `extend` | Clips without a manifest entry were not re-exported |
+| `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
+| `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
+| `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | `--vision` was passed but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
@@ -522,11 +523,23 @@ file stays, including `.mp4` files the old manifest does not list (renamed or ad
 WARNING names them, since `assemble` includes every `.mp4` in the folder; move them out before
 re-running `clips --force` if they are not part of the edit. If such a file has the name of a
 new clip, the run stops with an error naming it before exporting; move or rename it. Without a
-readable old manifest, every existing `.mp4` counts as such a file. Because the staging folder sits next to the output
+readable old manifest, every existing `.mp4` counts as such a file. A clip renamed during
+review is recognised by its size (manifest `size`) when its exported name is gone and no
+other unlisted clip or missing entry has that size; the WARNING then names it as a clip cutpoint exported,
+with its exported name, and it still stays. A `manifest.json` that cutpoint may not have
+written (unreadable, another `generator`, or no `clips` list of entries with a `file`) is
+never replaced: the run stops with an error before exporting; move or rename it. Because the staging folder sits next to the output
 folder, `clips --force` refuses before any export a non-empty output folder that is a drive
 root, a mount point or a bind mount; use `--out` with a folder on that drive. An empty drive
 root or mount point is exported into directly, each clip under a temporary name until it is
 complete; a failed run there may keep the finished clips.
+
+One run at a time works on a folder: `clips`, `extend` and `assemble` hold the lock file
+`.<folder>.cutpoint-lock` next to it while they run, so a second run never removes the first
+one's staging folder. A second run stops with an `ERROR` naming the process that holds the
+lock. The file is removed when the run ends, also on Ctrl+C. One left by a run that was
+killed (`taskkill /F`) is taken over once its process is gone; one from a run on another
+computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
@@ -588,8 +601,10 @@ Notes:
   Precedence: segment `crop`, then `--crop`, then `project.json`, then none.
 - **Mixed aspect ratios.** The output format follows the tallest source. When 16:9 and 8:7
   sources mix, pass `--size 1920x1080` and a `crop` on the 8:7 segments.
-- `manifest.json` records each clip's source, start, end, score, label, tail, crop, padding and
-  speech moves. `extend` and `assemble` read it.
+- `manifest.json` records each clip's source, start, end, score, label, tail, crop, padding,
+  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and
+  `assemble` read it. Manifests without `size` or `generator` (written by earlier versions)
+  still work; their clips are matched by name only.
 - **Subtitles.** Each clip gets `001_<label>.srt` next to it, from the source's cached
   transcript (the one `analyze` made; no transcription runs), timed to the clip's padded start.
   A source without a cached transcript gets no `.srt` (one INFO line); a transcript without
@@ -633,6 +648,11 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   before any export, as with `clips --force`. `--out DIR --force` is refused
   before any export when a non-empty `DIR` is a drive root, a mount point or a bind mount, and
   so is in-place `extend` of such a clips folder; use `--out` with a folder on that drive.
+  As with `clips --force`, a `manifest.json` in `DIR` that cutpoint may not have written stops
+  the run before any export.
+- An `.mp4` in the folder without a manifest entry is not re-exported; the WARNING says
+  whether it is a source of the clips, a clip renamed during review (recognised by its size,
+  naming its exported name), or added by hand.
 - **Subtitles.** Each re-exported clip gets its `.srt` for the new range, as `clips` writes it,
   and the manifest records it (`srt`). An `.srt` the target folder's manifest lists for a
   re-exported clip is replaced (removed if the source has no cached transcript); one it does
@@ -649,7 +669,10 @@ cutpoint assemble <clips_dir> [--out final.mp4] [--transition cut|fade] [--fade-
 ```
 
 Joins the `.mp4` files currently in the folder, in natural filename order (`2_x` before
-`10_x`).
+`10_x`). Like `clips`, it first puts back or removes what an interrupted `clips --force` or
+`extend` left next to the folder (`.<folder>.cutpoint-tmp`, `.<folder>.cutpoint-bak`), and it
+holds the folder's [lock](#clips) while it runs. The audio fade and peak compression baked
+into a clip renamed during review are read from its manifest entry, matched by size.
 
 - `cut` (default) uses stream copy when all clips share parameters, else normalises and
   re-encodes. `fade` crossfades video and audio over `--fade-dur` seconds (default 0.25,

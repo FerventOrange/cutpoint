@@ -233,6 +233,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** `clips --force` and `extend` refuse a `manifest.json` Cutpoint did not write
+  (another `generator`, or no `clips` list of entries with a `file`) and one they cannot read,
+  stopping with an `ERROR` before exporting; move or rename it. An unreadable manifest used to
+  be replaced (#145).
 - `360 qa` measures the horizon tilt of each clip from the v360 commands its render emitted,
   so it catches render roll errors that the old model prediction could not (#12). Each `.cmd`
   file now starts with a `# cutpoint-v360 ...` line holding the starting rotation; ffmpeg
@@ -408,6 +412,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clips --force`, `extend` and `assemble` no longer lose or mix up work when a folder is
+  touched by two runs or an interrupted one (#145):
+  - `assemble` puts back or removes the staging and backup folders (`.<folder>.cutpoint-tmp`,
+    `.<folder>.cutpoint-bak`) that an interrupted `clips --force` or `extend` left.
+  - `clips`, `extend` and `assemble` hold a lock file `.<folder>.cutpoint-lock` next to the
+    folder; a second run on it stops with an `ERROR` naming the process that holds it. A lock
+    left by a killed run is taken over.
+  - `manifest.json` records each clip's size and `"generator": "cutpoint"`, so a clip renamed
+    during review is reported as one Cutpoint exported, and `assemble` still reads its audio
+    fade and compression from the manifest. Older manifests still work, matched by name.
+  - `extend` reports files that are sources of the clips as `kept_sources`, not as "added by
+    hand?" (`kept_sources` now comes from `clips` and `extend`).
 - UI: the page's own files (`index.html`, `app.css`, the JS modules) are revalidated on each
   load (`Cache-Control: no-cache`), so an update's CSS and JS are used at once; a stale cached
   `app.css` had brought back the page scrolling past the Jobs bar (#415).
