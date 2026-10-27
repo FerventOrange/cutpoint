@@ -237,6 +237,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (another `generator`, or no `clips` list of entries with a `file`) and one they cannot read,
   stopping with an `ERROR` before exporting; move or rename it. An unreadable manifest used to
   be replaced (#145).
+- `360 qa` measures the horizon tilt of each clip from the v360 commands its render emitted,
+  so it catches render roll errors that the old model prediction could not (#12). Each `.cmd`
+  file now starts with a `# cutpoint-v360 ...` line holding the starting rotation; ffmpeg
+  skips it and renders are unchanged. Clips rendered before this fall back to the model with
+  an INFO line until they are re-rendered. The horizons in `qa.json` gain `source`
+  (`commands` or `model`).
+- `analyze --vision` with Ollama down uses the vision ratings already cached for the top
+  candidates instead of skipping the rating. The `vision_unavailable` warning gives the
+  counts, and `settings.vision.uncached` in `highlights.json` is the number of top candidates
+  with no cached rating. The cache now records the Ollama model's digest: a model pulled again
+  under the same tag is rated again, and with Ollama down the cached ratings for the tag are
+  used. Ratings cached before this change have no digest and are rated again once (#413).
 - `analyze` on `gaming` and `funny` footage starts the HUD OCR of the keyframes step in the
   background while transcription, scene detection and the reactions step use the GPU, instead
   of after them. It runs only when Whisper runs on CUDA, every game has a HUD preset, a source
@@ -412,6 +424,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     fade and compression from the manifest. Older manifests still work, matched by name.
   - `extend` reports files that are sources of the clips as `kept_sources`, not as "added by
     hand?" (`kept_sources` now comes from `clips` and `extend`).
+- UI: the page's own files (`index.html`, `app.css`, the JS modules) are revalidated on each
+  load (`Cache-Control: no-cache`), so an update's CSS and JS are used at once; a stale cached
+  `app.css` had brought back the page scrolling past the Jobs bar (#415).
 - Ctrl+C during an `analyze` step after the transcription (reactions, keyframes, crashes,
   ranking or vision) left a new `transcript.txt` next to the previous `highlights.json`, or in
   an otherwise empty new project folder. `analyze` now writes `transcript.txt` with

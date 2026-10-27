@@ -287,7 +287,7 @@ def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
 
 
 # ------------------------------------------------------------------------------ follow-ups
-VISION_MSG = "--vision requested but Ollama/model unavailable; continuing without it"
+VISION_MSG = "vision rating requested but Ollama/model unavailable; continuing without it"
 
 
 class _NoOllama:
@@ -298,6 +298,9 @@ class _NoOllama:
 
     def available(self) -> bool:
         return False
+
+    def cached(self, *_a, **_k) -> None:  # no cached ratings either
+        return None
 
 
 @needs_ffmpeg

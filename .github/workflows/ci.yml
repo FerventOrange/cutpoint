@@ -46,8 +46,9 @@ jobs:
       # breaks a cache miss, and then the bounded apt install below (Ubuntu 24.04 ships ffmpeg 6.1)
       # is the fallback. The cache is saved only after a successful static install, never after
       # an apt fallback, so a failed download cannot poison the key.
-      # To bump: pick a newer autobuild tag and change only FFMPEG_LINUX_URL and
-      # FFMPEG_LINUX_SHA256 in this job's env (the release API lists `digest: sha256:...` per asset).
+      # To bump: pick a newer autobuild tag and change FFMPEG_LINUX_URL and FFMPEG_LINUX_SHA256
+      # both in this job's env and in the Dockerfile ARGs (the docker job checks they match; the
+      # release API lists `digest: sha256:...` per asset).
       - name: Restore ffmpeg cache (Linux)
         id: ffmpeg-cache
         if: runner.os == 'Linux'
@@ -134,16 +135,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The Dockerfile pins the same ffmpeg as the test job above; fail if they drift apart.
+      - name: Check ffmpeg pin matches the Dockerfile
+        run: |
+          for v in FFMPEG_LINUX_URL FFMPEG_LINUX_SHA256; do
+            a=$(grep -m1 "^ *$v:" .github/workflows/ci.yml | sed 's/^[^:]*: *//')
+            b=$(grep -m1 "^ARG $v=" Dockerfile | sed 's/^[^=]*=//')
+            [ -n "$a" ] && [ "$a" = "$b" ] || { echo "::error::$v differs between ci.yml and Dockerfile"; exit 1; }
+          done
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           load: true
           tags: cutpoint:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Own scope and mode=min: this cache shares the repo's cache quota with the ffmpeg
+          # cache of the test job, so keep it small (final-stage layers only) to avoid evicting it.
+          cache-from: type=gha,scope=docker
+          cache-to: type=gha,scope=docker,mode=min
       # The image's ENTRYPOINT is the cutpoint CLI.
       - run: docker run --rm cutpoint:ci --version
+      # cv2 needs libGL/glib/xcb now that ffmpeg no longer comes from apt.
+      - run: docker run --rm --entrypoint /app/.venv/bin/python cutpoint:ci -c "import cv2, scenedetect"
+      # Burned-in captions need fontconfig and a font.
+      - run: docker run --rm --entrypoint fc-match cutpoint:ci sans-serif | grep -F DejaVu
+      # Fails when the Dockerfile fell back to apt ffmpeg (BtbN pruned the pinned tag): bump FFMPEG_LINUX_URL/SHA256 in both places.
+      - run: docker run --rm --entrypoint ffmpeg cutpoint:ci -version | head -1 | grep -F "n9.0.2"
       - run: docker run --rm cutpoint:ci capabilities
       # Non-root with an arbitrary uid, as users run it with --user.
       - run: docker run --rm --user 4242:4242 cutpoint:ci paths

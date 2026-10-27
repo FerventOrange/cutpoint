@@ -6,7 +6,7 @@
 `--vision` (or turn it on in Settings in `cutpoint ui`, which sets `"vision": true` in
 `config.json`; see [configuration](../configuration.md#vision)). If the server or model is not available
 then, it logs a WARNING (a `vision_unavailable` warning with `--json`) and continues without the
-rating.
+rating; if some of the top candidates have cached ratings, it uses those instead.
 
 1. Start Ollama and pull the model: `ollama pull qwen3-vl:8b`.
 2. Check the server: open `http://127.0.0.1:11434` in a browser; it answers "Ollama is running".
