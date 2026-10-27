@@ -60,7 +60,19 @@ and installs it as a preset. A stack of score popups (30% or more of its rows a 
 such as "+10" over a label) gets no region, and no extra notice is proposed inside it;
 `proposal.json` lists it as a `popup` proposal with `score_rows` evidence. Check `overlay.jpg`, then edit the preset JSON to calibrate.
 A discovered kill feed grows by the oldest rows that show only when the feed is full (up to
-twice its height). With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed.
+twice its height). Kill feeds without kill words: when at least 30% of the frames with text in a
+region at a screen edge show two names split by an icon gap (in at least 3 bursts, with at least 4 different names, at least one of them on both sides of an icon gap somewhere in the region),
+discovery proposes it as a `feed` even if names repeat or it shows one row at a time. A short clip
+in which no player both kills and dies is therefore not found as a feed. The written
+preset then gets `"feed": {"row_notices": true}`, so the feed's other rows (a name and text, such as
+"X has found the bombs") become notices; such rows that stay longer than 20 s, like lobby text, are
+dropped. With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed.
+A game that already has a preset does not pick this up: discovery does not run for it and the old
+preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
+preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or
+`events` again, so discovery installs the new one, or run `events --discover-regions` (which leaves
+the preset file alone and writes only `projects/<name>/discovery/<game>/proposal.json`) and copy the
+proposal's `feed` region and `"feed": {"row_notices": true}` into the preset by hand. Either way the new region needs new OCR reads (no cache replay).
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
 static screen when a small grey thumbnail of the HUD area stays nearly the same, with no feed
 sighting or kill within 2 s, for at least 5 s when new menu text shows (at least 2 text lines

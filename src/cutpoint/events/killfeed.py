@@ -92,7 +92,9 @@ class OcrParams:
 # 10: new menu text is STATIC_TEXT_LINES texts that stay for STATIC_TEXT_SHARE of the part;
 # 11: screens with TEXT_LINES lines of new text that stay, TEXT_TOGETHER first read together,
 # are menus too (:func:`text_frames`)
-GENERIC_VERSION = 11
+# 12: feeds without team colours read icon kill lines ("name [icon] name", FeedParser._icon_line);
+# icon kill events keep their most complete names, "row_notices" feeds read other rows as notices
+GENERIC_VERSION = 12
 
 
 # --------------------------------------------------------------------------- text utils
@@ -214,6 +216,18 @@ def team_color(bgr: np.ndarray) -> str | None:
     return None
 
 
+_HUES = (  # upper hue limits (degrees) of the colour names
+    (15, "red"),
+    (38, "orange"),
+    (68, "yellow"),
+    (160, "green"),
+    (200, "cyan"),
+    (250, "blue"),
+    (320, "purple"),
+    (361, "red"),
+)
+
+
 def text_hue(bgr: np.ndarray) -> str | None:
     """Dominant colour name of the text in a box crop ("white" or None if unclear).
 
@@ -232,19 +246,7 @@ def text_hue(bgr: np.ndarray) -> str | None:
     if len(sat) < max(6, 0.25 * len(bright)):
         return "white" if np.median(bright[:, 1]) < 60 else None
     h = float(np.median(sat[:, 0])) * 2  # OpenCV hue is 0-180
-    for limit, name in (
-        (15, "red"),
-        (38, "orange"),
-        (68, "yellow"),
-        (160, "green"),
-        (200, "cyan"),
-        (250, "blue"),
-        (320, "purple"),
-        (361, "red"),
-    ):
-        if h < limit:
-            return name
-    return None
+    return next((name for limit, name in _HUES if h < limit), None)
 
 
 def colour_runs(img: np.ndarray, row: list[tuple]) -> list[tuple[str | None, str]]:
@@ -292,6 +294,128 @@ def colour_runs(img: np.ndarray, row: list[tuple]) -> list[tuple[str | None, str
         else:
             runs.append((hue, ch))
     return [(h, t.strip()) for h, t in runs if t.strip()]
+
+
+# Icon kill lines without a kill word ("name [weapon icon] name"): the two names are split
+# by a stretch of ICON_GAP text heights or more. OCR boxes split there, or one box spans
+# the whole line; then the names sit on coloured columns (their box or their text: at least
+# ICON_FILL of a column's pixels have saturation >= ICON_SAT and value >= ICON_VAL, in 0-255;
+# white text and dark icon boxes have neither) and the icon gap is the widest run of other
+# columns, with a text height of coloured columns on both sides. The characters are shared
+# out by the widths on both sides and the cut moved to the nearest word boundary within
+# ICON_SNAP characters (a space wins a tie). Measured on R6 (solid and see-through name boxes):
+# most kill-line reads split with both names right, and of the other rows only a menu tab
+# row, whose right part _icon_name rejects.
+ICON_GAP = 1.0
+ICON_SAT = 60
+ICON_VAL = 90
+ICON_FILL = 0.3
+ICON_SNAP = 2.5
+_ICON_NAME_BAD = re.compile(r"[:%/]")
+# Feed rows read as notices (``row_notices``) that stay longer than this are no feed lines but
+# text that stays in the feed's area (a lobby line: "We're estimating your chances to win..."
+# for 49 s on R6); feed lines scroll out within seconds (R6 kill lines and notices: up to 10 s).
+ROW_NOTICE_MAX_S = 20.0
+# Two reads of an icon kill line's name are one name when the shorter shares a run of
+# ICON_PART of its characters with the longer (a cut read with noise at the cut)
+ICON_PART = 0.8
+# ... or when the shorter is within one edit per ICON_EDIT_CHARS of its characters (at least
+# one) of a start of the longer (misread letters: "NAVA" for "NOVA", "DRARNATI" of
+# "DRAMATICRAIL39")
+ICON_EDIT_CHARS = 4
+
+
+def column_colours(bgr: np.ndarray) -> list[str | None]:
+    """The colour name of each column of a box crop (:data:`_HUES`, the median hue of its
+    coloured pixels), or None when fewer than :data:`ICON_FILL` of its pixels are coloured
+    (saturation >= :data:`ICON_SAT`, value >= :data:`ICON_VAL`)."""
+    import cv2  # noqa: PLC0415
+
+    if bgr.size == 0:
+        return []
+    hsv = cv2.cvtColor(np.ascontiguousarray(bgr), cv2.COLOR_BGR2HSV)
+    coloured = (hsv[..., 1] >= ICON_SAT) & (hsv[..., 2] >= ICON_VAL)
+    out: list[str | None] = []
+    for x in range(hsv.shape[1]):
+        m = coloured[:, x]
+        if m.sum() < ICON_FILL * len(m):
+            out.append(None)
+            continue
+        h = float(np.median(hsv[m, x, 0])) * 2  # OpenCV hue is 0-180
+        out.append(next((n for lim, n in _HUES if h < lim), None))
+    return out
+
+
+def _icon_cut(text: str, k: float) -> int:
+    """Where to cut ``text`` into two names near character ``k``: the nearest space or word
+    boundary (:func:`_is_bound`) within :data:`ICON_SNAP` characters where the right name does
+    not start with punctuation (a space wins a tie), else ``k`` rounded."""
+    near = [i for i in range(1, len(text)) if abs(i - k) <= ICON_SNAP]
+
+    def space(i: int) -> bool:
+        return text[i].isspace() or text[i - 1].isspace()
+
+    bounds = [
+        i
+        for i in near
+        if space(i) or (_is_bound(text, i) and (text[i].isalnum() or text[i].isspace()))
+    ]
+    return min(bounds, key=lambda i: (abs(i - k), not space(i))) if bounds else round(k)
+
+
+def icon_split(bgr: np.ndarray, text: str) -> tuple[str, str, str | None, str | None] | None:
+    """``(left name, right name, left colour, right colour)`` of one OCR box ``text`` (crop
+    ``bgr``) that spans an icon kill line, or None.
+
+    The icon gap is the widest run of uncoloured columns (:func:`column_colours`) at least
+    :data:`ICON_GAP` crop heights wide with a crop height of coloured columns on both
+    sides; each name's colour is the most common one on its side. The text is cut at the
+    share of the width left of the gap (:func:`_icon_cut`)."""
+    h, w = bgr.shape[:2]
+    cols = column_colours(bgr)
+    on = np.array([c is not None for c in cols])
+    best: tuple[int, int] | None = None
+    x = 0
+    while x < w:
+        end = x
+        while end < w and on[end] == on[x]:
+            end += 1
+        if (
+            not on[x]
+            and end - x >= ICON_GAP * h
+            and on[:x].sum() >= h
+            and on[end:].sum() >= h
+            and (best is None or end - x > best[1] - best[0])
+        ):
+            best = (x, end)
+        x = end
+    if best is None:
+        return None
+    a, b = best
+    t = text.strip()
+    cut = _icon_cut(t, len(t) * a / max(1, a + w - b))
+    left, right = t[:cut].strip(), t[cut:].strip()
+    if not left or not right:
+        return None
+
+    def common(side: list[str | None]) -> str | None:
+        named = [c for c in side if c]
+        return max(set(named), key=named.count) if named else None
+
+    return left, right, common(cols[:a]), common(cols[b:])
+
+
+def _icon_name(text: str, min_len: int) -> bool:
+    """Whether ``text`` reads as one name of an icon kill line: one or two words (OCR
+    splits names), ``min_len`` letters and digits or more, half of them letters, no
+    ":" "%" "/" (readouts such as "FPS:106" or "3/4")."""
+    n = _alnum_len(text)
+    return (
+        n >= min_len
+        and len(text.split()) <= 2
+        and sum(ch.isalpha() for ch in text) >= 0.5 * n
+        and not _ICON_NAME_BAD.search(text)
+    )
 
 
 def _small(mask: np.ndarray, k: int = 4) -> np.ndarray:
@@ -400,6 +524,70 @@ class EventTracker:
             >= 0.85
         )
 
+    @staticmethod
+    def _nested(a: str | None, b: str | None) -> bool:
+        """Whether one name (normalized, spaces ignored) is part of the other: a read cut
+        while the line slides in or fades ("BOXE" of "BOXER7"), allowing OCR noise at the cut
+        (at least :data:`ICON_PART` of the shorter name in one run: "PDRAMATIC" of
+        "DRAMATICRAIL39")."""
+        na, nb = norm(a or "").replace(" ", ""), norm(b or "").replace(" ", "")
+        if not (na and nb):
+            return False
+        m = difflib.SequenceMatcher(None, na, nb, autojunk=False)
+        run = m.find_longest_match(0, len(na), 0, len(nb)).size
+        return run >= ICON_PART * min(len(na), len(nb))
+
+    @staticmethod
+    def _misread(a: str | None, b: str | None) -> bool:
+        """Whether one name (normalized, spaces ignored) is the other, or its start (a cut
+        read), but for misread letters: the shorter one is within one edit per
+        :data:`ICON_EDIT_CHARS` characters (at least one) of a start of the longer. A short
+        name misread by one letter ("NAVA" for "NOVA", "KLP" for "KIP") or a cut read with
+        "rn" for "m" ("DRARNATI" of "DRAMATICRAIL39") is no other name."""
+        na, nb = norm(a or "").replace(" ", ""), norm(b or "").replace(" ", "")
+        if not (na and nb):
+            return False
+        short, long = sorted((na, nb), key=len)
+        row = list(range(len(long) + 1))  # edits from "" to each start of ``long``
+        for i, ch in enumerate(short, 1):
+            prev, row = row, [i]
+            for j, c in enumerate(long, 1):
+                row.append(min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (ch != c)))
+        return min(row) <= max(1, len(short) // ICON_EDIT_CHARS)
+
+    def _same_line(self, e: dict[str, Any], fields: dict[str, Any]) -> bool:
+        """Whether an icon kill event and a sighting are one line: per side the names are
+        nested (:meth:`_nested`), misread (:meth:`_misread`) or similar. Two lines of one
+        killer ("Alder > Kip", "Alder > Boxer7") are two kills even when a long killer name
+        makes the keys similar."""
+        return all(
+            self._nested(e.get(s), fields.get(s))
+            or self._misread(e.get(s), fields.get(s))
+            or similar(e.get(s) or "", fields.get(s) or "") >= self.fuzzy
+            for s in ("killer", "victim")
+        )
+
+    @staticmethod
+    def _most_complete(e: dict[str, Any], fields: dict[str, Any]) -> None:
+        """An icon kill line's names and colours from its most complete read, whatever its
+        confidence: each read (killer, victim) of the line is counted in ``_reads``, and the
+        names are those of the read with the most letters and digits over both names among
+        the reads seen at least twice, or among all when none repeats (a read with junk
+        glued on, seen once, does not win; both names from one read, so two bad splits are
+        not combined; a tie keeps the earlier read). Only reads of one line
+        (:meth:`_same_line`) get here. Measured on R6: a cut read ("dramati", 0.95) often has
+        a higher confidence than the whole line ("dramatic_rail39", 0.91)."""
+        read = (fields.get("killer"), fields.get("victim"))
+        hues = {k: fields.get(k) for k in ("killer_hue", "victim_hue")}
+        e["_reads"].setdefault(read, {"n": 0} | hues)["n"] += 1
+        reads = list(e["_reads"].items())
+        pool = [r for r in reads if r[1]["n"] >= 2] or reads
+        (killer, victim), best = max(
+            pool, key=lambda r: _alnum_len(r[0][0] or "") + _alnum_len(r[0][1] or "")
+        )
+        e |= {"killer": killer, "victim": victim, "text": f"{killer} > {victim}"}
+        e |= {k: best[k] for k in ("killer_hue", "victim_hue")}
+
     def see(
         self, t: float, etype: str, key: str, exclusive: bool = False, **fields: Any
     ) -> dict[str, Any] | None:
@@ -414,11 +602,16 @@ class EventTracker:
                 continue
             # " #n" keys (repeated identical feed rows) only match exactly
             dup = " #" in key or " #" in e["_key"]
-            if e["type"] == etype and (
-                e["_key"] == key
-                or (not dup and similar(e["_key"], key) >= self.fuzzy)
-                or (exclusive and self._same_victim(e, fields))
-            ):
+            icon = e.get("entry") == "icon" and fields.get("entry") == "icon"
+            if icon:  # one line by its names (:meth:`_same_line`): the key is the killer's
+                match = e["_key"] == key if dup else self._same_line(e, fields)
+            else:
+                match = (
+                    e["_key"] == key
+                    or (not dup and similar(e["_key"], key) >= self.fuzzy)
+                    or (exclusive and self._same_victim(e, fields))
+                )
+            if e["type"] == etype and match:
                 e["end"] = round(t, 2)
                 e["sightings"] += 1
                 e["_seen_t"] = t
@@ -431,6 +624,13 @@ class EventTracker:
                         if k in fields
                     }
                     e.update({k: v for k, v in fields.items() if k != "text"} | flags)
+                if icon:
+                    self._most_complete(e, fields)
+                    # the names may come from a read of lower confidence: keep a player
+                    # flag found in any read
+                    for k in ("player", "player_kill", "player_death"):
+                        if k in fields:
+                            e[k] = bool(e.get(k)) or bool(fields[k])
                 self.touched.append(e)
                 return None
         ev = {
@@ -443,6 +643,10 @@ class EventTracker:
             "_times": [t],
             **fields,
         }
+        if fields.get("entry") == "icon":  # the reads of an icon kill line (_most_complete)
+            read = (fields.get("killer"), fields.get("victim"))
+            hues = {k: fields.get(k) for k in ("killer_hue", "victim_hue")}
+            ev["_reads"] = {read: {"n": 1} | hues}
         self.events.append(ev)
         self._active.append(ev)
         self.touched.append(ev)
@@ -933,7 +1137,9 @@ class FeedParser:
       afire B"): actor before the word, target after it;
     * icon feeds without words, where an entry is a coloured *actor* line and
       a differently coloured *target* line (``"entry": "two_line"``, War
-      Thunder) or two coloured names on one row (``"entry": "one_line"``).
+      Thunder) or two coloured names on one row (``"entry": "one_line"``);
+      without a colour map (a discovered preset), a row of two names split by an
+      icon gap is a kill, left name first (:meth:`_icon_line`).
 
     Team colours come from the preset (``"colors": {"red": "enemy", "blue":
     "ally", ...}``, keyed by the colour names :func:`text_hue` returns). A kill
@@ -951,6 +1157,8 @@ class FeedParser:
         self.scale = scale
         self.row_tol = float(cfg.get("row_tol", 10)) * scale
         self.min_name = int(cfg.get("min_name", 3))
+        self.row_notices = bool(cfg.get("row_notices", False))
+        self.notice_boxes: list[list] = []  # the last parse's notice rows (crop px)
         self._img: np.ndarray | None = None
 
     def _team(self, img: np.ndarray, row: list[tuple]) -> str | None:
@@ -1128,6 +1336,37 @@ class FeedParser:
             k += 1
         return out
 
+    def _icon_line(
+        self, img: np.ndarray, names: list[tuple], line: str, conf: float
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """A kill from an icon kill line ("name [weapon icon] name", no kill word) when the
+        preset maps no colours to teams: two name boxes ``names`` at least
+        :data:`ICON_GAP` text heights apart, or one box split by :func:`icon_split`. The
+        left name is the killer (the usual order); both must read as names
+        (:func:`_icon_name`). Returns the kill (or None) and whether the row has an icon
+        gap. The colours (:func:`text_hue` of a box, or the name's side of
+        :func:`icon_split`) are kept as ``killer_hue`` and ``victim_hue``."""
+        if not names:
+            return None, False
+        if len(names) >= 2:
+            (ba, ta, _), (bb, tb, _) = names[0], names[-1]
+            h = float(np.median([max(p[1] for p in b) - min(p[1] for p in b) for b in (ba, bb)]))
+            if min(p[0] for p in bb) - max(p[0] for p in ba) < ICON_GAP * h:
+                return None, False
+            ha, hb = text_hue(_box_crop(img, ba)), text_hue(_box_crop(img, bb))
+        else:
+            sp = icon_split(_box_crop(img, names[0][0]), names[0][1])
+            if sp is None:
+                return None, False
+            ta, tb, ha, hb = sp
+        ta, tb = ta.strip(), tb.strip()
+        if not (_icon_name(ta, self.min_name) and _icon_name(tb, self.min_name)):
+            return None, True
+        ev = self._event(ta, tb, "kill", None, None, conf, line)
+        if ev:
+            ev |= {"killer_hue": ha, "victim_hue": hb, "entry": "icon"}
+        return ev, True
+
     def parse(self, img: np.ndarray, items: list[tuple[list, str, float]]) -> list[dict[str, Any]]:
         """Events (dicts with ``type`` and ``key``) for one OCR'd feed crop."""
         self._img = img
@@ -1143,6 +1382,7 @@ class FeedParser:
         ]
         out: list[dict[str, Any]] = []
         used: set[int] = set()
+        gapped: set[int] = set()  # rows split by an icon gap that made no kill
         for k, (line, conf, team, _row) in enumerate(lines):
             sp = self._word_split(line)
             if sp is None:
@@ -1188,6 +1428,14 @@ class FeedParser:
                 names = _merge_adjacent(
                     [i for i in row if len(norm(i[1])) >= 2], gap=14 * self.scale
                 )
+                if not self.colors:
+                    ev, gap = self._icon_line(img, names, line, conf)
+                    if ev:
+                        out.append(ev)
+                        used.add(k)
+                    elif gap:
+                        gapped.add(k)
+                    continue
                 if len(names) < 2:
                     continue
                 ka = self._team(img, [names[0]])
@@ -1196,6 +1444,40 @@ class FeedParser:
                     ev = self._event(names[0][1], names[-1][1], "kill", ka, kb, conf, line)
                     if ev:
                         out.append(ev)
+                        used.add(k)
+        if self.row_notices:
+            out += self._row_notices(lines, used | gapped)
+        return out
+
+    def _row_notices(self, lines: list[tuple], skip: set[int]) -> list[dict[str, Any]]:
+        """Notices from feed rows that made no event and have no icon gap (not in
+        ``skip``): a name and text ("Kip has left the game"), at least two words of which
+        4 or more letters, 60% of the characters letters (as notice regions read). Their
+        boxes are kept in ``notice_boxes`` for the menu test (kill rows stay out of it: a
+        full feed is no menu)."""
+        out = []
+        self.notice_boxes = []
+        for k, (line, conf, _, row) in enumerate(lines):
+            letters = sum(ch.isalpha() for ch in line)
+            if (
+                k in skip
+                or len(line.split()) < 2
+                or letters < 4
+                or letters < 0.6 * len(line.replace(" ", ""))
+            ):
+                continue
+            h = float(np.median([max(p[1] for p in i[0]) - min(p[1] for p in i[0]) for i in row]))
+            self.notice_boxes += [i[0] for i in row]
+            out.append(
+                {
+                    "type": "notice",
+                    "key": norm(line),
+                    "text": line[:120],
+                    "confidence": round(conf, 3),
+                    "text_h": round(h / self.scale),
+                    "unknown": True,
+                }
+            )
         return out
 
 
@@ -2074,6 +2356,10 @@ class OcrInterpretation:
         if self.menus:
             stats["static_area"] = round(area, 2)
         self.region_events: dict[str, list[dict[str, Any]]] = {}
+        # a "row_notices" feed's notice rows count in the menu test (a menu or loading
+        # screen's text there), in reference px
+        self.feed_notices = bool(preset and preset.feed.get("row_notices"))
+        self.ref = {n: (x, y, 1920 / width, 1080 / height) for n, (x, y, _, _) in rects.items()}
 
     def add(self, rec: FrameRec) -> list[str]:
         """Interpret one frame; returns the names of the regions whose reading made a
@@ -2089,6 +2375,8 @@ class OcrInterpretation:
                 stats["det_calls"][r.name] += 1
                 if self.menus and r.kind != "feed":
                     self.det_boxes[r.name] = g.get("boxes", [])
+                elif self.menus and self.feed_notices and g["g"] == "det":
+                    self.det_boxes[r.name] = []  # no text rows
                 if g["g"] == "keep":  # same text still on screen
                     tracker.keep_alive(self.region_events.get(r.name, []), rec.t)
                 if g["g"] != "read":
@@ -2099,8 +2387,20 @@ class OcrInterpretation:
             n_before = len(tracker.events)
             if r.gate == "det":
                 tracker.reset_touched()
+                interp.feed.notice_boxes = []
                 interp.handle(rec.t, r, img, items)
                 self.region_events[r.name] = list(tracker.touched)
+                if self.menus and self.feed_notices and r.kind == "feed":
+                    rx, ry, sx, sy = self.ref[r.name]
+                    self.det_boxes[r.name] = [
+                        [
+                            _plain((rx + min(p[0] for p in b)) * sx),
+                            _plain((ry + min(p[1] for p in b)) * sy),
+                            _plain((rx + max(p[0] for p in b)) * sx),
+                            _plain((ry + max(p[1] for p in b)) * sy),
+                        ]
+                        for b in interp.feed.notice_boxes
+                    ]
             else:
                 interp.handle(rec.t, r, img, items)
             if len(tracker.events) > n_before:
@@ -2133,10 +2433,12 @@ class OcrInterpretation:
             feeds = {r.name for r in self.regions if r.kind == "feed"}
 
             def feed_event(e: dict[str, Any]) -> bool:
-                """Feed sightings and kills (kills come from the feed region): never dropped.
+                """Feed sightings and kills (kills come from the feed region): never dropped;
+                feed rows read as notices (``row_notices``) are dropped like other notices.
                 This assumes menus do not cover the feed region; a scoreboard drawn over it
                 is kept."""
-                return e.get("region") in feeds or e.get("type") == "kill"
+                t = e.get("type")
+                return t == "kill" or (e.get("region") in feeds and t != "notice")
 
             tracked = tracker.events
             feed_times = {t for e in tracked if feed_event(e) for t in e["_times"]}
@@ -2180,6 +2482,17 @@ class OcrInterpretation:
             stats["static_frames"] = sum(r == "static" for r in rules.values())
             stats["text_frames"] = sum(r == "text" for r in rules.values())
         events = tracker.finish()
+        if self.feed_notices:
+            feeds = {r.name for r in self.regions if r.kind == "feed"}
+            events = [
+                e
+                for e in events
+                if not (
+                    e.get("type") == "notice"
+                    and e.get("region") in feeds
+                    and e["end"] - e["t"] > ROW_NOTICE_MAX_S
+                )
+            ]
         for e in events:
             e["kind"] = "ocr"
         return events

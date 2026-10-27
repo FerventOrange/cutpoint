@@ -720,3 +720,26 @@ def test_moving_lobby_gives_no_events(tmp_path: Path, monkeypatch) -> None:
     assert [(e["text"], e["t"]) for e in events if e["type"] == "banner"] == [("Squad wiped", 40.0)]
     assert stats["static_frames"] == 0
     assert stats["menu_frames"] == stats["text_frames"] > 0
+
+
+def test_row_notices_that_stay_are_no_feed_lines(tmp_path: Path, monkeypatch) -> None:
+    """A row_notices feed: a row that scrolls out is a notice, a row that stays all
+    clip (lobby text in the feed's area) is none."""
+    x, y, w, h = FEED
+    preset = _preset() | {"feed": {"row_notices": True}}
+    preset["regions"] = [
+        *preset["regions"],
+        {"name": "feed", "x": x, "y": y, "w": w, "h": h, "kind": "feed", "gate": "det"},
+    ]
+
+    def screen(t: float) -> list[tuple[str, float, float]]:
+        out = [("Hold", 900, 820), ("Waiting for other players", 1650, 50)]
+        if 10 <= t < 14:
+            out.append(("Kip has left the game", 1650, 100))
+        if 12 <= t < 16:  # a new row: Kip's row is read again (Ana's once: OCR noise)
+            out.append(("Ana has left the game", 1650, 130))
+        return out
+
+    events, _ = _run(tmp_path, monkeypatch, _Engine(screen, (NOTICE, FEED)), preset)
+    notices = [(e["text"], e["t"]) for e in events if e.get("region") == "feed"]
+    assert notices == [("Kip has left the game", 10.0)]  # not the 60 s "Waiting" row
