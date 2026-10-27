@@ -64,3 +64,36 @@ def test_popup_labels_are_no_regions(tmp_path: Path, monkeypatch: pytest.MonkeyP
     preset = discover.discover_regions([], tmp_path / "disc", "zonewar")
     assert [r["kind"] for r in preset["regions"] if r["kind"] == "feed"] == ["feed"]
     assert not [r for r in preset["regions"] if _at_popup(r)]  # neither a feed nor a notice
+
+
+def _side_feed_frame(b: int, k: int, base: int, pitch: int) -> dict[str, Any]:
+    """A right-side four-row feed: each row is a name box (h=24) plus a shorter "+N" box
+    (h=14) bottom-aligned with it."""
+    n = b * 4 + k
+    boxes = [_box("HEALTH", 20, 1040, w=100)]
+    for r in range(4):
+        y = base + r * pitch
+        m = n * 4 + r  # other kills in every frame: names vary like a real feed
+        name = f"{NAMES[m % 10]}{NAMES[m // 10 % 10]} {NAMES[m % 7]}{NAMES[m // 7 % 10]}"
+        boxes.append(_box(name, 1680, y))
+        boxes.append(_box(f"+{100 + 50 * (m % 3)}", 1844, y + 10, w=44, h=14))
+    return {
+        "id": f"rec.mp4@{b * 60 + k * 1.5:.1f}",
+        "source": "rec.mp4",
+        "burst": b,
+        "k": k,
+        "frame": f"b{b:03d}_{k}.jpg",
+        "boxes": boxes,
+    }
+
+
+@pytest.mark.parametrize("pitch", [28, 30, 32, 36])
+@pytest.mark.parametrize("base", [40, 44, 47, 50])
+def test_feed_rows_with_short_plus_boxes_stay_a_feed(base: int, pitch: int) -> None:
+    """A feed row's name box plus its shorter, bottom-aligned "+N" box is one row: the feed
+    stays a feed whatever the row band phase (base y, pitch)."""
+    frames = [_side_feed_frame(b, k, base, pitch) for b in range(40) for k in range(4)]
+    proposals, _ = cluster_regions(frames, DiscoverParams())
+    side = [p for p in proposals if p["x"] + p["w"] > 1700 and p["y"] < 300]
+    assert side, "no region proposed for the side feed"
+    assert {p["kind"] for p in side} == {"feed"}

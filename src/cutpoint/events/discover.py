@@ -422,15 +422,25 @@ def _label_variety(texts: list[str]) -> float:
 
 
 def _score_rows(frames: list[list[dict[str, Any]]]) -> float:
-    """Share of the rows (boxes of one frame on one 14 px band, as for ``mean_rows``)
-    whose text is a "+" number alone ("+10", "+1,000")."""
+    """Share of the lines whose text is a "+" number alone ("+10", "+1,000"). A line is
+    the boxes of one frame whose y-ranges overlap by half the shorter box's height or
+    more, joined in x order, so a shorter or bottom-aligned "+N" box next to a name
+    stays on the name's line instead of counting as a row of its own."""
     rows: list[str] = []
     for bs in frames:
-        by_row: dict[int, str] = {}
-        for b in bs:
-            key = round((b["y0"] + b["y1"]) / 2 / 14)
-            by_row[key] = by_row.get(key, "") + b["text"]
-        rows += by_row.values()
+        lines: list[list[dict[str, Any]]] = []
+        for b in sorted(bs, key=lambda b: b["y0"]):
+            h = b["y1"] - b["y0"]
+            for ln in lines:
+                if any(
+                    min(b["y1"], o["y1"]) - max(b["y0"], o["y0"]) >= 0.5 * min(h, o["y1"] - o["y0"])
+                    for o in ln
+                ):
+                    ln.append(b)
+                    break
+            else:
+                lines.append([b])
+        rows += ["".join(o["text"] for o in sorted(ln, key=lambda o: o["x0"])) for ln in lines]
     return sum(bool(_SCORE_RE.fullmatch(t.strip())) for t in rows) / max(1, len(rows))
 
 
