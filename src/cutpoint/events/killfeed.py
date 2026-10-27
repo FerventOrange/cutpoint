@@ -1,7 +1,7 @@
 """Layer 1b: on-screen events (kill feed, round banners, "X VS Y") via OCR.
 
 One sequential ffmpeg pass per source decodes only the bounding box of the
-game's HUD regions at a low frame rate (``-hwaccel cuda`` when it works) and
+game's HUD regions at a low frame rate (the probed GPU decoder when it works) and
 pipes raw BGR frames to numpy. Each region is OCR'd with RapidOCR (CPU) only
 when its "HUD pixel" mask (white text, blue/orange name boxes) has changed
 since the last OCR of that region, which skips the vast majority of frames.
@@ -32,7 +32,7 @@ from cutpoint.events import ocr_raw
 from cutpoint.events.common import Source, layer_cache_path
 from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_frames
 from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
-from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, probe
+from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
 
 logger = logging.getLogger(__name__)
 
@@ -349,7 +349,7 @@ def iter_frames(
         start=start if start > 0 else None,
         duration=dur,
         stamp_fps=fps,
-        hwaccel="cuda" if hw else None,
+        hwaccel="auto" if hw else None,
         fallback_cpu=False,  # the caller switches to the CPU for the remaining segments
         stderr_lines=errors,
         isolate=cancel is not None,
@@ -2011,10 +2011,10 @@ def detect_ocr_events(
             ffmpeg killed and nothing committed after the last finished raw chunk. ffmpeg
             then runs isolated from Ctrl+C and is killed at once on ``cancel``. A pass
             that ffmpeg left with an exit the decode did not cause (the console's
-            Ctrl+Break reaches every process group) and a failed CUDA pass also raise
+            Ctrl+Break reaches every process group) and a failed GPU pass also raise
             :class:`OcrCancelled`, without committing the pass: the caller reads the
             source itself then, resuming from the raw chunks, as a serial run would.
-        decode: With ``cancel``: gives the frames of a fresh CUDA read of the whole source
+        decode: With ``cancel``: gives the frames of a fresh GPU read of the whole source
             instead of :func:`iter_frames` (the shared decode of
             :mod:`cutpoint.events.ocr_prefetch`), the same frames; asked once at most.
 
@@ -2023,7 +2023,7 @@ def detect_ocr_events(
 
     Raises:
         OcrCancelled: With ``cancel``: when it was set, ffmpeg was stopped from outside or a
-            CUDA pass failed.
+            GPU pass failed.
     """
     game = game_key_for_path(str(src.path), params.game, params.project)
     preset = load_preset(game, params.project)
@@ -2108,7 +2108,12 @@ def detect_ocr_events(
             regions, rects, union, engine, params, height / 1080, newest, (width, height)
         )
         # where the read goes on: segment, frame in it, frame number, decoder, read errors
-        pos: dict[str, Any] = {"seg": 0, "idx": 0, "frame_no": 0, "hw": params.hwaccel}
+        pos: dict[str, Any] = {
+            "seg": 0,
+            "idx": 0,
+            "frame_no": 0,
+            "hw": params.hwaccel,
+        }
         pos |= {"hwaccel": False, "read_errors": 0}
         if last is not None:
             reader.restore(last.state["reader"], last.arrays)
@@ -2205,11 +2210,12 @@ def detect_ocr_events(
                         report(t)
                     if cancel is not None and (cancel.is_set() or exits):
                         raise OcrCancelled  # killed on cancel, or stopped from outside
-                    stats["hwaccel"] = hw
+                    # "auto" decodes on the CPU when no GPU decoder fits this source
+                    stats["hwaccel"] = hw and decoder_for(src.io_path) is not None
                     break
                 except RuntimeError as err:
                     if cancel is not None and (cancel.is_set() or exits or hw):
-                        # cancelled or stopped from outside, or a failed CUDA pass: the read in
+                        # cancelled or stopped from outside, or a failed GPU pass: the read in
                         # its turn redoes it from the raw chunks (CPU retry, hwaccel stats) as a
                         # serial run would
                         raise OcrCancelled from err

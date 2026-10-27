@@ -3,7 +3,7 @@
 Stages run one after another so only one GPU model is resident at a time:
 PANNs (torch) -> freed -> voice (PANNs on high-passed audio + Silero VAD) ->
 visual (CLIP ViT-L/14 + Faster R-CNN, one decode per source) -> freed -> OCR
-(CPU, NVDEC decode) -> crashes (CLIP, handed over by the visual layer when no
+(CPU, GPU decode) -> crashes (CLIP, handed over by the visual layer when no
 OCR runs in between) -> Ollama unloaded -> llama-server started -> windows
 described -> server stopped. ``cutpoint analyze`` may have read the OCR in the background
 already (:mod:`cutpoint.events.ocr_prefetch`); its results are taken in the OCR turn.

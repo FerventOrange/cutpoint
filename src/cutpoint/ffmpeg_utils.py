@@ -6,8 +6,8 @@ Media reads go through a few typed primitives: :func:`ffprobe_json` (metadata),
 (:func:`stage_inputs`), accepts an optional timeout and raises :class:`FFmpegError`
 with the tail of ffmpeg's stderr on failure. Their argv builders
 (``*_args``) are pure functions. Note the hardware defaults differ, as their
-callers expect: :func:`decode_raw` tries CUDA first (``hwaccel="cuda"``), while
-:func:`grab_images` decodes on the CPU unless asked (``hwaccel=None``).
+callers expect: :func:`decode_raw` tries the probed GPU decoder first (``hwaccel="auto"``:
+CUDA, then VAAPI), while :func:`grab_images` decodes on the CPU unless asked (``hwaccel=None``).
 
 The executables are located (in order) via the ``CUTPOINT_FFMPEG`` /
 ``CUTPOINT_FFPROBE`` environment variables, ``PATH``, and on Windows the WinGet package folder
@@ -44,6 +44,7 @@ import numpy as np
 from cutpoint import paths, state
 from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import get_config, path_key
+from cutpoint.utils import file_stamp
 from cutpoint.winjob import kill_with_parent
 
 logger = logging.getLogger(__name__)
@@ -766,6 +767,127 @@ def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
             return enc, []
         errors.append(f"{enc.device or enc.codec}: {error}")
     return None, errors
+
+
+# ----------------------------------------------------------------- GPU decode
+# Decoders are probed like encoders: a working encoder says nothing about the decoder.
+_GPU_DOWNLOAD = "hwdownload,format=nv12,format=yuv420p"  # to the 8-bit 4:2:0 the CPU chain expects
+
+
+@dataclass(frozen=True)
+class HwDecoder:
+    """A hardware decode path: NVDEC (``cuda``), or VAAPI on the render node ``device``."""
+
+    kind: str
+    device: str | None = None
+
+    def __str__(self) -> str:
+        return self.kind if self.device is None else f"{self.kind} {self.device}"
+
+    def input_args(self, *, keep_on_gpu: bool = False) -> list[str]:
+        """Input options (before ``-i``). ``keep_on_gpu`` leaves CUDA frames on the GPU; VAAPI
+        frames always stay there, so :func:`gpu_chain` must download them."""
+        if self.kind == "vaapi":
+            args = ["-hwaccel", "vaapi", "-hwaccel_device", str(self.device)]
+            return [*args, "-hwaccel_output_format", "vaapi"]
+        args = ["-hwaccel", "cuda"]
+        if keep_on_gpu:
+            args += ["-hwaccel_output_format", "cuda"]
+        return args
+
+
+def gpu_chain(hw: HwDecoder | None, chain: str | None) -> str | None:
+    """``chain`` with the VAAPI frames downloaded first; CUDA and CPU chains pass unchanged."""
+    if hw is None or hw.kind != "vaapi":
+        return chain
+    return _GPU_DOWNLOAD if chain is None else f"{_GPU_DOWNLOAD},{chain}"
+
+
+@state.register_cache
+@cache
+def decoder_error(dec: HwDecoder) -> str | None:
+    """None if ffmpeg decodes a generated 8-bit H.264 clip on ``dec`` here, else the first real
+    line of its error. Frames go through :data:`_GPU_DOWNLOAD`, so a hardware start that fell back
+    to software (which ffmpeg does silently) fails here instead of passing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "probe.mp4"
+        make = ["-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=0.4"]
+        enc = ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+        try:
+            run(["ffmpeg", "-v", "error", *make, *enc, str(clip)], timeout=60)
+        except FFmpegError as err:
+            return f"no probe clip: {_first_error_line(err)}"
+        dec_args = [*dec.input_args(keep_on_gpu=True), "-i", str(clip)]
+        try:
+            out = run(
+                ["ffmpeg", "-v", "error", *dec_args, "-vf", _GPU_DOWNLOAD, "-f", "framemd5", "-"],
+                timeout=60,
+            )
+        except FFmpegError as err:
+            return _first_error_line(err)
+    return None if re.search(r"(?m)^0,", out) else "no frame decoded"
+
+
+def _is_amd_node(device: str) -> bool:
+    """True if the VAAPI render node ``device`` belongs to an AMD GPU (PCI vendor 0x1002)."""
+    try:
+        vendor = Path("/sys/class/drm", Path(device).name, "device", "vendor").read_text()
+    except OSError:
+        return False
+    return vendor.strip().lower() == "0x1002"
+
+
+def decoder_candidates() -> list[HwDecoder]:
+    """The decoders that fit the GPUs found here: NVDEC for NVIDIA, VAAPI on AMD render nodes.
+    A vendor that is not present is never tried."""
+    from cutpoint import capabilities  # noqa: PLC0415 - it imports this module
+
+    found = [HwDecoder("cuda")] if capabilities.nvidia_present() else []
+    if capabilities.gpu_vendors()["amd"]:
+        found += [HwDecoder("vaapi", d) for d in vaapi_devices() if _is_amd_node(d)]
+    return found
+
+
+@state.register_cache
+@cache
+def gpu_decoder() -> HwDecoder | None:
+    """The GPU decoder ``hwaccel="auto"`` uses: the first of :func:`decoder_candidates` that
+    really decodes; ``None`` = CPU. Failed probes are logged at debug level."""
+    for dec in decoder_candidates():
+        error = decoder_error(dec)
+        if error is None:
+            return dec
+        logger.debug("%s decode not used: %s", dec, error)
+    return None
+
+
+# decoder_for's ffprobe result per source: path -> (file_stamp, VAAPI can decode it). A rewritten
+# or replaced file has another stamp, so it is probed again.
+_VAAPI_OK: dict[str, tuple[tuple[int, int, int], bool]] = state.register_container(
+    __name__, "_VAAPI_OK", {}
+)
+
+
+def decoder_for(path: Path | str) -> HwDecoder | None:
+    """The GPU decoder for ``path`` (:func:`gpu_decoder`), or ``None`` for the CPU. VAAPI is only
+    used for 8-bit limited-range 4:2:0 H.264, the format it is probed with; other sources decode
+    on the CPU. The source is probed once per file version."""
+    dec = gpu_decoder()
+    if dec is None or dec.kind == "cuda":
+        return dec
+    key, stamp = str(path), file_stamp(Path(path))
+    hit = _VAAPI_OK.get(key)
+    if hit is not None and stamp is not None and hit[0] == stamp:
+        return dec if hit[1] else None
+    try:
+        streams = ffprobe_json(path, entries="stream=codec_name,pix_fmt", streams="v:0")
+    except FFmpegError:
+        return None  # the CPU decode reports the unreadable source
+    info = (streams.get("streams") or [{}])[0]
+    ok = info.get("codec_name") == "h264" and info.get("pix_fmt") == "yuv420p"
+    if stamp is not None:  # an unreadable stamp (a staged or remote path) is not remembered
+        _VAAPI_OK[key] = (stamp, ok)
+    return dec if ok else None
 
 
 # video_encoder() results by configured choice, so an edited ``video_encoder`` is followed (the
@@ -1560,7 +1682,7 @@ def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:
 
 
 # --------------------------------------------------------------------------- media I/O primitives
-HwAccel = Literal["cuda"] | None
+HwAccel = Literal["auto"] | None
 ImageFormat = Literal["jpeg", "png"]
 PixFmt = Literal["rgb24", "bgr24", "gray"]
 
@@ -1600,13 +1722,18 @@ def _exec(
         raise FFmpegError(f"{tool} timed out after {timeout:g}s on {path}") from err
 
 
-def _hw_passes(hwaccel: HwAccel, fallback_cpu: bool) -> tuple[bool, ...]:
-    """Decode passes to try: ``(True, False)`` = CUDA first, then the CPU."""
-    if hwaccel not in (None, "cuda"):
-        raise ValueError(f"unsupported hwaccel {hwaccel!r} (expected 'cuda' or None)")
+def _hw_passes(
+    hwaccel: HwAccel, fallback_cpu: bool, path: Path | str
+) -> tuple[HwDecoder | None, ...]:
+    """Decode passes to try: the GPU pass, then the CPU (``None``) if ``fallback_cpu``."""
+    if hwaccel not in (None, "auto"):
+        raise ValueError(f"unsupported hwaccel {hwaccel!r} (expected 'auto' or None)")
     if hwaccel is None:
-        return (False,)
-    return (True, False) if fallback_cpu else (True,)
+        return (None,)
+    dec = decoder_for(path)
+    if dec is None:
+        return (None,)
+    return (dec, None) if fallback_cpu else (dec,)
 
 
 # ----------------------------------------------------------------- ffprobe
@@ -1685,7 +1812,7 @@ def ffprobe_json(
 def decode_raw_args(
     path: Path | str,
     *,
-    hw: bool,
+    hw: HwDecoder | None,
     vf: str | None = None,
     vf_cuda: str | None = None,
     pix_fmt: PixFmt = "rgb24",
@@ -1696,23 +1823,22 @@ def decode_raw_args(
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for one :func:`decode_raw` pass.
 
-    ``hw`` adds ``-hwaccel cuda``; with ``vf_cuda`` the frames also stay on the GPU
-    (``-hwaccel_output_format cuda``) and ``vf_cuda`` replaces ``vf``.
+    ``hw`` adds that decoder's input options (``None`` = CPU). On CUDA with ``vf_cuda`` the frames
+    also stay on the GPU and ``vf_cuda`` replaces ``vf``; VAAPI frames are downloaded before ``vf``.
     """
     args = ["-hide_banner", "-nostats", "-v", "info" if pts else "error"]
     if keyframes_only:
         args += ["-skip_frame", "nokey"]
-    if hw:
-        args += ["-hwaccel", "cuda"]
-        if vf_cuda is not None:
-            args += ["-hwaccel_output_format", "cuda"]
+    on_gpu = hw is not None and hw.kind == "cuda" and vf_cuda is not None
+    if hw is not None:
+        args += hw.input_args(keep_on_gpu=on_gpu)
     if start is not None:
         args += ["-ss", f"{start:.3f}"]
     args += ["-i", str(path)]
     if duration is not None:
         args += ["-t", f"{duration:.3f}"]
     args += ["-an", "-sn", "-dn"]
-    chain = vf_cuda if hw and vf_cuda is not None else vf
+    chain = gpu_chain(hw, vf_cuda if on_gpu else vf)
     if pts:
         chain = f"{chain},showinfo" if chain else "showinfo"
     if chain:
@@ -1854,7 +1980,7 @@ def decode_raw(
     stamp_fps: float | None = None,
     keyframes_only: bool = False,
     pts: bool = False,
-    hwaccel: HwAccel = "cuda",
+    hwaccel: HwAccel = "auto",
     fallback_cpu: bool = True,
     stderr_lines: list[str] | None = None,
     timeout: float | None = None,
@@ -1865,7 +1991,7 @@ def decode_raw(
     """Stream decoded frames of ``path`` (its staged copy if any) as raw arrays.
 
     One sequential ffmpeg pass writes ``rawvideo`` to a pipe; frames are yielded
-    as they arrive. With ``hwaccel="cuda"`` the first pass decodes on NVDEC; if it
+    as they arrive. A GPU pass (``hwaccel="auto"``) decodes first; if it
     yields no frames at all and ``fallback_cpu`` is set, a CPU pass follows. Once
     a pass has yielded a frame it is final (its exit code is not checked).
 
@@ -1887,8 +2013,8 @@ def decode_raw(
         keyframes_only: Decode keyframes only (``-skip_frame nokey``).
         pts: Stamp frames with their presentation time (``showinfo`` is appended
             to the chain and frames pass through without duplication).
-        hwaccel: ``"cuda"`` or ``None`` (CPU only).
-        fallback_cpu: Retry on the CPU when the CUDA pass yields nothing.
+        hwaccel: ``"auto"`` (the probed GPU decoder, else the CPU) or ``None`` (CPU only).
+        fallback_cpu: Retry on the CPU when the GPU pass yields nothing.
         stderr_lines: If given, ffmpeg's stderr lines (``showinfo`` excluded) are
             appended to it as they arrive.
         timeout: Wall-clock seconds per pass, including the time the consumer
@@ -1915,7 +2041,7 @@ def decode_raw(
     """
     if pix_fmt not in PIX_CHANNELS:
         raise ValueError(f"unsupported pix_fmt {pix_fmt!r} (expected one of {list(PIX_CHANNELS)})")
-    passes = _hw_passes(hwaccel, fallback_cpu)
+    passes = _hw_passes(hwaccel, fallback_cpu, path)
     width, height = size
     channels = PIX_CHANNELS[pix_fmt]
     shape = (height, width, channels) if channels > 1 else (height, width)
@@ -2046,16 +2172,17 @@ def split_decode_args(
     proxy: Path,
     raw_vf: str,
     pix_fmt: PixFmt = "bgr24",
-    hw: bool = True,
+    hw: HwDecoder | None = None,
 ) -> list[str]:
-    """ffmpeg arguments (without the executable) for one CUDA pass that writes both the
-    scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use them) to ``proxy`` and
-    the raw frames of ``raw_vf`` (as :func:`decode_raw` gets them) to stdout. ``hw`` False
-    decodes on the CPU (tests)."""
-    graph = f"[0:v:0]split=2[s][o];[s]{scene_vf}[sv];[o]{raw_vf}[ov]"
+    """ffmpeg arguments (without the executable) for one decode pass (``hw``, else the CPU)
+    that writes both the scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use
+    them) to ``proxy`` and the raw frames of ``raw_vf`` (as :func:`decode_raw` gets them) to
+    stdout."""
+    graph_head = gpu_chain(hw, "split=2")  # VAAPI frames are downloaded before the split
+    graph = f"[0:v:0]{graph_head}[s][o];[s]{scene_vf}[sv];[o]{raw_vf}[ov]"
     return [
         *("-hide_banner", "-nostats", "-v", "error", "-y"),
-        *(("-hwaccel", "cuda") if hw else ()),
+        *(hw.input_args() if hw is not None else ()),
         *("-i", str(path), "-filter_complex", graph),
         *("-map", "[sv]", "-an", *scene_enc, str(proxy)),
         *("-map", "[ov]", "-an", "-sn", "-dn", "-pix_fmt", pix_fmt, "-f", "rawvideo", "-"),
@@ -2063,7 +2190,7 @@ def split_decode_args(
 
 
 class SplitDecode:
-    """One CUDA pass (:func:`split_decode_args`) that writes the scene proxy and spools the
+    """One decode pass (:func:`split_decode_args`) that writes the scene proxy and spools the
     raw frames to ``spool`` (files of the whole frames that fit in :data:`SPOOL_SEGMENT_BYTES`,
     at least one, each deleted once :meth:`frames` has read it), so ffmpeg runs at decode speed
     while the frames are consumed more slowly, until the spool holds :func:`spool_cap` bytes;
@@ -2092,7 +2219,7 @@ class SplitDecode:
         cancel: threading.Event,
         on_exit: Callable[[bool, int], None],
         stderr_lines: list[str] | None = None,
-        hw: bool = True,
+        hw: HwDecoder | None = None,
     ) -> None:
         width, height = size
         self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
@@ -2309,7 +2436,7 @@ def grab_images_args(
     path: Path | str,
     start: float,
     *,
-    hw: bool = False,
+    hw: HwDecoder | None = None,
     count: int = 1,
     duration: float | None = None,
     fps: float | str | None = None,
@@ -2325,12 +2452,13 @@ def grab_images_args(
         raise ValueError(f"unsupported image format {fmt!r}")
     scale = f"scale={width}:-2" if width is not None else f"scale=-2:{height}"
     args = ["-hide_banner", "-v", "error"]
-    if hw:
-        args += ["-hwaccel", "cuda"]
+    if hw is not None:
+        args += hw.input_args()
     args += ["-ss", f"{start:.3f}", "-i", str(path)]
     if duration is not None:
         args += ["-t", f"{duration:.3f}"]
-    args += ["-an", "-sn", "-vf", f"fps={fps},{scale}" if fps is not None else scale]
+    chain = f"fps={fps},{scale}" if fps is not None else scale
+    args += ["-an", "-sn", "-vf", gpu_chain(hw, chain)]
     args += ["-frames:v", str(count)]
     if fmt == "jpeg":
         args += ["-c:v", "mjpeg"]
@@ -2371,8 +2499,8 @@ def grab_images(
             Give exactly one of ``width`` / ``height``.
         fmt: ``"jpeg"`` (mjpeg) or ``"png"`` (``count`` must be 1).
         quality: JPEG ``-q:v`` (2 = best .. 31); ``None`` = encoder default.
-        hwaccel: ``"cuda"`` decodes on NVDEC first; ``None`` = CPU only.
-        fallback_cpu: Retry on the CPU when the CUDA pass returns no image.
+        hwaccel: ``"auto"`` (the probed GPU decoder first) or ``None`` = CPU only.
+        fallback_cpu: Retry on the CPU when the GPU pass returns no image.
         timeout: Seconds per pass before ffmpeg is killed.
 
     Returns:
@@ -2385,7 +2513,7 @@ def grab_images(
     """
     if fmt == "png" and count != 1:
         raise ValueError("png grabs support count=1 only")
-    passes = _hw_passes(hwaccel, fallback_cpu)
+    passes = _hw_passes(hwaccel, fallback_cpu, path)
     err = b""
     for hw in passes:
         args = grab_images_args(

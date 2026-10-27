@@ -5,7 +5,6 @@ clips; CUDA rows skip without nvidia-smi)."""
 
 from __future__ import annotations
 
-import functools
 import shutil
 import subprocess
 import sys
@@ -29,12 +28,7 @@ FB = SIZE[0] * SIZE[1] * 3  # bytes of one raw frame
 VF = ocr_vf(3.0, RECT)
 SCENE_VF = "fps=10,scale=320:-2"
 ENC = ("-c:v", "libx264", "-preset", "ultrafast", "-crf", "32")
-HW = [
-    False,
-    pytest.param(
-        True, marks=pytest.mark.skipif(not shutil.which("nvidia-smi"), reason="no NVIDIA GPU")
-    ),
-]
+HW = [False, True]  # True: the GPU decoder found here (NVDEC or VAAPI), skipped when none
 
 
 def _clip(path: Path, seconds: int = 4) -> Path:
@@ -59,7 +53,7 @@ def _framemd5(path: Path) -> str:
     ).stdout
 
 
-def _split(clip: Path, cdir: Path, outs: list, cancel=None, hw=False) -> SplitDecode:
+def _split(clip: Path, cdir: Path, outs: list, cancel=None, hw=None) -> SplitDecode:
     return SplitDecode(
         clip,
         size=SIZE,
@@ -88,6 +82,9 @@ def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(
 ):
     """Also with a slow read held at a 2-file spool cap: the same frames and proxy, and the
     spool never held more than the cap."""
+    dec = ffmpeg_utils.gpu_decoder() if hw else None
+    if hw and dec is None:
+        pytest.skip("no GPU decoder works here")
     clip = _clip(tmp_path / "clip.mp4")
     monkeypatch.setattr(ffmpeg_utils, "SPOOL_SEGMENT_BYTES", 7 * FB + FB // 2)  # 7 frames a file
     if capped:
@@ -98,12 +95,12 @@ def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(
         (t, f.tobytes())
         for t, f in ffmpeg_utils.decode_raw(
             clip, size=SIZE, vf=VF, pix_fmt="bgr24", stamp_fps=3.0,
-            hwaccel="cuda" if hw else None, fallback_cpu=False,
+            hwaccel="auto" if hw else None, fallback_cpu=False,
         )
     ]  # fmt: skip
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", *(["-hwaccel", "cuda"] if hw else []), "-i", str(clip),
-         "-an", "-vf", SCENE_VF, *ENC, str(serial / "proxy.mp4")],
+        ["ffmpeg", "-v", "error", "-y", *(dec.input_args() if dec else []), "-i", str(clip),
+         "-an", "-vf", ffmpeg_utils.gpu_chain(dec, SCENE_VF), *ENC, str(serial / "proxy.mp4")],
         check=True,
     )  # fmt: skip
     cdir = tmp_path / "shared"
@@ -119,7 +116,7 @@ def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(
         return real_unlink(self, *a, **k)
 
     monkeypatch.setattr(Path, "unlink", unlink)
-    split = _split(clip, cdir, outs, hw=hw)
+    split = _split(clip, cdir, outs, hw=dec)
     got = []
     for t, f in split.frames(codes):
         got.append((t, f.tobytes()))
@@ -541,6 +538,7 @@ def test_shared_mode_env(monkeypatch):
 
 # ----------------------------------------------------------------- scene cuts
 def test_scene_cuts_use_a_made_proxy_and_decode_otherwise(tmp_path, monkeypatch):
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: ffmpeg_utils.HwDecoder("cuda"))
     calls: list[list[str]] = []
     monkeypatch.setattr(analyze, "run_progress", lambda args, total, label: calls.append(args))
     monkeypatch.setattr(analyze, "_detect", lambda proxy, path: [proxy.name])
@@ -679,14 +677,14 @@ def test_a_read_that_never_decodes_declines_its_share(pre, monkeypatch):
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     _take(pre)  # a cached or resumed read: no shared pass
     assert share.state == "declined" and share.result() is None
-    assert "no fresh CUDA decode" in share.why
+    assert "no fresh GPU decode" in share.why
 
 
 @pytest.mark.parametrize(
     ("case", "why"),
     [
         ("preset", "no HUD preset for 'zonewar'"),
-        ("cancelled", "the OCR read was cancelled or its CUDA pass failed"),
+        ("cancelled", "the OCR read was cancelled or its GPU pass failed"),
         ("error", "the OCR read failed"),
     ],
 )
@@ -768,11 +766,7 @@ def test_real_split_read_equals_the_step_1_read(home, tmp_path, monkeypatch) -> 
     from hud_fixtures import write_preset  # noqa: PLC0415
     from test_ocr_raw import _files  # noqa: PLC0415
 
-    real_args = ffmpeg_utils.decode_raw_args
-    monkeypatch.setattr(
-        ffmpeg_utils, "decode_raw_args", lambda *a, hw, **k: real_args(*a, hw=False, **k)
-    )
-    monkeypatch.setattr(ocr_prefetch, "SplitDecode", functools.partial(SplitDecode, hw=False))
+    monkeypatch.setattr(ffmpeg_utils, "gpu_decoder", lambda: None)  # no GPU here: CPU decodes
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
     monkeypatch.setattr(ocr_prefetch, "vram_ok", lambda: True)
     monkeypatch.setenv("CUTPOINT_ANALYZE_SHARED_DECODE", "split")
@@ -800,7 +794,7 @@ def test_real_split_read_equals_the_step_1_read(home, tmp_path, monkeypatch) -> 
             time.sleep(0.01)
         events, stats = pre.take(src, params, None)
         cuts = analyze.scene_cuts(shared_clip, src.cdir, 12.0, shared=share)
-    assert share.state == "done" and stats["hwaccel"] is True
+    assert share.state == "done" and stats["hwaccel"] is False  # a CPU decode is not hwaccel
     assert events == serial[0] and serial[0], "the clip's feed gave no events"
     drop = ("elapsed_s",)
     assert {k: v for k, v in stats.items() if k not in drop} == {

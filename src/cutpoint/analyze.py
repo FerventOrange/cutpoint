@@ -41,10 +41,13 @@ from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
+    HwDecoder,
     MediaInfo,
     ProgressResult,
+    decoder_for,
     extract_audio,
     ffprobe_json,
+    gpu_chain,
     momentary_loudness,
     output_dir,
     probe,
@@ -300,7 +303,7 @@ def _detect(proxy: Path, path: Path) -> list[float]:
     manager.auto_downscale = False
     manager.add_detector(AdaptiveDetector(min_scene_len=5))
     manager.detect_scenes(video, show_progress=False)
-    cuts = [round(s[0].get_seconds(), 3) for s in manager.get_scene_list()[1:]]
+    cuts = [round(s[0].seconds, 3) for s in manager.get_scene_list()[1:]]
     del video
     proxy.unlink(missing_ok=True)
     cache.save_json(path, cuts)
@@ -340,22 +343,20 @@ def scene_cuts(
         return _detect(made, path)
     proxy = cdir / "proxy.mp4"
     pre, post, vf, enc = _proxy_args(duration, offset, limit)
-    base = [
-        *pre,
-        "-i",
-        str(src),
-        *post,
-        "-an",
-        "-vf",
-        vf,
-        *enc,
-        str(proxy),
-    ]
     label = f"scene proxy {src.name}"
-    try:  # NVDEC decode is much faster for big 1440p/4K files
-        run_progress(["ffmpeg", "-y", "-v", "error", "-hwaccel", "cuda", *base], duration, label)
+
+    def command(dec: HwDecoder | None) -> list[str]:  # the decoder's input options go before -i
+        chain = gpu_chain(dec, vf)
+        args = [*pre, *(dec.input_args() if dec else []), "-i", str(src), *post]
+        return ["ffmpeg", "-y", "-v", "error", *args, "-an", "-vf", chain, *enc, str(proxy)]
+
+    hw = decoder_for(src)  # NVDEC or VAAPI when probed here; a failed GPU run decodes on the CPU
+    try:
+        run_progress(command(hw), duration, label)
     except FFmpegError:
-        run_progress(["ffmpeg", "-y", "-v", "error", *base], duration, label)
+        if hw is None:
+            raise
+        run_progress(command(None), duration, label)
     return _detect(proxy, path)
 
 

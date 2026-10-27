@@ -24,7 +24,7 @@ combines four independent kinds of evidence per candidate window:
 
 A 1 fps keyframe sample is too coarse for a 1-2 s tumble, so the best
 candidates are **confirmed densely**: their window is decoded at ``dense_fps``
-(NVDEC seek, about 10 s of video each) and every frame is embedded with CLIP;
+(GPU-decoded seek, about 10 s of video each) and every frame is embedded with CLIP;
 the dense crash-prompt score and the frame-to-frame view change (a tumble
 spins the view; riding changes it smoothly) are cached per source and
 window (``cache/<source>/crashdense-<hash>.json``).
@@ -375,7 +375,7 @@ def imu_grids(
 def decode_window(
     path: Path, t0: float, t1: float, fps: float, width: int = 448
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Frames of ``[t0, t1]`` at ``fps`` (one seek, NVDEC when available).
+    """Frames of ``[t0, t1]`` at ``fps`` (one seek, GPU decode when available).
 
     Returns:
         ``(times (N,), frames (N, H, W, 3) uint8 RGB)``; empty arrays on failure.

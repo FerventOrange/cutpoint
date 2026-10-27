@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - UI: a "Stats for Nerds" setting (off by default, remembered per browser) shows the open
   moment's score, rank, analyzed times, signals and keywords as a small overlay in the top-left
   of the preview. The scoring line under the transcript is gone (#353).
+- Linux AMD GPUs decode limited-range 8-bit 4:2:0 H.264 with VAAPI for analysis, HUD OCR, 360
+  view sampling and 360 renders. HEVC, 10-bit, 4:4:4 and full-range (`yuvj420p`) sources still
+  decode on the CPU, and a failed GPU decode falls back to the CPU (#22).
 - `docs/pipeline.md`: diagrams of the flow from source footage to the finished video, and the
   `edit --kind` presets.
 - HUD region discovery proposes up to 2 extra `notice` regions (`extra_notice`,
@@ -256,6 +259,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged. This fixes hue shifts when `assemble --transition cut` joins clips from mixed
   sources. `assemble` re-encodes (crossfades, mixed formats) do the same per clip, so clips
   exported before this change join new ones without a color shift (#290, #289).
+- Decoding follows the GPUs detected here: NVDEC is probed only with an NVIDIA GPU and VAAPI
+  only on AMD render nodes, each with a one-clip test decode, so an AMD machine no longer tries
+  CUDA first (#22).
+- The UI's preview proxies use the GPU encoder exports use (NVENC, VAAPI or AMF, per
+  `video_encoder`), not NVENC only (#22).
+- `analyze` reads scene cuts with PySceneDetect's `seconds` property (the old call is deprecated) (#22).
 - **BREAKING:** `clips --force` and `extend` refuse a `manifest.json` Cutpoint did not write
   (another `generator`, or no `clips` list of entries with a `file`) and one they cannot read,
   stopping with an `ERROR` before exporting; move or rename it. An unreadable manifest used to

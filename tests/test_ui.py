@@ -57,7 +57,7 @@ def client() -> Iterator[TestClient]:
 @pytest.fixture(autouse=True)
 def no_nvenc(monkeypatch: pytest.MonkeyPatch) -> None:
     """Proxies encode with libx264 unless a test says otherwise: no GPU probe in tests."""
-    monkeypatch.setattr(ui, "find_encoder", lambda kind: (None, [f"{kind}: not probed"]))
+    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("cpu"))
 
 
 def make_project(client: TestClient, tmp_path: Path, files: dict[str, bytes]) -> tuple[str, Path]:
@@ -2917,14 +2917,18 @@ def test_the_server_loop_uses_the_quiet_reset_handler() -> None:
         assert c.portal.call(handler) is ui.quiet_resets
 
 
-@pytest.mark.parametrize("nvenc", [False, True])
-def test_proxy_has_short_keyframe_interval_and_at_most_30_fps(nvenc: bool) -> None:
-    args = ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1, nvenc=nvenc)
+@pytest.mark.parametrize("kind", [None, "nvenc", "vaapi"])
+def test_proxy_has_short_keyframe_interval_and_at_most_30_fps(kind: str | None) -> None:
+    enc = ui.VideoEncoder(kind, "/dev/dri/renderD128") if kind else None
+    args = ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1, encoder=enc)
     assert args[args.index("-g") + 1] == "30"
     assert args[args.index("-fpsmax") + 1] == "30"
     codec = args[args.index("-c:v") + 1]
-    assert codec == ("h264_nvenc" if nvenc else "libx264")
-    assert ("-maxrate" in args) is nvenc  # NVENC's size is capped near libx264's
+    assert codec == {None: "libx264", "nvenc": "h264_nvenc", "vaapi": "h264_vaapi"}[kind]
+    assert ("-maxrate" in args) is (kind == "nvenc")  # NVENC's size is capped near libx264's
+    # VAAPI frames are uploaded after the scale and never get a -pix_fmt
+    assert args[args.index("-vf") + 1].endswith("hwupload") is (kind == "vaapi")
+    assert ("-pix_fmt" in args) is (kind != "vaapi")
     assert args[-1] == "out.mp4"
 
 
@@ -2963,29 +2967,22 @@ def build_proxy(client: TestClient, p: Path, src: Path) -> str:
 
 
 @pytest.mark.parametrize(
-    ("probed", "setting", "codec"),
+    ("kind", "codec"),
     [
-        (True, None, "h264_nvenc"),
-        (True, "nvenc", "h264_nvenc"),
-        (False, None, "libx264"),
-        (True, "cpu", "libx264"),  # the user chose the CPU for every encode
-        (True, "amf", "libx264"),
+        (None, "libx264"),  # no GPU encoder works here, or the user chose the CPU
+        ("nvenc", "h264_nvenc"),
     ],
 )
-def test_proxy_uses_nvenc_when_it_works_here_else_libx264(
+def test_proxy_uses_the_gpu_encoder_exports_use_else_libx264(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
-    home: Path,
     hevc_project: tuple[str, Path, Path, Path],
     proxy_encoder: type[ProxyEncoder],
-    probed: bool,
-    setting: str | None,
+    kind: str | None,
     codec: str,
 ) -> None:
-    if setting:
-        set_config(home, video_encoder=setting)
-    enc = ui.VideoEncoder("nvenc") if probed else None
-    monkeypatch.setattr(ui, "find_encoder", lambda kind: (enc if kind == "nvenc" else None, []))
+    enc = ui.VideoEncoder(kind or "cpu", "/dev/dri/renderD128" if kind == "vaapi" else None)
+    monkeypatch.setattr(ui, "video_encoder", lambda: enc)
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == "ready"
     [args] = proxy_encoder.calls
@@ -3000,7 +2997,7 @@ def test_a_failed_nvenc_proxy_is_built_again_with_libx264(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The probe encodes 0.2 s of black; a driver can still fail on the real file."""
-    monkeypatch.setattr(ui, "find_encoder", lambda kind: (ui.VideoEncoder("nvenc"), []))
+    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
     monkeypatch.setattr(proxy_encoder, "nvenc_fails", True)
     _, folder, p, _ = hevc_project
     (folder / "b.mp4").write_bytes(b"y")
@@ -3021,7 +3018,7 @@ def test_a_proxy_failing_with_nvenc_and_libx264_fails(
     hevc_project: tuple[str, Path, Path, Path],
     proxy_encoder: type[ProxyEncoder],
 ) -> None:
-    monkeypatch.setattr(ui, "find_encoder", lambda kind: (ui.VideoEncoder("nvenc"), []))
+    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
 
     class Failing(ProxyEncoder):
         def __init__(self, args: list[str], **_kw: object) -> None:
@@ -3032,7 +3029,7 @@ def test_a_proxy_failing_with_nvenc_and_libx264_fails(
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == "failed"
     assert len(proxy_encoder.calls) == 2
-    assert not client.app.state.media.nvenc_failed  # libx264 did not work either
+    assert not client.app.state.media.gpu_failed  # libx264 did not work either
     assert not list(p.rglob("*.part.mp4"))
 
 
@@ -3394,7 +3391,7 @@ def test_a_whole_proxy_build_and_its_progress_belong_to_its_project(
             return 0
 
     monkeypatch.setattr(ui, "spawn", Held)
-    monkeypatch.setattr(ui.Media, "_nvenc", lambda _self: False)
+    monkeypatch.setattr(ui.Media, "_gpu_encoder", lambda _self: None)
     monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=100.0))
     src, a, b = tmp_path / "a.mp4", tmp_path / "A", tmp_path / "B"
     src.write_bytes(b"x")
@@ -3799,7 +3796,7 @@ def test_the_whole_build_progress_is_reported_then_cleared_when_it_ends(
     status: str,
 ) -> None:
     enc = scripted(client, monkeypatch, [(5_000_000, code)])  # of a 10 s source
-    monkeypatch.setattr(ui, "find_encoder", lambda kind: (None, []))
+    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("cpu"))
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == status
     assert enc.started == [0.0, 0.5]
@@ -3812,7 +3809,7 @@ def test_the_nvenc_retry_restarts_the_progress_at_zero(
     hevc_project: tuple[str, Path, Path, Path],
 ) -> None:
     enc = scripted(client, monkeypatch, [(8_000_000, 1), (2_000_000, 0)])
-    monkeypatch.setattr(ui, "find_encoder", lambda kind: (ui.VideoEncoder("nvenc"), []))
+    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == "ready"
     assert len(enc.calls) == 2
@@ -4013,7 +4010,7 @@ def test_a_failed_window_logs_ffmpeg_s_last_lines_and_is_listed_until_asked_for_
             return "\n".join(output) + "\n", None
 
     monkeypatch.setattr(ui, "spawn", Failing)
-    monkeypatch.setattr(ui.Media, "_nvenc", lambda _self: False)
+    monkeypatch.setattr(ui.Media, "_gpu_encoder", lambda _self: None)
     entry = lambda: client.get(base).json()["sources"][0]  # noqa: E731
     with caplog.at_level(logging.WARNING, logger="cutpoint.ui"):
         assert prepare(client, pid, sid, {"lo": 2, "hi": 4}).status_code == 200

@@ -84,12 +84,13 @@ from cutpoint.config import (
 from cutpoint.encode import BT709_TAGS, sdr_filter
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
+    EncoderUnavailableError,
     FFmpegError,
     VideoEncoder,
     audio_mix_filter,
-    find_encoder,
     grab_images,
     probe,
+    video_encoder,
 )
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
@@ -775,7 +776,7 @@ PROXY_FPS_MAX = 30
 # NVENC at CQ 28 alone was up to four times libx264's size at CRF 27. At CQ 32 with this cap, a
 # 1080p60 recording's proxy was about 1.2 times libx264's (scoring a higher SSIM) and needed
 # about half the CPU time of libx264.
-PROXY_NVENC_CQ = 32
+PROXY_GPU_QUALITY = 32  # NVENC CQ; the same number as QP for VAAPI and AMF
 PROXY_NVENC_RATE = ["-maxrate", "1500k", "-bufsize", "3000k"]
 # Window proxies (#323): while the whole proxy builds, the focused moment plays from a short
 # proxy of [start - BEFORE, end + AFTER], its edges rounded outward to STEP so nearby requests
@@ -801,15 +802,15 @@ def proxy_args(
     out: Path,
     audio_streams: int,
     *,
-    nvenc: bool = False,
+    encoder: VideoEncoder | None = None,
     color: str = "",
     lo: float | None = None,
     hi: float | None = None,
 ) -> list[str]:
     """ffmpeg command for a 720p H.264/AAC preview; several audio tracks are mixed as in exports.
 
-    ``nvenc``: encode with h264_nvenc, else libx264. Decoding stays on the CPU: ``-hwaccel cuda``
-    halved the CPU time but made the build two to three times slower on an RTX 3080.
+    ``encoder``: a GPU encoder (NVENC, VAAPI or AMF), else libx264. Decoding stays on the CPU:
+    ``-hwaccel cuda`` halved the CPU time but made the build two to three times slower on an RTX 3080.
     ``color``: the source's :func:`~cutpoint.encode.sdr_filter` (HDR and BT.2020 become SDR
     Rec.709, tagged so). ``lo``/``hi``: only that part of the source, in seconds (a window
     proxy, whose 0 is ``lo``).
@@ -817,16 +818,19 @@ def proxy_args(
     mix = audio_mix_filter(audio_streams)
     audio = ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else ["-map", "0:a:0?"]
     video = (
-        [*VideoEncoder("nvenc").args(PROXY_NVENC_CQ), *PROXY_NVENC_RATE]
-        if nvenc
+        [*encoder.args(PROXY_GPU_QUALITY), *(PROXY_NVENC_RATE if encoder.kind == "nvenc" else [])]
+        if encoder
         else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p"]
     )
     scale = "scale=-2:min(720\\,ih)"
+    vf = f"{scale},{color},format=yuv420p" if color else scale
+    if encoder:
+        vf = encoder.chain(vf)
     start = ["-ss", f"{lo:.3f}"] if lo is not None else []
     length = ["-t", f"{hi - (lo or 0.0):.3f}"] if hi is not None else []
     return [
         "ffmpeg", "-y", "-nostdin", "-v", "error", *start, "-i", str(real), "-map", "0:v:0",
-        *audio, "-vf", f"{scale},{color},format=yuv420p" if color else scale, *video,
+        *audio, "-vf", vf, *video,
         *(BT709_TAGS if color else []), *length,
         "-g", str(PROXY_GOP), "-fpsmax", str(PROXY_FPS_MAX),
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out),
@@ -907,7 +911,7 @@ class Media:
         self.window_lane: threading.Thread | None = None  # started with the first window
         self.proxies_pruned: set[Path] = set()  # projects whose proxy leftovers went this run
         self.closing = False
-        self.nvenc_failed = False  # a proxy failed with NVENC and worked with libx264 this run
+        self.gpu_failed = False  # a proxy failed with the GPU encoder and worked with libx264
         # still file name -> (its builder lock, requests using it); dropped when the last one leaves
         self.frame_locks: dict[str, tuple[threading.Lock, int]] = {}
         self.frame_slots = threading.BoundedSemaphore(FRAME_SLOTS)
@@ -1126,22 +1130,23 @@ class Media:
         try:
             _ui_folder(p, "proxy")  # ui or ui/proxy a file: a clear refusal, not a traceback
             _own(p, f"{name}.part.mp4")  # a link made while this window was queued
-            nvenc = self._nvenc()
+            gpu = self._gpu_encoder()
 
-            def encode(nv: bool) -> tuple[int, str]:
+            def encode(enc: VideoEncoder | None) -> tuple[int, str]:
                 args = proxy_args(
-                    win.real, tmp, win.audio_streams, nvenc=nv, color=win.color,
+                    win.real, tmp, win.audio_streams, encoder=enc, color=win.color,
                     lo=win.lo / 100, hi=win.hi / 100,
                 )  # fmt: skip
                 return self._encode(args, win)
 
-            code, tail = encode(nvenc)
-            if code != 0 and nvenc and not self.closing and not win.cancelled:
+            code, tail = encode(gpu)
+            if code != 0 and gpu and not self.closing and not win.cancelled:
                 logger.warning(
-                    "window proxy of %s: h264_nvenc failed (%s); retrying with libx264", what, tail
-                )
-                code, tail = encode(False)
-                self.nvenc_failed = code == 0
+                    "window proxy of %s: %s failed (%s); retrying with libx264",
+                    what, gpu.codec, tail,
+                )  # fmt: skip
+                code, tail = encode(None)
+                self.gpu_failed = code == 0
             if code == 0 and not self.closing and not win.cancelled:
                 _own(p, f"{name}.mp4")  # a link made during the encode
                 with self.lock:
@@ -1337,20 +1342,20 @@ class Media:
             _ui_folder(project, "proxy", made)
             # a link made while this build was queued
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")
-            nvenc = self._nvenc()
+            gpu = self._gpu_encoder()
             track = ((project, key), duration)  # the page shows how far the whole proxy got
             code, tail = self._encode(
-                proxy_args(real, tmp, audio_streams, nvenc=nvenc, color=color), progress=track
+                proxy_args(real, tmp, audio_streams, encoder=gpu, color=color), progress=track
             )
-            if code != 0 and nvenc and not self.closing:
+            if code != 0 and gpu and not self.closing:
                 # The probe encodes 0.2 s of black: a driver can still fail on real footage.
                 logger.warning(
-                    "proxy of %s: h264_nvenc failed (%s); retrying with libx264", real.name, tail
+                    "proxy of %s: %s failed (%s); retrying with libx264", real.name, gpu.codec, tail
                 )
                 code, tail = self._encode(
                     proxy_args(real, tmp, audio_streams, color=color), progress=track
                 )
-                self.nvenc_failed = code == 0
+                self.gpu_failed = code == 0
             if code == 0 and not self.closing:
                 _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # a link made during the encode
                 tmp.replace(proxy)
@@ -1378,16 +1383,16 @@ class Media:
                         with contextlib.suppress(OSError):
                             folder.rmdir()
 
-    def _nvenc(self) -> bool:
-        """Encode proxies with NVENC: ``video_encoder`` allows it and it encodes here (probed once,
-        as for exports), unless a proxy already failed with it and worked with libx264."""
-        if self.nvenc_failed:
-            return False
+    def _gpu_encoder(self) -> VideoEncoder | None:
+        """The GPU encoder for proxies: the one exports use (``video_encoder``, probed once),
+        or None for libx264, also after a proxy failed with it and worked with libx264."""
+        if self.gpu_failed:
+            return None
         try:
-            choice = get_config().video_encoder
-        except ValueError:
-            return False
-        return choice in {"auto", "nvenc"} and find_encoder("nvenc")[0] is not None
+            enc = video_encoder()
+        except (ValueError, EncoderUnavailableError):
+            return None
+        return None if enc.kind == "cpu" else enc
 
     def _encode(
         self,

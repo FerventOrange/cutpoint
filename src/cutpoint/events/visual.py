@@ -15,7 +15,7 @@ One decode pass per source feeds two GPU models:
   detector happily calls "person" on a helmet camera looking down).
 
 Frames: GoPro HEVC has a keyframe every 1.001 s, so a keyframe-only decode
-(``-skip_frame nokey``, NVDEC + ``scale_cuda``) yields about 1 fps for almost
+(``-skip_frame nokey``, GPU decode: NVDEC + ``scale_cuda``, or VAAPI) yields about 1 fps for almost
 no decode cost; reading the file is the bottleneck. Sources whose keyframes
 are sparser than 1.5 s (gameplay recordings) are decoded fully through
 ``fps=1``. Frame times come from ``showinfo``.
@@ -230,8 +230,9 @@ def keyframe_spacing(path: Path, probe_s: float = 12.0) -> float | None:
 def iter_frames(path: Path, width: int, height: int, keyframes: bool, hwaccel: bool) -> Any:
     """Yield ``(t, HxWx3 uint8 frame)`` at ~1 fps from one sequential ffmpeg pass.
 
-    Tries NVDEC with ``scale_cuda`` first and falls back to CPU decoding if it
-    produced nothing. ``t`` is each frame's presentation time (``showinfo``).
+    Tries the GPU decoder first (NVDEC with ``vf_cuda``, VAAPI with ``vf``) and falls back
+    to CPU decoding if it produced nothing. ``t`` is each frame's presentation time
+    (``showinfo``).
     """
     find_tool("ffmpeg")  # a missing ffmpeg is an error, not "no frames"
     rate = "" if keyframes else "fps=1,"
@@ -243,7 +244,7 @@ def iter_frames(path: Path, width: int, height: int, keyframes: bool, hwaccel: b
             vf_cuda=f"{rate}scale_cuda={width}:{height},hwdownload,format=nv12,format=rgb24",
             keyframes_only=keyframes,
             pts=True,
-            hwaccel="cuda" if hwaccel else None,
+            hwaccel="auto" if hwaccel else None,
         )
     except FFmpegError as err:
         logger.debug("visual decode produced no frames: %s", err)

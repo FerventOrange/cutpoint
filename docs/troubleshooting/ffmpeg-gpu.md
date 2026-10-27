@@ -89,8 +89,12 @@ Common causes when the GPU encoder is not used:
   Windows machine while this was written, so run `cutpoint capabilities` there and use
   `CUTPOINT_VIDEO_ENCODER=cpu` if it fails.
 
-Limits: only encoding runs on the AMD GPU. Video decoding for analysis, HUD OCR and 360 renders
-still uses CUDA when it can and the CPU otherwise.
+Decoding follows the GPU found here: NVDEC with an NVIDIA GPU, VAAPI on the render nodes of an
+AMD GPU (Linux); a vendor that is not present is not tried. Analysis, HUD OCR, 360 view sampling
+and 360 renders decode that way, and the UI's preview proxies encode with the encoder above. VAAPI
+decodes only limited-range 8-bit 4:2:0 H.264; HEVC, 10-bit, 4:4:4 and full-range (`yuvj420p`) sources decode on the CPU. Each decoder
+must pass a one-clip test decode first, and a failing one falls back to the CPU. Transcription,
+OCR and the other models stay on the CPU on an AMD GPU.
 
 ## Whisper runs on the CPU, or CUDA / cuDNN / cuBLAS errors
 
@@ -183,6 +187,6 @@ own Python: see [Install as a tool](../getting-started.md#install-as-a-tool-opti
 
 ## Slow or odd video decoding
 
-- Hardware decoding (`-hwaccel cuda`) is used for HUD OCR. If it fails on your GPU, pass
+- Hardware decoding (NVDEC, or VAAPI on an AMD GPU) is used for HUD OCR. If it fails on your GPU, pass
   `events --no-hwaccel`.
 - 10-bit or exotic codecs may fall back to CPU decoding, which is slower but correct.

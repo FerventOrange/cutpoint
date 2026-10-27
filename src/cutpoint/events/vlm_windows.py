@@ -477,7 +477,7 @@ def grab_frames(
             fps=f"{n}/{dur:.3f}",
             height=height,
             quality=4,
-            hwaccel="cuda" if hwaccel else None,
+            hwaccel="auto" if hwaccel else None,
         )
     except FFmpegError as err:
         logger.debug("frame grab failed: %s", err)
