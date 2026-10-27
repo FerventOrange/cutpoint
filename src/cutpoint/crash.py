@@ -1054,8 +1054,10 @@ def write_sheet(
         1,
         cv2.LINE_AA,
     )
-    out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), np.vstack([title, grid]), [cv2.IMWRITE_JPEG_QUALITY, 82])
+    # the bytes cv2.imwrite gives, written atomically (held back while `analyze` runs)
+    ok, buf = cv2.imencode(".jpg", np.vstack([title, grid]), [cv2.IMWRITE_JPEG_QUALITY, 82])
+    if ok:
+        cache.save_bytes(out, buf.tobytes(), parents=True)
     return out
 
 
@@ -1283,7 +1285,7 @@ def detect_project(
     out_dir = project / CHECK_DIR
     if sheets:
         for f in out_dir.glob("*.jpg"):
-            f.unlink()
+            cache.remove(f)
     for c in cands[:sheets]:
         c["caption"] = (
             f"{c['id']} {c['name']} {c['t0']:.1f}-{c['t1']:.1f}s "
@@ -1323,9 +1325,13 @@ def detect_project(
             c["scores"]["audio"],
             c["scores"]["words"],
         )
+    # inside `analyze` crashes.json is held back until the analysis completes
+    held = " (written when analyze completes)" if cache.is_held(out) else ""
     logger.info(
-        "Wrote %s (%d candidates, %d checked densely, %d sheets) in %.1fs",
+        "%s %s%s (%d candidates, %d checked densely, %d sheets) in %.1fs",
+        "Prepared" if held else "Wrote",
         out,
+        held,
         len(cands),
         sum(c["confirmed"] for c in cands),
         len(written),

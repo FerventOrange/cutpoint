@@ -401,6 +401,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an otherwise empty new project folder. `analyze` now writes `transcript.txt` with
   `highlights.json` at the end (same content), and its event layers read the transcript from
   memory, so a cancelled run leaves both files as they were.
+- Ctrl+C during `analyze` left a new `events.json`, `events.txt`, `crashes.json`, `crash_check\`
+  sheets, `activity.json`, or for ski `telemetry.json` and `ski_features\` (stale features were
+  deleted at the start). They are now written with `highlights.json` at the end, so a cancelled
+  run leaves them as they were. A UI or agent watching the project folder no longer sees these
+  files until `analyze` finishes (#408).
 - Clips of a recording with the same audio on several tracks (OBS writes its mix to every
   enabled track) came out 20·log10(N) dB too loud and clipped, because every track was summed.
   `clips`, `extend` and `edit` now compare the tracks on six 3 s windows across each source

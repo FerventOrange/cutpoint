@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -186,5 +187,7 @@ def write_outputs(
         lines.extend(r[2] for r in sorted(rows, key=lambda r: (r[0], r[1])))
         lines.append("")
     tpath = project / "events.txt"
-    tpath.write_text("\n".join(lines), encoding="utf-8")
+    # Text mode's line endings, as a plain write_text gave them; atomic, and held back with
+    # events.json while `cutpoint analyze` runs (cache.hold_outputs)
+    cache.save_bytes(tpath, "\n".join(lines).replace("\n", os.linesep).encode("utf-8"))
     return jpath, tpath

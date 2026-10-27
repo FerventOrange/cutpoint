@@ -89,6 +89,20 @@ WAV_HEADER = 44
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
+# Result files of the project written only when analyze completes, just before
+# transcript.txt and highlights.json (cache.hold_outputs): a failed or cancelled run leaves
+# the previous ones as they were and a first one none (#408). The steps read them from
+# memory meanwhile. Kept as written on purpose: discovery/ (HUD discovery's proposal, for the
+# preset it installs in the user's preset folder at once) and the caches outside the project.
+HELD_OUTPUTS = (
+    "events.json",
+    "events.txt",
+    "crashes.json",
+    "crash_check",  # the crash contact sheets crashes.json names
+    "activity.json",
+    "telemetry.json",  # ski
+    "ski_features",
+)
 
 
 @dataclass
@@ -1333,7 +1347,8 @@ def _run_layers(
     transcript: str | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
-    events.json, as ``cutpoint events`` would; False if they stopped before writing it.
+    events.json, as ``cutpoint events`` would (held back with the other
+    :data:`HELD_OUTPUTS` until the analysis completes); False if they stopped before it.
     ``prefetch``: the background OCR reader (:func:`_ocr_prefetch`) or None; ``transcript``:
     the transcript.txt text, not written yet either (None: read from the project)."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
@@ -1478,8 +1493,8 @@ def analyze(
     keyframes and crashes, see :func:`plan_layers`; events.json is written so a later
     ``cutpoint events`` reuses their caches), ranking (the events rescore the candidates)
     and the optional vision rating. highlights.json is written once, atomically, at the
-    end (transcript.txt just before it): a failed or cancelled run leaves the previous
-    ones untouched.
+    end (transcript.txt and the :data:`HELD_OUTPUTS` such as events.json and crashes.json
+    just before it): a failed or cancelled run leaves the previous ones untouched.
 
     A source whose read stops early (ffmpeg "Error during demuxing", an I/O
     error, or audio meaningfully shorter than the container) gets a loud
@@ -1575,6 +1590,7 @@ def _analyze(
     logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
     with (
         output_dir(out_dir),  # a failed run leaves no empty project folder behind
+        cache.hold_outputs(out_dir, HELD_OUTPUTS) as held,
         # HUD OCR in the background while the GPU steps run; stopped before the folder goes
         _ocr_prefetch(style, sources, skip, out_dir, layers) as prefetch,
     ):
@@ -1588,7 +1604,7 @@ def _analyze(
             stale = out_dir / ski.FEATURES_DIR
             if stale.is_dir():
                 for f in stale.glob("*.npz"):
-                    f.unlink()
+                    cache.remove(f)  # held: removed only when the run completes
             taste = (style.learned or {}).get("taste")
             durations = {str(s): probe(remap_source(s)).duration for s in sources}
             ski_ctx = ski.prepare(sources, durations, out_dir, taste=Path(taste) if taste else None)
@@ -1852,6 +1868,7 @@ def _analyze(
         hl["suggested_top"] = suggested
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         timings["total_s"] = round(time.perf_counter() - t_start, 2)
+        held.commit()  # events.json, crashes.json, ... (HELD_OUTPUTS)
         # Text mode's line endings, as a plain write_text gave them; highlights.json last, so
         # a cancel between the two leaves the previous pair's highlights.json unchanged.
         cache.save_bytes(

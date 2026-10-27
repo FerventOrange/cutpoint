@@ -420,7 +420,7 @@ OCR in the background removes them.
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
 | `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `ski` and `sport`, the CLIP visual layer, only with a CUDA GPU |
 | `crashes` | Action-cam footage only (telemetry found, or style `ski`, `action` or `sport`) |
-| `ranking` | Re-ranks the candidates with the events (writes `events.json` and `events.txt`); `highlights.json` is written after the last step |
+| `ranking` | Re-ranks the candidates with the events; `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
 | `vision` | Ollama frame rating, only when vision is on |
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
@@ -430,7 +430,18 @@ VLM layer is not part of `analyze`; it stays in [`events`](#events) and `edit --
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
-file, and a cancelled first run leaves none. The analysis score stays in each candidate's
+file, and a cancelled first run leaves none. The other result files are written with it, just
+before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
+`crash_check\` sheets, `activity.json` and, for `ski`, `telemetry.json` and `ski_features\`
+(older sheets and features of the project are removed at the same time). A failed or cancelled
+run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
+folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
+reads the cached transcription. What stays on purpose: the per-source caches outside the
+project (audio, transcript, scene cuts, event layers, dense crash checks), so a rerun resumes
+where it stopped; a HUD preset found by discovery, installed in the presets folder at once,
+with its proposal in the project's `discovery\` folder; and an activity profile written by the
+local LLM to the profile library. `analyze` never writes `visual_check\`; only
+[`events --sheets`](#events) does. The analysis score stays in each candidate's
 `score_pre_events`, and `highlights.pre-events.json` is written only when the analysis was not
 ranked with events yet.
 
