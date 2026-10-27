@@ -1,7 +1,7 @@
 """Shared decode of ``analyze`` (#375 step 2, ``CUTPOINT_ANALYZE_SHARED_DECODE``): the split
 pass gives the frames and scene proxy of the separate decodes, its spool and failure paths
-leave no proxy or spool behind, the scene share's states, the proxy control mode, and the
-gates (synthetic testsrc clips; CUDA rows skip without nvidia-smi)."""
+leave no proxy or spool behind, the scene share's states, and the gates (synthetic testsrc
+clips; CUDA rows skip without nvidia-smi)."""
 
 from __future__ import annotations
 
@@ -294,19 +294,6 @@ def test_a_paused_read_closes_its_spool_file_before_the_spool_goes(tmp_path, mon
 
 
 @needs_ffmpeg
-def test_run_cancellable(tmp_path):
-    clip = _clip(tmp_path / "clip.mp4", seconds=1)
-    out = tmp_path / "p.mp4"
-    args = ["-v", "error", "-y", "-i", str(clip), "-an", "-vf", SCENE_VF, *ENC, str(out)]
-    assert ffmpeg_utils.run_cancellable(args, threading.Event()) and out.stat().st_size
-    stopped = threading.Event()
-    stopped.set()
-    assert not ffmpeg_utils.run_cancellable(["-v", "error", "-re", *args[2:]], stopped)
-    assert not ffmpeg_utils.run_cancellable(["-v", "error", "-i", str(tmp_path / "x.mp4"),
-                                             str(out)], threading.Event())  # fmt: skip
-
-
-@needs_ffmpeg
 def test_a_spool_write_error_fails_both_sides(tmp_path, monkeypatch):
     clip = _clip(tmp_path / "clip.mp4")
     real = Path.open
@@ -413,14 +400,14 @@ def test_the_scene_cuts_wait_for_a_running_share(tmp_path, monkeypatch):
     assert share.result() == tmp_path / "proxy.mp4"
     assert share.waited >= 0.05
     assert share.summary().startswith("done, waited") and "spool peak 3 MiB" in share.summary()
-    failed = ocr_prefetch.SceneShare(_plan(tmp_path), "proxy")
+    failed = ocr_prefetch.SceneShare(_plan(tmp_path), "split")
     failed.claim()
     failed.finish(False)
     assert failed.result() is None and failed.state == "failed"
 
 
 def test_shared_mode_env(monkeypatch):
-    for value, want in [("split", "split"), (" Proxy ", "proxy"), ("0", None), ("x", None)]:
+    for value, want in [(" Split ", "split"), ("proxy", None), ("0", None), ("x", None)]:
         monkeypatch.setenv("CUTPOINT_ANALYZE_SHARED_DECODE", value)
         assert ocr_prefetch.shared_mode() == want
     monkeypatch.delenv("CUTPOINT_ANALYZE_SHARED_DECODE")
@@ -592,28 +579,6 @@ def test_mode_0_logs_no_shared_decode_lines(pre, monkeypatch, caplog):
     assert not [m for m in caplog.messages if "shared decode" in m or "spool" in m]
 
 
-@pytest.mark.parametrize("ok", [True, False])
-def test_proxy_mode_makes_the_scene_proxy_beside_the_ocr_read(pre, monkeypatch, tmp_path, ok):
-    runs: list[list[str]] = []
-
-    def run(args, cancel):
-        runs.append(args)
-        Path(args[-1]).write_bytes(b"part")
-        return ok
-
-    monkeypatch.setattr(ocr_prefetch, "run_cancellable", run)
-    share = pre.make("proxy").offer(pre.src, 60.0, True, pre.plan())
-    proxy = share.result()
-    cdir = tmp_path / "cache"
-    (args,) = runs
-    assert args[args.index("-i") + 1 :] == [str(pre.src), "-an", "-vf", SCENE_VF, *ENC,
-                                            str(cdir / ocr_prefetch.PROXY_TMP)]  # fmt: skip
-    assert "-hwaccel" in args and pre.decoded is None  # the OCR decodes on its own
-    assert proxy == (cdir / "proxy.mp4" if ok else None)
-    assert _left(cdir) == ({"proxy.mp4"} if ok else set())
-    _take(pre)
-
-
 def test_split_that_cannot_start_fails_its_share(pre, monkeypatch, tmp_path):
     def broken(path, **k):
         raise RuntimeError("no thread")
@@ -625,30 +590,32 @@ def test_split_that_cannot_start_fails_its_share(pre, monkeypatch, tmp_path):
     assert pre.decoded is None and share.state == "failed" and share.result() is None
 
 
-def test_proxy_mode_waits_for_enough_vram(pre, monkeypatch):
-    monkeypatch.setattr(ocr_prefetch, "vram_ok", lambda: False)
-    monkeypatch.setattr(ocr_prefetch, "run_cancellable", lambda *a: pytest.fail("ran"))
-    share = pre.make("proxy").offer(pre.src, 60.0, True, pre.plan())
-    assert share.state == "declined" and "VRAM" in share.why and share.result() is None
-
-
 @pytest.mark.parametrize("taken", [True, False])
 def test_close_removes_a_proxy_the_scene_cuts_never_took(pre, monkeypatch, tmp_path, taken):
-    def run(args, cancel):
-        Path(args[-1]).write_bytes(b"proxy")
-        return True
+    class Fake:
+        def __init__(self, path, **k):
+            k["proxy"].write_bytes(b"proxy")
+            k["on_exit"](True, None)
 
-    monkeypatch.setattr(ocr_prefetch, "run_cancellable", run)
-    share = pre.make("proxy").offer(pre.src, 60.0, True, pre.plan())
-    pre.pre._proxies[0].join(5)
+        def frames(self, exits):
+            return iter(())
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
+    monkeypatch.setattr(ocr_prefetch, "SplitDecode", Fake)
+    share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
+    assert pre.pre._jobs[str(pre.src)].done.wait(5)
     if taken:
         assert share.result() is not None
     pre.pre.close()
     assert share.plan.proxy.exists() is taken  # a taken one is the scene cuts' to delete
 
 
-def test_mode_0_offers_no_share(pre):
-    assert pre.make("0").offer(pre.src, 60.0, True, pre.plan()) is None
+@pytest.mark.parametrize("mode", ["0", "proxy"])  # proxy: a removed mode, off like any other
+def test_mode_0_offers_no_share(pre, mode):
+    assert pre.make(mode).offer(pre.src, 60.0, True, pre.plan()) is None
     assert pre.pre.mode is None
 
 

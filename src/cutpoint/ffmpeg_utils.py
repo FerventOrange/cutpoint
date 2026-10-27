@@ -1846,34 +1846,6 @@ def split_decode_args(
     ]
 
 
-def run_cancellable(args: Sequence[str], cancel: threading.Event) -> bool:
-    """Run ffmpeg isolated from Ctrl+C (and, on Windows, ended with Python), killed as soon
-    as ``cancel`` is set; True when it exited 0 by itself. Its progress goes to a pipe drained
-    here, so it never blocks. On POSIX an orphan left by a killed Python finishes its pass
-    (ffmpeg ignores a failed progress write); ``offer()`` sweeps its ``proxy.tmp.mp4``."""
-    cmd = _command("ffmpeg", ["-progress", "pipe:1", *args])
-    logger.debug("exec: %s", subprocess.list2cmdline(cmd))
-    with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, **_isolated())
-        _kill_with_parent(proc)
-        watch = _CancelWatch(proc, cancel)
-        assert proc.stdout is not None
-        try:
-            for _ in proc.stdout:  # drained, so ffmpeg never blocks on it
-                pass
-            proc.wait()
-        finally:
-            proc.stdout.close()
-            watch.finish()
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-        if proc.returncode != 0 and not watch.fired:
-            err.seek(0)
-            logger.debug("ffmpeg exit %s: %s", exit_code(proc.returncode), _tail(err.read()))
-    return proc.returncode == 0 and not watch.fired
-
-
 class SplitDecode:
     """One CUDA pass (:func:`split_decode_args`) that writes the scene proxy and spools the
     raw frames to ``spool`` (files of the whole frames that fit in :data:`SPOOL_SEGMENT_BYTES`,

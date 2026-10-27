@@ -395,20 +395,20 @@ debug lines of helper threads and a `resuming the OCR read` line when a backgrou
 handed back to its turn; only timings differ. Set
 `CUTPOINT_ANALYZE_OVERLAP=0` to turn it off.
 
-Experimental, off by default: `CUTPOINT_ANALYZE_SHARED_DECODE` also moves the scene detection
-proxy of `transcribe` into the background, for a source of up to 30 minutes with one video
-stream (no cover art) whose scene cuts are not cached yet. `split` makes it in the same CUDA
-decode as the background HUD OCR (one pass instead of two), spooling the OCR frames to the
-source's cache folder; it is skipped when the drive has less free space than the worst-case
-spool (every OCR frame of the source) plus 1 GB, and the spool, in files of about 256 MB, is
-removed as it is read. `proxy` runs the proxy's own CUDA decode beside the OCR read (a
-second decode; a control for measuring). `0` or unset: as described above. When the
+Experimental, off by default: `CUTPOINT_ANALYZE_SHARED_DECODE=split` also moves the scene
+detection proxy of `transcribe` into the background, for a source of up to 30 minutes with one
+video stream (no cover art) whose scene cuts are not cached yet. It makes the proxy in the same
+CUDA decode as the background HUD OCR (one pass instead of two) and spools the OCR frames to
+the source's cache folder, in files of about 256 MB removed as they are read. The spool grows
+by as much as the OCR read lags behind the decode: about 4 GB on a 446 s 1080p clip. It is
+skipped when the drive has less free space than the whole file's worst case (every OCR frame
+of the source) plus 1 GB. `0`, unset or any other value: as described above. When the
 background proxy has not started by the time scene detection needs it, or fails, scene
 detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and the OCR
-caches are the same in every mode. Each source then logs an INFO
-line with the scene detection time, the wait for the background proxy and the spool peak, and
-one with the wait for the background OCR, for comparing the modes; a source with cover art or
-more than one video stream, or a drive without room for the spool, logs why at once.
+caches are the same as with it off. Each source then logs an INFO line with the scene
+detection time, the wait for the background proxy and the spool peak, and one with the wait for
+the background OCR, for measuring; a source with cover art or more than one video stream, or a
+drive without room for the spool, logs why at once.
 
 | Step | What |
 |---|---|

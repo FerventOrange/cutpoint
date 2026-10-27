@@ -18,13 +18,12 @@ VRAM. ``CUTPOINT_ANALYZE_OVERLAP=0`` turns it off. Whatever it does not read, or
 whose inputs differ from the ones ``run_events`` uses, is read inline as before, after the
 worker is stopped: one OCR engine and one decode at most.
 
-``CUTPOINT_ANALYZE_SHARED_DECODE`` (experimental, off by default) also makes the scene proxy
-of a whole, clean source of up to ``LONG_FILE_S`` in the background (:class:`SceneShare`):
-``split`` decodes it in the OCR read's CUDA pass (:class:`~cutpoint.ffmpeg_utils.SplitDecode`,
-the raw frames spooled to the cache folder when the free disk allows), ``proxy`` runs the
-scene proxy's own pass beside the OCR read (a second NVDEC session; the control). The scene
-cuts use that proxy, wait for it while it is made, and decode as before when it is not
-started yet or failed: the results are the same.
+``CUTPOINT_ANALYZE_SHARED_DECODE=split`` (experimental, off by default) also makes the scene
+proxy of a whole, clean source of up to ``LONG_FILE_S`` in the background (:class:`SceneShare`),
+in the OCR read's CUDA pass (:class:`~cutpoint.ffmpeg_utils.SplitDecode`, the raw frames
+spooled to the cache folder when the free disk allows). The scene cuts use that proxy, wait
+for it while it is made, and decode as before when it is not started yet or failed: the
+results are the same.
 """
 
 from __future__ import annotations
@@ -53,13 +52,12 @@ from cutpoint.events.killfeed import (
     detect_ocr_events,
 )
 from cutpoint.events.regions import game_key_for_path, load_preset
-from cutpoint.ffmpeg_utils import SPOOL_DIR, SplitDecode, run_cancellable, spool_fits
+from cutpoint.ffmpeg_utils import SPOOL_DIR, SplitDecode, spool_fits
 
 logger = logging.getLogger(__name__)
 
 ENV = "ANALYZE_OVERLAP"  # CUTPOINT_ANALYZE_OVERLAP=0: OCR waits for its turn (escape hatch)
-SHARED_ENV = "ANALYZE_SHARED_DECODE"  # split | proxy | 0 (default): the scene proxy (experimental)
-SHARED_MODES = ("split", "proxy")
+SHARED_ENV = "ANALYZE_SHARED_DECODE"  # split | 0 (default): the scene proxy (experimental)
 PROXY_TMP = "proxy.tmp.mp4"  # a background scene proxy until it is complete
 MIN_FREE_MIB = 2048  # free VRAM when the first source is offered (Whisper may load after it)
 MIN_TOTAL_MIB = 8192
@@ -76,9 +74,9 @@ def enabled() -> bool:
 
 
 def shared_mode() -> str | None:
-    """``split`` or ``proxy`` from ``CUTPOINT_ANALYZE_SHARED_DECODE``; None (off) otherwise."""
+    """``split`` from ``CUTPOINT_ANALYZE_SHARED_DECODE``; None (off) otherwise."""
     mode = (paths.env(SHARED_ENV) or "").strip().lower()
-    return mode if mode in SHARED_MODES else None
+    return mode if mode == "split" else None
 
 
 def sweep(cdir: Path) -> None:
@@ -246,8 +244,6 @@ class OcrPrefetch:
         self._off = ""  # the same, for the shares of every source
         self.mode = shared_mode()  # the background scene proxy (None: off)
         self._split: SplitDecode | None = None  # the worker's shared decode
-        self._proxies: list[threading.Thread] = []  # proxy mode: scene proxy passes
-        self._proxy_vram: bool | None = None  # proxy mode: the VRAM gate, checked once
 
     def __enter__(self) -> OcrPrefetch:
         return self
@@ -262,7 +258,7 @@ class OcrPrefetch:
         """A source whose read was checked, ``duration`` as highlights.json records it.
         ``ok`` False (a read error, a recovered part, Whisper not on CUDA): neither it nor
         a later source is read in the background. ``scene``: its scene proxy, made in the
-        background in a shared-decode mode; returns the share the scene cuts then use."""
+        background in the shared-decode mode; returns the share the scene cuts then use."""
         if not self._open or str(src) in self._jobs:
             return None
         if not ok:
@@ -286,19 +282,6 @@ class OcrPrefetch:
             for hold in self._holds:
                 hold.handler.addFilter(hold)
         self._queue.put(job)
-        if job.share is not None and job.share.mode == "proxy":
-            if self._proxy_vram is None:
-                self._proxy_vram = vram_ok()
-            if not self._proxy_vram:
-                job.share.decline(
-                    f"less than {MIN_FREE_MIB} MiB VRAM free or {MIN_TOTAL_MIB} in all"
-                )
-                return job.share
-            thread = threading.Thread(
-                target=self._proxy, args=(job.share,), name="scene-proxy", daemon=True
-            )
-            self._proxies.append(thread)
-            thread.start()
         return job.share
 
     def take(
@@ -351,9 +334,6 @@ class OcrPrefetch:
             if thread.is_alive():
                 logger.debug("OCR prefetch still busy after %.0fs; left to exit", JOIN_S)
                 self._stuck = thread
-        for proxy in self._proxies:  # killed on cancel: only the cleanup is left
-            proxy.join(JOIN_S)
-        self._proxies = []
         for job in self._jobs.values():  # a proxy the scene cuts never used
             if job.share is not None and job.share.state == "done" and not job.share.taken:
                 with contextlib.suppress(OSError):
@@ -425,17 +405,17 @@ class OcrPrefetch:
                 if self._split is not None:  # its frames were not all read: ffmpeg is killed
                     self._split.close()
                     self._split = None
-                if job.share is not None and job.share.mode == "split":  # unless it ran
+                if job.share is not None:  # unless it ran
                     job.share.decline(why)
                 self.current = None
                 job.done.set()
 
     def _decoder(self, job: _Job) -> DecodeHook | None:
-        """split mode: the decode hook that reads the OCR frames from one CUDA pass that also
-        makes the job's scene proxy (when the scene cuts did not come first and the disk
-        holds the worst-case spool)."""
+        """The shared-decode mode: the decode hook that reads the OCR frames from one CUDA pass
+        that also makes the job's scene proxy (when the scene cuts did not come first and the
+        disk holds the worst-case spool)."""
         share = job.share
-        if share is None or share.mode != "split":
+        if share is None:
             return None
         plan = share.plan
 
@@ -476,24 +456,3 @@ class OcrPrefetch:
             return self._split.frames(exits)
 
         return decode
-
-    def _proxy(self, share: SceneShare) -> None:
-        """proxy mode (a thread): the scene proxy's own CUDA pass, beside the OCR read."""
-        if not share.claim():
-            return
-        plan, ok = share.plan, False
-        tmp = plan.cdir / PROXY_TMP
-        try:
-            args = ["-hide_banner", "-nostats", "-v", "error", "-y", "-hwaccel", "cuda"]
-            args += ["-i", str(plan.io), "-an", "-vf", plan.vf, *plan.enc, str(tmp)]
-            ok = run_cancellable(args, self._cancel)
-            if ok:
-                tmp.replace(plan.proxy)
-        except OSError as err:
-            logger.debug("scene proxy not made in the background: %s", err)
-            ok = False
-        finally:
-            if not ok:
-                with contextlib.suppress(OSError):
-                    tmp.unlink(missing_ok=True)
-            share.finish(ok)
