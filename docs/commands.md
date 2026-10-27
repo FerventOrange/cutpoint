@@ -73,7 +73,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
 | `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
-| `vision_unavailable` | `analyze` | `--vision` was passed but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
+| `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
@@ -431,7 +431,7 @@ OCR in the background removes them.
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
 | `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `ski` and `sport`, the CLIP visual layer, only with a CUDA GPU |
 | `crashes` | Action-cam footage only (telemetry found, or style `ski`, `action` or `sport`) |
-| `ranking` | Re-ranks the candidates with the events (writes `events.json` and `events.txt`); `highlights.json` is written after the last step |
+| `ranking` | Re-ranks the candidates with the events; `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
 | `vision` | Ollama frame rating, only when vision is on |
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
@@ -441,7 +441,18 @@ VLM layer is not part of `analyze`; it stays in [`events`](#events) and `edit --
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
-file, and a cancelled first run leaves none. The analysis score stays in each candidate's
+file, and a cancelled first run leaves none. The other result files are written with it, just
+before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
+`crash_check\` sheets, `activity.json` and, for `ski`, `telemetry.json` and `ski_features\`
+(older sheets and features of the project are removed at the same time). A failed or cancelled
+run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
+folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
+reads the cached transcription. What stays on purpose: the per-source caches outside the
+project (audio, transcript, scene cuts, event layers, dense crash checks), so a rerun resumes
+where it stopped; a HUD preset found by discovery, installed in the presets folder at once,
+with its proposal in the project's `discovery\` folder; and an activity profile written by the
+local LLM to the profile library. `analyze` never writes `visual_check\`; only
+[`events --sheets`](#events) does. The analysis score stays in each candidate's
 `score_pre_events`, and `highlights.pre-events.json` is written only when the analysis was not
 ranked with events yet.
 

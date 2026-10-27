@@ -17,7 +17,9 @@ cutpoint assemble projects/trip/clips --loudnorm
 `analyze --style ski` skips scene detection. It also runs the reaction (sound events, voice), keyframe
 (visual, only with a CUDA GPU) and crash steps when the `events` extra and models are installed,
 and writes `events.json` and `crashes.json`; `--skip` leaves steps out. As with every style, the Ollama frame rating runs
-only with `--vision`. It writes `telemetry.json` (day summary, runs, per-source events). Clips are ordered by their
+only with `--vision`. It writes `telemetry.json` (day summary, runs, per-source events). These
+files, `crash_check\` and `ski_features\` are written only when `analyze` completes: a cancelled
+run leaves the previous ones as they were ([analyze](../commands.md#analyze)). Clips are ordered by their
 start time (GPS time, else the camera clock) and the day is split into runs at lift segments
 and gaps over 4 minutes.
 

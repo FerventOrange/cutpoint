@@ -5,20 +5,24 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import signal
 import sys
+import threading
 import time
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pytest
 
 import cutpoint.pano.x3 as x3
 import cutpoint.ski as ski
 from conftest import set_config, write
-from cutpoint import analyze, cli, config, crash, jsonout, progress, transcribe
-from cutpoint.events import common, pipeline, scoring
+from cutpoint import activity, analyze, cache, cli, config, crash, jsonout, progress, transcribe
+from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
 from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
 from cutpoint.styles import get_style
@@ -54,7 +58,7 @@ def run(home, tmp_path, monkeypatch):
     state = SimpleNamespace(
         video=video, proj=proj, plan=analyze.LayerPlan(), fail=None, cancel=False,
         events_calls=[], layers_seen=[], saves=[], vision_ok=True, vision_cached=False,
-        rated=0, segments=[], transcripts=[],
+        rated=0, segments=[], transcripts=[], events=[],
     )  # fmt: skip
 
     class StubTranscriber:
@@ -82,11 +86,25 @@ def run(home, tmp_path, monkeypatch):
         for layer in [x for x in ORDER if x in layers]:
             with stage(layer):
                 state.layers_seen.append(layer)
+                if layer == "crash":  # its files, as detect_project writes them
+                    fake_crash_outputs(project)
                 if state.fail == layer:
                     raise KeyboardInterrupt if state.cancel else RuntimeError("model blew up")
         with stage("write"):
-            write(project / "events.json", json.dumps({"events": [], "created": "t"}))
-        return project / "events.json", project / "events.txt"
+            lines = common.load_transcript_lines(project)
+            out = report.write_outputs(project, [str(video)], state.events, [], lines, {}, {}, {})
+            if state.fail == "write" and state.cancel:
+                raise KeyboardInterrupt
+        return out
+
+    def fake_crash_outputs(project):
+        """activity.json, the crash_check sheets and crashes.json with the real writers."""
+        activity.resolve(project, activity="generic", llm=False)
+        for f in (project / crash.CHECK_DIR).glob("*.jpg"):
+            cache.remove(f)
+        c = {"source": str(video), "t0": 10.0, "t1": 11.0, "confidence": 0.9}
+        crash.write_sheet(c, project / crash.CHECK_DIR / "c001_a_10.jpg")
+        cache.save_json(project / crash.CRASHES_FILE, {"crashes": [c]})
 
     class FakeRater:
         hits = asked = missed = 0
@@ -116,6 +134,8 @@ def run(home, tmp_path, monkeypatch):
         real_save(path, data, **kw)
 
     state.old = None
+    frames = (np.array([10.0]), np.zeros((1, 24, 32, 3), np.uint8))
+    monkeypatch.setattr(crash, "decode_window", lambda *a, **k: frames)
     monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
     monkeypatch.setattr(analyze, "analyze_source", fake_analyze_source)
     monkeypatch.setattr(analyze, "VisionRater", FakeRater)
@@ -780,10 +800,8 @@ def test_a_cancel_after_the_transcription_leaves_no_transcript_txt(run, where):
     run.fail, run.cancel = ("visual" if where == "keyframes" else "vision"), True
     with pytest.raises(KeyboardInterrupt):
         run.go(vision=where == "vision")
-    if where == "keyframes":  # nothing written yet: the new project folder is removed too
-        assert not run.proj.exists()
-    else:  # events.json of the finished layers stays (the earlier behaviour)
-        assert sorted(p.name for p in run.proj.iterdir()) == ["events.json"]
+    # nothing written: the new project folder is removed too (events.json, held back, #408)
+    assert not run.proj.exists()
 
 
 def test_a_cancel_leaves_the_previous_transcript_txt_byte_identical(run):
@@ -805,6 +823,341 @@ def test_pending_transcript_is_parsed_only_inside_the_block(tmp_path):
     assert [t["text"] for t in common.load_transcript_lines(tmp_path)] == ["file"]
     with common.pending_highlights(tmp_path, {"sources": []}):  # no text: the file
         assert [t["text"] for t in common.load_transcript_lines(tmp_path)] == ["file"]
+
+
+# ----------------------------------------------------------------- held result files (#408)
+ALL_LAYERS = {"reactions": ("audio",), "keyframes": ("visual",), "crashes": ("crash",)}
+LAUGH = {"source": "", "kind": "audio", "type": "audio", "label": "Laughter",
+         "confidence": 1.0, "start": 12.0, "end": 14.0}  # fmt: skip
+OLD_FILES = {
+    "events.json": b'{"events": [], "old": true}\r\n',
+    "events.txt": b"# old events\r\n",
+    "crashes.json": b'{"crashes": [], "old": true}\n',
+    "crash_check/c001_old_5.jpg": b"old sheet",
+    "activity.json": b'{"name": "old"}',
+    "telemetry.json": b'{"old": true}',
+    "ski_features/old-0123abcd.npz": b"old features",
+}
+
+
+def tree(folder: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(folder).as_posix(): p.read_bytes()
+        for p in sorted(folder.rglob("*"))
+        if p.is_file()
+    }
+
+
+def test_hold_outputs_keeps_writes_and_deletions_in_memory_until_commit(tmp_path):
+    keep = write(tmp_path / "a.json", '{"v": "old"}')
+    gone = write(tmp_path / "sheets" / "old.jpg", b"jpg")
+    other = tmp_path / "other.json"
+    with cache.hold_outputs(tmp_path, ["a.json", "new.txt", "sheets", "sub"]) as held:
+        cache.save_json(keep, {"v": "new"})
+        cache.save_bytes(tmp_path / "new.txt", b"text\r\n")
+        cache.save_bytes(tmp_path / "sub" / "x.bin", b"x", parents=True)
+        cache.remove(gone)
+        cache.save_json(other, {"v": 1})  # not held: written at once
+        assert keep.read_text(encoding="utf-8") == '{"v": "old"}' and gone.is_file()
+        assert not (tmp_path / "new.txt").exists() and not (tmp_path / "sub").exists()
+        assert cache.load_json(keep) == {"v": "new"} == cache.read_json(keep)
+        assert cache.load_json(gone) is None
+        with pytest.raises(FileNotFoundError):
+            cache.read_json(gone)
+        assert cache.load_json(other) == {"v": 1}
+        held.commit()
+        direct = tmp_path / "direct.json"
+        cache.save_json(direct, {"v": "new"})
+        assert keep.read_bytes() == direct.read_bytes()  # what save_json writes itself
+        cache.save_json(keep, {"v": "after"})  # committed: no longer held
+    assert json.loads(keep.read_text(encoding="utf-8")) == {"v": "after"}
+    assert (tmp_path / "new.txt").read_bytes() == b"text\r\n"
+    assert (tmp_path / "sub" / "x.bin").read_bytes() == b"x" and not gone.exists()
+    with cache.hold_outputs(tmp_path, ["a.json"]):  # left without a commit: dropped
+        cache.save_json(keep, {"v": "dropped"})
+    assert json.loads(keep.read_text(encoding="utf-8")) == {"v": "after"}
+    assert cache.load_json(keep) == {"v": "after"}
+
+
+@pytest.mark.parametrize("fail", ["stage", "rename", "cancel+rename"])
+def test_a_failed_commit_leaves_the_project_untouched(tmp_path, monkeypatch, fail):
+    """F1: every file is staged before anything is deleted or renamed; a failure while
+    staging (the second file) leaves the old tree byte-identical, with no temp file or new
+    folder. A failed rename removes the temp files that were not renamed; with a Ctrl+C
+    before it, the KeyboardInterrupt follows the error. The signal handlers are put back."""
+    write(tmp_path / "a.json", b'{"v": "old"}')
+    write(tmp_path / "sheets" / "old.jpg", b"jpg")
+    old = tree(tmp_path)
+    calls = []
+    real_mode, real_replace = cache.match_mode, cache.os.replace
+
+    def mode(tmp, target):
+        calls.append(target.name)
+        if fail == "stage" and len(calls) == 2:
+            raise OSError("disk full")
+        real_mode(tmp, target)
+
+    def replace(src, dst):
+        if Path(dst).name == "x.bin":
+            if fail == "cancel+rename":
+                signal.raise_signal(signal.SIGINT)
+            raise OSError("locked")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(cache, "match_mode", mode)
+    if fail != "stage":
+        monkeypatch.setattr(cache.os, "replace", replace)
+    before = {s: signal.getsignal(s) for s in cache._INTERRUPTS}
+    with cache.hold_outputs(tmp_path, ["a.json", "sheets", "sub"]) as held:
+        cache.save_json(tmp_path / "a.json", {"v": "new"})
+        cache.save_bytes(tmp_path / "sub" / "deep" / "x.bin", b"x")
+        cache.remove(tmp_path / "sheets" / "old.jpg")
+        if fail == "cancel+rename":
+            with pytest.raises(KeyboardInterrupt) as got:
+                held.commit()
+            assert isinstance(got.value.__context__, OSError)
+            assert str(got.value.__context__) == "locked"
+        else:
+            with pytest.raises(OSError, match="disk full" if fail == "stage" else "locked"):
+                held.commit()
+    assert {s: signal.getsignal(s) for s in cache._INTERRUPTS} == before
+    leftovers = [p.name for p in tmp_path.rglob("*.tmp")]
+    assert leftovers == []
+    if fail == "stage":
+        assert calls == ["a.json", "x.bin"]
+        assert tree(tmp_path) == old and not (tmp_path / "sub").exists()
+    else:  # deletions and the renames before the failed one are made
+        assert json.loads((tmp_path / "a.json").read_text(encoding="utf-8")) == {"v": "new"}
+
+
+@pytest.mark.parametrize("sig", ["SIGINT", "SIGBREAK", "SIGTERM"])
+def test_a_cancel_during_the_commit_renames_every_file_then_interrupts(tmp_path, monkeypatch, sig):
+    """Ctrl+C (or the CLI's Ctrl+Break, or its SIGTERM on POSIX) arriving between two renames
+    waits for the last one: the project gets the whole new set, then KeyboardInterrupt, and
+    the handlers are put back."""
+    if sig not in {"SIGINT", "SIGBREAK" if os.name == "nt" else "SIGTERM"}:
+        pytest.skip(f"the CLI does not stop on {sig} here")
+    write(tmp_path / "a.json", b'{"v": "old"}')
+    write(tmp_path / "b.json", b'{"v": "old"}')
+    write(tmp_path / "sheets" / "old.jpg", b"jpg")
+    signum, real_replace = getattr(signal, sig), cache.os.replace
+    renamed = []
+
+    def replace(src, dst):
+        if not renamed:  # a cancel after the deletion, before a rename
+            signal.raise_signal(signum)
+        real_replace(src, dst)
+        renamed.append(Path(dst).name)
+
+    monkeypatch.setattr(cache.os, "replace", replace)
+    with contextlib.ExitStack() as stack:
+        if sig != "SIGINT":
+            stack.enter_context(cli._stop_signal_as_interrupt())
+        before = {s: signal.getsignal(s) for s in cache._INTERRUPTS}
+        with cache.hold_outputs(tmp_path, ["a.json", "b.json", "sheets"]) as held:
+            cache.save_json(tmp_path / "a.json", {"v": "new"})
+            cache.save_json(tmp_path / "b.json", {"v": "new"})
+            cache.remove(tmp_path / "sheets" / "old.jpg")
+            with pytest.raises(KeyboardInterrupt):
+                held.commit()
+        assert {s: signal.getsignal(s) for s in cache._INTERRUPTS} == before
+    assert renamed == ["a.json", "b.json"]
+    assert sorted(tree(tmp_path)) == ["a.json", "b.json"]
+    for name in renamed:
+        assert json.loads((tmp_path / name).read_text(encoding="utf-8")) == {"v": "new"}
+
+
+def test_a_commit_off_the_main_thread_defers_nothing(tmp_path, monkeypatch):
+    """signal.signal works only on the main thread: elsewhere the commit runs as it is."""
+    before, seen, errors = signal.getsignal(signal.SIGINT), [], []
+    real_replace = cache.os.replace
+
+    def replace(src, dst):
+        seen.append(signal.getsignal(signal.SIGINT))
+        real_replace(src, dst)
+
+    def commit():
+        try:
+            held.commit()
+        except BaseException as err:  # noqa: BLE001 - reported to the test below
+            errors.append(err)
+
+    monkeypatch.setattr(cache.os, "replace", replace)
+    with cache.hold_outputs(tmp_path, ["a.json"]) as held:
+        cache.save_json(tmp_path / "a.json", {"v": "new"})
+        thread = threading.Thread(target=commit)
+        thread.start()
+        thread.join()
+    assert errors == [] and seen == [before]
+    assert json.loads((tmp_path / "a.json").read_text(encoding="utf-8")) == {"v": "new"}
+
+
+def test_result_files_are_written_at_the_end_and_read_from_memory_meanwhile(run, monkeypatch):
+    write(run.proj / "crash_check" / "c001_old_5.jpg", b"old sheet")
+    run.segments = SPEECH
+    run.events = [{**LAUGH, "source": str(run.video)}]
+    run.plan = plan(**ALL_LAYERS)
+    seen = []
+    real = analyze.rescore
+
+    def rescore(hl, ev, project):
+        seen.append((ev["events"], (project / "events.json").exists()))
+        return real(hl, ev, project)
+
+    monkeypatch.setattr(analyze, "rescore", rescore)
+    run.go("action")
+    assert seen == [(run.events, False)]  # this run's events, before events.json exists
+    (cand,) = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))["candidates"]
+    assert cand["score"] > cand["score_pre_events"] == 50.0
+    got = tree(run.proj)
+    assert sorted(got) == [
+        "activity.json", "crash_check/c001_a_10.jpg", "crashes.json", "events.json",
+        "events.txt", "highlights.json", "transcript.txt",
+    ]  # fmt: skip
+    assert json.loads(got["events.json"])["events"] == run.events
+    assert json.loads(got["crashes.json"])["crashes"][0]["t0"] == 10.0
+    assert json.loads(got["activity.json"])["name"] == "generic"
+    assert got["crash_check/c001_a_10.jpg"][:2] == b"\xff\xd8"  # a JPEG
+    # events.txt as write_text gave it: the transcript and the event, text mode's endings
+    want = [
+        "# events.txt: transcript lines interleaved with detected events.",
+        "# AUDIO = PANNs sound events (confidence, duration); OCR = on-screen HUD text;",
+        "# VLM WINDOW = Qwen2.5-Omni summary of a window (hl = highlight 0-10);",
+        "# VLM = moment inside a window. Times are source time.",
+        "",
+        f"# {run.video}",
+        "[a.mp4 00:00:01.0-00:00:02.5] Here we go.",
+        "[a.mp4 00:00:04.0-00:00:05.0] again",
+        "[a.mp4 00:00:12.0] AUDIO: Laughter (1.00, 2.0s)",
+        "",
+    ]
+    assert got["events.txt"] == os.linesep.join(want).encode("utf-8")
+
+
+def test_the_standalone_writers_still_write_at_once(tmp_path, monkeypatch):
+    """`cutpoint events` and `crashes` run no hold: their files are on disk at once, the
+    sheet with the bytes cv2.imwrite gave."""
+    jpath, tpath = report.write_outputs(tmp_path, ["a.mp4"], [], [], [], {}, {}, {})
+    assert json.loads(jpath.read_text(encoding="utf-8"))["events"] == []
+    assert tpath.read_bytes().startswith(b"# events.txt")
+    images = []
+    frames = (np.array([1.5]), np.full((1, 24, 32, 3), 90, np.uint8))
+    monkeypatch.setattr(crash, "decode_window", lambda *a, **k: frames)
+    c = {"source": "a.mp4", "t0": 1.0, "t1": 2.0, "caption": "c001"}
+    sheet = crash.write_sheet(c, tmp_path / "crash_check" / "c.jpg")
+    assert sheet is not None and sheet.is_file()
+    real_encode = cv2.imencode
+
+    def encode(ext, img, opts):
+        images.append(img)
+        return real_encode(ext, img, opts)
+
+    monkeypatch.setattr(cv2, "imencode", encode)
+    crash.write_sheet(c, tmp_path / "again.jpg")
+    plain = tmp_path / "plain.jpg"
+    cv2.imwrite(str(plain), images[0], [cv2.IMWRITE_JPEG_QUALITY, 82])
+    assert sheet.read_bytes() == plain.read_bytes() == (tmp_path / "again.jpg").read_bytes()
+
+
+@pytest.mark.parametrize("where", ["audio", "visual", "crash", "write", "ranking", "vision"])
+@pytest.mark.parametrize("earlier", [True, False])
+def test_a_cancel_at_any_step_leaves_the_result_files_as_they_were(
+    run, monkeypatch, where, earlier
+):
+    """A cancel in reactions, keyframes, crashes, the events write, ranking or vision: the
+    earlier result files stay byte-identical and a first run leaves no project folder."""
+    old = {**OLD_FILES, "highlights.json": b'{"style": "old", "candidates": []}'}
+    if earlier:
+        for name, data in old.items():
+            write(run.proj / name, data)
+        run.old = old["highlights.json"]
+    run.events = [{**LAUGH, "source": str(run.video)}]
+    run.plan = plan(**ALL_LAYERS)
+    run.fail, run.cancel = where, True
+    if where == "ranking":
+
+        def rescore(*a):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(analyze, "rescore", rescore)
+    with pytest.raises(KeyboardInterrupt):
+        run.go("action", vision=where == "vision")
+    if earlier:
+        assert tree(run.proj) == old
+    else:
+        assert not run.proj.exists()
+
+
+def test_a_cancel_during_the_final_commit_leaves_every_result_file_new(run, monkeypatch):
+    """Ctrl+C between the renames of the final commit: transcript.txt and highlights.json
+    are new too, with events.json and the rest, then the run is cancelled."""
+    old = {
+        **OLD_FILES,
+        "highlights.json": b'{"style": "old", "candidates": []}',
+        "highlights.pre-events.json": b"{}",
+        "transcript.txt": b"[a.mp4 00:00:00.0-00:00:01.0] old\r\n",
+    }
+    for name, data in old.items():
+        write(run.proj / name, data)
+    run.old = old["highlights.json"]
+    run.segments = SPEECH
+    run.events = [{**LAUGH, "source": str(run.video)}]
+    run.plan = plan(**ALL_LAYERS)
+    real_replace, renamed = cache.os.replace, []
+
+    def replace(src, dst):
+        if not renamed:
+            signal.raise_signal(signal.SIGINT)
+        real_replace(src, dst)
+        renamed.append(Path(dst).name)
+
+    monkeypatch.setattr(cache.os, "replace", replace)
+    with pytest.raises(KeyboardInterrupt):
+        run.go("action")
+    assert renamed[-1] == "highlights.json"
+    got = tree(run.proj)
+    assert sorted(got) == [
+        "activity.json", "crash_check/c001_a_10.jpg", "crashes.json", "events.json",
+        "events.txt", "highlights.json", "ski_features/old-0123abcd.npz", "telemetry.json",
+        "transcript.txt",
+    ]  # fmt: skip
+    for name in ["activity.json", "crashes.json", "events.json", "events.txt"]:
+        assert got[name] != old[name]
+    assert json.loads(got["highlights.json"])["candidates"][0]["id"] == "h001"
+    assert b"Here we go." in got["transcript.txt"]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch, cancel):
+    """The stale features go and the new ones and telemetry.json come only when the run
+    completes; the second ski.prepare reads this run's crashes.json from memory."""
+    for name in ("telemetry.json", "ski_features/old-0123abcd.npz"):
+        write(run.proj / name, OLD_FILES[name])
+    monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
+    monkeypatch.setattr(ski, "extract", lambda src, duration: None)  # no telemetry
+    seen = []
+
+    def pick(r, style, max_candidates, timings, ctx):
+        seen.append((len(ctx.crashes), (run.proj / "crashes.json").exists()))
+        grid = np.zeros(5, np.float32)
+        ski.save_features(ctx.project, r.source, 0.0, 60.0, {"speed": grid}, grid, grid, [])
+        assert not ski.features_path(run.proj, r.source).exists()
+        return r.candidates
+
+    monkeypatch.setattr(analyze, "pick_candidates", pick)
+    run.plan = plan(crashes=("crash",))
+    run.fail, run.cancel = ("vision" if cancel else None), cancel
+    with pytest.raises(KeyboardInterrupt) if cancel else contextlib.nullcontext():
+        run.go("ski", vision=cancel)
+    assert seen == [(1, False)]
+    got = tree(run.proj)
+    if cancel:
+        assert got == {k: OLD_FILES[k] for k in ("telemetry.json", "ski_features/old-0123abcd.npz")}
+        return
+    new = ski.features_path(run.proj, run.video)
+    assert "ski_features/old-0123abcd.npz" not in got
+    assert ski.load_features(new)["features"]["speed"].tolist() == [0.0] * 5
+    assert json.loads(got["telemetry.json"])["sources"] == {str(run.video): None}
 
 
 # ----------------------------------------------------------------- background OCR (#375)

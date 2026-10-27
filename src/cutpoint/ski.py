@@ -60,6 +60,7 @@ one clip, not several back to back.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 from dataclasses import dataclass, field
@@ -685,17 +686,18 @@ def save_features(
 ) -> Path:
     """Store the grids so ``cutpoint refmatch`` can refit and re-rank without re-analysis."""
     path = features_path(project, src, offset)
-    path.parent.mkdir(parents=True, exist_ok=True)
     meta = json.dumps(
         {"source": str(src), "offset": offset, "duration": duration, "events": events}
     )
+    buf = io.BytesIO()  # written atomically (held back until `analyze` completes)
     np.savez_compressed(
-        path,
+        buf,
         mask=mask.astype(np.float32),
         friends=friends.astype(np.float32),
         meta=np.array(meta),
         **{f"f_{k}": v.astype(np.float32) for k, v in features.items()},
     )
+    cache.save_bytes(path, buf.getvalue(), parents=True)
     return path
 
 
