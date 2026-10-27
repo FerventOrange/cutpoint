@@ -166,17 +166,17 @@ class LlamaServer:
             )
         logger.info("Starting llama-server: %s", subprocess.list2cmdline(cmd))
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        log = self.log_path.open("wb")
         t0 = time.perf_counter()
-        self.proc = subprocess.Popen(
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
-            cwd=exe_dir,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            preexec_fn=_pdeathsig_hook(),
-        )
+        with self.log_path.open("wb") as log:  # the child keeps its own copy of the descriptor
+            self.proc = subprocess.Popen(
+                cmd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+                cwd=exe_dir,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                preexec_fn=_pdeathsig_hook(),
+            )
         kill_with_parent(self.proc)
         deadline = time.time() + self.startup_timeout_s
         while time.time() < deadline:
