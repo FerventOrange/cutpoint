@@ -52,7 +52,7 @@ from cutpoint.events.killfeed import (
     detect_ocr_events,
 )
 from cutpoint.events.regions import game_key_for_path, load_preset
-from cutpoint.ffmpeg_utils import SPOOL_DIR, SplitDecode, spool_fits
+from cutpoint.ffmpeg_utils import SPOOL_DIR, SplitDecode, spool_cap, spool_fits
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +413,7 @@ class OcrPrefetch:
     def _decoder(self, job: _Job) -> DecodeHook | None:
         """The shared-decode mode: the decode hook that reads the OCR frames from one CUDA pass
         that also makes the job's scene proxy (when the scene cuts did not come first and the
-        disk holds the worst-case spool)."""
+        disk holds the spool: its cap, or every frame of a shorter file)."""
         share = job.share
         if share is None:
             return None
@@ -421,8 +421,10 @@ class OcrPrefetch:
 
         def decode(rect: tuple[int, int, int, int], vf: str, errors: list[str], exits: list[int]):
             width, height = rect[2:]
-            # every frame of the file: with no backpressure the OCR read may lag the whole way
-            need = width * height * 3 * math.ceil(self.params.fps * plan.duration + 1)
+            # the spool thread waits at the cap, so the spool never holds more than that or
+            # than every frame of the file (when the OCR read lags the whole way)
+            frame = width * height * 3
+            need = min(frame * math.ceil(self.params.fps * plan.duration + 1), spool_cap(frame))
             if plan.io != job.source.io_path or not self.params.hwaccel:
                 share.decline("another file or decoder than the OCR read")
                 return None

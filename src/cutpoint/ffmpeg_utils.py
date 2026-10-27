@@ -2055,8 +2055,14 @@ SPOOL_DIR = "ocr-spool"  # in a source's cache folder: the raw frames of a split
 # target size of a spool file (whole frames, at least one; each is deleted once read), so the
 # spool on disk is what the consumer lags behind plus one small file
 SPOOL_SEGMENT_BYTES = 256 << 20
+# most spool files on disk at once (backpressure: the spool thread then stops reading, so
+# ffmpeg, the scene proxy encode with it, waits for the consumer to delete one). 8 is about
+# 2 GiB: twice the most measured on a 300 s clip (0.9 GB, never held up), half of a 446 s
+# 1080p clip's 4 GB (held up only while the OCR read lags 2 GiB behind). At least 2, so the
+# consumer, which deletes whole files, can always finish the file it reads.
+SPOOL_MAX_SEGMENTS = 8
 SPOOL_READ = 4 << 20  # bytes per read of ffmpeg's raw output
-SPOOL_MARGIN = 1 << 30  # free disk a split decode leaves beyond its worst-case spool
+SPOOL_MARGIN = 1 << 30  # free disk a split decode leaves beyond its spool cap
 
 
 def single_video_stream(path: Path | str) -> bool:
@@ -2070,6 +2076,18 @@ def single_video_stream(path: Path | str) -> bool:
         return False
     streams = data.get("streams", [])
     return len(streams) == 1 and not streams[0].get("disposition", {}).get("attached_pic")
+
+
+def spool_segment(frame_bytes: int) -> int:
+    """Bytes of a spool file: the whole frames that fit in :data:`SPOOL_SEGMENT_BYTES`, at
+    least one."""
+    return frame_bytes * max(1, SPOOL_SEGMENT_BYTES // frame_bytes)
+
+
+def spool_cap(frame_bytes: int) -> int:
+    """Most bytes a split decode's spool holds on disk: :data:`SPOOL_MAX_SEGMENTS` files (at
+    least 2). The spool thread waits before a write would pass it, so this is exact."""
+    return spool_segment(frame_bytes) * max(2, SPOOL_MAX_SEGMENTS)
 
 
 def spool_fits(folder: Path, need: int) -> bool:
@@ -2108,13 +2126,16 @@ class SplitDecode:
     """One CUDA pass (:func:`split_decode_args`) that writes the scene proxy and spools the
     raw frames to ``spool`` (files of the whole frames that fit in :data:`SPOOL_SEGMENT_BYTES`,
     at least one, each deleted once :meth:`frames` has read it), so ffmpeg runs at decode speed
-    however slowly the frames are consumed. ffmpeg starts here, isolated from Ctrl+C and
-    killed on ``cancel``.
+    while the frames are consumed more slowly, until the spool holds :func:`spool_cap` bytes;
+    then the spool thread waits for the consumer to delete a file (ffmpeg waits on its pipe).
+    ffmpeg starts here, isolated from Ctrl+C and killed on ``cancel``.
 
     The proxy is written to ``proxy.tmp.mp4`` beside ``proxy`` and renamed to ``proxy`` only
     when ffmpeg exited 0 by itself and the spool took all of its output; otherwise it is
-    deleted. ``on_exit`` then gets that outcome and the spool peak in bytes (from the spool
-    thread).
+    deleted. A cancel or :meth:`close` while the spool is full kills a running ffmpeg (no
+    proxy); one that already exited has the rest of its output drained, not spooled, and its
+    proxy kept as without the cap. ``on_exit`` then gets that outcome and the spool peak in
+    bytes (from the spool thread, at most the cap).
     """
 
     def __init__(
@@ -2136,7 +2157,8 @@ class SplitDecode:
         width, height = size
         self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
         self.shape = (height, width, 3)
-        self.seg_bytes = self.frame_bytes * max(1, SPOOL_SEGMENT_BYTES // self.frame_bytes)
+        self.seg_bytes = spool_segment(self.frame_bytes)
+        self.cap = spool_cap(self.frame_bytes)
         self.stamp_fps = stamp_fps
         self.proxy = proxy
         self.tmp = proxy.with_name(proxy.stem + ".tmp" + proxy.suffix)
@@ -2149,7 +2171,7 @@ class SplitDecode:
         self._deleted = 0  # bytes of spool files read and deleted
         self._ended = False  # the spool thread is done (ffmpeg exited)
         self._error: OSError | None = None  # a spool write failed
-        self._stopped = False  # ffmpeg killed here (spool error, or the consumer stopped)
+        self._stopped = False  # ffmpeg killed or cut off here (spool error, consumer stopped)
         self._closed = False
         self._seg: IO[bytes] | None = None  # the spool file frames() reads
         args = split_decode_args(
@@ -2179,6 +2201,16 @@ class SplitDecode:
                 self._stopped = True
                 self._proc.kill()
 
+    def _room(self, n: int) -> bool:
+        """Wait until ``n`` more bytes keep the spool within :attr:`cap`; False if ``cancel``,
+        :meth:`close` or a kill came first."""
+        with self._cond:
+            while self._written - self._deleted + n > self.cap:
+                if self._stopped or self._closed or self._cancel.is_set():
+                    return False
+                self._cond.wait(CANCEL_POLL_S)  # the cancel is checked in between
+            return True
+
     def _run(self) -> None:
         out: IO[bytes] | None = None
         filled, idx = 0, 0  # bytes in the current spool file, its number
@@ -2190,9 +2222,20 @@ class SplitDecode:
             while data := stdout.read(SPOOL_READ):
                 view = memoryview(data)
                 while view:
+                    n = min(len(view), self.seg_bytes - filled)
+                    if not self._room(n):  # stopped while the spool was full
+                        with self._cond:
+                            running = self._proc.poll() is None
+                            if running:  # output cut: no proxy
+                                self._stopped = True
+                                self._proc.kill()
+                        if not running:  # exited by itself: drain the rest, unspooled; the
+                            # proxy is decided below as without the cap
+                            while stdout.read(SPOOL_READ):
+                                pass
+                        return
                     if out is None:
                         out = (self.spool / f"seg-{idx:05d}.raw").open("wb")
-                    n = min(len(view), self.seg_bytes - filled)
                     out.write(view[:n])
                     filled, view = filled + n, view[n:]
                     if filled == self.seg_bytes:  # closed before the consumer may delete it
@@ -2275,6 +2318,7 @@ class SplitDecode:
                         (self.spool / f"seg-{pos // self.seg_bytes - 1:05d}.raw").unlink()
                     with self._cond:
                         self._deleted += self.seg_bytes
+                        self._cond.notify_all()  # a spool thread waiting for room
                 yield k / self.stamp_fps, np.frombuffer(buf, np.uint8).reshape(self.shape)
                 k += 1
         finally:
@@ -2292,7 +2336,9 @@ class SplitDecode:
         thread and remove the spool. Idempotent."""
         if self._closed:
             return
-        self._closed = True
+        with self._cond:  # a spool thread waiting for room stops
+            self._closed = True
+            self._cond.notify_all()
         if self._seg is not None:  # a paused frames(): its file must close before rmtree
             with suppress(OSError):
                 self._seg.close()
