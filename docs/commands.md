@@ -408,7 +408,11 @@ detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and
 caches are the same as with it off. Each source then logs an INFO line with the scene
 detection time, the wait for the background proxy and the spool peak, and one with the wait for
 the background OCR, for measuring; a source with cover art or more than one video stream, or a
-drive without room for the spool, logs why at once.
+drive without room for the spool, logs why at once. When Cutpoint is killed or crashes during
+the split, its ffmpeg stops at once on Windows and with ffmpeg 7 and newer; on Linux and macOS
+with ffmpeg 6.x it finishes encoding the proxy first. Either way the spool and
+`proxy.tmp.mp4` stay in the cache folder until the next `analyze` that reads the source's HUD
+OCR in the background removes them.
 
 | Step | What |
 |---|---|

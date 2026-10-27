@@ -327,6 +327,39 @@ def test_a_failed_ffmpeg_gives_no_frames_and_no_proxy(tmp_path):
 
 
 @needs_ffmpeg
+def test_a_corrupt_packet_still_gives_every_frame_and_the_proxy(tmp_path):
+    """Garbage mid-file: the decoder complains and conceals it, the split still reads every
+    frame, keeps its proxy and reports no exit. Guards against adding ``-xerror`` to the split:
+    it would stop the decode at the corrupt packet and drop the frames after it."""
+    clip = _clip(tmp_path / "clip.mp4")
+    data = bytearray(clip.read_bytes())
+    mid = len(data) // 2  # inside mdat: the moov atom is at the end
+    data[mid : mid + 400] = bytes(range(200)) * 2
+    bad = tmp_path / "bad.mp4"
+    bad.write_bytes(data)
+    warned = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-v", "warning", "-i", str(bad), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stderr
+    assert warned.strip(), "the garbage gave no decode warning"
+    ref = [
+        f.tobytes()
+        for _, f in ffmpeg_utils.decode_raw(
+            bad, size=SIZE, vf=VF, pix_fmt="bgr24", stamp_fps=3.0, hwaccel=None
+        )
+    ]
+    cdir = tmp_path / "c"
+    cdir.mkdir()
+    outs: list = []
+    codes: list[int] = []
+    split = _split(bad, cdir, outs)
+    assert [f.tobytes() for _, f in split.frames(codes)] == ref and len(ref) == 24
+    assert outs[0][0] and codes == [] and _left(cdir) == {"proxy.mp4"}
+
+
+@needs_ffmpeg
 @pytest.mark.parametrize("how", ["cancel", "close"])
 def test_a_stopped_split_keeps_a_proxy_only_when_complete(tmp_path, monkeypatch, how):
     """A cancel or a consumer that stops early kills a running ffmpeg: no proxy then, no
