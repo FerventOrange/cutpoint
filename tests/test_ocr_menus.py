@@ -148,7 +148,7 @@ def test_menu_and_event_frames_are_logged_at_debug(tmp_path: Path, monkeypatch, 
         r"rec\.mp4 menu test 20\.0s: \d+ boxes \(min 24\), centre cover 0\.\d\d "
         r"\(cover >= 0\.50, list >= 0\.25\), median 1\.0, jump off, "
         r"still 0\.0s \(static >= 5\.0s with menu text, >= 10\.0s without\), menu text (yes|no), "
-        r"\d+ OCR events -> cover",
+        r"\d+ staying lines, \d+ together \(text >= 5, together >= 3\), \d+ OCR events -> cover",
         menus[0],
     )
     events = [x for x in lines if x.endswith("-> none")]
@@ -179,6 +179,7 @@ def test_menu_rules_name_the_rule() -> None:
         "static_s": float("inf"),  # no feed times given: the static rule is off
         "static_bare_s": float("inf"),
         "static_diff": killfeed.STATIC_MAX_DIFF,
+        "text_lines": float("inf"),  # off too
     }
 
 
@@ -338,7 +339,7 @@ def test_still_menu_is_logged_with_the_static_rule(tmp_path: Path, monkeypatch, 
         r"rec\.mp4 menu test 20\.0s: 8 boxes \(min 24\), centre cover 0\.\d\d "
         r"\(cover >= 0\.50, list >= 0\.25\), median 1\.0, jump off, "
         r"still 9\.7s \(static >= 5\.0s with menu text, >= 10\.0s without\), menu text yes, "
-        r"\d+ OCR events -> static",
+        r"\d+ staying lines, \d+ together \(text >= 5, together >= 3\), \d+ OCR events -> static",
         static[0],
     )
     assert not [x for x in lines if any(t in x for t in ("Hull", "Tab", "Hold"))]  # no OCR text
@@ -590,3 +591,132 @@ def test_progress_within_a_source(tmp_path: Path, monkeypatch) -> None:
     _run(tmp_path, monkeypatch, _Engine(), on_progress=shares.append)
     assert shares == sorted(set(shares))  # rising, once per percent
     assert len(shares) == 100 and shares[0] == 0.0 and shares[-1] == 0.99
+
+
+# --------------------------------------------------------------------------- text screens
+
+
+def _moving_records(times: list[float]) -> list[dict[str, Any]]:
+    """Frame records at ``times`` of a screen that never holds still (each frame its
+    own still run) and has few boxes: no box or static rule fires."""
+    return [
+        {"id": n, "t": t, "source": "rec.mp4", "boxes": [], "still": n} for n, t in enumerate(times)
+    ]
+
+
+def test_text_screen_needs_many_lines_that_stay() -> None:
+    times = [n / 3 for n in range(75)]  # 25 s of moving frames
+    records = _moving_records(times)
+
+    def text(spans: list[tuple[float, float]]) -> list[float]:
+        rules = menu_rules(records, feed_times=set(), text_spans=spans)[0]
+        return [f["t"] for f in records if rules[f["id"]] == "text"]
+
+    lobby = [(4.0, 14.0)] * 5  # 5 lines on screen 4-14 s
+    assert text(lobby) == [t for t in times if 4.0 <= t <= 14.0]
+    assert text(lobby[:4]) == []  # 4 lines: an objective, a location and an overlay or two
+    assert text([(4.0, 9.5)] * 5) == []  # lines that stay 5.5 s (< TEXT_STAY_S)
+    # a HUD player list on screen all match (> TEXT_STAY_MAX_S) and a 3-line notice box
+    assert text([(-80.0, 20.0)] * 7 + [(4.0, 14.0)] * 3) == []
+    assert text([(-80.0, 20.0)] * 7 + lobby) == [t for t in times if 4.0 <= t <= 14.0]
+    # flashing notices and kill lines next to two lasting labels, however many at once
+    assert text([(0.0, 20.0)] * 2 + [(4 + i / 3, 5 + i / 3) for i in range(30)]) == []
+    # held 2.7 s (< TEXT_MIN_S): the stretch of frames with 5 such lines at once
+    assert text([(4.0, 12.0)] * 4 + [(9.3, 15.3)]) == []
+    assert text([(4.0, 12.0)] * 4 + [(9.0, 15.0)]) == [t for t in times if 9.0 <= t <= 12.0]
+    # off without feed times or text spans (a HUD area too small for the static rule)
+    assert set(menu_rules(records, text_spans=lobby)[0].values()) == {"none"}
+    assert set(menu_rules(records, feed_times=set())[0].values()) == {"none"}
+    assert menu_rules(records, feed_times=set(), text_spans=lobby)[1]["text_lines"] == 5
+
+
+def test_text_screen_ends_at_gaps() -> None:
+    # 5 lasting lines, but the frames 4-6 s and 8-10 s are apart by 2 s (a skipped range)
+    times = [4.0, 4 + 1 / 3, 4 + 2 / 3, 5.0, 6.0, 8.0, 9.0, 10.0, 20.0]
+    records = _moving_records(times)
+    rules = menu_rules(records, feed_times=set(), text_spans=[(0.0, 12.0)] * 5)[0]
+    assert set(rules.values()) == {"none"}  # each part holds 2 s
+    # (staying lines, first read together): the sixth line came 5 s after the others
+    shown = killfeed.staying_lines(records, [(0.0, 12.0)] * 5 + [(5.0, 12.0)])
+    assert shown == [(5, 5)] * 3 + [(6, 5)] * 5 + [(0, 0)]
+
+
+def test_text_screen_at_low_ocr_frame_rates() -> None:
+    # --ocr-fps 0.5: frames 2 s apart, as far apart as StillRuns allows (2 frame intervals)
+    records = _moving_records([2.0 * n for n in range(13)])  # 0-24 s
+    lobby = [(4.0, 14.0)] * 5
+    gap = killfeed.StillRuns(0.5).max_gap
+    assert gap == 4.0
+    rules = menu_rules(records, feed_times=set(), text_spans=lobby, max_gap=gap)[0]
+    assert [f["t"] for f in records if rules[f["id"]] == "text"] == [
+        4.0,
+        6.0,
+        8.0,
+        10.0,
+        12.0,
+        14.0,
+    ]
+    rules = menu_rules(records, feed_times=set(), text_spans=lobby)[0]  # 1 s: never a stretch
+    assert set(rules.values()) == {"none"}
+
+
+def test_text_screen_skips_hud_lines_of_short_sources() -> None:
+    times = [n / 3 for n in range(135)]  # a 45 s source, under TEXT_STAY_MAX_S
+    records = _moving_records(times)
+
+    def text(spans: list[tuple[float, float]], keys: list | None = None) -> list[float]:
+        rules = menu_rules(records, feed_times=set(), text_spans=spans, text_keys=keys)[0]
+        return [f["t"] for f in records if rules[f["id"]] == "text"]
+
+    hud, lobby = [(0.0, 45.0)] * 7, [(4.0, 14.0)] * 5  # a player list on screen all along
+    assert text(hud) == []
+    # first read late: a missed read, a region read every few frames, a fade-in
+    assert text([(1.5, 45.0)] * 7) == []
+    assert text([(4.5, 45.0)] * 7) == []
+    assert text(hud + lobby) == [t for t in times if 4.0 <= t <= 14.0]
+    # the list hidden by a scoreboard at 20-25 s comes back as new spans of the same lines
+    pieces = [(0.0, 20.0)] * 7 + [(25.0, 45.0)] * 7
+    names = [f"player {i}" for i in range(7)] * 2
+    assert text(pieces, names) == []
+    assert text(pieces) != []  # without keys each piece is a screen of its own
+    # the same lobby at the start and the end: on screen for under TEXT_HUD_SHARE of the read
+    twice = [(0.0, 8.0)] * 5 + [(37.0, 45.0)] * 5
+    shown = text(twice, [f"map {i}" for i in range(5)] * 2)
+    assert shown == [t for t in times if t <= 8.0 or t >= 37.0]
+
+
+def test_text_screen_needs_lines_read_together() -> None:
+    times = [n / 3 for n in range(75)]
+    records = _moving_records(times)
+
+    def text(spans: list[tuple[float, float]]) -> list[float]:
+        rules = menu_rules(records, feed_times=set(), text_spans=spans)[0]
+        return [f["t"] for f in records if rules[f["id"]] == "text"]
+
+    # gameplay labels that arrive one by one, 2.5 s apart: 5 on screen at 11-17 s
+    labels = [(2.0 + 2.5 * i, 17.0) for i in range(4)] + [(11.0, 17.0)]
+    assert text(labels) == []
+    # a screen that opens with 3 of them at once
+    assert text(labels[:2] + [(10.0, 17.0)] * 2 + [(11.0, 17.0)]) == [
+        t for t in times if 11.0 <= t <= 17.0
+    ]
+
+
+def _lobby(t: float) -> list[tuple[str, float, float]]:
+    """Gameplay, and at 20-32 s a lobby of 6 lines of its own, one per row (no box
+    rule sees 6 boxes); a notice flashes at 40-41 s."""
+    if 20 <= t < 32:
+        words = ("Armory", "Barracks", "Courtyard", "Dockyard", "Embassy", "Foundry")
+        return [(w, 600, 230 + 75 * i) for i, w in enumerate(words)]
+    out = [("Hold", 900, 820)]
+    if 40 <= t < 41:
+        out.append(("Squad wiped", 860, 400))
+    return out
+
+
+def test_moving_lobby_gives_no_events(tmp_path: Path, monkeypatch) -> None:
+    events, stats = _run(tmp_path, monkeypatch, _Engine(_lobby))  # never still
+    assert not [e for e in events if 20 <= e["t"] < 32]
+    assert [(e["text"], e["t"]) for e in events if e["type"] == "banner"] == [("Squad wiped", 40.0)]
+    assert stats["static_frames"] == 0
+    assert stats["menu_frames"] == stats["text_frames"] > 0

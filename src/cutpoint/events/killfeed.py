@@ -89,8 +89,10 @@ class OcrParams:
 # events (:func:`menu_times`), multi-word phrases and feed kill words match whole words only;
 # 8: static screens are menus too (:func:`static_frames`); 9: menu frames keep feed sightings
 # and kills, a static screen without new menu text must hold still STATIC_BARE_MIN_S;
-# 10: new menu text is STATIC_TEXT_LINES texts that stay for STATIC_TEXT_SHARE of the part
-GENERIC_VERSION = 10
+# 10: new menu text is STATIC_TEXT_LINES texts that stay for STATIC_TEXT_SHARE of the part;
+# 11: screens with TEXT_LINES lines of new text that stay, TEXT_TOGETHER first read together,
+# are menus too (:func:`text_frames`)
+GENERIC_VERSION = 11
 
 
 # --------------------------------------------------------------------------- text utils
@@ -1372,6 +1374,37 @@ STATIC_MIN_AREA = 0.25
 STATIC_TEXT_LINES = 2
 STATIC_TEXT_SHARE = 0.5
 
+# Text screens (rule "text"): lobbies, operator select, deploy maps and result screens rarely
+# hold still (animated backgrounds, cursors, countdowns end their still runs within seconds) and
+# show their words in HUD regions in numbers no box rule sees, but many of their lines stay on
+# screen. A frame is a text screen when at least TEXT_LINES lines of new menu text (the
+# ``text_spans`` of :func:`static_parts`, so no preset phrase, number or feed line), each on
+# screen for TEXT_STAY_S to TEXT_STAY_MAX_S, are on screen at once, at least TEXT_TOGETHER of
+# them first read within STATIC_FEED_GUARD_S of each other, in a stretch of at least
+# STATIC_MIN_FRAMES such frames over at least TEXT_MIN_S (frames at most STATIC_MAX_GAP_S
+# apart, or 2 frame intervals at low OCR frame rates, as :class:`StillRuns`). A span runs from
+# a line's first read to its last, so it bridges gaps up to ``persist_s`` (8 s): a notice that
+# keeps coming back counts as one line that stays. Gameplay text flashes (notices, kill lines,
+# score popups) or is a few lasting labels that arrive one by one (a location, an objective,
+# an overlay, a returning notice); a menu opens with many lines at once. Measured on R6,
+# Battlefield, War Thunder and Destiny footage, gameplay showed at most 5 staying lines at
+# once, never for TEXT_MIN_S and never TEXT_TOGETHER of them first read together; menus show
+# up to 11. A line that is part of the HUD is no screen that opens and closes: a line on
+# screen for over TEXT_STAY_MAX_S (a player list that stays all match: 7 lines over all 90 s
+# of a War Thunder clip), and a line (one text in one region, all its spans: a list hidden by
+# a scoreboard comes back as a new span) first read within TEXT_STAY_S of the read's start, on
+# screen until within TEXT_STAY_S of its end (a missed read, a region read every few frames or
+# a clip that opens on a fade) and for at least TEXT_HUD_SHARE of it, so a source shorter than
+# TEXT_STAY_MAX_S is covered too.
+# Like the static rule it runs only with ``feed_times`` and ``text_spans`` (the decoded HUD
+# area is at least STATIC_MIN_AREA of the frame).
+TEXT_LINES = 5
+TEXT_TOGETHER = 3
+TEXT_HUD_SHARE = 0.5
+TEXT_STAY_S = 6.0
+TEXT_STAY_MAX_S = 60.0
+TEXT_MIN_S = 3.0
+
 
 def _thumb_bgr(frame: np.ndarray) -> np.ndarray:
     """The :data:`STATIC_THUMB` BGR thumbnail (uint8) of a decoded BGR frame, as the raw
@@ -1485,6 +1518,91 @@ def static_frames(
     return out
 
 
+def staying_spans(
+    frames: list[dict[str, Any]],
+    text_spans: list[tuple[float, float]],
+    text_keys: list[Any] | None = None,
+    max_gap: float = STATIC_MAX_GAP_S,
+) -> list[tuple[float, float]]:
+    """The ``text_spans`` (first read, end) of lines that stay (see :data:`TEXT_LINES`):
+    on screen :data:`TEXT_STAY_S` to :data:`TEXT_STAY_MAX_S`, and not of a HUD line,
+    whose spans (those with the same ``text_keys`` entry, the line's text and region;
+    without keys every span is a line of its own) reach from the read of ``frames`` (in
+    time order, within :data:`TEXT_STAY_S` or ``max_gap``) to its end and cover
+    :data:`TEXT_HUD_SHARE` of it."""
+    if not frames:
+        return []
+    t0, t1 = frames[0]["t"], frames[-1]["t"]
+    allow = max(max_gap, TEXT_STAY_S)
+    keys = list(range(len(text_spans))) if text_keys is None else text_keys
+    lines: dict[Any, list[tuple[float, float]]] = {}
+    for span, key in zip(text_spans, keys, strict=True):
+        lines.setdefault(key, []).append(span)
+    hud = {
+        key
+        for key, spans in lines.items()
+        if min(a for a, _ in spans) <= t0 + allow
+        and max(b for _, b in spans) >= t1 - allow
+        and sum(max(0.0, min(b, t1) - max(a, t0)) for a, b in spans) >= TEXT_HUD_SHARE * (t1 - t0)
+    }
+    return [
+        (a, b)
+        for (a, b), key in zip(text_spans, keys, strict=True)
+        if TEXT_STAY_S <= b - a <= TEXT_STAY_MAX_S and key not in hud
+    ]
+
+
+def staying_lines(
+    frames: list[dict[str, Any]],
+    text_spans: list[tuple[float, float]],
+    text_keys: list[Any] | None = None,
+    max_gap: float = STATIC_MAX_GAP_S,
+) -> list[tuple[int, int]]:
+    """Per frame of ``frames`` (in time order): how many :func:`staying_spans` are on
+    screen at its time, and the most of them first read within
+    :data:`STATIC_FEED_GUARD_S` of each other."""
+    spans = staying_spans(frames, text_spans, text_keys, max_gap)
+    starts, ends = sorted(a for a, _ in spans), sorted(b for _, b in spans)
+    out = []
+    for f in frames:
+        t = f["t"]
+        shown = sorted(a for a, b in spans if a <= t <= b)
+        together = max(
+            (bisect.bisect_right(shown, a + STATIC_FEED_GUARD_S) - i for i, a in enumerate(shown)),
+            default=0,
+        )
+        out.append((bisect.bisect_right(starts, t) - bisect.bisect_left(ends, t), together))
+    return out
+
+
+def text_frames(
+    frames: list[dict[str, Any]],
+    text_spans: list[tuple[float, float]],
+    text_keys: list[Any] | None = None,
+    max_gap: float = STATIC_MAX_GAP_S,
+) -> set[Any]:
+    """Ids of the frames of a text screen (see :data:`TEXT_LINES`): stretches of at
+    least :data:`STATIC_MIN_FRAMES` frames over at least :data:`TEXT_MIN_S`, at most
+    ``max_gap`` apart, that each show at least :data:`TEXT_LINES` :func:`staying_lines`,
+    :data:`TEXT_TOGETHER` of them first read together."""
+    out: set[Any] = set()
+    run: list[dict[str, Any]] = []
+    shown = staying_lines(frames, text_spans, text_keys, max_gap)
+    for f, (n, together) in [*zip(frames, shown, strict=True), (None, (0, 0))]:
+        if (
+            f is not None
+            and n >= TEXT_LINES
+            and together >= TEXT_TOGETHER
+            and (not run or f["t"] - run[-1]["t"] <= max_gap)
+        ):
+            run.append(f)
+            continue
+        if len(run) >= STATIC_MIN_FRAMES and run[-1]["t"] - run[0]["t"] >= TEXT_MIN_S:
+            out.update(r["id"] for r in run)
+        run = [f] if f is not None and n >= TEXT_LINES and together >= TEXT_TOGETHER else []
+    return out
+
+
 def menu_times(
     frames: list[dict[str, Any]],
     params: DiscoverParams | None = None,
@@ -1513,13 +1631,17 @@ def menu_rules(
     params: DiscoverParams | None = None,
     feed_times: set[float] | None = None,
     text_spans: list[tuple[float, float]] | None = None,
+    text_keys: list[Any] | None = None,
+    max_gap: float = STATIC_MAX_GAP_S,
 ) -> tuple[dict[Any, str], dict[str, float]]:
     """The :func:`menu_times` decision per frame id: the rule that made it a menu
-    (``cover``, ``jump``, ``list`` or ``static``) or ``none``, and the source's
-    numbers (``median`` box count, ``min_boxes``, the ``cover``, ``list`` and
-    ``jump`` thresholds, inf when off, and the ``static_s`` (with new menu text,
+    (``cover``, ``jump``, ``list``, ``static`` or ``text``) or ``none``, and the
+    source's numbers (``median`` box count, ``min_boxes``, the ``cover``, ``list`` and
+    ``jump`` thresholds, inf when off, the ``static_s`` (with new menu text,
     ``text_spans``), ``static_bare_s`` (without) and ``static_diff`` of the static
-    rule, which runs only with ``feed_times``)."""
+    rule, which runs only with ``feed_times``, and the ``text_lines`` of the text
+    rule (:func:`text_frames`, with ``text_keys`` and ``max_gap``), which runs only with
+    ``feed_times`` and ``text_spans``)."""
     params = params or DiscoverParams()
     median = float(np.median([len(f["boxes"]) for f in frames])) if frames else 0.0
     lists = median < params.menu_min_boxes / params.menu_jump
@@ -1527,6 +1649,8 @@ def menu_rules(
         params = replace(params, menu_jump=float("inf"))
     keep = {f["id"] for f in gameplay_frames(frames, params)}
     static = static_frames(frames, feed_times, text_spans) if feed_times is not None else set()
+    on = feed_times is not None and text_spans is not None
+    texts = text_frames(frames, text_spans or [], text_keys, max_gap) if on else set()
     rules = {}
     for f in frames:
         if f["id"] not in keep:
@@ -1539,6 +1663,8 @@ def menu_rules(
             rules[f["id"]] = "list"
         elif f["id"] in static:
             rules[f["id"]] = "static"
+        elif f["id"] in texts:
+            rules[f["id"]] = "text"
         else:
             rules[f["id"]] = "none"
     info = {
@@ -1550,6 +1676,7 @@ def menu_rules(
         "static_s": STATIC_MIN_S if feed_times is not None else float("inf"),
         "static_bare_s": STATIC_BARE_MIN_S if feed_times is not None else float("inf"),
         "static_diff": STATIC_MAX_DIFF,
+        "text_lines": TEXT_LINES if on else float("inf"),
     }
     return rules, info
 
@@ -1562,10 +1689,14 @@ def _log_menu_frames(
     events: list[dict[str, Any]],
     feed_times: set[float] | None = None,
     text_spans: list[tuple[float, float]] | None = None,
+    text_keys: list[Any] | None = None,
+    max_gap: float = STATIC_MAX_GAP_S,
 ) -> None:
     """One DEBUG line per frame that is a menu or has an OCR sighting: its numbers and
     the rule that fired, no OCR text (logs get shared). ``menu text`` tells whether
-    the frame's still part shows new menu text (``-``: not in such a part)."""
+    the frame's still part shows new menu text (``-``: not in such a part);
+    ``staying lines`` counts its :func:`staying_lines` and how many of them were first
+    read together (text rule)."""
     seen: dict[float, int] = {}
     for e in events:
         for t in e["_times"]:
@@ -1579,10 +1710,17 @@ def _log_menu_frames(
         for part, shown in static_parts(frames, feed_times, text_spans or []):
             text.update((p["id"], "yes" if shown else "no") for p in part)
 
+    stays = dict.fromkeys((f["id"] for f in frames), (0, 0))
+    if text_spans is not None:
+        shown = staying_lines(frames, text_spans, text_keys, max_gap)
+        stays = dict(zip((f["id"] for f in frames), shown, strict=True))
+
     def off(v: float, fmt: str) -> str:
         return "off" if v == float("inf") else f">= {v:{fmt}}"
 
     jump, lists = off(info["jump"], ".0f"), off(info["list"], ".2f")
+    texts = off(info["text_lines"], ".0f")
+    texts += "" if texts == "off" else f", together >= {TEXT_TOGETHER}"
     static = (
         "off"
         if info["static_s"] == float("inf")
@@ -1594,7 +1732,8 @@ def _log_menu_frames(
             continue
         logger.debug(
             "%s menu test %.1fs: %d boxes (min %d), centre cover %.2f (cover >= %.2f, list %s), "
-            "median %.1f, jump %s, still %.1fs (static %s), menu text %s, %d OCR events -> %s",
+            "median %.1f, jump %s, still %.1fs (static %s), menu text %s, "
+            "%d staying lines, %d together (text %s), %d OCR events -> %s",
             name,
             f["t"],
             len(f["boxes"]),
@@ -1607,6 +1746,8 @@ def _log_menu_frames(
             still[f["id"]],
             static,
             text.get(f["id"], "-"),
+            *stays[f["id"]],
+            texts,
             n,
             rule,
         )
@@ -2003,23 +2144,41 @@ class OcrInterpretation:
             # shown; ``end`` moves only on the frames a region is read, so it is padded by one
             # read interval
             step = {r.name: r.every / self.interp.params.fps for r in self.regions}
+            unknown = [e for e in tracked if e.get("unknown")]
             text_spans = [
-                (e["_times"][0], e["end"] + step.get(e.get("region"), 0.0))
-                for e in tracked
-                if e.get("unknown")
+                (e["_times"][0], e["end"] + step.get(e.get("region"), 0.0)) for e in unknown
             ]
+            text_keys = [(e.get("region"), e["_key"]) for e in unknown]  # a line's spans
+            max_gap = STATIC_MAX_GAP_S
             if self.still_runs is None:
                 feed_times, text_spans = None, None
+            else:
+                max_gap = self.still_runs.max_gap
             frames = self.frame_boxes
-            rules, menu_info = menu_rules(frames, feed_times=feed_times, text_spans=text_spans)
+            rules, menu_info = menu_rules(
+                frames,
+                feed_times=feed_times,
+                text_spans=text_spans,
+                text_keys=text_keys,
+                max_gap=max_gap,
+            )
             if logger.isEnabledFor(logging.DEBUG):
                 _log_menu_frames(
-                    self.src_name, frames, rules, menu_info, tracked, feed_times, text_spans
+                    self.src_name,
+                    frames,
+                    rules,
+                    menu_info,
+                    tracked,
+                    feed_times,
+                    text_spans,
+                    text_keys,
+                    max_gap,
                 )
             menu = {f["t"] for f in frames if rules[f["id"]] != "none"}
             tracker.drop_sightings(menu, keep=feed_event)
             stats["menu_frames"] = len(menu)
             stats["static_frames"] = sum(r == "static" for r in rules.values())
+            stats["text_frames"] = sum(r == "text" for r in rules.values())
         events = tracker.finish()
         for e in events:
             e["kind"] = "ocr"
@@ -2048,7 +2207,8 @@ def detect_ocr_events(
     the frame), and after the pass the sightings in menu frames
     are forgotten.
     No OCR runs for this; ``stats["menu_frames"]`` counts them, of which
-    ``stats["static_frames"]`` held still.
+    ``stats["static_frames"]`` held still and ``stats["text_frames"]`` showed many
+    lines of new text that stay (:func:`text_frames`).
 
     The read (:class:`OcrReader`) and its interpretation (:class:`OcrInterpretation`)
     are apart: the reader's records go into a raw OCR cache

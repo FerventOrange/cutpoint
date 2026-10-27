@@ -67,16 +67,22 @@ sighting or kill within 2 s, for at least 5 s when new menu text shows (at least
 that are no preset phrase, first read in that stretch or just before it, each on screen for at
 least half of it; one gameplay notice is not enough) or 10 s without, so still gameplay (scoped,
 about 6 s) keeps its banners. Kills and other feed sightings are never dropped, even in a menu
-frame. This test
-runs only when the preset's regions span at least a quarter of the frame (`static_area`), since a
-few small corner regions see too little of the screen.
-`stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out, and
-`static_frames` how many of them held still.
+frame. Menus that keep moving (lobbies, operator select, deploy maps, result screens with
+animated backgrounds) are found by their text: a frame is a text screen when at least 5 lines
+of new menu text are on screen at once, each staying 6 to 60 s, at least 3 of them first read
+within 2 s of each other (a menu opens at once; gameplay labels arrive one by one), for at
+least 3 s. A line on screen for over 60 s, or from within 6 s of the start of the read to within
+6 s of its end for at least half of it (also when a scoreboard hides it for a while), is part of
+the HUD and does not count. These tests run only when the preset's regions span at least a quarter of the frame
+(`static_area`), since a few small corner regions see too little of the screen.
+`stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out,
+`static_frames` how many of them held still and `text_frames` how many were text screens.
 With `cutpoint -v`, the OCR layer logs one line per frame that is a menu or has an OCR event:
 the time, the box count of the regions other than feeds, the centre cover, the recording's
 median box count, the thresholds (cover, list, jump), how long the screen held still, whether new
-menu text showed (`menu text yes`, `no`, or `-` near feed activity) and the
-rule that decided (`cover`, `jump`, `list`, `static` or `none`). Discovery logs how a kill feed grew (`Feed growth ...`: the row pitch, the frames with
+menu text showed (`menu text yes`, `no`, or `-` near feed activity), how many staying lines
+were on screen and how many of them were first read together (`staying lines`) and the
+rule that decided (`cover`, `jump`, `list`, `static`, `text` or `none`). Discovery logs how a kill feed grew (`Feed growth ...`: the row pitch, the frames with
 a full feed, what a row needs, and above and below every row tried, with its frames (how many
 with a full feed), bursts, label variety and sighting variety, ending in `ok: frames` (seen in
 enough frames), `ok: varied` (fewer frames, but a different text per burst while the feed is
