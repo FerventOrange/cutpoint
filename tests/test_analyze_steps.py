@@ -55,8 +55,8 @@ def run(home, tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     state = SimpleNamespace(
         video=video, proj=proj, plan=analyze.LayerPlan(), fail=None, cancel=False,
-        events_calls=[], layers_seen=[], saves=[], vision_ok=True, rated=0, segments=[],
-        transcripts=[], events=[],
+        events_calls=[], layers_seen=[], saves=[], vision_ok=True, vision_cached=False,
+        rated=0, segments=[], transcripts=[], events=[],
     )  # fmt: skip
 
     class StubTranscriber:
@@ -105,13 +105,16 @@ def run(home, tmp_path, monkeypatch):
         cache.save_json(project / crash.CRASHES_FILE, {"crashes": [c]})
 
     class FakeRater:
-        hits = asked = 0
+        hits = asked = missed = 0
 
         def __init__(self, **_):
             pass
 
         def available(self):
             return state.vision_ok
+
+        def cached(self, *a, **k):  # when Ollama is down: the cached rating, if any
+            return SimpleNamespace(score=8.0, label="nice") if state.vision_cached else None
 
         def rate(self, *a, **k):
             state.rated += 1
@@ -204,6 +207,75 @@ def test_vision_is_skipped_when_ollama_is_unreachable(run, capsys):
     assert with_warning["state"] == "skipped"
     assert "not reachable" in with_warning["detail"]
     assert (run.proj / "highlights.json").is_file()
+    assert run.rated == 0
+
+
+def test_vision_uses_the_cached_ratings_when_ollama_is_unreachable(run, capsys, caplog):
+    """#413: Ollama down, but the top candidate has a cached rating: the vision step runs on
+    the cache and the warning says how many candidates had none."""
+    run.vision_ok, run.vision_cached = False, True
+    run.go(vision=True)
+    assert last_states(progress_lines(capsys))["vision"]["state"] == "done"
+    assert run.rated == 1
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    (cand,) = hl["candidates"]
+    assert cand["signals"]["vision"] == 8.0
+    assert hl["settings"]["vision_used"] is True
+    assert hl["settings"]["vision"] == {"requested": 1, "failed": 0, "uncached": 0}
+    assert "using 1 cached rating, 0 candidates had no cached rating" in caplog.text
+
+
+def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monkeypatch):
+    """#413: two candidates, only the first has a cached rating. The settings and the warning
+    count the miss; an online run has no ``uncached`` key."""
+
+    def two(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cands = [
+            analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=60.0),
+            analyze.Candidate(src, 30.0, 40.0, 35.0, 1.0, {"loudness": 1.0}, score=50.0),
+        ]
+        return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
+
+    class Rater:
+        cache_only = False
+        hits = asked = missed = 0
+
+        def __init__(self, **_):
+            pass
+
+        def available(self):
+            return run.vision_ok
+
+        def cached(self, src, start, end, base):
+            hit = not self.cache_only or start == 10.0
+            return SimpleNamespace(score=8.0, label="nice") if hit else None
+
+        def rate(self, src, start, end, base):
+            res = self.cached(src, start, end, base)
+            if res is None:
+                self.missed += 1
+            return res
+
+        def unload(self):
+            pass
+
+    monkeypatch.setattr(analyze, "analyze_source", two)
+    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    run.vision_ok = False
+    run.go(vision=True, vision_top=2)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["settings"]["vision_used"] is True
+    assert hl["settings"]["vision"] == {"requested": 2, "failed": 0, "uncached": 1}
+    warning = next(r.getMessage() for r in caplog.records if "using " in r.getMessage())
+    assert "1 cached" in warning and "1 candidate" in warning
+
+    run.vision_ok = True  # online: nothing is "uncached"
+    run.go(vision=True, vision_top=2)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["settings"]["vision"] == {"requested": 2, "failed": 0}
 
 
 def test_without_layers_no_event_step_runs(run, capsys):

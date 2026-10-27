@@ -1829,15 +1829,32 @@ def _analyze(
             rater = VisionRater(
                 **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
             )
-            if rater.available():
+            # vision_top itself stays None (auto) in the saved settings, for reanalyze
+            n_top = (
+                auto_vision_top(sum(r.duration for r in results))
+                if vision_top is None
+                else vision_top
+            )
+            online, n_cached = rater.available(), 0
+            if not online:  # Ollama down: the ratings already cached, no requests (#413)
+                rater.cache_only = True
+                n_cached = sum(
+                    rater.cached(remap_source(Path(c["source"])), c["start"], c["end"], style.base)
+                    is not None
+                    for c in cands[:n_top]
+                )
+            if online or n_cached:
+                if not online:
+                    n_none = min(n_top, len(cands)) - n_cached
+                    message = (
+                        "vision rating requested but Ollama/model unavailable; using "
+                        f"{n_cached} cached rating{'s' if n_cached != 1 else ''}, "
+                        f"{n_none} candidate{'s' if n_none != 1 else ''} had no cached rating"
+                    )
+                    logger.warning("%s", message)
+                    jsonout.warn("vision_unavailable", message)
                 with steps.step("vision"):
                     t0 = time.perf_counter()
-                    # vision_top itself stays None (auto) in the saved settings, for reanalyze
-                    n_top = (
-                        auto_vision_top(sum(r.duration for r in results))
-                        if vision_top is None
-                        else vision_top
-                    )
                     logger.info(
                         "Vision: rating top %d of %d candidates", min(n_top, len(cands)), len(cands)
                     )
@@ -1848,10 +1865,13 @@ def _analyze(
                     hl["settings"]["vision_used"] = used
                     hl["settings"]["vision"] = {
                         "requested": min(n_top, len(cands)),
-                        "failed": n_failed,
+                        "failed": n_failed - rater.missed,
+                        **({} if online else {"uncached": rater.missed}),
                     }
             else:
-                message = "--vision requested but Ollama/model unavailable; continuing without it"
+                message = (
+                    "vision rating requested but Ollama/model unavailable; continuing without it"
+                )
                 logger.warning("%s", message)
                 jsonout.warn("vision_unavailable", message)
                 steps.skip("vision", "Ollama or its vision model is not reachable")
