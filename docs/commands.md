@@ -400,13 +400,15 @@ proxy of `transcribe` into the background, for a source of up to 30 minutes with
 stream (no cover art) whose scene cuts are not cached yet. `split` makes it in the same CUDA
 decode as the background HUD OCR (one pass instead of two), spooling the OCR frames to the
 source's cache folder; it is skipped when the drive has less free space than the worst-case
-spool plus 1 GB, and the spool is removed as it is read. `proxy` runs the proxy's own CUDA
-decode beside the OCR read (a second decode; a control for measuring). `0` or unset: as
-described above. When the background proxy has not started by the time scene detection needs
-it, or fails, scene detection decodes as usual; the scene cuts, `events.json`,
-`highlights.json` and the OCR caches are the same in every mode. Each source then logs an INFO
+spool (every OCR frame of the source) plus 1 GB, and the spool, in files of about 256 MB, is
+removed as it is read. `proxy` runs the proxy's own CUDA decode beside the OCR read (a
+second decode; a control for measuring). `0` or unset: as described above. When the
+background proxy has not started by the time scene detection needs it, or fails, scene
+detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and the OCR
+caches are the same in every mode. Each source then logs an INFO
 line with the scene detection time, the wait for the background proxy and the spool peak, and
-one with the wait for the background OCR, for comparing the modes.
+one with the wait for the background OCR, for comparing the modes; a source with cover art or
+more than one video stream, or a drive without room for the spool, logs why at once.
 
 | Step | What |
 |---|---|

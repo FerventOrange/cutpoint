@@ -1306,7 +1306,7 @@ def _scene_plan(src: Path, duration: float) -> Any:
     """The :class:`~cutpoint.events.ocr_prefetch.ScenePlan` of a whole source whose scene
     proxy may be made in the background: up to :data:`LONG_FILE_S` (longer files decode
     keyframes only), its scene cuts not cached and one video stream (no cover art); else
-    None."""
+    None (an INFO line names a failed stream gate; called in a shared-decode mode only)."""
     from cutpoint.events.ocr_prefetch import ScenePlan  # noqa: PLC0415
 
     cdir = cache.source_dir(src)
@@ -1314,6 +1314,10 @@ def _scene_plan(src: Path, duration: float) -> Any:
         return None
     io = remap_source(src)
     if not single_video_stream(io):
+        logger.info(
+            "%s: shared decode off: not exactly one video stream (cover art or several)",
+            src.name,
+        )
         return None
     _pre, _post, vf, enc = _proxy_args(duration)
     return ScenePlan(io, cdir, duration, vf, tuple(enc))

@@ -1794,7 +1794,9 @@ def decode_raw(
 
 # ----------------------------------------------------------------- shared decode (#375)
 SPOOL_DIR = "ocr-spool"  # in a source's cache folder: the raw frames of a split decode
-SPOOL_SEGMENT_FRAMES = 600  # frames per spool file (each is deleted once read)
+# target size of a spool file (whole frames, at least one; each is deleted once read), so the
+# spool on disk is what the consumer lags behind plus one small file
+SPOOL_SEGMENT_BYTES = 256 << 20
 SPOOL_READ = 4 << 20  # bytes per read of ffmpeg's raw output
 SPOOL_MARGIN = 1 << 30  # free disk a split decode leaves beyond its worst-case spool
 
@@ -1874,9 +1876,10 @@ def run_cancellable(args: Sequence[str], cancel: threading.Event) -> bool:
 
 class SplitDecode:
     """One CUDA pass (:func:`split_decode_args`) that writes the scene proxy and spools the
-    raw frames to ``spool`` (files of :data:`SPOOL_SEGMENT_FRAMES` frames, each deleted once
-    :meth:`frames` has read it), so ffmpeg runs at decode speed however slowly the frames are
-    consumed. ffmpeg starts here, isolated from Ctrl+C and killed on ``cancel``.
+    raw frames to ``spool`` (files of the whole frames that fit in :data:`SPOOL_SEGMENT_BYTES`,
+    at least one, each deleted once :meth:`frames` has read it), so ffmpeg runs at decode speed
+    however slowly the frames are consumed. ffmpeg starts here, isolated from Ctrl+C and
+    killed on ``cancel``.
 
     The proxy is written to ``proxy.tmp.mp4`` beside ``proxy`` and renamed to ``proxy`` only
     when ffmpeg exited 0 by itself and the spool took all of its output; otherwise it is
@@ -1903,7 +1906,7 @@ class SplitDecode:
         width, height = size
         self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
         self.shape = (height, width, 3)
-        self.seg_bytes = self.frame_bytes * SPOOL_SEGMENT_FRAMES
+        self.seg_bytes = self.frame_bytes * max(1, SPOOL_SEGMENT_BYTES // self.frame_bytes)
         self.stamp_fps = stamp_fps
         self.proxy = proxy
         self.tmp = proxy.with_name(proxy.stem + ".tmp" + proxy.suffix)
@@ -1952,7 +1955,9 @@ class SplitDecode:
         stdout = self._proc.stdout
         assert stdout is not None
         try:
-            while data := stdout.read1(SPOOL_READ):
+            # read() fills SPOOL_READ bytes (read1 gives about 32 KiB a call from a Windows
+            # pipe) or returns at EOF, which a kill of ffmpeg (cancel) brings at once
+            while data := stdout.read(SPOOL_READ):
                 view = memoryview(data)
                 while view:
                     if out is None:

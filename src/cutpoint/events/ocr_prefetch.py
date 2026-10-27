@@ -243,6 +243,7 @@ class OcrPrefetch:
         self._open = True  # sources may still be offered
         self._checked: bool | None = None  # presets and VRAM, checked by the worker
         self.declined: str | None = None  # why the worker read nothing
+        self._off = ""  # the same, for the shares of every source
         self.mode = shared_mode()  # the background scene proxy (None: off)
         self._split: SplitDecode | None = None  # the worker's shared decode
         self._proxies: list[threading.Thread] = []  # proxy mode: scene proxy passes
@@ -394,14 +395,16 @@ class OcrPrefetch:
     def _run(self) -> None:
         while (job := self._queue.get()) is not None:
             self.current = job
+            why = "the OCR read needed no fresh CUDA decode (cached, resumed or in parts)"
             try:
                 if self._cancel.is_set():
-                    job.skipped = True
+                    job.skipped, why = True, "the background OCR was stopped"
                     continue
                 if self._checked is None:
                     self._checked = self._check()
+                    self._off = self.declined or ""  # kept: take() clears declined once said
                 if not self._checked:
-                    job.skipped = True
+                    job.skipped, why = True, self._off
                     continue
                 job.result = detect_ocr_events(
                     job.source,
@@ -413,17 +416,17 @@ class OcrPrefetch:
                     decode=self._decoder(job),
                 )
             except OcrCancelled:  # cancelled, or a CUDA pass failed: read in its turn
-                job.skipped = True
+                job.skipped, why = True, "the OCR read was cancelled or its CUDA pass failed"
                 self._cancel.set()  # the later sources too, after it
             except BaseException as err:  # noqa: BLE001 - re-raised by take()
-                job.error = err
+                job.error, why = err, "the OCR read failed"
                 self._cancel.set()  # a serial run stops at this source too
             finally:
                 if self._split is not None:  # its frames were not all read: ffmpeg is killed
                     self._split.close()
                     self._split = None
-                if job.share is not None and job.share.mode == "split":
-                    job.share.decline("the OCR read did not decode the source")
+                if job.share is not None and job.share.mode == "split":  # unless it ran
+                    job.share.decline(why)
                 self.current = None
                 job.done.set()
 
@@ -438,12 +441,16 @@ class OcrPrefetch:
 
         def decode(rect: tuple[int, int, int, int], vf: str, errors: list[str], exits: list[int]):
             width, height = rect[2:]
+            # every frame of the file: with no backpressure the OCR read may lag the whole way
             need = width * height * 3 * math.ceil(self.params.fps * plan.duration + 1)
             if plan.io != job.source.io_path or not self.params.hwaccel:
                 share.decline("another file or decoder than the OCR read")
                 return None
             if not spool_fits(plan.cdir, need):
-                share.decline(f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool")
+                why = f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool"
+                share.decline(why)
+                # said now, not held for the OCR turn (REPLAY lets it through _Hold)
+                logger.info("%s: shared decode off: %s", job.source.name, why, extra={REPLAY: True})
                 return None
             if not share.claim():
                 return None
