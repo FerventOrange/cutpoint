@@ -1585,8 +1585,9 @@ def _kill_with_parent(proc: subprocess.Popen) -> None:
 
     An isolated child leaves the console's group, so a ``taskkill /F`` of Python would leave
     it running until its next write to the closed pipe; the job (KILL_ON_JOB_CLOSE, as
-    :mod:`cutpoint.events.llama_server` uses) ends it at once. POSIX needs nothing: the pipe
-    closes with the parent and ffmpeg exits on EPIPE. No-op if the API is unavailable.
+    :mod:`cutpoint.events.llama_server` uses) ends it at once. POSIX does nothing: the pipe
+    closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first); either way
+    the next run's sweep removes the spool and the tmp proxy. No-op if the API is unavailable.
     """
     global _JOB_HANDLE
     if os.name != "nt":
