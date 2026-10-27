@@ -50,7 +50,9 @@ from cutpoint.ffmpeg_utils import (
     measure_loudness,
     output_dir,
     probe,
+    recover_swap,
     run,
+    swap_lock,
 )
 from cutpoint.timeline import write_timelines
 from cutpoint.transcribe import Segment, Transcriber, flat_words
@@ -65,11 +67,11 @@ def list_clips(clips_dir: Path, exclude: set[Path]) -> list[Path]:
 
 
 def baked_fades(clips_dir: Path, files: list[Path]) -> list[float]:
-    """Audio fade already baked into each file, per its folder's manifest.json (0 if none)."""
-    from cutpoint import cache  # noqa: PLC0415
+    """Audio fade already baked into each file, per its folder's manifest.json entry (renamed
+    clips included, see :func:`~cutpoint.planning.manifest_entries`; 0 if none)."""
+    from cutpoint.planning import manifest_entries  # noqa: PLC0415
 
-    manifest = cache.load_json(clips_dir / "manifest.json") or {}
-    by_file = {e.get("file"): e for e in manifest.get("clips", [])}
+    by_file = manifest_entries(clips_dir, files)
     return [float((by_file.get(f.name) or {}).get("audio_fade") or 0.0) for f in files]
 
 
@@ -85,12 +87,12 @@ def _peak_tagged(path: Path) -> bool:
 
 def baked_peaks(clips_dir: Path, files: list[Path]) -> list[bool]:
     """Whether each file already has peak compression baked in: its folder's manifest entry
-    says so, or, for a file without one (renamed or added during review), its own tag. The
-    entry wins: ffmpeg copies a tagged source's comment into a clip exported without it."""
-    from cutpoint import cache  # noqa: PLC0415
+    (renamed clips included, see :func:`~cutpoint.planning.manifest_entries`) says so, or, for a
+    file without one (added during review), its own tag. The entry wins: ffmpeg copies a
+    tagged source's comment into a clip exported without it."""
+    from cutpoint.planning import manifest_entries  # noqa: PLC0415
 
-    manifest = cache.load_json(clips_dir / "manifest.json") or {}
-    by_file = {e.get("file"): e for e in manifest.get("clips", [])}
+    by_file = manifest_entries(clips_dir, files)
     return [
         e.get("compress_peaks") in PEAK_PRESETS
         if (e := by_file.get(f.name)) is not None
@@ -686,9 +688,40 @@ def assemble(
     compresses loud peaks and levels the clips that do not have it baked in; the final audio
     then always ends with the true-peak limiter (with or without ``loudnorm``).
 
+    Like ``clips``, a replace of ``clips_dir`` killed hard is first finished or undone
+    (:func:`~cutpoint.ffmpeg_utils.recover_swap`), and the folder is locked for the run.
+
     Raises:
         FileNotFoundError: If the folder has no .mp4 clips.
+        FolderBusyError: If another run is using ``clips_dir``.
     """
+    with swap_lock(clips_dir):  # one run at a time: another would remove a run's staging folder
+        recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
+        return _assemble(
+            clips_dir,
+            out,
+            transition,
+            fade_dur,
+            loudnorm,
+            captions,
+            caption_model,
+            audio_fade,
+            compress_peaks,
+        )
+
+
+def _assemble(
+    clips_dir: Path,
+    out: Path | None,
+    transition: str,
+    fade_dur: float,
+    loudnorm: bool,
+    captions: bool,
+    caption_model: str | None,
+    audio_fade: float,
+    compress_peaks: str,
+) -> Path:
+    """:func:`assemble`, with ``clips_dir`` locked."""
     if out is None:  # clips -> final.mp4, clips_vertical -> final_vertical.mp4
         name = clips_dir.resolve().name
         stem = "final" + name[5:] if name.lower().startswith("clips") else f"final_{name}"

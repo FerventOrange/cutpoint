@@ -119,7 +119,9 @@ def test_clips_json_force_reports_kept_clips_and_a_blocked_name(video, home, cap
     [warning] = doc["warnings"]
     assert warning["code"] == "kept_clips"
     assert warning["files"] == [str(mine)]
-    assert warning["message"].startswith(f"Kept 099_mine.mp4 in {clips_dir}: the old manifest")
+    # #145: recognised by its size as the clip cutpoint exported under the first name
+    kept = f"Kept 099_mine.mp4 in {clips_dir}: cutpoint exported 099_mine.mp4 as {first.name} "
+    assert warning["message"].startswith(kept + "(renamed during review)")
     assert warning["message"] in caplog.text
     _assert_clips(doc["outputs"], clips_dir)
 
