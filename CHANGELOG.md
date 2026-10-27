@@ -233,6 +233,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exported clips are now always tagged BT.709. BT.601 SDR sources (NVIDIA DVR/ShadowPlay-style
+  `smpte170m` captures, `bt470bg`, `smpte240m`, and SD below 720 lines and 1280 columns without
+  a matrix tag) are converted to BT.709 with ffmpeg's `colorspace` filter, logged once per
+  source. HD without a matrix tag is tagged BT.709 with no pixel change, and BT.709 sources are
+  unchanged. This fixes hue shifts when `assemble --transition cut` joins clips from mixed
+  sources. `assemble` re-encodes (crossfades, mixed formats) do the same per clip, so clips
+  exported before this change join new ones without a color shift (#290, #289).
 - **BREAKING:** `clips --force` and `extend` refuse a `manifest.json` Cutpoint did not write
   (another `generator`, or no `clips` list of entries with a `file`) and one they cannot read,
   stopping with an `ERROR` before exporting; move or rename it. An unreadable manifest used to

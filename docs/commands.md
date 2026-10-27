@@ -602,6 +602,15 @@ Notes:
   Precedence: segment `crop`, then `--crop`, then `project.json`, then none.
 - **Mixed aspect ratios.** The output format follows the tallest source. When 16:9 and 8:7
   sources mix, pass `--size 1920x1080` and a `crop` on the 8:7 segments.
+- **Color.** Every clip from YUV footage (nearly all video) is BT.709 (limited range, tagged
+  bt709), so clips from different sources join without a color shift; RGB footage (`gbr`) is
+  exported as before. HDR (HLG, PQ) and BT.2020 footage is tone-mapped to SDR (needs `zscale`
+  in the ffmpeg build; without it a WARNING says so and the clip keeps its colors). BT.601
+  footage is converted to BT.709, with one INFO line per source: footage with a BT.601 matrix
+  tag (`smpte170m`, `bt470bg` or `smpte240m`, such as NVIDIA DVR captures), and SD footage
+  (below 720 lines and 1280 columns) without a matrix tag. HD footage without a matrix tag is
+  taken as BT.709 and only tagged; its pixels do not change, nor do those of BT.709 footage.
+  `360` renders do the same.
 - `manifest.json` records each clip's source, start, end, score, label, tail, crop, padding,
   speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and
   `assemble` read it. Manifests without `size` or `generator` (written by earlier versions)
