@@ -18,8 +18,12 @@ changes*:
 * Connected groups of "dynamic" cells become regions, classified from the
   boxes inside them:
     - ``feed``: stacked lines (2+ rows per frame) near a screen edge or corner,
-      grown up and down by rows that continue it at its row pitch but show
-      too rarely to be dynamic (:func:`_grow_feed`, up to twice its height);
+      fewer than :data:`FEED_SCORE_ROWS` of them a "+" number alone, grown up
+      and down by rows that continue it at its row pitch but show too rarely to be
+      dynamic (:func:`_grow_feed`, up to twice its height);
+    - ``popup``: such lines, but :data:`FEED_SCORE_ROWS` of them a "+" number
+      alone (score popups: a value over a label, "+10" / "CRATE OPENED"); not read, and
+      no extra notice comes from inside them;
     - ``banner``: large text (>= 3.4% of the frame height) near the centre that
       appears briefly;
     - ``notice``: other centred text lines (objective messages, hints);
@@ -87,6 +91,12 @@ FEED_GROW_MIN_FRAMES = 2
 FEED_GROW_VARIED = 0.75
 FEED_GROW_FULL_SHARE = 0.5
 FEED_GROW_MAX = 2.0
+# A stack is no feed when FEED_SCORE_ROWS of its rows are a "+" number alone: a score
+# popup stacks a value over a label ("+10" / "CRATE OPENED"), a feed's rows are names (a
+# wrapped entry's tail such as "4-5)" or a crew count "2/3" has no sign). Measured: popups
+# 0.42 and 0.47, feeds and every other stack 0.04 at most.
+FEED_SCORE_ROWS = 0.3
+_SCORE_RE = re.compile(r"\+\s?\d[\d,.]*")
 # Outside notices (notice_proposals): text that keeps appearing outside every covered region.
 # A left-over box is NOTICE_MIN_H px to NOTICE_MAX_H of the frame height tall; text in
 # NOTICE_STATIC_SHARE of its source's frames, or on NOTICE_STATIC_CELLS static cells, is a
@@ -411,6 +421,19 @@ def _label_variety(texts: list[str]) -> float:
     return len({s for s in stripped if s}) / max(1, len(texts))
 
 
+def _score_rows(frames: list[list[dict[str, Any]]]) -> float:
+    """Share of the rows (boxes of one frame on one 14 px band, as for ``mean_rows``)
+    whose text is a "+" number alone ("+10", "+1,000")."""
+    rows: list[str] = []
+    for bs in frames:
+        by_row: dict[int, str] = {}
+        for b in bs:
+            key = round((b["y0"] + b["y1"]) / 2 / 14)
+            by_row[key] = by_row.get(key, "") + b["text"]
+        rows += by_row.values()
+    return sum(bool(_SCORE_RE.fullmatch(t.strip())) for t in rows) / max(1, len(rows))
+
+
 def _sighting_variety(band: list[tuple[str, tuple[str, int], float, str]]) -> float:
     """Distinct texts of a row's sightings per burst, at most 1. A sighting is the
     texts of one frame in ``band`` (``(frame, burst, centre y, text)``), each
@@ -681,6 +704,7 @@ def cluster_regions(
         texts = [b["text"] for _, bs in inside for b in bs]
         heights = [b["y1"] - b["y0"] for _, bs in inside for b in bs]
         rows = [len({round((b["y0"] + b["y1"]) / 2 / 14) for b in bs}) for _, bs in inside]
+        scores = _score_rows([bs for _, bs in inside])
         cx = (x0 + x1) / 2 / REF_W
         med_h = float(np.median(heights))
         mean_rows = float(np.mean(rows))
@@ -691,8 +715,11 @@ def cluster_regions(
         if variety < 0.15 or alpha < 0.45:
             kind = "readout"  # gauges, compass, ammo: labels fixed, numbers change
         elif mean_rows >= 1.3 and side and med_h < 0.034 * REF_H:
-            kind = "feed"
-            y0, y1, grown = _grow_feed(game_frames, (x0, y0, x1, y1), med_h, len(inside))
+            if scores >= FEED_SCORE_ROWS:
+                kind = "popup"  # score popups: a value over a label, not read
+            else:
+                kind = "feed"
+                y0, y1, grown = _grow_feed(game_frames, (x0, y0, x1, y1), med_h, len(inside))
         elif med_h >= 0.034 * REF_H and 0.25 < cx < 0.75:
             kind = "banner"
         elif 0.3 < cx < 0.7:
@@ -719,6 +746,7 @@ def cluster_regions(
                     "bursts": int(bursts_hit[gy0:gy1, gx0:gx1].max()),
                     "median_text_h": round(med_h, 1),
                     "mean_rows": round(mean_rows, 2),
+                    "score_rows": round(scores, 3),
                     "label_variety": round(variety, 3),
                     "alpha_share": round(alpha, 3),
                     "change_rate": round(float(chg_rate[gy0:gy1, gx0:gx1].mean()), 3),
@@ -731,7 +759,7 @@ def cluster_regions(
         ban = _banner_proposal(game_frames, 0.034 * REF_H)
         if ban:
             proposals.append(ban)
-    order = {"feed": 0, "banner": 1, "notice": 2, "dynamic": 3, "readout": 4}
+    order = {"feed": 0, "banner": 1, "notice": 2, "dynamic": 3, "readout": 4, "popup": 5}
     proposals.sort(key=lambda p: (order.get(p["kind"], 9), -p["score"]))
     counts: dict[str, int] = {}
     for p in proposals:
@@ -1244,17 +1272,20 @@ def proposals_to_regions(
         if (p["kind"] == "feed" and p["score"] >= 0.25 * best)
         or (p["kind"] in ("banner", "notice") and p["score"] >= 0.02)
     ]
-    keep = keep or [p for p in proposals if p["kind"] != "readout"]
+    keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup")]
     out = []
     for p in keep[:max_regions]:
-        x, y = max(0, p["x"] - pad), max(0, p["y"] - pad)
-        w = min(REF_W - x, p["w"] + 2 * pad)
-        h = min(REF_H - y, p["h"] + 2 * pad)
         kind = {"feed": "feed", "banner": "banner", "notice": "notice"}.get(p["kind"], "notice")
-        out.append(
-            Region(p["name"], x, y, w, h, kind, gate="det", every=1 if kind == "feed" else 3)
-        )
+        out.append(_padded(p, kind, pad))
     return out
+
+
+def _padded(p: dict[str, Any], kind: str, pad: int = 12) -> Region:
+    """The :class:`Region` of proposal ``p``, padded by ``pad`` px and clipped to the frame."""
+    x, y = max(0, p["x"] - pad), max(0, p["y"] - pad)
+    w = min(REF_W - x, p["w"] + 2 * pad)
+    h = min(REF_H - y, p["h"] + 2 * pad)
+    return Region(p["name"], x, y, w, h, kind, gate="det", every=1 if kind == "feed" else 3)
 
 
 def write_overlay(
@@ -1364,6 +1395,8 @@ def discover_regions(
     regions = proposals_to_regions(proposals)
     game_frames = gameplay_frames(frames, params)
     cover = covered if covered is not None else (*regions, bigtext_region())
+    # score popups are not read, but their labels are no notices either
+    cover += tuple(_padded(p, "notice") for p in proposals if p["kind"] == "popup")
     extra = notice_proposals(game_frames, cover, params, maps["static"], outside)
     extra_regions = [notice_region(p) for p in extra]
     proposals += extra

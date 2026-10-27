@@ -460,6 +460,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clips graded with `--lut` are tagged BT.709 (matrix, primaries, transfer, tv range) on older
   ffmpeg too: ffmpeg 6.1 left the matrix tag unset, so `assemble` read SD clips as BT.601.
 - A `llama-server` start no longer leaves its log file handle open in the parent.
+- HUD region discovery no longer takes a column of score popups (a "+10" value over a label)
+  for the kill feed (#410). On two R6 recordings the discovered `feed` region held only popups
+  and pre-round text, no kill line: it was OCR'd at the full rate and gave no events. A stack
+  where 30% or more of the rows are a "+" number alone is now a `popup` proposal: it gets no
+  region, and no extra notice region is proposed inside it, so its labels don't come back as
+  notice events. War Thunder's feed and crew box are found as before. Existing presets are not
+  changed; delete a discovered preset to discover it again.
 - `clips --force`, `extend` and `assemble` no longer lose or mix up work when a folder is
   touched by two runs or an interrupted one (#145):
   - `assemble` puts back or removes the staging and backup folders (`.<folder>.cutpoint-tmp`,

@@ -56,7 +56,9 @@ picked from the file or folder name, or set with `--game KEY`.
 For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events` run region discovery automatically; `analyze` logs `first run for <game>: discovering HUD regions`, which can take several minutes on CPU OCR. It samples bursts of
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and
 world text, and writes a proposal to `<project>\discovery\<game>\` (`proposal.json`, `overlay.jpg`)
-and installs it as a preset. Check `overlay.jpg`, then edit the preset JSON to calibrate.
+and installs it as a preset. A stack of score popups (30% or more of its rows a "+" number alone,
+such as "+10" over a label) gets no region, and no extra notice is proposed inside it;
+`proposal.json` lists it as a `popup` proposal with `score_rows` evidence. Check `overlay.jpg`, then edit the preset JSON to calibrate.
 A discovered kill feed grows by the oldest rows that show only when the feed is full (up to
 twice its height). With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed.
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
