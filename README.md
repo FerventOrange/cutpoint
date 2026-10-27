@@ -116,6 +116,7 @@ GPU vendors from working encoders and see the selected backend. Use `video_encod
 - [Troubleshooting](https://github.com/FerventOrange/cutpoint/blob/main/docs/troubleshooting/README.md)
 - [FAQ](https://github.com/FerventOrange/cutpoint/blob/main/docs/faq.md)
 - [Architecture](https://github.com/FerventOrange/cutpoint/blob/main/docs/architecture.md), [Contributing](https://github.com/FerventOrange/cutpoint/blob/main/CONTRIBUTING.md), [Security](https://github.com/FerventOrange/cutpoint/blob/main/SECURITY.md)
+- [Pipeline](https://github.com/FerventOrange/cutpoint/blob/main/docs/pipeline.md): diagrams of the analyze, clips and assemble flow
 - [Insta360 SDK](https://github.com/FerventOrange/cutpoint/blob/main/docs/insta360-sdk.md): optional, for high-quality 360 stitching
 
 ## License
