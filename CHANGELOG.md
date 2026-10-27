@@ -233,6 +233,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `analyze --vision` with Ollama down uses the vision ratings already cached for the top
+  candidates instead of skipping the rating. The `vision_unavailable` warning gives the
+  counts, and `settings.vision.uncached` in `highlights.json` is the number of top candidates
+  with no cached rating. The cache now records the Ollama model's digest: a model pulled again
+  under the same tag is rated again, and with Ollama down the cached ratings for the tag are
+  used. Ratings cached before this change have no digest and are rated again once (#413).
 - `analyze` on `gaming` and `funny` footage starts the HUD OCR of the keyframes step in the
   background while transcription, scene detection and the reactions step use the GPU, instead
   of after them. It runs only when Whisper runs on CUDA, every game has a HUD preset, a source
