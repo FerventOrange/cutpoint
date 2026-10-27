@@ -49,7 +49,9 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
 - Results are files. Read the JSON files below instead of parsing logs. `--json` (on the commands in
   the Status table) also writes one JSON object to stdout, with the file paths and warnings:
   `ok`, `command`, `schema`, `project`, `outputs`, `warnings` (`code`, `message`, `files`) and
-  `error` (`code`, `message`, or `null`). `error.code` is `bad_args` (exit 2), `not_found`,
+  `error` (`code`, `message`, or `null`). `error.code` is `bad_args` (exit 2 for the command
+  line, 1 when a command rejects an option value itself, such as a `--lut` file or
+  `--clip-override`), `not_found`,
   `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `folder_busy` (another run holds the folder's lock: wait or retry),
   `interrupted` (130) or `error`.
   Read `warnings` such as `kept_clips`, `kept_sources` and `step_failed` and tell the user. With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step ([docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output)). Keys:

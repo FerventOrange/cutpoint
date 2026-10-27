@@ -96,6 +96,10 @@ decodes only limited-range 8-bit 4:2:0 H.264; HEVC, 10-bit, 4:4:4 and full-range
 must pass a one-clip test decode first, and a failing one falls back to the CPU. Transcription,
 OCR and the other models stay on the CPU on an AMD GPU.
 
+To decode on the CPU whatever the GPU, set `CUTPOINT_VIDEO_DECODER=cpu`; the log then says
+`Video decoder: CPU (CUTPOINT_VIDEO_DECODER=cpu)`. Unset (or any other value) goes back to
+detection. Encoding is chosen separately (`CUTPOINT_VIDEO_ENCODER`).
+
 ## Whisper runs on the CPU, or CUDA / cuDNN / cuBLAS errors
 
 Transcription uses CUDA when it can and falls back to CPU (`small` model by default instead of
@@ -189,4 +193,6 @@ own Python: see [Install as a tool](../getting-started.md#install-as-a-tool-opti
 
 - Hardware decoding (NVDEC, or VAAPI on an AMD GPU) is used for HUD OCR. If it fails on your GPU, pass
   `events --no-hwaccel`.
+- To keep every decode on the CPU (analysis, HUD OCR, 360, UI proxies), set
+  `CUTPOINT_VIDEO_DECODER=cpu`.
 - 10-bit or exotic codecs may fall back to CPU decoding, which is slower but correct.

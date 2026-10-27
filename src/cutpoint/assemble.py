@@ -36,7 +36,9 @@ from cutpoint.encode import (
     SILENCE,
     TAG_BT709,
     audio_fade_filter,
+    bt601_matrix,
     bt709_filter,
+    color_kind,
     limiter_chain,
     plan_makeup,
     plan_peaks,
@@ -547,10 +549,10 @@ def post_process(
         The caption ASS file (reuse it via ``ass`` when re-running), if any.
     """
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(stage.resolve())]
-    cwd, vf = None, None
+    cwd, vf, tags = None, None, []
     if captions:
+        info = probe(stage)
         if ass is None:
-            info = probe(stage)
             wav = out.with_name(f".{out.stem}.captions.wav")
             extract_audio(stage, wav, info)
             tr = Transcriber(model=model, language=language)
@@ -567,6 +569,10 @@ def post_process(
             )
         cwd = ass.parent  # relative path avoids Windows drive-colon escaping in filters
         vf = f"ass={ass.name}"
+        # A BT.709 join (re-encoded, see _encode_with) keeps its tags; a stream-copied join of
+        # HDR, BT.601 or full-range clips is not BT.709, so it keeps the tags ffmpeg carries.
+        if not color_kind(info) and not bt601_matrix(info) and info.color_range != "pc":
+            tags = ["-color_range", "tv", *BT709_TAGS]
     if loudnorm:
         a_args = ["-af", f"{loudnorm_filter(stage)},{limiter_filter(limit_db)}", *FINAL_AUDIO_OUT]
     elif limit:
@@ -578,7 +584,8 @@ def post_process(
         run([*args, "-c:v", "copy", *tail])
     else:
         encode_with_fallback(
-            lambda enc: run([*args, "-vf", enc.chain(vf), *enc.args(), *tail], cwd=cwd), out.name
+            lambda enc: run([*args, "-vf", enc.chain(vf), *enc.args(), *tags, *tail], cwd=cwd),
+            out.name,
         )
     return ass
 

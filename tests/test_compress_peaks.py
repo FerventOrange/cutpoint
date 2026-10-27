@@ -224,6 +224,44 @@ def test_limit_without_loudnorm_runs_the_limiter_alone(monkeypatch, tmp_path):
     assert "-af" not in calls[-1] and "copy" in calls[-1]
 
 
+def test_the_captions_re_encode_keeps_the_bt709_tags(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")  # no encoder probe
+    calls: list[list[str]] = []
+    monkeypatch.setattr(assemble, "run", lambda args, **_: calls.append(args) or "")
+    monkeypatch.setattr(assemble, "probe", lambda p: media_info(p, color_space="bt709"))
+    ass = tmp_path / "o.ass"
+    assemble.post_process(tmp_path / "s.mp4", tmp_path / "o.mp4", False, True, None, ass=ass)
+    args = calls[-1]
+    assert "ass=o.ass" in args[args.index("-vf") + 1]
+    tags = ["-color_range", "tv", *assemble.BT709_TAGS]
+    i = args.index("-color_range")
+    assert args[i : i + len(tags)] == tags
+
+
+@pytest.mark.parametrize(
+    "color",
+    [
+        {"color_transfer": "arib-std-b67", "color_primaries": "bt2020", "color_space": "bt2020nc"},
+        {"color_space": "smpte170m"},
+        {"color_space": "bt709", "color_range": "pc"},
+    ],
+    ids=["hlg", "bt601", "full-range"],
+)
+def test_the_captions_re_encode_of_a_join_that_is_not_bt709_adds_no_tags(
+    monkeypatch, tmp_path, color
+):
+    # A stream-copied join (concat_copy) of such clips was never converted to BT.709.
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")  # no encoder probe
+    calls: list[list[str]] = []
+    monkeypatch.setattr(assemble, "run", lambda args, **_: calls.append(args) or "")
+    monkeypatch.setattr(assemble, "probe", lambda p: media_info(p, **color))
+    ass = tmp_path / "o.ass"
+    assemble.post_process(tmp_path / "s.mp4", tmp_path / "o.mp4", False, True, None, ass=ass)
+    args = calls[-1]
+    assert "ass=o.ass" in args[args.index("-vf") + 1]
+    assert "-color_primaries" not in args and "-color_range" not in args
+
+
 def _manifest(d: Path, entries: list[dict]) -> None:
     d.mkdir(parents=True, exist_ok=True)
     (d / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")

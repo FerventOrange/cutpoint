@@ -340,6 +340,15 @@ def test_gpu_decoder_is_the_first_candidate_that_really_decodes(monkeypatch, fai
     assert fu.gpu_decoder() == want
 
 
+def test_cutpoint_video_decoder_cpu_skips_the_gpu_decoders(monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_DECODER", "cpu")
+    tried = []
+    monkeypatch.setattr(fu, "decoder_candidates", lambda: tried.append(1) or [fu.HwDecoder("cuda")])
+    monkeypatch.setattr(fu, "decoder_error", lambda dec: None)
+    assert fu.gpu_decoder() is None
+    assert tried == []  # no GPU probe at all
+
+
 def test_a_source_is_probed_once_until_the_file_changes(monkeypatch, tmp_path):
     """One ffprobe per file version."""
     va = fu.HwDecoder("vaapi", "/dev/dri/renderD128")

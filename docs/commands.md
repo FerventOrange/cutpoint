@@ -54,7 +54,7 @@ codes are unchanged.
 
 With a failure, `ok` is `false` and `outputs` holds whatever was recorded before it. An
 argument error (`bad_args` from the parser) also writes an envelope, then exits 2. A command that
-checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--clip-override`, `--ids`, `mix --quotas`,
+checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--clip-override`, `--ids`, a `--lut` file that is not `.cube`/`.3dl`, unreadable or that ffmpeg cannot load, `--lut-strength` without `--lut`, `mix --quotas`,
 `360 director --out-name`, `stage` with no inputs, an unknown `--activity`) reports `bad_args` and exits 1.
 
 | `error.code` | Exit | Cause |
@@ -302,6 +302,7 @@ Use `video_encoder` in `config.json` or `CUTPOINT_VIDEO_ENCODER` to select `auto
 `amf`, `vaapi` or `cpu`. Auto falls back to software when no hardware probe succeeds, and redoes an
 export once on the CPU if a GPU encode fails on real footage (one WARNING); an
 explicit unavailable GPU encoder fails rather than silently selecting another backend.
+`CUTPOINT_VIDEO_DECODER=cpu` keeps decoding on the CPU instead of NVDEC or VAAPI.
 AMD transcription remains CPU-only with the current faster-whisper runtime.
 See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device permissions.
 
