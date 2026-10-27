@@ -16,7 +16,7 @@ after smart tails and event tails, to the final in/out points:
   ``.srt`` subtitles for the new range (see :mod:`cutpoint.srt`).
 
 ``cutpoint extend`` re-exports an existing clips folder from its ``manifest.json``
-(source, in and out points, crop, format), keeping the exact file names and
+(source, in and out points, crop, ``--lut`` grade, format), keeping the exact file names and
 order of the clips *still in the folder*, so renames and deletions made
 during review are respected. Per-clip speech-aware caps come from the
 manifest entry (``speech_max_extend`` / ``speech_max_lead``, set by a
@@ -40,7 +40,7 @@ from typing import Any
 from cutpoint import boundaries, cache, jsonout, srt
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
-from cutpoint.encode import OutputFormat, export_clip_checked
+from cutpoint.encode import Lut, OutputFormat, check_lut, export_clip_checked
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
     atomic_output,
@@ -229,6 +229,7 @@ def _reusable(
         and abs(float(old["start"]) - new["start"]) < 1e-3
         and abs(float(old["end"]) - new["end"]) < 1e-3
         and old.get("crop") == new.get("crop")
+        and Lut.from_entry(old) == Lut.from_entry(new)
         and float(old.get("audio_fade", 0.25)) == float(audio_fade)
     )
 
@@ -276,7 +277,7 @@ def extend_clips(
             ``extend_end`` per side) replacing ``padding`` for those clips
             (all recorded in the new manifest).
         reuse_dir: An earlier output folder. A clip whose new source, in/out
-            points, crop, format and fade equal its entry there is copied
+            points, crop, LUT grade, format and fade equal its entry there is copied
             instead of re-encoded (never for 360 clips).
 
     Returns:
@@ -392,6 +393,13 @@ def _extend_locked(
             plans.append(ExtendPlan(f.name, e, src, info, start, end, rec, _pick(e)))
 
         apply_overrides(plans, clip_overrides, padding)
+        # The --lut grade a clip recorded is redone; its LUT must still load (before any export).
+        checked: dict[Lut, Lut] = {}
+        luts: dict[str, Lut | None] = {}
+        for plan in plans:
+            if (lut := Lut.from_entry(plan.entry)) is not None and lut not in checked:
+                checked[lut] = check_lut(lut.path, lut.strength, f"{plan.name}: lut")
+            luts[plan.name] = checked[lut] if lut is not None else None
         reuse_by_file: dict[str, dict[str, Any]] = {}
         reuse_same_format = False
         if reuse_dir is not None:
@@ -508,6 +516,7 @@ def _extend_locked(
                     kind=e.get("kind"),
                     reuse_path=old,
                     source_mode=None if pano_source else pano_rec.get("mode"),
+                    lut=luts[name],
                 )
             else:
                 box = parse_spec(e.get("crop"))
@@ -521,6 +530,8 @@ def _extend_locked(
                     vertical,
                     box if isinstance(box, Crop) else None,
                     audio_fade,
+                    "",  # extend does not compress peaks (warned above)
+                    luts[name],
                 )
             if read_err and read_err["end"] < end:
                 end = read_err["end"]

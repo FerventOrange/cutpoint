@@ -21,6 +21,7 @@ from cutpoint import boundaries, cache, jsonout, sources, srt
 from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import (
+    Lut,
     OutputFormat,
     choose_format,
     export_clip_checked,
@@ -635,6 +636,7 @@ def render_clips(
     protected_srts: set[str] | None = None,
     peaks: list[str] | None = None,
     language: str | None = None,
+    lut: Lut | None = None,
 ) -> list[RenderResult]:
     """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
     its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
@@ -647,6 +649,8 @@ def render_clips(
     (one WARNING names them).
 
     ``language``: transcript language of the subtitles (None: the detected one).
+
+    ``lut``: ``--lut`` grade of every clip, 360 ones included (:func:`~cutpoint.encode.lut_filter`).
 
     Returns:
         One :class:`RenderResult` per plan, in order.
@@ -665,11 +669,21 @@ def render_clips(
             if pano is None:
                 raise ValueError(f"{plan.name}: 360 plan needs a PanoExporter")
             read_err, pano_rec = pano.export(
-                m["source"], start, end, out, audio_fade=audio_fade, kind=m.get("kind")
+                m["source"], start, end, out, audio_fade=audio_fade, kind=m.get("kind"), lut=lut
             )
         else:
             read_err = export_clip_checked(
-                plan.src, plan.info, start, end, out, fmt, vertical, plan.crop, audio_fade, peak
+                plan.src,
+                plan.info,
+                start,
+                end,
+                out,
+                fmt,
+                vertical,
+                plan.crop,
+                audio_fade,
+                peak,
+                lut,
             )
         if read_err and read_err["end"] < end:
             end = read_err["end"]
@@ -739,11 +753,12 @@ def _entry(
     peaks: str = "",
     makeup: float | None = None,
     size: int | None = None,
+    lut: Lut | None = None,
 ) -> dict[str, Any]:
     """manifest.json record of one rendered clip (``peaks``: its :func:`peak_filters` preset,
     recorded as ``compress_peaks`` when the clip got compression, with its ``makeup`` gain as
     ``compress_peaks_makeup_db``; ``size``: the clip's size in bytes, see
-    :func:`manifest_entries`)."""
+    :func:`manifest_entries`; ``lut``: its grade, recorded as ``lut`` and ``lut_strength``)."""
     m, src, start, end = plan.entry, plan.src, plan.start, res.end
     return {
         "file": plan.name,
@@ -759,6 +774,7 @@ def _entry(
         "tail": plan.tail.to_json() | ({"payoff_events": plan.payoffs} if plan.payoffs else {}),
         "crop": str(plan.crop) if plan.crop else None,
         "crop_source": plan.crop_source,
+        **(lut.to_json() if lut else {}),
         "score": m["score"],
         "label": m.get("label", ""),
         **({"extend": plan.pad_rec} if plan.pad_rec else {}),
@@ -795,11 +811,12 @@ def write_manifest(
     compress_peaks: str = "off",
     peaks: list[str] | None = None,
     makeup: list[float | None] | None = None,
+    lut: Lut | None = None,
 ) -> None:
     """Write ``<out_dir>/manifest.json`` for the rendered clips (and log the tail total).
 
     ``compress_peaks`` is recorded when not ``off``, and on each clip ``peaks`` gave a filter,
-    with its ``makeup`` (:func:`peak_filters`).
+    with its ``makeup`` (:func:`peak_filters`). ``lut`` is recorded on every clip.
     """
     total_ext = 0.0
     for plan in plans:
@@ -810,7 +827,7 @@ def write_manifest(
     peaks = peaks or [""] * len(plans)
     makeup = makeup or [None] * len(plans)
     entries = [
-        _entry(p, r, audio_fade, compress_peaks if f else "", m, file_size(out_dir / p.name))
+        _entry(p, r, audio_fade, compress_peaks if f else "", m, file_size(out_dir / p.name), lut)
         for p, r, f, m in zip(plans, results, peaks, makeup, strict=True)
     ]
     logger.info(
@@ -975,6 +992,7 @@ def export_clips(
     pano_cmd_every: int | None = None,
     size: tuple[int, int] | None = None,
     compress_peaks: str = "off",
+    lut: Lut | None = None,
 ) -> Path:
     """Export moments as normalised, numbered clips plus manifest.json.
 
@@ -1020,6 +1038,10 @@ def export_clips(
     (:data:`~cutpoint.encode.PEAK_PRESETS`): loud peaks are compressed and the clips leveled
     toward each other, then a true-peak limiter ends each clip's audio (manifest
     ``compress_peaks``, so ``assemble`` does not compress them again).
+
+    ``lut`` (:func:`~cutpoint.encode.check_lut`): every clip is graded with it after the
+    BT.709 conversion (:func:`~cutpoint.encode.lut_filter`), recorded per clip as ``lut`` and
+    ``lut_strength`` so ``extend`` grades the same way; ``assemble`` leaves the grade as is.
 
     360 sources (Insta360 X3 clips registered in ``<project>/pano.json`` by
     ``cutpoint 360 scan``) are rendered to flat video along a director path (see
@@ -1127,6 +1149,8 @@ def export_clips(
             base_tail.tail_min,
             base_tail.tail_max,
         )
+        if lut is not None:
+            logger.info("Grading every clip with %s (strength %g)", lut.path, lut.strength)
 
         plans = plan_clips(
             ordered,
@@ -1160,6 +1184,7 @@ def export_clips(
             protected_srts=protected_srts,
             peaks=peaks,
             language=language,
+            lut=lut,
         )
         write_manifest(
             work,
@@ -1179,6 +1204,7 @@ def export_clips(
             compress_peaks=compress_peaks,
             peaks=peaks,
             makeup=makeup,
+            lut=lut,
         )
         if work != out_dir:  # staged, not exported into directly
             swap_in(work, out_dir, [*replace, "manifest.json"])
