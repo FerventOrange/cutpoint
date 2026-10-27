@@ -323,6 +323,22 @@ def test_the_scrolling_columns_clip_their_visually_hidden_labels() -> None:
     assert col and "position: relative;" in col[1] and "overflow: auto;" in col[1]
 
 
+def test_the_page_files_are_revalidated_on_each_load(client: TestClient) -> None:
+    """#415: with no Cache-Control the browser reused an app.css from before the #354 fix, judged
+    fresh by its age, and the page scrolled past the Jobs bar again. Each load must revalidate.
+
+    Layout check in a browser (no browser in the test suite): a project with 20+ moments and
+    clips, the editor open, at 1915x950 and 1280x720 the document's scrollHeight equals
+    innerHeight and #jobs ends at the bottom edge; at 960px wide the page scrolls as before."""
+    for path in ("/", "/index.html", "/app.css", "/app.js", "/api.js"):
+        res = client.get(path)
+        assert res.status_code == 200, path
+        assert res.headers["cache-control"] == "no-cache", path
+        again = client.get(path, headers={"If-None-Match": res.headers["etag"]})
+        assert again.status_code == 304, path
+    assert client.get("/api/session").headers["cache-control"] == "no-store"
+
+
 def test_project_ids_cannot_leave_the_projects_folder(client: TestClient, tmp_path: Path) -> None:
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     for bad_id in ("..", "%2e%2e", "a%2Fb", pid + "%00"):
