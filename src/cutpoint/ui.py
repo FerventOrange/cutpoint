@@ -2117,6 +2117,11 @@ def create_app(port: int) -> FastAPI:
         response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
+        else:
+            # The page's own files: revalidated on each load (a 304 by ETag). Without it the
+            # browser may reuse a copy it judges fresh by its age, so an updated app.css or
+            # app.js is not used until that runs out (#415).
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     def supplied(request: Request, *, query: bool = False) -> bool:
