@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- UI: a "Stats for Nerds" setting (off by default, remembered per browser) shows the open
+  moment's score, rank, analyzed times, signals and keywords as a small overlay in the top-left
+  of the preview. The scoring line under the transcript is gone (#353).
 - `docs/pipeline.md`: diagrams of the flow from source footage to the finished video, and the
   `edit --kind` presets.
 - HUD region discovery proposes up to 2 extra `notice` regions (`extra_notice`,

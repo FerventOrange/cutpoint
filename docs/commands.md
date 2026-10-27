@@ -193,6 +193,9 @@ Settings also has "Rate frames with a local vision model (Ollama)" (off by defau
 one or "Analyze again", uses it (passed as `--vision` or `--no-vision`; 360 analyses never rate frames), and it is the default of
 `analyze` and `edit` on the command line. The UI has no per-run vision checkbox. "Analyze again"
 keeps the Ollama model, URL and vision-top the last analysis recorded.
+"Stats for Nerds" (off by default) shows the open moment's score, rank, analyzed times, signals
+and keywords over the top-left corner of the preview. It shows as soon as you tick it; Save keeps
+it, in the browser (local storage), not in `config.json`, and Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
