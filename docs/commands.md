@@ -267,7 +267,11 @@ the view, the overview strip next to them shows the view in the whole source and
 or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
 playhead during playback. On the rail, the arrow keys move the playhead by 0.5% of the view (at
 least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
-rail widens to show it. Clips longer than 10 minutes get a note under the trim fields.
+rail widens to show it. The gold start and end edges on the rail are handles: drag them (a drag held at
+the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
+Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
+the clip at least 0.1 s long and inside the source, and the preview seeks to it. Space still
+plays and pauses while a handle has focus. Clips longer than 10 minutes get a note under the trim fields.
 "Play sequence" in the Sequence header previews the cut without exporting: it plays each clip
 from its current start to its end, in sequence order, from the sources (or their proxies), with
 hard cuts. The clock shows the clip number and the time in the sequence, the playing row is

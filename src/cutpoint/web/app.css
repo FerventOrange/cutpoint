@@ -306,6 +306,23 @@ select { max-width: 100%; }
 .rail input[type=range]::-moz-range-thumb { width: 4px; height: 44px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
 .rail input.off-view::-webkit-slider-thumb { opacity: 0; }
 .rail input.off-view::-moz-range-thumb { opacity: 0; }
+/* the trim handles (#352): a 24 px hit area (WCAG 2.5.8) mostly outside the clip, start to the left
+   of its point and end to the right, so both stay grabbable on a clip a few pixels wide; the 14 px
+   overhang stays inside #stage's padding */
+.rail-handle {
+  position: absolute; top: 0; bottom: 0; width: 24px; margin-left: -14px;
+  cursor: ew-resize; touch-action: none; border-radius: 3px;
+}
+.rail-handle.end { margin-left: -10px; }
+.rail-handle::before {
+  content: ""; position: absolute; top: 50%; left: 11px; width: 6px; height: 22px; margin-top: -11px;
+  background: var(--gold-edge); border-radius: 2px; box-shadow: 0 0 0 1px var(--deep);
+}
+.rail-handle.end::before { left: 7px; }
+.rail-handle:hover::before, .rail-handle.dragging::before { background: var(--amber); }
+.rail-handle:focus-visible { outline: 2px solid var(--amber); outline-offset: 0; }
+.rail-handle:focus-visible::before { background: var(--amber); }
+.rail-handle.off-view::before { opacity: 0.45; } /* its point is off the view: parked at the edge */
 .rail-ends { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 /* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
 .rail-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 4px; }

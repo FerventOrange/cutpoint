@@ -350,6 +350,53 @@ def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
     assert "nerdStats: false," in js  # off unless the browser stored "1"
 
 
+def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
+    """Contract pin (#352): Clip start and Clip end on the rail are focusable sliders with a 24 px
+    hit area, moved by keys and pointer drags through setRange (the path of the time fields and
+    "Use playhead"), and Space is not taken from the global play/pause handler.
+
+    Check in a browser (no browser in the test suite): Tab to a handle, arrows move it 0.1 s,
+    Shift+arrows 1 s, PageUp/PageDown 5 s; the time field and aria-valuetext follow; start stops
+    MIN_CLIP before end; Space plays and pauses; a drag on a zoomed rail pans at the edge."""
+    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    rail = re.search(r'<div class="rail" id="rail">(.*?)\n        </div>', html, re.S)
+    assert rail
+    for which, name in (("start", "Clip start"), ("end", "Clip end")):
+        tag = re.search(rf'<div id="{which}Handle"[^>]*>', rail[1])
+        assert tag, which
+        for attr in (
+            'role="slider"',
+            'tabindex="0"',
+            f'aria-label="{name}"',
+            "aria-valuemin=",
+            "aria-valuemax=",
+            "aria-valuenow=",
+        ):
+            assert attr in tag[0], (which, attr)
+    for attr in ("aria-valuemin", "aria-valuemax", "aria-valuenow"):
+        assert f"el.setAttribute('{attr}'" in js
+    assert "el.setAttribute('aria-valuetext', `${HANDLE_NAMES[which]}, ${fmt(t)}`);" in js
+    assert (
+        "const HANDLE_STEPS = { ArrowLeft: -0.1, ArrowDown: -0.1, ArrowRight: 0.1, ArrowUp: 0.1, PageDown: -5, PageUp: 5 };"
+        in js
+    )
+    assert "step * 10" in js  # Shift+arrows: 1 s
+    assert "return t === c[which] || setRange(which, t, widen);" in js
+    assert "el.setPointerCapture(e.pointerId);" in js
+    assert (
+        "' '"
+        not in js[js.index("const HANDLE_STEPS") : js.index("el.addEventListener('pointerdown'")]
+    )
+    handle = re.search(r"^\.rail-handle \{([^}]*)\}", css, re.M)
+    assert handle and "width: 24px;" in handle[1] and "top: 0; bottom: 0;" in handle[1]
+    assert "touch-action: none;" in handle[1]
+    assert re.search(r"^\.rail-handle:focus-visible \{[^}]*outline: 2px solid", css, re.M)
+    # the rail is 46 px tall: the handle's hit area is at least 24 x 24
+    assert re.search(r"^\.rail \{[^}]*height: 46px;", css, re.M)
+
+
 def test_the_page_files_are_revalidated_on_each_load(client: TestClient) -> None:
     """#415: with no Cache-Control the browser reused an app.css from before the #354 fix, judged
     fresh by its age, and the page scrolled past the Jobs bar again. Each load must revalidate.
