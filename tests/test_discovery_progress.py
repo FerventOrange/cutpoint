@@ -123,7 +123,7 @@ def test_ocr_frames_report_cached_short_and_new_bursts(tmp_path, monkeypatch):
     )
 
     class Engine:
-        def __init__(self, det_side=960):
+        def __init__(self, det_side=960, **_kwargs):
             pass
 
         def __call__(self, img, min_score):

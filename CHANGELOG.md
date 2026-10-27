@@ -308,6 +308,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to catch up. A 446 s 1080p clip peaked at about 4 GB before. The mode now needs free disk for
   that cap (or every OCR frame of a shorter source) plus 1 GB, instead of every OCR frame of the
   source plus 1 GB; the output is the same (#402).
+- The OCR layer of `analyze` and `events` reads HUD text faster on the CPU: it splits its 4
+  threads over 2 OCR engines that run at once (the regions of a frame, then the text rows of a
+  region), on a machine with at least 4 CPUs. On a 4-vCPU machine the OCR read of a 300 s
+  game clip took 286 s instead of 345 s, for about 140 MB more memory. The OCR results, the
+  caches and `events.json` are unchanged; HUD discovery still uses one engine (#403).
 - The HUD OCR engine (the OCR layer and HUD discovery) runs on at most 4 CPU threads (fewer on
   a machine with fewer CPUs) instead of one per core. CPU OCR stops scaling at about 4 threads:
   on an 8-core CPU a 1280 px discovery frame took 3.3 s instead of 4.0 s, about 18% faster. The
