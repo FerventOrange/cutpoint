@@ -2452,6 +2452,7 @@ def grab_images_args(
     height: int | None = None,
     fmt: ImageFormat = "jpeg",
     quality: int | None = None,
+    color: str = "",
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for one :func:`grab_images` pass."""
     if (width is None) == (height is None):
@@ -2459,6 +2460,8 @@ def grab_images_args(
     if fmt not in ("jpeg", "png"):
         raise ValueError(f"unsupported image format {fmt!r}")
     scale = f"scale={width}:-2" if width is not None else f"scale=-2:{height}"
+    if color:
+        scale = f"{scale},{color}"
     args = ["-hide_banner", "-v", "error"]
     if hw is not None:
         args += hw.input_args()
@@ -2491,6 +2494,7 @@ def grab_images(
     hwaccel: HwAccel = None,
     fallback_cpu: bool = True,
     timeout: float | None = None,
+    color: str = "",
 ) -> list[bytes]:
     """Encoded stills from ``path`` (its staged copy if any), after one input seek.
 
@@ -2510,6 +2514,8 @@ def grab_images(
         hwaccel: ``"auto"`` (the probed GPU decoder first) or ``None`` = CPU only.
         fallback_cpu: Retry on the CPU when the GPU pass returns no image.
         timeout: Seconds per pass before ffmpeg is killed.
+        color: Filters placed after the scale, e.g. :func:`~cutpoint.encode.sdr_filter`'s
+            tone map of an HDR source ("" = none).
 
     Returns:
         The encoded images in time order (at least one; the exit code is not
@@ -2535,6 +2541,7 @@ def grab_images(
             height=height,
             fmt=fmt,
             quality=quality,
+            color=color,
         )
         proc = _exec("ffmpeg", args, timeout, path)
         if fmt == "jpeg":
