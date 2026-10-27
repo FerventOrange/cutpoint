@@ -796,6 +796,12 @@ PROXY_WINDOW_FRAME_CS = 4
 # ui/proxy/<proxy key>.w<lo>-<hi>.mp4 (see Media._proxy_key), the range in centiseconds of
 # the source
 PROXY_WINDOW_FILE = re.compile(r"([0-9a-f]{16})\.w(\d+)-(\d+)\.mp4")
+# a whole proxy ui/proxy/<proxy key>.mp4 or a window
+PROXY_FILE = re.compile(r"([0-9a-f]{16})(?:\.w\d+-\d+)?\.mp4")
+# prune_proxies leaves files written or used this recently: another run on the project may be
+# encoding one (a temporary grows as it encodes), or about to serve or serving one
+# (Media.window and the proxy routes touch what they serve, see _mark_used)
+PROXY_PRUNE_GRACE_S = 3600.0
 # a ``key=value`` line of ffmpeg's ``-progress`` output (frame=, out_time_us=, progress=...)
 PROXY_PROGRESS_LINE = re.compile(r"([a-z0-9_]+)= *(\S*)")  # bitrate= 4.1kbits/s
 
@@ -852,6 +858,22 @@ def _exit_reason(code: int, tail: str) -> str:
         return tail
     hexa = f" (0x{code & 0xFFFFFFFF:08X})" if code < 0 or code > 255 else ""  # Windows NTSTATUS
     return f"ffmpeg exited with code {code}{hexa}"
+
+
+def _idle(file: Path, cutoff_ns: int) -> bool:
+    """``file`` was last written or touched before ``cutoff_ns``; False if it is gone."""
+    try:
+        return file.stat().st_mtime_ns < cutoff_ns
+    except OSError:
+        return False
+
+
+def _mark_used(file: Path) -> None:
+    """A proxy is being served: touch it so another run's prune_proxies leaves it. Only once a
+    quarter of the grace period has passed, so its Last-Modified rarely changes mid-playback."""
+    with contextlib.suppress(OSError):
+        if time.time() - file.stat().st_mtime > PROXY_PRUNE_GRACE_S / 4:
+            os.utime(file)
 
 
 def _covers(span: tuple[int, int], want: tuple[int, int], dur_cs: int) -> bool:
@@ -913,6 +935,8 @@ class Media:
         self.window_wake = threading.Condition(self.lock)
         self.window_lane: threading.Thread | None = None  # started with the first window
         self.proxies_pruned: set[Path] = set()  # projects whose proxy leftovers went this run
+        # (project, content key) of HDR sources whose proxies of an earlier tone map went
+        self.tone_maps_pruned: set[tuple[Path, str]] = set()
         self.closing = False
         self.gpu_failed = False  # a proxy failed with the GPU encoder and worked with libx264
         # still file name -> (its builder lock, requests using it); dropped when the last one leaves
@@ -1024,8 +1048,10 @@ class Media:
         clips so).
         """
         real = remap_source(path)
-        key, res = self._lookup(real)
-        key = self._proxy_key(key)
+        content, res = self._lookup(real)
+        key = self._proxy_key(content)
+        if content is not None and key != content:
+            self._drop_earlier_tone_map(project, content)
         if res is not None and key is not None and not res[0] and not self.closing:
             proxy = _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # never built through a link
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")  # nor its temporary
@@ -1217,6 +1243,21 @@ class Media:
             except OSError as err:  # e.g. still being sent on Windows; pruned next run
                 logger.debug("could not delete %s: %s", f.name, err)
 
+    def _drop_earlier_tone_map(self, project: Path, content: str) -> None:
+        """Once per run: delete an HDR source's proxies named by its content key alone (built
+        with an earlier tone map), unless written or used in the last PROXY_PRUNE_GRACE_S."""
+        folder = project / UI_DIR / "proxy"
+        cutoff = time.time_ns() - int(PROXY_PRUNE_GRACE_S * 1e9)
+        with self.lock:
+            if (project, content) in self.tone_maps_pruned:
+                return
+            self.tone_maps_pruned.add((project, content))
+            self.windows.pop((project, content), None)  # adopted before the source was probed
+            if not folder.is_dir() or not _inside(project, f"{UI_DIR}/proxy"):
+                return  # never delete in a folder a link takes outside the project
+            stale = [f for f in folder.glob(f"{content}*.mp4") if PROXY_FILE.fullmatch(f.name)]
+        self._delete([f for f in stale if _idle(f, cutoff)])
+
     def _drop_windows(self, project: Path, key: str) -> None:
         """The whole proxy of ``key`` landed: stop that source's window encodes and retire its
         windows (still served, no longer listed; the next run's :meth:`prune_proxies` deletes
@@ -1254,6 +1295,7 @@ class Media:
             or not _inside(project, f"{UI_DIR}/proxy/{file.name}")
         ):
             return None
+        _mark_used(file)
         return file
 
     def windows_of(
@@ -1277,19 +1319,28 @@ class Media:
         return ready, pending
 
     def prune_proxies(self, project: Path, paths: list[str]) -> None:
-        """Once per run and project: delete leftover temporaries and windows of sources that
-        changed or left or whose whole proxy is built, and adopt the other windows on disk.
+        """Once per run and project: delete leftover temporaries, the whole proxies and windows
+        of sources that changed or left or whose tone map changed, and windows whose whole proxy
+        is built; adopt the other windows on disk. A file written or used in the last
+        PROXY_PRUNE_GRACE_S stays (another run may be encoding or serving it), as does one that
+        cannot be deleted (open on Windows); a later run deletes it. While a source cannot be
+        read (an offline drive), no proxy goes for naming no current source, and no source is
+        probed.
 
-        A window no known key names may be of an HDR source not probed yet (its proxy key holds
-        the colour filter): sources are then probed, in order, until every such window is
-        matched, so this may run ffprobe."""
+        A proxy no known key names may be of an HDR source not probed yet (its proxy key holds
+        the colour filter): sources are then probed, in order, until every such proxy is
+        matched, so this may run ffprobe. Proxies an HDR source's content key names (an earlier
+        tone map) go in :meth:`prepare` instead, so no other source is probed for them."""
         folder = project / UI_DIR / "proxy"
         if project in self.proxies_pruned:
             return
+        cutoff = time.time_ns() - int(PROXY_PRUNE_GRACE_S * 1e9)
         reals = [remap_source(path) for path in paths]
-        keys = {self._proxy_key(self.key(real)) for real in reals} - {None}
-        windows = [PROXY_WINDOW_FILE.fullmatch(f.name) for f in folder.glob("*.w*.mp4")]
-        left = {m[1] for m in windows if m and m[1] not in keys}
+        keys = {self._proxy_key(self.key(real)) for real in reals}
+        unsure = None in keys  # a source is unreachable: its proxies' names are unknown
+        keys.discard(None)
+        named = {m[1] for m in (PROXY_FILE.fullmatch(f.name) for f in folder.glob("*.mp4")) if m}
+        left = set() if unsure else named - keys
         for real in reals:
             if not left:
                 break
@@ -1315,21 +1366,32 @@ class Media:
                 if w is not None and w.project == project
             }
             drop += [f for f in folder.glob("*.part.mp4") if f.name not in busy]
+            if not unsure:
+                drop += [
+                    f
+                    for f in folder.glob("*.mp4")
+                    if (m := PROXY_FILE.fullmatch(f.name))
+                    and ".w" not in f.name
+                    and m[1] not in keys
+                ]  # whole proxies
             found: list[tuple[int, Path, str, tuple[int, int]]] = []
             for f in folder.glob("*.w*.mp4"):
                 m = PROXY_WINDOW_FILE.fullmatch(f.name)
                 if m is None:
                     continue
                 k = m.group(1)
-                if k not in keys or (folder / f"{k}.mp4").is_file():
+                if (folder / f"{k}.mp4").is_file():
                     drop.append(f)
+                elif k not in keys:
+                    if not unsure:
+                        drop.append(f)
                 else:
                     with contextlib.suppress(OSError):
                         found.append((f.stat().st_mtime_ns, f, k, (int(m[2]), int(m[3]))))
             for _, f, k, span in sorted(found):  # oldest first: evicted first
                 if span not in self.windows.get((project, k), {}):
                     drop += self._keep_window((project, k), span, f)
-        self._delete(drop)
+        self._delete([f for f in drop if _idle(f, cutoff)])
 
     def _build(
         self,
@@ -2559,14 +2621,26 @@ def create_app(port: int) -> FastAPI:
     def cancel_job(job_id: str):
         return jobs.cancel(job_id).view()
 
-    def send(file: Path, request: Request, name: str | None = None) -> FileResponse:
-        """Range-capable file response; ``?download=1`` makes the browser save it."""
+    def send(
+        file: Path, request: Request, name: str | None = None, *, proxy: bool = False
+    ) -> FileResponse:
+        """Range-capable file response; ``?download=1`` makes the browser save it.
+
+        ``proxy``: a proxy, marked used (see :func:`_mark_used`), with an ETag from its name
+        (which holds its key) and size, so touching it does not turn a seek's ranged request
+        (If-Range) into a whole response."""
         download = request.query_params.get("download") == "1"
         # mimetypes knows .srt only where the OS registry or mime.types lists it
         kind = "text/plain" if file.suffix.lower() == ".srt" else mimetypes.guess_type(file.name)[0]
+        headers = None
+        if proxy:
+            _mark_used(file)
+            with contextlib.suppress(OSError):
+                headers = {"etag": f'"{file.stem}-{file.stat().st_size}"'}
         return FileResponse(
             file,
             media_type=kind or "application/octet-stream",
+            headers=headers,
             filename=name or file.name if download else None,
             content_disposition_type="attachment" if download else "inline",
         )
@@ -2584,7 +2658,8 @@ def create_app(port: int) -> FastAPI:
         status, file = media.status(p, entry["path"])
         if file is None:
             raise bad(f"source is {status}", 404 if status == "failed" else 409)
-        return send(file, request, entry["name"])
+        # a proxy is marked used; never the source itself
+        return send(file, request, entry["name"], proxy=file.parent == p / UI_DIR / "proxy")
 
     @served.api_route("/projects/{pid}/sources/{sid}/window/{span}", methods=["GET", "HEAD"])
     def source_window(pid: str, sid: str, span: str, request: Request):
@@ -2599,7 +2674,7 @@ def create_app(port: int) -> FastAPI:
             raise bad(
                 f"window is not ready (source is {status})", 404 if status == "failed" else 409
             )
-        return send(file, request)
+        return send(file, request, proxy=True)
 
     @served.get("/projects/{pid}/sources/{sid}/frame")
     def source_frame(pid: str, sid: str, at: float = 0.0, w: int = FRAME_WIDTH):

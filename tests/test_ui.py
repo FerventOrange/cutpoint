@@ -3511,6 +3511,13 @@ def test_at_most_eight_windows_are_kept_and_the_least_recently_used_goes_first(
     assert not (p / ui.UI_DIR / "proxy" / f"{key}.w{second[0]}-{second[1]}.mp4").exists()
 
 
+def age(*files: Path) -> None:
+    """Last written or used before prune_proxies' grace period."""
+    then = time.time() - ui.PROXY_PRUNE_GRACE_S - 60
+    for f in files:
+        os.utime(f, (then, then))
+
+
 def test_windows_are_retired_not_deleted_when_the_whole_proxy_lands_and_pruned_next_run(
     window_media: tuple[ui.Media, Path, Path], window_ffmpeg: FakeWindowFfmpeg
 ) -> None:
@@ -3531,6 +3538,7 @@ def test_windows_are_retired_not_deleted_when_the_whole_proxy_lands_and_pruned_n
     assert media.window(p, str(src), 1000, 4500) == folder / f"{key}.w1000-4500.mp4"
     media.shutdown()
 
+    age(*windows)
     fresh = ui.Media()  # the next run
     fresh.prune_proxies(p, [str(src)])
     assert [f.name for f in folder.iterdir()] == [f"{key}.mp4"]
@@ -4163,8 +4171,10 @@ def test_prune_proxies_removes_leftovers_and_adopts_the_windows_that_are_still_w
     stale = "1" * 16
     keep = [f"{a}.w0-500.mp4", f"{a}.w1000-1500.mp4", "notes.txt", f"{a}.w1-2.txt", f"{b}.mp4"]
     gone = [f"{a}.part.mp4", f"{a}.w0-500.part.mp4", f"{stale}.w0-500.mp4", f"{b}.w0-500.mp4"]
+    gone.append(f"{stale}.mp4")  # the whole proxy of a source that left
     for name in keep + gone:
         (folder / name).write_bytes(b"x")
+    age(*folder.iterdir())
     p = folder.parents[1]
     media.prune_proxies(p, paths)
     assert sorted(f.name for f in folder.iterdir()) == sorted(keep)
@@ -4186,11 +4196,177 @@ def test_prune_proxies_keeps_hdr_windows_of_the_current_tone_map_before_any_prob
     hdr = hashlib.sha1(f"{a}|{encode.sdr_filter(hlg)}".encode()).hexdigest()[:16]
     (folder / f"{hdr}.w0-500.mp4").write_bytes(b"x")
     (folder / f"{a}.w0-500.mp4").write_bytes(b"x")  # built with an earlier tone map
+    age(*folder.iterdir())
     p = folder.parents[1]
     media.prune_proxies(p, paths)  # a new run: nothing probed yet
     assert sorted(f.name for f in folder.iterdir()) == [f"{hdr}.w0-500.mp4"]
     assert set(media.windows[(p, hdr)]) == {(0, 500)}
     assert probed == ["a.mp4"]  # matched: b.mp4 is not probed
+
+
+def test_prepare_deletes_hdr_proxies_of_an_earlier_tone_map_that_prune_could_not_tell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
+    probed: list[str] = []
+    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hlg)
+    media, folder, paths, a, b = prune_setup(tmp_path)
+    monkeypatch.setattr(media.pool, "submit", lambda *_args: None)  # no build
+    # named by the content key: no current proxy beside them
+    stale = [folder / f"{a}.w0-500.mp4", folder / f"{a}.mp4"]
+    recent = folder / f"{a}.w1000-1500.mp4"  # another run may be serving it
+    for f in [*stale, recent]:
+        f.write_bytes(b"x")
+    age(*stale)
+    (folder / f"{b}.mp4").write_bytes(b"x")  # another source's
+    p = folder.parents[1]
+    media.prune_proxies(p, paths)
+    assert probed == []  # nothing to tell them from without probing
+    assert media.prepare(p, paths[0]) == "preparing"
+    assert probed == ["a.mp4"]
+    assert sorted(f.name for f in folder.iterdir()) == sorted([recent.name, f"{b}.mp4"])
+    assert (p, a) not in media.windows  # adopted by prune_proxies, now gone
+
+
+def test_prune_proxies_probes_no_source_whose_proxy_it_knows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probed: list[str] = []
+    hevc = media_info(vcodec="hevc", duration=10.0)
+    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hevc)
+    media, folder, paths, a, b = prune_setup(tmp_path)
+    names = [f"{a}.mp4", f"{b}.w0-500.mp4"]
+    for name in names:
+        (folder / name).write_bytes(b"x")
+    age(*folder.iterdir())
+    media.prune_proxies(folder.parents[1], paths)
+    assert probed == []
+    assert sorted(f.name for f in folder.iterdir()) == sorted(names)
+
+
+def test_prune_proxies_keeps_the_proxies_while_a_source_is_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probed: list[str] = []
+    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name))
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    paths = []
+    for name, data in (("a.mp4", b"x"), ("b.mp4", b"xy")):
+        (nas / name).write_bytes(data)
+        paths.append(str(nas / name))
+    a, b = (ui.Media.key(ui.remap_source(s)) or "" for s in paths)
+    folder = tmp_path / "proj" / ui.UI_DIR / "proxy"
+    folder.mkdir(parents=True)
+    # an HDR source's proxies would carry other keys: these may be any source's
+    keep = [f"{a}.mp4", f"{b}.w0-500.mp4", f"{'1' * 16}.w0-500.mp4", f"{'2' * 16}.mp4"]
+    for name in [*keep, f"{a}.part.mp4"]:
+        (folder / name).write_bytes(b"x")
+    age(*folder.iterdir())
+    nas.rename(tmp_path / "nas-offline")  # the drive goes offline
+    ui.Media().prune_proxies(folder.parents[1], paths)
+    assert sorted(f.name for f in folder.iterdir()) == sorted(keep)  # the temporary goes
+    assert probed == []
+
+
+def test_prune_proxies_deletes_stale_whole_proxies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
+    hevc = media_info(vcodec="hevc", duration=10.0)
+    monkeypatch.setattr(ui, "probe", lambda path: hlg if Path(path).name == "a.mp4" else hevc)
+    media, folder, paths, a, b = prune_setup(tmp_path)
+    hdr = hashlib.sha1(f"{a}|{encode.sdr_filter(hlg)}".encode()).hexdigest()[:16]
+    (tmp_path / "b.mp4").write_bytes(b"changed")  # b's proxy is of its earlier content
+    b_now = ui.Media.key(ui.remap_source(paths[1])) or ""
+    keep = [f"{hdr}.mp4", f"{b_now}.mp4"]
+    gone = [f"{a}.mp4", f"{'2' * 16}.mp4", f"{b}.mp4"]  # earlier tone maps, b before it changed
+    for name in keep + gone:
+        (folder / name).write_bytes(b"x")
+    age(*folder.iterdir())
+    media.prune_proxies(folder.parents[1], paths)
+    assert sorted(f.name for f in folder.iterdir()) == sorted(keep)
+
+
+def test_prune_proxies_keeps_what_another_run_may_be_encoding_or_serving(
+    tmp_path: Path,
+) -> None:
+    media, folder, paths, a, _ = prune_setup(tmp_path)
+    stale = "1" * 16
+    p = folder.parents[1]
+    names = [f"{a}.part.mp4", f"{a}.w0-500.part.mp4", f"{stale}.mp4", f"{stale}.w0-500.mp4"]
+    for name in names:
+        (folder / name).write_bytes(b"x")  # just written: another run is encoding them
+    used = folder / f"{a}.w1000-1500.mp4"
+    used.write_bytes(b"x")
+    age(used)
+    other = ui.Media()  # another run serves the window
+    other.windows[(p, a)] = {(1000, 1500): used}
+    assert other.window(p, paths[0], 1000, 1500) == used
+    (folder / f"{a}.mp4").write_bytes(b"x")  # its whole proxy landed meanwhile
+    media.prune_proxies(p, paths)
+    assert sorted(f.name for f in folder.iterdir()) == sorted([*names, used.name, f"{a}.mp4"])
+    fresh = ui.Media()
+    age(*folder.iterdir())  # an hour later, nothing in use
+    fresh.prune_proxies(p, paths)
+    assert [f.name for f in folder.iterdir()] == [f"{a}.mp4"]
+
+
+def test_prune_proxies_skips_a_file_it_cannot_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media, folder, paths, _, _ = prune_setup(tmp_path)
+    for name in ("1" * 16, "2" * 16):
+        (folder / f"{name}.mp4").write_bytes(b"x")
+    age(*folder.iterdir())
+    unlink = Path.unlink
+
+    def held(self: Path, missing_ok: bool = False) -> None:
+        if self.name.startswith("1"):
+            raise PermissionError(13, "in use by another process", str(self))  # Windows
+        unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held)
+    media.prune_proxies(folder.parents[1], paths)
+    assert [f.name for f in folder.iterdir()] == [f"{'1' * 16}.mp4"]
+
+
+def test_a_served_proxy_is_marked_used(
+    client: TestClient, hevc_project: tuple[str, Path, Path, Path]
+) -> None:
+    pid, folder, p, _ = hevc_project
+    sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
+    source = folder / "a.mp4"
+    age(source)
+    key = ui.Media.key(source.resolve()) or ""
+    (p / ui.UI_DIR / "proxy").mkdir(parents=True)
+    proxy = p / ui.UI_DIR / "proxy" / f"{key}.mp4"
+    proxy.write_bytes(b"proxy")
+    age(proxy)
+    before = source.stat().st_mtime_ns
+    url = f"/api/projects/{pid}/sources/{sid}?t={client.headers['X-Cutpoint-Token']}"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert first.headers["etag"] == f'"{key}-5"'  # from its name and size, not its mtime
+    touched = proxy.stat().st_mtime_ns
+    assert time.time() - touched / 1e9 < 60
+    assert source.stat().st_mtime_ns == before  # never the source
+    seek = client.get(url, headers={"Range": "bytes=1-2", "If-Range": first.headers["etag"]})
+    assert (seek.status_code, seek.content) == (206, b"ro")
+    assert proxy.stat().st_mtime_ns == touched  # touched recently: not again
+
+
+def test_a_window_written_recently_is_not_touched_again_when_served(tmp_path: Path) -> None:
+    media, folder, paths, a, _ = prune_setup(tmp_path)
+    p = folder.parents[1]
+    window = folder / f"{a}.w0-500.mp4"
+    window.write_bytes(b"x")
+    media.windows[(p, a)] = {(0, 500): window}
+    touched = window.stat().st_mtime_ns
+    assert media.window(p, paths[0], 0, 500) == window
+    assert window.stat().st_mtime_ns == touched  # just written: not touched
 
 
 def test_prune_proxies_adopts_at_most_eight_windows_keeping_the_newest(tmp_path: Path) -> None:

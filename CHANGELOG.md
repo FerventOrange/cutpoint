@@ -461,6 +461,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are, so they no longer look washed out (#412). On a PQ sample the mean saturation went from
   0.38 to 0.64 (the SDR copy: 0.67). Without `zscale` they stay as before, with the same
   warning as exports. Thumbnails of other sources are unchanged; ones cached before are rebuilt.
+- `cutpoint ui` deletes preview proxies that are no longer current: the whole proxies of
+  sources that changed or left, and HDR proxies and windows built with an earlier tone map,
+  also when no current one sits beside them. It leaves a proxy file written or played in the
+  last hour, so a second UI on the same project no longer deletes a proxy it is encoding or
+  serving, and skips a file it cannot delete (open on Windows) until a later run. While a
+  source cannot be read (an offline drive), no proxy is deleted for matching no source (#411).
 - Clips graded with `--lut` are tagged BT.709 (matrix, primaries, transfer, tv range) on older
   ffmpeg too: ffmpeg 6.1 left the matrix tag unset, so `assemble` read SD clips as BT.601.
 - A `llama-server` start no longer leaves its log file handle open in the parent.
