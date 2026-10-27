@@ -228,17 +228,20 @@ def lut_filter(path: PurePath, strength: float = 1.0) -> str | None:
     profile (a GoPro Flat or Insta360 Log to Rec.709 LUT, say); Cutpoint cannot check that.
     Below strength 1 the graded frames are blended over the original at that opacity, in YUV
     (a linear mix, the same as one in RGB, on fewer samples). Strength 1 has no blend.
+    The result is tagged BT.709 tv range (:data:`TAG_BT709`): ffmpeg 6.1's ``scale`` back to
+    YUV leaves the matrix unset (9.0.2 sets it), and a BT.709 source gets no output tags.
     """
     if strength <= 0:
         return None
     to_rgb = "scale=in_color_matrix=bt709:in_range=tv:out_range=pc"
     grade = f"lut3d=file={filter_path(path)}:interp=tetrahedral"
     to_yuv = "scale=out_color_matrix=bt709:out_range=tv"
+    tag = f"{TAG_BT709}:range=tv"
     if strength >= 1:
-        return f"{to_rgb},{grade},{to_yuv}"
+        return f"{to_rgb},{grade},{to_yuv},{tag}"
     return (
         f"split=2[lut_o][lut_i];[lut_i]{to_rgb},{grade},{to_yuv}[lut_g];"
-        f"[lut_g][lut_o]blend=all_mode=normal:all_opacity={strength:g}"
+        f"[lut_g][lut_o]blend=all_mode=normal:all_opacity={strength:g},{tag}"
     )
 
 
