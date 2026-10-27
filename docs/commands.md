@@ -494,7 +494,9 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--no-rescore` | Do not touch `highlights.json` |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
-Every layer is cached per source, so reruns are cheap.
+Every layer is cached per source, so reruns are cheap. The model devices in the `stats` of
+`events.json` (`audio_device`, `voice.device`, `visual.device`) name where a model ran in this
+run, so a layer that only read its cache leaves the key out.
 
 ## clips
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -114,3 +115,45 @@ def test_a_source_without_audio_loads_no_detector(tmp_path: Path, run, caplog):
     made, calls = run([_source(tmp_path, "a", audio=False)])
     assert made == [] and calls == []
     assert "a.mp4: no cached 16 kHz audio; run `cutpoint analyze` first" in caplog.text
+
+
+@pytest.fixture
+def run_stats(tmp_path: Path, monkeypatch):
+    """``run_events`` with the audio layer only; returns the ``stats`` of the ``events.json``
+    it wrote."""
+
+    def go(srcs: list[Source]) -> dict:
+        by_path = {str(s.path): s for s in srcs}
+        monkeypatch.setattr(
+            pipeline, "load_highlights", lambda p: {"sources": [{"path": k} for k in by_path]}
+        )
+        monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+        monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
+        monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
+        monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+        monkeypatch.setattr(pipeline, "unload_ollama", list)
+        monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
+        monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
+
+        class Det:
+            device = "cuda"
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(pipeline, "PannsDetector", Det)
+        monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+        j, _ = pipeline.run_events(tmp_path, layers=("audio",), discover=False, cached_ocr=False)
+        return json.loads(j.read_text(encoding="utf-8"))["stats"]
+
+    return go
+
+
+def test_audio_device_is_the_device_of_this_run(tmp_path: Path, run_stats):
+    """``stats.audio_device`` names the device PANNs ran on in this run, like
+    ``stats.voice.device`` and ``stats.visual.device``: a run that only reads cached audio
+    events loads no detector, so the key is absent."""
+    src = _source(tmp_path, "a")
+    assert run_stats([src])["audio_device"] == "cuda"  # a cache miss: PANNs runs
+    _cache(src, [])
+    assert "audio_device" not in run_stats([src])
