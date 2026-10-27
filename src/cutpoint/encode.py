@@ -129,8 +129,9 @@ def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
         _note(
             info,
             logging.WARNING,
-            "%s is %s video but this ffmpeg has no %s filter: exported without conversion to "
-            "SDR (colors may look washed out). Use an ffmpeg build with zscale (libzimg)",
+            "%s is %s video but this ffmpeg has no %s filter: shown and exported without "
+            "conversion to SDR Rec.709 (colors may look washed out). "
+            "Use an ffmpeg build with zscale (libzimg)",
             info.path.name,
             kind,
             " or ".join(missing),
