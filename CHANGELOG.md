@@ -252,6 +252,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timings (#375).
 - The docs of `CUTPOINT_ANALYZE_SHARED_DECODE=split` say what happens to its ffmpeg when
   Cutpoint is killed, per ffmpeg version, and what removes the leftover spool (#375).
+- `CUTPOINT_ANALYZE_SHARED_DECODE=split` keeps at most 8 spool files (about 2 GB) on disk:
+  when the OCR read lags that far behind, the decode, and the scene proxy with it, waits for it
+  to catch up. A 446 s 1080p clip peaked at about 4 GB before. The mode now needs free disk for
+  that cap (or every OCR frame of a shorter source) plus 1 GB, instead of every OCR frame of the
+  source plus 1 GB; the output is the same (#402).
 - The HUD OCR engine (the OCR layer and HUD discovery) runs on at most 4 CPU threads (fewer on
   a machine with fewer CPUs) instead of one per core. CPU OCR stops scaling at about 4 threads:
   on an 8-core CPU a 1280 px discovery frame took 3.3 s instead of 4.0 s, about 18% faster. The

@@ -82,9 +82,16 @@ def _left(cdir: Path) -> set[str]:
 # ----------------------------------------------------------------- byte identity
 @needs_ffmpeg
 @pytest.mark.parametrize("hw", HW)
-def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(tmp_path, monkeypatch, hw):
+@pytest.mark.parametrize("capped", [False, True])
+def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(
+    tmp_path, monkeypatch, hw, capped
+):
+    """Also with a slow read held at a 2-file spool cap: the same frames and proxy, and the
+    spool never held more than the cap."""
     clip = _clip(tmp_path / "clip.mp4")
     monkeypatch.setattr(ffmpeg_utils, "SPOOL_SEGMENT_BYTES", 7 * FB + FB // 2)  # 7 frames a file
+    if capped:
+        monkeypatch.setattr(ffmpeg_utils, "SPOOL_MAX_SEGMENTS", 2)
     serial = tmp_path / "serial"
     serial.mkdir()
     ref = [
@@ -112,9 +119,16 @@ def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(tmp_path, mon
         return real_unlink(self, *a, **k)
 
     monkeypatch.setattr(Path, "unlink", unlink)
-    got = [(t, f.tobytes()) for t, f in _split(clip, cdir, outs, hw=hw).frames(codes)]
+    split = _split(clip, cdir, outs, hw=hw)
+    got = []
+    for t, f in split.frames(codes):
+        got.append((t, f.tobytes()))
+        if capped:
+            time.sleep(0.05)  # ffmpeg is done in a fraction of this
     assert got == ref and len(ref) == 24
-    assert outs[0][0] and 0 < outs[0][1] <= len(ref) * SIZE[0] * SIZE[1] * 3 and codes == []
+    cap = 14 * FB if capped else len(ref) * FB
+    assert split.cap == (cap if capped else ffmpeg_utils.spool_cap(FB))
+    assert outs[0][0] and 0 < outs[0][1] <= cap and codes == []
     assert unlinked == [f"seg-{i:05d}.raw" for i in range(3)]  # each full file once read
     assert _left(cdir) == {"proxy.mp4"}  # the spool and the tmp proxy are gone
     assert _framemd5(cdir / "proxy.mp4") == _framemd5(serial / "proxy.mp4")
@@ -242,6 +256,70 @@ def test_a_cancel_ends_a_blocked_read_at_once(tmp_path, monkeypatch):
     assert time.perf_counter() - t0 < 10 and not f.split._thread.is_alive()
     assert codes == []
     assert f.outs == [(False, f.outs[0][1])] and _left(f.cdir) == set()
+
+
+def _blocked(split: SplitDecode) -> None:
+    """Wait until the spool thread waits at the cap."""
+    deadline = time.monotonic() + 10
+    while split._written - split._deleted < split.cap:
+        assert time.monotonic() < deadline, "the spool never reached its cap"
+        time.sleep(0.01)
+    time.sleep(0.1)
+    assert split._written - split._deleted == split.cap and split._thread.is_alive()
+
+
+def test_a_slow_read_holds_the_spool_at_its_cap(tmp_path, monkeypatch):
+    """A writer far ahead of the read: the spool on disk never passes the cap (2 files of 2
+    frames), and every frame comes in order."""
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_READ", 64)
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_SEGMENT_BYTES", 2 * TINY_FB)
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_MAX_SEGMENTS", 2)
+    proxy = tmp_path / "c" / "proxy.tmp.mp4"
+    f = _fake(monkeypatch, tmp_path, _writer(20 * TINY_FB, 500, proxy=proxy))
+    assert f.split.cap == 4 * TINY_FB
+    got, on_disk = [], 0
+    for _, fr in f.split.frames([]):
+        got.append(fr.tobytes())
+        on_disk = max(on_disk, sum(p.stat().st_size for p in f.split.spool.glob("seg-*")))
+        time.sleep(0.02)
+    assert b"".join(got) == _payload(20 * TINY_FB)
+    assert on_disk <= 4 * TINY_FB and f.outs == [(True, 4 * TINY_FB)]
+    assert _left(f.cdir) == {"proxy.mp4"}
+
+
+@pytest.mark.parametrize("exited", [False, True])
+@pytest.mark.parametrize("how", ["cancel", "close"])
+def test_a_writer_held_at_the_cap_stops_at_once(tmp_path, monkeypatch, how, exited):
+    """A cancel or close() while the spool thread waits for room: it returns at once and
+    leaves no spool. ffmpeg still running is killed and keeps no proxy; ffmpeg done (its
+    output left in the pipe) has the pipe drained and keeps its proxy, as without the cap."""
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_READ", TINY_FB)  # a stalled child's frames come
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_SEGMENT_BYTES", TINY_FB)
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_MAX_SEGMENTS", 2)
+    proxy = tmp_path / "c" / "proxy.tmp.mp4"
+    cancel = threading.Event()
+    script = _writer(20 * TINY_FB, TINY_FB, proxy=proxy)
+    if not exited:
+        script = script.replace("sys.exit(0)", "time.sleep(60)")
+    f = _fake(monkeypatch, tmp_path, script, cancel)
+    codes: list[int] = []
+    frames = f.split.frames(codes)
+    next(frames)
+    _blocked(f.split)
+    if exited:
+        f.split._proc.wait(10)  # exited 0 by itself, the rest of its output in the pipe
+        assert proxy.exists()
+    t0 = time.perf_counter()
+    if how == "cancel":
+        cancel.set()
+        f.split._thread.join(3)  # the waiting spool thread sees the cancel by itself
+        assert not f.split._thread.is_alive()
+        list(frames)
+    else:
+        frames.close()
+    assert time.perf_counter() - t0 < 3 and not f.split._thread.is_alive()
+    assert codes == [] and f.outs == [(exited, 2 * TINY_FB)]
+    assert _left(f.cdir) == ({"proxy.mp4"} if exited else set())
 
 
 # ----------------------------------------------------------------- failure paths
@@ -558,6 +636,16 @@ def test_split_is_declined_below_the_disk_gate(pre, monkeypatch, tmp_path, caplo
     assert asked == [120 * 60 * 3 * 181]  # every frame: W*H*3 bytes, 3 fps over 60 s (+1)
     assert "GiB + 1 GiB free" in share.why
     assert [m for m in caplog.messages if "shared decode off" in m] == said  # not replayed
+
+
+def test_the_disk_gate_asks_for_the_spool_cap_when_it_is_less(pre, monkeypatch):
+    asked: list[int] = []
+    monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: asked.append(need))
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_SEGMENT_BYTES", 10 * FB)
+    monkeypatch.setattr(ffmpeg_utils, "SPOOL_MAX_SEGMENTS", 3)
+    pre.make("split").offer(pre.src, 60.0, True, pre.plan())
+    _take(pre)
+    assert asked == [30 * FB]  # 3 files of 10 frames, not every frame (181)
 
 
 def test_split_claims_the_share_and_the_scene_cuts_get_its_proxy(pre, monkeypatch, tmp_path):
