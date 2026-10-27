@@ -27,6 +27,7 @@ import requests
 from cutpoint.events import paths
 from cutpoint.events.common import unload_ollama
 from cutpoint.ffmpeg_utils import exit_code
+from cutpoint.winjob import kill_with_parent
 
 logger = logging.getLogger(__name__)
 
@@ -42,81 +43,11 @@ def free_port(preferred: int = 8089) -> int:
             return s.getsockname()[1]
 
 
-_JOB_HANDLE: Any = None
-
-
-def _kill_with_parent(proc: subprocess.Popen[bytes]) -> None:
-    """Put ``proc`` in a Windows job object that is killed when Python exits.
-
-    Without this, a crashed or killed driver leaves llama-server holding
-    ~8 GB of VRAM. No-op on other platforms (Linux uses
-    :func:`_pdeathsig_hook`) or if the API is unavailable.
-    """
-    global _JOB_HANDLE
-    if os.name != "nt":
-        return
-    try:
-        import ctypes  # noqa: PLC0415
-        from ctypes import wintypes  # noqa: PLC0415
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        if _JOB_HANDLE is None:
-
-            class _Basic(ctypes.Structure):
-                _fields_ = [
-                    ("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD),
-                ]
-
-            class _Io(ctypes.Structure):
-                _fields_ = [
-                    (n, ctypes.c_uint64)
-                    for n in (
-                        "ReadOperationCount",
-                        "WriteOperationCount",
-                        "OtherOperationCount",
-                        "ReadTransferCount",
-                        "WriteTransferCount",
-                        "OtherTransferCount",
-                    )
-                ]
-
-            class _Ext(ctypes.Structure):
-                _fields_ = [
-                    ("BasicLimitInformation", _Basic),
-                    ("IoInfo", _Io),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t),
-                ]
-
-            k32.CreateJobObjectW.restype = wintypes.HANDLE
-            job = k32.CreateJobObjectW(None, None)
-            info = _Ext()
-            info.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
-            k32.SetInformationJobObject(
-                wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info)
-            )
-            _JOB_HANDLE = job
-        k32.AssignProcessToJobObject(
-            wintypes.HANDLE(_JOB_HANDLE), wintypes.HANDLE(int(proc._handle))
-        )
-    except (OSError, AttributeError, ValueError) as err:
-        logger.debug("job object not available: %s", err)
-
-
 def _pdeathsig_hook() -> Callable[[], None] | None:
     """Linux ``preexec_fn`` that makes the child get SIGTERM when Python exits.
 
-    The Linux counterpart of :func:`_kill_with_parent`. libc is loaded here,
+    The Linux counterpart of :func:`cutpoint.winjob.kill_with_parent`: without either, a
+    crashed or killed driver leaves llama-server holding ~8 GB of VRAM. libc is loaded here,
     in the parent, so the child only calls ``prctl`` between fork and exec.
     None on other platforms or if libc is unavailable.
     """
@@ -235,18 +166,18 @@ class LlamaServer:
             )
         logger.info("Starting llama-server: %s", subprocess.list2cmdline(cmd))
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        log = self.log_path.open("wb")
         t0 = time.perf_counter()
-        self.proc = subprocess.Popen(
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
-            cwd=exe_dir,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            preexec_fn=_pdeathsig_hook(),
-        )
-        _kill_with_parent(self.proc)
+        with self.log_path.open("wb") as log:  # the child keeps its own copy of the descriptor
+            self.proc = subprocess.Popen(
+                cmd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+                cwd=exe_dir,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                preexec_fn=_pdeathsig_hook(),
+            )
+        kill_with_parent(self.proc)
         deadline = time.time() + self.startup_timeout_s
         while time.time() < deadline:
             if self.proc.poll() is not None:

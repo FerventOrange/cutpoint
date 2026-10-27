@@ -55,7 +55,7 @@ KEY=VALUE`.
 `render.py` uses the ffmpeg `v360` filter driven by a `sendcmd` file. Runtime rotation commands
 are incremental in ffmpeg, so the renderer tracks the rotation it has sent and sends only deltas.
 By default one stabilised update goes out per frame (`pano.cmd_every`, default 1); 2 renders
-faster but leaves shake on every other frame. Decoding uses NVDEC with a CPU fallback.
+faster but leaves shake on every other frame. Decoding uses the GPU decoder found here (NVDEC, or VAAPI for 8-bit H.264 on an AMD GPU) with a CPU fallback.
 
 ## Quality checks
 

@@ -30,9 +30,12 @@ R-CNN persons, person-crop CLIP) and each frame gets flags:
     ``dark_rel`` x the clip's median, with more than ``dark_share`` of the pixels
     near black (grey < ``dark_px``); or mean grey below ``dark_abs`` (covered throughout).
 ``tilt``
-    the rendered horizon roll (true up seen through the renderer's
-    stabilised view, :func:`cutpoint.pano.render.stabilised_r_vw`) exceeds
-    ``tilt_deg``.
+    the rendered horizon roll exceeds ``tilt_deg``: the IMU's true up seen through
+    the ``v360`` rotation the clip was rendered with, replayed from its ``.cmd`` file
+    (:mod:`cutpoint.pano.qa_horizon`), so render bugs show. A clip without a
+    readable ``.cmd`` (rendered before the file had a header, or a still path) falls
+    back to the renderer's own stabilisation model (:func:`horizon_roll`), which only
+    shows the tilt the render intends; ``qa.json`` names the ``source`` of the horizon.
 
 Pan metrics come from the director path (30 fps samples of
 :func:`cutpoint.pano.director.evaluate`, hard cuts excluded). Per clip:
@@ -139,9 +142,8 @@ class QAThresholds:
     lowinfo_zs: float = 0.6
     lowinfo_zs_alone: float = 0.8
     # display tilt (deg): the render levels only level_strength of the camera lean, so
-    # (1 - level_strength) of it shows by design. The horizon check predicts roll with the
-    # render's own stabilisation model, so it only measures that intended tilt and cannot
-    # catch render bugs (GitHub issue #34): an absolute cap on what is shown
+    # (1 - level_strength) of it shows by design; an absolute cap on what is shown,
+    # measured from the emitted v360 commands (falls back to the render's model, see tilt)
     tilt_deg: float = 12.0
     # a hand over the lens: grey mean 0.04 with 86 % of the pixels below 0.1 (its edge
     # frames 0.19 / 61 %, clip median 0.44); the darkest clean frame of a ski day, on a
@@ -586,8 +588,9 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
 
     Returns:
         ``{"file", "video", "offset", "kind", "path", "path_missing", "mode",
-        "imu_levelled"}`` per clip (``path`` is the director path dict
-        or None; ``path_missing`` when the manifest names a path file that is gone).
+        "imu_levelled", "commands"}`` per clip (``path`` is the director path dict
+        or None; ``path_missing`` when the manifest names a path file that is gone;
+        ``commands`` the parsed ``.cmd`` file of an IMU-levelled clip, or None).
     """
     files = clip_files(qa_dir)
     manifest = cache.load_json(qa_dir / "manifest.json")
@@ -601,6 +604,10 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
             pano = e.get("pano") or {}
             path = load_path(pano.get("path_file"))
             missing = bool(pano.get("path_file")) and path is None
+            levelled = imu_levelled(pano)
+            cmd = None
+            if levelled and path is not None and pano.get("cmd_file"):
+                cmd = _sibling(pano["path_file"], pano["cmd_file"])
             if missing:
                 logger.warning(
                     "%s: director path %s not found; no targets, pans or horizon",
@@ -616,7 +623,8 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
                     "path": path,
                     "path_missing": missing,
                     "mode": pano.get("mode"),
-                    "imu_levelled": imu_levelled(pano),
+                    "imu_levelled": levelled,
+                    "commands": load_commands(f.name, cmd) if levelled and path else None,
                 }
             )
         return out
@@ -635,9 +643,38 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
                 "path_missing": False,
                 "mode": "dfisheye",  # director previews render the .lrv proxy
                 "imu_levelled": True,
+                "commands": load_commands(f.name, f.with_suffix(".cmd")),
             }
         )
     return out
+
+
+def _sibling(path_file: str, name: str) -> Path:
+    """``name`` in the folder of ``path_file`` (as recorded, else through ``source_remap``)."""
+    from cutpoint.config import remap_source  # noqa: PLC0415
+
+    here = Path(path_file).parent / name
+    return here if here.is_file() else remap_source(path_file).parent / name
+
+
+def load_commands(file: str, cmd: Path | None) -> Any:
+    """The parsed ``.cmd`` file of a rendered clip (:func:`qa_horizon.read_commands`), or
+    None (logged: the horizon then comes from the stabilisation model)."""
+    from cutpoint.pano.qa_horizon import read_commands  # noqa: PLC0415
+
+    got = None
+    if cmd is not None and cmd.is_file():
+        try:
+            got = read_commands(cmd)
+        except (ValueError, KeyError) as err:
+            logger.warning("%s: unreadable v360 commands %s (%s)", file, cmd, err)
+    if got is None:
+        logger.info(
+            "%s: no recorded v360 commands; horizon predicted from the stabilisation model "
+            "(re-render the clip to measure it)",
+            file,
+        )
+    return got
 
 
 # --------------------------------------------------------------------------- run
@@ -662,9 +699,15 @@ def decode(video: Path, fps: float, size: tuple[int, int]) -> tuple[np.ndarray, 
 
 
 def horizon(item: dict[str, Any], src_times: np.ndarray) -> np.ndarray | None:
-    """Per-time rendered roll, or None (not IMU-levelled, no path / cached IMU)."""
+    """Per-time rendered roll, or None (not IMU-levelled, no path / cached IMU).
+
+    Measured from the clip's emitted ``v360`` commands (``item["commands"]``,
+    :func:`qa_horizon.emitted_roll`) when it has them, else predicted from the director
+    path with the renderer's model (:func:`horizon_roll`); :func:`horizon_source` says which.
+    """
     from cutpoint.config import remap_source  # noqa: PLC0415
     from cutpoint.pano.geometry import load_orientation  # noqa: PLC0415
+    from cutpoint.pano.qa_horizon import emitted_roll  # noqa: PLC0415
 
     path = item["path"]
     if path is None or not item.get("imu_levelled") or not path.get("source"):
@@ -672,7 +715,14 @@ def horizon(item: dict[str, Any], src_times: np.ndarray) -> np.ndarray | None:
     orient = load_orientation(remap_source(path["source"]))
     if orient is None:
         return None
+    if item.get("commands") is not None:
+        return emitted_roll(item["commands"], orient, src_times)
     return horizon_roll(orient, path, src_times)
+
+
+def horizon_source(item: dict[str, Any]) -> str:
+    """``commands`` (measured from the emitted ``v360`` commands) or ``model``."""
+    return "commands" if item.get("commands") is not None else "model"
 
 
 def qa_clip(
@@ -719,7 +769,9 @@ def qa_clip(
     pan = pan_metrics(item["path"], item["offset"], dur) if item["path"] else None
     hor = None
     if item["path"] is not None:
-        hor = horizon_summary(horizon(item, item["offset"] + np.arange(0.0, dur, 1 / 30.0)))
+        hor = horizon_summary(
+            horizon(item, item["offset"] + np.arange(0.0, dur, 1 / 30.0)), horizon_source(item)
+        )
     try:
         beauty = round(float(V.beauty_score(V.frame_scores(data, models)).mean()), 3)
     except FileNotFoundError:  # no aesthetic head installed
@@ -727,12 +779,19 @@ def qa_clip(
     return clip_record(item, dur, recs, fps, pan, hor, th, beauty)
 
 
-def horizon_summary(roll: np.ndarray | None) -> dict[str, float] | None:
-    """``{"p95", "max"}`` of the absolute rendered roll, or None."""
+def horizon_summary(roll: np.ndarray | None, source: str | None = None) -> dict[str, Any] | None:
+    """``{"p95", "max"}`` of the absolute rendered roll (plus ``source``, see
+    :func:`horizon_source`, when given), or None."""
     if roll is None or not len(roll):
         return None
     a = np.abs(roll)
-    return {"p95": round(float(np.percentile(a, 95)), 2), "max": round(float(a.max()), 2)}
+    out: dict[str, Any] = {
+        "p95": round(float(np.percentile(a, 95)), 2),
+        "max": round(float(a.max()), 2),
+    }
+    if source is not None:
+        out["source"] = source
+    return out
 
 
 FRAME_KEYS = (

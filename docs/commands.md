@@ -64,14 +64,15 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
 | `missing_extra` | 1 | An optional extra is not installed |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
+| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
 
 | `warnings[].code` | Command | Meaning |
 |---|---|---|
-| `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder; `assemble` includes them |
-| `kept_sources` | `clips` | A file the run reads as a source was not replaced |
-| `skipped_clips` | `extend` | Clips without a manifest entry were not re-exported |
+| `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
+| `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
+| `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
@@ -192,6 +193,9 @@ Settings also has "Rate frames with a local vision model (Ollama)" (off by defau
 one or "Analyze again", uses it (passed as `--vision` or `--no-vision`; 360 analyses never rate frames), and it is the default of
 `analyze` and `edit` on the command line. The UI has no per-run vision checkbox. "Analyze again"
 keeps the Ollama model, URL and vision-top the last analysis recorded.
+"Stats for Nerds" (off by default) shows the open moment's score, rank, analyzed times, signals
+and keywords over the top-left corner of the preview. It shows as soon as you tick it; Save keeps
+it, in the browser (local storage), not in `config.json`, and Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
@@ -263,7 +267,11 @@ the view, the overview strip next to them shows the view in the whole source and
 or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
 playhead during playback. On the rail, the arrow keys move the playhead by 0.5% of the view (at
 least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
-rail widens to show it. Clips longer than 10 minutes get a note under the trim fields.
+rail widens to show it. The gold start and end edges on the rail are handles: drag them (a drag held at
+the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
+Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
+the clip at least 0.1 s long and inside the source, and the preview seeks to it. Space still
+plays and pauses while a handle has focus. Clips longer than 10 minutes get a note under the trim fields.
 "Play sequence" in the Sequence header previews the cut without exporting: it plays each clip
 from its current start to its end, in sequence order, from the sources (or their proxies), with
 hard cuts. The clock shows the clip number and the time in the sequence, the playing row is
@@ -304,7 +312,8 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--top N] [--max-total S] [--vertical] [--force] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
               [--ollama-model MODEL] [--skip STEP [STEP ...]]
-              [--compress-peaks off|light|strong] [--json]
+              [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
+              [--json]
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
@@ -331,6 +340,7 @@ one of them is refused.
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
+| `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 With `CUTPOINT_PROGRESS=1`, `edit` reports 8 [steps](#progress-output): the 6 of `analyze`, then `clips` and `assemble`. `--kind clips` still assembles. With `--events`, `keyframes` is reported again after `vision`, for the VLM layer.
@@ -398,11 +408,12 @@ handed back to its turn; only timings differ. Set
 Experimental, off by default: `CUTPOINT_ANALYZE_SHARED_DECODE=split` also moves the scene
 detection proxy of `transcribe` into the background, for a source of up to 30 minutes with one
 video stream (no cover art) whose scene cuts are not cached yet. It makes the proxy in the same
-CUDA decode as the background HUD OCR (one pass instead of two) and spools the OCR frames to
+GPU decode (CPU without one) as the background HUD OCR (one pass instead of two) and spools the OCR frames to
 the source's cache folder, in files of about 256 MB removed as they are read. The spool grows
-by as much as the OCR read lags behind the decode: about 4 GB on a 446 s 1080p clip. It is
-skipped when the drive has less free space than the whole file's worst case (every OCR frame
-of the source) plus 1 GB. `0`, unset or any other value: as described above. When the
+by as much as the OCR read lags behind the decode, up to 8 files (about 2 GB; 4 GB without the
+cap on a 446 s 1080p clip): then the decode, and the proxy with it, waits for the OCR read to
+catch up. It is skipped when the drive has less free space than that cap (or every OCR frame of
+a shorter source) plus 1 GB. `0`, unset or any other value: as described above. When the
 background proxy has not started by the time scene detection needs it, or fails, scene
 detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and the OCR
 caches are the same as with it off. Each source then logs an INFO line with the scene
@@ -533,11 +544,23 @@ file stays, including `.mp4` files the old manifest does not list (renamed or ad
 WARNING names them, since `assemble` includes every `.mp4` in the folder; move them out before
 re-running `clips --force` if they are not part of the edit. If such a file has the name of a
 new clip, the run stops with an error naming it before exporting; move or rename it. Without a
-readable old manifest, every existing `.mp4` counts as such a file. Because the staging folder sits next to the output
+readable old manifest, every existing `.mp4` counts as such a file. A clip renamed during
+review is recognised by its size (manifest `size`) when its exported name is gone and no
+other unlisted clip or missing entry has that size; the WARNING then names it as a clip cutpoint exported,
+with its exported name, and it still stays. A `manifest.json` that cutpoint may not have
+written (unreadable, another `generator`, or no `clips` list of entries with a `file`) is
+never replaced: the run stops with an error before exporting; move or rename it. Because the staging folder sits next to the output
 folder, `clips --force` refuses before any export a non-empty output folder that is a drive
 root, a mount point or a bind mount; use `--out` with a folder on that drive. An empty drive
 root or mount point is exported into directly, each clip under a temporary name until it is
 complete; a failed run there may keep the finished clips.
+
+One run at a time works on a folder: `clips`, `extend` and `assemble` hold the lock file
+`.<folder>.cutpoint-lock` next to it while they run, so a second run never removes the first
+one's staging folder. A second run stops with an `ERROR` naming the process that holds the
+lock. The file is removed when the run ends, also on Ctrl+C. One left by a run that was
+killed (`taskkill /F`) is taken over once its process is gone; one from a run on another
+computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
@@ -555,6 +578,8 @@ complete; a failed run there may keep the finished clips.
 | `--speech-aware` / `--no-speech-aware`, `--speech-max-extend`, `--speech-max-lead` | Move in/out points to utterance boundaries |
 | `--audio-fade S` | Audio fade baked into each clip (default 0.25, 0 = off) |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression) baked into each clip, then a true-peak limiter (default: `compress_peaks` in `config.json`, else off) |
+| `--lut FILE` | Grade every clip with a 3D LUT (`.cube` or `.3dl`), see **LUT grade** below. Default: no grade |
+| `--lut-strength 0-1` | How much of the `--lut` grade to apply, blended with the ungraded picture (default 1; needs `--lut`) |
 | `--out DIR`, `--force` | Output folder; replace the clips an earlier run made in a non-empty folder |
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
@@ -599,8 +624,31 @@ Notes:
   Precedence: segment `crop`, then `--crop`, then `project.json`, then none.
 - **Mixed aspect ratios.** The output format follows the tallest source. When 16:9 and 8:7
   sources mix, pass `--size 1920x1080` and a `crop` on the 8:7 segments.
-- `manifest.json` records each clip's source, start, end, score, label, tail, crop, padding and
-  speech moves. `extend` and `assemble` read it.
+- **Color.** Every clip from YUV footage (nearly all video) is BT.709 (limited range, tagged
+  bt709), so clips from different sources join without a color shift; RGB footage (`gbr`) is
+  exported as before. HDR (HLG, PQ) and BT.2020 footage is tone-mapped to SDR (needs `zscale`
+  in the ffmpeg build; without it a WARNING says so and the clip keeps its colors). BT.601
+  footage is converted to BT.709, with one INFO line per source: footage with a BT.601 matrix
+  tag (`smpte170m`, `bt470bg` or `smpte240m`, such as NVIDIA DVR captures), and SD footage
+  (below 720 lines and 1280 columns) without a matrix tag. HD footage without a matrix tag is
+  taken as BT.709 and only tagged; its pixels do not change, nor do those of BT.709 footage.
+  `360` renders do the same.
+- **LUT grade.** `--lut FILE` applies a 3D LUT (`.cube` or `.3dl`; Cutpoint ships none) to
+  every clip, `360` renders included, after the BT.709 conversion above: the frames go to RGB
+  with the BT.709 matrix, through ffmpeg `lut3d` (tetrahedral) and back to BT.709 limited
+  range. Use the LUT made for the footage's log or flat profile and for Rec.709 output (for
+  example GoPro Flat or GP-Log to Rec.709); a LUT on footage it was not made for distorts the
+  colors, and Cutpoint cannot tell. `--lut-strength` below 1 blends the graded picture over the
+  ungraded one. The file is checked before any work: a missing file is `not_found`; another
+  extension, a LUT ffmpeg cannot load or a strength outside 0-1 is `bad_args`. Each clip
+  records the LUT's absolute path and strength (`lut`, `lut_strength`), and `extend` grades the
+  clips it re-exports the same way (it stops before exporting if the LUT has moved); a
+  `clips --force` re-run needs `--lut` again. `assemble` leaves graded clips as they are. On a
+  1080p30 export from 4K GoPro footage the grade added about 0.2 s per second of clip.
+- `manifest.json` records each clip's source, start, end, score, label, tail, crop, LUT grade, padding,
+  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and
+  `assemble` read it. Manifests without `size` or `generator` (written by earlier versions)
+  still work; their clips are matched by name only.
 - **Subtitles.** Each clip gets `001_<label>.srt` next to it, from the source's cached
   transcript (the one `analyze` made; no transcription runs), timed to the clip's padded start.
   A source without a cached transcript gets no `.srt` (one INFO line); a transcript without
@@ -630,8 +678,10 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   `extend`, `extend_start` or `extend_end` for matching file names, for example
   `--clip-override 005_* speech_max_extend=45`.
 - `--json` writes the result as one [JSON envelope](#json-output) on stdout.
+- A clip exported with `clips --lut` is graded again with the LUT and strength its manifest
+  entry records; if that file is gone, the run stops before exporting (`not_found`).
 - `--reuse DIR` copies a clip from an earlier output instead of re-encoding when source, in/out
-  points, crop, format and fade are identical.
+  points, crop, LUT grade, format and fade are identical.
 - The original folder is never overwritten unless you pass `--out <clips_dir> --force`. Then
   the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
   or a clip locked by another program, leaves the original clips as they were. The same holds for
@@ -644,6 +694,11 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   before any export, as with `clips --force`. `--out DIR --force` is refused
   before any export when a non-empty `DIR` is a drive root, a mount point or a bind mount, and
   so is in-place `extend` of such a clips folder; use `--out` with a folder on that drive.
+  As with `clips --force`, a `manifest.json` in `DIR` that cutpoint may not have written stops
+  the run before any export.
+- An `.mp4` in the folder without a manifest entry is not re-exported; the WARNING says
+  whether it is a source of the clips, a clip renamed during review (recognised by its size,
+  naming its exported name), or added by hand.
 - **Subtitles.** Each re-exported clip gets its `.srt` for the new range, as `clips` writes it,
   and the manifest records it (`srt`). An `.srt` the target folder's manifest lists for a
   re-exported clip is replaced (removed if the source has no cached transcript); one it does
@@ -660,7 +715,10 @@ cutpoint assemble <clips_dir> [--out final.mp4] [--transition cut|fade] [--fade-
 ```
 
 Joins the `.mp4` files currently in the folder, in natural filename order (`2_x` before
-`10_x`).
+`10_x`). Like `clips`, it first puts back or removes what an interrupted `clips --force` or
+`extend` left next to the folder (`.<folder>.cutpoint-tmp`, `.<folder>.cutpoint-bak`), and it
+holds the folder's [lock](#clips) while it runs. The audio fade and peak compression baked
+into a clip renamed during review are read from its manifest entry, matched by size.
 
 - `cut` (default) uses stream copy when all clips share parameters, else normalises and
   re-encodes. `fade` crossfades video and audio over `--fade-dur` seconds (default 0.25,

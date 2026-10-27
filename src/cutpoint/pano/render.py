@@ -58,13 +58,16 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.encode import A_FMT, BT709_TAGS, audio_fade_filter, sdr_filter
+from cutpoint.encode import A_FMT, BT709_TAGS, Lut, audio_fade_filter, bt709_filter
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
+    HwDecoder,
     VideoEncoder,
     atomic_output,
+    decoder_for,
     encode_with_fallback,
+    gpu_chain,
     output_dir,
     probe,
     run,
@@ -80,6 +83,9 @@ PATHS_DIR = "pano_paths"
 ANGLE_EPS = 0.05
 FOV_EPS = 0.2
 CMD_LEAD_S = 0.005  # commands go out this long before the frame they are meant for
+# First line of a ``.cmd`` file, a sendcmd comment: ``input=``, the initial ``rorder``,
+# ``yaw``, ``pitch`` and ``roll``, the seek ``start`` and the source ``fps`` (for ``360 qa``)
+CMD_HEADER = "# cutpoint-v360"
 
 
 @dataclass(frozen=True)
@@ -243,15 +249,17 @@ def render_segment(
     audio_fade: float = 0.25,
     cmd_every: int | None = None,
     work_dir: Path | None = None,
+    lut: Lut | None = None,
 ) -> dict[str, Any]:
-    """Render ``[start, end]`` of ``clip`` along ``path`` into ``out``.
+    """Render ``[start, end]`` of ``clip`` along ``path`` into ``out``; ``lut`` grades it
+    after the BT.709 conversion, as in a flat export.
 
     Returns:
         A record: ``mode``, ``inputs``, ``preview``, ``seconds``, ``commands``,
         ``read_error`` (or None).
 
     Raises:
-        FFmpegError: If ffmpeg fails with and without NVDEC.
+        FFmpegError: If ffmpeg fails with and without GPU decoding.
     """
     from cutpoint.config import remap_source  # noqa: PLC0415
 
@@ -275,46 +283,63 @@ def render_segment(
     work.mkdir(parents=True, exist_ok=True)
     # A still path has no commands: ffmpeg rejects an empty sendcmd file, and the
     # initial v360 options already hold the static view.
+    rot = f"rorder=ryp:yaw={init['yaw']:.3f}:pitch={init['pitch']:.3f}:roll={init['roll']:.3f}"
     cmd_file = work / (out.stem + ".cmd") if lines else None
     if cmd_file is not None:
-        cmd_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # A sendcmd comment first: the initial rotation and the timing the incremental
+        # commands start from, so `360 qa` can replay what ffmpeg was told (CMD_HEADER).
+        head = f"{CMD_HEADER} input={src.projection} {rot.replace(':', ' ')} "
+        head += f"start={start:.6f} fps={fps:.6f}"
+        cmd_file.write_text("\n".join([head, *lines]) + "\n", encoding="utf-8")
+    else:  # an earlier render's commands would mislead `360 qa`
+        (work / (out.stem + ".cmd")).unlink(missing_ok=True)
     sendcmd = f"sendcmd=f={cmd_file.name}," if cmd_file is not None else ""
     seek = ["-ss", f"{start:.6f}", "-t", f"{dur:.3f}"]
+    two = src.projection == "dfisheye" and len(src.inputs) == 2
     if src.projection == "dfisheye":
-        stack = "[0:v][1:v]hstack=inputs=2," if len(src.inputs) == 2 else "[0:v]"
         v360_in = f"input=dfisheye:ih_fov={G.DFISHEYE_FOV:g}:iv_fov={G.DFISHEYE_FOV:g}"
     else:
-        stack = "[0:v]"
         v360_in = "input=equirect"
     audio_idx = len(src.inputs)
     info = probe(remap_source(clip.source))
     audio_end = info.audio_duration
     audio = None if audio_end is None else min(end, audio_end) - start
     a_fmt = A_FMT + audio_fade_filter(dur, audio_fade, audio)
-    # HDR / BT.2020 footage is converted to SDR Rec.709 before the 8-bit format (#289).
+    # HDR / BT.2020 footage is converted to SDR Rec.709 before the 8-bit format (#289), BT.601
+    # to BT.709 and untagged HD tagged bt709 (#290), as in a flat export. Insta360 X3 files are
+    # tagged BT.709 (full range), so for them nothing changes.
     same = Path(src.inputs[0]) == Path(clip.source)
-    color = sdr_filter(info if same else probe(remap_source(src.inputs[0])))
+    color = bt709_filter(info if same else probe(remap_source(src.inputs[0])))
+    grade = ",".join(f for f in (color, lut.filter() if lut else "") if f)
     v360 = (
-        f"v360@cam={v360_in}:output=flat:rorder=ryp:yaw={init['yaw']:.3f}:"
-        f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
+        f"v360@cam={v360_in}:output=flat:{rot}:h_fov={init['h_fov']:.3f}:"
         f"v_fov={init['v_fov']:.3f}:w={fmt.width}:h={fmt.height}:interp=line"
     )
     body = (
         f"{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
-        f"setsar=1,fps={fmt.fps}:round=down,{color + ',' if color else ''}format=yuv420p"
+        f"setsar=1,fps={fmt.fps}:round=down,{grade + ',' if grade else ''}format=yuv420p"
     )
     af = f"[{audio_idx}:a:0]{a_fmt}[a]"
 
-    def args_for(enc: VideoEncoder, hw: bool, dst: Path) -> list[str]:
+    def stack_for(dec: HwDecoder | None) -> str:
+        """The inputs joined for v360; VAAPI frames are downloaded first (CUDA and CPU ones are not)."""
+        dl = gpu_chain(dec, None)
+        if not two:
+            return f"[0:v]{dl}," if dl else "[0:v]"
+        if not dl:
+            return "[0:v][1:v]hstack=inputs=2,"
+        return f"[0:v]{dl}[d0];[1:v]{dl}[d1];[d0][d1]hstack=inputs=2,"
+
+    def args_for(enc: VideoEncoder, dec: HwDecoder | None, dst: Path) -> list[str]:
         args = ["ffmpeg", "-y", "-v", "error"]
         # Read moved footage through source_remap; the record keeps the original inputs.
         for inp in src.inputs:
-            args += (["-hwaccel", "cuda"] if hw else []) + seek + ["-i", str(remap_source(inp))]
+            args += (dec.input_args() if dec else []) + seek + ["-i", str(remap_source(inp))]
         args += [*seek, "-i", str(remap_source(clip.source))]
         return [
             *args,
             "-filter_complex",
-            f"{stack}{enc.chain(body)}[v];{af}",
+            f"{stack_for(dec)}{enc.chain(body)}[v];{af}",
             "-map",
             "[v]",
             "-map",
@@ -342,22 +367,25 @@ def render_segment(
             str(dst),
         ]
 
-    # Once NVDEC failed for this segment, the CPU-encoder retry decodes on the CPU too.
-    nvdec = [True]
+    # One GPU decoder for every input, or the CPU: the probed one fits the GPU found here, and
+    # only 8-bit H.264 (see decoder_for) is decoded on a VAAPI GPU.
+    decs = {decoder_for(remap_source(inp)) for inp in src.inputs}
+    hw: list[HwDecoder | None] = [decs.pop() if len(decs) == 1 else None]
 
     def encode(enc: VideoEncoder, dst: Path) -> str:
-        """Render into ``dst`` with ``enc``: NVDEC first, then CPU decoding."""
-        if nvdec[0]:
+        """Render into ``dst`` with ``enc``: GPU decoding first, then CPU decoding."""
+        if hw[0] is not None:
             try:
-                return run(args_for(enc, True, dst), cwd=work)
+                return run(args_for(enc, hw[0], dst), cwd=work)
             except FFmpegError as err:
-                nvdec[0] = False
                 logger.warning(
-                    "  %s: NVDEC render failed, retrying on the CPU (%s)",
+                    "  %s: %s render failed, retrying on the CPU (%s)",
                     out.name,
+                    hw[0].kind,
                     str(err).splitlines()[-1][:200],
                 )
-        return run(args_for(enc, False, dst), cwd=work)
+                hw[0] = None  # the CPU-encoder retry decodes on the CPU too
+        return run(args_for(enc, None, dst), cwd=work)
 
     t0 = time.perf_counter()
     # A failed auto GPU encode is redone with libx264; out only appears once complete.
@@ -627,12 +655,13 @@ class PanoExporter:
         kind: str | None = None,
         reuse_path: Path | None = None,
         source_mode: str | None = None,
+        lut: Lut | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         """Render one clip. Returns ``(read_error record or None, manifest pano record)``.
 
         ``source_mode`` (the mode recorded for this clip by an earlier run)
         replaces the exporter's ``source_mode``; if it is no longer available
-        the best available source (``auto``) is used.
+        the best available source (``auto``) is used. ``lut``: the clip's ``--lut`` grade.
         """
         clip = clip_for(self.clips, source)
         if clip is None:
@@ -657,6 +686,7 @@ class PanoExporter:
             audio_fade=audio_fade,
             cmd_every=self.cmd_every,
             work_dir=self.paths_dir,
+            lut=lut,
         )
         logger.info(
             "  %s: 360 %s, %s; rendered %.1fs at %.2fx realtime",

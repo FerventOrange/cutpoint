@@ -49,6 +49,16 @@ def _fill_encoder(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     ffmpeg_utils.video_encoder()  # fills encoder_error (the probes) and video_encoder
 
 
+def _fill_decoder(tmp: Path, mp: pytest.MonkeyPatch) -> None:
+    def fail(*a, **k):
+        raise FFmpegError("no GPU decoder")
+
+    mp.setattr(ffmpeg_utils, "run", fail)
+    # a candidate whatever GPU (or none, on CI) this machine has, so the probe cache is filled
+    mp.setattr(ffmpeg_utils, "decoder_candidates", lambda: [ffmpeg_utils.HwDecoder("cuda")])
+    ffmpeg_utils.gpu_decoder()  # fills decoder_error (the probes) and gpu_decoder
+
+
 def _fill_soxr(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     mp.setattr(ffmpeg_utils, "run", lambda *a, **k: "")
     ffmpeg_utils.has_soxr()
@@ -85,6 +95,8 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.stage.staged_path": lambda t, m: stage.staged_path("-"),
     "cutpoint.ffmpeg_utils.find_tool": _fill_find_tool,
     "cutpoint.ffmpeg_utils.encoder_error": _fill_encoder,
+    "cutpoint.ffmpeg_utils.decoder_error": _fill_decoder,
+    "cutpoint.ffmpeg_utils.gpu_decoder": _fill_decoder,
     "cutpoint.ffmpeg_utils.has_soxr": _fill_soxr,
     "cutpoint.ffmpeg_utils.ffmpeg_filters": _fill_filters,
     "cutpoint.events.visual._aesthetic_layers": _fill_aesthetic,

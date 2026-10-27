@@ -1,7 +1,7 @@
 """Background HUD OCR for ``cutpoint analyze`` (#375): the OCR layer of the keyframes step
 starts while Whisper, the scene cuts and PANNs use the GPU, instead of after them.
 
-OCR (RapidOCR) runs on the CPU and decodes with NVDEC, so it overlaps the GPU steps well. One
+OCR (RapidOCR) runs on the CPU and decodes on the GPU, so it overlaps the GPU steps well. One
 worker thread reads the offered sources one at a time, in source order, with the same
 :func:`~cutpoint.events.killfeed.detect_ocr_events` call ``run_events`` makes; ``run_events``
 then takes each result in its normal turn, so the merge order, events.json and the OCR caches
@@ -20,7 +20,7 @@ worker is stopped: one OCR engine and one decode at most.
 
 ``CUTPOINT_ANALYZE_SHARED_DECODE=split`` (experimental, off by default) also makes the scene
 proxy of a whole, clean source of up to ``LONG_FILE_S`` in the background (:class:`SceneShare`),
-in the OCR read's CUDA pass (:class:`~cutpoint.ffmpeg_utils.SplitDecode`, the raw frames
+in the OCR read's GPU pass (:class:`~cutpoint.ffmpeg_utils.SplitDecode`, the raw frames
 spooled to the cache folder when the free disk allows). The scene cuts use that proxy, wait
 for it while it is made, and decode as before when it is not started yet or failed: the
 results are the same.
@@ -52,7 +52,7 @@ from cutpoint.events.killfeed import (
     detect_ocr_events,
 )
 from cutpoint.events.regions import game_key_for_path, load_preset
-from cutpoint.ffmpeg_utils import SPOOL_DIR, SplitDecode, spool_fits
+from cutpoint.ffmpeg_utils import SPOOL_DIR, SplitDecode, decoder_for, spool_cap, spool_fits
 
 logger = logging.getLogger(__name__)
 
@@ -375,7 +375,7 @@ class OcrPrefetch:
     def _run(self) -> None:
         while (job := self._queue.get()) is not None:
             self.current = job
-            why = "the OCR read needed no fresh CUDA decode (cached, resumed or in parts)"
+            why = "the OCR read needed no fresh GPU decode (cached, resumed or in parts)"
             try:
                 if self._cancel.is_set():
                     job.skipped, why = True, "the background OCR was stopped"
@@ -395,8 +395,8 @@ class OcrPrefetch:
                     cancel=self._cancel,
                     decode=self._decoder(job),
                 )
-            except OcrCancelled:  # cancelled, or a CUDA pass failed: read in its turn
-                job.skipped, why = True, "the OCR read was cancelled or its CUDA pass failed"
+            except OcrCancelled:  # cancelled, or a GPU pass failed: read in its turn
+                job.skipped, why = True, "the OCR read was cancelled or its GPU pass failed"
                 self._cancel.set()  # the later sources too, after it
             except BaseException as err:  # noqa: BLE001 - re-raised by take()
                 job.error, why = err, "the OCR read failed"
@@ -411,9 +411,9 @@ class OcrPrefetch:
                 job.done.set()
 
     def _decoder(self, job: _Job) -> DecodeHook | None:
-        """The shared-decode mode: the decode hook that reads the OCR frames from one CUDA pass
+        """The shared-decode mode: the decode hook that reads the OCR frames from one decode pass
         that also makes the job's scene proxy (when the scene cuts did not come first and the
-        disk holds the worst-case spool)."""
+        disk holds the spool: its cap, or every frame of a shorter file)."""
         share = job.share
         if share is None:
             return None
@@ -421,8 +421,10 @@ class OcrPrefetch:
 
         def decode(rect: tuple[int, int, int, int], vf: str, errors: list[str], exits: list[int]):
             width, height = rect[2:]
-            # every frame of the file: with no backpressure the OCR read may lag the whole way
-            need = width * height * 3 * math.ceil(self.params.fps * plan.duration + 1)
+            # the spool thread waits at the cap, so the spool never holds more than that or
+            # than every frame of the file (when the OCR read lags the whole way)
+            frame = width * height * 3
+            need = min(frame * math.ceil(self.params.fps * plan.duration + 1), spool_cap(frame))
             if plan.io != job.source.io_path or not self.params.hwaccel:
                 share.decline("another file or decoder than the OCR read")
                 return None
@@ -447,6 +449,7 @@ class OcrPrefetch:
                     cancel=self._cancel,
                     on_exit=share.finish,
                     stderr_lines=errors,
+                    hw=decoder_for(plan.io),
                 )
             except Exception as err:  # noqa: BLE001 - not started: both decode as before
                 logger.debug("shared decode not started: %s", err)

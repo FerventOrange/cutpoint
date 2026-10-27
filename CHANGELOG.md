@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- UI: the clip start and end markers on the trim rail are handles: drag them (mouse or touch;
+  a drag held at the rail's edge pans a zoomed view) or focus one and use the arrow keys (0.1 s,
+  Shift 1 s), PageUp/PageDown (5 s) and Home/End. They keep the clip at least 0.1 s long and
+  inside the source, update the time fields like "Use playhead", and screen readers announce
+  them as sliders ("Clip end, 0:06.50"). Space still plays and pauses (#352).
+- UI: a "Stats for Nerds" setting (off by default, remembered per browser) shows the open
+  moment's score, rank, analyzed times, signals and keywords as a small overlay in the top-left
+  of the preview. The scoring line under the transcript is gone (#353).
+- Linux AMD GPUs decode limited-range 8-bit 4:2:0 H.264 with VAAPI for analysis, HUD OCR, 360
+  view sampling and 360 renders. HEVC, 10-bit, 4:4:4 and full-range (`yuvj420p`) sources still
+  decode on the CPU, and a failed GPU decode falls back to the CPU (#22).
 - `docs/pipeline.md`: diagrams of the flow from source footage to the finished video, and the
   `edit --kind` presets.
 - HUD region discovery proposes up to 2 extra `notice` regions (`extra_notice`,
@@ -230,9 +241,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/commands.md` lists measured analysis costs (GPU and CPU), how to force a CPU run with
   `CUDA_VISIBLE_DEVICES=-1`, and that no cache key includes the device (the transcript is reused
   only with the same `--model`).
+- `clips` and `edit` take `--lut FILE` (a `.cube` or `.3dl` 3D LUT) and `--lut-strength 0-1`
+  (default 1) to grade every clip, `360` renders included, with ffmpeg `lut3d` (tetrahedral)
+  after the BT.709 conversion; below 1 the grade is blended over the ungraded picture. Use the
+  LUT made for the footage's log or flat profile (for example GoPro Flat to Rec.709); Cutpoint
+  ships none. The file is checked before any work (`not_found` when missing, `bad_args` for
+  another extension, a LUT ffmpeg cannot load or a strength outside 0-1). `clips/manifest.json`
+  records `lut` (absolute path) and `lut_strength` per clip, and `extend` grades its
+  re-exports the same way. Without `--lut` the output is unchanged (#290).
 
 ### Changed
 
+- Exported clips are now always tagged BT.709. BT.601 SDR sources (NVIDIA DVR/ShadowPlay-style
+  `smpte170m` captures, `bt470bg`, `smpte240m`, and SD below 720 lines and 1280 columns without
+  a matrix tag) are converted to BT.709 with ffmpeg's `colorspace` filter, logged once per
+  source. HD without a matrix tag is tagged BT.709 with no pixel change, and BT.709 sources are
+  unchanged. This fixes hue shifts when `assemble --transition cut` joins clips from mixed
+  sources. `assemble` re-encodes (crossfades, mixed formats) do the same per clip, so clips
+  exported before this change join new ones without a color shift (#290, #289).
+- Decoding follows the GPUs detected here: NVDEC is probed only with an NVIDIA GPU and VAAPI
+  only on AMD render nodes, each with a one-clip test decode, so an AMD machine no longer tries
+  CUDA first, and logs the decoder it chose once at INFO (`Video decoder: ...`); a failed
+  NVIDIA probe is logged too (#22).
+- The UI's preview proxies use the GPU encoder exports use (NVENC or VAAPI, per
+  `video_encoder`), not NVENC only. VAAPI proxies measured 0.6 to 1.0 times libx264's size on
+  AMD, so they have no rate cap; AMF proxies stay on libx264 until measured (#22, #430).
+- `events` no longer retries a failed CPU decode as if it were a GPU one (#429).
+- `analyze` reads scene cuts with PySceneDetect's `seconds` property (the old call is deprecated) (#22).
+- **BREAKING:** `clips --force` and `extend` refuse a `manifest.json` Cutpoint did not write
+  (another `generator`, or no `clips` list of entries with a `file`) and one they cannot read,
+  stopping with an `ERROR` before exporting; move or rename it. An unreadable manifest used to
+  be replaced (#145).
+- `360 qa` measures the horizon tilt of each clip from the v360 commands its render emitted,
+  so it catches render roll errors that the old model prediction could not (#12). Each `.cmd`
+  file now starts with a `# cutpoint-v360 ...` line holding the starting rotation; ffmpeg
+  skips it and renders are unchanged. Clips rendered before this fall back to the model with
+  an INFO line until they are re-rendered. The horizons in `qa.json` gain `source`
+  (`commands` or `model`).
 - `analyze --vision` with Ollama down uses the vision ratings already cached for the top
   candidates instead of skipping the rating. The `vision_unavailable` warning gives the
   counts, and `settings.vision.uncached` in `highlights.json` is the number of top candidates
@@ -258,6 +303,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timings (#375).
 - The docs of `CUTPOINT_ANALYZE_SHARED_DECODE=split` say what happens to its ffmpeg when
   Cutpoint is killed, per ffmpeg version, and what removes the leftover spool (#375).
+- `CUTPOINT_ANALYZE_SHARED_DECODE=split` keeps at most 8 spool files (about 2 GB) on disk:
+  when the OCR read lags that far behind, the decode, and the scene proxy with it, waits for it
+  to catch up. A 446 s 1080p clip peaked at about 4 GB before. The mode now needs free disk for
+  that cap (or every OCR frame of a shorter source) plus 1 GB, instead of every OCR frame of the
+  source plus 1 GB; the output is the same (#402).
 - The HUD OCR engine (the OCR layer and HUD discovery) runs on at most 4 CPU threads (fewer on
   a machine with fewer CPUs) instead of one per core. CPU OCR stops scaling at about 4 threads:
   on an 8-core CPU a 1280 px discovery frame took 3.3 s instead of 4.0 s, about 18% faster. The
@@ -402,6 +452,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `llama-server` start no longer leaves its log file handle open in the parent.
+- `clips --force`, `extend` and `assemble` no longer lose or mix up work when a folder is
+  touched by two runs or an interrupted one (#145):
+  - `assemble` puts back or removes the staging and backup folders (`.<folder>.cutpoint-tmp`,
+    `.<folder>.cutpoint-bak`) that an interrupted `clips --force` or `extend` left.
+  - `clips`, `extend` and `assemble` hold a lock file `.<folder>.cutpoint-lock` next to the
+    folder; a second run on it stops with an `ERROR` naming the process that holds it. A lock
+    left by a killed run is taken over.
+  - `manifest.json` records each clip's size and `"generator": "cutpoint"`, so a clip renamed
+    during review is reported as one Cutpoint exported, and `assemble` still reads its audio
+    fade and compression from the manifest. Older manifests still work, matched by name.
+  - `extend` reports files that are sources of the clips as `kept_sources`, not as "added by
+    hand?" (`kept_sources` now comes from `clips` and `extend`).
 - UI: the page's own files (`index.html`, `app.css`, the JS modules) are revalidated on each
   load (`Cache-Control: no-cache`), so an update's CSS and JS are used at once; a stale cached
   `app.css` had brought back the page scrolling past the Jobs bar (#415).

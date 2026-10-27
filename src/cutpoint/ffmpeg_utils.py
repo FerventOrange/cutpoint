@@ -6,8 +6,8 @@ Media reads go through a few typed primitives: :func:`ffprobe_json` (metadata),
 (:func:`stage_inputs`), accepts an optional timeout and raises :class:`FFmpegError`
 with the tail of ffmpeg's stderr on failure. Their argv builders
 (``*_args``) are pure functions. Note the hardware defaults differ, as their
-callers expect: :func:`decode_raw` tries CUDA first (``hwaccel="cuda"``), while
-:func:`grab_images` decodes on the CPU unless asked (``hwaccel=None``).
+callers expect: :func:`decode_raw` tries the probed GPU decoder first (``hwaccel="auto"``:
+CUDA, then VAAPI), while :func:`grab_images` decodes on the CPU unless asked (``hwaccel=None``).
 
 The executables are located (in order) via the ``CUTPOINT_FFMPEG`` /
 ``CUTPOINT_FFPROBE`` environment variables, ``PATH``, and on Windows the WinGet package folder
@@ -22,11 +22,13 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import wave
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -42,6 +44,8 @@ import numpy as np
 from cutpoint import paths, state
 from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import get_config, path_key
+from cutpoint.utils import file_stamp
+from cutpoint.winjob import kill_with_parent
 
 logger = logging.getLogger(__name__)
 
@@ -765,6 +769,135 @@ def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
     return None, errors
 
 
+# ----------------------------------------------------------------- GPU decode
+# Decoders are probed like encoders: a working encoder says nothing about the decoder.
+_GPU_DOWNLOAD = "hwdownload,format=nv12,format=yuv420p"  # to the 8-bit 4:2:0 the CPU chain expects
+
+
+@dataclass(frozen=True)
+class HwDecoder:
+    """A hardware decode path: NVDEC (``cuda``), or VAAPI on the render node ``device``."""
+
+    kind: str
+    device: str | None = None
+
+    def __str__(self) -> str:
+        return self.kind if self.device is None else f"{self.kind} {self.device}"
+
+    def input_args(self, *, keep_on_gpu: bool = False) -> list[str]:
+        """Input options (before ``-i``). ``keep_on_gpu`` leaves CUDA frames on the GPU; VAAPI
+        frames always stay there, so :func:`gpu_chain` must download them."""
+        if self.kind == "vaapi":
+            args = ["-hwaccel", "vaapi", "-hwaccel_device", str(self.device)]
+            return [*args, "-hwaccel_output_format", "vaapi"]
+        args = ["-hwaccel", "cuda"]
+        if keep_on_gpu:
+            args += ["-hwaccel_output_format", "cuda"]
+        return args
+
+
+def gpu_chain(hw: HwDecoder | None, chain: str | None) -> str | None:
+    """``chain`` with the VAAPI frames downloaded first; CUDA and CPU chains pass unchanged."""
+    if hw is None or hw.kind != "vaapi":
+        return chain
+    return _GPU_DOWNLOAD if chain is None else f"{_GPU_DOWNLOAD},{chain}"
+
+
+@state.register_cache
+@cache
+def decoder_error(dec: HwDecoder) -> str | None:
+    """None if ffmpeg decodes a generated 8-bit H.264 clip on ``dec`` here, else the first real
+    line of its error. Frames go through :data:`_GPU_DOWNLOAD`, so a hardware start that fell back
+    to software (which ffmpeg does silently) fails here instead of passing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "probe.mp4"
+        make = ["-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=0.4"]
+        enc = ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+        try:
+            run(["ffmpeg", "-v", "error", *make, *enc, str(clip)], timeout=60)
+        except FFmpegError as err:
+            return f"no probe clip: {_first_error_line(err)}"
+        dec_args = [*dec.input_args(keep_on_gpu=True), "-i", str(clip)]
+        try:
+            out = run(
+                ["ffmpeg", "-v", "error", *dec_args, "-vf", _GPU_DOWNLOAD, "-f", "framemd5", "-"],
+                timeout=60,
+            )
+        except FFmpegError as err:
+            return _first_error_line(err)
+    return None if re.search(r"(?m)^0,", out) else "no frame decoded"
+
+
+def _is_amd_node(device: str) -> bool:
+    """True if the VAAPI render node ``device`` belongs to an AMD GPU (PCI vendor 0x1002)."""
+    try:
+        vendor = Path("/sys/class/drm", Path(device).name, "device", "vendor").read_text()
+    except OSError:
+        return False
+    return vendor.strip().lower() == "0x1002"
+
+
+def decoder_candidates() -> list[HwDecoder]:
+    """The decoders that fit the GPUs found here: NVDEC for NVIDIA, VAAPI on AMD render nodes.
+    A vendor that is not present is never tried."""
+    from cutpoint import capabilities  # noqa: PLC0415 - it imports this module
+
+    found = [HwDecoder("cuda")] if capabilities.nvidia_present() else []
+    if capabilities.gpu_vendors()["amd"]:
+        found += [HwDecoder("vaapi", d) for d in vaapi_devices() if _is_amd_node(d)]
+    return found
+
+
+@state.register_cache
+@cache
+def gpu_decoder() -> HwDecoder | None:
+    """The GPU decoder ``hwaccel="auto"`` uses: the first of :func:`decoder_candidates` that
+    really decodes; ``None`` = CPU. Logged once at INFO, like the video encoder; a failed NVIDIA
+    probe too, since it moves every decode to the CPU (a failed VAAPI node is tried next)."""
+    for dec in decoder_candidates():
+        error = decoder_error(dec)
+        if error is None:
+            logger.info("Video decoder: %s", dec)
+            return dec
+        logger.log(
+            logging.INFO if dec.kind == "cuda" else logging.DEBUG,
+            "%s decode not used: %s",
+            dec,
+            error,
+        )
+    logger.info("Video decoder: CPU (no GPU decoder works here)")
+    return None
+
+
+# decoder_for's ffprobe result per source: path -> (file_stamp, VAAPI can decode it). A rewritten
+# or replaced file has another stamp, so it is probed again.
+_VAAPI_OK: dict[str, tuple[tuple[int, int, int], bool]] = state.register_container(
+    __name__, "_VAAPI_OK", {}
+)
+
+
+def decoder_for(path: Path | str) -> HwDecoder | None:
+    """The GPU decoder for ``path`` (:func:`gpu_decoder`), or ``None`` for the CPU. VAAPI is only
+    used for 8-bit limited-range 4:2:0 H.264, the format it is probed with; other sources decode
+    on the CPU. The source is probed once per file version."""
+    dec = gpu_decoder()
+    if dec is None or dec.kind == "cuda":
+        return dec
+    key, stamp = str(path), file_stamp(Path(path))
+    hit = _VAAPI_OK.get(key)
+    if hit is not None and stamp is not None and hit[0] == stamp:
+        return dec if hit[1] else None
+    try:
+        streams = ffprobe_json(path, entries="stream=codec_name,pix_fmt", streams="v:0")
+    except FFmpegError:
+        return None  # the CPU decode reports the unreadable source
+    info = (streams.get("streams") or [{}])[0]
+    ok = info.get("codec_name") == "h264" and info.get("pix_fmt") == "yuv420p"
+    if stamp is not None:  # an unreadable stamp (a staged or remote path) is not remembered
+        _VAAPI_OK[key] = (stamp, ok)
+    return dec if ok else None
+
+
 # video_encoder() results by configured choice, so an edited ``video_encoder`` is followed (the
 # probes stay cached in encoder_error).
 _ENCODERS: dict[str, VideoEncoder] = state.register_container(__name__, "_ENCODERS", {})
@@ -1293,6 +1426,261 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
         new.rmdir()
 
 
+# --- one run at a time per folder (``clips``, ``extend``, ``assemble``)
+#
+# Each run holds the lock file ``.<name>.cutpoint-lock`` next to the folder (beside its
+# staging and backup folders) while it recovers, exports and swaps, so a second run never
+# removes the first one's staging folder. The file is created atomically (O_EXCL) and holds
+# the run's process id, host and a token; it is removed on exit, Ctrl+C included. One left by
+# a hard kill is stale once its process is gone, and the next run on the same host takes it.
+
+_LOCK_UNWRITTEN_S = 30.0  # an empty lock older than this was never written (a hard kill)
+_HELD_LOCKS: set[str] = set()  # path_key of the locks this process holds
+
+
+class FolderBusyError(RuntimeError):
+    """Another cutpoint run holds the lock of the folder (see :func:`swap_lock`)."""
+
+
+def lock_path(dst: Path) -> Path | None:
+    """Lock file of ``dst``: ``.<name>.cutpoint-lock`` next to it (None for a drive root,
+    which nothing is ever staged next to)."""
+    res = dst.resolve()
+    return res.with_name(f".{res.name}.cutpoint-lock") if res.name else None
+
+
+def _win_created(k32: Any, handle: Any) -> float | None:
+    """Creation time (epoch seconds) of the Windows process ``handle``, or None."""
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    times = [wintypes.FILETIME() for _ in range(4)]  # creation, exit, kernel, user
+    k32.GetProcessTimes.argtypes = (wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4)
+    if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+        return None
+    ft = times[0].dwHighDateTime << 32 | times[0].dwLowDateTime  # 100 ns since 1601
+    return (ft - 116444736000000000) / 1e7
+
+
+def _pid_alive(pid: int, not_after: float | None = None) -> bool:
+    """Whether the process ``pid`` is running (True when that cannot be told).
+
+    ``not_after``: on Windows, which reuses process ids quickly, a process created after
+    this time (epoch seconds, the lock file's mtime) is another one that got the id: False.
+    """
+    if pid <= 0 or pid > 0xFFFFFFFF:
+        return False
+    if sys.platform == "win32":
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # 87 (ERROR_INVALID_PARAMETER): no such process; anything else (5, access
+            # denied, for a protected or another user's process): it exists
+            return ctypes.get_last_error() != 87
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            if code.value != 259:  # STILL_ACTIVE
+                return False
+            created = _win_created(k32, handle) if not_after is not None else None
+            return created is None or not_after is None or created <= not_after
+        finally:
+            k32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)  # signal 0 only checks (on Windows os.kill would terminate it)
+    except ProcessLookupError:
+        return False
+    except OSError:  # PermissionError: it exists, owned by another user
+        return True
+    return True
+
+
+def _read_lock(lock: Path) -> tuple[bytes, dict[str, Any] | None] | None:
+    """``(raw bytes, parsed record or None)`` of ``lock``, or None if it is gone."""
+    try:
+        raw = lock.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:  # being written or removed right now (Windows): treat as unreadable
+        return b"", None
+    try:
+        rec = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return raw, None
+    return raw, rec if isinstance(rec, dict) and isinstance(rec.get("pid"), int) else None
+
+
+def _lock_stale(lock: Path, rec: dict[str, Any] | None) -> bool:
+    """Whether the lock ``lock`` with the record ``rec`` belongs to no running process."""
+    if rec is None:  # empty or garbled: a run is writing it, or one was killed before it did
+        try:
+            return time.time() - lock.stat().st_mtime > _LOCK_UNWRITTEN_S
+        except OSError:
+            return False
+    if rec.get("host") != socket.gethostname():  # a run on another computer: cannot tell
+        return False
+    if rec["pid"] == os.getpid():  # this process: held by a run still going, else left over
+        return path_key(str(lock)) not in _HELD_LOCKS
+    try:
+        written = lock.stat().st_mtime
+    except OSError:
+        written = None
+    return not _pid_alive(rec["pid"], written)
+
+
+def _busy_error(dst: Path, lock: Path, rec: dict[str, Any] | None) -> FolderBusyError:
+    if rec is None:
+        who = "Another cutpoint run is starting on"
+    else:
+        host = rec.get("host")
+        on = f" on {host}" if host and host != socket.gethostname() else ""
+        since = f", started {rec['started']}" if rec.get("started") else ""
+        who = f"Another cutpoint run (process {rec['pid']}{on}{since}) is using"
+    return FolderBusyError(
+        f"{who} {dst}. Wait until it has finished, or stop it, and run again. If no other run "
+        f"is active, delete {lock} and run again."
+    )
+
+
+def _take_stale(lock: Path, raw: bytes) -> None:
+    """Remove the stale lock ``lock`` whose content was ``raw``.
+
+    It is first renamed to a name of this process, so of two runs that both found it stale,
+    only one removes it; a lock that another run created meanwhile is put back.
+    """
+    moved = lock.with_name(f"{lock.name}.{os.getpid()}.stale")
+    try:
+        lock.replace(moved)
+    except OSError:  # another run took it first, or has it open (Windows): try again
+        return
+    try:
+        if moved.read_bytes() == raw:
+            moved.unlink()
+            logger.info("Removed %s, left by a cutpoint run that is no longer running", lock)
+            return
+    except OSError:
+        pass
+    with suppress(OSError):  # a fresh lock of another run: give it back
+        moved.rename(lock)
+
+
+def _dir_writable(folder: Path) -> bool:
+    """Whether a file can be created in ``folder`` (a probe file, removed again)."""
+    try:
+        fd, name = tempfile.mkstemp(dir=folder, prefix=".cutpoint-probe.")
+    except OSError:
+        return False
+    os.close(fd)
+    with suppress(OSError):
+        Path(name).unlink()
+    return True
+
+
+def _open_lock(lock: Path) -> int | None:
+    """Create ``lock`` exclusively and return its descriptor, or None if its folder is
+    read-only (nothing can be staged there either, so there is nothing to protect).
+
+    A PermissionError is retried briefly: on Windows a lock another run is removing is
+    "delete pending" for a moment.
+
+    Raises:
+        FileExistsError: If another run's lock is there.
+        PermissionError: If the folder is writable but the lock still cannot be created.
+        OSError: Any other error.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            return os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            raise
+        except OSError as err:
+            if err.errno == errno.EROFS:
+                return None
+            if err.errno not in (errno.EACCES, errno.EPERM):
+                raise
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+                continue
+            if not _dir_writable(lock.parent):
+                return None
+            raise PermissionError(
+                f"Cannot create the lock file {lock}: {err.strerror or err}. If no other "
+                "cutpoint run is active, delete it and run again."
+            ) from err
+    raise AssertionError("unreachable")
+
+
+@contextmanager
+def swap_lock(dst: Path) -> Iterator[None]:
+    """Hold the lock of the folder ``dst`` (:func:`lock_path`) for one run.
+
+    Missing parent folders are created (removed again on failure while empty, as
+    :func:`output_dir`). The lock is removed on exit, Ctrl+C included; one left by a run that
+    was killed hard is taken over once its process is gone (same host only).
+
+    Raises:
+        FolderBusyError: If another run holds it, naming its process and the lock file.
+    """
+    lock = lock_path(dst)
+    if lock is None:
+        yield
+        return
+    with output_dir(lock.parent):
+        token = uuid.uuid4().hex
+        data = json.dumps(
+            {
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "token": token,
+            }
+        ).encode("utf-8")
+        for _ in range(3):
+            try:
+                fd = _open_lock(lock)
+            except FileExistsError:
+                found = _read_lock(lock)
+                if found is None:  # removed meanwhile: try again
+                    continue
+                raw, rec = found
+                if not _lock_stale(lock, rec):
+                    raise _busy_error(dst, lock, rec) from None
+                _take_stale(lock, raw)
+                continue
+            if fd is None:
+                logger.info("Not locking %s: %s is read-only", dst, lock.parent)
+                yield
+                return
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            break
+        else:
+            found = _read_lock(lock)
+            raise _busy_error(dst, lock, found[1] if found else None)
+        key = path_key(str(lock))
+        _HELD_LOCKS.add(key)
+        try:
+            yield
+        finally:
+            _HELD_LOCKS.discard(key)
+            found = _read_lock(lock)
+            if found is not None and found[0] == data:  # never another run's lock
+                try:
+                    retry_locked(lock.unlink, lock, "delete")
+                except OSError as err:  # a stale lock: the next run takes it over
+                    logger.warning("Could not remove %s (%s)", lock, err)
+
+
 def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:
     """Decode a single frame at time ``t`` and return it as JPEG bytes."""
     try:
@@ -1302,7 +1690,7 @@ def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:
 
 
 # --------------------------------------------------------------------------- media I/O primitives
-HwAccel = Literal["cuda"] | None
+HwAccel = Literal["auto"] | None
 ImageFormat = Literal["jpeg", "png"]
 PixFmt = Literal["rgb24", "bgr24", "gray"]
 
@@ -1342,13 +1730,18 @@ def _exec(
         raise FFmpegError(f"{tool} timed out after {timeout:g}s on {path}") from err
 
 
-def _hw_passes(hwaccel: HwAccel, fallback_cpu: bool) -> tuple[bool, ...]:
-    """Decode passes to try: ``(True, False)`` = CUDA first, then the CPU."""
-    if hwaccel not in (None, "cuda"):
-        raise ValueError(f"unsupported hwaccel {hwaccel!r} (expected 'cuda' or None)")
+def _hw_passes(
+    hwaccel: HwAccel, fallback_cpu: bool, path: Path | str
+) -> tuple[HwDecoder | None, ...]:
+    """Decode passes to try: the GPU pass, then the CPU (``None``) if ``fallback_cpu``."""
+    if hwaccel not in (None, "auto"):
+        raise ValueError(f"unsupported hwaccel {hwaccel!r} (expected 'auto' or None)")
     if hwaccel is None:
-        return (False,)
-    return (True, False) if fallback_cpu else (True,)
+        return (None,)
+    dec = decoder_for(path)
+    if dec is None:
+        return (None,)
+    return (dec, None) if fallback_cpu else (dec,)
 
 
 # ----------------------------------------------------------------- ffprobe
@@ -1427,7 +1820,7 @@ def ffprobe_json(
 def decode_raw_args(
     path: Path | str,
     *,
-    hw: bool,
+    hw: HwDecoder | None,
     vf: str | None = None,
     vf_cuda: str | None = None,
     pix_fmt: PixFmt = "rgb24",
@@ -1438,23 +1831,22 @@ def decode_raw_args(
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for one :func:`decode_raw` pass.
 
-    ``hw`` adds ``-hwaccel cuda``; with ``vf_cuda`` the frames also stay on the GPU
-    (``-hwaccel_output_format cuda``) and ``vf_cuda`` replaces ``vf``.
+    ``hw`` adds that decoder's input options (``None`` = CPU). On CUDA with ``vf_cuda`` the frames
+    also stay on the GPU and ``vf_cuda`` replaces ``vf``; VAAPI frames are downloaded before ``vf``.
     """
     args = ["-hide_banner", "-nostats", "-v", "info" if pts else "error"]
     if keyframes_only:
         args += ["-skip_frame", "nokey"]
-    if hw:
-        args += ["-hwaccel", "cuda"]
-        if vf_cuda is not None:
-            args += ["-hwaccel_output_format", "cuda"]
+    on_gpu = hw is not None and hw.kind == "cuda" and vf_cuda is not None
+    if hw is not None:
+        args += hw.input_args(keep_on_gpu=on_gpu)
     if start is not None:
         args += ["-ss", f"{start:.3f}"]
     args += ["-i", str(path)]
     if duration is not None:
         args += ["-t", f"{duration:.3f}"]
     args += ["-an", "-sn", "-dn"]
-    chain = vf_cuda if hw and vf_cuda is not None else vf
+    chain = gpu_chain(hw, vf_cuda if on_gpu else vf)
     if pts:
         chain = f"{chain},showinfo" if chain else "showinfo"
     if chain:
@@ -1577,72 +1969,11 @@ def _isolated() -> dict[str, Any]:
     return {"stdin": subprocess.DEVNULL, "start_new_session": True}
 
 
-_JOB_HANDLE: Any = None
-
-
-def _kill_with_parent(proc: subprocess.Popen) -> None:
-    """Windows: put ``proc`` in a job object that is killed when Python exits.
-
-    An isolated child leaves the console's group, so a ``taskkill /F`` of Python would leave
-    it running until its next write to the closed pipe; the job (KILL_ON_JOB_CLOSE, as
-    :mod:`cutpoint.events.llama_server` uses) ends it at once. POSIX does nothing: the pipe
-    closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first); either way
-    the next run's sweep removes the spool and the tmp proxy. No-op if the API is unavailable.
-    """
-    global _JOB_HANDLE
-    if os.name != "nt":
-        return
-    try:
-        import ctypes  # noqa: PLC0415
-        from ctypes import wintypes  # noqa: PLC0415
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-        if _JOB_HANDLE is None:
-
-            class _Basic(ctypes.Structure):
-                _fields_ = [
-                    ("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD),
-                ]
-
-            class _Ext(ctypes.Structure):
-                _fields_ = [
-                    ("BasicLimitInformation", _Basic),
-                    ("IoInfo", ctypes.c_uint64 * 6),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t),
-                ]
-
-            k32.CreateJobObjectW.restype = wintypes.HANDLE
-            job = k32.CreateJobObjectW(None, None)
-            if not job:
-                logger.debug("job object not created: error %d", ctypes.get_last_error())
-                return
-            info = _Ext()
-            info.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
-            if not k32.SetInformationJobObject(
-                wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info)
-            ):
-                logger.debug("job object limits not set: error %d", ctypes.get_last_error())
-                k32.CloseHandle(wintypes.HANDLE(job))
-                return
-            _JOB_HANDLE = job
-        if not k32.AssignProcessToJobObject(
-            wintypes.HANDLE(_JOB_HANDLE),
-            wintypes.HANDLE(int(proc._handle)),  # type: ignore[attr-defined]
-        ):
-            logger.debug("ffmpeg not put in the job object: error %d", ctypes.get_last_error())
-    except (OSError, AttributeError, ValueError) as err:
-        logger.debug("job object not available: %s", err)
+# Isolated children also go in a Windows job object (:func:`cutpoint.winjob.kill_with_parent`):
+# out of the console's group, a ``taskkill /F`` of Python would leave ffmpeg running until its
+# next write to the closed pipe; the job (KILL_ON_JOB_CLOSE) ends it at once. POSIX does nothing:
+# the pipe closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first);
+# either way the next run's sweep removes the spool and the tmp proxy.
 
 
 def decode_raw(
@@ -1657,7 +1988,7 @@ def decode_raw(
     stamp_fps: float | None = None,
     keyframes_only: bool = False,
     pts: bool = False,
-    hwaccel: HwAccel = "cuda",
+    hwaccel: HwAccel = "auto",
     fallback_cpu: bool = True,
     stderr_lines: list[str] | None = None,
     timeout: float | None = None,
@@ -1668,7 +1999,7 @@ def decode_raw(
     """Stream decoded frames of ``path`` (its staged copy if any) as raw arrays.
 
     One sequential ffmpeg pass writes ``rawvideo`` to a pipe; frames are yielded
-    as they arrive. With ``hwaccel="cuda"`` the first pass decodes on NVDEC; if it
+    as they arrive. A GPU pass (``hwaccel="auto"``) decodes first; if it
     yields no frames at all and ``fallback_cpu`` is set, a CPU pass follows. Once
     a pass has yielded a frame it is final (its exit code is not checked).
 
@@ -1690,8 +2021,8 @@ def decode_raw(
         keyframes_only: Decode keyframes only (``-skip_frame nokey``).
         pts: Stamp frames with their presentation time (``showinfo`` is appended
             to the chain and frames pass through without duplication).
-        hwaccel: ``"cuda"`` or ``None`` (CPU only).
-        fallback_cpu: Retry on the CPU when the CUDA pass yields nothing.
+        hwaccel: ``"auto"`` (the probed GPU decoder, else the CPU) or ``None`` (CPU only).
+        fallback_cpu: Retry on the CPU when the GPU pass yields nothing.
         stderr_lines: If given, ffmpeg's stderr lines (``showinfo`` excluded) are
             appended to it as they arrive.
         timeout: Wall-clock seconds per pass, including the time the consumer
@@ -1718,7 +2049,7 @@ def decode_raw(
     """
     if pix_fmt not in PIX_CHANNELS:
         raise ValueError(f"unsupported pix_fmt {pix_fmt!r} (expected one of {list(PIX_CHANNELS)})")
-    passes = _hw_passes(hwaccel, fallback_cpu)
+    passes = _hw_passes(hwaccel, fallback_cpu, path)
     width, height = size
     channels = PIX_CHANNELS[pix_fmt]
     shape = (height, width, channels) if channels > 1 else (height, width)
@@ -1747,7 +2078,7 @@ def decode_raw(
             **(_isolated() if isolate else {}),
         )
         if isolate:
-            _kill_with_parent(proc)
+            kill_with_parent(proc)
         reader = threading.Thread(target=log.read, args=(proc.stderr,), daemon=True)
         reader.start()
         deadline = _Deadline(proc, timeout) if timeout is not None else None
@@ -1798,8 +2129,14 @@ SPOOL_DIR = "ocr-spool"  # in a source's cache folder: the raw frames of a split
 # target size of a spool file (whole frames, at least one; each is deleted once read), so the
 # spool on disk is what the consumer lags behind plus one small file
 SPOOL_SEGMENT_BYTES = 256 << 20
+# most spool files on disk at once (backpressure: the spool thread then stops reading, so
+# ffmpeg, the scene proxy encode with it, waits for the consumer to delete one). 8 is about
+# 2 GiB: twice the most measured on a 300 s clip (0.9 GB, never held up), half of a 446 s
+# 1080p clip's 4 GB (held up only while the OCR read lags 2 GiB behind). At least 2, so the
+# consumer, which deletes whole files, can always finish the file it reads.
+SPOOL_MAX_SEGMENTS = 8
 SPOOL_READ = 4 << 20  # bytes per read of ffmpeg's raw output
-SPOOL_MARGIN = 1 << 30  # free disk a split decode leaves beyond its worst-case spool
+SPOOL_MARGIN = 1 << 30  # free disk a split decode leaves beyond its spool cap
 
 
 def single_video_stream(path: Path | str) -> bool:
@@ -1813,6 +2150,18 @@ def single_video_stream(path: Path | str) -> bool:
         return False
     streams = data.get("streams", [])
     return len(streams) == 1 and not streams[0].get("disposition", {}).get("attached_pic")
+
+
+def spool_segment(frame_bytes: int) -> int:
+    """Bytes of a spool file: the whole frames that fit in :data:`SPOOL_SEGMENT_BYTES`, at
+    least one."""
+    return frame_bytes * max(1, SPOOL_SEGMENT_BYTES // frame_bytes)
+
+
+def spool_cap(frame_bytes: int) -> int:
+    """Most bytes a split decode's spool holds on disk: :data:`SPOOL_MAX_SEGMENTS` files (at
+    least 2). The spool thread waits before a write would pass it, so this is exact."""
+    return spool_segment(frame_bytes) * max(2, SPOOL_MAX_SEGMENTS)
 
 
 def spool_fits(folder: Path, need: int) -> bool:
@@ -1831,16 +2180,17 @@ def split_decode_args(
     proxy: Path,
     raw_vf: str,
     pix_fmt: PixFmt = "bgr24",
-    hw: bool = True,
+    hw: HwDecoder | None = None,
 ) -> list[str]:
-    """ffmpeg arguments (without the executable) for one CUDA pass that writes both the
-    scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use them) to ``proxy`` and
-    the raw frames of ``raw_vf`` (as :func:`decode_raw` gets them) to stdout. ``hw`` False
-    decodes on the CPU (tests)."""
-    graph = f"[0:v:0]split=2[s][o];[s]{scene_vf}[sv];[o]{raw_vf}[ov]"
+    """ffmpeg arguments (without the executable) for one decode pass (``hw``, else the CPU)
+    that writes both the scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use
+    them) to ``proxy`` and the raw frames of ``raw_vf`` (as :func:`decode_raw` gets them) to
+    stdout."""
+    graph_head = gpu_chain(hw, "split=2")  # VAAPI frames are downloaded before the split
+    graph = f"[0:v:0]{graph_head}[s][o];[s]{scene_vf}[sv];[o]{raw_vf}[ov]"
     return [
         *("-hide_banner", "-nostats", "-v", "error", "-y"),
-        *(("-hwaccel", "cuda") if hw else ()),
+        *(hw.input_args() if hw is not None else ()),
         *("-i", str(path), "-filter_complex", graph),
         *("-map", "[sv]", "-an", *scene_enc, str(proxy)),
         *("-map", "[ov]", "-an", "-sn", "-dn", "-pix_fmt", pix_fmt, "-f", "rawvideo", "-"),
@@ -1848,16 +2198,19 @@ def split_decode_args(
 
 
 class SplitDecode:
-    """One CUDA pass (:func:`split_decode_args`) that writes the scene proxy and spools the
+    """One decode pass (:func:`split_decode_args`) that writes the scene proxy and spools the
     raw frames to ``spool`` (files of the whole frames that fit in :data:`SPOOL_SEGMENT_BYTES`,
     at least one, each deleted once :meth:`frames` has read it), so ffmpeg runs at decode speed
-    however slowly the frames are consumed. ffmpeg starts here, isolated from Ctrl+C and
-    killed on ``cancel``.
+    while the frames are consumed more slowly, until the spool holds :func:`spool_cap` bytes;
+    then the spool thread waits for the consumer to delete a file (ffmpeg waits on its pipe).
+    ffmpeg starts here, isolated from Ctrl+C and killed on ``cancel``.
 
     The proxy is written to ``proxy.tmp.mp4`` beside ``proxy`` and renamed to ``proxy`` only
     when ffmpeg exited 0 by itself and the spool took all of its output; otherwise it is
-    deleted. ``on_exit`` then gets that outcome and the spool peak in bytes (from the spool
-    thread).
+    deleted. A cancel or :meth:`close` while the spool is full kills a running ffmpeg (no
+    proxy); one that already exited has the rest of its output drained, not spooled, and its
+    proxy kept as without the cap. ``on_exit`` then gets that outcome and the spool peak in
+    bytes (from the spool thread, at most the cap).
     """
 
     def __init__(
@@ -1874,12 +2227,13 @@ class SplitDecode:
         cancel: threading.Event,
         on_exit: Callable[[bool, int], None],
         stderr_lines: list[str] | None = None,
-        hw: bool = True,
+        hw: HwDecoder | None = None,
     ) -> None:
         width, height = size
         self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
         self.shape = (height, width, 3)
-        self.seg_bytes = self.frame_bytes * max(1, SPOOL_SEGMENT_BYTES // self.frame_bytes)
+        self.seg_bytes = spool_segment(self.frame_bytes)
+        self.cap = spool_cap(self.frame_bytes)
         self.stamp_fps = stamp_fps
         self.proxy = proxy
         self.tmp = proxy.with_name(proxy.stem + ".tmp" + proxy.suffix)
@@ -1892,7 +2246,7 @@ class SplitDecode:
         self._deleted = 0  # bytes of spool files read and deleted
         self._ended = False  # the spool thread is done (ffmpeg exited)
         self._error: OSError | None = None  # a spool write failed
-        self._stopped = False  # ffmpeg killed here (spool error, or the consumer stopped)
+        self._stopped = False  # ffmpeg killed or cut off here (spool error, consumer stopped)
         self._closed = False
         self._seg: IO[bytes] | None = None  # the spool file frames() reads
         args = split_decode_args(
@@ -1905,7 +2259,7 @@ class SplitDecode:
         self._proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_isolated()
         )
-        _kill_with_parent(self._proc)
+        kill_with_parent(self._proc)
         self._reader = threading.Thread(
             target=self._log.read, args=(self._proc.stderr,), daemon=True
         )
@@ -1922,6 +2276,16 @@ class SplitDecode:
                 self._stopped = True
                 self._proc.kill()
 
+    def _room(self, n: int) -> bool:
+        """Wait until ``n`` more bytes keep the spool within :attr:`cap`; False if ``cancel``,
+        :meth:`close` or a kill came first."""
+        with self._cond:
+            while self._written - self._deleted + n > self.cap:
+                if self._stopped or self._closed or self._cancel.is_set():
+                    return False
+                self._cond.wait(CANCEL_POLL_S)  # the cancel is checked in between
+            return True
+
     def _run(self) -> None:
         out: IO[bytes] | None = None
         filled, idx = 0, 0  # bytes in the current spool file, its number
@@ -1933,9 +2297,20 @@ class SplitDecode:
             while data := stdout.read(SPOOL_READ):
                 view = memoryview(data)
                 while view:
+                    n = min(len(view), self.seg_bytes - filled)
+                    if not self._room(n):  # stopped while the spool was full
+                        with self._cond:
+                            running = self._proc.poll() is None
+                            if running:  # output cut: no proxy
+                                self._stopped = True
+                                self._proc.kill()
+                        if not running:  # exited by itself: drain the rest, unspooled; the
+                            # proxy is decided below as without the cap
+                            while stdout.read(SPOOL_READ):
+                                pass
+                        return
                     if out is None:
                         out = (self.spool / f"seg-{idx:05d}.raw").open("wb")
-                    n = min(len(view), self.seg_bytes - filled)
                     out.write(view[:n])
                     filled, view = filled + n, view[n:]
                     if filled == self.seg_bytes:  # closed before the consumer may delete it
@@ -2018,6 +2393,7 @@ class SplitDecode:
                         (self.spool / f"seg-{pos // self.seg_bytes - 1:05d}.raw").unlink()
                     with self._cond:
                         self._deleted += self.seg_bytes
+                        self._cond.notify_all()  # a spool thread waiting for room
                 yield k / self.stamp_fps, np.frombuffer(buf, np.uint8).reshape(self.shape)
                 k += 1
         finally:
@@ -2035,7 +2411,9 @@ class SplitDecode:
         thread and remove the spool. Idempotent."""
         if self._closed:
             return
-        self._closed = True
+        with self._cond:  # a spool thread waiting for room stops
+            self._closed = True
+            self._cond.notify_all()
         if self._seg is not None:  # a paused frames(): its file must close before rmtree
             with suppress(OSError):
                 self._seg.close()
@@ -2066,7 +2444,7 @@ def grab_images_args(
     path: Path | str,
     start: float,
     *,
-    hw: bool = False,
+    hw: HwDecoder | None = None,
     count: int = 1,
     duration: float | None = None,
     fps: float | str | None = None,
@@ -2082,12 +2460,13 @@ def grab_images_args(
         raise ValueError(f"unsupported image format {fmt!r}")
     scale = f"scale={width}:-2" if width is not None else f"scale=-2:{height}"
     args = ["-hide_banner", "-v", "error"]
-    if hw:
-        args += ["-hwaccel", "cuda"]
+    if hw is not None:
+        args += hw.input_args()
     args += ["-ss", f"{start:.3f}", "-i", str(path)]
     if duration is not None:
         args += ["-t", f"{duration:.3f}"]
-    args += ["-an", "-sn", "-vf", f"fps={fps},{scale}" if fps is not None else scale]
+    chain = f"fps={fps},{scale}" if fps is not None else scale
+    args += ["-an", "-sn", "-vf", gpu_chain(hw, chain)]
     args += ["-frames:v", str(count)]
     if fmt == "jpeg":
         args += ["-c:v", "mjpeg"]
@@ -2128,8 +2507,8 @@ def grab_images(
             Give exactly one of ``width`` / ``height``.
         fmt: ``"jpeg"`` (mjpeg) or ``"png"`` (``count`` must be 1).
         quality: JPEG ``-q:v`` (2 = best .. 31); ``None`` = encoder default.
-        hwaccel: ``"cuda"`` decodes on NVDEC first; ``None`` = CPU only.
-        fallback_cpu: Retry on the CPU when the CUDA pass returns no image.
+        hwaccel: ``"auto"`` (the probed GPU decoder first) or ``None`` = CPU only.
+        fallback_cpu: Retry on the CPU when the GPU pass returns no image.
         timeout: Seconds per pass before ffmpeg is killed.
 
     Returns:
@@ -2142,7 +2521,7 @@ def grab_images(
     """
     if fmt == "png" and count != 1:
         raise ValueError("png grabs support count=1 only")
-    passes = _hw_passes(hwaccel, fallback_cpu)
+    passes = _hw_passes(hwaccel, fallback_cpu, path)
     err = b""
     for hw in passes:
         args = grab_images_args(

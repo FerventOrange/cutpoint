@@ -16,7 +16,7 @@ after smart tails and event tails, to the final in/out points:
   ``.srt`` subtitles for the new range (see :mod:`cutpoint.srt`).
 
 ``cutpoint extend`` re-exports an existing clips folder from its ``manifest.json``
-(source, in and out points, crop, format), keeping the exact file names and
+(source, in and out points, crop, ``--lut`` grade, format), keeping the exact file names and
 order of the clips *still in the folder*, so renames and deletions made
 during review are respected. Per-clip speech-aware caps come from the
 manifest entry (``speech_max_extend`` / ``speech_max_lead``, set by a
@@ -31,6 +31,7 @@ import fnmatch
 import logging
 import os
 import shutil
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,7 +40,7 @@ from typing import Any
 from cutpoint import boundaries, cache, jsonout, srt
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
-from cutpoint.encode import OutputFormat, export_clip_checked
+from cutpoint.encode import Lut, OutputFormat, check_lut, export_clip_checked
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
     atomic_output,
@@ -51,8 +52,19 @@ from cutpoint.ffmpeg_utils import (
     source_keys,
     staged_dir,
     swap_in,
+    swap_lock,
 )
-from cutpoint.planning import Padding, pad, report_clips, speech_pass
+from cutpoint.planning import (
+    MANIFEST_GENERATOR,
+    Padding,
+    check_own_manifest,
+    file_size,
+    kept_why,
+    manifest_entries,
+    pad,
+    report_clips,
+    speech_pass,
+)
 from cutpoint.sources import project_language
 from cutpoint.utils import clip_files, seconds_keys
 
@@ -217,6 +229,7 @@ def _reusable(
         and abs(float(old["start"]) - new["start"]) < 1e-3
         and abs(float(old["end"]) - new["end"]) < 1e-3
         and old.get("crop") == new.get("crop")
+        and Lut.from_entry(old) == Lut.from_entry(new)
         and float(old.get("audio_fade", 0.25)) == float(audio_fade)
     )
 
@@ -264,7 +277,7 @@ def extend_clips(
             ``extend_end`` per side) replacing ``padding`` for those clips
             (all recorded in the new manifest).
         reuse_dir: An earlier output folder. A clip whose new source, in/out
-            points, crop, format and fade equal its entry there is copied
+            points, crop, LUT grade, format and fade equal its entry there is copied
             instead of re-encoded (never for 360 clips).
 
     Returns:
@@ -276,7 +289,40 @@ def extend_clips(
             and ``force`` is False, or a clip to re-export has the name of an ``.mp4``
             that ``out_dir``'s manifest.json does not list (before any export).
         ValueError: If nothing could be re-exported.
+        FolderBusyError: If another run is using ``clips_dir`` or ``out_dir``.
     """
+    with ExitStack() as held:
+        return _extend_locked(
+            held,
+            clips_dir,
+            padding,
+            out_dir,
+            force,
+            speech,
+            audio_fade,
+            pano_source,
+            pano_cmd_every,
+            clip_overrides,
+            reuse_dir,
+        )
+
+
+def _extend_locked(
+    held: ExitStack,
+    clips_dir: Path,
+    padding: Padding,
+    out_dir: Path | None,
+    force: bool,
+    speech: boundaries.SpeechSettings | None,
+    audio_fade: float,
+    pano_source: str | None,
+    pano_cmd_every: int | None,
+    clip_overrides: dict[str, dict[str, Any]] | None,
+    reuse_dir: Path | None,
+) -> Path:
+    """:func:`extend_clips`, taking the folders' locks (:func:`swap_lock`) into ``held``."""
+    # One run at a time on each folder: another would remove this one's staging folder.
+    held.enter_context(swap_lock(clips_dir))
     recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
     manifest = cache.load_json(clips_dir / "manifest.json")
     if manifest is None:
@@ -295,6 +341,7 @@ def extend_clips(
     )
     in_place = out_dir.resolve() == clips_dir.resolve()
     if not in_place:
+        held.enter_context(swap_lock(out_dir))
         recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
     non_empty = out_dir.exists() and any(out_dir.iterdir())
     if (in_place or non_empty) and not force:
@@ -316,13 +363,27 @@ def extend_clips(
         files = clip_files(clips_dir)
         infos: dict[str, MediaInfo] = {}
         plans: list[ExtendPlan] = []
-        skipped: list[str] = []
+        skipped: dict[str, str] = {}  # file name: why it has no plan
+        # every file the manifest's clips were cut from, so one in the folder is named so
+        all_sources = source_keys(
+            (e["source"], _read_path(e), []) for e in by_file.values() if e.get("source")
+        )
+        known = manifest_entries(clips_dir, files)  # clips renamed during review too
         for f in files:
             e = by_file.get(f.name)
             if e is None:
+                if same_file(f, all_sources):
+                    why = "a source of these clips, not a clip"
+                elif f.name in known:
+                    why = (
+                        f"exported as {known[f.name]['file']} and renamed during review "
+                        "(only clips under their manifest.json names are re-exported)"
+                    )
+                else:
+                    why = "no manifest entry (added by hand?)"
                 if not in_place:  # in place it stays: the Kept warning below names it
-                    logger.warning("  %s: no manifest entry (added by hand?); skipped", f.name)
-                skipped.append(f.name)
+                    logger.warning("  %s: %s; skipped", f.name, why)
+                skipped[f.name] = why
                 continue
             src = _read_path(e)
             if str(src) not in infos:
@@ -332,6 +393,13 @@ def extend_clips(
             plans.append(ExtendPlan(f.name, e, src, info, start, end, rec, _pick(e)))
 
         apply_overrides(plans, clip_overrides, padding)
+        # The --lut grade a clip recorded is redone; its LUT must still load (before any export).
+        checked: dict[Lut, Lut] = {}
+        luts: dict[str, Lut | None] = {}
+        for plan in plans:
+            if (lut := Lut.from_entry(plan.entry)) is not None and lut not in checked:
+                checked[lut] = check_lut(lut.path, lut.strength, f"{plan.name}: lut")
+            luts[plan.name] = checked[lut] if lut is not None else None
         reuse_by_file: dict[str, dict[str, Any]] = {}
         reuse_same_format = False
         if reuse_dir is not None:
@@ -390,8 +458,14 @@ def extend_clips(
         # spelled otherwise on disk goes, under that spelling, only if this run writes or
         # replaces its clip: an .srt beside it would keep the old cues, unlisted. Leftover
         # ``.<name>.part.mp4`` files of a hard-killed run go too, as with clips --force.
+        check_own_manifest(out_dir)
         listed = srt.listed_files(out_dir)
         srt.check_unlisted_clips(out_dir, names, listed)
+        renamed = {
+            n: e["file"]
+            for n, e in manifest_entries(out_dir, clip_files(out_dir)).items()
+            if e["file"] != n
+        }
         subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed), language)
         present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
         on_disk = {path_key(n): n for n in present}
@@ -442,6 +516,7 @@ def extend_clips(
                     kind=e.get("kind"),
                     reuse_path=old,
                     source_mode=None if pano_source else pano_rec.get("mode"),
+                    lut=luts[name],
                 )
             else:
                 box = parse_spec(e.get("crop"))
@@ -455,6 +530,8 @@ def extend_clips(
                     vertical,
                     box if isinstance(box, Crop) else None,
                     audio_fade,
+                    "",  # extend does not compress peaks (warned above)
+                    luts[name],
                 )
             if read_err and read_err["end"] < end:
                 end = read_err["end"]
@@ -482,6 +559,7 @@ def extend_clips(
                     if k not in ("read_from", "srt", "compress_peaks", "compress_peaks_makeup_db")
                 }
                 | {
+                    "size": file_size(work / name),
                     **({"read_from": str(src)} if str(src) != e["source"] else {}),
                     "start": start,
                     "end": end,
@@ -502,12 +580,13 @@ def extend_clips(
             work / "manifest.json",
             {k: v for k, v in manifest.items() if k != "compress_peaks"}
             | {
+                "generator": MANIFEST_GENERATOR,
                 "created": datetime.now().isoformat(timespec="seconds"),
                 "extended_from": str(clips_dir.resolve()),
                 "extend": {"start": padding.start, "end": padding.end},
                 "speech_aware": speech.to_json(),
                 "audio_fade": audio_fade,
-                "skipped_no_manifest": skipped,
+                "skipped_no_manifest": list(skipped),
                 **(
                     {"reused_from": str(reuse_dir.resolve()), "reused": reused}
                     if reuse_dir is not None
@@ -522,23 +601,28 @@ def extend_clips(
     if staged:
         written = {path_key(e["file"]) for e in entries}
         kept = [p for p in clip_files(out_dir) if path_key(p.name) not in written]
-        if kept:
-            why = (
-                "the old manifest.json does not list them (renamed during review or added by hand)"
-                if listed is not None
-                else "not replaced because there is no readable manifest.json"
-            )
+        hint = "assemble includes them, so move them out if they are not part of the edit"
+        kept_sources = [p for p in kept if same_file(p, all_sources | sources)]
+        if kept_sources:
             message = (
-                f"Kept {', '.join(p.name for p in kept)} in {out_dir.absolute()}: {why}; "
-                "assemble includes them, so move them out if they are not part of the edit"
+                f"Kept {', '.join(p.name for p in kept_sources)} in {out_dir.absolute()}: a "
+                f"source of these clips is never replaced; {hint}"
+            )
+            logger.warning("%s", message)
+            jsonout.warn("kept_sources", message, kept_sources)
+        kept = [p for p in kept if p not in kept_sources]
+        if kept:
+            why = kept_why([p.name for p in kept], renamed, listed is not None)
+            message = (
+                f"Kept {', '.join(p.name for p in kept)} in {out_dir.absolute()}: {why}; {hint}"
             )
             logger.warning("%s", message)
             jsonout.warn("kept_clips", message, kept)
     if skipped and not in_place:
         jsonout.warn(
             "skipped_clips",
-            f"Not re-exported from {clips_dir.absolute()}: {', '.join(skipped)} (no manifest "
-            "entry; added by hand?)",
+            f"Not re-exported from {clips_dir.absolute()}: "
+            + "; ".join(f"{n}: {why}" for n, why in skipped.items()),
             [clips_dir / n for n in skipped],
         )
     logger.info(
