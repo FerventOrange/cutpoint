@@ -440,6 +440,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `llama-server` start no longer leaves its log file handle open in the parent.
 - `clips --force`, `extend` and `assemble` no longer lose or mix up work when a folder is
   touched by two runs or an interrupted one (#145):
   - `assemble` puts back or removes the staging and backup folders (`.<folder>.cutpoint-tmp`,
