@@ -533,7 +533,8 @@ function setTrimMsg(text, bad = false) {
   m.classList.toggle('error', bad);
 }
 
-function setRange(which, t) {
+/** ``widen``: a point that left the rail widens it to show both; the trim handles keep the zoom and pan instead. */
+function setRange(which, t, widen = true) {
   const c = current();
   if (!c) return false;
   t = round2(t);
@@ -554,7 +555,7 @@ function setRange(which, t) {
     renderRemoved();
   }
   const w = S.view?.id === c.id && S.view;
-  if (w && (s < w.lo || e > w.hi)) { // a trim point left the rail: widen it to show both again
+  if (widen && w && (s < w.lo || e > w.hi)) { // a trim point left the rail: widen it to show both again
     const pad = 0.05 * (Math.max(w.hi, e) - Math.min(w.lo, s));
     S.view = { id: c.id, ...clampView(s < w.lo ? s - pad : w.lo, e > w.hi ? e + pad : w.hi, durOf(c)) };
   }
@@ -689,6 +690,7 @@ function drawRail(c = current()) {
   const sel = $('#railSel');
   sel.classList.toggle('cut-l', c.start < lo);
   sel.classList.toggle('cut-r', c.end > hi);
+  drawHandles(c, lo, hi);
   const zIn = $('#zoomIn');
   const zOut = $('#zoomOut');
   const had = document.activeElement; // read first: disabling a focused button drops its focus
@@ -698,6 +700,41 @@ function drawRail(c = current()) {
   if (zIn.disabled && had === zIn) zOut.focus();
   if (zOut.disabled && had === zOut) zIn.focus();
   updatePlayhead();
+}
+
+const handles = { start: $('#startHandle'), end: $('#endHandle') };
+const HANDLE_NAMES = { start: 'Clip start', end: 'Clip end' };
+
+/** Where a trim handle may go (#352): inside the source, MIN_CLIP from the other point. ``max`` is Infinity while the source length is unknown. */
+function handleRange(which, c) {
+  const dur = durOf(c);
+  return which === 'start'
+    ? { min: 0, max: round2(c.end - MIN_CLIP) }
+    : { min: round2(c.start + MIN_CLIP), max: dur ? Math.floor(dur * 100) / 100 : Infinity };
+}
+
+/** Place the trim handles on the rail (a point off the view parks its handle at that edge) and set their slider values. */
+function drawHandles(c, lo, hi) {
+  for (const which of ['start', 'end']) {
+    const el = handles[which];
+    const t = c[which];
+    const { min, max } = handleRange(which, c);
+    el.style.left = `${(Math.max(0, Math.min(1, (t - lo) / (hi - lo))) * 100).toFixed(2)}%`;
+    el.classList.toggle('off-view', t < lo || t > hi);
+    el.setAttribute('aria-valuemin', min);
+    el.setAttribute('aria-valuemax', Number.isFinite(max) ? max : Math.max(t, hi));
+    el.setAttribute('aria-valuenow', t);
+    el.setAttribute('aria-valuetext', `${HANDLE_NAMES[which]}, ${fmt(t)}`);
+  }
+}
+
+/** Move a trim point, clamped to its handle's range, through the same path as the time fields and "Use playhead". */
+function moveHandle(which, t, widen = true) {
+  const c = current();
+  if (!c) return false;
+  const { min, max } = handleRange(which, c);
+  t = round2(Math.max(min, Math.min(max, t)));
+  return t === c[which] || setRange(which, t, widen);
 }
 
 /**
@@ -1291,6 +1328,112 @@ $('#rail').addEventListener('wheel', (e) => {
   if (e.ctrlKey) zoomBy(2 ** Math.max(-1, Math.min(1, d / 100)), w.lo + ((e.clientX - r.left) / r.width) * span); // a wheel notch: x2
   else setView(w.lo + (d / r.width) * span, w.hi + (d / r.width) * span);
 }, { passive: false });
+
+// The trim handles (#352). Keys: arrows 0.1 s, Shift+arrows 1 s, PageUp/PageDown 5 s, Home/End
+// to the limit. Space is left to the global handler, so it still plays and pauses.
+const HANDLE_STEPS = { ArrowLeft: -0.1, ArrowDown: -0.1, ArrowRight: 0.1, ArrowUp: 0.1, PageDown: -5, PageUp: 5 };
+const DRAG_SEEK_MS = 100; // the least time between preview seeks while dragging
+const PAN_EDGE = 24; // pixels: a drag this close to (or past) a rail edge pans the view along
+let trimDrag = null; // {which, el, id, cid, pid, x, x0, moved, grab, raf, seekAt}
+
+/** End a drag without moving the point. */
+function dropDrag() {
+  const d = trimDrag;
+  cancelAnimationFrame(d.raf);
+  trimDrag = null;
+  d.el.classList.remove('dragging');
+}
+
+/** The drag's clip is no longer the open one (Play sequence moved on, or another moment or project opened). */
+const dragStale = (d) => current()?.id !== d.cid || S.id !== d.pid;
+
+/** Source time at client x on the rail, clamped to the view. */
+function railTime(x) {
+  const rail = $('#rail');
+  const left = rail.getBoundingClientRect().left + rail.clientLeft;
+  const f = Math.max(0, Math.min(1, (x - left) / rail.clientWidth));
+  return S.view.lo + f * (S.view.hi - S.view.lo);
+}
+
+/** One drag step per frame: pan when held at an edge, move the point under the pointer, seek at most every DRAG_SEEK_MS. */
+function dragFrame(final = false) {
+  const d = trimDrag;
+  d.raf = 0;
+  if (dragStale(d)) return dropDrag();
+  const c = current();
+  if (!S.view) return;
+  const rail = $('#rail');
+  const left = rail.getBoundingClientRect().left + rail.clientLeft;
+  const x = d.x - d.grab;
+  const over = x < left + PAN_EDGE ? x - left - PAN_EDGE : x > left + rail.clientWidth - PAN_EDGE ? x - left - rail.clientWidth + PAN_EDGE : 0;
+  let panned = false;
+  const { min, max } = handleRange(d.which, c);
+  // up to 2% of the view a frame, faster the further past the edge; not once the point is held at its limit
+  if (over && !final && (over < 0 ? c[d.which] > min : c[d.which] < max)) {
+    const { lo, hi } = S.view;
+    const shift = Math.sign(over) * Math.min(1, Math.abs(over) / (2 * PAN_EDGE)) * 0.02 * (hi - lo);
+    setView(lo + shift, hi + shift);
+    panned = S.view.lo !== lo;
+  }
+  moveHandle(d.which, railTime(x), false);
+  const now = performance.now();
+  if (!final && now - d.seekAt >= DRAG_SEEK_MS) {
+    d.seekAt = now;
+    seekTo(trimSeek(d.which), true);
+  }
+  if (panned) d.raf = requestAnimationFrame(() => dragFrame()); // keeps panning while the pointer is held still
+}
+
+for (const [which, el] of Object.entries(handles)) {
+  el.addEventListener('keydown', (e) => {
+    const c = current();
+    if (!c || e.ctrlKey || e.metaKey || e.altKey) return;
+    const step = HANDLE_STEPS[e.key];
+    const { min, max } = handleRange(which, c);
+    let t;
+    if (step != null) t = c[which] + (e.shiftKey && e.key.startsWith('Arrow') ? step * 10 : step);
+    else if (e.key === 'Home') t = min;
+    else if (e.key === 'End' && Number.isFinite(max)) t = max;
+    else return;
+    e.preventDefault();
+    if (!moveHandle(which, t, false)) return; // keeps the zoom: only the moved point is brought onto the view
+    follow(current()[which]);
+    seekTo(trimSeek(which));
+  });
+  el.addEventListener('pointerdown', (e) => {
+    const c = current();
+    if (!c || !S.view || trimDrag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    e.preventDefault(); // no text selection or touch scrolling
+    el.focus();
+    el.setPointerCapture(e.pointerId);
+    const rail = $('#rail');
+    const { lo, hi } = S.view;
+    const at = rail.getBoundingClientRect().left + rail.clientLeft + ((c[which] - lo) / (hi - lo)) * rail.clientWidth;
+    // grab offset: a press beside the point does not make it jump (none when the point is off the view)
+    const grab = c[which] >= lo && c[which] <= hi ? e.clientX - at : 0;
+    trimDrag = { which, el, id: e.pointerId, cid: c.id, pid: S.id, x: e.clientX, x0: e.clientX, moved: false, grab, raf: 0, seekAt: 0 };
+    el.classList.add('dragging');
+  });
+  el.addEventListener('pointermove', (e) => {
+    const d = trimDrag;
+    if (!d || d.el !== el || e.pointerId !== d.id) return;
+    d.x = e.clientX;
+    d.moved ||= Math.abs(e.clientX - d.x0) >= 3; // a plain click (also on a parked handle) moves nothing
+    if (d.moved && !d.raf) d.raf = requestAnimationFrame(() => dragFrame());
+  });
+  el.addEventListener('pointerup', (e) => {
+    if (trimDrag?.el === el && e.pointerId === trimDrag.id) trimDrag.x = e.clientX;
+  });
+  el.addEventListener('lostpointercapture', (e) => { // after pointerup or pointercancel
+    const d = trimDrag;
+    if (!d || d.el !== el || e.pointerId !== d.id) return;
+    if (dragStale(d)) return dropDrag();
+    cancelAnimationFrame(d.raf);
+    if (d.moved) dragFrame(true);
+    dropDrag();
+    seekTo(trimSeek(which)); // released: an exact seek
+  });
+}
 
 // ---------- sequence ----------
 

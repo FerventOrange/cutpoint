@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- UI: the clip start and end markers on the trim rail are handles: drag them (mouse or touch;
+  a drag held at the rail's edge pans a zoomed view) or focus one and use the arrow keys (0.1 s,
+  Shift 1 s), PageUp/PageDown (5 s) and Home/End. They keep the clip at least 0.1 s long and
+  inside the source, update the time fields like "Use playhead", and screen readers announce
+  them as sliders ("Clip end, 0:06.50"). Space still plays and pauses (#352).
 - UI: a "Stats for Nerds" setting (off by default, remembered per browser) shows the open
   moment's score, rank, analyzed times, signals and keywords as a small overlay in the top-left
   of the preview. The scoring line under the transcript is gone (#353).
