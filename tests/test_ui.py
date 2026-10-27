@@ -218,9 +218,7 @@ def test_360_analyze_job_view_carries_the_step_plan(
     pid = client.post("/api/projects", json={"name": "T", "source": str(folder)}).json()["id"]
     # No real interpreter: spawn starts jobs at below-normal priority, and on a busy machine
     # one took up to ~15 s to exit, close to the old 20 s wait. The plan comes from the real Job.
-    proc = FakeProc()
-    proc.release.set()  # exits at once
-    monkeypatch.setattr(ui, "spawn", lambda args, **_kw: proc)
+    FakeProc().fake_spawn(monkeypatch)
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     assert [s["step"] for s in res.json()["progress"]["plan"]] == [
@@ -2291,18 +2289,18 @@ def test_frames_folder_linked_outside_is_not_used_and_nothing_there_is_deleted(
     assert sorted(f.name for f in outside.iterdir()) == sorted(f.name for f in stale)
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("refused", [False, True], ids=["crash", "refused-write"])
 def test_a_failing_post_processing_step_fails_the_job_with_a_clean_message(
-    caplog: pytest.LogCaptureFixture, refused: bool
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, refused: bool
 ) -> None:
     def on_success() -> None:
         raise ui.bad("x", 409) if refused else RuntimeError("boom")
 
+    FakeProc().fake_spawn(monkeypatch)
     jobs = ui.Jobs()
     with caplog.at_level(logging.ERROR):
-        job = jobs.start("p", "clips", [sys.executable, "-c", "pass"], on_success=on_success)
-        assert job.done.wait(20)
+        job = jobs.start("p", "clips", ["x"], on_success=on_success)
+        assert job.done.wait(10)
     assert (job.status, job.error) == ("failed", "x" if refused else "boom")
     # a refusal is expected and plain; only a real crash logs its traceback
     assert any(r.exc_info for r in caplog.records if r.levelno >= logging.ERROR) is not refused
@@ -2320,7 +2318,6 @@ def cli_project(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return p, seg
 
 
-@pytest.mark.slow
 def test_a_command_line_project_without_a_ui_folder_can_be_reviewed_and_exported(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2329,10 +2326,10 @@ def test_a_command_line_project_without_a_ui_folder_can_be_reviewed_and_exported
     assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
     assert client.get("/api/projects/cli").json()["review"]["segments"][0]["id"] == "h001"
 
-    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *_a: [sys.executable, "-c", "pass"])
+    FakeProc().fake_spawn(monkeypatch)
     res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
     assert res.status_code == 200, res.text
-    assert client.app.state.jobs.get(res.json()["id"]).done.wait(20)
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
     assert len(list((p / "ui").glob("segments-*.json"))) == 1
 
 
@@ -2480,7 +2477,6 @@ def test_a_proxy_linked_during_the_encode_fails_with_a_warning_and_leaves_nothin
     assert media.status(p, str(folder / "a.mp4"))[0] == "failed"
 
 
-@pytest.mark.slow
 def test_assemble_picks_a_fresh_name_when_only_a_caption_file_is_left(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2492,33 +2488,41 @@ def test_assemble_picks_a_fresh_name_when_only_a_caption_file_is_left(
     (p / "clips_ui_1" / "001_a.mp4").write_bytes(b"x")
     cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
     (p / "final_ui_1.srt").write_text("keep me", encoding="utf-8")
-    seen: list[tuple[str, ...]] = []
-
-    def cmd(*args: str) -> list[str]:
-        seen.append(args)
-        return [sys.executable, "-c", "pass"]
-
-    monkeypatch.setattr(ui, "cutpoint_cmd", cmd)
+    seen: list[list[str]] = []
+    proc = FakeProc()
+    proc.release.set()
+    monkeypatch.setattr(ui, "spawn", lambda args, **_kw: seen.append(args) or proc)
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "assemble"})
     assert res.status_code == 200, res.text
-    assert client.app.state.jobs.get(res.json()["id"]).done.wait(20)
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
     assert seen[0][seen[0].index("--out") + 1] == str(p / "final_ui_1-2.mp4")
     assert (p / "final_ui_1.srt").read_text(encoding="utf-8") == "keep me"
 
 
 class FakeProc:
-    """A job process that stays alive until ``release`` is set, then exits 0."""
+    """A job process that stays alive until ``release`` is set, then prints ``lines``, exits ``code``."""
 
-    def __init__(self) -> None:
+    def __init__(self, lines: list[str] | None = None, code: int = 0) -> None:
         self.release = threading.Event()
         self.stdout = self
+        self.lines = [f"{ln}\n" for ln in lines or []]
+        self.code = code
 
     def __iter__(self):
         self.release.wait(10)
-        return iter(())
+        return iter(self.lines)
 
     def wait(self, timeout: float | None = None) -> int:
-        return 0
+        return self.code
+
+    def fake_spawn(self, monkeypatch: pytest.MonkeyPatch) -> FakeProc:
+        """Make jobs start this process (already exited) instead of a real interpreter.
+
+        ``ui.spawn`` runs a real child at below-normal priority, which is slow on a busy machine.
+        """
+        self.release.set()
+        monkeypatch.setattr(ui, "spawn", lambda args, **_kw: self)
+        return self
 
 
 def test_a_cancelled_job_reads_cancelling_until_the_process_has_exited(
@@ -4385,17 +4389,18 @@ SAMPLE_PROGRESS = [
 ]  # fmt: skip
 
 
-def progress_job(lines: list[str], code: int = 0) -> ui.Job:
-    """A finished job whose child printed ``lines`` and exited ``code``."""
-    script = f"import sys\nfor ln in {lines!r}:\n    print(ln)\nsys.exit({code})"
-    job = ui.Jobs().start("p", "analyze", [sys.executable, "-c", script])
-    assert job.done.wait(20)
+def progress_job(lines: list[str], monkeypatch: pytest.MonkeyPatch, code: int = 0) -> ui.Job:
+    """A finished job whose (faked) child printed ``lines`` and exited ``code``."""
+    FakeProc(lines, code).fake_spawn(monkeypatch)
+    job = ui.Jobs().start("p", "analyze", ["x"])
+    assert job.done.wait(10)
     return job
 
 
-@pytest.mark.slow
-def test_progress_lines_become_steps_and_stay_out_of_the_log() -> None:
-    job = progress_job(SAMPLE_PROGRESS)
+def test_progress_lines_become_steps_and_stay_out_of_the_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = progress_job(SAMPLE_PROGRESS, monkeypatch)
     view = job.view()
     assert view["status"] == "completed"
     assert view["logs"] == ["12:00:01 INFO transcribing sample.mp4"]
@@ -4469,10 +4474,11 @@ def test_odd_progress_fields_are_tidied() -> None:
     assert nan is not None and nan["pct"] is None
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("code", [0, 1])
-def test_a_step_still_running_when_the_job_fails_reads_interrupted(code: int) -> None:
-    job = progress_job([*SAMPLE_PROGRESS[:1], "12:00:03 ERROR boom"], code)
+def test_a_step_still_running_when_the_job_fails_reads_interrupted(
+    monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    job = progress_job([*SAMPLE_PROGRESS[:1], "12:00:03 ERROR boom"], monkeypatch, code)
     view = job.view()
     assert view["status"] == ("completed" if code == 0 else "failed")
     (step,) = view["progress"]["steps"]
