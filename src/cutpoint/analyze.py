@@ -1330,10 +1330,12 @@ def _run_layers(
     steps: progress.Run,
     llm: bool,
     prefetch: OcrPrefetch | None = None,
+    transcript: str | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would; False if they stopped before writing it.
-    ``prefetch``: the background OCR reader (:func:`_ocr_prefetch`) or None."""
+    ``prefetch``: the background OCR reader (:func:`_ocr_prefetch`) or None; ``transcript``:
+    the transcript.txt text, not written yet either (None: read from the project)."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -1345,7 +1347,7 @@ def _run_layers(
     why = plan.skipped.get("keyframes")
     try:
         with (
-            pending_highlights(project, hl),
+            pending_highlights(project, hl, transcript),
             no_visual_reason(NO_VISUAL_REASON.get(why or "")),
             prefetch or contextlib.nullcontext(),  # stopped once the layers are done
         ):
@@ -1476,7 +1478,8 @@ def analyze(
     keyframes and crashes, see :func:`plan_layers`; events.json is written so a later
     ``cutpoint events`` reuses their caches), ranking (the events rescore the candidates)
     and the optional vision rating. highlights.json is written once, atomically, at the
-    end: a failed or cancelled run leaves the previous one untouched.
+    end (transcript.txt just before it): a failed or cancelled run leaves the previous
+    ones untouched.
 
     A source whose read stops early (ffmpeg "Error during demuxing", an I/O
     error, or audio meaningfully shorter than the container) gets a loud
@@ -1651,9 +1654,6 @@ def _analyze(
                 transcript_lines.append(f"# {src}" + (f" (from {clock(offset)})" if offset else ""))
                 transcript_lines.extend(transcript_text(name, res.segments) or ["(no speech)"])
                 transcript_lines.append("")
-                (out_dir / "transcript.txt").write_text(
-                    "\n".join(transcript_lines), encoding="utf-8"
-                )
                 rec = res.read_error
                 if not (recover and rec) or n_parts >= MAX_RECOVERED_PARTS:
                     break
@@ -1678,6 +1678,8 @@ def _analyze(
                     rec["lost_s"],
                 )
                 offset, n_parts = resume, n_parts + 1
+        # Written with highlights.json at the end; the event layers read it from memory.
+        transcript = "\n".join(transcript_lines)
         tr.close()  # Whisper out of memory before the next step loads a model
         free_models()
         steps.done()  # an error of the later steps never fails the transcription
@@ -1770,7 +1772,13 @@ def _analyze(
                 hl["candidates"] = records()  # VLM windows cached by `events` follow them
                 t0 = time.perf_counter()
                 events_new = _run_layers(
-                    out_dir, plan, hl, steps, llm=bool(vision), prefetch=prefetch
+                    out_dir,
+                    plan,
+                    hl,
+                    steps,
+                    llm=bool(vision),
+                    prefetch=prefetch,
+                    transcript=transcript,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
@@ -1844,6 +1852,11 @@ def _analyze(
         hl["suggested_top"] = suggested
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         timings["total_s"] = round(time.perf_counter() - t_start, 2)
+        # Text mode's line endings, as a plain write_text gave them; highlights.json last, so
+        # a cancel between the two leaves the previous pair's highlights.json unchanged.
+        cache.save_bytes(
+            out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
+        )
         out = out_dir / "highlights.json"
         cache.save_json(out, hl)  # once, atomically (temp file in the folder + os.replace)
         if ev:  # ranked with the events: a pre-events copy of an older analysis is stale

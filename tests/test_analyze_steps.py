@@ -53,7 +53,8 @@ def run(home, tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     state = SimpleNamespace(
         video=video, proj=proj, plan=analyze.LayerPlan(), fail=None, cancel=False,
-        events_calls=[], layers_seen=[], saves=[], vision_ok=True, rated=0,
+        events_calls=[], layers_seen=[], saves=[], vision_ok=True, rated=0, segments=[],
+        transcripts=[],
     )  # fmt: skip
 
     class StubTranscriber:
@@ -70,10 +71,11 @@ def run(home, tmp_path, monkeypatch):
             src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
         )
         cand = analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=50.0)
-        return analyze.SourceResult(src, info, 0.0, 60.0, [cand], [], None)
+        return analyze.SourceResult(src, info, 0.0, 60.0, [cand], list(state.segments), None)
 
     def fake_run_events(project, *, layers, stage, **kw):
         state.events_calls.append((project, tuple(layers), kw))
+        state.transcripts.append(common.load_transcript_lines(project))
         # the analysis in progress is visible, highlights.json is not written yet
         assert common.load_highlights(project)["candidates"]
         assert not (project / "highlights.json").exists() or state.old is not None
@@ -670,6 +672,67 @@ def test_a_cancel_leaves_the_previous_highlights_json_byte_identical(run, capsys
     last = progress_lines(capsys)[-1]
     assert last["state"] == "failed" and last["detail"] == "cancelled"
     assert last["step"] == ("reactions" if where == "reactions" else "vision")
+
+
+# ----------------------------------------------------------------- transcript.txt
+SPEECH = [
+    {"start": 1.0, "end": 2.5, "text": "Here we go."},
+    {"start": 4.0, "end": 5.0, "text": "again"},
+]
+
+
+def test_transcript_txt_is_written_at_the_end_and_the_layers_read_it_in_memory(run):
+    run.segments = SPEECH
+    run.plan = plan(reactions=("audio",))
+    run.go()
+    want = f"# {run.video}\n[a.mp4 00:00:01.0-00:00:02.5] Here we go.\n"
+    want += "[a.mp4 00:00:04.0-00:00:05.0] again\n"
+    assert (run.proj / "transcript.txt").read_text(encoding="utf-8") == want
+    (seen,) = run.transcripts  # before transcript.txt exists
+    assert [t["text"] for t in seen] == ["Here we go.", "again"]
+    assert seen == common.load_transcript_lines(run.proj)  # same as from the file after
+    assert [p.name for p in run.proj.iterdir() if p.name.startswith("transcript.txt.")] == []
+
+
+def test_without_layers_the_transcript_is_still_written(run):
+    run.go()
+    assert (run.proj / "transcript.txt").read_text(encoding="utf-8") == (
+        f"# {run.video}\n(no speech)\n"
+    )
+
+
+@pytest.mark.parametrize("where", ["keyframes", "vision"])
+def test_a_cancel_after_the_transcription_leaves_no_transcript_txt(run, where):
+    run.segments = SPEECH
+    run.plan = plan(keyframes=("visual",))
+    run.fail, run.cancel = ("visual" if where == "keyframes" else "vision"), True
+    with pytest.raises(KeyboardInterrupt):
+        run.go(vision=where == "vision")
+    if where == "keyframes":  # nothing written yet: the new project folder is removed too
+        assert not run.proj.exists()
+    else:  # events.json of the finished layers stays (the earlier behaviour)
+        assert sorted(p.name for p in run.proj.iterdir()) == ["events.json"]
+
+
+def test_a_cancel_leaves_the_previous_transcript_txt_byte_identical(run):
+    old = b"# old\r\n(no speech)\r\n"
+    write(run.proj / "transcript.txt", old)
+    run.segments = SPEECH
+    run.plan = plan(keyframes=("visual",))
+    run.fail, run.cancel = "visual", True
+    with pytest.raises(KeyboardInterrupt):
+        run.go()
+    assert (run.proj / "transcript.txt").read_bytes() == old
+
+
+def test_pending_transcript_is_parsed_only_inside_the_block(tmp_path):
+    write(tmp_path / "transcript.txt", "[a.mp4 00:00:01.0-00:00:02.0] file\n")
+    text = "# a.mp4\n[a.mp4 00:00:03.0-00:00:04.0] memory\n"
+    with common.pending_highlights(tmp_path, {"sources": []}, text):
+        assert [t["text"] for t in common.load_transcript_lines(tmp_path)] == ["memory"]
+    assert [t["text"] for t in common.load_transcript_lines(tmp_path)] == ["file"]
+    with common.pending_highlights(tmp_path, {"sources": []}):  # no text: the file
+        assert [t["text"] for t in common.load_transcript_lines(tmp_path)] == ["file"]
 
 
 # ----------------------------------------------------------------- background OCR (#375)
