@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import signal
 import tempfile
 from collections.abc import Collection, Iterator
 from functools import partial
@@ -74,7 +75,8 @@ class HeldOutputs:
         first (a temp file in its folder, missing folders created, the mode of
         :func:`match_mode`); if any of that fails, the temp files and the new folders are
         removed and the project is left untouched. Only then are the deletions made and the
-        temp files renamed onto their files (retried while locked, as :func:`save_bytes`)."""
+        temp files renamed onto their files (retried while locked, as :func:`save_bytes`), with
+        Ctrl+C, Ctrl+Break and SIGTERM deferred (:func:`_deferred_interrupts`)."""
         from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415 - it imports this module
 
         with contextlib.suppress(ValueError):
@@ -101,16 +103,62 @@ class HeldOutputs:
                         tmp.unlink(missing_ok=True)
                     staged = []
                     raise
-            for path, data in files.items():
-                if data is None:
-                    path.unlink(missing_ok=True)
-            for tmp, path in staged:
-                # os.replace, not Path.replace: tests patch cache.os.replace
-                retry_locked(partial(os.replace, tmp, path), path, "replace")
+            # A cancel in here takes effect once every file is in place: the project gets the
+            # whole new set, never part of it next to the old files.
+            with _deferred_interrupts():
+                for path, data in files.items():
+                    if data is None:
+                        path.unlink(missing_ok=True)
+                for tmp, path in staged:
+                    # os.replace, not Path.replace: tests patch cache.os.replace
+                    retry_locked(partial(os.replace, tmp, path), path, "replace")
         finally:
             for tmp, _ in staged:  # those not renamed (a rename failed or was interrupted)
                 with contextlib.suppress(OSError):
                     tmp.unlink(missing_ok=True)
+
+
+# Ctrl+C, and the stop signal the CLI raises KeyboardInterrupt for while a command runs:
+# Ctrl+Break on Windows, SIGTERM (a UI cancel) on POSIX
+_INTERRUPTS = (signal.SIGINT, signal.SIGBREAK if os.name == "nt" else signal.SIGTERM)
+
+
+@contextlib.contextmanager
+def _deferred_interrupts() -> Iterator[None]:
+    """Hold back Ctrl+C and Ctrl+Break or SIGTERM in the block: their handlers only note the
+    signal, and on leaving the block the previous handlers are put back and called for the
+    signals that arrived (the CLI's and Python's default SIGINT handler raise
+    KeyboardInterrupt; so does a default SIGBREAK here, instead of ending the process; a
+    default SIGTERM is sent again and ends it). Outside the main thread ``signal.signal``
+    raises ValueError, so nothing is deferred there."""
+    arrived: list[int] = []
+    previous: dict[int, Any] = {}
+    try:
+        with contextlib.suppress(ValueError):  # not the main thread
+            for signum in _INTERRUPTS:
+                if signal.getsignal(signum) is None:  # set outside Python: cannot be put back
+                    continue
+                previous[signum] = signal.signal(signum, lambda s, frame: arrived.append(s))
+        yield
+    finally:
+        error: BaseException | None = None
+        for signum, handler in previous.items():  # every one, even if one fails
+            for _ in range(2):  # once more if interrupted (another signal's handler)
+                try:
+                    signal.signal(signum, handler)
+                    break
+                except BaseException as err:  # noqa: BLE001 - raised below
+                    error = error or err
+        if error is not None:
+            raise error
+        for signum in dict.fromkeys(arrived):
+            handler = previous[signum]
+            if callable(handler):
+                handler(signum, None)
+            elif handler == signal.SIG_DFL and signum == signal.SIGTERM:
+                signal.raise_signal(signum)
+            elif handler == signal.SIG_DFL:
+                raise KeyboardInterrupt
 
 
 # Holds in force (cutpoint analyze holds its result files until it completes).

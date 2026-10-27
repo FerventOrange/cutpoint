@@ -92,12 +92,15 @@ WAV_HEADER = 44
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
-# Result files of the project written only when analyze completes, just before
-# transcript.txt and highlights.json (cache.hold_outputs): a failed or cancelled run leaves
-# the previous ones as they were and a first one none (#408). The steps read them from
-# memory meanwhile. Kept as written on purpose: discovery/ (HUD discovery's proposal, for the
-# preset it installs in the user's preset folder at once) and the caches outside the project.
+# Result files of the project written only when analyze completes, all in one commit
+# (cache.hold_outputs): a failed or cancelled run leaves the previous ones as they were and a
+# first one none (#408). The steps read them from memory meanwhile. Kept as written on
+# purpose: discovery/ (HUD discovery's proposal, for the preset it installs in the user's
+# preset folder at once) and the caches outside the project.
 HELD_OUTPUTS = (
+    "transcript.txt",
+    "highlights.json",
+    "highlights.pre-events.json",  # deleted once ranked with the events
     "events.json",
     "events.txt",
     "crashes.json",
@@ -1493,9 +1496,9 @@ def analyze(
     scene cuts), with ``layers`` the event layers of ``cutpoint events`` (reactions,
     keyframes and crashes, see :func:`plan_layers`; events.json is written so a later
     ``cutpoint events`` reuses their caches), ranking (the events rescore the candidates)
-    and the optional vision rating. highlights.json is written once, atomically, at the
-    end (transcript.txt and the :data:`HELD_OUTPUTS` such as events.json and crashes.json
-    just before it): a failed or cancelled run leaves the previous ones untouched.
+    and the optional vision rating. highlights.json is written once, at the end, with
+    transcript.txt and the other :data:`HELD_OUTPUTS` such as events.json and crashes.json
+    (one commit): a failed or cancelled run leaves the previous ones untouched.
 
     A source whose read stops early (ffmpeg "Error during demuxing", an I/O
     error, or audio meaningfully shorter than the container) gets a loud
@@ -1889,16 +1892,16 @@ def _analyze(
         hl["suggested_top"] = suggested
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         timings["total_s"] = round(time.perf_counter() - t_start, 2)
-        held.commit()  # events.json, crashes.json, ... (HELD_OUTPUTS)
         # Text mode's line endings, as a plain write_text gave them; highlights.json last, so
-        # a cancel between the two leaves the previous pair's highlights.json unchanged.
+        # the commit renames it last.
         cache.save_bytes(
             out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
         )
         out = out_dir / "highlights.json"
-        cache.save_json(out, hl)  # once, atomically (temp file in the folder + os.replace)
+        cache.save_json(out, hl)
         if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
-            (out_dir / "highlights.pre-events.json").unlink(missing_ok=True)
+            cache.remove(out_dir / "highlights.pre-events.json")
+        held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
         logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, timings["total_s"])
         report_highlights(out_dir, out)
         return out

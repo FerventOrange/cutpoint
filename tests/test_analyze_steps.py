@@ -6,7 +6,9 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import signal
 import sys
+import threading
 import time
 from fractions import Fraction
 from pathlib import Path
@@ -877,11 +879,12 @@ def test_hold_outputs_keeps_writes_and_deletions_in_memory_until_commit(tmp_path
     assert cache.load_json(keep) == {"v": "after"}
 
 
-@pytest.mark.parametrize("fail", ["stage", "rename"])
+@pytest.mark.parametrize("fail", ["stage", "rename", "cancel+rename"])
 def test_a_failed_commit_leaves_the_project_untouched(tmp_path, monkeypatch, fail):
     """F1: every file is staged before anything is deleted or renamed; a failure while
     staging (the second file) leaves the old tree byte-identical, with no temp file or new
-    folder. A failed rename removes the temp files that were not renamed."""
+    folder. A failed rename removes the temp files that were not renamed; with a Ctrl+C
+    before it, the KeyboardInterrupt follows the error. The signal handlers are put back."""
     write(tmp_path / "a.json", b'{"v": "old"}')
     write(tmp_path / "sheets" / "old.jpg", b"jpg")
     old = tree(tmp_path)
@@ -896,18 +899,28 @@ def test_a_failed_commit_leaves_the_project_untouched(tmp_path, monkeypatch, fai
 
     def replace(src, dst):
         if Path(dst).name == "x.bin":
+            if fail == "cancel+rename":
+                signal.raise_signal(signal.SIGINT)
             raise OSError("locked")
         real_replace(src, dst)
 
     monkeypatch.setattr(cache, "match_mode", mode)
-    if fail == "rename":
+    if fail != "stage":
         monkeypatch.setattr(cache.os, "replace", replace)
+    before = {s: signal.getsignal(s) for s in cache._INTERRUPTS}
     with cache.hold_outputs(tmp_path, ["a.json", "sheets", "sub"]) as held:
         cache.save_json(tmp_path / "a.json", {"v": "new"})
         cache.save_bytes(tmp_path / "sub" / "deep" / "x.bin", b"x")
         cache.remove(tmp_path / "sheets" / "old.jpg")
-        with pytest.raises(OSError, match="disk full" if fail == "stage" else "locked"):
-            held.commit()
+        if fail == "cancel+rename":
+            with pytest.raises(KeyboardInterrupt) as got:
+                held.commit()
+            assert isinstance(got.value.__context__, OSError)
+            assert str(got.value.__context__) == "locked"
+        else:
+            with pytest.raises(OSError, match="disk full" if fail == "stage" else "locked"):
+                held.commit()
+    assert {s: signal.getsignal(s) for s in cache._INTERRUPTS} == before
     leftovers = [p.name for p in tmp_path.rglob("*.tmp")]
     assert leftovers == []
     if fail == "stage":
@@ -915,6 +928,68 @@ def test_a_failed_commit_leaves_the_project_untouched(tmp_path, monkeypatch, fai
         assert tree(tmp_path) == old and not (tmp_path / "sub").exists()
     else:  # deletions and the renames before the failed one are made
         assert json.loads((tmp_path / "a.json").read_text(encoding="utf-8")) == {"v": "new"}
+
+
+@pytest.mark.parametrize("sig", ["SIGINT", "SIGBREAK", "SIGTERM"])
+def test_a_cancel_during_the_commit_renames_every_file_then_interrupts(tmp_path, monkeypatch, sig):
+    """Ctrl+C (or the CLI's Ctrl+Break, or its SIGTERM on POSIX) arriving between two renames
+    waits for the last one: the project gets the whole new set, then KeyboardInterrupt, and
+    the handlers are put back."""
+    if sig not in {"SIGINT", "SIGBREAK" if os.name == "nt" else "SIGTERM"}:
+        pytest.skip(f"the CLI does not stop on {sig} here")
+    write(tmp_path / "a.json", b'{"v": "old"}')
+    write(tmp_path / "b.json", b'{"v": "old"}')
+    write(tmp_path / "sheets" / "old.jpg", b"jpg")
+    signum, real_replace = getattr(signal, sig), cache.os.replace
+    renamed = []
+
+    def replace(src, dst):
+        if not renamed:  # a cancel after the deletion, before a rename
+            signal.raise_signal(signum)
+        real_replace(src, dst)
+        renamed.append(Path(dst).name)
+
+    monkeypatch.setattr(cache.os, "replace", replace)
+    with contextlib.ExitStack() as stack:
+        if sig != "SIGINT":
+            stack.enter_context(cli._stop_signal_as_interrupt())
+        before = {s: signal.getsignal(s) for s in cache._INTERRUPTS}
+        with cache.hold_outputs(tmp_path, ["a.json", "b.json", "sheets"]) as held:
+            cache.save_json(tmp_path / "a.json", {"v": "new"})
+            cache.save_json(tmp_path / "b.json", {"v": "new"})
+            cache.remove(tmp_path / "sheets" / "old.jpg")
+            with pytest.raises(KeyboardInterrupt):
+                held.commit()
+        assert {s: signal.getsignal(s) for s in cache._INTERRUPTS} == before
+    assert renamed == ["a.json", "b.json"]
+    assert sorted(tree(tmp_path)) == ["a.json", "b.json"]
+    for name in renamed:
+        assert json.loads((tmp_path / name).read_text(encoding="utf-8")) == {"v": "new"}
+
+
+def test_a_commit_off_the_main_thread_defers_nothing(tmp_path, monkeypatch):
+    """signal.signal works only on the main thread: elsewhere the commit runs as it is."""
+    before, seen, errors = signal.getsignal(signal.SIGINT), [], []
+    real_replace = cache.os.replace
+
+    def replace(src, dst):
+        seen.append(signal.getsignal(signal.SIGINT))
+        real_replace(src, dst)
+
+    def commit():
+        try:
+            held.commit()
+        except BaseException as err:  # noqa: BLE001 - reported to the test below
+            errors.append(err)
+
+    monkeypatch.setattr(cache.os, "replace", replace)
+    with cache.hold_outputs(tmp_path, ["a.json"]) as held:
+        cache.save_json(tmp_path / "a.json", {"v": "new"})
+        thread = threading.Thread(target=commit)
+        thread.start()
+        thread.join()
+    assert errors == [] and seen == [before]
+    assert json.loads((tmp_path / "a.json").read_text(encoding="utf-8")) == {"v": "new"}
 
 
 def test_result_files_are_written_at_the_end_and_read_from_memory_meanwhile(run, monkeypatch):
@@ -1011,6 +1086,45 @@ def test_a_cancel_at_any_step_leaves_the_result_files_as_they_were(
         assert tree(run.proj) == old
     else:
         assert not run.proj.exists()
+
+
+def test_a_cancel_during_the_final_commit_leaves_every_result_file_new(run, monkeypatch):
+    """Ctrl+C between the renames of the final commit: transcript.txt and highlights.json
+    are new too, with events.json and the rest, then the run is cancelled."""
+    old = {
+        **OLD_FILES,
+        "highlights.json": b'{"style": "old", "candidates": []}',
+        "highlights.pre-events.json": b"{}",
+        "transcript.txt": b"[a.mp4 00:00:00.0-00:00:01.0] old\r\n",
+    }
+    for name, data in old.items():
+        write(run.proj / name, data)
+    run.old = old["highlights.json"]
+    run.segments = SPEECH
+    run.events = [{**LAUGH, "source": str(run.video)}]
+    run.plan = plan(**ALL_LAYERS)
+    real_replace, renamed = cache.os.replace, []
+
+    def replace(src, dst):
+        if not renamed:
+            signal.raise_signal(signal.SIGINT)
+        real_replace(src, dst)
+        renamed.append(Path(dst).name)
+
+    monkeypatch.setattr(cache.os, "replace", replace)
+    with pytest.raises(KeyboardInterrupt):
+        run.go("action")
+    assert renamed[-1] == "highlights.json"
+    got = tree(run.proj)
+    assert sorted(got) == [
+        "activity.json", "crash_check/c001_a_10.jpg", "crashes.json", "events.json",
+        "events.txt", "highlights.json", "ski_features/old-0123abcd.npz", "telemetry.json",
+        "transcript.txt",
+    ]  # fmt: skip
+    for name in ["activity.json", "crashes.json", "events.json", "events.txt"]:
+        assert got[name] != old[name]
+    assert json.loads(got["highlights.json"])["candidates"][0]["id"] == "h001"
+    assert b"Here we go." in got["transcript.txt"]
 
 
 @pytest.mark.parametrize("cancel", [False, True])
