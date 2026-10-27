@@ -230,6 +230,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/commands.md` lists measured analysis costs (GPU and CPU), how to force a CPU run with
   `CUDA_VISIBLE_DEVICES=-1`, and that no cache key includes the device (the transcript is reused
   only with the same `--model`).
+- `clips` and `edit` take `--lut FILE` (a `.cube` or `.3dl` 3D LUT) and `--lut-strength 0-1`
+  (default 1) to grade every clip, `360` renders included, with ffmpeg `lut3d` (tetrahedral)
+  after the BT.709 conversion; below 1 the grade is blended over the ungraded picture. Use the
+  LUT made for the footage's log or flat profile (for example GoPro Flat to Rec.709); Cutpoint
+  ships none. The file is checked before any work (`not_found` when missing, `bad_args` for
+  another extension, a LUT ffmpeg cannot load or a strength outside 0-1). `clips/manifest.json`
+  records `lut` (absolute path) and `lut_strength` per clip, and `extend` grades its
+  re-exports the same way. Without `--lut` the output is unchanged (#290).
 
 ### Changed
 

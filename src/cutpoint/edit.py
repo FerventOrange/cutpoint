@@ -20,6 +20,7 @@ from pathlib import Path
 from cutpoint import cache, jsonout, progress
 from cutpoint.assemble import assemble
 from cutpoint.clips import export_clips
+from cutpoint.encode import Lut
 from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
 from cutpoint.styles import get_style
 from cutpoint.utils import file_stamp, find_videos, input_name
@@ -109,6 +110,7 @@ def run_edit(
     ollama_model: str | None = None,
     skip: Collection[str] = (),
     compress_peaks: str = "off",
+    lut: Lut | None = None,
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
@@ -118,7 +120,8 @@ def run_edit(
     (opt-in: None or False rates nothing with Ollama); ``vision_top``, ``ollama_url``,
     ``ollama_model`` and ``skip`` are analyze's options of those names. ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
-    without compressing twice.
+    without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
+    as ``clips --lut`` does; the final keeps the grade.
 
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
@@ -147,6 +150,7 @@ def run_edit(
             ollama_model=ollama_model,
             skip=skip,
             compress_peaks=compress_peaks,
+            lut=lut,
         )
 
 
@@ -165,6 +169,7 @@ def _run_edit(
     ollama_model: str | None,
     skip: Collection[str],
     compress_peaks: str,
+    lut: Lut | None,
 ) -> Path:
     """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
@@ -218,6 +223,7 @@ def _run_edit(
             vertical=vertical,
             force=force,
             compress_peaks=compress_peaks,
+            lut=lut,
         )
     steps.start("assemble")
     srt = (project / final_name).with_suffix(".srt")

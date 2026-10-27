@@ -40,6 +40,7 @@ from cutpoint.config import (
 )
 from cutpoint.crash import CrashParams, detect_project
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
+from cutpoint.encode import LUT_SUFFIXES, Lut, check_lut
 from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.ffmpeg_utils import FFmpegError
@@ -78,6 +79,33 @@ def _add_compress_peaks_argument(p: argparse.ArgumentParser, what: str) -> None:
         f"even out loudness between clips, {what}; light or strong (default: compress_peaks "
         "in config.json, else off)",
     )
+
+
+def _add_lut_arguments(p: argparse.ArgumentParser) -> None:
+    """``--lut FILE`` and ``--lut-strength 0-1`` (see cutpoint.encode.lut_filter)."""
+    p.add_argument(
+        "--lut",
+        metavar="FILE",
+        help=f"grade every clip with this 3D LUT ({' or '.join(LUT_SUFFIXES)}), applied to "
+        "BT.709 video: use the LUT made for the footage's log or flat profile (e.g. GoPro "
+        "Flat to Rec.709). Recorded in clips/manifest.json; default: no grade",
+    )
+    p.add_argument(
+        "--lut-strength",
+        type=unit_float,
+        metavar="0-1",
+        help="how much of the --lut grade to apply, blended with the ungraded video (default: 1)",
+    )
+
+
+def _lut(a: argparse.Namespace) -> Lut | None:
+    """The checked ``--lut`` grade (:func:`~cutpoint.encode.check_lut`), None without --lut."""
+    if a.lut is None:
+        if a.lut_strength is not None:
+            raise jsonout.ArgumentError("--lut-strength needs --lut")
+        return None
+    strength = 1.0 if a.lut_strength is None else a.lut_strength
+    return check_lut(resolve_project_path(a.lut, bare_names=False), strength)
 
 
 def _add_skip_argument(p: argparse.ArgumentParser) -> None:
@@ -137,6 +165,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.out) if a.out else projects_dir() / edit_name(targets[0])
     jsonout.set_project(project)
     jsonout.output("kind", a.kind)
+    lut = _lut(a)  # before hours of analysis
     run_edit(
         targets,
         project,
@@ -150,6 +179,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         ollama_model=a.ollama_model,
         skip=_skip(a),
         compress_peaks=_compress_peaks(a),
+        lut=lut,
     )
 
 
@@ -169,6 +199,7 @@ def _segments_where(text: str, given: PurePath, segments: Path) -> str:
 def _cmd_clips(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.project)
     jsonout.set_project(project)
+    lut = _lut(a)
     segments = resolve_project_path(a.segments, bare_names=False) if a.segments else None
     if segments is not None and not a.mix and not segments.is_file():
         if segments.is_dir():
@@ -207,6 +238,7 @@ def _cmd_clips(a: argparse.Namespace) -> None:
         pano_cmd_every=a.pano_cmd_every,
         size=a.size,
         compress_peaks=_compress_peaks(a),
+        lut=lut,
     )
 
 
@@ -860,6 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ollama_arguments(ed)
     _add_skip_argument(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
+    _add_lut_arguments(ed)
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit)
 
@@ -1011,6 +1044,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_speech_arguments(cl, "on, per style")
     _add_pano_arguments(cl, "auto")
     _add_compress_peaks_argument(cl, "baked into every clip with a true-peak limiter")
+    _add_lut_arguments(cl)
     _add_json_argument(cl)
     cl.set_defaults(func=_cmd_clips)
 

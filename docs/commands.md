@@ -305,7 +305,8 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--top N] [--max-total S] [--vertical] [--force] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
               [--ollama-model MODEL] [--skip STEP [STEP ...]]
-              [--compress-peaks off|light|strong] [--json]
+              [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
+              [--json]
 ```
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
@@ -332,6 +333,7 @@ one of them is refused.
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
+| `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 With `CUTPOINT_PROGRESS=1`, `edit` reports 8 [steps](#progress-output): the 6 of `analyze`, then `clips` and `assemble`. `--kind clips` still assembles. With `--events`, `keyframes` is reported again after `vision`, for the VLM layer.
@@ -558,6 +560,8 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 | `--speech-aware` / `--no-speech-aware`, `--speech-max-extend`, `--speech-max-lead` | Move in/out points to utterance boundaries |
 | `--audio-fade S` | Audio fade baked into each clip (default 0.25, 0 = off) |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression) baked into each clip, then a true-peak limiter (default: `compress_peaks` in `config.json`, else off) |
+| `--lut FILE` | Grade every clip with a 3D LUT (`.cube` or `.3dl`), see **LUT grade** below. Default: no grade |
+| `--lut-strength 0-1` | How much of the `--lut` grade to apply, blended with the ungraded picture (default 1; needs `--lut`) |
 | `--out DIR`, `--force` | Output folder; replace the clips an earlier run made in a non-empty folder |
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
@@ -611,7 +615,19 @@ Notes:
   (below 720 lines and 1280 columns) without a matrix tag. HD footage without a matrix tag is
   taken as BT.709 and only tagged; its pixels do not change, nor do those of BT.709 footage.
   `360` renders do the same.
-- `manifest.json` records each clip's source, start, end, score, label, tail, crop, padding,
+- **LUT grade.** `--lut FILE` applies a 3D LUT (`.cube` or `.3dl`; Cutpoint ships none) to
+  every clip, `360` renders included, after the BT.709 conversion above: the frames go to RGB
+  with the BT.709 matrix, through ffmpeg `lut3d` (tetrahedral) and back to BT.709 limited
+  range. Use the LUT made for the footage's log or flat profile and for Rec.709 output (for
+  example GoPro Flat or GP-Log to Rec.709); a LUT on footage it was not made for distorts the
+  colors, and Cutpoint cannot tell. `--lut-strength` below 1 blends the graded picture over the
+  ungraded one. The file is checked before any work: a missing file is `not_found`; another
+  extension, a LUT ffmpeg cannot load or a strength outside 0-1 is `bad_args`. Each clip
+  records the LUT's absolute path and strength (`lut`, `lut_strength`), and `extend` grades the
+  clips it re-exports the same way (it stops before exporting if the LUT has moved); a
+  `clips --force` re-run needs `--lut` again. `assemble` leaves graded clips as they are. On a
+  1080p30 export from 4K GoPro footage the grade added about 0.2 s per second of clip.
+- `manifest.json` records each clip's source, start, end, score, label, tail, crop, LUT grade, padding,
   speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and
   `assemble` read it. Manifests without `size` or `generator` (written by earlier versions)
   still work; their clips are matched by name only.
@@ -644,8 +660,10 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   `extend`, `extend_start` or `extend_end` for matching file names, for example
   `--clip-override 005_* speech_max_extend=45`.
 - `--json` writes the result as one [JSON envelope](#json-output) on stdout.
+- A clip exported with `clips --lut` is graded again with the LUT and strength its manifest
+  entry records; if that file is gone, the run stops before exporting (`not_found`).
 - `--reuse DIR` copies a clip from an earlier output instead of re-encoding when source, in/out
-  points, crop, format and fade are identical.
+  points, crop, LUT grade, format and fade are identical.
 - The original folder is never overwritten unless you pass `--out <clips_dir> --force`. Then
   the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
   or a clip locked by another program, leaves the original clips as they were. The same holds for
