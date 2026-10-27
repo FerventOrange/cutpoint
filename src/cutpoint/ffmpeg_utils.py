@@ -22,11 +22,13 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import wave
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -1291,6 +1293,261 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
         logger.warning("Could not remove %s (%s); the next run removes it", bak, err)
     with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
         new.rmdir()
+
+
+# --- one run at a time per folder (``clips``, ``extend``, ``assemble``)
+#
+# Each run holds the lock file ``.<name>.cutpoint-lock`` next to the folder (beside its
+# staging and backup folders) while it recovers, exports and swaps, so a second run never
+# removes the first one's staging folder. The file is created atomically (O_EXCL) and holds
+# the run's process id, host and a token; it is removed on exit, Ctrl+C included. One left by
+# a hard kill is stale once its process is gone, and the next run on the same host takes it.
+
+_LOCK_UNWRITTEN_S = 30.0  # an empty lock older than this was never written (a hard kill)
+_HELD_LOCKS: set[str] = set()  # path_key of the locks this process holds
+
+
+class FolderBusyError(RuntimeError):
+    """Another cutpoint run holds the lock of the folder (see :func:`swap_lock`)."""
+
+
+def lock_path(dst: Path) -> Path | None:
+    """Lock file of ``dst``: ``.<name>.cutpoint-lock`` next to it (None for a drive root,
+    which nothing is ever staged next to)."""
+    res = dst.resolve()
+    return res.with_name(f".{res.name}.cutpoint-lock") if res.name else None
+
+
+def _win_created(k32: Any, handle: Any) -> float | None:
+    """Creation time (epoch seconds) of the Windows process ``handle``, or None."""
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    times = [wintypes.FILETIME() for _ in range(4)]  # creation, exit, kernel, user
+    k32.GetProcessTimes.argtypes = (wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4)
+    if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+        return None
+    ft = times[0].dwHighDateTime << 32 | times[0].dwLowDateTime  # 100 ns since 1601
+    return (ft - 116444736000000000) / 1e7
+
+
+def _pid_alive(pid: int, not_after: float | None = None) -> bool:
+    """Whether the process ``pid`` is running (True when that cannot be told).
+
+    ``not_after``: on Windows, which reuses process ids quickly, a process created after
+    this time (epoch seconds, the lock file's mtime) is another one that got the id: False.
+    """
+    if pid <= 0 or pid > 0xFFFFFFFF:
+        return False
+    if sys.platform == "win32":
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # 87 (ERROR_INVALID_PARAMETER): no such process; anything else (5, access
+            # denied, for a protected or another user's process): it exists
+            return ctypes.get_last_error() != 87
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            if code.value != 259:  # STILL_ACTIVE
+                return False
+            created = _win_created(k32, handle) if not_after is not None else None
+            return created is None or not_after is None or created <= not_after
+        finally:
+            k32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)  # signal 0 only checks (on Windows os.kill would terminate it)
+    except ProcessLookupError:
+        return False
+    except OSError:  # PermissionError: it exists, owned by another user
+        return True
+    return True
+
+
+def _read_lock(lock: Path) -> tuple[bytes, dict[str, Any] | None] | None:
+    """``(raw bytes, parsed record or None)`` of ``lock``, or None if it is gone."""
+    try:
+        raw = lock.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:  # being written or removed right now (Windows): treat as unreadable
+        return b"", None
+    try:
+        rec = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return raw, None
+    return raw, rec if isinstance(rec, dict) and isinstance(rec.get("pid"), int) else None
+
+
+def _lock_stale(lock: Path, rec: dict[str, Any] | None) -> bool:
+    """Whether the lock ``lock`` with the record ``rec`` belongs to no running process."""
+    if rec is None:  # empty or garbled: a run is writing it, or one was killed before it did
+        try:
+            return time.time() - lock.stat().st_mtime > _LOCK_UNWRITTEN_S
+        except OSError:
+            return False
+    if rec.get("host") != socket.gethostname():  # a run on another computer: cannot tell
+        return False
+    if rec["pid"] == os.getpid():  # this process: held by a run still going, else left over
+        return path_key(str(lock)) not in _HELD_LOCKS
+    try:
+        written = lock.stat().st_mtime
+    except OSError:
+        written = None
+    return not _pid_alive(rec["pid"], written)
+
+
+def _busy_error(dst: Path, lock: Path, rec: dict[str, Any] | None) -> FolderBusyError:
+    if rec is None:
+        who = "Another cutpoint run is starting on"
+    else:
+        host = rec.get("host")
+        on = f" on {host}" if host and host != socket.gethostname() else ""
+        since = f", started {rec['started']}" if rec.get("started") else ""
+        who = f"Another cutpoint run (process {rec['pid']}{on}{since}) is using"
+    return FolderBusyError(
+        f"{who} {dst}. Wait until it has finished, or stop it, and run again. If no other run "
+        f"is active, delete {lock} and run again."
+    )
+
+
+def _take_stale(lock: Path, raw: bytes) -> None:
+    """Remove the stale lock ``lock`` whose content was ``raw``.
+
+    It is first renamed to a name of this process, so of two runs that both found it stale,
+    only one removes it; a lock that another run created meanwhile is put back.
+    """
+    moved = lock.with_name(f"{lock.name}.{os.getpid()}.stale")
+    try:
+        lock.replace(moved)
+    except OSError:  # another run took it first, or has it open (Windows): try again
+        return
+    try:
+        if moved.read_bytes() == raw:
+            moved.unlink()
+            logger.info("Removed %s, left by a cutpoint run that is no longer running", lock)
+            return
+    except OSError:
+        pass
+    with suppress(OSError):  # a fresh lock of another run: give it back
+        moved.rename(lock)
+
+
+def _dir_writable(folder: Path) -> bool:
+    """Whether a file can be created in ``folder`` (a probe file, removed again)."""
+    try:
+        fd, name = tempfile.mkstemp(dir=folder, prefix=".cutpoint-probe.")
+    except OSError:
+        return False
+    os.close(fd)
+    with suppress(OSError):
+        Path(name).unlink()
+    return True
+
+
+def _open_lock(lock: Path) -> int | None:
+    """Create ``lock`` exclusively and return its descriptor, or None if its folder is
+    read-only (nothing can be staged there either, so there is nothing to protect).
+
+    A PermissionError is retried briefly: on Windows a lock another run is removing is
+    "delete pending" for a moment.
+
+    Raises:
+        FileExistsError: If another run's lock is there.
+        PermissionError: If the folder is writable but the lock still cannot be created.
+        OSError: Any other error.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            return os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            raise
+        except OSError as err:
+            if err.errno == errno.EROFS:
+                return None
+            if err.errno not in (errno.EACCES, errno.EPERM):
+                raise
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+                continue
+            if not _dir_writable(lock.parent):
+                return None
+            raise PermissionError(
+                f"Cannot create the lock file {lock}: {err.strerror or err}. If no other "
+                "cutpoint run is active, delete it and run again."
+            ) from err
+    raise AssertionError("unreachable")
+
+
+@contextmanager
+def swap_lock(dst: Path) -> Iterator[None]:
+    """Hold the lock of the folder ``dst`` (:func:`lock_path`) for one run.
+
+    Missing parent folders are created (removed again on failure while empty, as
+    :func:`output_dir`). The lock is removed on exit, Ctrl+C included; one left by a run that
+    was killed hard is taken over once its process is gone (same host only).
+
+    Raises:
+        FolderBusyError: If another run holds it, naming its process and the lock file.
+    """
+    lock = lock_path(dst)
+    if lock is None:
+        yield
+        return
+    with output_dir(lock.parent):
+        token = uuid.uuid4().hex
+        data = json.dumps(
+            {
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "token": token,
+            }
+        ).encode("utf-8")
+        for _ in range(3):
+            try:
+                fd = _open_lock(lock)
+            except FileExistsError:
+                found = _read_lock(lock)
+                if found is None:  # removed meanwhile: try again
+                    continue
+                raw, rec = found
+                if not _lock_stale(lock, rec):
+                    raise _busy_error(dst, lock, rec) from None
+                _take_stale(lock, raw)
+                continue
+            if fd is None:
+                logger.info("Not locking %s: %s is read-only", dst, lock.parent)
+                yield
+                return
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            break
+        else:
+            found = _read_lock(lock)
+            raise _busy_error(dst, lock, found[1] if found else None)
+        key = path_key(str(lock))
+        _HELD_LOCKS.add(key)
+        try:
+            yield
+        finally:
+            _HELD_LOCKS.discard(key)
+            found = _read_lock(lock)
+            if found is not None and found[0] == data:  # never another run's lock
+                try:
+                    retry_locked(lock.unlink, lock, "delete")
+                except OSError as err:  # a stale lock: the next run takes it over
+                    logger.warning("Could not remove %s (%s)", lock, err)
 
 
 def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:

@@ -325,7 +325,9 @@ def qa_path_clip(item: dict[str, Any], pv: Any, fps: float, th: Q.QAThresholds) 
         r["t"] = round(float(t - off), 2)
         r["target"] = tg
     pan = Q.pan_metrics(path, off, dur)
-    hor = Q.horizon_summary(Q.horizon(item, off + np.arange(0.0, dur, 1 / 30.0)))
+    hor = Q.horizon_summary(
+        Q.horizon(item, off + np.arange(0.0, dur, 1 / 30.0)), Q.horizon_source(item)
+    )
     return Q.clip_record(item, dur, recs, fps, pan, hor, th)
 
 

@@ -10,6 +10,8 @@ import logging
 import ntpath
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
@@ -37,8 +39,20 @@ from cutpoint.ffmpeg_utils import (
     source_keys,
     staged_dir,
     swap_in,
+    swap_lock,
 )
-from cutpoint.planning import Padding, pad, report_clips, select_moments, speech_pass
+from cutpoint.planning import (
+    MANIFEST_GENERATOR,
+    Padding,
+    check_own_manifest,
+    file_size,
+    kept_why,
+    manifest_entries,
+    pad,
+    report_clips,
+    select_moments,
+    speech_pass,
+)
 from cutpoint.styles import Style, get_style
 from cutpoint.tail import TailResult, TailSettings, smart_tail
 from cutpoint.utils import clip_files, seconds_keys, slugify
@@ -724,13 +738,16 @@ def _entry(
     audio_fade: float,
     peaks: str = "",
     makeup: float | None = None,
+    size: int | None = None,
 ) -> dict[str, Any]:
     """manifest.json record of one rendered clip (``peaks``: its :func:`peak_filters` preset,
     recorded as ``compress_peaks`` when the clip got compression, with its ``makeup`` gain as
-    ``compress_peaks_makeup_db``)."""
+    ``compress_peaks_makeup_db``; ``size``: the clip's size in bytes, see
+    :func:`manifest_entries`)."""
     m, src, start, end = plan.entry, plan.src, plan.start, res.end
     return {
         "file": plan.name,
+        "size": size,
         "id": m["id"],
         "source": m["source"],
         **({"read_from": str(src)} if str(src) != m["source"] else {}),
@@ -793,7 +810,7 @@ def write_manifest(
     peaks = peaks or [""] * len(plans)
     makeup = makeup or [None] * len(plans)
     entries = [
-        _entry(p, r, audio_fade, compress_peaks if f else "", m)
+        _entry(p, r, audio_fade, compress_peaks if f else "", m, file_size(out_dir / p.name))
         for p, r, f, m in zip(plans, results, peaks, makeup, strict=True)
     ]
     logger.info(
@@ -806,6 +823,7 @@ def write_manifest(
     cache.save_json(
         out_dir / "manifest.json",
         {
+            "generator": MANIFEST_GENERATOR,
             "created": datetime.now().isoformat(timespec="seconds"),
             "project": str(project.resolve()),
             "order": order,
@@ -835,7 +853,7 @@ def write_manifest(
 
 def _replaced_files(
     out_dir: Path, new: list[str], sources: set[Any]
-) -> tuple[list[str], list[str], list[str], bool, set[str]]:
+) -> tuple[list[str], list[str], list[str], bool, set[str], dict[str, str]]:
     """What ``--force`` replaces in ``out_dir`` besides the clip names ``new`` this run writes.
 
     Only files an earlier run made are replaced: the clips and their ``.srt`` subtitles
@@ -844,20 +862,24 @@ def _replaced_files(
     other ``.mp4``, so a name in ``new`` that is such a file stops the run
     (:func:`~cutpoint.srt.check_unlisted_clips`). Every other ``.srt`` (all of them without
     a readable manifest.json) is protected: :func:`render_clips` writes no subtitles under
-    its name.
+    its name. A manifest.json cutpoint did not write stops the run
+    (:func:`check_own_manifest`).
 
     Returns:
         ``(names to replace, .mp4 kept as sources of this run, other .mp4 kept, whether
-        the old manifest.json was readable, path_key of the protected .srt names)``.
+        the old manifest.json was readable, path_key of the protected .srt names, the
+        exported name of each kept clip renamed during review)``.
 
     Raises:
         ValueError: If a name in ``new`` is a source of this run (before any export).
         FileExistsError: If a name in ``new`` is another ``.mp4`` the old manifest.json
-            does not list (before any export).
+            does not list, or that manifest.json is not one cutpoint wrote (before any
+            export).
     """
     check_not_sources(out_dir, new, sources)
     if not out_dir.is_dir():
-        return [], [], [], True, set()
+        return [], [], [], True, set(), {}
+    check_own_manifest(out_dir)
     listed = srt.listed_files(out_dir)
     srt.check_unlisted_clips(out_dir, new, listed)
     if listed is None and any(out_dir.iterdir()):
@@ -898,7 +920,33 @@ def _replaced_files(
     for p in sorted(clip_files(out_dir)):
         if path_key(p.name) not in done:
             (kept_sources if same_file(p, sources) else kept).append(p.name)
-    return replace, kept_sources, kept, listed is not None, srt.unlisted_srts(out_dir, listed)
+    entries = manifest_entries(out_dir, [out_dir / n for n in kept])
+    renamed = {n: e["file"] for n, e in entries.items() if e["file"] != n}
+    return (
+        replace,
+        kept_sources,
+        kept,
+        listed is not None,
+        srt.unlisted_srts(out_dir, listed),
+        renamed,
+    )
+
+
+@contextmanager
+def _claimed(out_dir: Path, force: bool) -> Iterator[None]:
+    """Hold the lock of ``out_dir`` (:func:`swap_lock`: one run at a time, as another would
+    remove this one's staging folder), finish a hard-killed earlier replace there
+    (:func:`recover_swap`), then refuse a non-empty ``out_dir`` without ``force``.
+
+    Raises:
+        FolderBusyError: If another run is using ``out_dir``.
+        FileExistsError: If ``out_dir`` is not empty and ``force`` is False.
+    """
+    with swap_lock(out_dir):
+        recover_swap(out_dir)  # before the folder is looked at
+        if not force and out_dir.exists() and any(out_dir.iterdir()):
+            raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
+        yield
 
 
 def export_clips(
@@ -1029,17 +1077,17 @@ def export_clips(
     )
     project_cfg = cache.load_json(project / "project.json")
     out_dir = out_dir or project / ("clips_vertical" if vertical else "clips")
-    recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
-    non_empty = out_dir.exists() and any(out_dir.iterdir())
-    if non_empty and not force:
-        raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
     # The clips are exported into a hidden staging folder and swapped in only when all
     # succeeded, so a failed or cancelled run (--force included) leaves the folder as it was.
     # A run that fails leaves no empty folders behind. staged_dir refuses a drive root, a
     # mount point or a bind mount before any export; only an empty one is exported into
     # directly (each clip under a temporary name until complete; a failed run keeps the
     # finished clips).
-    with output_dir(out_dir.parent), staged_dir(out_dir, direct_if_empty=True) as work:
+    with (
+        _claimed(out_dir, force),
+        output_dir(out_dir.parent),
+        staged_dir(out_dir, direct_if_empty=True) as work,
+    ):
         from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
         pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
@@ -1096,7 +1144,7 @@ def export_clips(
             language=language,
         )
         # --force replaces only what an earlier run made, never a file this run reads.
-        replace, kept_sources, kept, had_manifest, protected_srts = _replaced_files(
+        replace, kept_sources, kept, had_manifest, protected_srts, renamed = _replaced_files(
             out_dir,
             [p.name for p in plans],
             source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
@@ -1143,11 +1191,7 @@ def export_clips(
         logger.warning("%s", message)
         jsonout.warn("kept_sources", message, [out_dir / n for n in kept_sources])
     if kept:
-        why = (
-            "the old manifest.json does not list them (renamed during review or added by hand)"
-            if had_manifest
-            else "not replaced because there is no readable manifest.json"
-        )
+        why = kept_why(kept, renamed, had_manifest)
         message = f"Kept {', '.join(kept)} in {out_dir}: {why}; {hint}"
         logger.warning("%s", message)
         jsonout.warn("kept_clips", message, [out_dir / n for n in kept])

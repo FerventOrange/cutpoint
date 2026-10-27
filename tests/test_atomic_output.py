@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import hard_link, link_file, media_info, messages, remap, write
+from conftest import hard_link, link_file, media_info, messages, remap, run_json, write
 from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning
 from cutpoint.ffmpeg_utils import FFmpegError
 
@@ -884,9 +885,17 @@ def test_clips_force_without_a_readable_manifest_replaces_no_clip(
     project = _setup(home, monkeypatch)
     _segments(project / "seg.json", project / "src.mp4")
     out = _write_old_set(project, manifest)
-    before = _snapshot(out)
     exported = []
     monkeypatch.setattr(clips, "export_clip_checked", lambda *a, **_kw: exported.append(a))
+    if manifest is not None:  # #145: an unreadable manifest.json may not be cutpoint's
+        before = _snapshot(out)
+        assert cli.main(_argv("clips", project, "--force")) == 1
+        assert "manifest.json may not be one cutpoint wrote" in _errors(caplog)
+        assert not exported
+        assert _snapshot(out) == before
+        (out / "manifest.json").rename(out / "manifest.mine.json")
+        caplog.clear()
+    before = _snapshot(out)
     assert cli.main(_argv("clips", project, "--force")) == 1
     assert "001_a.mp4" in _errors(caplog)
     assert "no readable manifest.json" in _errors(caplog)
@@ -896,6 +905,8 @@ def test_clips_force_without_a_readable_manifest_replaces_no_clip(
     (out / "001_a.mp4").rename(out / "001_mine.mp4")
     _fake_export(monkeypatch)
     assert cli.main(_argv("clips", project, "--force")) == 0
+    if manifest is not None:
+        assert (out / "manifest.mine.json").read_text(encoding="utf-8") == manifest
     assert (out / "001_a.mp4").read_bytes() == b"new"
     for n in ("001_mine.mp4", "002_b.mp4", "003_c.mp4", "009_user.mp4"):
         assert (out / n).read_bytes() == b"old"
@@ -1084,6 +1095,447 @@ def test_lock_hint_mentions_read_only_only_for_access_denied(
     with pytest.raises(PermissionError, match="open in another program") as exc:
         ffmpeg_utils.retry_locked(op, tmp_path / "x.json", "write")
     assert ("read-only" in str(exc.value)) is read_only_hint
+
+
+# --- #145: assemble recovers leftovers; one run at a time; renamed clips; foreign manifests ---
+
+
+@pytest.mark.parametrize("n", [3, 6], ids=["while-backing-up", "while-moving-in"])
+def test_assemble_first_puts_back_the_originals_of_a_killed_replace(monkeypatch, home, caplog, n):
+    project = _setup(home, monkeypatch)
+    before = _killed_mid_swap(monkeypatch, project, "clips", n)
+    assert (project / ".clips.cutpoint-bak").is_dir()
+    write(project / ".clips.cutpoint-tmp" / "003_c.mp4", "half an export")
+    seen: dict[str, bytes] = {}
+
+    def joined(clips_dir, *_a):
+        seen.update(_snapshot(clips_dir))
+        return project / "final.mp4"
+
+    monkeypatch.setattr(assemble, "_assemble", joined)
+    caplog.clear()
+    assert cli.main(["assemble", str(project / "clips")]) == 0
+    assert seen == before  # the clips were put back before they were listed
+    assert "Put back the original files" in _warnings(caplog)  # as clips says it
+    _only_original_folders(project)  # no backup, staging or lock left
+
+
+def test_assemble_removes_a_leftover_staging_folder(monkeypatch, home):
+    project = _setup(home, monkeypatch)
+    before = _snapshot(project / "clips")
+    stale = project / ".clips.cutpoint-tmp"
+    stale.mkdir()
+    (stale / "001_a.mp4").write_bytes(b"half an export")
+    monkeypatch.setattr(assemble, "_assemble", lambda *_a: project / "final.mp4")
+    assert cli.main(["assemble", str(project / "clips")]) == 0
+    assert _snapshot(project / "clips") == before
+    _only_original_folders(project)
+
+
+@pytest.mark.parametrize("second", ["clips", "extend", "assemble"])
+def test_a_second_run_on_the_folder_is_refused_and_keeps_the_first_ones_staging(
+    monkeypatch, home, caplog, second
+):
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    tmp = project / ".clips.cutpoint-tmp"
+    argv = {
+        "clips": _argv("clips", project, "--force"),
+        "extend": _argv("extend", project, "--force"),
+        "assemble": ["assemble", str(clips_dir)],
+    }[second]
+    codes = []
+
+    def export(src, info, start, end, out, *_a, **_kw):
+        out.write_bytes(b"new")
+        if not codes:  # while the first run is exporting into its staging folder
+            codes.append(cli.main(argv))
+            assert out.parent == tmp and out.exists()  # the second run left it alone
+
+    def joined(*_a):
+        raise AssertionError("assembled while another run was exporting")
+
+    monkeypatch.setattr(clips, "export_clip_checked", export)
+    monkeypatch.setattr(assemble, "_assemble", joined)
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    assert codes == [1]
+    errors = _errors(caplog)
+    assert "Another cutpoint run" in errors
+    assert str(project / ".clips.cutpoint-lock") in errors
+    assert all((clips_dir / n).read_bytes() == b"new" for n in NAMES)
+    _only_original_folders(project)
+
+
+def _lock_record(pid: int, host: str | None = None) -> bytes:
+    host = socket.gethostname() if host is None else host
+    rec = {"pid": pid, "host": host, "started": "2026-10-27 10:00:00", "token": "theirs"}
+    return json.dumps(rec).encode("utf-8")
+
+
+@pytest.mark.parametrize("holder", ["running", "other-host", "starting"])
+def test_lock_of_another_run_stops_the_run_before_anything_is_touched(
+    monkeypatch, home, caplog, capsys, holder
+):
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    tmp = project / ".clips.cutpoint-tmp"  # the other run's staging folder
+    tmp.mkdir()
+    (tmp / "001_a.mp4").write_bytes(b"theirs")
+    lock = project / ".clips.cutpoint-lock"
+    data = {
+        "running": _lock_record(4321),
+        "other-host": _lock_record(4321, "other-pc"),
+        "starting": b"",  # created, not yet written
+    }[holder]
+    lock.write_bytes(data)
+    monkeypatch.setattr(
+        ffmpeg_utils, "_pid_alive", lambda pid, _t=None: pid == 4321 and holder == "running"
+    )
+    before = _snapshot(clips_dir)
+    for argv in (_argv("clips", project, "--force"), _argv("extend", project, "--force")):
+        caplog.clear()
+        assert cli.main(argv) == 1
+        errors = _errors(caplog)
+        assert str(lock) in errors
+        assert "If no other run is active, delete" in errors
+        if holder == "starting":
+            assert "is starting on" in errors
+        else:
+            assert "process 4321" in errors
+            assert ("on other-pc" in errors) is (holder == "other-host")
+    monkeypatch.setattr(assemble, "_assemble", lambda *_a: pytest.fail("assembled"))
+    code, doc = run_json(capsys, ["assemble", str(clips_dir)])
+    assert code == 1
+    assert doc["error"]["code"] == "folder_busy"
+    assert (tmp / "001_a.mp4").read_bytes() == b"theirs"
+    assert lock.read_bytes() == data
+    assert _snapshot(clips_dir) == before
+
+
+@pytest.mark.parametrize("left", ["dead-process", "never-written", "this-process"])
+def test_stale_lock_of_a_killed_run_is_taken_over(monkeypatch, home, caplog, left):
+    project = _setup(home, monkeypatch)
+    lock = project / ".clips.cutpoint-lock"
+    if left == "never-written":
+        lock.write_bytes(b"")
+        old = time.time() - 3600
+        os.utime(lock, (old, old))
+    else:  # a run killed hard (taskkill /F); "this-process": by an earlier call in this one
+        lock.write_bytes(_lock_record(os.getpid() if left == "this-process" else 4321))
+    monkeypatch.setattr(ffmpeg_utils, "_pid_alive", lambda pid, _t=None: pid != 4321)
+    caplog.set_level("INFO")
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    assert f"Removed {lock}" in caplog.text
+    assert all((project / "clips" / n).read_bytes() == b"new" for n in NAMES)
+    _only_original_folders(project)  # the run's own lock is gone too
+
+
+def test_a_run_never_removes_a_lock_it_does_not_own(monkeypatch, home):
+    """Its lock taken over meanwhile (another run judged it stale): the other one's stays."""
+    project = _setup(home, monkeypatch)
+    lock = project / ".clips.cutpoint-lock"
+    theirs = _lock_record(4321)
+
+    def export(src, info, start, end, out, *_a, **_kw):
+        out.write_bytes(b"new")
+        lock.write_bytes(theirs)
+
+    monkeypatch.setattr(clips, "export_clip_checked", export)
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    assert lock.read_bytes() == theirs
+
+
+def _failing_lock_open(monkeypatch, err: OSError, times: int | None = None) -> list[int]:
+    """``os.open`` of a lock file raises ``err`` (the first ``times`` calls; None: always)."""
+    real_open = os.open
+    calls: list[int] = []
+
+    def open_(path, *a, **kw):
+        if str(path).endswith(".cutpoint-lock"):
+            calls.append(1)
+            if times is None or len(calls) <= times:
+                raise err
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(os, "open", open_)
+    return calls
+
+
+@pytest.mark.parametrize("kind", ["read-only-fs", "no-permission"])
+@pytest.mark.usefixtures("no_sleep")
+def test_assemble_of_a_folder_whose_parent_is_read_only_runs_without_a_lock(
+    monkeypatch, home, caplog, kind
+):
+    """Nothing can be staged next to such a folder, so there is nothing to protect."""
+    project = _setup(home, monkeypatch)
+    if kind == "read-only-fs":
+        _failing_lock_open(monkeypatch, OSError(errno.EROFS, "Read-only file system"))
+    else:  # the lock cannot be created and neither can any other file there
+        _failing_lock_open(monkeypatch, PermissionError(errno.EACCES, "Permission denied"))
+        monkeypatch.setattr(ffmpeg_utils, "_dir_writable", lambda _folder: False)
+    monkeypatch.setattr(assemble, "_assemble", lambda *_a: project / "final.mp4")
+    caplog.set_level("INFO")
+    assert cli.main(["assemble", str(project / "clips")]) == 0
+    assert "Not locking" in caplog.text
+    _only_original_folders(project)
+
+
+@pytest.mark.usefixtures("no_sleep")
+def test_lock_that_is_briefly_not_creatable_is_retried_and_taken(monkeypatch, home):
+    """Windows: a lock another run is removing is "delete pending" for a moment."""
+    project = _setup(home, monkeypatch)
+    calls = _failing_lock_open(monkeypatch, PermissionError(errno.EACCES, "Access denied"), 1)
+    held = []
+    monkeypatch.setattr(assemble, "_assemble", lambda *_a: held.append(lock_file(project).exists()))
+    assert cli.main(["assemble", str(project / "clips")]) == 0
+    assert len(calls) == 2
+    assert held == [True]
+    _only_original_folders(project)
+
+
+@pytest.mark.usefixtures("no_sleep")
+def test_lock_not_creatable_in_a_writable_folder_stops_the_run(monkeypatch, home, caplog):
+    project = _setup(home, monkeypatch)
+    _failing_lock_open(monkeypatch, PermissionError(errno.EACCES, "Access denied"))
+    monkeypatch.setattr(assemble, "_assemble", lambda *_a: pytest.fail("assembled"))
+    assert cli.main(["assemble", str(project / "clips")]) == 1
+    assert f"Cannot create the lock file {lock_file(project)}" in _errors(caplog)
+
+
+def lock_file(project: Path) -> Path:
+    return project / ".clips.cutpoint-lock"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows reuses process ids quickly")
+@pytest.mark.parametrize(("offset", "alive"), [(-60.0, True), (60.0, False)])
+def test_pid_alive_takes_a_process_created_after_the_lock_for_another_one(
+    monkeypatch, offset, alive
+):
+    """A running process with the lock's id, created after the lock was written, got the id
+    after the lock's own process ended."""
+    written = time.time()
+    monkeypatch.setattr(ffmpeg_utils, "_win_created", lambda _k32, _h: written + offset)
+    assert ffmpeg_utils._pid_alive(os.getpid(), written) is alive
+    assert ffmpeg_utils._pid_alive(os.getpid())  # no time to compare: running
+
+
+def test_stale_lock_check_passes_the_locks_mtime(monkeypatch, tmp_path):
+    lock = tmp_path / ".x.cutpoint-lock"
+    lock.write_bytes(_lock_record(4321))
+    seen = []
+    monkeypatch.setattr(
+        ffmpeg_utils, "_pid_alive", lambda pid, not_after=None: seen.append(not_after)
+    )
+    ffmpeg_utils._lock_stale(lock, json.loads(lock.read_bytes()))
+    assert seen == [lock.stat().st_mtime]
+
+
+def test_pid_alive_counts_a_process_it_cannot_open_as_alive():
+    """Windows: the System process (4) cannot be opened (access denied); POSIX: init (1)
+    belongs to root, so signal 0 is refused (EPERM)."""
+    if sys.platform != "win32" and os.geteuid() == 0:
+        pytest.skip("root may signal init")
+    assert ffmpeg_utils._pid_alive(4 if sys.platform == "win32" else 1)
+
+
+def test_stale_lock_replaced_meanwhile_by_a_live_one_is_put_back(monkeypatch, home):
+    """Judged stale from an old reading, the lock on disk is another run's fresh one by the
+    time it is moved aside: it goes back unchanged and the run stops."""
+    project = _setup(home, monkeypatch)
+    lock = lock_file(project)
+    live = _lock_record(1111)
+    lock.write_bytes(live)
+    old = _lock_record(4321)
+    monkeypatch.setattr(ffmpeg_utils, "_read_lock", lambda _p: (old, json.loads(old)))
+    monkeypatch.setattr(ffmpeg_utils, "_pid_alive", lambda pid, not_after=None: False)
+    with pytest.raises(ffmpeg_utils.FolderBusyError), ffmpeg_utils.swap_lock(project / "clips"):
+        pytest.fail("locked")
+    assert lock.read_bytes() == live
+    assert list(project.glob("*.stale")) == []
+
+
+def test_pid_alive_tells_this_process_from_a_missing_one():
+    assert ffmpeg_utils._pid_alive(os.getpid())
+    assert not ffmpeg_utils._pid_alive(2**31 - 4)  # above pid_max (Linux), not in use (Windows)
+    assert not ffmpeg_utils._pid_alive(0)
+
+
+@pytest.mark.slow
+def test_pid_alive_sees_a_child_exit():
+    """The Windows path (OpenProcess + GetExitCodeProcess) or os.kill(pid, 0) elsewhere."""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert ffmpeg_utils._pid_alive(child.pid)
+    finally:
+        child.kill()
+        child.wait()
+    assert not ffmpeg_utils._pid_alive(child.pid)
+
+
+def test_manifest_records_each_clips_size_and_that_cutpoint_wrote_it(monkeypatch, home):
+    project = _setup(home, monkeypatch)
+    clips_dir = project / "clips"
+    for argv in (_argv("clips", project, "--force"), _argv("extend", project, "--force")):
+        assert cli.main(argv) == 0
+        data = json.loads((clips_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert data["generator"] == "cutpoint"
+        assert [(e["file"], e["size"]) for e in data["clips"]] == [(n, 3) for n in NAMES]
+
+
+def _sized_set(project: Path) -> Path:
+    """The old clips get distinct sizes, recorded in their manifest entries."""
+    clips_dir = project / "clips"
+    path = clips_dir / "manifest.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for i, e in enumerate(data["clips"]):
+        (clips_dir / e["file"]).write_bytes(b"old" * (i + 2))
+        e["size"] = 3 * (i + 2)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return clips_dir
+
+
+def test_clips_force_names_a_clip_renamed_during_review_as_its_own(monkeypatch, home, caplog):
+    project = _setup(home, monkeypatch)
+    clips_dir = _sized_set(project)
+    (clips_dir / "003_c.mp4").rename(clips_dir / "001b_c.mp4")  # moved up during review
+    (clips_dir / "009_mine.mp4").write_bytes(b"mine")
+    assert cli.main(_argv("clips", project, "--force")) == 0
+    warnings = _warnings(caplog)
+    assert "cutpoint exported 001b_c.mp4 as 003_c.mp4 (renamed during review)" in warnings
+    assert "does not list 009_mine.mp4 (added by hand?)" in warnings
+    assert (clips_dir / "001b_c.mp4").read_bytes() == b"old" * 4  # kept, never deleted
+    assert (clips_dir / "009_mine.mp4").read_bytes() == b"mine"
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("renamed", {"001b.mp4": "003_c.mp4"}),
+        ("copy", {}),  # the exported clip is still there: the copy is not it
+        ("same-size-entries", {}),
+        ("same-size-clips", {}),
+        ("no-size", {}),  # written before sizes were recorded: by name only
+    ],
+)
+def test_manifest_entries_recognises_a_renamed_clip_only_when_unambiguous(tmp_path, case, expected):
+    entries = [
+        {"file": "001_a.mp4", "size": 1},
+        {"file": "002_b.mp4", "size": 2},
+        {"file": "003_c.mp4", "size": 3},
+    ]
+    write(tmp_path / "001_a.mp4", b"a")
+    write(tmp_path / "001b.mp4", b"ccc")
+    if case == "copy":
+        write(tmp_path / "003_c.mp4", b"ccc")
+        expected = {"003_c.mp4": "003_c.mp4"}
+    elif case == "same-size-entries":
+        entries[1]["size"] = 3
+    elif case == "same-size-clips":
+        write(tmp_path / "001c.mp4", b"ccc")
+    elif case == "no-size":
+        del entries[2]["size"]
+    write(tmp_path / "manifest.json", json.dumps({"clips": entries}))
+    found = planning.manifest_entries(tmp_path, sorted(tmp_path.glob("*.mp4")))
+    assert {n: e["file"] for n, e in found.items()} == {"001_a.mp4": "001_a.mp4", **expected}
+
+
+@pytest.mark.parametrize(("key", "matched"), [(str.lower, False), (str, True)])
+def test_manifest_entries_counts_a_case_variant_on_disk_as_the_listed_clip(
+    tmp_path, monkeypatch, key, matched
+):
+    """On a case-insensitive file system (path_key folds case) the listed ``003_C.mp4`` is the
+    ``003_c.mp4`` on disk, so ``x.mp4`` of the same size is not it renamed; on a
+    case-sensitive one the listed clip is gone. Patched, so both run on every OS."""
+    monkeypatch.setattr(planning, "path_key", key)
+    write(tmp_path / "003_c.mp4", b"ccc")
+    write(tmp_path / "x.mp4", b"ccc")
+    write(tmp_path / "manifest.json", json.dumps({"clips": [{"file": "003_C.mp4", "size": 3}]}))
+    found = planning.manifest_entries(tmp_path, [tmp_path / "x.mp4"])
+    assert ("x.mp4" in found) is matched
+
+
+def test_assemble_reads_the_baked_fade_of_a_renamed_clip(tmp_path):
+    entries = [{"file": "001_a.mp4", "size": 1, "audio_fade": 0.25}]
+    entries.append({"file": "002_b.mp4", "size": 2, "audio_fade": 0.5})
+    write(tmp_path / "manifest.json", json.dumps({"clips": entries}))
+    files = [write(tmp_path / "001_a.mp4", b"a"), write(tmp_path / "000_b.mp4", b"bb")]
+    files.append(write(tmp_path / "003_mine.mp4", b"mine"))
+    assert assemble.baked_fades(tmp_path, files) == [0.25, 0.5, 0.0]
+
+
+def _source_in_clips_folder(project: Path) -> Path:
+    """Every clip of the manifest is cut from ``clips/footage.mp4``."""
+    clips_dir = project / "clips"
+    src = clips_dir / "footage.mp4"
+    src.write_bytes(b"precious source")
+    for n in NAMES:
+        _point_manifest_at(clips_dir, n, src)
+    return src
+
+
+def test_extend_names_a_source_in_the_clips_folder_as_a_source(monkeypatch, home, caplog):
+    project = _setup(home, monkeypatch)
+    src = _source_in_clips_folder(project)
+    argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
+    assert cli.main([*argv, "--out", str(project / "out")]) == 0
+    warnings = _warnings(caplog)
+    assert "footage.mp4: a source of these clips, not a clip; skipped" in warnings
+    assert "added by hand" not in warnings
+    caplog.clear()
+    assert cli.main([*argv, "--out", str(project / "clips"), "--force"]) == 0  # in place
+    warnings = _warnings(caplog)
+    assert "Kept footage.mp4" in warnings
+    assert "a source of these clips is never replaced" in warnings
+    assert "added by hand" not in warnings
+    assert src.read_bytes() == b"precious source"
+
+
+def test_extend_names_a_clip_renamed_during_review(monkeypatch, home, caplog):
+    project = _setup(home, monkeypatch)
+    clips_dir = _sized_set(project)
+    (clips_dir / "003_c.mp4").rename(clips_dir / "001b_c.mp4")
+    argv = ["extend", str(clips_dir), "--seconds", "1", "--no-speech-aware"]
+    assert cli.main([*argv, "--out", str(project / "out")]) == 0
+    warnings = _warnings(caplog)
+    assert "001b_c.mp4: exported as 003_c.mp4 and renamed during review" in warnings
+    caplog.clear()
+    assert cli.main([*argv, "--out", str(clips_dir), "--force"]) == 0  # in place: it stays
+    assert "cutpoint exported 001b_c.mp4 as 003_c.mp4" in _warnings(caplog)
+    assert (clips_dir / "001b_c.mp4").read_bytes() == b"old" * 4
+
+
+@pytest.mark.parametrize("cmd", ["clips", "extend-out"])
+@pytest.mark.parametrize(
+    ("manifest", "why"),
+    [
+        ({"generator": "resolve", "clips": [{"file": "001_a.mp4"}]}, "its generator is 'resolve'"),
+        ({"name": "My app", "icons": []}, "it does not list clips as cutpoint does"),
+        ([1, 2], "it is not a clips manifest"),
+    ],
+    ids=["other-generator", "other-shape", "not-an-object"],
+)
+def test_force_refuses_a_manifest_cutpoint_did_not_write(
+    monkeypatch, home, caplog, cmd, manifest, why
+):
+    project = _setup(home, monkeypatch)
+    out = project / ("clips" if cmd == "clips" else "out")
+    if cmd == "clips":  # the old clips stay: the manifest is checked before them
+        argv = _argv("clips", project, "--force")
+    else:
+        argv = [*_argv("extend", project)[:-1], str(out), "--force"]
+    write(out / "manifest.json", json.dumps(manifest))
+    write(out / "notes.txt", "keep")
+    before = _snapshot(out)
+    exported = []
+    monkeypatch.setattr(clips, "export_clip_checked", lambda *a, **_kw: exported.append(a))
+    monkeypatch.setattr(extend, "export_clip_checked", lambda *a, **_kw: exported.append(a))
+    assert cli.main(argv) == 1
+    errors = _errors(caplog)
+    assert f"{out / 'manifest.json'} may not be one cutpoint wrote ({why})" in errors
+    assert "Move or rename it" in errors
+    assert not exported
+    assert _snapshot(out) == before
+    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == []
 
 
 # --- staged_dir(direct_if_empty) and retry_locked(locked=) ---
