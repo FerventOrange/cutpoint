@@ -683,6 +683,8 @@ class FakePrefetch:
         self.closed_with_folder: bool | None = None
         self.closed_early: bool | None = None
         self.probe = lambda: None
+        self.mode = None  # CUTPOINT_ANALYZE_SHARED_DECODE off
+        self.scenes: list[object] = []
 
     def __enter__(self):
         return self
@@ -692,8 +694,9 @@ class FakePrefetch:
             self.closed_with_folder = self.proj.is_dir()
             self.closed_early = self.probe()
 
-    def offer(self, src, duration, ok):
+    def offer(self, src, duration, ok, scene=None):
         self.offers.append((Path(src).name, duration, ok))
+        self.scenes.append(scene)
 
 
 @pytest.fixture
@@ -731,6 +734,16 @@ def test_sources_are_offered_to_the_ocr_prefetch(prefetched, device, read_error,
     (_, _, kw) = prefetched.events_calls[0]
     assert kw["prefetch"] is prefetched.pre
     assert prefetched.pre.closed_early  # stopped once the layers are done
+
+
+@pytest.mark.parametrize(("device", "mode", "planned"), [("cuda", "split", True),
+                         ("cpu", "split", False), ("cuda", None, False)])  # fmt: skip
+def test_a_shared_decode_mode_offers_the_scene_plan(prefetched, monkeypatch, device, mode, planned):
+    prefetched.plan = plan(reactions=("audio",), keyframes=("ocr",))
+    prefetched.device, prefetched.pre.mode = device, mode
+    monkeypatch.setattr(analyze, "_scene_plan", lambda src, duration: ("plan", src.name, duration))
+    prefetched.go("gaming", use_scenes=True)
+    assert prefetched.pre.scenes == [("plan", "a.mp4", 60.0) if planned else None]
 
 
 def test_the_ocr_prefetch_stops_before_a_cancelled_run_cleans_up(prefetched):
