@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from cutpoint import ffmpeg_utils
 from cutpoint.events import killfeed, ocr_raw, pipeline
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrParams, detect_ocr_events
@@ -135,6 +136,7 @@ def _run(
     exit_after: int | None = None,
     fail_hw_at: float | None = None,
     on_cut: Any = None,
+    gpu: bool = True,
     **kwargs: Any,
 ) -> tuple[list[dict], dict]:
     """Detect the OCR events of a 60 s source whose frames are moving gameplay (a new
@@ -145,11 +147,15 @@ def _run(
     with the number of frames made, and ``isolated`` gets each pass's ``isolate``. After
     ``exit_after`` frames ffmpeg exits with code 255 that the decode did not cause; a CUDA
     pass starting at ``fail_hw_at`` gives no frames (the CPU pass does); ``on_cut`` is
-    called when a pass ends after ``cut_after`` frames."""
+    called when a pass ends after ``cut_after`` frames. ``gpu`` False: no GPU decoder fits the
+    source, so a ``hw`` pass is a CPU pass."""
     data = preset or _preset()
     monkeypatch.setattr(killfeed, "load_preset", lambda *_a, **_k: preset_from_dict(data))
     monkeypatch.setattr(
         killfeed, "probe", lambda _p: SimpleNamespace(width=1920, height=1080, duration=60.0)
+    )
+    monkeypatch.setattr(
+        killfeed, "decoder_for", lambda _p: ffmpeg_utils.HwDecoder("cuda") if gpu else None
     )
     made = [0]
 
@@ -520,6 +526,27 @@ def test_pass_killed_by_the_cancel_commits_nothing(tmp_path: Path, monkeypatch) 
     status = json.loads(meta.read_text())
     assert status["chunks"] == 2 and not status["complete"]
     assert not list(tmp_path.glob("events-ocr-*.json"))
+
+
+@pytest.mark.parametrize(("gpu", "tries"), [(True, 2), (False, 1)])
+def test_a_failed_cpu_decode_is_not_retried_as_a_gpu_failure(
+    tmp_path: Path, monkeypatch, caplog, gpu: bool, tries: int
+) -> None:
+    """#429: with no GPU decoder for the source the decode is the CPU's already; retrying it, or
+    reporting "hwaccel decode failed", would only repeat the failure."""
+    starts: list[float] = []
+    with caplog.at_level(logging.WARNING):
+        _run(
+            tmp_path,
+            monkeypatch,
+            _Engine(),
+            avoid=[(25.0, 27.0)],
+            fail_at=29.0,
+            starts=starts,
+            gpu=gpu,
+        )
+    assert starts.count(29.0) == tries
+    assert ("hwaccel decode failed" in caplog.text) is gpu
 
 
 def test_failed_pass_after_a_cancel_is_not_retried(tmp_path: Path, monkeypatch) -> None:

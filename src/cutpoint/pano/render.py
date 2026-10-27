@@ -62,9 +62,12 @@ from cutpoint.encode import A_FMT, BT709_TAGS, Lut, audio_fade_filter, bt709_fil
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
+    HwDecoder,
     VideoEncoder,
     atomic_output,
+    decoder_for,
     encode_with_fallback,
+    gpu_chain,
     output_dir,
     probe,
     run,
@@ -256,7 +259,7 @@ def render_segment(
         ``read_error`` (or None).
 
     Raises:
-        FFmpegError: If ffmpeg fails with and without NVDEC.
+        FFmpegError: If ffmpeg fails with and without GPU decoding.
     """
     from cutpoint.config import remap_source  # noqa: PLC0415
 
@@ -292,11 +295,10 @@ def render_segment(
         (work / (out.stem + ".cmd")).unlink(missing_ok=True)
     sendcmd = f"sendcmd=f={cmd_file.name}," if cmd_file is not None else ""
     seek = ["-ss", f"{start:.6f}", "-t", f"{dur:.3f}"]
+    two = src.projection == "dfisheye" and len(src.inputs) == 2
     if src.projection == "dfisheye":
-        stack = "[0:v][1:v]hstack=inputs=2," if len(src.inputs) == 2 else "[0:v]"
         v360_in = f"input=dfisheye:ih_fov={G.DFISHEYE_FOV:g}:iv_fov={G.DFISHEYE_FOV:g}"
     else:
-        stack = "[0:v]"
         v360_in = "input=equirect"
     audio_idx = len(src.inputs)
     info = probe(remap_source(clip.source))
@@ -319,16 +321,25 @@ def render_segment(
     )
     af = f"[{audio_idx}:a:0]{a_fmt}[a]"
 
-    def args_for(enc: VideoEncoder, hw: bool, dst: Path) -> list[str]:
+    def stack_for(dec: HwDecoder | None) -> str:
+        """The inputs joined for v360; VAAPI frames are downloaded first (CUDA and CPU ones are not)."""
+        dl = gpu_chain(dec, None)
+        if not two:
+            return f"[0:v]{dl}," if dl else "[0:v]"
+        if not dl:
+            return "[0:v][1:v]hstack=inputs=2,"
+        return f"[0:v]{dl}[d0];[1:v]{dl}[d1];[d0][d1]hstack=inputs=2,"
+
+    def args_for(enc: VideoEncoder, dec: HwDecoder | None, dst: Path) -> list[str]:
         args = ["ffmpeg", "-y", "-v", "error"]
         # Read moved footage through source_remap; the record keeps the original inputs.
         for inp in src.inputs:
-            args += (["-hwaccel", "cuda"] if hw else []) + seek + ["-i", str(remap_source(inp))]
+            args += (dec.input_args() if dec else []) + seek + ["-i", str(remap_source(inp))]
         args += [*seek, "-i", str(remap_source(clip.source))]
         return [
             *args,
             "-filter_complex",
-            f"{stack}{enc.chain(body)}[v];{af}",
+            f"{stack_for(dec)}{enc.chain(body)}[v];{af}",
             "-map",
             "[v]",
             "-map",
@@ -356,22 +367,25 @@ def render_segment(
             str(dst),
         ]
 
-    # Once NVDEC failed for this segment, the CPU-encoder retry decodes on the CPU too.
-    nvdec = [True]
+    # One GPU decoder for every input, or the CPU: the probed one fits the GPU found here, and
+    # only 8-bit H.264 (see decoder_for) is decoded on a VAAPI GPU.
+    decs = {decoder_for(remap_source(inp)) for inp in src.inputs}
+    hw: list[HwDecoder | None] = [decs.pop() if len(decs) == 1 else None]
 
     def encode(enc: VideoEncoder, dst: Path) -> str:
-        """Render into ``dst`` with ``enc``: NVDEC first, then CPU decoding."""
-        if nvdec[0]:
+        """Render into ``dst`` with ``enc``: GPU decoding first, then CPU decoding."""
+        if hw[0] is not None:
             try:
-                return run(args_for(enc, True, dst), cwd=work)
+                return run(args_for(enc, hw[0], dst), cwd=work)
             except FFmpegError as err:
-                nvdec[0] = False
                 logger.warning(
-                    "  %s: NVDEC render failed, retrying on the CPU (%s)",
+                    "  %s: %s render failed, retrying on the CPU (%s)",
                     out.name,
+                    hw[0].kind,
                     str(err).splitlines()[-1][:200],
                 )
-        return run(args_for(enc, False, dst), cwd=work)
+                hw[0] = None  # the CPU-encoder retry decodes on the CPU too
+        return run(args_for(enc, None, dst), cwd=work)
 
     t0 = time.perf_counter()
     # A failed auto GPU encode is redone with libx264; out only appears once complete.

@@ -408,7 +408,7 @@ handed back to its turn; only timings differ. Set
 Experimental, off by default: `CUTPOINT_ANALYZE_SHARED_DECODE=split` also moves the scene
 detection proxy of `transcribe` into the background, for a source of up to 30 minutes with one
 video stream (no cover art) whose scene cuts are not cached yet. It makes the proxy in the same
-CUDA decode as the background HUD OCR (one pass instead of two) and spools the OCR frames to
+GPU decode (CPU without one) as the background HUD OCR (one pass instead of two) and spools the OCR frames to
 the source's cache folder, in files of about 256 MB removed as they are read. The spool grows
 by as much as the OCR read lags behind the decode, up to 8 files (about 2 GB; 4 GB without the
 cap on a 446 s 1080p clip): then the decode, and the proxy with it, waits for the OCR read to

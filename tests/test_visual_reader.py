@@ -83,6 +83,7 @@ def test_stale_hw_reader_does_not_pollute_cpu_pass(monkeypatch):
         )
 
     monkeypatch.setattr(ffmpeg_utils.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ffmpeg_utils, "gpu_decoder", lambda: ffmpeg_utils.HwDecoder("cuda"))
     monkeypatch.setattr(ffmpeg_utils, "find_tool", lambda name: name)
     monkeypatch.setattr(visual, "find_tool", lambda name: name)
     monkeypatch.setattr(ffmpeg_utils, "stage_inputs", lambda cmd: cmd)

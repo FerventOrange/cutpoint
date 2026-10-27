@@ -22,7 +22,7 @@ import pytest
 
 from conftest import needs_ffmpeg
 from cutpoint import assemble as asm
-from cutpoint import cache, crash, refmatch, stage
+from cutpoint import cache, capabilities, crash, refmatch, stage
 from cutpoint import ffmpeg_utils as fu
 from cutpoint.ffmpeg_utils import FFmpegError
 from cutpoint.pano import x3
@@ -144,8 +144,11 @@ def test_split_jpegs_skips_garbage_and_drops_truncated_tail():
 # --------------------------------------------------------------------------- argv builders
 
 
+CUDA = fu.HwDecoder("cuda")
+
+
 def test_decode_raw_args_cuda_pass_keeps_frames_on_gpu_with_vf_cuda():
-    args = fu.decode_raw_args("in.mp4", hw=True, vf="scale=8:8", vf_cuda="scale_cuda=8:8")
+    args = fu.decode_raw_args("in.mp4", hw=CUDA, vf="scale=8:8", vf_cuda="scale_cuda=8:8")
     assert args[args.index("-hwaccel") + 1] == "cuda"
     assert args[args.index("-hwaccel_output_format") + 1] == "cuda"
     assert args.index("-hwaccel") < args.index("-i")
@@ -153,7 +156,7 @@ def test_decode_raw_args_cuda_pass_keeps_frames_on_gpu_with_vf_cuda():
 
 
 def test_decode_raw_args_cuda_pass_without_vf_cuda_downloads_frames():
-    args = fu.decode_raw_args("in.mp4", hw=True, vf="fps=2,crop=4:4:0:0", pix_fmt="bgr24")
+    args = fu.decode_raw_args("in.mp4", hw=CUDA, vf="fps=2,crop=4:4:0:0", pix_fmt="bgr24")
     assert "-hwaccel_output_format" not in args
     assert args[args.index("-vf") + 1] == "fps=2,crop=4:4:0:0"
     assert args[args.index("-pix_fmt") + 1] == "bgr24"
@@ -161,7 +164,7 @@ def test_decode_raw_args_cuda_pass_without_vf_cuda_downloads_frames():
 
 def test_decode_raw_args_pts_mode():
     args = fu.decode_raw_args(
-        "in.mp4", hw=False, vf="fps=1,scale=8:8", keyframes_only=True, pts=True
+        "in.mp4", hw=None, vf="fps=1,scale=8:8", keyframes_only=True, pts=True
     )
     assert args[args.index("-v") + 1] == "info"  # showinfo logs at info level
     assert args[args.index("-skip_frame") + 1] == "nokey"
@@ -171,7 +174,7 @@ def test_decode_raw_args_pts_mode():
 
 
 def test_grab_images_args_single_png_by_height_on_cuda():
-    args = fu.grab_images_args("in.mp4", 2.5, hw=True, height=360, fmt="png")
+    args = fu.grab_images_args("in.mp4", 2.5, hw=CUDA, height=360, fmt="png")
     assert args[args.index("-hwaccel") + 1] == "cuda"
     assert args[args.index("-vf") + 1] == "scale=-2:360"
     assert args[args.index("-c:v") + 1] == "png"
@@ -242,7 +245,7 @@ def test_grab_images_raises_when_no_image(run):
 FRAME = bytes(2 * 2 * 3)
 
 
-def test_decode_raw_falls_back_to_cpu_when_cuda_yields_nothing(popen):
+def test_decode_raw_falls_back_to_cpu_when_cuda_yields_nothing(popen, cuda):
     popen.procs = [_Proc(b"", b"cuda init failed\n", 1), _Proc(FRAME * 3)]
     out = list(fu.decode_raw("x.mp4", size=(2, 2), stamp_fps=2.0, start=10.0))
     assert len(popen.cmds) == 2
@@ -251,14 +254,14 @@ def test_decode_raw_falls_back_to_cpu_when_cuda_yields_nothing(popen):
     assert all(f.shape == (2, 2, 3) for _, f in out)
 
 
-def test_decode_raw_keeps_cuda_pass_that_yields_frames(popen):
+def test_decode_raw_keeps_cuda_pass_that_yields_frames(popen, cuda):
     popen.procs = [_Proc(FRAME * 2, b"", 1)]  # exit code is not checked once frames came
     out = list(fu.decode_raw("x.mp4", size=(2, 2)))
     assert len(popen.cmds) == 1 and len(out) == 2
     assert [t for t, _ in out] == [0.0, 1.0]  # no fps, no pts: frame index
 
 
-def test_decode_raw_without_fallback_raises_with_stderr(popen):
+def test_decode_raw_without_fallback_raises_with_stderr(popen, cuda):
     popen.procs = [_Proc(b"", b"No device available for decoder\n", 1)]
     errors: list[str] = []
     with pytest.raises(FFmpegError, match="No device available"):
@@ -288,11 +291,100 @@ def test_decode_raw_kills_process_when_consumer_stops(popen):
     assert proc.killed
 
 
-def test_grab_images_falls_back_to_cpu(run):
+def test_grab_images_falls_back_to_cpu(run, cuda):
     a = _jpeg(b"cpu")
     run.results = [(b"", b"cuda failed\n", 1), (a, b"", 0)]
-    assert fu.grab_images("x.mp4", 1.0, height=360, hwaccel="cuda") == [a]
+    assert fu.grab_images("x.mp4", 1.0, height=360, hwaccel="auto") == [a]
     assert "cuda" in run.cmds[0] and "cuda" not in run.cmds[1]
+
+
+# --------------------------------------------------------------------------- GPU decode choice
+@pytest.fixture
+def cuda(monkeypatch):
+    """The probed GPU decoder is NVDEC, without running a probe."""
+    monkeypatch.setattr(fu, "gpu_decoder", lambda: fu.HwDecoder("cuda"))
+
+
+NODES = ["/dev/dri/renderD128", "/dev/dri/renderD129"]
+
+
+@pytest.mark.parametrize(
+    ("nvidia", "amd", "want"),
+    [
+        (True, False, [fu.HwDecoder("cuda")]),
+        (False, True, [fu.HwDecoder("vaapi", n) for n in NODES]),  # no CUDA try on AMD
+        (True, True, [fu.HwDecoder("cuda"), *(fu.HwDecoder("vaapi", n) for n in NODES)]),
+        (False, False, []),
+    ],
+)
+def test_decoder_candidates_follow_the_detected_gpu_vendors(monkeypatch, nvidia, amd, want):
+    monkeypatch.setattr(capabilities, "nvidia_present", lambda: nvidia)
+    monkeypatch.setattr(capabilities, "gpu_vendors", lambda: {"nvidia": nvidia, "amd": amd})
+    monkeypatch.setattr(fu, "vaapi_devices", lambda: NODES)
+    monkeypatch.setattr(fu, "_is_amd_node", lambda _d: True)
+    assert fu.decoder_candidates() == want
+
+
+@pytest.mark.parametrize(
+    ("failing", "want"),
+    [
+        (set(), fu.HwDecoder("vaapi", NODES[0])),
+        ({"vaapi " + NODES[0]}, fu.HwDecoder("vaapi", NODES[1])),
+        ({"vaapi " + NODES[0], "vaapi " + NODES[1]}, None),
+    ],
+)
+def test_gpu_decoder_is_the_first_candidate_that_really_decodes(monkeypatch, failing, want):
+    monkeypatch.setattr(fu, "decoder_candidates", lambda: [fu.HwDecoder("vaapi", n) for n in NODES])
+    fails = lambda dec: "probe failed" if str(dec) in failing else None  # noqa: E731
+    monkeypatch.setattr(fu, "decoder_error", fails)
+    assert fu.gpu_decoder() == want
+
+
+def test_a_source_is_probed_once_until_the_file_changes(monkeypatch, tmp_path):
+    """One ffprobe per file version."""
+    va = fu.HwDecoder("vaapi", "/dev/dri/renderD128")
+    monkeypatch.setattr(fu, "gpu_decoder", lambda: va)
+    fmt = ["h264"]
+    probes: list[str] = []
+
+    def ffprobe(path, **_k):
+        probes.append(str(path))
+        return {"streams": [{"codec_name": fmt[0], "pix_fmt": "yuv420p"}]}
+
+    monkeypatch.setattr(fu, "ffprobe_json", ffprobe)
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    assert [fu.decoder_for(src) for _ in range(3)] == [va] * 3
+    assert len(probes) == 1
+    fmt[0] = "hevc"
+    src.write_bytes(b"replaced with a longer file")  # another size, so another stamp
+    assert fu.decoder_for(src) is None and len(probes) == 2
+
+
+@pytest.mark.parametrize(
+    ("codec", "pix_fmt", "vaapi"),
+    [
+        ("h264", "yuv420p", True),
+        ("hevc", "yuv420p", False),
+        ("h264", "yuv420p10le", False),
+        ("h264", "yuv444p", False),
+        ("h264", "yuvj420p", False),  # full range
+    ],
+)
+def test_vaapi_is_only_used_for_8bit_420_h264(monkeypatch, codec, pix_fmt, vaapi):
+    va = fu.HwDecoder("vaapi", "/dev/dri/renderD128")
+    monkeypatch.setattr(fu, "gpu_decoder", lambda: va)
+    streams = {"streams": [{"codec_name": codec, "pix_fmt": pix_fmt}]}
+    monkeypatch.setattr(fu, "ffprobe_json", lambda path, **k: streams)
+    assert fu.decoder_for("x.mp4") == (va if vaapi else None)
+
+
+def test_vaapi_frames_are_downloaded_before_the_cpu_chain():
+    va = fu.HwDecoder("vaapi", "/dev/dri/renderD128")
+    args = fu.decode_raw_args("in.mp4", hw=va, vf="scale=8:8", vf_cuda="scale_cuda=8:8")
+    assert args[args.index("-hwaccel_device") + 1] == "/dev/dri/renderD128"
+    assert args[args.index("-hwaccel_output_format") + 1] == "vaapi"
+    assert args[args.index("-vf") + 1] == "hwdownload,format=nv12,format=yuv420p,scale=8:8"
 
 
 # --------------------------------------------------------------------------- staging
@@ -423,9 +515,11 @@ def test_decode_window_returns_empty_arrays_on_ffmpeg_error(monkeypatch):
 @pytest.fixture
 def thumbs_env(monkeypatch, tmp_path):
     """refmatch.thumbnails with a 10 s video and a fake decoder (frames per pass)."""
-    state = SimpleNamespace(per_pass={"cuda": 100, None: 100}, calls=[])
+    state = SimpleNamespace(per_pass={"auto": 100, None: 100}, calls=[])
     monkeypatch.setattr(cache, "source_dir", lambda _p: tmp_path)
     monkeypatch.setattr(refmatch, "probe", lambda _p: SimpleNamespace(vduration=10.0))
+    state.gpu = [fu.HwDecoder("cuda")]  # the decoder found for the source; [None] = CPU only
+    monkeypatch.setattr(refmatch, "decoder_for", lambda _p: state.gpu[0])
 
     def fake_decode(_path, *, size, vf, pix_fmt, hwaccel, fallback_cpu=True):
         state.calls.append((hwaccel, fallback_cpu))
@@ -445,40 +539,48 @@ def test_thumbnails_full_decode_is_cached(thumbs_env):
     frames = refmatch.thumbnails(Path("x.mp4"))
     assert frames.shape == (100, refmatch.W * refmatch.H)
     assert frames[3, 0] == 3
-    assert thumbs_env.calls == [("cuda", False)]  # no hidden CPU pass in decode_raw
+    assert thumbs_env.calls == [("auto", False)]  # no hidden CPU pass in decode_raw
     assert thumbs_env.cpath.exists()
 
 
 def test_thumbnails_short_cuda_decode_is_redone_on_cpu(thumbs_env):
-    thumbs_env.per_pass["cuda"] = 40
+    thumbs_env.per_pass["auto"] = 40
     frames = refmatch.thumbnails(Path("x.mp4"))
-    assert thumbs_env.calls == [("cuda", False), (None, True)]
+    assert thumbs_env.calls == [("auto", False), (None, True)]
     assert len(frames) == 100 and thumbs_env.cpath.exists()
 
 
+def test_thumbnails_without_a_gpu_decoder_decode_once_on_the_cpu(thumbs_env):
+    """VAAPI declines HEVC/10-bit: "auto" would be the CPU pass the retry then repeats."""
+    thumbs_env.gpu[0] = None
+    frames = refmatch.thumbnails(Path("x.mp4"))
+    assert len(frames) == 100
+    assert thumbs_env.calls == [(None, True)]
+
+
 def test_thumbnails_still_short_is_not_cached(thumbs_env):
-    thumbs_env.per_pass.update({"cuda": 40, None: 60})
+    thumbs_env.per_pass.update({"auto": 40, None: 60})
     frames = refmatch.thumbnails(Path("x.mp4"))
     assert len(frames) == 60
     assert not thumbs_env.cpath.exists()
 
 
 def test_thumbnails_failed_cuda_decode_runs_cpu(thumbs_env):
-    thumbs_env.per_pass["cuda"] = FFmpegError("No device")
+    thumbs_env.per_pass["auto"] = FFmpegError("No device")
     frames = refmatch.thumbnails(Path("x.mp4"))
-    assert thumbs_env.calls == [("cuda", False), (None, True)]
+    assert thumbs_env.calls == [("auto", False), (None, True)]
     assert len(frames) == 100 and thumbs_env.cpath.exists()
 
 
 def test_thumbnails_keeps_cuda_frames_when_cpu_retry_fails(thumbs_env):
-    thumbs_env.per_pass.update({"cuda": 40, None: FFmpegError("read error")})
+    thumbs_env.per_pass.update({"auto": 40, None: FFmpegError("read error")})
     frames = refmatch.thumbnails(Path("x.mp4"))
     assert len(frames) == 40
     assert not thumbs_env.cpath.exists()
 
 
 def test_thumbnails_raise_when_neither_pass_decodes(thumbs_env):
-    thumbs_env.per_pass.update({"cuda": FFmpegError("a"), None: FFmpegError("b")})
+    thumbs_env.per_pass.update({"auto": FFmpegError("a"), None: FFmpegError("b")})
     with pytest.raises(FFmpegError, match="Could not decode thumbnails"):
         refmatch.thumbnails(Path("x.mp4"))
     assert not thumbs_env.cpath.exists()

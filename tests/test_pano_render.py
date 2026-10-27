@@ -34,6 +34,9 @@ def clip() -> X3Clip:
 @pytest.fixture(autouse=True)
 def fresh_warnings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(project, "_flowstate_warned", set())
+    # the commands asserted below are the CPU ones, whatever GPU this machine has
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setattr(render, "decoder_for", lambda _path: None)
 
 
 def _stitched(tmp_path: Path) -> Path:
@@ -343,6 +346,21 @@ class TestRenderSegmentSendcmd:
         assert f"fps=30:round=down,{color}" in self._filter(args)
         i = args.index("-color_range")
         assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
+
+    def test_vaapi_decodes_every_input_and_downloads_each_before_the_stack(
+        self, clip, tmp_path, ffmpeg, monkeypatch
+    ):
+        """AMD: both fisheye inputs are VAAPI-decoded, then come down to the CPU separately."""
+        va = ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")
+        monkeypatch.setattr(render, "decoder_for", lambda _path: va)
+        src = project.RenderSource("dfisheye", ("a.mp4", "b.mp4"), "dfisheye", True, True, "t")
+        path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
+        render.render_segment(clip, path, 3.0, 4.0, tmp_path / "v.mp4", src=src, work_dir=tmp_path)
+        args = ffmpeg[0]
+        assert args.count("-hwaccel_device") == 2  # one per fisheye input, not the audio input
+        dl = "hwdownload,format=nv12,format=yuv420p"
+        graph = self._filter(args)
+        assert graph.startswith(f"[0:v]{dl}[d0];[1:v]{dl}[d1];[d0][d1]hstack=inputs=2,v360")
 
 
 # --------------------------------------------------------------------------- moved footage

@@ -1,7 +1,7 @@
 """``cutpoint refmatch``: find a reference edit's shots in the sources and learn from them.
 
 1. **Thumbnails.** The reference and every project source are decoded once to
-   64x36 grey frames at 10 fps (NVDEC when possible), cached per file as
+   64x36 grey frames at 10 fps (GPU decode when possible), cached per file as
    ``cache/<file>/thumbs64x36-10fps.npy``.
 2. **Shots.** Cuts in the reference are frames whose correlation with the
    previous frame drops below ``cut_corr``; shots shorter than 0.4 s are merged.
@@ -48,6 +48,7 @@ from cutpoint.ffmpeg_utils import (
     FFmpegError,
     decode_pcm,
     decode_raw,
+    decoder_for,
     output_dir,
     pcm_float,
     probe,
@@ -79,7 +80,7 @@ class MatchParams:
 
 # --------------------------------------------------------------------------- decoding
 def _decode_thumbs(path: Path, hwaccel: str | None, fallback_cpu: bool = True) -> np.ndarray:
-    """One thumbnail decode (CUDA first unless ``hwaccel`` is None)."""
+    """One thumbnail decode (GPU first unless ``hwaccel`` is None)."""
     vf = f"fps={FPS},scale={W}:{H}:flags=area,format=gray"
     data = bytearray()  # one growing buffer: no per-frame arrays to stack
     for _, f in decode_raw(
@@ -94,8 +95,8 @@ def _decode_thumbs(path: Path, hwaccel: str | None, fallback_cpu: bool = True) -
 def thumbnails(path: Path) -> np.ndarray:
     """``(N, H*W)`` uint8 grey frames at ``FPS`` (cached per file).
 
-    Decodes on CUDA; if that fails or is clearly shorter than the video (more
-    than 1 s missing, e.g. an NVDEC error part-way) it is redone on the CPU and
+    Decodes on the GPU; if that fails or is clearly shorter than the video (more
+    than 1 s missing, e.g. a GPU decode error part-way) it is redone on the CPU and
     the longer result kept. A result that is still short is returned but not
     cached, so the next run tries again.
     """
@@ -107,12 +108,12 @@ def thumbnails(path: Path) -> np.ndarray:
         expected = probe(path).vduration * FPS
     except FFmpegError:
         expected = 0.0  # unknown: accept what decodes
-    frames: np.ndarray | None
-    try:
-        frames = _decode_thumbs(path, "cuda", fallback_cpu=False)
-    except FFmpegError as err:
-        logger.debug("Thumbnails %s: CUDA decode failed: %s", path.name, err)
-        frames = None
+    frames: np.ndarray | None = None
+    if decoder_for(path) is not None:  # else "auto" would be the CPU pass the retry below repeats
+        try:
+            frames = _decode_thumbs(path, "auto", fallback_cpu=False)
+        except FFmpegError as err:
+            logger.debug("Thumbnails %s: GPU decode failed: %s", path.name, err)
     if frames is None or len(frames) < expected - FPS:
         if frames is not None:
             logger.info(
