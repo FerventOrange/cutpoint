@@ -402,6 +402,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- UI: the page's own files (`index.html`, `app.css`, the JS modules) are revalidated on each
+  load (`Cache-Control: no-cache`), so an update's CSS and JS are used at once; a stale cached
+  `app.css` had brought back the page scrolling past the Jobs bar (#415).
 - Ctrl+C during an `analyze` step after the transcription (reactions, keyframes, crashes,
   ranking or vision) left a new `transcript.txt` next to the previous `highlights.json`, or in
   an otherwise empty new project folder. `analyze` now writes `transcript.txt` with
