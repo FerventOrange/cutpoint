@@ -39,7 +39,7 @@ flowchart TD
 
     subgraph BG["Background OCR overlap"]
         direction TB
-        ELIG{{"Eligible if: game style, keyframes not skipped, OCR extra and models present, clean read so far, Whisper on CUDA, HUD preset for every game, enough VRAM, CUTPOINT_ANALYZE_OVERLAP not 0"}}
+        ELIG{{"Eligible if: game style, keyframes not skipped, events extra and OCR models present, clean read so far, Whisper on CUDA, HUD preset for every game, enough VRAM, CUTPOINT_ANALYZE_OVERLAP not 0"}}
         PF["Worker thread runs OCR per source"]
         ELIG -->|yes| PF
     end
