@@ -295,7 +295,9 @@ class TestRenderSegmentSendcmd:
         i = args.index("-color_range")
         assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
 
-    def test_sdr_source_render_is_unchanged(self, clip, tmp_path, ffmpeg):
+    def test_sdr_source_render_is_unchanged(self, clip, tmp_path, ffmpeg, monkeypatch):
+        bt709 = {"color_space": "bt709", "color_primaries": "bt709", "color_transfer": "bt709"}
+        monkeypatch.setattr(render, "probe", lambda p: media_info(duration=1.0, **bt709))
         path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
         render.render_segment(
             clip, path, 3.0, 4.0, tmp_path / "s.mp4", src=_src("equirect", True), work_dir=tmp_path
@@ -305,6 +307,27 @@ class TestRenderSegmentSendcmd:
             self._filter(args)
         )
         assert "-color_primaries" not in args and "-colorspace" not in args
+
+    @pytest.mark.parametrize(
+        ("tags", "color"),
+        [
+            ({}, encode.TAG_BT709),
+            ({"color_space": "smpte170m"}, "colorspace=all=bt709:iall=smpte170m:"),
+        ],
+    )
+    def test_untagged_or_bt601_source_render_is_bt709(
+        self, clip, tmp_path, ffmpeg, monkeypatch, tags, color
+    ):
+        """#290: untagged HD is only tagged bt709, BT.601 converted, as in a flat export."""
+        monkeypatch.setattr(render, "probe", lambda p: media_info(duration=1.0, **tags))
+        path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
+        render.render_segment(
+            clip, path, 3.0, 4.0, tmp_path / "u.mp4", src=_src("equirect", True), work_dir=tmp_path
+        )
+        args = ffmpeg[0]
+        assert f"fps=30:round=down,{color}" in self._filter(args)
+        i = args.index("-color_range")
+        assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
 
 
 # --------------------------------------------------------------------------- moved footage

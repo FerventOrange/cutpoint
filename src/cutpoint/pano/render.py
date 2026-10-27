@@ -58,7 +58,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.encode import A_FMT, BT709_TAGS, audio_fade_filter, sdr_filter
+from cutpoint.encode import A_FMT, BT709_TAGS, audio_fade_filter, bt709_filter
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
@@ -291,9 +291,11 @@ def render_segment(
     audio_end = info.audio_duration
     audio = None if audio_end is None else min(end, audio_end) - start
     a_fmt = A_FMT + audio_fade_filter(dur, audio_fade, audio)
-    # HDR / BT.2020 footage is converted to SDR Rec.709 before the 8-bit format (#289).
+    # HDR / BT.2020 footage is converted to SDR Rec.709 before the 8-bit format (#289), BT.601
+    # to BT.709 and untagged HD tagged bt709 (#290), as in a flat export. Insta360 X3 files are
+    # tagged BT.709 (full range), so for them nothing changes.
     same = Path(src.inputs[0]) == Path(clip.source)
-    color = sdr_filter(info if same else probe(remap_source(src.inputs[0])))
+    color = bt709_filter(info if same else probe(remap_source(src.inputs[0])))
     v360 = (
         f"v360@cam={v360_in}:output=flat:rorder=ryp:yaw={init['yaw']:.3f}:"
         f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"

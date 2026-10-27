@@ -233,6 +233,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exported clips are now always tagged BT.709. BT.601 SDR sources (NVIDIA DVR/ShadowPlay-style
+  `smpte170m` captures, `bt470bg`, `smpte240m`, and untagged SD under 720 lines) are converted
+  to BT.709 with ffmpeg's `colorspace` filter, logged once per source. Untagged HD is tagged
+  BT.709 with no pixel change, and BT.709 sources are unchanged. This fixes hue shifts when
+  `assemble --transition cut` joins clips from mixed sources (#290, #289).
 - `analyze` on `gaming` and `funny` footage starts the HUD OCR of the keyframes step in the
   background while transcription, scene detection and the reactions step use the GPU, instead
   of after them. It runs only when Whisper runs on CUDA, every game has a HUD preset, a source

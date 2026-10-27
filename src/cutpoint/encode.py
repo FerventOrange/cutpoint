@@ -56,6 +56,32 @@ _ZSCALE_PRIMARIES = ("bt709", "bt2020")
 _ZSCALE_MATRICES = ("bt709", "bt2020nc", "bt2020c")
 # Output tags of a converted clip, so players do not guess (other clips stay as they were).
 BT709_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+# BT.601 SDR (#290 stage 0.5): NVIDIA DVR captures (tv, smpte170m) and SD video hold BT.601
+# data. Exported as it was, a cut-joined montage stream-copies it next to BT.709 clips under
+# the first clip's tags, and players reading only those showed the BT.601 part up to ~33 codes
+# off on saturated colours. A matrix tag of that family (smpte240m has its own matrix) is
+# converted to BT.709. Without a matrix tag, players pick the matrix by size, and so does this:
+# SD (below 720 lines and 1280 columns, so cropped widescreen HD such as 1280x536 is HD) is
+# BT.601 (a BT.601 primaries tag names which one), HD is BT.709. The transfer tag never
+# decides: BT.601 and BT.709 share the curve. HD without a matrix tag (OBS, editors) was
+# exported without one; on real footage tagging it bt709 changed no frame (framemd5).
+BT601_TAGS = ("smpte170m", "bt470bg", "smpte240m")
+BT601_MAX_HEIGHT = 719
+BT601_MAX_WIDTH = 1279
+# Matrix only (fast=1: primaries and transfer are not re-mapped, as players treat BT.601 SDR).
+# ``colorspace`` is in every ffmpeg since 3.1 and works in YUV: on BT.601 bars (lossless),
+# decoded with the BT.709 matrix, the mean RGB error inside the bars was 0.17 codes (6.0
+# unconverted) against 1.15 for ``scale=in_color_matrix=...`` (0.28 with accurate_rnd+
+# full_chroma_int) and 0.17 for ``zscale`` (not in every build). It costs about 7 % wall time
+# on 1080p60. It is explicit: recent ffmpeg (9.0.2 measured) converts by itself to match the
+# output tags, but older builds would only re-tag the BT.601 data. Its input is tv range: the
+# scale before it always outputs that (full-range BT.601 is narrowed there, as full-range
+# BT.709 always was).
+_BT601_TO_709 = "colorspace=all=bt709:iall={}:irange=tv:range=tv:fast=1"
+# Tags HD frames without a matrix tag bt709 without touching a pixel. The output tags alone would not do:
+# recent ffmpeg (9.0.2 measured) then converts the untagged frames as BT.601 (on bars: 7 codes
+# mean, 22 max).
+TAG_BT709 = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
 # Log/flat look of a 10-bit SDR source (one small frame, luma 0-1): mean HSV saturation
 # below LOG_MAX_SATURATION, lifted blacks (1 % luma above LOG_MIN_BLACK), no near-white
 # (99 % luma below LOG_MAX_WHITE) and still a picture (spread above LOG_MIN_SPREAD), so
@@ -131,6 +157,50 @@ def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
         "format=gbrpf32le,tonemap=tonemap=hable:desat=0,"
         "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
     )
+
+
+def bt601_matrix(info: MediaInfo) -> str | None:
+    """The BT.601-family matrix (an ffprobe name) of an SDR source, None for any other.
+
+    The matrix tag decides. Without one, SD (:func:`is_sd`) is BT.601: the primaries tag's
+    matrix when it is one of :data:`BT601_TAGS`, else ``smpte170m``; HD is BT.709.
+    """
+    if color_kind(info):
+        return None
+    if info.color_space:
+        return info.color_space if info.color_space in BT601_TAGS else None
+    if not is_sd(info):
+        return None
+    return info.color_primaries if info.color_primaries in BT601_TAGS else "smpte170m"
+
+
+def is_sd(info: MediaInfo) -> bool:
+    """True below 720 lines and 1280 columns, the size players read as BT.601 when untagged."""
+    return info.height <= BT601_MAX_HEIGHT and info.width <= BT601_MAX_WIDTH
+
+
+def bt709_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
+    """Color filters making an exported clip BT.709; they go where :func:`sdr_filter`'s go.
+
+    HDR and BT.2020 sources get :func:`sdr_filter` (``filters`` as there); BT.601 ones
+    (:func:`bt601_matrix`) a matrix conversion, with one INFO line per source; HD without a
+    matrix tag only :data:`TAG_BT709`. Anything else (BT.709 among it) gets "", the chain of
+    before. A non-empty result means the clip takes :data:`BT709_TAGS`.
+    """
+    if color_kind(info):
+        return sdr_filter(info, filters)
+    matrix = bt601_matrix(info)
+    if matrix:
+        why = (
+            f"tagged {info.color_space}"
+            if info.color_space
+            else f"no matrix tag, {info.width}x{info.height}"
+        )
+        _note(
+            info, logging.INFO, "%s is BT.601 video (%s): converting to BT.709", info.path.name, why
+        )
+        return _BT601_TO_709.format(matrix)
+    return "" if info.color_space else TAG_BT709
 
 
 def _note(info: MediaInfo, level: int, msg: str, *args: object) -> None:
@@ -420,7 +490,7 @@ class OutputFormat:
 
         ``crop`` is applied first (trimmed to the output aspect when close, so a
         bordered recording fills the frame), then the usual scale/pad. ``color``
-        (:func:`sdr_filter`) goes just before ``format=yuv420p``.
+        (:func:`bt709_filter`) goes just before ``format=yuv420p``.
         """
         w, h = self.width, self.height
         pre = ""
@@ -534,7 +604,7 @@ def _encode(
         "-i",
         str(src),
     ]
-    color = sdr_filter(info)
+    color = bt709_filter(info)
     vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop, color))}[v]"
     audio = None if info.audio_duration is None else min(end, info.audio_duration) - start
     a_fmt = A_FMT + peaks + audio_fade_filter(dur, audio_fade, audio)

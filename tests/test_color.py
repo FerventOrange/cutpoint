@@ -1,4 +1,5 @@
-"""Color handling of exports (#289): probed tags, HDR/BT.2020 to SDR Rec.709, log warning."""
+"""Color handling of exports (#289, #290): probed tags, HDR/BT.2020 to SDR Rec.709, BT.601 to
+BT.709, log warning."""
 
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ BOTH = frozenset({"zscale", "tonemap", "scale"})
 HLG = {"color_transfer": "arib-std-b67", "color_primaries": "bt2020", "color_space": "bt2020nc"}
 PQ = {"color_transfer": "smpte2084", "color_primaries": "bt2020", "color_space": "bt2020nc"}
 BT709 = {"color_transfer": "bt709", "color_primaries": "bt709", "color_space": "bt709"}
+FULL_BT709 = BT709 | {"color_range": "pc", "pix_fmt": "yuvj420p"}  # GoPro
+BT601 = {"color_transfer": "smpte170m", "color_primaries": "smpte170m", "color_space": "smpte170m"}
+SD = {"width": 720, "height": 480}
 TODAY = (
     "scale=1920:1080:force_original_aspect_ratio=decrease:out_range=tv,"
     "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
@@ -87,6 +91,94 @@ def test_sdr_and_untagged_sources_get_no_conversion(tags):
     assert encode.sdr_filter(media_info(**tags), BOTH) == ""
 
 
+# -- BT.601 to BT.709 (#290) -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tags", "matrix"),
+    [
+        (BT601, "smpte170m"),
+        (BT601 | {"color_range": "pc", "pix_fmt": "yuvj420p"}, "smpte170m"),
+        ({"color_space": "bt470bg", "color_primaries": "bt470bg"}, "bt470bg"),
+        ({"color_space": "smpte240m"}, "smpte240m"),
+        (SD, "smpte170m"),  # untagged SD
+        ({"width": 960, "height": 540, "color_range": "tv"}, "smpte170m"),
+        ({**SD, **BT601}, "smpte170m"),
+        # No matrix tag: SD only, the primaries tag naming the matrix; the transfer never.
+        ({**SD, "color_primaries": "bt470bg", "color_range": "tv"}, "bt470bg"),
+        ({**SD, "color_primaries": "bt709"}, "smpte170m"),
+        ({**SD, "color_transfer": "bt709"}, "smpte170m"),
+    ],
+)
+def test_bt601_source_is_converted_to_bt709_by_matrix(tags, matrix):
+    vf = encode.bt709_filter(media_info(**tags), BOTH)
+    assert vf == f"colorspace=all=bt709:iall={matrix}:irange=tv:range=tv:fast=1"
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        BT709,
+        FULL_BT709,
+        {**SD, **BT709},  # tagged SD keeps its tags
+        {"color_space": "bt709", "color_primaries": "smpte170m"},  # the matrix decides
+        {"color_space": "gbr"},  # RGB stays as before
+    ],
+)
+def test_bt709_sources_keep_todays_chain(tags):
+    assert encode.bt601_matrix(media_info(**tags)) is None
+    assert encode.bt709_filter(media_info(**tags), BOTH) == ""
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        {},
+        {"color_range": "tv"},
+        {"color_range": "pc"},
+        {"width": 1280, "height": 720},
+        {"width": 1280, "height": 536},  # cropped widescreen HD: HD by its width
+        {"width": 1920, "height": 800},
+        {"width": 720, "height": 1280},  # vertical HD
+        # No matrix tag on HD: BT.601 primaries or transfer do not make it BT.601.
+        {"color_transfer": "smpte170m"},
+        {"color_primaries": "smpte170m", "color_transfer": "smpte170m"},
+        {"color_primaries": "bt470bg", "color_range": "tv"},
+        {"color_primaries": "bt709"},
+    ],
+)
+def test_hd_without_a_matrix_tag_is_only_tagged_bt709(tags):
+    assert encode.bt601_matrix(media_info(**tags)) is None
+    assert encode.bt709_filter(media_info(**tags), BOTH) == encode.TAG_BT709
+    assert encode.TAG_BT709 == "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
+
+
+@pytest.mark.parametrize(
+    "tags", [HLG, {"color_transfer": "bt2020-10", "color_primaries": "bt2020"}]
+)
+def test_hdr_and_bt2020_sources_keep_the_sdr_conversion(tags):
+    info = media_info(**tags, **SD)  # SD as well: never read as BT.601
+    assert encode.bt601_matrix(info) is None
+    assert encode.bt709_filter(info, BOTH) == encode.sdr_filter(info, BOTH)
+    assert encode.bt709_filter(info, frozenset()) == ""  # no zscale: as before, with its WARNING
+
+
+def test_bt601_conversion_logs_one_info_line_per_source(caplog):
+    caplog.set_level("INFO")
+    for _ in range(3):
+        encode.bt709_filter(media_info(Path("dvr.mp4"), **BT601), BOTH)
+    encode.bt709_filter(media_info(Path("sd.mp4"), **SD), BOTH)
+    pal = {"width": 720, "height": 576, "color_primaries": "bt470bg"}
+    encode.bt709_filter(media_info(Path("pal.mp4"), **pal), BOTH)
+    encode.bt709_filter(media_info(Path("hd.mp4"), color_transfer="smpte170m"), BOTH)
+    lines = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert lines == [
+        "dvr.mp4 is BT.601 video (tagged smpte170m): converting to BT.709",
+        "sd.mp4 is BT.601 video (no matrix tag, 720x480): converting to BT.709",
+        "pal.mp4 is BT.601 video (no matrix tag, 720x576): converting to BT.709",
+    ]
+
+
 def test_without_zscale_hdr_keeps_todays_chain_and_warns_once_per_source(caplog):
     caplog.set_level("WARNING")
     info = media_info(Path("hdr.mp4"), **HLG)
@@ -134,14 +226,32 @@ def test_hdr_export_with_vaapi_converts_before_the_upload(monkeypatch):
     assert "r=tv,format=yuv420p,format=nv12,hwupload[v]" in graph
 
 
-@pytest.mark.parametrize("tags", [{}, BT709, {"color_transfer": "smpte170m"}])
-def test_sdr_export_command_is_unchanged(monkeypatch, tags):
+@pytest.mark.parametrize("tags", [BT709, FULL_BT709, {"color_space": "bt709"}, {**SD, **BT709}])
+def test_bt709_export_command_is_unchanged(monkeypatch, tags):
     args = _export_args(monkeypatch, media_info(**tags))
     assert args[args.index("-filter_complex") + 1].startswith(f"[0:v:0]{TODAY}[v];")
     assert not {"-color_primaries", "-color_trc", "-colorspace"} & set(args)
     assert args[args.index("-color_range") : args.index("-color_range") + 3] == [
         "-color_range", "tv", "-fps_mode",
     ]  # fmt: skip
+
+
+@pytest.mark.parametrize(("tags", "matrix"), [(BT601, "smpte170m"), (SD, "smpte170m")])
+def test_bt601_export_converts_and_tags_the_output_bt709(monkeypatch, tags, matrix):
+    args = _export_args(monkeypatch, media_info(**tags))
+    graph = args[args.index("-filter_complex") + 1]
+    conv = f"colorspace=all=bt709:iall={matrix}:irange=tv:range=tv:fast=1"
+    assert graph.startswith(f"[0:v:0]{TODAY.replace('format=', conv + ',format=')}[v];")
+    i = args.index("-color_range")
+    assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
+
+
+def test_untagged_hd_export_is_only_tagged_bt709(monkeypatch):
+    args = _export_args(monkeypatch, media_info())
+    graph = args[args.index("-filter_complex") + 1]
+    assert graph.startswith(f"[0:v:0]{TODAY.replace('format=', encode.TAG_BT709 + ',format=')}[v];")
+    i = args.index("-color_range")
+    assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
 
 
 # -- log/flat footage ----------------------------------------------------------------------------
@@ -287,3 +397,76 @@ def test_real_hlg_export_is_tone_mapped_and_tagged_bt709(tmp_path, monkeypatch):
     )  # fmt: skip
     # Read as SDR, the HLG source looks washed out; the converted clip keeps the bars' colour.
     assert _saturation(out) > _saturation(src) + 0.1
+
+
+def _bars(path: Path, size: str, tag: str | None) -> None:
+    """1 s colour bars at ``size``, BT.601 data (tv range, FFV1), all three tags ``tag``.
+
+    With ``tag`` None the clip is untagged (ffmpeg 9 would tag the scale's output bt470bg).
+    """
+    tags = ["-colorspace", tag, "-color_primaries", tag, "-color_trc", tag] if tag else []
+    ffmpeg_utils.run(
+        [
+            *("ffmpeg", "-y", "-v", "error", "-f", "lavfi"),
+            *("-i", f"smptebars=s={size}:d=1:r=30,format=rgb24"),
+            *("-vf", "scale=out_color_matrix=bt601:out_range=tv,format=yuv420p,"
+                     f"setparams=colorspace={tag or 'unknown'}"),
+            *("-c:v", "ffv1", "-color_range", "tv", *tags, str(path)),
+        ]
+    )  # fmt: skip
+
+
+def _rgb(path: Path, matrix: str) -> np.ndarray:
+    """The middle frame of ``path`` as float RGB, decoded with ``matrix`` (tv range)."""
+    vf = (
+        "scale=320:180:flags=accurate_rnd+full_chroma_int:"
+        f"in_color_matrix={matrix}:in_range=tv:out_range=pc,format=rgb24"
+    )
+    frames = ffmpeg_utils.decode_raw(path, size=(320, 180), vf=vf, start=0.5, hwaccel=None)
+    return next(iter(frames))[1].astype(np.float32)
+
+
+def _video_md5(path: Path) -> list[str]:
+    """framemd5 of the video frames of ``path``."""
+    text = ffmpeg_utils.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
+                             "-f", "framemd5", "-"])  # fmt: skip
+    return [line.rsplit(",", 1)[-1].strip() for line in text.splitlines() if line[:1].isdigit()]
+
+
+@needs_ffmpeg
+def test_real_bt601_export_is_bt709_data_and_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    src = tmp_path / "dvr.mkv"
+    _bars(src, "320x180", "smpte170m")
+    info = ffmpeg_utils.probe(src)
+    assert encode.bt601_matrix(info) == "smpte170m"
+    out = tmp_path / "001.mp4"
+
+    encode.export_clip(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
+
+    got = ffmpeg_utils.probe(out)
+    assert (got.color_space, got.color_primaries, got.color_transfer) == ("bt709",) * 3
+    # Read as BT.709 (what a player does with the montage's tags), the clip shows the
+    # source's colours; the source read that way is several codes off.
+    want = _rgb(src, "bt601")
+    assert np.abs(_rgb(out, "bt709") - want).mean() < 1.5
+    assert np.abs(_rgb(src, "bt709") - want).mean() > 4.0
+
+
+@needs_ffmpeg
+def test_real_untagged_hd_export_changes_no_pixel(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    src = tmp_path / "hd.mkv"
+    _bars(src, "1280x720", None)
+    info = ffmpeg_utils.probe(src)
+    assert (info.color_space, info.color_primaries, info.color_transfer) == (None,) * 3
+    fmt = encode.OutputFormat(1280, 720, 30)
+    tagged, before = tmp_path / "tagged.mp4", tmp_path / "before.mp4"
+
+    encode.export_clip(src, info, 0.0, 1.0, tagged, fmt, False)
+    monkeypatch.setattr(encode, "bt709_filter", lambda _info: "")  # the export before #290
+    encode.export_clip(src, info, 0.0, 1.0, before, fmt, False)
+
+    got = ffmpeg_utils.probe(tagged)
+    assert (got.color_space, got.color_primaries, got.color_transfer) == ("bt709",) * 3
+    assert _video_md5(tagged) == _video_md5(before)
