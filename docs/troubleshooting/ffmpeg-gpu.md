@@ -91,7 +91,7 @@ Common causes when the GPU encoder is not used:
 
 Decoding follows the GPU found here: NVDEC with an NVIDIA GPU, VAAPI on the render nodes of an
 AMD GPU (Linux); a vendor that is not present is not tried. Analysis, HUD OCR, 360 view sampling
-and 360 renders decode that way, and the UI's preview proxies encode with the encoder above. VAAPI
+and 360 renders decode that way, and the UI's preview proxies encode with NVENC or VAAPI when exports use them (AMF proxies stay on libx264). VAAPI
 decodes only limited-range 8-bit 4:2:0 H.264; HEVC, 10-bit, 4:4:4 and full-range (`yuvj420p`) sources decode on the CPU. Each decoder
 must pass a one-clip test decode first, and a failing one falls back to the CPU. Transcription,
 OCR and the other models stay on the CPU on an AMD GPU.

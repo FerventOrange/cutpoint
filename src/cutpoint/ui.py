@@ -776,7 +776,10 @@ PROXY_FPS_MAX = 30
 # NVENC at CQ 28 alone was up to four times libx264's size at CRF 27. At CQ 32 with this cap, a
 # 1080p60 recording's proxy was about 1.2 times libx264's (scoring a higher SSIM) and needed
 # about half the CPU time of libx264.
-PROXY_GPU_QUALITY = 32  # NVENC CQ; the same number as QP for VAAPI and AMF
+# VAAPI at QP 32 (AMD, 1080p60, 15-20 s of four synthetic contents) came out 0.6 to 1.0 times
+# libx264's size, so it needs no cap. AMF was not measured (no Windows machine): AMF proxies
+# stay on libx264 (Media._gpu_encoder).
+PROXY_GPU_QUALITY = 32  # NVENC CQ; the same number as QP for VAAPI
 PROXY_NVENC_RATE = ["-maxrate", "1500k", "-bufsize", "3000k"]
 # Window proxies (#323): while the whole proxy builds, the focused moment plays from a short
 # proxy of [start - BEFORE, end + AFTER], its edges rounded outward to STEP so nearby requests
@@ -1385,14 +1388,15 @@ class Media:
 
     def _gpu_encoder(self) -> VideoEncoder | None:
         """The GPU encoder for proxies: the one exports use (``video_encoder``, probed once),
-        or None for libx264, also after a proxy failed with it and worked with libx264."""
+        or None for libx264, also after a proxy failed with it and worked with libx264. AMF
+        proxies stay on libx264: their size was never measured (VAAPI's was, see below)."""
         if self.gpu_failed:
             return None
         try:
             enc = video_encoder()
         except (ValueError, EncoderUnavailableError):
             return None
-        return None if enc.kind == "cpu" else enc
+        return None if enc.kind in ("cpu", "amf") else enc
 
     def _encode(
         self,

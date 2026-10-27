@@ -2971,6 +2971,8 @@ def build_proxy(client: TestClient, p: Path, src: Path) -> str:
     [
         (None, "libx264"),  # no GPU encoder works here, or the user chose the CPU
         ("nvenc", "h264_nvenc"),
+        ("vaapi", "h264_vaapi"),
+        ("amf", "libx264"),  # its proxy size is unmeasured
     ],
 )
 def test_proxy_uses_the_gpu_encoder_exports_use_else_libx264(
