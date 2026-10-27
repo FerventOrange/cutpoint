@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import encode, ffmpeg_utils
+from cutpoint import assemble, encode, ffmpeg_utils
 from cutpoint.crop import Crop
 from cutpoint.ffmpeg_utils import FFmpegError, VideoEncoder
 
@@ -399,8 +399,9 @@ def test_real_hlg_export_is_tone_mapped_and_tagged_bt709(tmp_path, monkeypatch):
     assert _saturation(out) > _saturation(src) + 0.1
 
 
-def _bars(path: Path, size: str, tag: str | None) -> None:
-    """1 s colour bars at ``size``, BT.601 data (tv range, FFV1), all three tags ``tag``.
+def _bars(path: Path, size: str, tag: str | None, data: str = "bt601", dur: float = 1.0) -> None:
+    """``dur`` s of still colour bars at ``size`` (FFV1, tv range), ``data`` the matrix of
+    the pixels, all three tags ``tag``.
 
     With ``tag`` None the clip is untagged (ffmpeg 9 would tag the scale's output bt470bg).
     """
@@ -408,21 +409,21 @@ def _bars(path: Path, size: str, tag: str | None) -> None:
     ffmpeg_utils.run(
         [
             *("ffmpeg", "-y", "-v", "error", "-f", "lavfi"),
-            *("-i", f"smptebars=s={size}:d=1:r=30,format=rgb24"),
-            *("-vf", "scale=out_color_matrix=bt601:out_range=tv,format=yuv420p,"
+            *("-i", f"smptebars=s={size}:d={dur:g}:r=30,format=rgb24"),
+            *("-vf", f"scale=out_color_matrix={data}:out_range=tv,format=yuv420p,"
                      f"setparams=colorspace={tag or 'unknown'}"),
             *("-c:v", "ffv1", "-color_range", "tv", *tags, str(path)),
         ]
     )  # fmt: skip
 
 
-def _rgb(path: Path, matrix: str) -> np.ndarray:
-    """The middle frame of ``path`` as float RGB, decoded with ``matrix`` (tv range)."""
+def _rgb(path: Path, matrix: str, at: float = 0.5) -> np.ndarray:
+    """The frame of ``path`` at ``at`` s as float RGB, decoded with ``matrix`` (tv range)."""
     vf = (
         "scale=320:180:flags=accurate_rnd+full_chroma_int:"
         f"in_color_matrix={matrix}:in_range=tv:out_range=pc,format=rgb24"
     )
-    frames = ffmpeg_utils.decode_raw(path, size=(320, 180), vf=vf, start=0.5, hwaccel=None)
+    frames = ffmpeg_utils.decode_raw(path, size=(320, 180), vf=vf, start=at, hwaccel=None)
     return next(iter(frames))[1].astype(np.float32)
 
 
@@ -470,3 +471,50 @@ def test_real_untagged_hd_export_changes_no_pixel(tmp_path, monkeypatch):
     got = ffmpeg_utils.probe(tagged)
     assert (got.color_space, got.color_primaries, got.color_transfer) == ("bt709",) * 3
     assert _video_md5(tagged) == _video_md5(before)
+
+
+# -- assemble re-encodes (#290) ------------------------------------------------------------------
+
+
+def test_assemble_normalises_each_input_to_bt709():
+    infos = [media_info(Path(f"00{i}.mp4"), 2.0, **t) for i, t in enumerate((BT709, {}, BT601))]
+    chains, _ = assemble._normalize_inputs(infos)
+    video = [c for c in chains if c.startswith("[") and ":v:0]" in c]
+    assert f"fps=30,{encode.TAG_BT709},format=yuv420p," in video[0]  # BT.709: tags only
+    assert f"fps=30,{encode.TAG_BT709},format=yuv420p," in video[1]
+    conv = "colorspace=all=bt709:iall=smpte170m:irange=tv:range=tv:fast=1"
+    assert f"fps=30,{conv},format=yuv420p," in video[2]
+    other = assemble._normalize_inputs([media_info(color_space="gbr")])[0][0]
+    assert "fps=30,format=yuv420p," in other  # RGB and other matrices: as before
+
+
+def test_assemble_reencode_tags_the_output_bt709(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(assemble, "run", lambda args, **_kw: calls.append(args) or "")
+    files = [tmp_path / "a.mp4"]
+    assemble._encode_with(VideoEncoder("cpu"), files, "[0:v]null[v]", tmp_path / "o.mp4")
+    args = calls[0]
+    i = args.index("-color_range")
+    assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
+
+
+@needs_ffmpeg
+def test_real_crossfade_of_bt709_untagged_and_bt601_clips_keeps_their_colours(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    files = [tmp_path / f"00{i}.mkv" for i in (1, 2, 3)]
+    _bars(files[0], "1280x720", "bt709", "bt709", 2.0)  # a clip exported after #290
+    _bars(files[1], "1280x720", None, "bt709", 2.0)  # an untagged HD clip from before
+    _bars(files[2], "1280x720", "smpte170m", "bt601", 2.0)  # a BT.601 clip from before
+    infos = [ffmpeg_utils.probe(f) for f in files]
+    out = tmp_path / "final.mp4"
+
+    assemble.crossfade(files, infos, out, assemble.crossfade_duration(infos, 0.2))
+
+    got = ffmpeg_utils.probe(out)
+    assert (got.color_space, got.color_primaries, got.color_transfer) == ("bt709",) * 3
+    # The middle of each clip in the final, read as BT.709, against its source read as it
+    # should be (still bars: any frame will do).
+    for f, at, matrix in zip(files, (1.0, 2.8, 4.6), ("bt709", "bt709", "bt601"), strict=True):
+        assert np.abs(_rgb(out, "bt709", at) - _rgb(f, matrix)).mean() < 1.5, f.name

@@ -30,10 +30,13 @@ from cutpoint import jsonout
 from cutpoint.encode import (
     A_FMT,
     AUDIO_OUT,
+    BT709_TAGS,
     PEAK_PRESETS,
     PEAK_TAG,
     SILENCE,
+    TAG_BT709,
     audio_fade_filter,
+    bt709_filter,
     limiter_chain,
     plan_makeup,
     plan_peaks,
@@ -161,15 +164,25 @@ def _audio_chain(
 def _normalize_inputs(
     infos: list[MediaInfo], fades: list[float] | None = None, peaks: list[str] | None = None
 ) -> tuple[list[str], Fraction]:
-    """Per-input filter chains producing [v<i>]/[a<i>] with identical params."""
+    """Per-input filter chains producing [v<i>]/[a<i>] with identical params.
+
+    Each input also gets its :func:`~cutpoint.encode.bt709_filter` (#290), as at export, so
+    xfade and concat only see BT.709 tv-range frames tagged so: a clip exported before #290
+    (BT.601 data, or HD without tags) no longer shifts colour next to a newer one. A clip
+    with a BT.709 matrix tag only gets :data:`~cutpoint.encode.TAG_BT709` (no pixel changes):
+    ffmpeg 9 writes the frames' primaries and transfer over the output tags, and xfade passes
+    on the first input's, so one clip without them left the final without them.
+    """
     w, h, fps = infos[0].width, infos[0].height, infos[0].fps
     fades = fades or [0.0] * len(infos)
     peaks = peaks or [""] * len(infos)
     chains = []
     for i, info in enumerate(infos):
+        color = bt709_filter(info) or (TAG_BT709 if info.color_space == "bt709" else "")
         chains.append(
             f"[{i}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p,"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
+            f"{color + ',' if color else ''}format=yuv420p,"
             f"settb=AVTB,setpts=PTS-STARTPTS[v{i}]"
         )
         chains.append(_audio_chain(i, info, fades[i], peaks=peaks[i]))
@@ -196,6 +209,9 @@ def _encode_with(enc: VideoEncoder, files: list[Path], graph: str, out: Path) ->
         *enc.args(),
         "-color_range",
         "tv",
+        # Every input is BT.709 after _normalize_inputs; the tags say so, whatever the first
+        # clip carried (a BT.709 clip's frames already are, so no pixel changes).
+        *BT709_TAGS,
         *AUDIO_OUT,
         "-movflags",
         "+faststart",
