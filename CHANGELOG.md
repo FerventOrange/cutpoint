@@ -233,6 +233,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `360 qa` measures the horizon tilt of each clip from the v360 commands its render emitted,
+  so it catches render roll errors that the old model prediction could not (#12). Each `.cmd`
+  file now starts with a `# cutpoint-v360 ...` line holding the starting rotation; ffmpeg
+  skips it and renders are unchanged. Clips rendered before this fall back to the model with
+  an INFO line until they are re-rendered. The horizons in `qa.json` gain `source`
+  (`commands` or `model`).
 - `analyze --vision` with Ollama down uses the vision ratings already cached for the top
   candidates instead of skipping the rating. The `vision_unavailable` warning gives the
   counts, and `settings.vision.uncached` in `highlights.json` is the number of top candidates
