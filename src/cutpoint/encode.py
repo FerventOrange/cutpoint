@@ -9,12 +9,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 import numpy as np
 
-from cutpoint import state
+from cutpoint import jsonout, state
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.crop import Crop
 from cutpoint.ffmpeg_utils import (
@@ -201,6 +201,106 @@ def bt709_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
         )
         return _BT601_TO_709.format(matrix)
     return "" if info.color_space else TAG_BT709
+
+
+def filter_path(path: PurePath) -> str:
+    """``path`` as a filter option value inside a filtergraph (``-filter_complex``).
+
+    Forward slashes on Windows (``as_posix``; on POSIX a backslash is a file name character),
+    then the two escaping levels of ffmpeg: the option value (``\\``, ``'``, ``:``, so a drive
+    colon is not an option separator) and the filtergraph (``\\``, ``'``, ``[``, ``]``, ``,``,
+    ``;``). Spaces need no escaping inside a value.
+    """
+    text = path.as_posix()
+    for special in ("\\':", "\\'[],;"):
+        text = "".join("\\" + c if c in special else c for c in text)
+    return text
+
+
+def lut_filter(path: PurePath, strength: float = 1.0) -> str | None:
+    """Filters grading a BT.709 tv-range clip with the 3D LUT ``path`` (#290 stage 1), for
+    :meth:`OutputFormat.video_filter`'s ``color`` after :func:`bt709_filter`'s; None at
+    strength 0.
+
+    The frames go to full-range RGB with the BT.709 matrix, through ``lut3d`` (tetrahedral)
+    and back to BT.709 tv range. The matrix is explicit: an older ffmpeg's automatic
+    conversion would use BT.601. The LUT is assumed to be made for the footage's log or flat
+    profile (a GoPro Flat or Insta360 Log to Rec.709 LUT, say); Cutpoint cannot check that.
+    Below strength 1 the graded frames are blended over the original at that opacity, in YUV
+    (a linear mix, the same as one in RGB, on fewer samples). Strength 1 has no blend.
+    """
+    if strength <= 0:
+        return None
+    to_rgb = "scale=in_color_matrix=bt709:in_range=tv:out_range=pc"
+    grade = f"lut3d=file={filter_path(path)}:interp=tetrahedral"
+    to_yuv = "scale=out_color_matrix=bt709:out_range=tv"
+    if strength >= 1:
+        return f"{to_rgb},{grade},{to_yuv}"
+    return (
+        f"split=2[lut_o][lut_i];[lut_i]{to_rgb},{grade},{to_yuv}[lut_g];"
+        f"[lut_g][lut_o]blend=all_mode=normal:all_opacity={strength:g}"
+    )
+
+
+LUT_SUFFIXES = (".cube", ".3dl")  # lut3d's Iridas/Resolve .cube and Autodesk .3dl
+
+
+@dataclass(frozen=True)
+class Lut:
+    """A ``--lut`` grade: an absolute LUT file and its ``--lut-strength`` (0-1)."""
+
+    path: Path
+    strength: float = 1.0
+
+    def filter(self) -> str:
+        """:func:`lut_filter` ("" at strength 0)."""
+        return lut_filter(self.path, self.strength) or ""
+
+    def to_json(self) -> dict[str, Any]:
+        """manifest.json keys of a clip graded with it: ``lut`` and ``lut_strength``."""
+        return {"lut": str(self.path), "lut_strength": self.strength}
+
+    @classmethod
+    def from_entry(cls, entry: dict[str, Any]) -> Lut | None:
+        """The grade a manifest entry records (:meth:`to_json`), None for an ungraded clip."""
+        if not entry.get("lut"):
+            return None
+        return cls(Path(entry["lut"]), float(entry.get("lut_strength", 1.0)))
+
+
+def check_lut(path: Path | str, strength: float = 1.0, what: str = "--lut") -> Lut:
+    """Validate a LUT before any work: a readable ``.cube`` / ``.3dl`` file ffmpeg's
+    ``lut3d`` loads, and a strength from 0 to 1.
+
+    Returns:
+        The :class:`Lut` with the absolute path.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        jsonout.ArgumentError: If it is not a file, cannot be read, has another extension,
+            ffmpeg cannot load it, or ``strength`` is outside 0-1.
+    """
+    path = Path(path).absolute()
+    if not 0 <= strength <= 1:
+        raise jsonout.ArgumentError(f"{what} strength {strength:g}: must be from 0 to 1")
+    if path.suffix.lower() not in LUT_SUFFIXES:
+        raise jsonout.ArgumentError(
+            f"{what} {path}: not a LUT file (use {' or '.join(LUT_SUFFIXES)})"
+        )
+    if not path.exists():
+        raise FileNotFoundError(f"{what} file not found: {path}")
+    try:
+        with path.open("rb") as f:
+            f.read(1)
+    except OSError as err:
+        raise jsonout.ArgumentError(f"{what} {path}: cannot be read ({err})") from None
+    # One tiny frame through lut3d: a malformed LUT fails now, not after hours of analysis.
+    graph = f"color=s=16x16:d=0.04,format=gbrp,lut3d=file={filter_path(path)}"
+    try:
+        run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", graph, "-f", "null", "-"])
+    except FFmpegError as err:
+        raise jsonout.ArgumentError(f"{what} {path}: ffmpeg cannot load it ({err})") from None
+    return Lut(path, strength)
 
 
 def _note(info: MediaInfo, level: int, msg: str, *args: object) -> None:
@@ -490,7 +590,8 @@ class OutputFormat:
 
         ``crop`` is applied first (trimmed to the output aspect when close, so a
         bordered recording fills the frame), then the usual scale/pad. ``color``
-        (:func:`bt709_filter`) goes just before ``format=yuv420p``.
+        (:func:`bt709_filter`, then any :func:`lut_filter`) goes just before
+        ``format=yuv420p``.
         """
         w, h = self.width, self.height
         pre = ""
@@ -535,6 +636,7 @@ def export_clip(
     crop: Crop | None = None,
     audio_fade: float = 0.0,
     peaks: str = "",
+    lut: Lut | None = None,
 ) -> str:
     """Frame-accurate re-encode of [start, end] (absolute source time) into ``out``.
 
@@ -542,6 +644,7 @@ def export_clip(
     video stays a hard cut), so a cut never slaps from sound to silence.
     ``peaks`` (:meth:`PeakPlan.filter`) compresses and levels the audio before the fade;
     a true-peak limiter (:data:`CLIP_LIMIT_DB`) then ends the chain.
+    ``lut`` grades the video after the BT.709 conversion (:func:`lut_filter`).
     ``out`` only appears once the clip is complete (:func:`atomic_output`); a failed
     auto-chosen GPU encode is redone on the CPU (:func:`encode_with_fallback`).
 
@@ -550,7 +653,7 @@ def export_clip(
     """
     with atomic_output(out) as part:
         return _export(
-            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks
+            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, lut
         )
 
 
@@ -566,12 +669,13 @@ def _export(
     audio_fade: float,
     name: str,
     peaks: str = "",
+    lut: Lut | None = None,
 ) -> str:
     """:func:`export_clip` straight into ``out`` (no temporary name); ``name`` is for logs."""
     warn_if_log(src, info, start)
     return encode_with_fallback(
         lambda enc: _encode(
-            enc, src, info, start, end, out, fmt, vertical, crop, audio_fade, peaks
+            enc, src, info, start, end, out, fmt, vertical, crop, audio_fade, peaks, lut
         ),
         name,
     )
@@ -589,6 +693,7 @@ def _encode(
     crop: Crop | None,
     audio_fade: float,
     peaks: str = "",
+    lut: Lut | None = None,
 ) -> str:
     """One ffmpeg run of :func:`export_clip` with ``enc``."""
     dur = end - start
@@ -605,7 +710,8 @@ def _encode(
         str(src),
     ]
     color = bt709_filter(info)
-    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop, color))}[v]"
+    grade = ",".join(f for f in (color, lut.filter() if lut else "") if f)
+    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop, grade))}[v]"
     audio = None if info.audio_duration is None else min(end, info.audio_duration) - start
     a_fmt = A_FMT + peaks + audio_fade_filter(dur, audio_fade, audio)
     if peaks:
@@ -654,9 +760,10 @@ def export_clip_checked(
     crop: Crop | None = None,
     audio_fade: float = 0.0,
     peaks: str = "",
+    lut: Lut | None = None,
 ) -> dict[str, Any] | None:
-    """:func:`export_clip` (``peaks`` as there), guarded against silent truncation by read
-    errors.
+    """:func:`export_clip` (``peaks`` and ``lut`` as there), guarded against silent
+    truncation by read errors.
 
     If ffmpeg reports a read error or the clip comes out short, the read is
     retried once (marginal sectors sometimes read on a second try). If it is
@@ -670,7 +777,7 @@ def export_clip_checked(
     """
     with atomic_output(out) as part:
         return _export_checked(
-            src, info, start, end, part, fmt, vertical, crop, audio_fade, out, peaks
+            src, info, start, end, part, fmt, vertical, crop, audio_fade, out, peaks, lut
         )
 
 
@@ -686,13 +793,14 @@ def _export_checked(
     audio_fade: float,
     out: Path,
     peaks: str = "",
+    lut: Lut | None = None,
 ) -> dict[str, Any] | None:
     """:func:`export_clip_checked` writing to ``part``; ``out`` names the clip in logs."""
     expected = end - start
     messages: list[str] = []
     for attempt in (1, 2):
         text = _export(
-            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks
+            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, lut
         )
         got = probe(part).duration
         found = [m.strip() for m in READ_ERROR_RE.findall(text)]
@@ -716,7 +824,7 @@ def _export_checked(
         logger.warning("  ffmpeg: %s", "; ".join(messages) or "output shorter than requested")
         logger.warning("!" * 78)
     safe_end = max(start + 0.1, fail_t - SAFE_END_MARGIN_S)
-    _export(src, info, start, safe_end, part, fmt, vertical, crop, audio_fade, out.name, peaks)
+    _export(src, info, start, safe_end, part, fmt, vertical, crop, audio_fade, out.name, peaks, lut)
     logger.warning("  %s trimmed to end at %.2f (before the unreadable spot)", out.name, safe_end)
     return {
         "failure_time": round(fail_t, 3),

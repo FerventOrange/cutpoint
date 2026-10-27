@@ -308,6 +308,21 @@ class TestRenderSegmentSendcmd:
         )
         assert "-color_primaries" not in args and "-colorspace" not in args
 
+    def test_lut_grades_the_render_after_the_bt709_conversion(
+        self, clip, tmp_path, ffmpeg, monkeypatch
+    ):
+        """#290 stage 1: ``--lut`` reaches 360 clips too, where a flat export puts it."""
+        monkeypatch.setattr(render, "probe", lambda p: media_info(duration=1.0))
+        lut = encode.Lut(tmp_path / "look.cube", 0.5)
+        path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
+        render.render_segment(
+            clip, path, 3.0, 4.0, tmp_path / "g.mp4", src=_src("equirect", True),
+            work_dir=tmp_path, lut=lut,
+        )  # fmt: skip
+        assert f"round=down,{encode.TAG_BT709},{lut.filter()},format=yuv420p[v]" in self._filter(
+            ffmpeg[0]
+        )
+
     @pytest.mark.parametrize(
         ("tags", "color"),
         [
