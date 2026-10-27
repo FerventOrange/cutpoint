@@ -36,12 +36,27 @@ MODULE_EXTRA: dict[str, str] = {
 # Extras that pull in torch (the CUDA build needs the PyTorch index).
 TORCH_EXTRAS = ("events", "all")
 TORCH_INDEX = "https://download.pytorch.org/whl/cu126"
+# Extras that do not install from PyPI: telemetry-parser has no cp314 wheel or sdist there, and
+# the git pin in pyproject.toml is not part of the published package metadata.
+NO_PYPI_EXTRAS = ("ski", "all")
+GIT_SOURCE = "git+https://github.com/FerventOrange/cutpoint"
 
 
 def _notes(*notes: str) -> str:
     """The non-empty ``notes`` as one parenthetical to append to a hint: `` (a; b)`` or ``""``."""
     kept = [n for n in notes if n]
     return f" ({'; '.join(kept)})" if kept else ""
+
+
+def _git_note(extras: str) -> str:
+    """Note for a PyPI target whose ``extras`` (comma-separated) need a git or clone install,
+    or ``""``."""
+    if not set(extras.split(",")) & set(NO_PYPI_EXTRAS):
+        return ""
+    return (
+        "ski and all install only from a clone or git URL until telemetry-parser publishes "
+        f'cp314 wheels on PyPI: use "cutpoint[{extras}] @ {GIT_SOURCE}" instead'
+    )
 
 
 def uv_managed() -> bool:
@@ -196,13 +211,16 @@ def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
         python = tool.get("python")
     except (AttributeError, TypeError, KeyError):
         extras, source, indexes, explicit, strategy, python = {extra}, {}, [], [], None, None
-    cmd = f"uv tool install {_tool_source(source, ','.join(sorted(extras)))} --reinstall"
+    joined = ",".join(sorted(extras))
+    cmd = f"uv tool install {_tool_source(source, joined)} --reinstall"
     if python:
         cmd += f' --python "{python}"'
     cmd += "".join(f" {flag} {url}" for flag, url in indexes)
     if strategy:
         cmd += f" --index-strategy {strategy}"
     notes = []
+    if not any(source.get(k) for k in ("editable", "directory", "path", "git", "url")):
+        notes.append(_git_note(joined))
     if explicit:
         notes.append(
             f"explicit index {', '.join(explicit)} left out: it applies through your uv "
@@ -293,10 +311,12 @@ def install_hint(extra: str) -> str:
                 gpu = _REINSTALL_TORCH_NOTE
         elif extra in TORCH_EXTRAS and sys.platform == "win32":
             gpu = _torch_index_note(uv)
+        # A PyPI target cannot install ski (see NO_PYPI_EXTRAS).
+        git = "" if (info or {}).get("url") else _git_note(extra)
         if uv:
-            return f'uv pip install --python "{sys.executable}" {source}{_notes(gpu)}'
+            return f'uv pip install --python "{sys.executable}" {source}{_notes(git, gpu)}'
         exe, note = _python()
-        return f"{exe} -m pip install {source}{_notes(gpu, note)}"
+        return f"{exe} -m pip install {source}{_notes(git, gpu, note)}"
     if uv_managed():
         # uv pip applies the clone's [tool.uv.sources] (cu126 torch) but keeps an installed
         # CPU torch. uv sync installs the locked +cu126 build, replacing a +cpu one.

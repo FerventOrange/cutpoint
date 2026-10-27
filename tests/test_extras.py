@@ -74,7 +74,7 @@ def test_main_reraises_for_unknown_missing_module(monkeypatch):
 
 RECEIPT = """\
 [tool]
-requirements = [{ name = "cutpoint", extras = ["all"] }]
+requirements = [{ name = "cutpoint", extras = ["events"] }]
 [tool.options]
 index = [{ url = "https://download.pytorch.org/whl/cu126", explicit = false, default = false, format = "simple", authenticate = "auto" }]
 index-strategy = "unsafe-best-match"
@@ -92,9 +92,9 @@ def _set_install(monkeypatch, tmp_path, *, receipt=None, direct_url=None, uv=Fal
 
 def test_install_hint_uv_tool_keeps_extras_and_index(monkeypatch, tmp_path):
     _set_install(monkeypatch, tmp_path, receipt=RECEIPT, uv=True)
-    hint = extras.install_hint("ski")
+    hint = extras.install_hint("ui")
     assert hint == (
-        'uv tool install "cutpoint[all,ski]" --reinstall '
+        'uv tool install "cutpoint[events,ui]" --reinstall '
         "--index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match"
     )
     assert "NVIDIA" not in hint  # index already carried over
@@ -148,12 +148,12 @@ def test_install_hint_not_installed_counts_as_source_tree(monkeypatch, tmp_path)
 @pytest.mark.parametrize("direct_url", [None, '{"dir_info": {}}', "not json"])
 def test_install_hint_regular_install(monkeypatch, tmp_path, direct_url):
     _set_install(monkeypatch, tmp_path, direct_url=direct_url, uv=False)
-    hint = extras.install_hint("ski")
-    assert "-m pip install" in hint and 'pip install "cutpoint[ski]"' in hint
+    hint = extras.install_hint("ui")
+    assert "-m pip install" in hint and 'pip install "cutpoint[ui]"' in hint
     assert " -e " not in hint
     _set_install(monkeypatch, tmp_path, direct_url=direct_url, uv=True)
-    hint = extras.install_hint("ski")
-    assert hint.startswith("uv pip install --python") and hint.endswith('"cutpoint[ski]"')
+    hint = extras.install_hint("ui")
+    assert hint.startswith("uv pip install --python") and hint.endswith('"cutpoint[ui]"')
 
 
 # --- _python: shell prefix for sys.executable ---------------------------------------------
@@ -181,8 +181,8 @@ def test_python_prefix(monkeypatch, tmp_path, exe, os_name, expected):
     assert extras._python() == expected
     prefix, note = expected  # and the pip hint carries it, with the shell note
     _set_install(monkeypatch, tmp_path, direct_url=None, uv=False)
-    want = f'{prefix} -m pip install "cutpoint[ski]"' + (f" ({note})" if note else "")
-    assert extras.install_hint("ski") == want
+    want = f'{prefix} -m pip install "cutpoint[ui]"' + (f" ({note})" if note else "")
+    assert extras.install_hint("ui") == want
 
 
 # --- uv tool receipts: reinstall from the original source ---------------------------------
@@ -292,7 +292,7 @@ def test_install_hint_tool_receipt_explicit_index_is_left_out(monkeypatch, tmp_p
         'index = [{ name = "pytorch", url = "https://example.com/cu126", explicit = true }]\n'
     )
     _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
-    hint = extras.install_hint("ski")
+    hint = extras.install_hint("ui")
     assert "https://example.com/cu126" not in hint
     assert "(explicit index pytorch left out" in hint
 
@@ -413,3 +413,82 @@ def test_install_hint_pip_editable_points_at_cuda_torch_index(
     assert extras.install_hint(extra) == (
         f'C:/py/python.exe -m pip install -e ".[{extra}]" (from the repository{note}{end})'
     )
+
+
+# --- install_hint: ski and all do not install from PyPI --------------------------------------
+
+_NOTE_START = "ski and all install only from a clone or git URL until telemetry-parser publishes"
+
+
+def _git_note_for(extras_arg: str) -> str:
+    return (
+        f"{_NOTE_START} cp314 wheels on PyPI: "
+        f'use "cutpoint[{extras_arg}] @ {extras.GIT_SOURCE}" instead'
+    )
+
+
+@pytest.mark.parametrize("uv", [False, True])
+def test_install_hint_pypi_pip_ski_gets_git_note(monkeypatch, tmp_path, uv):
+    monkeypatch.setattr(extras.sys, "executable", "/the/python")
+    monkeypatch.setattr(extras, "os", SimpleNamespace(name="posix"))
+    _set_install(monkeypatch, tmp_path, direct_url=None, uv=uv)
+    hint = extras.install_hint("ski")
+    assert hint.endswith(f' "cutpoint[ski]" ({_git_note_for("ski")})')
+    assert hint.startswith("uv pip install" if uv else "/the/python -m pip install")
+
+
+def test_install_hint_pypi_pip_all_gets_git_note_and_events_does_not(monkeypatch, tmp_path):
+    _set_install(monkeypatch, tmp_path, direct_url=None, uv=True)
+    assert _git_note_for("all") in extras.install_hint("all")
+    assert _NOTE_START not in extras.install_hint("events")
+
+
+def test_install_hint_pypi_tool_receipt_with_ski_adding_events_gets_git_note(monkeypatch, tmp_path):
+    receipt = _receipt_with('extras = ["ski"]')
+    _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
+    hint = extras.install_hint("events")
+    assert hint.startswith('uv tool install "cutpoint[events,ski]" --reinstall')
+    assert _git_note_for("events,ski") in hint
+
+
+def test_install_hint_pypi_tool_receipt_all_gets_git_note(monkeypatch, tmp_path):
+    _set_install(monkeypatch, tmp_path, receipt=_receipt_with('extras = ["all"]'), uv=True)
+    assert _git_note_for("all,ui") in extras.install_hint("ui")
+
+
+def test_install_hint_pypi_tool_receipt_without_ski_has_no_git_note(monkeypatch, tmp_path):
+    _set_install(monkeypatch, tmp_path, receipt=_receipt_with('extras = ["ui"]'), uv=True)
+    assert _NOTE_START not in extras.install_hint("events")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'directory = "C:/src/cutpoint"',
+        'editable = "C:/src/cutpoint"',
+        'git = "https://github.com/FerventOrange/cutpoint"',
+        'path = "C:/dl/cutpoint-1.0-py3-none-any.whl"',
+        'url = "https://example.com/cutpoint-0.1.0-py3-none-any.whl"',
+    ],
+)
+def test_install_hint_non_pypi_tool_source_with_ski_has_no_git_note(monkeypatch, tmp_path, source):
+    _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
+    assert _NOTE_START not in extras.install_hint("ski")
+
+
+@pytest.mark.parametrize("direct_url", [_DIR, _GIT, _ARCHIVE])
+def test_install_hint_non_pypi_pip_source_with_ski_has_no_git_note(
+    monkeypatch, tmp_path, direct_url
+):
+    _set_install(monkeypatch, tmp_path, direct_url=json.dumps(direct_url), uv=True)
+    assert _NOTE_START not in extras.install_hint("ski")
+
+
+def test_install_hint_git_note_comes_before_explicit_index_note(monkeypatch, tmp_path):
+    receipt = _TOOL + (
+        'index = [{ name = "pytorch", url = "https://example.com/cu126", explicit = true }]\n'
+    )
+    _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
+    hint = extras.install_hint("ski")
+    assert hint.index(_NOTE_START) < hint.index("explicit index pytorch left out")
+    assert hint.count(" (") == 1  # one parenthetical, notes joined with "; "

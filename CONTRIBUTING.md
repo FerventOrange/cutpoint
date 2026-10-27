@@ -4,8 +4,9 @@ Thanks for helping. Bug reports, fixes, docs and focused features are welcome.
 
 ## Set up
 
-Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), ffmpeg. A GPU is not needed for the
-tests.
+Requirements: Python 3.14, [uv](https://docs.astral.sh/uv/), ffmpeg. A C++ compiler (MSVC Build
+Tools on Windows; `build-essential` on Linux) builds OpenTimelineIO, and Rust
+(rustup) builds telemetry-parser for the `ski` extra. A GPU is not needed for the tests.
 
 ```powershell
 git clone https://github.com/FerventOrange/cutpoint.git

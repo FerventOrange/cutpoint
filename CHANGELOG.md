@@ -252,6 +252,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Python 3.14 is required (`>=3.14,<3.15`; 3.12 is no longer supported). OpenTimelineIO and
+  telemetry-parser have no cp314 wheels on PyPI, so `[tool.uv.sources]` pins them to upstream
+  commits (OpenTimelineIO main 0.19.0.dev1, telemetry-parser master 0.4.0) with the reasons and
+  the exit condition in `pyproject.toml`; the dependency lists stay plain PyPI requirements. uv
+  builds both from source: install a C++ compiler (MSVC Build Tools on Windows; `build-essential`
+  on Linux), and Rust (rustup) for the `ski` extra. Install `ski` (and `all`) from a clone or a git
+  URL, not from PyPI, until telemetry-parser publishes cp314 wheels: git sources are not part of
+  the published package metadata.
 - Exported clips are now always tagged BT.709. BT.601 SDR sources (NVIDIA DVR/ShadowPlay-style
   `smpte170m` captures, `bt470bg`, `smpte240m`, and SD below 720 lines and 1280 columns without
   a matrix tag) are converted to BT.709 with ffmpeg's `colorspace` filter, logged once per

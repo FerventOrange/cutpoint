@@ -32,17 +32,14 @@ RUN mkdir -p /tmp/ffmpeg/bin \
         echo "ffmpeg download failed (HTTP $code)" >&2; exit 1; \
     fi
 
-FROM base
+# Builder: uv installs Python 3.14 and builds OpenTimelineIO from its pinned git commit (no cp314
+# wheel on PyPI; see [tool.uv.sources] in pyproject.toml), which needs a C++ compiler (cmake comes
+# from PyPI). It stays in this stage; the final image only copies the result.
+FROM base AS builder
 ENV DEBIAN_FRONTEND=noninteractive
-# libgl1, libglib2.0-0t64, libxcb1: needed by the opencv-python wheel (cv2 import); fontconfig and
-# fonts-dejavu-core: burned-in captions (libass); libgomp1: llama-server downloaded by `cutpoint setup`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libgl1 libglib2.0-0t64 libxcb1 fontconfig fonts-dejavu-core libgomp1 \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=ffmpeg /tmp/ffmpeg/bin/ /usr/local/bin/
-# Fallback when the static download failed in the ffmpeg stage.
-RUN [ -x /usr/local/bin/ffmpeg ] || (apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*)
-# uv from the first stage.
 COPY --from=uv /uv /uvx /usr/local/bin/
 # Managed Python lives outside /root so the non-root user can run the venv.
 ENV UV_LINK_MODE=copy UV_PYTHON_INSTALL_DIR=/opt/uv-python
@@ -55,6 +52,25 @@ RUN if [ "$INSTALL_EVENTS" = true ]; then uv sync --locked --no-install-project 
 
 COPY src ./src
 RUN uv pip install --no-deps --editable . && uv cache clean
+
+FROM base
+ENV DEBIAN_FRONTEND=noninteractive
+# libgl1, libglib2.0-0t64, libxcb1: needed by the opencv-python wheel (cv2 import); fontconfig and
+# fonts-dejavu-core: burned-in captions (libass); libgomp1: llama-server downloaded by `cutpoint setup`.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libgl1 libglib2.0-0t64 libxcb1 fontconfig fonts-dejavu-core libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /tmp/ffmpeg/bin/ /usr/local/bin/
+# Fallback when the static download failed in the ffmpeg stage.
+RUN [ -x /usr/local/bin/ffmpeg ] || (apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*)
+# uv from the first stage.
+COPY --from=uv /uv /uvx /usr/local/bin/
+ENV UV_LINK_MODE=copy UV_PYTHON_INSTALL_DIR=/opt/uv-python
+
+# The Python and the venv (with the editable install of /app/src) built above.
+WORKDIR /app
+COPY --from=builder /opt/uv-python /opt/uv-python
+COPY --from=builder /app /app
 
 # Non-root runtime user. ubuntu:24.04 ships "ubuntu" (1000:1000); remove it so the ids are free.
 # An existing group with the same gid (e.g. 100 "users") is reused.

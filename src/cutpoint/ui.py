@@ -1827,8 +1827,9 @@ def load_exports(p: Path) -> list[dict[str, Any]]:
 def _inside(p: Path, name: str) -> bool:
     """``p / name`` still lies inside ``p`` once symlinks and junctions are resolved."""
     try:
-        return (p / name).resolve().is_relative_to(p.resolve())
-    except (OSError, RuntimeError):  # RuntimeError: a symlink loop (Python 3.12)
+        target = Path(os.path.realpath(p / name, strict=os.path.ALLOW_MISSING))
+        return target.is_relative_to(p.resolve())
+    except OSError:  # a symlink loop (realpath raises it even with ALLOW_MISSING)
         return False
 
 

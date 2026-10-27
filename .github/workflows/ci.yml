@@ -37,7 +37,7 @@ jobs:
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.14"
       # The real-ffmpeg tests skip when ffmpeg/ffprobe are not on PATH, so install them.
       # Linux: pinned BtbN/FFmpeg-Builds static GPL build (n9.0.2; libx264, xfade, acrossfade,
       # loudnorm, zscale, tonemap), downloaded from a GitHub release and verified by SHA256, so CI
@@ -151,12 +151,13 @@ jobs:
           tags: cutpoint:ci
           # Own scope and mode=min: this cache shares the repo's cache quota with the ffmpeg
           # cache of the test job, so keep it small (final-stage layers only) to avoid evicting it.
+          # The builder stage (uv sync, the OpenTimelineIO build) is not cached and reruns each time.
           cache-from: type=gha,scope=docker
           cache-to: type=gha,scope=docker,mode=min
       # The image's ENTRYPOINT is the cutpoint CLI.
       - run: docker run --rm cutpoint:ci --version
       # cv2 needs libGL/glib/xcb now that ffmpeg no longer comes from apt.
-      - run: docker run --rm --entrypoint /app/.venv/bin/python cutpoint:ci -c "import cv2, scenedetect"
+      - run: docker run --rm --entrypoint /app/.venv/bin/python cutpoint:ci -c "import cv2, scenedetect, opentimelineio"
       # Burned-in captions need fontconfig and a font.
       - run: docker run --rm --entrypoint fc-match cutpoint:ci sans-serif | grep -F DejaVu
       # Fails when the Dockerfile fell back to apt ffmpeg (BtbN pruned the pinned tag): bump FFMPEG_LINUX_URL/SHA256 in both places.

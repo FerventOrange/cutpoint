@@ -188,7 +188,9 @@ command for theirs:
 - From a clone: `uv sync --extra X`, listing every other extra in use too (the error prints this
   form), or `uv sync --extra all` for every extra (`ski`, `events`, `gpu`, `ui`; a large
   download with torch and CUDA).
-- Tool install: `uv tool install "cutpoint[X]" --reinstall`, listing every extra in use. For a
+- Tool install: `uv tool install "cutpoint[X]" --reinstall`, listing every extra in use (`ski`
+  and `all` only from a clone or git URL until telemetry-parser publishes cp314 wheels on PyPI;
+  use `".[X]"` from a clone). For a
   PyPI or wheel install (not one from a clone directory or git URL, with `uv tool` or `uv pip`) with an NVIDIA GPU and the
   `events` extra, add
   `--index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match` so torch

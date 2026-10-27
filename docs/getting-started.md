@@ -4,7 +4,9 @@
 
 | Requirement | Notes |
 |---|---|
-| Python 3.12 | `pyproject.toml` pins `>=3.12,<3.13`. uv installs it for you. |
+| Python 3.14 | `pyproject.toml` pins `>=3.14,<3.15`. uv installs it for you. |
+| C++ compiler | uv builds OpenTimelineIO from a pinned upstream commit (no cp314 wheel on PyPI yet): MSVC Build Tools on Windows ("Desktop development with C++"), `build-essential` on Linux. |
+| Rust (only for the `ski` extra) | uv builds telemetry-parser from a pinned upstream commit: install with [rustup](https://rustup.rs/). |
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
 | ffmpeg and ffprobe 5.1 or newer | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
@@ -116,13 +118,18 @@ Add extras with `uv tool install "cutpoint[ski,events,gpu]"` (or `".[ski,events,
 clone); with pip, `pip install "cutpoint[gpu]"`. This path is not exercised by the project's tests; if it fails, use `uv sync` and
 `uv run`.
 
+The `ski` extra (and so `all`) installs from a clone or a git URL, not from PyPI: telemetry-parser
+has no cp314 wheel on PyPI, and the git pin in `pyproject.toml` is not part of the published
+package metadata. Use `uv tool install ".[ski,events,gpu]"` from a clone until telemetry-parser
+publishes cp314 wheels.
+
 A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on Windows. The CUDA
 12.6 index in `pyproject.toml` applies to a clone, to tool installs from a clone directory
 (including `--editable`) or a git URL, and to `uv pip install` from a clone directory or git URL
 (`uv pip` keeps an already-installed CPU-only torch unless you add `--reinstall-package torch
 --reinstall-package torchvision`); these need no index flags. `pip` and PyPI or wheel installs do
 not apply it. For a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add the PyTorch
-index (`all` is `ski`, `events`, `gpu` and `ui`):
+index (`all` is `ski`, `events`, `gpu` and `ui`; `ski` and so `all` need a clone, see above):
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match

@@ -64,7 +64,8 @@ See the [command reference](docs/commands.md#ui) for details.
 ## Requirements
 
 - Windows or Linux
-- Python 3.12 and [uv](https://docs.astral.sh/uv/)
+- Python 3.14 and [uv](https://docs.astral.sh/uv/) (uv installs Python)
+- A C++ compiler to build OpenTimelineIO (MSVC Build Tools on Windows, `build-essential` on Linux); Rust (rustup) for the `ski` extra
 - ffmpeg 5.1 or newer
 - An NVIDIA GPU is recommended (add the `gpu` extra for GPU Whisper). Without one, everything
   still runs but slower.

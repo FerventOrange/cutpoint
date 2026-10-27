@@ -5,10 +5,10 @@ description = "Local, agent-driven AI video editor: finds highlights, cuts clips
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Topic :: Multimedia :: Video",
@@ -25,7 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 # Optional: action-cam telemetry (GoPro GPMF GPS/IMU) for --style ski and the
 # optional 360-camera (Insta360) module.
-ski = ["telemetry-parser>=0.3.0"]
+ski = ["telemetry-parser>=0.4.0"]
 # CUDA 12 runtime libs so faster-whisper / ctranslate2 transcribe on an NVIDIA GPU
 # (cuBLAS + cuDNN 9, about 3.6 GB). Without them whisper runs on the CPU. Linux gets
 # looser floors because the cu126 torch wheels (events extra) pin their own
@@ -94,6 +94,28 @@ torch = [
 torchvision = [
     { index = "pytorch-cu126", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
 ]
+# OpenTimelineIO is pinned to 2f3e0a4, a commit of upstream main (0.19.0.dev1, 2026-07-12)
+# because Cutpoint needs Python 3.14 and the latest PyPI release (0.18.1, 2025-11-09) has no
+# cp314 wheel (upstream issue AcademySoftwareFoundation/OpenTimelineIO#1968); main's CI builds
+# cp39-cp315 wheels. This is the newest main commit without a zlib build dependency (upstream
+# #2021 added one right after), so Windows needs only MSVC. uv builds it from source: a C++
+# compiler, and cmake (fetched from PyPI as a build requirement). The dependency above stays
+# a plain PyPI requirement because PyPI rejects direct git dependencies and release.yml
+# publishes to PyPI; only uv honours this source. Drop it once an OTIO release with cp314
+# wheels is on PyPI.
+opentimelineio = { git = "https://github.com/AcademySoftwareFoundation/OpenTimelineIO", rev = "2f3e0a433f22fc92b5341e71893c68b80b2ff935" }
+# telemetry-parser (ski and all extras only) is pinned to a commit of upstream master
+# (Python module 0.4.0, unreleased, 2026-10-27). Its wheel workflow has a cp314 row but runs
+# only on v* tags, and the last tag is v0.3.0 (2024-01) with cp37-cp312 wheels and no sdist,
+# so PyPI has nothing installable on Python 3.14. uv builds it from source with maturin:
+# a Rust toolchain (rustup, stable). The same PyPI-requirement rule as above applies. Drop
+# it once a release with cp314 wheels is on PyPI.
+telemetry-parser = { git = "https://github.com/AdrianEddy/telemetry-parser", rev = "6701e6465a77e8dcac60c92e646587f729689658", subdirectory = "bin/python-module" }
+
+# Build tools of the two git pins above, locked to the versions that built them, so a new
+# cmake or maturin release cannot break a fresh build. Bump them together with the pins.
+[tool.uv]
+build-constraint-dependencies = ["cmake==4.4.4", "maturin==1.15.0"]
 
 [[tool.uv.index]]
 name = "pytorch-cu126"
@@ -111,7 +133,9 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py312"
+# Stays py313 until the separate format-only PR switches it to py314 and runs `ruff format`
+# (py314 makes the formatter drop the parentheses of `except (A, B):`, PEP 758).
+target-version = "py313"
 src = ["src", "tests"]
 # 99.9% of existing lines are <= 100 columns (only 18 of ~19.7k exceed it).
 line-length = 100
