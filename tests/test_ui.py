@@ -499,9 +499,7 @@ def test_moment_ids_survive_reanalysis_without_relinking_saved_trims(
 def test_media_supports_range_and_only_serves_project_sources(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    info = SimpleNamespace(
-        vcodec="h264", pix_fmt="yuv420p", acodec="aac", duration=10.0, audio_streams=1
-    )
+    info = media_info(duration=10.0)  # h264 yuv420p + one AAC track: the browser plays it
     monkeypatch.setattr(ui, "probe", lambda _path: info)
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"0123456789"})
     source = client.get(f"/api/projects/{pid}").json()["sources"][0]
@@ -1198,6 +1196,50 @@ def test_frame_cache_evicts_the_least_recently_used_beyond_the_cap(
     third = media.frame(project, str(source), 0.3, 160)
     assert sorted(frames.iterdir()) == sorted([first, third])  # the least recently used went
     assert not second.exists()
+
+
+STILL_BT2020 = {"color_primaries": "bt2020", "color_space": "bt2020nc", "pix_fmt": "yuv420p10le"}
+
+
+@pytest.mark.parametrize(
+    ("over", "hdr"),
+    [
+        ({"vcodec": "hevc", "color_transfer": "smpte2084", **STILL_BT2020}, True),
+        ({"vcodec": "av1", "color_transfer": "arib-std-b67", **STILL_BT2020}, True),
+        ({"vcodec": "hevc"}, False),  # SDR: today's command and file name
+        ({"color_transfer": "bt709", "color_primaries": "bt709", "color_space": "bt709"}, False),
+    ],
+)
+def test_hdr_still_is_tone_mapped_and_cached_under_a_new_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, over: dict[str, str], hdr: bool
+) -> None:
+    """#412: stills of HLG/PQ sources (an AV1 one the browser plays as is too) go through the
+    export's sdr_filter; the filter's hash ends their name, so a washed-out still cached before
+    is never served. SDR stills keep their command and name."""
+    source = write(tmp_path / "a.mp4", b"x" * 10)
+    project = tmp_path / "project"
+    project.mkdir()
+    info = media_info(source, duration=10.0, **over)
+    monkeypatch.setattr(ui, "probe", lambda _path: info)
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    calls: list[dict[str, object]] = []
+
+    def grab(*_a: object, **k: object) -> list[bytes]:
+        calls.append(k)
+        return [b"\xff\xd8\xffjpeg"]
+
+    monkeypatch.setattr(ui, "grab_images", grab)
+    media = ui.Media()
+    still = media.frame(project, str(source), 0.5, 160)
+
+    key = media.key(source)
+    color = encode.sdr_filter(info) if hdr else ""
+    assert color.startswith("zscale=") if hdr else color == ""
+    assert [k["color"] for k in calls] == [color]
+    tag = f"-{hashlib.sha1(color.encode()).hexdigest()[:8]}" if hdr else ""
+    assert still is not None and still.name == f"{key}-50-160{tag}.jpg"
+    media.prune_frames(project, [str(source)])  # the tagged name still belongs to its source
+    assert still.is_file()
 
 
 def test_ui_on_a_taken_port_fails_cleanly_without_printing_a_url(

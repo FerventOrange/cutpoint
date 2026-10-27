@@ -91,6 +91,36 @@ def test_sdr_and_untagged_sources_get_no_conversion(tags):
     assert encode.sdr_filter(media_info(**tags), BOTH) == ""
 
 
+# -- UI stills (#412) ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tags", [HLG, PQ])
+def test_hdr_still_is_tone_mapped_after_the_scale(tags):
+    color = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **tags), BOTH)
+    args = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, quality=5, color=color)
+    assert args[args.index("-vf") + 1] == f"scale=160:-2,{color}"
+
+
+@pytest.mark.parametrize("tags", [{}, BT709, BT601])
+def test_sdr_still_command_is_unchanged(tags):
+    color = encode.sdr_filter(media_info(**tags), BOTH)
+    args = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, quality=5, color=color)
+    assert args == [
+        "-hide_banner", "-v", "error", "-ss", "5.000", "-i", "v.mp4", "-an", "-sn",
+        "-vf", "scale=160:-2", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "5",
+        "-f", "image2pipe", "-",
+    ]  # fmt: skip
+
+
+def test_hdr_still_without_zscale_keeps_todays_command_and_warns(caplog):
+    info = media_info(path=Path("hdr-still.mp4"), pix_fmt="yuv420p10le", **PQ)
+    color = encode.sdr_filter(info, frozenset({"scale"}))
+    assert color == ""
+    assert "no zscale or tonemap filter" in caplog.text
+    args = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, color=color)
+    assert args[args.index("-vf") + 1] == "scale=160:-2"
+
+
 # -- BT.601 to BT.709 (#290) -------------------------------------------------------------------
 
 

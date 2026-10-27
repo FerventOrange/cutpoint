@@ -457,6 +457,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- UI: thumbnails of HDR (HLG, PQ) and BT.2020 sources are converted to SDR Rec.709 as exports
+  are, so they no longer look washed out (#412). On a PQ sample the mean saturation went from
+  0.38 to 0.64 (the SDR copy: 0.67). Without `zscale` they stay as before, with the same
+  warning as exports. Thumbnails of other sources are unchanged; ones cached before are rebuilt.
 - `cutpoint ui` deletes preview proxies that are no longer current: the whole proxies of
   sources that changed or left, and HDR proxies and windows built with an earlier tone map,
   also when no current one sits beside them. It leaves a proxy file written or played in the

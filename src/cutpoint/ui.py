@@ -943,6 +943,8 @@ class Media:
         self.frame_locks: dict[str, tuple[threading.Lock, int]] = {}
         self.frame_slots = threading.BoundedSemaphore(FRAME_SLOTS)
         self.frames_pruned: set[Path] = set()  # projects whose stale stills went this run
+        # key -> sdr_filter of its stills (#412): also for a source the browser plays as is
+        self.still_color: dict[str, str] = {}
 
     @staticmethod
     def key(real: Path) -> str | None:
@@ -966,7 +968,9 @@ class Media:
                     and i.acodec in BROWSER_AUDIO
                     and i.audio_streams <= 1  # a browser plays one track; exports mix them all
                 )
-                self.probed[key] = (ok, i.duration, i.audio_streams, "" if ok else sdr_filter(i))
+                color = sdr_filter(i)
+                self.still_color[key] = color
+                self.probed[key] = (ok, i.duration, i.audio_streams, "" if ok else color)
             except (FFmpegError, OSError, ValueError, KeyError):
                 self.probed[key] = None
         return self.probed[key]
@@ -1523,7 +1527,10 @@ class Media:
         """A JPEG still of ``path`` at ``at`` s (clamped into the source), ``width`` px wide.
 
         Cached as ``ui/frames/<content key>-<centiseconds>-<width>.jpg`` and built once even when
-        requested concurrently. None if the source cannot be read.
+        requested concurrently. An HDR or BT.2020 source's still goes through its
+        :func:`~cutpoint.encode.sdr_filter`, as exports do, and its name ends in ``-<filter hash>``,
+        so stills cached before the conversion (or a changed one) are not reused. None if the
+        source cannot be read.
 
         Raises:
             FFmpegError: If ffmpeg decodes no image.
@@ -1535,7 +1542,11 @@ class Media:
         if res[1] > 0:
             at = min(at, max(0.0, res[1] - 0.1))  # the last instants may hold no decodable frame
         cs = round(at * 100)
-        out = _own(project, f"{UI_DIR}/frames/{key}-{cs}-{width}.jpg")  # nor cached through one
+        color = self.still_color.get(key, "")
+        name = f"{key}-{cs}-{width}"
+        if color:  # a tone-mapped still never reuses one cached before (or with another filter)
+            name += f"-{hashlib.sha1(color.encode()).hexdigest()[:8]}"
+        out = _own(project, f"{UI_DIR}/frames/{name}.jpg")  # nor cached through one
         if out.is_file():
             with contextlib.suppress(OSError):
                 os.utime(out)  # recently used: evicted last
@@ -1548,7 +1559,12 @@ class Media:
                 if not out.is_file():
                     with self.frame_slots:
                         image = grab_images(
-                            real, cs / 100, width=width, quality=5, timeout=FRAME_TIMEOUT_S
+                            real,
+                            cs / 100,
+                            width=width,
+                            quality=5,
+                            timeout=FRAME_TIMEOUT_S,
+                            color=color,
                         )[0]
                     _ui_folder(project, "frames")  # ui or ui/frames a file: a clear 409
                     tmp = _own(project, f"{UI_DIR}/frames/{out.stem}.{threading.get_ident()}.part")
