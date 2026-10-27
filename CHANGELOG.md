@@ -452,6 +452,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Clips graded with `--lut` are tagged BT.709 (matrix, primaries, transfer, tv range) on older
+  ffmpeg too: ffmpeg 6.1 left the matrix tag unset, so `assemble` read SD clips as BT.601.
 - A `llama-server` start no longer leaves its log file handle open in the parent.
 - `clips --force`, `extend` and `assemble` no longer lose or mix up work when a folder is
   touched by two runs or an interrupted one (#145):

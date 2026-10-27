@@ -20,6 +20,7 @@ from cutpoint.tail import TailResult
 
 TO_RGB = "scale=in_color_matrix=bt709:in_range=tv:out_range=pc"
 TO_YUV = "scale=out_color_matrix=bt709:out_range=tv"
+TAG = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
 FMT = {"width": 1920, "height": 1080, "fps": 30, "vertical": False}
 
 
@@ -59,14 +60,14 @@ def test_filter_path_escapes_for_an_option_inside_a_filtergraph(path, escaped):
 
 def test_full_strength_grades_in_bt709_rgb_without_a_blend():
     vf = encode.lut_filter(PureWindowsPath(r"C:\L\a.cube"))
-    assert vf == f"{TO_RGB},lut3d=file=C\\\\:/L/a.cube:interp=tetrahedral,{TO_YUV}"
+    assert vf == f"{TO_RGB},lut3d=file=C\\\\:/L/a.cube:interp=tetrahedral,{TO_YUV},{TAG}"
 
 
 def test_partial_strength_blends_the_grade_over_the_original():
     vf = encode.lut_filter(PurePosixPath("/l/a.cube"), 0.35)
     assert vf == (
         f"split=2[lut_o][lut_i];[lut_i]{TO_RGB},lut3d=file=/l/a.cube:interp=tetrahedral,"
-        f"{TO_YUV}[lut_g];[lut_g][lut_o]blend=all_mode=normal:all_opacity=0.35"
+        f"{TO_YUV}[lut_g];[lut_g][lut_o]blend=all_mode=normal:all_opacity=0.35,{TAG}"
     )
 
 
@@ -128,7 +129,8 @@ def test_a_partial_grade_with_a_gpu_upload_stays_one_chain_to_v(monkeypatch):
                    Path("o.mp4"), fmt, False, None, 0.0, lut=lut)  # fmt: skip
     graph = _graph(calls[0])
     assert (
-        graph.startswith("[0:v:0]scale=") and "all_opacity=0.5,format=yuv420p,format=nv12" in graph
+        graph.startswith("[0:v:0]scale=")
+        and f"all_opacity=0.5,{TAG},format=yuv420p,format=nv12" in graph
     )
     assert graph.split(";[", 3)[2].endswith("hwupload[v]")
 
