@@ -80,6 +80,9 @@ PATHS_DIR = "pano_paths"
 ANGLE_EPS = 0.05
 FOV_EPS = 0.2
 CMD_LEAD_S = 0.005  # commands go out this long before the frame they are meant for
+# First line of a ``.cmd`` file, a sendcmd comment: ``input=``, the initial ``rorder``,
+# ``yaw``, ``pitch`` and ``roll``, the seek ``start`` and the source ``fps`` (for ``360 qa``)
+CMD_HEADER = "# cutpoint-v360"
 
 
 @dataclass(frozen=True)
@@ -275,9 +278,16 @@ def render_segment(
     work.mkdir(parents=True, exist_ok=True)
     # A still path has no commands: ffmpeg rejects an empty sendcmd file, and the
     # initial v360 options already hold the static view.
+    rot = f"rorder=ryp:yaw={init['yaw']:.3f}:pitch={init['pitch']:.3f}:roll={init['roll']:.3f}"
     cmd_file = work / (out.stem + ".cmd") if lines else None
     if cmd_file is not None:
-        cmd_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # A sendcmd comment first: the initial rotation and the timing the incremental
+        # commands start from, so `360 qa` can replay what ffmpeg was told (CMD_HEADER).
+        head = f"{CMD_HEADER} input={src.projection} {rot.replace(':', ' ')} "
+        head += f"start={start:.6f} fps={fps:.6f}"
+        cmd_file.write_text("\n".join([head, *lines]) + "\n", encoding="utf-8")
+    else:  # an earlier render's commands would mislead `360 qa`
+        (work / (out.stem + ".cmd")).unlink(missing_ok=True)
     sendcmd = f"sendcmd=f={cmd_file.name}," if cmd_file is not None else ""
     seek = ["-ss", f"{start:.6f}", "-t", f"{dur:.3f}"]
     if src.projection == "dfisheye":
@@ -295,8 +305,7 @@ def render_segment(
     same = Path(src.inputs[0]) == Path(clip.source)
     color = sdr_filter(info if same else probe(remap_source(src.inputs[0])))
     v360 = (
-        f"v360@cam={v360_in}:output=flat:rorder=ryp:yaw={init['yaw']:.3f}:"
-        f"pitch={init['pitch']:.3f}:roll={init['roll']:.3f}:h_fov={init['h_fov']:.3f}:"
+        f"v360@cam={v360_in}:output=flat:{rot}:h_fov={init['h_fov']:.3f}:"
         f"v_fov={init['v_fov']:.3f}:w={fmt.width}:h={fmt.height}:interp=line"
     )
     body = (
