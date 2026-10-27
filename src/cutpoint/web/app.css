@@ -354,7 +354,14 @@ select { max-width: 100%; }
   padding: 0 2px; box-decoration-break: clone; /* so a marked "I" is still easy to spot */
 }
 #transcript .unsure .vh { user-select: none; } /* copying the transcript leaves out "(unsure)" */
-#signals { margin-top: 2px; font-size: 12.5px; text-align: center; }
+/* Stats for Nerds (#353): top-left of the video panel, which ends above the transport bar, so it never
+   covers the player controls; clicks pass through to the video; it wraps inside the panel when narrow */
+.nerd-stats {
+  position: absolute; top: 8px; left: 8px; max-width: calc(100% - 16px); max-height: calc(100% - 16px); overflow: hidden;
+  margin: 0; padding: 4px 8px; border-radius: 3px; background: rgb(8 12 18 / 0.78); color: var(--text);
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: pre-line; overflow-wrap: anywhere; pointer-events: none;
+}
 /* narrower: Start and End side by side above the transcript, then all stacked */
 @container stage (width < 760px) {
   .trim-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }

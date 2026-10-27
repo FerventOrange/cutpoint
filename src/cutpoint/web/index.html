@@ -59,6 +59,7 @@
           <video id="video" class="active" playsinline preload="metadata"></video>
           <video id="video2" playsinline preload="auto"></video>
           <p id="screenMsg" class="screen-msg" role="status"></p>
+          <p id="signals" class="nerd-stats" hidden></p>
         </div>
         <div class="transport">
           <div class="transport-start">
@@ -103,7 +104,6 @@
           </section>
         </div>
         <p id="trimMsg" class="trim-msg" role="status"></p>
-        <p id="signals" class="muted tc"></p>
       </div>
     </section>
 
@@ -227,6 +227,11 @@
         <legend>Analysis</legend>
         <label class="check"><input type="checkbox" id="setVision" aria-describedby="setVisionHint"> Rate frames with a local vision model (Ollama)</label>
         <p id="setVisionHint" class="hint"></p>
+      </fieldset>
+      <fieldset class="panel">
+        <legend>Preview</legend>
+        <label class="check"><input type="checkbox" id="setNerdStats" aria-describedby="setNerdStatsHint"> Stats for Nerds</label>
+        <p id="setNerdStatsHint" class="hint">Shows each moment's score, rank and signals over the top-left corner of the preview. Off by default. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
       <p id="settingsError" class="error" role="alert"></p>
       <div class="dialog-actions">
