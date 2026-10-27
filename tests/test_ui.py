@@ -323,6 +323,33 @@ def test_the_scrolling_columns_clip_their_visually_hidden_labels() -> None:
     assert col and "position: relative;" in col[1] and "overflow: auto;" in col[1]
 
 
+def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
+    """Contract pin (#353): the scoring line is an overlay in the video panel, hidden by default,
+    toggled by a labelled Settings box and remembered per browser; the line under the transcript
+    is gone.
+
+    Check in a browser (no browser in the test suite): with a moment open, tick Settings > Stats
+    for Nerds; the stats show at once in the preview's top-left, clicks on them still play/pause,
+    the transport bar stays uncovered, and they stay inside the preview at a 360 px wide window.
+    Reload: still on. Untick: #signals is hidden and empty."""
+    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    screen = re.search(r'<div class="screen">(.*?)</div>', html, re.S)
+    assert screen and '<p id="signals" class="nerd-stats" hidden></p>' in screen[1]
+    assert html.count('id="signals"') == 1
+    settings = re.search(r'<dialog id="settingsDialog".*?</dialog>', html, re.S)
+    assert settings and re.search(
+        r'<label class="check"><input type="checkbox" id="setNerdStats"[^>]*> Stats for Nerds</label>',
+        settings[0],
+    )
+    overlay = re.search(r"^\.nerd-stats \{([^}]*)\}", css, re.M)
+    assert overlay and "position: absolute;" in overlay[1] and "pointer-events: none;" in overlay[1]
+    assert "max-width: calc(100% - 16px);" in overlay[1] and "monospace" in overlay[1]
+    assert "const NERD_KEY = 'cutpoint.nerdStats';" in js
+    assert "nerdStats: false," in js  # off unless the browser stored "1"
+
+
 def test_the_page_files_are_revalidated_on_each_load(client: TestClient) -> None:
     """#415: with no Cache-Control the browser reused an app.css from before the #354 fix, judged
     fresh by its age, and the page scrolled past the Jobs bar again. Each load must revalidate.

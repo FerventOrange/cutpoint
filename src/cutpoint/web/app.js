@@ -17,6 +17,7 @@ const SIDE_MAX = 640;
 const STAGE_MIN = 360; // pixels the preview keeps when the sequence column widens
 const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
 const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for every preview video
+const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
 
@@ -38,6 +39,8 @@ const S = {
   logOpen: false,
   saving: false,
   selected: new Set(), // sequence ids ticked for batch actions
+  nerdStats: false, // Settings > Stats for Nerds: the scoring overlay on the preview
+  nerdStatsWas: false, // nerdStats when Settings opened, restored by Cancel or Escape
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
   renameErr: '',
@@ -565,6 +568,7 @@ function renderStage(seekToStart, keepVideo = false) {
   $('#toggleBtn').hidden = !c;
   $('#stageMeta').textContent = c ? `${c.label} from ${baseName(c.source)}` : '';
   renderFullPrep(c);
+  renderNerdStats(c);
   if (!S.project)
     setEmpty($('#stageEmpty'),
       h('p', {}, 'No project is open.'),
@@ -581,14 +585,30 @@ function renderStage(seekToStart, keepVideo = false) {
   const inSeq = !!c.seg;
   $('#toggleBtn').textContent = inSeq ? 'Remove from sequence' : 'Add to sequence';
   renderTranscript(c.cand);
-  const sig = c.cand?.signals;
+  ensureVideo(seekToStart && !keepVideo ? c : null);
+  renderTrim(!!seekToStart);
+}
+
+/**
+ * Stats for Nerds (#353): the moment's score, rank, analyzed times and signals over the top-left of
+ * the preview, only while the setting is on; off, the overlay is hidden and empty.
+ */
+function renderNerdStats(c = current()) {
+  const el = $('#signals');
+  const cand = S.nerdStats ? c?.cand : null;
+  el.hidden = !cand;
+  if (!cand) return (el.textContent = '');
+  const sig = cand.signals;
   const bits = sig
     ? Object.entries(sig).filter(([, n]) => typeof n === 'number' && n > 0).map(([k, n]) => `${k} ${n.toFixed(2)}`)
     : [];
-  const kw = sig?.keywords?.length ? `Keywords: ${sig.keywords.join(', ')}. ` : '';
-  $('#signals').textContent = c.cand ? `${kw}Score ${c.cand.score.toFixed(2)}${bits.length ? `. Signals: ${bits.join(', ')}` : ''}` : '';
-  ensureVideo(seekToStart && !keepVideo ? c : null);
-  renderTrim(!!seekToStart);
+  const all = cands();
+  el.textContent = [
+    `Score ${cand.score.toFixed(2)}, rank ${all.indexOf(cand) + 1} of ${all.length}`,
+    `Analyzed ${fmt(cand.start)} to ${fmt(cand.end)}`,
+    bits.length ? `Signals: ${bits.join(', ')}` : '',
+    sig?.keywords?.length ? `Keywords: ${sig.keywords.join(', ')}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 /** "Full preview 42%" beside the moment while its source's whole proxy builds; window proxies play meanwhile. */
@@ -2364,6 +2384,8 @@ async function openSettings() {
   box.checked = st.vision === true;
   box.dataset.saved = String(box.checked);
   $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
+  $('#setNerdStats').checked = S.nerdStats;
+  S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
   d.showModal();
   // a locked folder cannot be edited: start on the first control that can
   (st.projects_dir_locked ? box : input).focus();
@@ -2410,13 +2432,44 @@ async function saveSettings() {
   }
 }
 
+/** Turn Stats for Nerds on or off: store it in this browser, show or hide the overlay and tick the box to match. */
+function setNerdStats(on) {
+  S.nerdStats = on;
+  try {
+    if (on) localStorage.setItem(NERD_KEY, '1');
+    else localStorage.removeItem(NERD_KEY);
+  } catch {
+    // storage blocked or full: the setting still applies until reload
+  }
+  $('#setNerdStats').checked = on;
+  renderNerdStats();
+}
+
+/**
+ * Stats for Nerds is cosmetic, so it lives in this browser's storage, not in config.json. The box
+ * previews on change; Save keeps it and Cancel or Escape puts back the state the dialog opened
+ * with. Without storage it lasts the session.
+ */
+function initNerdStats() {
+  try {
+    S.nerdStats = localStorage.getItem(NERD_KEY) === '1';
+  } catch {
+    // storage blocked: start from the default (off)
+  }
+  $('#setNerdStats').addEventListener('change', (e) => setNerdStats(e.target.checked));
+}
+
 function bindSettings() {
   const d = $('#settingsDialog');
   const gear = $('#settingsBtn');
   gear.append(icon('gear'));
   gear.addEventListener('click', openSettings);
   d.addEventListener('close', () => gear.focus());
-  $('#settingsCancel').addEventListener('click', () => d.close());
+  $('#settingsCancel').addEventListener('click', () => {
+    setNerdStats(S.nerdStatsWas);
+    d.close();
+  });
+  d.addEventListener('cancel', () => setNerdStats(S.nerdStatsWas)); // Escape; not on close, which Save fires too
   $('#settingsForm').addEventListener('submit', (e) => {
     e.preventDefault();
     if (!$('#settingsSave').hidden) saveSettings();
@@ -2601,6 +2654,7 @@ function bind() {
   initSplitter();
   const toggleMute = initVolume();
   bindSettings();
+  initNerdStats();
   showPlaying(false);
   trimInputs.start = trimField('start', 'Clip Start');
   trimInputs.end = trimField('end', 'Clip End');
