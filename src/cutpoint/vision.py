@@ -67,7 +67,8 @@ _DEFAULT_PROMPTS = (_PROMPT, _RETRY_PROMPT)
 _ATTEMPTS = ((8192, 3072), (12288, 6144))
 _TEMPERATURES = (0.2, 0.4)  # sampling temperature per attempt
 FRAME_WIDTH = 640  # px of each frame sent to the model
-# Ratings cached per source (cache.source_dir), one entry per rating input (rating_key).
+# Ratings cached per source (cache.source_dir), one entry per rating input (rating_key),
+# stamped with the model's digest (VisionRater._lookup says how the digest is matched).
 RATINGS_FILE = "vision-ratings.json"
 # Bump when the rating input or the reply parsing changes outside what rating_key hashes
 # (the prompts, attempt options and temperatures, frame width, model, style and frame times).
@@ -93,11 +94,17 @@ class VisionRater:
         self.used = False  # True once a request went to the model: unload() frees it
         self.hits = 0  # ratings taken from the cache by rate()
         self.asked = 0  # ratings rate() asked the model for (failed ones included)
+        self.missed = 0  # cache misses rate() gave no rating for (cache_only)
+        # the model's digest from /api/tags (set by available()); None: not known
+        self.digest: str | None = None
+        # True: rate() gives only cached ratings and asks the model nothing (Ollama down)
+        self.cache_only = False
         # per source: (cache file, its ratings), or None when the source cannot be keyed
         self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
 
     def available(self) -> bool:
-        """True if the server answers and has the model pulled."""
+        """True if the server answers and has the model pulled; records the model's
+        ``digest`` for the rating cache."""
         try:
             resp = requests.get(f"{self.url}/api/tags", timeout=3)
             resp.raise_for_status()
@@ -116,6 +123,9 @@ class VisionRater:
                 ", ".join(sorted(names)) or "none",
             )
             return False
+        found = (m for m in models if m.get("name") in (self.model, f"{self.model}:latest"))
+        digest = next(found, {}).get("digest")
+        self.digest = digest if isinstance(digest, str) and digest else None
         return True
 
     def ask_json(
@@ -169,23 +179,54 @@ class VisionRater:
 
         Ratings are cached per source (``RATINGS_FILE`` in :func:`cutpoint.cache.source_dir`)
         under :func:`rating_key`, each written as soon as the model gives it, so a rerun asks
-        the model only about new frames. A failed grab or request is not cached.
+        the model only about new frames. A failed grab or request is not cached. With
+        ``cache_only`` a miss gives None (counted in ``missed``) and nothing is sent.
         """
-        span = end - start
-        times = [start + span * (i + 1) / (n_frames + 1) for i in range(n_frames)]
+        times = _frame_times(start, end, n_frames)
         store = self._store(src)
         key = rating_key(self.model, style, times)
-        if store is not None and (hit := _cached(store[1].get(key))) is not None:
+        if (hit := self._lookup(store, key)) is not None:
             self.hits += 1
             return hit
+        if self.cache_only:
+            self.missed += 1
+            return None
         result = self._rate_frames(src, times, style)
         if result is not None and store is not None:
-            store[1][key] = {"score": result.score, "label": result.label}
+            entry: dict[str, Any] = {"score": result.score, "label": result.label}
+            store[1][key] = entry | ({"digest": self.digest} if self.digest else {})
             try:
                 cache.save_json(store[0], store[1])
             except OSError as err:  # a cache must not fail the run
                 logger.warning("Could not save the vision rating cache %s: %s", store[0], err)
         return result
+
+    def cached(
+        self, src: Path, start: float, end: float, style: str, n_frames: int = 3
+    ) -> VisionResult | None:
+        """The rating :meth:`rate` would take from the cache, or None; counts nothing."""
+        key = rating_key(self.model, style, _frame_times(start, end, n_frames))
+        return self._lookup(self._store(src), key)
+
+    def _lookup(self, store: tuple[Path, dict[str, Any]] | None, key: str) -> VisionResult | None:
+        """The cached rating under ``key``, or None.
+
+        The key holds the model's tag (its name) and each entry the digest of the model that
+        gave it. With the digest known (Ollama answered), only an entry with that digest
+        matches, so a model updated under the same tag rates again; an entry without a digest
+        (cached before digests were recorded) is a miss too. With no digest to compare
+        (``cache_only``: Ollama or the model is not available; or /api/tags listed none), the
+        entry for the tag matches whatever its digest: a new rating replaces the entry, so it
+        is the latest rating made with that tag.
+        """
+        if store is None:
+            return None
+        entry = store[1].get(key)
+        if self.cache_only or self.digest is None:
+            return _cached(entry)
+        if not isinstance(entry, dict) or entry.get("digest") != self.digest:
+            return None
+        return _cached(entry)
 
     def _store(self, src: Path) -> tuple[Path, dict[str, Any]] | None:
         """The cached ratings of ``src`` (loaded once; a missing or corrupt file is empty);
@@ -275,11 +316,19 @@ class VisionRater:
         logger.debug("Unloaded Ollama model %s", self.model)
 
 
+def _frame_times(start: float, end: float, n_frames: int) -> list[float]:
+    """``n_frames`` evenly spaced inside [start, end], neither end included."""
+    span = end - start
+    return [start + span * (i + 1) / (n_frames + 1) for i in range(n_frames)]
+
+
 def rating_key(model: str, style: str, times: list[float]) -> str:
     """Cache key of one rating: a hash of everything sent to the model except the frames
     (``RATING_VERSION``, model, style, both prompts, attempt options and temperatures, frame
     width), then the frame times to the millisecond (the precision of the grab's seek). The
-    Ollama URL is not part of it: the same model on another server rates the same."""
+    Ollama URL is not part of it: the same model on another server rates the same. The
+    model's digest is stored in the entry instead of hashed (:meth:`VisionRater._lookup`),
+    so a rating can still be found when Ollama is down and the digest cannot be fetched."""
     prompts = _PROMPTS.get(style, _DEFAULT_PROMPTS)
     params = {
         "version": RATING_VERSION,

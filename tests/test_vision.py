@@ -241,7 +241,7 @@ class _FakeRater:
 
     calls: ClassVar[list[str]] = []
     fail = False
-    hits = asked = 0
+    hits = asked = missed = 0
 
     def __init__(self, **_kw) -> None:
         _FakeRater.calls.append("init")
@@ -453,3 +453,112 @@ def test_the_attempts_keep_their_temperatures(posts):
     vision.VisionRater(url="http://x:1", model="m").rate(Path("a.mp4"), 0, 4, "gaming")
     temps = [p["options"]["temperature"] for u, p in posts if u.endswith("/api/chat")]
     assert temps == [0.2, 0.4]
+
+
+# ---- #413: the model digest in the cache; cached ratings when Ollama is down
+
+
+@pytest.fixture
+def ollama(posts, monkeypatch) -> dict:
+    """A fake ``/api/tags``: model ``m`` with ``state["digest"]``; ``state["up"] = False``
+    refuses the connection (and any POST then fails the test)."""
+    state: dict = {"up": True, "digest": "sha256:aaa"}
+    working = vision.requests.post
+
+    def get(url, timeout):
+        if not state["up"]:
+            raise requests.ConnectionError("refused")
+        assert url.endswith("/api/tags")
+        return _Resp({"models": [{"name": "m:latest", "digest": state["digest"]}]})
+
+    def post(*a, **k):
+        assert state["up"], "a request went to Ollama while it was down"
+        return working(*a, **k)
+
+    monkeypatch.setattr(vision.requests, "get", get)
+    monkeypatch.setattr(vision.requests, "post", post)
+    return state
+
+
+def _rater(ollama: dict) -> vision.VisionRater:
+    """A new rater (as a new `analyze` makes) after ``available()``; cache-only when down,
+    as analyze sets it."""
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    rater.cache_only = not rater.available()
+    assert rater.cache_only is not ollama["up"]
+    return rater
+
+
+def _entries(src: Path) -> list[dict]:
+    return list(cache.load_json(cache.source_dir(src) / vision.RATINGS_FILE).values())
+
+
+def test_an_unchanged_digest_reuses_the_rating(posts, src, ollama):
+    assert _rater(ollama).rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert _entries(src) == [{"score": 7.0, "label": "big jump", "digest": "sha256:aaa"}]
+    posts.clear()
+    rater = _rater(ollama)
+    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert posts == [] and (rater.hits, rater.asked) == (1, 0)
+
+
+def test_a_changed_digest_rates_again_and_replaces_the_entry(posts, src, ollama):
+    _rater(ollama).rate(src, 0, 4, "ski")
+    posts.clear()
+    ollama["digest"] = "sha256:bbb"  # the model pulled again under the same tag
+    rater = _rater(ollama)
+    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert _chats(posts) == 2 and (rater.hits, rater.asked) == (0, 1)
+    assert [e["digest"] for e in _entries(src)] == ["sha256:bbb"]
+
+
+def test_a_cached_rating_is_used_when_ollama_is_down(posts, src, ollama):
+    _rater(ollama).rate(src, 0, 4, "ski")
+    posts.clear()
+    ollama["up"] = False
+    rater = _rater(ollama)
+    assert rater.cached(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert (rater.hits, rater.asked, rater.missed) == (1, 0, 0)
+    rater.unload()  # nothing was asked: nothing to unload
+    assert posts == []
+
+
+def test_a_miss_when_ollama_is_down_is_no_rating(posts, src, ollama, monkeypatch):
+    _rater(ollama).rate(src, 0, 4, "ski")
+    posts.clear()
+    ollama["up"] = False
+
+    def grab(*_a, **_k):
+        raise AssertionError("no frame grab for a miss when Ollama is down")
+
+    monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
+    rater = _rater(ollama)
+    assert rater.cached(src, 10, 14, "ski") is None
+    assert rater.rate(src, 10, 14, "ski") is None
+    assert rater.rate(src, 0, 4, "ski") is not None
+    assert posts == [] and (rater.hits, rater.asked, rater.missed) == (1, 0, 1)
+
+
+def test_an_entry_without_a_digest_is_used_only_when_ollama_is_down(posts, src, ollama):
+    """A rating cached before #413 has no digest, so no known model build: it is rated
+    again when Ollama answers, and still used when Ollama is down (no digest to compare)."""
+    key = vision.rating_key("m", "ski", vision._frame_times(0, 4, 3))
+    path = cache.source_dir(src) / vision.RATINGS_FILE
+    path.write_text(json.dumps({key: {"score": 3.0, "label": "old"}}), "utf-8")
+    ollama["up"] = False
+    assert _rater(ollama).rate(src, 0, 4, "ski") == vision.VisionResult(3.0, "old")
+    ollama["up"] = True
+    rater = _rater(ollama)
+    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert (rater.hits, rater.asked) == (0, 1)
+
+
+def test_no_digest_is_stored_when_ollama_lists_none(posts, src, monkeypatch):
+    monkeypatch.setattr(
+        vision.requests, "get", lambda *_a, **_k: _Resp({"models": [{"name": "m"}]})
+    )
+    rater = vision.VisionRater(url="http://x:1", model="m")
+    assert rater.available() and rater.digest is None
+    rater.rate(src, 0, 4, "ski")
+    assert _entries(src) == [{"score": 7.0, "label": "big jump"}]
