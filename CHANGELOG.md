@@ -467,6 +467,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   last hour, so a second UI on the same project no longer deletes a proxy it is encoding or
   serving, and skips a file it cannot delete (open on Windows) until a later run. While a
   source cannot be read (an offline drive), no proxy is deleted for matching no source (#411).
+- `cutpoint ui` no longer keeps stale preview proxies and windows forever on a project with a
+  drive that stays offline: while a source cannot be read, one that matches no readable source
+  is deleted once it has not been written or played for 30 days.
 - Clips graded with `--lut` are tagged BT.709 (matrix, primaries, transfer, tv range) on older
   ffmpeg too: ffmpeg 6.1 left the matrix tag unset, so `assemble` read SD clips as BT.601.
 - A `llama-server` start no longer leaves its log file handle open in the parent.
