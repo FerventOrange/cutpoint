@@ -852,12 +852,20 @@ def decoder_candidates() -> list[HwDecoder]:
 @cache
 def gpu_decoder() -> HwDecoder | None:
     """The GPU decoder ``hwaccel="auto"`` uses: the first of :func:`decoder_candidates` that
-    really decodes; ``None`` = CPU. Failed probes are logged at debug level."""
+    really decodes; ``None`` = CPU. Logged once at INFO, like the video encoder; a failed NVIDIA
+    probe too, since it moves every decode to the CPU (a failed VAAPI node is tried next)."""
     for dec in decoder_candidates():
         error = decoder_error(dec)
         if error is None:
+            logger.info("Video decoder: %s", dec)
             return dec
-        logger.debug("%s decode not used: %s", dec, error)
+        logger.log(
+            logging.INFO if dec.kind == "cuda" else logging.DEBUG,
+            "%s decode not used: %s",
+            dec,
+            error,
+        )
+    logger.info("Video decoder: CPU (no GPU decoder works here)")
     return None
 
 

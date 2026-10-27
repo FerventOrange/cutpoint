@@ -261,9 +261,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exported before this change join new ones without a color shift (#290, #289).
 - Decoding follows the GPUs detected here: NVDEC is probed only with an NVIDIA GPU and VAAPI
   only on AMD render nodes, each with a one-clip test decode, so an AMD machine no longer tries
-  CUDA first (#22).
+  CUDA first, and logs the decoder it chose once at INFO (`Video decoder: ...`); a failed
+  NVIDIA probe is logged too (#22).
 - The UI's preview proxies use the GPU encoder exports use (NVENC, VAAPI or AMF, per
   `video_encoder`), not NVENC only (#22).
+- `events` no longer retries a failed CPU decode as if it were a GPU one (#429).
 - `analyze` reads scene cuts with PySceneDetect's `seconds` property (the old call is deprecated) (#22).
 - **BREAKING:** `clips --force` and `extend` refuse a `manifest.json` Cutpoint did not write
   (another `generator`, or no `clips` list of entries with a `file`) and one they cannot read,
