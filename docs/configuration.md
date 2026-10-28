@@ -164,6 +164,9 @@ to its exports and assemblies; it does not change the key.
 `off` (default), `auto` or `underwater`: the [automatic color correction](commands.md#clips)
 that `clips` and `edit` use when `--color` is not given. It never applies to `gaming` footage
 (only an explicit `--color` grades it) nor to a run with `--lut`. Other values are rejected.
+`cutpoint ui` starts its "Color" slider on the choice you saved for the project, else on this
+value (Off when the key is unset), and always at Off for gaming projects. It passes the choice to
+its exports and presets; it does not change the key.
 
 ### analysis
 

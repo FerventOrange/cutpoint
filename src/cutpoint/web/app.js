@@ -46,6 +46,8 @@ const OPT_FIELDS = {
 };
 const PEAK_STOPS = ['off', 'light', 'strong']; // the Compress Audio Peaks slider's stops, left to right
 const PEAK_NAMES = { off: 'None', light: 'Light', strong: 'Max' };
+const COLOR_STOPS = ['off', 'auto', 'underwater']; // the Color slider's stops, left to right (--color)
+const COLOR_NAMES = { off: 'Off', auto: 'Auto', underwater: 'Underwater' };
 const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the audio transition of each video one
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
@@ -55,6 +57,7 @@ const S = {
   canReveal: false, // the server can open a folder in this machine's file manager
   canPick: false, // the server can show this machine's own open dialog
   savedOpts: {}, // the Export & Assembly Options this browser stored (initExportOptions)
+  colorDefault: 'off', // config.json's color (GET /api/settings): Color's default when this browser saved none
   projects: [],
   id: null,
   project: null,
@@ -350,6 +353,7 @@ function adopt(p, switched) {
   }
   if (!current()) S.focus = S.segments[0]?.id ?? cands()[0]?.id ?? null;
   clearTimeout(S.prepTimer);
+  if (switched) startColor();
   renderAll(switched);
   if (switched) loadAssistant();
 }
@@ -2726,6 +2730,19 @@ function peaks() {
   return PEAK_STOPS[Number($('#optPeaks').value)] ?? 'off';
 }
 
+/** Color as sent to the server: 'off', 'auto' or 'underwater'. */
+function color() {
+  return COLOR_STOPS[Number($('#optColor').value)] ?? 'off';
+}
+
+/** Color and its Strength for Export clips and One-Click Edit; Strength only below 100% (the CLI's default is 1). */
+function colorOptions() {
+  const body = { color: color() };
+  const pct = Number($('#optColorStrength').value);
+  if (body.color !== 'off' && pct < 100) body.color_strength = pct / 100;
+  return body;
+}
+
 /** 'sequence' (hand-picked) or 'auto' (Clips to Export). */
 function picks() {
   return $('#optPicksAuto').checked ? 'auto' : 'sequence';
@@ -2758,7 +2775,7 @@ function extendOptions() {
 function exportOptions() {
   const body = {
     picks: picks(), vertical: $('#optVertical').checked, smart_tail: $('#optTail').checked, compress_peaks: peaks(),
-    ...extendOptions(), ...fields('tail_min', 'tail_max', 'event_window'),
+    ...colorOptions(), ...extendOptions(), ...fields('tail_min', 'tail_max', 'event_window'),
   };
   if (body.picks === 'auto') Object.assign(body, fields('top', 'max_total', 'ids'), $('#optOrder').value ? { order: $('#optOrder').value } : {});
   if (!$('#optEventTails').disabled) body.event_tails = $('#optEventTails').value;
@@ -2772,7 +2789,7 @@ function exportOptions() {
 async function makePreset() {
   await refreshProject(); // preset_taken as it is now, not when the page last loaded
   if (!S.project) return;
-  const body = { kind: $('#optKind').value, vertical: $('#optVertical').checked, compress_peaks: peaks() };
+  const body = { kind: $('#optKind').value, vertical: $('#optVertical').checked, compress_peaks: peaks(), ...colorOptions() };
   const dir = body.vertical ? 'clips_vertical' : 'clips';
   if (S.project?.preset_taken?.includes(dir)) {
     const text = `The ${dir} folder holds the clips of an earlier run. This run replaces the clips it lists and assembles final.mp4 again; other files stay.`;
@@ -3957,6 +3974,22 @@ function initExportOptions() {
     store('compress_peaks', peaks());
   });
   setPeaks(PEAK_STOPS.includes(saved.compress_peaks) ? saved.compress_peaks : OPT_DEFAULTS.compress_peaks);
+  const tint = $('#optColor');
+  tint.addEventListener('input', () => {
+    setColor(color());
+    if (!S.id) return;
+    // per project: a grade for one footage (Underwater on a dive) does not carry over to the next
+    const mine = saved.color_by_project && typeof saved.color_by_project === 'object' ? saved.color_by_project : {};
+    store('color_by_project', { ...mine, [S.id]: color() });
+  });
+  const strength = $('#optColorStrength');
+  strength.addEventListener('input', () => {
+    setColorStrength(Number(strength.value));
+    store('color_strength', Number(strength.value));
+  });
+  const pct = saved.color_strength;
+  setColorStrength(Number.isFinite(pct) && pct >= 0 && pct <= 100 ? pct : 100);
+  setColor('off'); // startColor sets a project's
   return saved;
 }
 
@@ -4004,6 +4037,34 @@ function setPeaks(value) {
   const range = $('#optPeaks');
   range.value = String(Math.max(0, PEAK_STOPS.indexOf(value)));
   range.setAttribute('aria-valuetext', PEAK_NAMES[peaks()]);
+}
+
+/** Set the Color slider to ``value`` ('off', 'auto' or 'underwater'); Strength shows only with a grade. */
+function setColor(value) {
+  const range = $('#optColor');
+  range.value = String(Math.max(0, COLOR_STOPS.indexOf(value)));
+  range.setAttribute('aria-valuetext', COLOR_NAMES[color()]);
+  $('#colorStrengthRow').hidden = color() === 'off';
+}
+
+/** Set Color's Strength slider to ``pct`` (0-100). */
+function setColorStrength(pct) {
+  const range = $('#optColorStrength');
+  range.value = String(pct);
+  range.setAttribute('aria-valuetext', `Strength ${range.value}%`);
+  $('#colorStrengthOut').textContent = `${range.value}%`;
+}
+
+/**
+ * The Color a project opens with: the choice this browser saved for it (color_by_project), else
+ * color in config.json, else Off. Never a grade for gaming footage (config.json's color does not
+ * apply to it either); a grade the user then picks is still sent, and the CLI warns. Strength is
+ * one choice for every project.
+ */
+function startColor() {
+  const mine = S.savedOpts.color_by_project?.[S.id];
+  const value = COLOR_STOPS.includes(mine) ? mine : S.colorDefault;
+  setColor(S.project?.gaming ? 'off' : value);
 }
 
 function bind() {
@@ -4162,6 +4223,8 @@ async function main() {
     // slider keeps Light if it cannot be read
     const st = await api('/api/settings');
     if (!PEAK_STOPS.includes(S.savedOpts.compress_peaks) && st.compress_peaks_set) setPeaks(st.compress_peaks);
+    // likewise config.json's color, applied as each project opens (startColor: Off for gaming)
+    if (COLOR_STOPS.includes(st.color)) S.colorDefault = st.color;
   } catch {
     // the project list has reported a config.json the server rejects
   }

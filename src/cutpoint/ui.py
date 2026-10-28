@@ -92,6 +92,7 @@ from cutpoint.backends import ollama_url
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     ASSISTANT_PROVIDERS,
+    COLOR_MODES,
     COMPRESS_PEAKS,
     assistant_settings,
     get_config,
@@ -547,10 +548,11 @@ def require_config() -> None:
 
 def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     """The settings for config ``data``: the projects folder, the vision default and the export
-    default of Compress peaks, so other invalid keys in ``config.json`` do not hide them; a wrongly
-    typed ``projects_dir`` is shown as is, to replace, a ``vision`` that is not ``true`` as off and
-    an unknown ``compress_peaks`` as off."""
+    defaults of Compress peaks and Color, so other invalid keys in ``config.json`` do not hide
+    them; a wrongly typed ``projects_dir`` is shown as is, to replace, a ``vision`` that is not
+    ``true`` as off and an unknown ``compress_peaks`` or ``color`` as off."""
     peaks = data.get("compress_peaks")
+    color = data.get("color")
     try:
         folder = str(resolve_projects_dir(data))
     except TypeError:
@@ -564,6 +566,8 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
         # whether config.json sets it: the page's Compress peaks then starts from it, else Light
         "compress_peaks_set": peaks in COMPRESS_PEAKS,
+        # the page's Color starts from it (Off when unset), never with a grade on gaming footage
+        "color": color if isinstance(color, str) and color in COLOR_MODES else "off",
         "assistant": assistant_view(data),
     }
 
@@ -2335,6 +2339,15 @@ def ui_styles() -> list[str]:
     return names
 
 
+def _gaming_style(name: object) -> bool:
+    """``name`` is a ``gaming`` style (or one based on it): config.json's ``color`` never grades
+    it, so the page's Color starts at Off for it."""
+    try:
+        return get_style(str(name)).base == "gaming" if name else False
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def _ski_style(name: str) -> bool:
     """``name`` is a telemetry-driven action-cam style (``kind`` ski), accepted for 360 sources."""
     try:
@@ -2358,6 +2371,30 @@ def _compress_peaks(body: dict[str, Any]) -> list[str]:
     if v not in COMPRESS_PEAKS:
         raise bad(f"compress_peaks must be one of {', '.join(COMPRESS_PEAKS)}")
     return ["--compress-peaks", v]
+
+
+def _color_args(body: dict[str, Any]) -> list[str]:
+    """``--color`` and ``--color-strength`` with the page's choice. Not sent: no flag, so the CLI
+    applies ``color`` in config.json itself (never to gaming footage, which an explicit flag
+    would grade). The page has no LUT, but a ``lut`` with a grade is refused as the CLI refuses
+    ``--color`` with ``--lut``."""
+    color = body.get("color")
+    strength = body.get("color_strength")
+    if color is not None and (not isinstance(color, str) or color not in COLOR_MODES):
+        raise bad(f"color must be one of {', '.join(COLOR_MODES)}")
+    if body.get("lut") is not None and (color not in (None, "off") or strength is not None):
+        raise bad("color cannot be combined with lut; use one")
+    if strength is None:
+        return [] if color is None else ["--color", color]
+    if (
+        isinstance(strength, bool)
+        or not isinstance(strength, (int, float))
+        or not 0 <= strength <= 1
+    ):
+        raise bad("color_strength must be a number from 0 to 1")
+    if color not in ("auto", "underwater"):
+        raise bad("color_strength needs color auto or underwater")
+    return ["--color", color, "--color-strength", f"{float(strength):g}"]
 
 
 def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
@@ -2797,6 +2834,8 @@ def create_app(port: int) -> FastAPI:
             "id": pid,
             "name": meta.get("name") or pid,
             "style": meta.get("style") or (hl or {}).get("style") or "",
+            # the page's Color starts at Off for gaming footage, as config.json's color does
+            "gaming": _gaming_style(meta.get("style") or (hl or {}).get("style")),
             "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
             "highlights": moments_view(hl),
@@ -2928,7 +2967,11 @@ def create_app(port: int) -> FastAPI:
                 args.append("--vertical")
             if force:  # the user confirmed replacing the earlier run's clips
                 args.append("--force")
-            args += _compress_peaks(body) + _vision_args((hl or {}).get("settings") or {})
+            args += (
+                _compress_peaks(body)
+                + _color_args(body)
+                + _vision_args((hl or {}).get("settings") or {})
+            )
 
             def prepare() -> None:
                 _ui_folder(p)  # a command-line project has no ui folder for exports.json yet
@@ -2991,7 +3034,7 @@ def create_app(port: int) -> FastAPI:
                     "--event-window", _seconds(body, "event_window", MAX_TIMING_S, positive=True)
                 )
             )
-            peaks = _compress_peaks(body)
+            peaks = _compress_peaks(body) + _color_args(body)
             out_name = fresh_name(p, f"clips_ui_{stamp}")
             seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
             _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the export

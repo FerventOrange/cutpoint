@@ -647,10 +647,14 @@ select { max-width: 100%; }
 /* Clips to Export and Cut Timing: nested panels in the options */
 .opts .picks, .opts .timing { gap: 2px; margin-top: 6px; }
 .opts .picks legend, .opts .timing legend { font-weight: 550; font-size: 14.5px; }
-.opts .peaks { gap: 2px; margin-top: 6px; }
-.opts .peaks legend { font-weight: 550; font-size: 14.5px; }
-.peaks input[type=range] { width: 100%; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
-.peaks .ticks { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.opts .peaks, .opts .color { gap: 2px; margin-top: 6px; }
+.opts .peaks legend, .opts .color legend { font-weight: 550; font-size: 14.5px; }
+.peaks input[type=range], .color input[type=range] { width: 100%; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
+.peaks .ticks, .color .ticks { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+/* Color's Strength: shown only with a grade, its percentage on the right */
+.color-strength { display: grid; grid-template-columns: auto minmax(0, 1fr) 3.2em; align-items: center; gap: 8px; margin-top: 6px; }
+.color-strength[hidden] { display: none; }
+#colorStrengthOut { text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* Export clips and Assemble side by side, Show Exports Folder across under them */
 .export-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .export-acts .btn { min-height: 40px; }
