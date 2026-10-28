@@ -38,12 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   9 deg shows. On the measured Insta360 footage no 10 s window is over the 12 deg QA cap (55
   were), and riding footage is unchanged (#442).
 - `clips --force` and `extend` on macOS (and on case-insensitive drives elsewhere, such as exFAT
-  or FAT drives on Linux, NTFS only when mounted case-insensitive) no longer fail when the old manifest.json names a clip in another case than
-  the folder (`001_A.mp4` listed, `001_a.mp4` on disk): the swap moved the same file twice. Names
-  now match case-insensitively where the folder is case-insensitive, checked once per folder
-  without writing to it; Windows is unchanged and case-sensitive folders keep `001_A` and `001_a`
-  apart. A listed `.srt` renamed in case only is now replaced with its clip there too, as on
-  Windows (#247).
+  or FAT drives on Linux, NTFS only when mounted case-insensitive) no longer fail when the old
+  manifest.json names a clip in another case than the folder (`001_A.mp4` listed, `001_a.mp4` on
+  disk): the swap moved the same file twice. Names now match case-insensitively where the folder
+  is case-insensitive, checked once per folder without writing to it; Windows is unchanged and
+  case-sensitive folders keep `001_A` and `001_a` apart. A listed `.srt` renamed in case only is
+  now replaced with its clip there too, as on Windows (#247).
 
 ## [0.3.0] - 2026-10-27
 

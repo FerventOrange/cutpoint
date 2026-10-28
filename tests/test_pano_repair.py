@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from conftest import link_file, messages
-from cutpoint import cache, cli, mix
+from cutpoint import cache, cli, config, mix
 from cutpoint.mix import Cand, apply_exclusions
 from cutpoint.pano.repair import _fit_budget, plan, repair
 
@@ -145,6 +145,7 @@ def test_plan_matches_impact_sources_case_insensitively_on_windows(
     monkeypatch.setattr(sys, "platform", "win32")
     assert plan([seg], qa, tmp_path, impacts=impacts)[1] == []
     monkeypatch.setattr(sys, "platform", "linux")  # case-sensitive: a different file
+    monkeypatch.setattr(config, "folds_case", lambda _f: False)  # the cwd may fold (Windows, Mac)
     assert len(plan([seg], qa, tmp_path, impacts=impacts)[1]) == 1
 
 

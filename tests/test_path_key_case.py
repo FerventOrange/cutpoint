@@ -114,13 +114,18 @@ def test_a_missing_output_folder_uses_its_nearest_existing_parent(tmp_path, monk
     assert calls == [tmp_path.resolve()]  # probed once, then cached
 
 
-def test_windows_always_folds_and_a_windows_path_on_posix_does_not(monkeypatch):
+def test_windows_always_folds(monkeypatch):
     monkeypatch.setattr(config, "_probe_case", lambda p: pytest.fail("no probe expected"))
     monkeypatch.setattr(sys, "platform", "win32")
     assert config.folds_case("C:\\missing") is True
     assert config.path_key("D:\\Clip.MP4") == "d:\\clip.mp4"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="ntpath: D:\\ is absolute")
+def test_a_windows_path_on_posix_is_not_looked_up_in_the_cwd(monkeypatch):
+    monkeypatch.setattr(config, "_probe_case", lambda p: pytest.fail("no probe expected"))
     monkeypatch.setattr(sys, "platform", "linux")
-    assert config.path_key("D:\\Clip.MP4") == "D:\\Clip.MP4"  # not looked up in the cwd
+    assert config.path_key("D:\\Clip.MP4") == "D:\\Clip.MP4"
 
 
 def test_case_sensitive_folder_keeps_two_spellings_apart(tmp_path, case_sensitive_fs):

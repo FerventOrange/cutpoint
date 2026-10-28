@@ -492,11 +492,12 @@ def path_key(path: str, folder: str | PurePath | None = None) -> str:
     elsewhere.
 
     Windows: always lower-cased. Elsewhere (macOS APFS/HFS+, exFAT or FAT drives on Linux,
-    NTFS only when mounted case-insensitive) it is lower-cased if :func:`folds_case` says so for ``folder`` (the folder a bare name
-    such as ``001_A.mp4`` is in) or, without ``folder``, for the folder of ``path``. The
-    whole string is folded even if only its last folder is case-insensitive, so compare
-    only keys made for the same folder or for paths in the same file. A Windows-form path
-    on POSIX (``D:\\x.mp4``, a project written on Windows) is not folded without ``folder``.
+    NTFS only when mounted case-insensitive) it is lower-cased if :func:`folds_case` says so
+    for ``folder`` (the folder a bare name such as ``001_A.mp4`` is in) or, without
+    ``folder``, for the folder of ``path``. The whole string is folded even if only its last
+    folder is case-insensitive, so compare only keys made for the same folder or for paths
+    in the same file. A Windows-form path on POSIX (``D:\\x.mp4``, a project written on
+    Windows) is not folded without ``folder``.
     """
     if sys.platform == "win32":
         return path.lower()
