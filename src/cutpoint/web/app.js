@@ -79,6 +79,19 @@ const S = {
   stepTimer: null, // ticks that elapsed time once a second
   view: null, // {id, lo, hi}: the part of the source the trim rail shows, separate from the trim
   seqPlay: null, // {order: [ids], i, wait}: "Play sequence" runs; order is fixed at its start, wait: the clip's video is not ready
+  undo: [], // {segments, drafts} before each edit, manual or applied from AI Chat, newest last (at most UNDO_MAX)
+  redo: [],
+  undoTag: null, // {tag, at}: the last edit's kind, so a held key or a drag is one undo step
+  // AI Chat (#346): the change previewed in the Sequence tab, the moments list and the rail until Apply
+  // or Discard: {id, summary, after, diff, base_key, seqKey}; seqKey: the sequence it was made on (baseOf its diff)
+  proposal: null,
+  chat: null, // {pid, provider, turns: [{id, user, status, error, events}], error}: the open project's chat
+  turn: null, // {id, next}: the turn being polled
+  sending: false,
+  applying: false,
+  pendingProposal: null, // a proposal that came in while Apply waited: previewed once Apply is done
+  shown: null, // Set of the moment ids the assistant showed (show_moments), highlighted in the list
+  history: [], // the applied assistant changes (GET history), oldest first
 };
 
 // Two stage players: the visible one (``v``) plays, the other preloads the next clip of "Play sequence".
@@ -87,6 +100,7 @@ let v = els[0];
 const spare = () => (v === els[0] ? els[1] : els[0]);
 const seek = $('#seek');
 let openDialog;
+let showTab = () => {}; // showTab('sequence', focus): select a tab of the sequence column (initSideTabs)
 let pendingSeek = null;
 let cued = null; // {id, start, vt}: the clip the spare player holds, at video time vt
 let seekWant = null; // {t, fast}: the latest scrub target while a seek is in flight
@@ -213,6 +227,7 @@ whenExpired((e) => {
   clearTimeout(S.partTimer);
   clearTimeout(S.jobTimer);
   clearTimeout(S.seqTimer);
+  clearTimeout(S.chatTimer);
   clearInterval(S.stepTimer);
   S.stepTimer = null;
   seqStop('');
@@ -296,6 +311,12 @@ function resetWorkspace(segments) {
   S.renaming = null;
   S.segments = segments;
   S.savedKey = key();
+  S.undo = [];
+  S.redo = [];
+  S.undoTag = null;
+  S.proposal = null;
+  S.pendingProposal = null;
+  S.shown = null;
 }
 
 /** Leave the open project (its folder is no longer listed): back to the empty workspace. */
@@ -307,6 +328,7 @@ function closeProject() {
   drop('');
   history.replaceState(null, '', location.pathname + location.search);
   renderAll(true);
+  loadAssistant();
 }
 
 function adopt(p, switched) {
@@ -325,6 +347,7 @@ function adopt(p, switched) {
   if (!current()) S.focus = S.segments[0]?.id ?? cands()[0]?.id ?? null;
   clearTimeout(S.prepTimer);
   renderAll(switched);
+  if (switched) loadAssistant();
 }
 
 // ---------- rendering: moments ----------
@@ -386,6 +409,7 @@ function renderMoments() {
   });
   if (list.length && !items.length)
     $('#candList').replaceChildren(h('li', { class: 'empty', text: 'No moments match this filter.' }));
+  markMoments();
   if (hadFocus && !empty.contains(document.activeElement))
     ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
@@ -595,6 +619,7 @@ function setRange(which, t, widen = true) {
     setTrimMsg(err, true);
     return false;
   }
+  if (s !== c.start || e !== c.end) remember(`trim:${c.id}:${which}`);
   if (c.seg) {
     c.seg.start = s;
     c.seg.end = e;
@@ -742,6 +767,7 @@ function drawRail(c = current()) {
   sel.classList.toggle('cut-l', c.start < lo);
   sel.classList.toggle('cut-r', c.end > hi);
   drawHandles(c, lo, hi);
+  drawGhost(c);
   const zIn = $('#zoomIn');
   const zOut = $('#zoomOut');
   const had = document.activeElement; // read first: disabling a focused button drops its focus
@@ -777,6 +803,24 @@ function drawHandles(c, lo, hi) {
     el.setAttribute('aria-valuenow', t);
     el.setAttribute('aria-valuetext', `${HANDLE_NAMES[which]}, ${fmt(t)}`);
   }
+}
+
+/**
+ * Ghost handles (#346): the trim the previewed AI Chat proposal gives the open clip, dashed on the
+ * rail in their own element, which never takes the pointer. Hidden when the proposal leaves its
+ * times as they are; the Sequence tab states the old and new times in words.
+ */
+function drawGhost(c = current()) {
+  const el = $('#railGhost');
+  const w = c && S.view?.id === c.id ? S.view : null;
+  const to = w && S.proposal?.diff.find((r) => r.id === c.id)?.after;
+  el.hidden = !to || (to.start === c.start && to.end === c.end);
+  if (el.hidden) return;
+  const at = (t) => Math.max(0, Math.min(1, (t - w.lo) / (w.hi - w.lo)));
+  el.style.left = `${(at(to.start) * 100).toFixed(2)}%`;
+  el.style.width = `${((at(to.end) - at(to.start)) * 100).toFixed(2)}%`;
+  el.classList.toggle('cut-l', to.start < w.lo);
+  el.classList.toggle('cut-r', to.end > w.hi);
 }
 
 /** Move a trim point, clamped to its handle's range, through the same path as the time fields and "Use playhead". */
@@ -1603,6 +1647,7 @@ function addSeg(id) {
   const d = S.drafts[id];
   const c = cands().find((x) => x.id === id) ?? (d?.source && d);
   if (!c || S.segments.some((s) => s.id === id)) return;
+  remember();
   // A removed clip goes back to the index it had, clamped to the current length; clips moved or
   // removed since then shift it, which is simpler than tracking neighbours. New clips go last.
   const at = Math.min(d?.at ?? S.segments.length, S.segments.length);
@@ -1623,6 +1668,7 @@ function keepDraft(seg, at) {
 function removeSeg(id) {
   const at = S.segments.findIndex((s) => s.id === id);
   if (at < 0) return;
+  remember();
   keepDraft(S.segments[at], at);
   S.segments.splice(at, 1);
   renderAfterSeqChange();
@@ -1632,6 +1678,7 @@ function moveSeg(id, to) {
   const from = S.segments.findIndex((s) => s.id === id);
   to = Math.max(0, Math.min(S.segments.length - 1, to));
   if (from < 0 || from === to) return;
+  remember();
   const [seg] = S.segments.splice(from, 1);
   S.segments.splice(to, 0, seg);
   $('#seqLive').textContent = `${seg.label || seg.id} moved to position ${to + 1} of ${S.segments.length}`;
@@ -1651,6 +1698,49 @@ function changed() {
   renderSequence();
   renderSave();
   renderExport();
+}
+
+// ---------- undo ----------
+// One stack for every edit of the working sequence, by hand or applied from AI Chat (#346): a
+// snapshot of the segments and drafts before each one. Ctrl+Z undoes, Ctrl+Y or Shift+Ctrl+Z redoes.
+
+const UNDO_MAX = 50;
+const UNDO_JOIN_MS = 1000; // edits of one kind this close together (a held key, a drag) are one step
+const snapshot = () => ({ segments: structuredClone(S.segments), drafts: structuredClone(S.drafts) });
+
+/** Keep the sequence as it is before an edit; ``tag`` joins a quick run of the same edit (one trim point of one clip) into one step. */
+function remember(tag = null) {
+  const now = performance.now();
+  const last = S.undoTag;
+  S.undoTag = tag ? { tag, at: now } : null;
+  if (tag && last?.tag === tag && now - last.at < UNDO_JOIN_MS) return;
+  S.undo.push(snapshot());
+  if (S.undo.length > UNDO_MAX) S.undo.shift();
+  S.redo = [];
+  renderUndo();
+}
+
+/** Move one snapshot from ``from`` to the sequence, keeping the current one on ``to``. */
+function restore(from, to, done) {
+  if (!from.length) return;
+  to.push(snapshot());
+  const s = from.pop();
+  S.segments = s.segments;
+  S.drafts = s.drafts;
+  S.undoTag = null;
+  renderAfterSeqChange();
+  renderUndo();
+  $('#sideLive').textContent = done;
+}
+const undo = () => restore(S.undo, S.redo, 'Undone');
+const redo = () => restore(S.redo, S.undo, 'Redone');
+
+function renderUndo() {
+  const had = document.activeElement; // read first: disabling a focused button drops its focus
+  $('#undoBtn').disabled = !S.undo.length;
+  $('#redoBtn').disabled = !S.redo.length;
+  if (had?.disabled && (had.id === 'undoBtn' || had.id === 'redoBtn'))
+    ([$('#undoBtn'), $('#redoBtn')].find((b) => !b.disabled) ?? $('#seqTitle')).focus();
 }
 
 let dragId = null;
@@ -1771,6 +1861,7 @@ function finishRename(commit, input, inPlace = false) {
       input.closest('.seq-text').querySelector('.seq-rename-err').textContent = err;
       return;
     }
+    remember();
     seg.label = text;
     S.renaming = null;
     $('#seqLive').textContent = `Clip renamed to ${text}`;
@@ -1915,6 +2006,7 @@ async function removeSelected() {
   if (!n) return;
   const what = `${n} clip${n > 1 ? 's' : ''}`;
   if (!(await confirmAction(`Remove ${what} from the sequence?`, 'Only the sequence changes. No files are deleted.'))) return;
+  remember();
   S.segments.forEach((s, i) => S.selected.has(s.id) && keepDraft(s, i)); // as removeSeg
   S.segments = S.segments.filter((s) => !S.selected.has(s.id));
   S.selected.clear();
@@ -2072,6 +2164,7 @@ function renderSequence() {
   renderBatch();
   renderRemoved();
   renderSeqPlay();
+  renderProposal();
 }
 
 // ---------- play sequence ----------
@@ -2694,6 +2787,477 @@ function assembleOptions() {
   };
 }
 
+// ---------- AI Chat (#346) ----------
+// A turn is posted with the working sequence and polled like a job. The assistant only proposes: a
+// proposal is previewed (S.proposal: the Sequence tab, the moments list and ghost trim handles on
+// the rail) until Apply replaces the working sequence, which Save and Export use as before. Text
+// from the model or the project is only ever set as text (h()'s text, textContent), never as markup.
+
+const CHAT_POLL_MS = 1000;
+const MAX_SUGGESTIONS = 3; // suggestion buttons under a proposal
+const MAX_HISTORY_SHOWN = 20; // newest applied changes listed for Revert
+const PROVIDER_NAMES = { ollama: 'Ollama' };
+const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
+const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
+const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
+const momentName = (id) => (cands().find((c) => c.id === id) ?? S.segments.find((s) => s.id === id))?.label || id;
+const REVERT = 'revert-';
+const isRevert = (p) => p.id.startsWith(REVERT);
+/** The sequence a proposal was made on, from its diff's "before" rows, as [id, start, end] in order. */
+const baseOf = (diff) => JSON.stringify(diff.filter((r) => r.before).sort((a, b) => a.before.pos - b.before.pos)
+  .map((r) => [r.id, r.before.start, r.before.end]));
+/** The working sequence in the same shape. */
+const seqShape = () => JSON.stringify(S.segments.map((s) => [s.id, s.start, s.end]));
+/** A saved turn (chat.json) or a polled one, in one shape. */
+const chatTurn = (t) => ({ id: t.id, user: t.user ?? t.text ?? '', status: t.status, error: t.error, events: [...(t.events ?? [])] });
+const arrow = () => [h('span', { 'aria-hidden': 'true', text: ' → ' }), h('span', { class: 'vh', text: ' to ' })];
+
+/** "2 added, 1 trimmed" for a proposal's diff. */
+function changeCounts(diff) {
+  const n = {};
+  for (const r of diff ?? []) for (const c of r.changes) n[c] = (n[c] ?? 0) + 1;
+  return Object.keys(CHANGE_NAMES).filter((c) => n[c]).map((c) => `${n[c]} ${CHANGE_NAMES[c]}`).join(', ') || 'no change';
+}
+
+/** The open project's chat, the turn still running (polled on) and the applied changes. */
+async function loadAssistant() {
+  const pid = S.id;
+  clearTimeout(S.chatTimer);
+  S.turn = null;
+  const chat = S.chat = pid ? { pid, provider: null, turns: [], error: '', loaded: false } : null;
+  S.history = [];
+  chatError('');
+  renderChat();
+  if (!chat) return;
+  try {
+    const [a, hist] = await Promise.all([api(aiUrl()), api(aiUrl('/history'))]);
+    if (S.chat !== chat) return; // another project opened meanwhile
+    chat.provider = a.provider;
+    chat.turns = (a.turns ?? []).map(chatTurn);
+    S.history = hist.applied ?? [];
+    const run = a.running?.[0];
+    if (run) {
+      chat.turns.push(chatTurn(run));
+      S.turn = { id: run.id, next: run.next };
+      S.chatTimer = setTimeout(pollTurn, CHAT_POLL_MS);
+    }
+  } catch (e) {
+    if (S.chat !== chat) return;
+    chat.error = e.message;
+  }
+  chat.loaded = true; // Send waits for this: the saved turns would replace one sent meanwhile
+  renderChat();
+}
+
+function chatError(text) {
+  $('#chatError').textContent = text;
+}
+
+async function sendChat(e) {
+  e.preventDefault();
+  const input = $('#chatInput');
+  const text = input.value.trim();
+  const chat = S.chat;
+  if (S.turn) chatError('The assistant is still answering: wait for it, or cancel it.');
+  if (!text || !chat?.loaded || S.turn || S.sending) return;
+  S.sending = true;
+  chatError('');
+  renderChatForm();
+  try {
+    const t = await api(aiUrl('/turns'), { method: 'POST', body: { text, segments: JSON.parse(key()) } });
+    if (S.chat !== chat) return;
+    input.value = '';
+    // its events, even those already in this answer, come in through pollTurn, which acts on them
+    chat.turns.push(chatTurn({ ...t, status: 'running', events: [] }));
+    if (t.provider) chat.provider = t.provider;
+    S.turn = { id: t.id, next: 0 };
+    $('#chatLive').textContent = 'Sent. The assistant is answering.';
+    S.chatTimer = setTimeout(pollTurn, t.status === 'running' ? CHAT_POLL_MS : 0);
+  } catch (err) {
+    if (S.chat === chat) chatError(err.message);
+  } finally {
+    S.sending = false;
+    renderChat();
+    if (document.activeElement === document.body) input.focus(); // the Send button was disabled under it
+  }
+}
+
+async function pollTurn() {
+  clearTimeout(S.chatTimer);
+  const run = S.turn;
+  const chat = S.chat;
+  if (!run || !chat || S.expired) return;
+  const t = chat.turns.find((x) => x.id === run.id);
+  try {
+    const v = await api(aiUrl(`/turns/${encodeURIComponent(run.id)}?after=${run.next}`));
+    if (S.turn !== run) return; // cancelled, cleared or another project meanwhile
+    const news = v.events.length > 0 || v.status !== t.status;
+    t.events.push(...v.events);
+    t.status = v.status;
+    t.error = v.error;
+    run.next = v.next;
+    if (v.provider) chat.provider = v.provider;
+    for (const ev of v.events) onChatEvent(ev);
+    if (v.status !== 'running') {
+      S.turn = null;
+      chatError(''); // a "still answering" or a failed poll no longer applies
+      $('#chatLive').textContent = turnNews(t);
+    }
+    if (news) renderChat();
+  } catch (e) {
+    if (S.turn !== run) return;
+    if (e.status === 404) { // the server restarted without it
+      S.turn = null;
+      t.status = 'failed';
+      t.error = 'The server no longer has this reply. Ask again.';
+      $('#chatLive').textContent = t.error;
+      renderChat();
+    } else chatError(e.message); // polling goes on
+  }
+  if (S.turn === run) S.chatTimer = setTimeout(pollTurn, CHAT_POLL_MS);
+}
+
+/** A new event of the polled turn: shown moments are highlighted, a proposal is previewed at once. */
+function onChatEvent(ev) {
+  if (ev.kind === 'show') {
+    S.shown = new Set(ev.ids);
+    markMoments();
+  } else if (ev.kind === 'proposal') previewProposal(ev);
+}
+
+/** What the live region says when a turn ends. */
+function turnNews(t) {
+  const last = [...t.events].reverse().find((e) => ['reply', 'proposal', 'error'].includes(e.kind));
+  if (t.status === 'cancelled') return 'Reply cancelled.';
+  if (last?.kind === 'proposal') return `Proposed: ${last.summary}. It is previewed in the Sequence tab.`;
+  if (last) return last.text;
+  return t.error || 'The assistant gave no answer.';
+}
+
+async function cancelTurn() {
+  const run = S.turn;
+  if (!run) return;
+  try {
+    const v = await api(aiUrl(`/turns/${encodeURIComponent(run.id)}/cancel`), { method: 'POST' });
+    if (S.turn !== run) return;
+    S.turn = null;
+    clearTimeout(S.chatTimer);
+    const t = S.chat.turns.find((x) => x.id === run.id);
+    Object.assign(t, chatTurn(v));
+    $('#chatLive').textContent = turnNews(t);
+    renderChat();
+    $('#chatInput').focus(); // the Cancel button is gone
+  } catch (e) {
+    chatError(e.message);
+  }
+}
+
+async function clearChat() {
+  const chat = S.chat;
+  if (!chat) return;
+  if (!(await confirmAction('Clear the chat?', 'The conversation is deleted. Changes you applied stay in the sequence, and Applied changes keeps them for reverting.', 'Clear chat'))) return;
+  try {
+    await api(aiUrl('/chat'), { method: 'DELETE' });
+    if (S.chat !== chat) return;
+    clearTimeout(S.chatTimer);
+    S.turn = null;
+    chat.turns = [];
+    S.shown = null;
+    if (S.proposal && !isRevert(S.proposal)) S.proposal = null; // its turn is gone: it can no longer be applied; no edit is undone
+    if (S.pendingProposal && !isRevert(S.pendingProposal)) S.pendingProposal = null;
+    chatError('');
+    renderProposal();
+    renderChat();
+    $('#chatLive').textContent = 'Chat cleared. Applied changes stay.';
+    $('#chatInput').focus();
+  } catch (e) {
+    chatError(e.message);
+  }
+}
+
+/** Preview proposal ``p`` ({id, summary, after, diff}), without changing the working sequence. */
+function previewProposal(p) {
+  if (S.applying) { // the page is waiting for Apply's answer: this one comes next
+    S.pendingProposal = p;
+    return;
+  }
+  S.proposal = { id: p.id, summary: p.summary, after: p.after, diff: p.diff, base_key: p.base_key, seqKey: baseOf(p.diff) };
+  $('#propMsg').textContent = '';
+  renderProposal();
+}
+
+/** A button's preview: in the Sequence tab, which gets the focus. */
+function reviewProposal(p) {
+  previewProposal(p);
+  renderChat();
+  showTab('sequence');
+  $('#propTitle').focus();
+}
+
+/** The Sequence tab's preview of S.proposal, the marks in the moments list and the rail's ghost handles. */
+function renderProposal() {
+  const p = S.proposal;
+  $('#panelSequence').classList.toggle('previewing', !!p);
+  $('#propPanel').hidden = !p;
+  if (p) {
+    $('#propSummary').textContent = p.summary;
+    const note = $('#propNote');
+    note.hidden = seqShape() === p.seqKey;
+    note.textContent = isRevert(p)
+      ? 'The sequence changed since this preview. Apply previews the revert again on the sequence as it is now.'
+      : 'The sequence changed since this was proposed. Apply makes the same edits to the sequence as it is now, if they still fit.';
+    preserveFocus(() => $('#propList').replaceChildren(...p.diff.map(propRow)));
+  }
+  renderPropBar();
+  markMoments();
+  drawGhost();
+}
+
+function renderPropBar() {
+  $('#propApply').disabled = !S.proposal || S.applying;
+  $('#propApply').textContent = S.applying ? 'Applying…' : 'Apply';
+  $('#propDiscard').disabled = !S.proposal || S.applying;
+}
+
+/** One row of the previewed sequence, with its change in words: Added, Removed, Moved 3 → 1, Trimmed 0:10.00–0:18.00 → .... */
+function propRow(r) {
+  const name = r.label || momentName(r.id);
+  const at = r.after ?? r.before;
+  const span = (s) => `${fmt(s.start)}–${fmt(s.end)}`;
+  const marks = r.changes.map((c) => h('span', { class: `prop-mark ${c}` },
+    c === 'moved' ? ['Moved ', String(r.before.pos), ...arrow(), String(r.after.pos)]
+      : c === 'trimmed' ? ['Trimmed ', span(r.before), ...arrow(), span(r.after)]
+        : c === 'relabelled' ? ['Renamed “', r.before.label, '”', ...arrow(), '“', r.after.label, '”']
+          : c === 'added' ? 'Added' : 'Removed'));
+  return h('li', { class: ['prop', ...r.changes].join(' '), 'data-id': r.id },
+    h('button', { type: 'button', class: 'prop-main', 'data-act': 'focus', onclick: () => focusMoment(r.id) },
+      h('span', { class: 'rank tc', text: r.after ? String(r.after.pos) : '–' }),
+      h('span', { class: 'prop-text' },
+        h('span', { class: 'prop-title', text: name }),
+        h('span', { class: 'prop-time tc', text: `${fmt(at.start)} to ${fmt(at.end)}, ${(at.end - at.start).toFixed(1)} s` }),
+        marks.length ? h('span', { class: 'prop-marks' }, marks) : null)));
+}
+
+/** Mark the moments the assistant showed or its proposal changes, by class only: the list itself is renderMoments'. */
+function markMoments() {
+  const rows = new Map((S.proposal?.diff ?? []).map((r) => [r.id, r.changes]));
+  for (const li of $('#candList').children) {
+    const id = li.dataset.id;
+    const ch = rows.get(id) ?? [];
+    li.classList.toggle('ai-shown', !!id && !!S.shown?.has(id));
+    li.classList.toggle('ai-added', ch.includes('added'));
+    li.classList.toggle('ai-removed', ch.includes('removed'));
+    li.classList.toggle('ai-changed', ch.some((c) => c === 'moved' || c === 'trimmed' || c === 'relabelled'));
+  }
+}
+
+/** Swap the working sequence for ``after``, keeping drafts of the clips it drops, as removeSeg does. */
+function replaceSequence(after) {
+  const ids = new Set(after.map((s) => s.id));
+  S.segments.forEach((s, i) => !ids.has(s.id) && keepDraft(s, i));
+  for (const s of after) delete S.drafts[s.id];
+  S.segments = structuredClone(after);
+}
+
+async function applyProposal() {
+  const p = S.proposal;
+  if (!p || S.applying) return;
+  const pid = S.id;
+  S.applying = true;
+  $('#propMsg').textContent = '';
+  renderPropBar();
+  try {
+    // The server checks it against the sequence as it is now; a changed one gets the same edits again.
+    const entry = await api(aiUrl(`/proposals/${encodeURIComponent(p.id)}/applied`), { method: 'POST', body: { segments: JSON.parse(key()), base_key: p.base_key } });
+    if (S.id !== pid || S.proposal !== p) return;
+    remember();
+    replaceSequence(entry.after);
+    S.proposal = null;
+    S.history.push(entry);
+    renderAfterSeqChange();
+    renderChat();
+    $('#sideLive').textContent = `${entry.rebased ? 'Applied to the sequence as it is now' : 'Applied'}: ${p.summary}. Ctrl+Z undoes it.`;
+    $('#seqTitle').focus(); // the preview and its buttons are gone
+  } catch (e) {
+    if (S.proposal !== p) return;
+    if (isRevert(p) && e.status === 409 && e.message.includes('preview it again')) {
+      S.applying = false; // revertChange previews the new one at once
+      const err = await revertChange({ id: p.id.slice(REVERT.length) });
+      if (!err) S.pendingProposal = null; // the revert just previewed again stays in view
+      if (err && S.proposal === p) $('#propMsg').textContent = `Can't apply: ${err}. Discard it.`;
+      else if (!err) $('#sideLive').textContent = 'The sequence changed since that preview: the revert is previewed again on it. Check it, then Apply.';
+      return;
+    }
+    $('#propMsg').textContent = e.status === 409 ? `Can't apply: ${e.message}. Discard it, or ask the assistant again.`
+      : e.status === 404 ? 'The assistant no longer has this proposal (the chat was cleared or the server restarted). Discard it and ask again.'
+        : e.message;
+  } finally {
+    S.applying = false;
+    const next = S.pendingProposal;
+    S.pendingProposal = null;
+    if (next && S.id === pid) previewProposal(next);
+    else renderPropBar();
+  }
+}
+
+function discardProposal() {
+  if (!S.proposal || S.applying) return;
+  S.proposal = null;
+  renderProposal();
+  renderChat();
+  $('#sideLive').textContent = 'Proposed change discarded';
+  $('#seqTitle').focus();
+}
+
+/** History > Revert this change: a proposal back to the change's "before", previewed like any other.
+ * Returns the error's message, or '' once previewed. */
+async function revertChange(entry) {
+  const chat = S.chat;
+  chatError('');
+  try {
+    const p = await api(aiUrl(`/history/${encodeURIComponent(entry.id)}/revert`), { method: 'POST', body: { segments: JSON.parse(key()) } });
+    if (S.chat === chat) reviewProposal(p);
+    return '';
+  } catch (e) {
+    if (S.chat === chat) chatError(e.message);
+    return e.message;
+  }
+}
+
+const TOOL_TEXT = {
+  find_moments: (ev) => `Searched for “${ev.query}”: ${ev.found} found`,
+  get_moment: (ev) => `Looked at ${momentName(ev.id)}`,
+  get_transcript: (ev) => `Read the transcript around ${momentName(ev.id)}`,
+};
+
+/** Chat bubbles of turn ``t``: the user's message, then the model's steps, its answer and its proposals. */
+function turnItems(t) {
+  const items = [h('li', { class: 'msg user', 'data-id': `${t.id}-u` }, h('span', { class: 'vh', text: 'You: ' }), h('p', { text: t.user }))];
+  let query = '';
+  for (const ev of t.events) {
+    const id = `${t.id}-${ev.n}`;
+    if (ev.kind === 'tool') {
+      if (ev.name === 'find_moments') query = ev.query;
+      items.push(h('li', { class: 'msg step', 'data-id': id, text: (TOOL_TEXT[ev.name] ?? (() => ev.name))(ev) }));
+    } else if (ev.kind === 'show') items.push(showItem(ev, id, query));
+    else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), h('p', { text: ev.text })));
+    else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
+    else if (ev.kind === 'error') items.push(h('li', { class: 'msg ai bad', 'data-id': id, text: ev.text }));
+  }
+  if (t.status === 'running')
+    items.push(h('li', { class: 'msg ai pending', 'data-id': `${t.id}-run` },
+      h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', { text: 'Thinking…' }),
+      h('button', { type: 'button', class: 'btn small', 'data-act': 'cancel', onclick: cancelTurn, text: 'Cancel' })));
+  else if (t.status === 'cancelled') items.push(h('li', { class: 'msg step', 'data-id': `${t.id}-x`, text: 'Cancelled.' }));
+  else if (t.error && !t.events.some((e) => e.kind === 'error')) items.push(h('li', { class: 'msg ai bad', 'data-id': `${t.id}-x`, text: t.error }));
+  return items;
+}
+
+/** show_moments: the moments, highlighted in the list (a toggle) or, by the words the model searched for, filtered through the list's own filter. */
+function showItem(ev, id, query) {
+  const on = !!S.shown && S.shown.size === ev.ids.length && ev.ids.every((x) => S.shown.has(x));
+  const n = ev.ids.length;
+  return h('li', { class: 'msg ai', 'data-id': id },
+    h('span', { class: 'vh', text: 'Assistant: ' }),
+    h('p', { text: ev.note || `${n} moment${n > 1 ? 's' : ''} found` }),
+    h('p', { class: 'msg-meta', text: ev.ids.map(momentName).join(', ') }),
+    h('span', { class: 'msg-acts' },
+      h('button', {
+        type: 'button', class: 'btn small', 'data-act': 'show', 'aria-pressed': String(on),
+        onclick: () => {
+          S.shown = on ? null : new Set(ev.ids);
+          markMoments();
+          renderChat();
+        },
+      }, 'Highlight in list'),
+      query ? h('button', {
+        type: 'button', class: 'btn small', 'data-act': 'filter',
+        onclick: () => {
+          S.filter = query;
+          $('#filter').value = query;
+          renderMoments();
+          $('#chatLive').textContent = `Moments filtered by ${query}`;
+        },
+      }, `Filter list by “${query}”`) : null));
+}
+
+/** A proposal: its summary and changes, Review change (the preview in the Sequence tab) and up to three suggestions, previewed the same way. */
+function proposalItem(ev, id) {
+  const applied = S.history.some((e) => e.proposal === ev.id);
+  const previewing = S.proposal?.id === ev.id;
+  const state = applied ? ', applied' : previewing ? ', previewed in the Sequence tab' : '';
+  const sugs = (ev.suggestions ?? []).slice(0, MAX_SUGGESTIONS);
+  return h('li', { class: `msg ai proposal${previewing ? ' previewing' : ''}`, 'data-id': id },
+    h('span', { class: 'vh', text: 'Assistant proposes: ' }),
+    h('p', { text: ev.summary }),
+    h('p', { class: 'msg-meta', text: `${changeCounts(ev.diff)}${state}` }),
+    h('span', { class: 'msg-acts' },
+      h('button', { type: 'button', class: 'btn small primary', 'data-act': 'review', onclick: () => reviewProposal(ev) }, applied ? 'Review again' : 'Review change')),
+    sugs.length ? h('span', { class: 'msg-acts', role: 'group', 'aria-label': 'Suggestions' },
+      sugs.map((s, i) => h('button', {
+        type: 'button', class: `btn small outline${S.proposal?.id === s.id ? ' on' : ''}`, 'data-act': `suggest${i}`,
+        title: changeCounts(s.diff), onclick: () => reviewProposal(s),
+      }, s.summary))) : null);
+}
+
+function historyRow(entry) {
+  const when = String(entry.applied ?? '').replace('T', ' ').slice(0, 16);
+  return h('li', { class: 'history-row', 'data-id': entry.id },
+    h('span', { class: 'history-text' },
+      h('span', { text: entry.summary || 'Change' }),
+      h('span', { class: 'msg-meta tc', text: `${when}, ${changeCounts(entry.diff)}` })),
+    h('button', { type: 'button', class: 'btn small', 'data-act': 'revert', onclick: () => revertChange(entry) }, 'Revert this change'));
+}
+
+function renderChatForm() {
+  const ready = !!S.chat?.loaded && !!S.project?.highlights;
+  const send = $('#chatSend');
+  const had = document.activeElement;
+  $('#chatInput').disabled = !ready;
+  send.disabled = !ready || !!S.turn || S.sending;
+  if (had === send && send.disabled) $('#chatInput').focus();
+}
+
+function renderChat() {
+  const c = S.chat;
+  const prov = c?.provider;
+  $('#chatProvider').textContent = !c ? ''
+    : prov ? `${prov.label} (${PROVIDER_NAMES[prov.name] ?? prov.name})`
+      : c.error ? `Unavailable: ${c.error}` : 'Connecting…';
+  const note = $('#chatNote');
+  note.hidden = !prov?.local;
+  note.textContent = prov?.local ? SMALL_MODEL_NOTE : '';
+  $('#chatClear').disabled = !c?.turns.length;
+  const log = $('#chatLog');
+  const items = c ? c.turns.flatMap(turnItems) : [];
+  const col = log.closest('.col');
+  const atEnd = !col || col.scrollHeight - col.scrollTop - col.clientHeight < 24;
+  const count = log.children.length;
+  preserveFocus(() => log.replaceChildren(...(items.length ? items : [h('li', { class: 'msg step' },
+    !S.project ? 'Open a project to chat about its moments.'
+      : !S.project.highlights ? 'Analyze the footage first; the assistant works with its moments.'
+        : 'Ask for moments to find, add, remove, reorder or trim. Each change is previewed in the Sequence tab before you apply it.')])));
+  if (items.length && items.length !== count && atEnd && !$('#panelAssistant').hidden) revealRow(log.lastElementChild);
+  const shown = S.history.slice(-MAX_HISTORY_SHOWN).reverse();
+  $('#chatHistory').hidden = !shown.length;
+  $('#chatHistory summary').textContent = `Applied changes (${S.history.length})`;
+  preserveFocus(() => $('#historyList').replaceChildren(...shown.map(historyRow)));
+  renderChatForm();
+}
+
+function bindAssistant() {
+  $('#chatForm').addEventListener('submit', sendChat);
+  $('#chatInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      $('#chatForm').requestSubmit();
+    }
+  });
+  $('#chatClear').addEventListener('click', clearChat);
+  $('#propApply').addEventListener('click', applyProposal);
+  $('#propDiscard').addEventListener('click', discardProposal);
+}
+
 // ---------- jobs ----------
 
 async function pollJobs() {
@@ -2917,6 +3481,8 @@ function renderAll(seekToStart) {
   renderSave();
   renderExport();
   renderOutputs();
+  renderUndo();
+  renderChat();
 }
 
 /**
@@ -3072,9 +3638,10 @@ function initVolume() {
 }
 
 /**
- * The sequence column's tabs (Sequence, Export; more can be added as a button and a panel): click,
- * or arrow keys and Home/End on the focused tab, which select as they move (automatic activation).
- * The choice is remembered per browser; without storage it lasts the session.
+ * The sequence column's tabs (Sequence, AI Chat, Export; more can be added as a button and a panel):
+ * click, or arrow keys and Home/End on the focused tab, which select as they move (automatic
+ * activation). The choice is remembered per browser; without storage it lasts the session. Returns
+ * showTab(name, focus).
  */
 function initSideTabs() {
   const tabs = [...document.querySelectorAll('#side [role=tab]')];
@@ -3109,6 +3676,10 @@ function initSideTabs() {
     e.preventDefault();
     select(tabs[(next + tabs.length) % tabs.length], true);
   });
+  return (name, focus = false) => {
+    const tab = tabs.find((t) => t.dataset.tab === name);
+    if (tab && tab.getAttribute('aria-selected') !== 'true') select(tab, focus);
+  };
 }
 
 /**
@@ -3242,7 +3813,8 @@ function bind() {
   const toggleMute = initVolume();
   bindSettings();
   initNerdStats();
-  initSideTabs();
+  showTab = initSideTabs();
+  bindAssistant();
   S.savedOpts = initExportOptions();
   showPlaying(false);
   trimInputs.start = trimField('start', 'Clip Start');
@@ -3251,6 +3823,7 @@ function bind() {
     h('button', { type: 'button', class: 'btn small', id: 'resetBtn', hidden: true, onclick: () => {
       const c = current();
       if (!c?.cand) return;
+      remember();
       if (c.seg) {
         c.seg.start = c.cand.start;
         c.seg.end = c.cand.end;
@@ -3277,6 +3850,8 @@ function bind() {
     $('#seqLive').textContent = `${c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
   });
   $('#seqPlayBtn').addEventListener('click', () => (S.seqPlay ? seqStop() : seqStart()));
+  $('#undoBtn').addEventListener('click', undo);
+  $('#redoBtn').addEventListener('click', redo);
   $('#seqRemoveSel').addEventListener('click', removeSelected);
   $('#seqClearSel').addEventListener('click', () => {
     S.selected.clear();
@@ -3319,6 +3894,16 @@ function bind() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       saveReview().catch(fail);
+      return;
+    }
+    // Ctrl+Z / Ctrl+Y (Shift+Ctrl+Z): the sequence's undo stack, manual and AI edits alike; a text
+    // field keeps its own undo
+    const k = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'z' || k === 'y')
+      && !e.target.closest('input:not([type=range]):not([type=checkbox]):not([type=radio]),textarea,select,[contenteditable]')) {
+      e.preventDefault();
+      if (k === 'y' || e.shiftKey) redo();
+      else undo();
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;

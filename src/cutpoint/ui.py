@@ -130,6 +130,7 @@ MAX_TIMING_S = 60.0  # speech caps, tail lengths and the event window the page m
 MAX_TOTAL_S = 36000.0  # clips --max-total
 CLIP_ORDERS = ("story", "score", "chronological")  # clips --order without --mix
 EVENT_TAILS = {"auto": [], "on": ["--event-tails"], "off": ["--no-event-tails"]}
+REVERT = "revert-"  # proposal id prefix: put back the "before" of an applied assistant change
 # A stopped job gets this long before the hard kill: its own soft stop waits SOFT_STOP_S for
 # ffmpeg, then kills it and waits SOFT_STOP_S again, and only then removes the partial file;
 # the rest is for that removal and the interpreter's exit (#257).
@@ -3067,6 +3068,16 @@ def create_app(port: int) -> FastAPI:
             raise bad("unknown turn", 404)
         return turn
 
+    def assistant_revert(p: Path, hid: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """``(history entry, its "before" checked again)``: what Revert puts back."""
+        entry = next((e for e in ai_store.history(p) if e.get("id") == hid), None)
+        if entry is None:
+            raise bad("unknown change", 404)
+        try:
+            return entry, validate_segments(entry.get("before"), sources.entries(p), media)
+        except HTTPException as err:
+            raise bad(f"this change can no longer be reverted: {err.detail}", 409) from err
+
     @owned.get("/projects/{pid}/assistant")
     def get_assistant(pid: str):
         """The provider in use, the saved chat and the turn still running, if any."""
@@ -3121,20 +3132,34 @@ def create_app(port: int) -> FastAPI:
     def proposal_applied(pid: str, prop: str, body: dict[str, Any]):
         """Record that the page applied proposal ``prop`` to its working sequence ``segments``
         (as it was before). When those or the analysis changed since the proposal was made, its
-        ops are applied again to them; the result's ``after`` is the sequence to show."""
+        ops are applied again to them; the result's ``after`` is the sequence to show.
+        ``revert-<id>`` (from ``history/<id>/revert``) puts back the "before" of applied change
+        ``<id>``; ``base_key`` (from that preview) must still match ``segments``, else 409."""
         p = project_dir(pid)
-        found = next(
-            ((t.id, hit) for t in turns.of(str(p)) if (hit := t.proposal(prop)) is not None), None
-        )
-        if found is None and (saved := ai_store.find_proposal(p, prop)) is not None:
-            found = (saved[0].get("id"), saved[1])
+        if prop.startswith(REVERT):
+            undone, back = assistant_revert(p, prop.removeprefix(REVERT))
+            found = (undone.get("turn"), {"summary": f"Revert: {undone.get('summary', '')}"})
+        else:
+            back = None
+            found = next(
+                ((t.id, hit) for t in turns.of(str(p)) if (hit := t.proposal(prop)) is not None),
+                None,
+            )
+            if found is None and (saved := ai_store.find_proposal(p, prop)) is not None:
+                found = (saved[0].get("id"), saved[1])
         if found is None:
             raise bad("unknown proposal", 404)
         tid, proposal = found
         before = validate_segments(body.get("segments"), sources.entries(p), media)
         moments, durations, key = assistant_state(p, before)
         after, changes, rebased = proposal.get("after"), proposal.get("diff"), False
-        if key != proposal.get("base_key"):
+        if back is not None:
+            if body.get("base_key") != key:
+                raise bad(
+                    "the sequence changed since this revert was previewed: preview it again", 409
+                )
+            after, changes = back, ai_ops.diff(before, back)
+        elif key != proposal.get("base_key"):
             out = ai_ops.apply_ops(before, proposal.get("ops"), moments, durations)
             if out.error:
                 raise bad(f"the proposal no longer applies to this sequence: {out.error}", 409)
@@ -3168,6 +3193,25 @@ def create_app(port: int) -> FastAPI:
     @owned.get("/projects/{pid}/assistant/history")
     def get_history(pid: str):
         return {"applied": ai_store.history(project_dir(pid))}
+
+    @owned.post("/projects/{pid}/assistant/history/{hid}/revert")
+    def revert_change(pid: str, hid: str, body: dict[str, Any]):
+        """A proposal that puts the working sequence ``segments`` back as it was before applied
+        change ``hid``, to preview; applying it goes through ``proposals/<id>/applied`` with the
+        ``base_key`` returned here. Writes nothing."""
+        p = project_dir(pid)
+        entry, back = assistant_revert(p, hid)
+        now = validate_segments(body.get("segments"), sources.entries(p), media)
+        changes = ai_ops.diff(now, back)
+        if not any(row["changes"] for row in changes):
+            raise bad("the sequence is already as it was before this change", 409)
+        return {
+            "id": f"{REVERT}{hid}",
+            "summary": f"Revert: {entry.get('summary', '')}",
+            "after": back,
+            "diff": changes,
+            "base_key": assistant_state(p, now)[2],
+        }
 
     api.include_router(secure)
     api.include_router(owned)

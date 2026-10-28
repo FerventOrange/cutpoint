@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
 from cutpoint import cache, cli, config, edit, encode, ffmpeg_utils, ui
+from cutpoint.assistant import session as ai_session
 from cutpoint.utils import find_videos
 
 PORT = 8765
@@ -5363,24 +5364,30 @@ def _web(name: str) -> str:
 
 
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
-    """Contract pin (#462): the column has a Sequence and an Export tab, each controlling a
-    labelled tabpanel; only the selected tab is in the tab order (roving tabindex)."""
+    """Contract pin (#462, #346): the column has a Sequence, an AI Chat and an Export tab, each
+    controlling a labelled tabpanel; only the selected tab is in the tab order (roving
+    tabindex)."""
     html = _web("index.html")
     (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
     tabs = re.findall(r"<button\b[^>]*>", tablist)
-    assert len(tabs) == 2 and all('role="tab"' in t for t in tabs)
+    assert len(tabs) == 3 and all('role="tab"' in t for t in tabs)
     panels = dict(
         re.findall(r'<div id="(\w+)"[^>]*role="tabpanel"[^>]*aria-labelledby="(\w+)"', html)
     )
-    assert panels == {"panelSequence": "tabSequence", "panelExport": "tabExport"}
+    assert panels == {
+        "panelSequence": "tabSequence",
+        "panelAssistant": "tabAssistant",
+        "panelExport": "tabExport",
+    }
     for tab in tabs:
         tab_id = re.search(r'id="(\w+)"', tab)[1]
         controls = re.search(r'aria-controls="(\w+)"', tab)[1]
         assert panels[controls] == tab_id  # tab and panel name each other
-    assert 'aria-selected="true"' in tabs[0] and 'aria-selected="false"' in tabs[1]
-    assert "tabindex" not in tabs[0] and 'tabindex="-1"' in tabs[1]
-    export_panel = re.search(r'<div id="panelExport"[^>]*>', html)[0]
-    assert " hidden" in export_panel  # Sequence is the tab shown first
+    assert 'aria-selected="true"' in tabs[0]
+    assert all('aria-selected="false"' in t and 'tabindex="-1"' in t for t in tabs[1:])
+    assert "tabindex" not in tabs[0]
+    for later in ("panelAssistant", "panelExport"):
+        assert " hidden" in re.search(rf'<div id="{later}"[^>]*>', html)[0]  # Sequence first
     js = _web("app.js")
     assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
 
@@ -6008,3 +6015,147 @@ def test_the_export_tab_offers_the_presets_and_asks_before_replacing() -> None:
     )
     assert "startJob('edit', body)" in make and "preset_taken" in make
     assert "p?.preset_problem" in js and "#presetWhy" in js
+
+
+# --- Web contract pins for the AI Chat tab (#346) ---
+
+
+def _chat_js() -> str:
+    """app.js's AI Chat section."""
+    js = _web("app.js")
+    return js[js.index("// ---------- AI Chat (#346)") : js.index("// ---------- jobs")]
+
+
+def _js_function(js: str, name: str) -> str:
+    """The body of top-level function ``name`` in ``js``."""
+    found = re.search(rf"^(?:async )?function {name}\((.*?)\) \{{\n(.*?)^\}}", js, re.M | re.S)
+    assert found, name
+    return found[2]
+
+
+def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
+    """Contract pin (#346): an AI Chat tab beside Sequence; the panel names the assistant, has a
+    Clear chat button, one labelled input limited as the server limits it, one send button and
+    no mic or attach button; replies are announced from outside the panels, so a hidden tab's
+    reply is still read out.
+
+    Check in a browser (no browser in the test suite): in Blue, Light and Dark, at a 290 px
+    column and in the narrow layout, the input stays at the bottom and nothing overflows."""
+    html = _web("index.html")
+    tab = re.search(r'<button\b[^>]*id="tabAssistant"[^>]*>([^<]*)</button>', html)
+    assert tab and 'role="tab"' in tab[0] and tab[1] == "AI Chat"
+    panel = re.search(r'<div id="panelAssistant".*?\n      </div>\n', html, re.S)[0]
+    assert re.search(r'<h2 id="chatTitle"[^>]*>AI Assistant</h2>', panel)
+    assert re.search(r'<button type="button" id="chatClear"[^>]*>Clear chat</button>', panel)
+    buttons = re.findall(r"<button\b[^>]*>[^<]*</button>", panel)
+    assert [b for b in buttons if 'type="submit"' in b] == [
+        '<button type="submit" id="chatSend" class="btn primary" disabled>Send</button>'
+    ]
+    assert len(buttons) == 2  # Clear chat and Send; no mic, no attach
+    assert not re.search(r"\b(mic|microphone|attach|voice)\b", panel, re.I)
+    fields = re.findall(r"<(?:input|textarea)\b[^>]*>", panel)
+    assert len(fields) == 1 and 'id="chatInput"' in fields[0]
+    assert f'maxlength="{ai_session.MAX_TEXT}"' in fields[0]
+    assert '<label for="chatInput"' in panel
+    side = re.search(r'<section class="col side".*?</section>\s*</main>', html, re.S)[0]
+    live = '<p id="chatLive" class="vh" role="status"></p>'
+    assert live in side and side.index(live) < side.index('<div id="panelSequence"')
+    chat = _chat_js()
+    assert "$('#chatLive').textContent = turnNews(t)" in chat
+    assert "PROVIDER_NAMES[prov.name]" in chat and "prov?.local" in chat  # the small-model note
+
+
+def test_model_text_is_never_set_as_markup() -> None:
+    """Contract pin (#346): replies, summaries, labels and notes come from the model or the
+    project; the page sets them as text only (h()'s ``text`` or textContent)."""
+    sinks = ("innerHTML", "outerHTML", "insertAdjacentHTML", "DOMParser", "document.write")
+    for name in ("app.js", "util.js", "api.js", "picker.js"):
+        js = _web(name)
+        for sink in sinks:
+            assert sink not in js, (name, sink)
+    chat = _chat_js()
+    assert "h('p', { text: ev.text })" in chat and "h('p', { text: ev.summary })" in chat
+    assert "$('#propSummary').textContent = p.summary;" in chat
+    assert "else if (k === 'text') el.textContent = v;" in _web("util.js")
+
+
+def test_a_proposal_is_previewed_before_it_replaces_the_working_sequence() -> None:
+    """Contract pin (#346): a proposal only sets S.proposal, which the Sequence tab previews with
+    its changes in words, the moments list marks by class and the rail shows as ghost handles
+    in their own element and function. Apply posts the working sequence and takes the server's
+    result (rebased, or a 409 in words); suggestions are at most three and preview the same
+    way; Save still uses S.segments only."""
+    html = _web("index.html")
+    js = _web("app.js")
+    chat = _chat_js()
+    assert "  proposal: null," in js
+    assert re.search(r'<button type="button" id="propApply"[^>]*>Apply</button>', html)
+    assert re.search(r'<button type="button" id="propDiscard"[^>]*>Discard</button>', html)
+    rail = re.search(r'<div class="rail" id="rail">.*?<div class="rail-ends', html, re.S)[0]
+    assert '<div class="rail-ghost" id="railGhost" aria-hidden="true" hidden></div>' in rail
+    draw = _js_function(js, "drawRail")
+    assert "drawGhost(c);" in draw and "railGhost" not in draw  # its own function
+    assert "$('#railGhost')" in _js_function(js, "drawGhost")
+    moments = _js_function(js, "renderMoments")
+    assert "markMoments();" in moments and "ai-" not in moments  # marked apart, by class
+    marks = _js_function(chat, "markMoments")
+    assert "classList.toggle" in marks and "replaceChildren" not in marks
+    on_event = _js_function(chat, "onChatEvent")
+    assert "previewProposal(ev)" in on_event and "S.segments" not in on_event
+    apply = _js_function(chat, "applyProposal")
+    assert (
+        "/applied`), { method: 'POST', body: { segments: JSON.parse(key()), base_key: p.base_key } }"
+        in apply
+    )
+    assert apply.index("await api(") < apply.index("remember();")
+    # "changed since" compares with the sequence the proposal was made on (its diff's "before"),
+    # not with the sequence when the preview opened
+    preview = _js_function(chat, "previewProposal")
+    assert "seqKey: baseOf(p.diff)" in preview and "key()" not in preview
+    assert "seqShape() === p.seqKey" in _js_function(chat, "renderProposal")
+    # while Apply waits: Discard is off and a new proposal waits for it
+    assert "S.pendingProposal = p;" in preview
+    assert "$('#propDiscard').disabled = !S.proposal || S.applying;" in chat
+    assert "previewProposal(next)" in apply
+    assert "revertChange(" in apply  # a revert previewed on an older sequence is previewed again
+    # ... and finally's pending proposal does not replace that new preview
+    again = apply.index("await revertChange(")
+    assert apply.index("if (!err) S.pendingProposal = null;", again) < apply.index("finally")
+    assert apply.index("remember();") < apply.index("replaceSequence(entry.after);")
+    assert "e.status === 409" in apply and "entry.rebased" in apply
+    assert "const MAX_SUGGESTIONS = 3;" in chat and ".slice(0, MAX_SUGGESTIONS)" in chat
+    assert "onclick: () => reviewProposal(s)" in chat  # a suggestion previews like a proposal
+    assert "'/turns'), { method: 'POST', body: { text, segments: JSON.parse(key()) } }" in chat
+    assert "?after=${run.next}" in chat and "/cancel`), { method: 'POST' }" in chat
+    revert = _js_function(chat, "revertChange")
+    assert "/revert`), { method: 'POST'" in revert and "reviewProposal(p)" in revert
+    # Send waits for the saved chat, which would otherwise replace a turn sent meanwhile
+    assert "!!S.chat?.loaded" in _js_function(chat, "renderChatForm")
+    assert "!chat?.loaded" in _js_function(chat, "sendChat")
+    clear = _js_function(chat, "clearChat")
+    assert "remember" not in clear and "S.segments" not in clear  # Clear chat never reverts
+    assert "proposal" not in _js_function(js, "saveReview")
+
+
+def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
+    """Contract pin (#346): every edit of the working sequence (add, remove, move, trims,
+    rename, batch remove, Apply) first pushes a snapshot of the segments and drafts onto one
+    stack of at most 50; Ctrl+Z undoes, Ctrl+Y or Shift+Ctrl+Z redoes; text fields keep their
+    own undo."""
+    html = _web("index.html")
+    js = _web("app.js")
+    assert "  undo: []," in js and "  redo: []," in js and "const UNDO_MAX = 50;" in js
+    assert "if (S.undo.length > UNDO_MAX) S.undo.shift();" in js
+    snap = re.search(r"const snapshot = \(\) => \(\{(.*?)\}\);", js)[1]
+    assert "structuredClone(S.segments)" in snap and "structuredClone(S.drafts)" in snap
+    for name in ("addSeg", "removeSeg", "moveSeg", "removeSelected", "finishRename"):
+        assert "remember();" in _js_function(js, name), name
+    assert "remember(`trim:${c.id}:${which}`)" in _js_function(js, "setRange")
+    assert "remember();" in _js_function(js, "applyProposal")
+    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("if (e.key === '[' || e.key === ']')")]
+    assert "(k === 'z' || k === 'y')" in keys and "textarea" in keys
+    assert "if (k === 'y' || e.shiftKey) redo();" in keys and "else undo();" in keys
+    for bid, shortcut in (("undoBtn", "Control+Z"), ("redoBtn", "Control+Y Control+Shift+Z")):
+        assert re.search(
+            rf'<button type="button" id="{bid}"[^>]*aria-keyshortcuts="{re.escape(shortcut)}"', html
+        )
