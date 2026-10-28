@@ -57,12 +57,31 @@ def test_filter_names_reads_ffmpeg_filters_output():
 # -- the conversion chain ------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("tags", "tin"), [(HLG, "arib-std-b67"), (PQ, "smpte2084")])
-def test_hdr_source_is_tone_mapped_to_bt709(tags, tin):
-    vf = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **tags), BOTH)
-    assert vf.startswith(f"zscale=tin={tin}:pin=bt2020:min=bt2020nc:t=linear:npl=100:p=bt709,")
-    assert "format=gbrpf32le,tonemap=tonemap=hable:desat=0," in vf
-    assert vf.endswith("zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv")
+def test_pq_source_is_tone_mapped_to_bt709_with_hable():
+    vf = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **PQ), BOTH)
+    assert vf == (  # unchanged by #449, so PQ proxies and stills keep their names
+        "zscale=tin=smpte2084:pin=bt2020:min=bt2020nc:t=linear:npl=100:p=bt709,"
+        "format=gbrpf32le,tonemap=tonemap=hable:desat=0,"
+        "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
+    )
+
+
+def test_hlg_source_is_tone_mapped_with_mobius_at_diffuse_white():
+    """#449: hable at npl=100 was 16 % darker than the bt.2390 reference on real HLG."""
+    vf = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **HLG), BOTH)
+    assert vf == (
+        "zscale=tin=arib-std-b67:pin=bt2020:min=bt2020nc:t=linear:npl=203:p=bt709,"
+        "format=gbrpf32le,tonemap=tonemap=mobius:param=0.5:peak=4.926:desat=0,"
+        "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
+    )
+
+
+@pytest.mark.parametrize("tags", [HLG, PQ])
+def test_hdr_preview_and_still_use_the_export_tone_map(tags):
+    info = media_info(pix_fmt="yuv420p10le", **tags)
+    sdr = encode.sdr_filter(info, BOTH)
+    assert encode.preview_filter(info, BOTH) == sdr
+    assert encode.still_filter(info, BOTH).startswith(f"{sdr},colorspace=all=bt470bg:")
 
 
 def test_hdr_source_without_primaries_or_matrix_tags_is_read_as_bt2020():
@@ -306,11 +325,11 @@ def _export_args(monkeypatch, info, kind: str = "cpu") -> list[str]:
     return calls[0]
 
 
-@pytest.mark.parametrize("tags", [HLG, PQ])
-def test_hdr_export_tone_maps_and_tags_the_output_bt709(monkeypatch, tags):
+@pytest.mark.parametrize(("tags", "curve"), [(HLG, "mobius:param=0.5:peak=4.926"), (PQ, "hable")])
+def test_hdr_export_tone_maps_and_tags_the_output_bt709(monkeypatch, tags, curve):
     args = _export_args(monkeypatch, media_info(pix_fmt="yuv420p10le", **tags))
     graph = args[args.index("-filter_complex") + 1]
-    assert ",tonemap=tonemap=hable:desat=0," in graph
+    assert f",tonemap=tonemap={curve}:desat=0," in graph
     assert graph.index("tonemap") < graph.index("format=yuv420p")
     i = args.index("-color_range")
     assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
