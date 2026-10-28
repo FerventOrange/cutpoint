@@ -813,3 +813,22 @@ def test_icon_kill_in_still_gameplay_is_kept(tmp_path: Path, monkeypatch, end: f
     events, _ = _run(tmp_path, monkeypatch, engine, preset, still=lambda t: 20 <= t < 40)
     kills = [(e["killer"], e["victim"], e["t"]) for e in events if e["type"] == "kill"]
     assert kills == [("Alder", "Boxer7", 24.0)]
+
+
+# --------------------------------------------------------------------------- menu spans (#440)
+
+
+def test_menu_frames_are_recorded_as_spans(tmp_path: Path, monkeypatch) -> None:
+    """The menu frames are kept as merged [start, end] spans with the cached result."""
+    _, stats = _run(tmp_path, monkeypatch, _Engine())
+    assert stats["menu_frames"] == 30
+    assert stats["menu_spans"] == [[20.0, 30.0]]  # 20-29.67 s at 3 fps, one frame each
+    assert _run(tmp_path, monkeypatch, None)[1]["menu_spans"] == [[20.0, 30.0]]  # cached
+
+
+def test_no_menu_gives_no_spans(tmp_path: Path, monkeypatch) -> None:
+    def gameplay(t: float) -> list[tuple[str, float, float]]:
+        return [("Hold", 900, 820)]
+
+    _, stats = _run(tmp_path, monkeypatch, _Engine(gameplay))
+    assert stats["menu_frames"] == 0 and stats["menu_spans"] == []

@@ -36,6 +36,7 @@ from cutpoint import cache, jsonout, progress
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.events import paths as event_paths
+from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import rescore
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
@@ -1818,6 +1819,7 @@ def _analyze(
         if style.kind != "ski":  # ski: the events are features of the scorer itself
             ev = cache.load_json(out_dir / "events.json")
         if ev:
+            drop_menu_time(hl, ev)
             changed = rescore(hl, ev, out_dir)
             logger.info(
                 "Rescored %d of %d candidates from events.json", changed, len(hl["candidates"])

@@ -34,6 +34,7 @@ from cutpoint import cache
 from cutpoint.events import ocr_raw
 from cutpoint.events.common import Source, layer_cache_path
 from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_frames
+from cutpoint.events.menu_spans import merge_menu_frames
 from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
 
@@ -95,7 +96,8 @@ class OcrParams:
 # 12: "row_notices" feeds without team colours read icon kill lines ("name [icon] name",
 # FeedParser._icon_line) and other rows as notices; icon kill events keep their most complete
 # names and are dropped on menu frames
-GENERIC_VERSION = 12
+# 13: menu frames are recorded as stats["menu_spans"] (#440)
+GENERIC_VERSION = 13
 
 
 # --------------------------------------------------------------------------- text utils
@@ -2508,6 +2510,7 @@ class OcrInterpretation:
             menu = {f["t"] for f in frames if rules[f["id"]] != "none"}
             tracker.drop_sightings(menu, keep=kept)
             stats["menu_frames"] = len(menu)
+            stats["menu_spans"] = merge_menu_frames(menu, self.interp.params.fps)
             stats["static_frames"] = sum(r == "static" for r in rules.values())
             stats["text_frames"] = sum(r == "text" for r in rules.values())
         events = tracker.finish()
@@ -2548,7 +2551,8 @@ def detect_ocr_events(
     (:func:`static_frames`; when that area is at least :data:`STATIC_MIN_AREA` of
     the frame), and after the pass the sightings in menu frames
     are forgotten.
-    No OCR runs for this; ``stats["menu_frames"]`` counts them, of which
+    No OCR runs for this; ``stats["menu_frames"]`` counts them (``stats["menu_spans"]``:
+    their ``[start, end]`` spans, :func:`~cutpoint.events.menu_spans.merge_menu_frames`), of which
     ``stats["static_frames"]`` held still and ``stats["text_frames"]`` showed many
     lines of new text that stay (:func:`text_frames`).
 

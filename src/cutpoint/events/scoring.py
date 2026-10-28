@@ -20,6 +20,7 @@ from typing import Any
 
 from cutpoint import cache, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
+from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.styles import get_style
 
 logger = logging.getLogger(__name__)
@@ -147,7 +148,8 @@ def style_and_base(name: str | None) -> tuple[str, ...]:
 
 
 def rescore_highlights(project: Path) -> int:
-    """Rescore ``<project>/highlights.json`` from ``events.json``.
+    """Rescore ``<project>/highlights.json`` from ``events.json``, after the candidates in
+    menu time are dropped or trimmed (:func:`~cutpoint.events.menu_spans.drop_menu_time`).
 
     The project's ``style`` (its name or, for a learned style, its base) gates
     event types limited to some styles. For a source with an event type whose
@@ -164,6 +166,7 @@ def rescore_highlights(project: Path) -> int:
     backup = project / "highlights.pre-events.json"
     if not backup.exists() and not hl.get("settings", {}).get("events_rescored"):
         cache.save_json(backup, hl)  # one-time copy of the untouched analysis
+    drop_menu_time(hl, ev)
     changed = rescore(hl, ev, project)
     cache.save_json(project / "highlights.json", hl)
     logger.info(

@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is case-insensitive, checked once per folder without writing to it; Windows is unchanged and
   case-sensitive folders keep `001_A` and `001_a` apart. A listed `.srt` renamed in case only is
   now replaced with its clip there too, as on Windows (#247).
+- Highlight candidates in game menus and lobbies are left out. `analyze`, and `events` when it
+  re-ranks `highlights.json`, drop a candidate with half or more of its time in the menu frames
+  the HUD OCR found, and trim one that starts or ends in a menu to its gameplay part when at least
+  the style's minimum clip length is left. The menu frames are recorded as
+  `stats.ocr.<source>.menu_spans` in `events.json`; HUD OCR results are re-interpreted once from
+  the raw OCR cache. Footage without menu frames gets the same candidates as before (#440).
 
 ## [0.3.0] - 2026-10-27
 

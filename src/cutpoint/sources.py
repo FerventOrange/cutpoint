@@ -137,10 +137,13 @@ def project_language(project: Path) -> str | None:
     return settings.get("language") if isinstance(settings, dict) else None
 
 
-def _transcript_file(cdir: Path, language: str | None = None) -> Path | None:
+def _transcript_file(
+    cdir: Path, language: str | None = None, model: str | None = None
+) -> Path | None:
     """The cached transcript in ``cdir`` to read, most accurate model first.
 
-    With ``language``, its ``transcript-<model>-<language>.json``; without (or when none
+    With ``model``, its ``transcript_name(model, language)`` first, when it exists. With
+    ``language``, its ``transcript-<model>-<language>.json``; without (or when none
     exists), a transcript of the detected language (``transcript-<model>.json``), and a
     file of a forced language only when there is no other.
     """
@@ -149,6 +152,8 @@ def _transcript_file(cdir: Path, language: str | None = None) -> Path | None:
         return None
     names = {f.name: f for f in files}
     language = language.lower() if language else None
+    if model and (f := names.get(transcript_name(model, language))) is not None:
+        return f
     if language:
         for model in TRANSCRIPT_MODELS:
             if (f := names.get(transcript_name(model, language))) is not None:
@@ -162,17 +167,20 @@ def _transcript_file(cdir: Path, language: str | None = None) -> Path | None:
     return (detected or files)[0]
 
 
-def source_segments(src: Path, language: str | None = None) -> list[dict[str, Any]] | None:
+def source_segments(
+    src: Path, language: str | None = None, model: str | None = None
+) -> list[dict[str, Any]] | None:
     """Cached transcript segments of ``src`` in absolute time (their words too),
     hallucinations dropped, or None if untranscribed.
 
     ``language``: the one the analysis forced (``analyze --language``); None reads the
-    transcript of the detected language (see :func:`_transcript_file`).
+    transcript of the detected language (see :func:`_transcript_file`). ``model``: the
+    Whisper model whose transcript to read first (the analysis's ``whisper_model``).
     """
     out: list[dict[str, Any]] = []
     found = False
     for p in parts(src):
-        f = _transcript_file(p.cdir, language)
+        f = _transcript_file(p.cdir, language, model)
         if f is None:
             continue
         segments = cache.load_json(f)
