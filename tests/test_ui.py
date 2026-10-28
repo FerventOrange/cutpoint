@@ -6487,6 +6487,24 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
         )
 
 
+def test_play_sequence_sits_under_undo_redo_at_a_fixed_width() -> None:
+    """Contract pin: Undo, Redo and Play sequence share one group in that order; Play spans both
+    columns, and a hidden ::after with its longer label keeps "Stop" from shrinking or moving it."""
+    html = _web("index.html")
+    css = _web("app.css")
+    js = _web("app.js")
+    group = re.search(r'<div class="seq-head-acts">(.*?)</div>', html, re.S)[1]
+    assert re.findall(r'id="(\w+)"', group) == ["undoBtn", "redoBtn", "seqPlayBtn"]
+    assert ".seq-head-acts { display: grid; grid-template-columns: 1fr 1fr;" in css
+    play = re.search(r"#seqPlayBtn \{([^}]*)\}", css)[1]
+    assert "grid-column: 1 / -1;" in play and "white-space: nowrap;" in play
+    reserve = re.search(r"#seqPlayBtn::after \{([^}]*)\}", css)[1]
+    # the reserved label is the button's longer one, hidden from sight and the accessible name
+    assert 'content: "Play sequence" / "";' in reserve and "visibility: hidden;" in reserve
+    label = "b.textContent = S.seqPlay ? 'Stop' : 'Play sequence';"
+    assert label in _js_function(js, "renderSeqPlay")
+
+
 # --- Moments list order (#469) ---
 
 

@@ -124,6 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: the Play sequence button sits under Undo and Redo, as wide as the pair, and
+  keeps its size and place when it turns into Stop. It used to shrink and jump up beside Redo.
 - `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
   instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
   there are none.
