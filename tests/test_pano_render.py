@@ -19,7 +19,7 @@ import pytest
 from conftest import media_info, write
 from cutpoint import encode, ffmpeg_utils, paths
 from cutpoint.pano import geometry as G
-from cutpoint.pano import project, render
+from cutpoint.pano import project, qa, render
 from cutpoint.pano.x3 import X3Clip, imu_source
 from pano_helpers import LRV, orientation, x3clip
 
@@ -215,6 +215,75 @@ class TestCommandLines:
         assert display_tilt(1.0).max() < 0.01
         assert 5 < display_tilt(0.0).max() < 10.5
         assert display_tilt(0.7).max() == pytest.approx(0.3 * display_tilt(0.0).max(), rel=0.05)
+
+    @staticmethod
+    def _rolled(roll_deg: np.ndarray) -> G.Orientation:
+        """Camera on the usual mount, rolled by ``roll_deg`` about the travel direction."""
+        q = np.array([_qmul(_q((0, 0, 1), r), MOUNT) for r in roll_deg])
+        return dataclasses.replace(_orient(len(roll_deg)), q=q)
+
+    @staticmethod
+    def _display_tilt(orient: G.Orientation, idx: np.ndarray, *args: float) -> np.ndarray:
+        r_vw = render.stabilised_r_vw(orient, idx, *args)
+        up = np.einsum("kij,kjl,l->ki", orient.cam_to_world(idx), r_vw, [0.0, -1.0, 0.0])
+        return np.degrees(np.arccos(np.clip(-up[:, 1], -1, 1)))
+
+    def _flip(self) -> G.Orientation:
+        """10 s: level, then a 120 deg roll over 0.5 s at 5 s (a fall), held."""
+        t = np.arange(300) / FPS
+        return self._rolled(120 * np.clip((t - 5.0) / 0.5, 0.0, 1.0))
+
+    def test_flip_shows_at_most_the_capped_follow(self):
+        """#442: a re-orientation of 100+ deg in a clip showed 30 % of it (~20 deg of
+        tilt); capped at max_follow_deg 30 the view leans at most 9 deg."""
+        orient, idx = self._flip(), np.arange(300)
+        uncapped = self._display_tilt(orient, idx, 0.7, 0.5, 180.0)
+        assert np.percentile(uncapped, 95) > 12  # the bug: over the QA cap
+        tilt = self._display_tilt(orient, idx, 0.7, 0.5)  # defaults
+        assert np.percentile(tilt, 95) <= 12
+        assert tilt.max() <= 0.3 * render.MAX_FOLLOW_DEG + 0.01
+
+    def test_upside_down_is_still_capped(self):
+        """The followed up exactly opposite the vertical (the last third turned over,
+        no smoothing): no great circle is defined, the cap still applies."""
+        orient, idx = self._rolled(np.r_[np.zeros(200), np.full(100, 180.0)]), np.arange(300)
+        tilt = self._display_tilt(orient, idx, 0.7, 0.0)
+        assert tilt.max() <= 0.3 * render.MAX_FOLLOW_DEG + 0.01
+
+    def test_steady_lean_under_the_cap_is_unchanged(self):
+        """Leans under max_follow_deg from the clip's mean attitude follow as before:
+        a constant 25 deg mount tilt plus a slow +-20 deg sway."""
+        n = 300
+        sway = 20 * np.sin(2 * np.pi * np.arange(n) / FPS / 5)
+        orient, idx = self._rolled(25 + sway), np.arange(n)
+        capped = render.stabilised_r_vw(orient, idx, 0.7, 0.5)
+        free = render.stabilised_r_vw(orient, idx, 0.7, 0.5, 180.0)
+        assert np.allclose(capped, free, atol=1e-9)
+        assert self._display_tilt(orient, idx, 0.7, 0.5).max() > 3  # it does follow
+
+    def test_max_follow_deg_from_config(self, clip, monkeypatch):
+        """``pano.max_follow_deg`` reaches the renderer and the QA model (default 30)."""
+        seen: list[float] = []
+        real = render.stabilised_r_vw
+
+        def spy(orient, idx, strength, follow_s, max_follow=render.MAX_FOLLOW_DEG):
+            seen.append(max_follow)
+            return real(orient, idx, strength, follow_s, max_follow)
+
+        monkeypatch.setattr(render, "stabilised_r_vw", spy)
+        path = _path((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
+        orient = self._flip()
+
+        def both() -> None:
+            render.command_lines(clip, path, _src("equirect", False), 1.0, 0.5, self.FMT, 1, orient)
+            qa.horizon_roll(orient, path, np.arange(1.0, 1.5, 0.1))
+
+        both()
+        cfg = paths.config_file()
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps({"pano": {"max_follow_deg": 45}}), encoding="utf-8")
+        both()
+        assert seen == [30.0, 30.0, 45.0, 45.0]
 
     def test_levelled_equirect_uses_path_angles_only(self, clip):
         path = _path((0.0, 25.0, -5.0), (10.0, 25.0, -5.0))

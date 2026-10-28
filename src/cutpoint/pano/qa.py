@@ -142,7 +142,8 @@ class QAThresholds:
     lowinfo_zs: float = 0.6
     lowinfo_zs_alone: float = 0.8
     # display tilt (deg): the render levels only level_strength of the camera lean, so
-    # (1 - level_strength) of it shows by design; an absolute cap on what is shown,
+    # (1 - level_strength) of it (lean capped at max_follow_deg) shows by design; an
+    # absolute cap on what is shown,
     # measured from the emitted v360 commands (falls back to the render's model, see tilt)
     tilt_deg: float = 12.0
     # a hand over the lens: grey mean 0.04 with 86 % of the pixels below 0.1 (its edge
@@ -394,14 +395,14 @@ def horizon_roll(orient: Any, path: dict[str, Any], times: np.ndarray) -> np.nda
     """Roll (deg) of the true horizon in the rendered view at increasing source ``times``.
 
     The renderer's rotation is ``R = R_VW @ view`` (:func:`render.stabilised_r_vw`
-    with the ``pano`` config's ``level_strength`` / ``tilt_follow_s``); the true
-    up seen through it shows the tilt left in: ``u = R.T @ up`` in output
-    coordinates, roll = atan2(u_x, -u_y).
+    with the ``pano`` config's ``level_strength`` / ``tilt_follow_s`` /
+    ``max_follow_deg``); the true up seen through it shows the tilt left in:
+    ``u = R.T @ up`` in output coordinates, roll = atan2(u_x, -u_y).
     """
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano.director import evaluate  # noqa: PLC0415
     from cutpoint.pano.project import pano_config  # noqa: PLC0415
-    from cutpoint.pano.render import stabilised_r_vw  # noqa: PLC0415
+    from cutpoint.pano.render import MAX_FOLLOW_DEG, stabilised_r_vw  # noqa: PLC0415
 
     cfg = pano_config()
     fps = float(orient.meta.get("fps") or 30000 / 1001)
@@ -412,6 +413,7 @@ def horizon_roll(orient: Any, path: dict[str, Any], times: np.ndarray) -> np.nda
         idx,
         float(cfg.get("level_strength", 0.7)),
         float(cfg.get("tilt_follow_s", 0.5)),
+        float(cfg.get("max_follow_deg", MAX_FOLLOW_DEG)),
     )
     up = np.einsum("kji,j->ki", orient.cam_to_world(idx), [0.0, -1.0, 0.0])
     out = np.zeros(len(times))

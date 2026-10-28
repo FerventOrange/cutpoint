@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured phone clip. HLG is tone-mapped with `mobius` at 203-nit diffuse white instead of
   `hable`; previews and stills of HLG sources are rebuilt once. PQ and every other source are
   unchanged (#449).
+- 360 renders no longer tilt the horizon by 20 to 30 deg when the camera turns over in a clip
+  (a fall, or the camera being handled). The view follows 30 % of the camera's lean, and that
+  lean had no limit; it is now capped at `pano.max_follow_deg` (default 30 deg), so at most
+  9 deg shows. On the measured Insta360 footage no 10 s window is over the 12 deg QA cap (55
+  were), and riding footage is unchanged (#442).
 
 ## [0.3.0] - 2026-10-27
 
