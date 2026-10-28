@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dark keep text, controls and focus outlines at WCAG AA contrast, and Blue keeps today's colours
   (#445).
 
+### Fixed
+
+- `cutpoint ui`: stills of BT.709 and HDR sources now show the same colours as their exports.
+  A JPEG is always decoded as BT.601 full range, so these stills were about 7 codes off (up to
+  32 on saturated colours). They are now converted to BT.601 before encoding, which rebuilds them
+  once under a new name. Previews of full-range BT.601 sources are encoded in TV range like
+  exports, keeping their BT.601 tags. BT.601 stills and every other preview are unchanged (#441).
+
 ## [0.3.0] - 2026-10-27
 
 ### Highlights

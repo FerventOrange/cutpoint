@@ -82,6 +82,12 @@ _BT601_TO_709 = "colorspace=all=bt709:iall={}:irange=tv:range=tv:fast=1"
 # recent ffmpeg (9.0.2 measured) then converts the untagged frames as BT.601 (on bars: 7 codes
 # mean, 22 max).
 TAG_BT709 = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
+# Full-range frames to TV range, matrix and tags kept (UI proxies of full-range BT.601, #441).
+TV_RANGE = "scale=out_range=tv"
+# To the BT.601 full range every decoder reads a JPEG as (UI stills, #441); the input range is
+# the frame's. The mjpeg encoder only re-tags: a BT.709 still was 7.4 codes off (mean RGB on
+# bars, 32 max) in the UI, while its export was right.
+_TO_JPEG = "colorspace=all=bt470bg:iall={}:range=pc:fast=1"
 # Log/flat look of a 10-bit SDR source (one small frame, luma 0-1): mean HSV saturation
 # below LOG_MAX_SATURATION, lifted blacks (1 % luma above LOG_MIN_BLACK), no near-white
 # (99 % luma below LOG_MAX_WHITE) and still a picture (spread above LOG_MIN_SPREAD), so
@@ -202,6 +208,37 @@ def bt709_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
         )
         return _BT601_TO_709.format(matrix)
     return "" if info.color_space else TAG_BT709
+
+
+def preview_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
+    """Color filters of a UI preview proxy: :func:`sdr_filter`'s, for full-range BT.601
+    :data:`TV_RANGE` (#441).
+
+    A BT.601 proxy keeps its matrix and tags, which players read (and SD without tags is
+    BT.601 to them too); only full range is narrowed to the TV range of exports. Every other
+    source gets :func:`sdr_filter`'s result, so its proxy keeps its name.
+    """
+    if bt601_matrix(info) and info.color_range == "pc":
+        return TV_RANGE
+    return sdr_filter(info, filters)
+
+
+def still_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
+    """Color filters of a JPEG still, so it shows what the source's export shows (#441).
+
+    A JPEG is BT.601 full range to every decoder, and the encoder only re-tags other matrices.
+    BT.709 sources (tagged, or HD without a matrix tag, as :func:`bt709_filter` reads them)
+    and HDR or BT.2020 ones after their :func:`sdr_filter` are converted to the BT.601 matrix
+    and full range; smpte240m to BT.601 as well. Other BT.601 sources (they already are) and
+    an HDR source this ffmpeg cannot tone-map get "", the chain of before.
+    """
+    if color_kind(info):
+        sdr = sdr_filter(info, filters)
+        return f"{sdr},{_TO_JPEG.format('bt709')}" if sdr else ""
+    matrix = bt601_matrix(info)
+    if matrix:
+        return _TO_JPEG.format(matrix) if matrix == "smpte240m" else ""
+    return _TO_JPEG.format("bt709") if info.color_space in (None, "bt709") else ""
 
 
 def filter_path(path: PurePath) -> str:

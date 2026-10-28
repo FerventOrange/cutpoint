@@ -1342,21 +1342,29 @@ def test_frame_cache_evicts_the_least_recently_used_beyond_the_cap(
 STILL_BT2020 = {"color_primaries": "bt2020", "color_space": "bt2020nc", "pix_fmt": "yuv420p10le"}
 
 
+TO_JPEG_709 = "colorspace=all=bt470bg:iall=bt709:range=pc:fast=1"
+SD = {"width": 640, "height": 480}
+
+
 @pytest.mark.parametrize(
-    ("over", "hdr"),
+    ("over", "kind"),
     [
-        ({"vcodec": "hevc", "color_transfer": "smpte2084", **STILL_BT2020}, True),
-        ({"vcodec": "av1", "color_transfer": "arib-std-b67", **STILL_BT2020}, True),
-        ({"vcodec": "hevc"}, False),  # SDR: today's command and file name
-        ({"color_transfer": "bt709", "color_primaries": "bt709", "color_space": "bt709"}, False),
+        ({"vcodec": "hevc", "color_transfer": "smpte2084", **STILL_BT2020}, "hdr"),
+        ({"vcodec": "av1", "color_transfer": "arib-std-b67", **STILL_BT2020}, "hdr"),
+        ({"vcodec": "hevc"}, "bt709"),  # HD without a matrix tag is BT.709, as exports read it
+        ({"color_transfer": "bt709", "color_primaries": "bt709", "color_space": "bt709"}, "bt709"),
+        (SD, "bt601"),  # BT.601 (a JPEG already is): today's command and file name
+        ({"color_space": "smpte170m", **SD}, "bt601"),
+        ({"color_space": "bt470bg", "color_range": "pc", **SD}, "bt601"),
     ],
 )
-def test_hdr_still_is_tone_mapped_and_cached_under_a_new_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, over: dict[str, str], hdr: bool
+def test_still_is_converted_to_what_the_export_shows_and_cached_under_a_new_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, over: dict[str, object], kind: str
 ) -> None:
-    """#412: stills of HLG/PQ sources (an AV1 one the browser plays as is too) go through the
-    export's sdr_filter; the filter's hash ends their name, so a washed-out still cached before
-    is never served. SDR stills keep their command and name."""
+    """#412, #441: a JPEG is BT.601 full range, so stills of HLG/PQ sources (an AV1 one the
+    browser plays as is too) go through the export's sdr_filter and then to BT.601, and BT.709
+    ones to BT.601; the filter's hash ends their name, so a still cached before is never served.
+    BT.601 stills keep their command and name."""
     source = write(tmp_path / "a.mp4", b"x" * 10)
     project = tmp_path / "project"
     project.mkdir()
@@ -1374,10 +1382,14 @@ def test_hdr_still_is_tone_mapped_and_cached_under_a_new_name(
     still = media.frame(project, str(source), 0.5, 160)
 
     key = media.key(source)
-    color = encode.sdr_filter(info) if hdr else ""
-    assert color.startswith("zscale=") if hdr else color == ""
+    color = {
+        "hdr": f"{encode.sdr_filter(info)},{TO_JPEG_709}",
+        "bt709": TO_JPEG_709,
+        "bt601": "",
+    }[kind]
+    assert color.startswith("zscale=") if kind == "hdr" else True
     assert [k["color"] for k in calls] == [color]
-    tag = f"-{hashlib.sha1(color.encode()).hexdigest()[:8]}" if hdr else ""
+    tag = f"-{hashlib.sha1(color.encode()).hexdigest()[:8]}" if color else ""
     assert still is not None and still.name == f"{key}-50-160{tag}.jpg"
     media.prune_frames(project, [str(source)])  # the tagged name still belongs to its source
     assert still.is_file()
@@ -3301,6 +3313,41 @@ def test_info_has_no_color_filter_for_playable_sources_and_the_sdr_filter_for_hl
     assert not ok
     assert color == encode.sdr_filter(hlg)
     assert color.startswith("zscale=tin=arib-std-b67")
+
+
+@pytest.mark.parametrize(
+    ("over", "color"),
+    [
+        ({"width": 640, "height": 480, "color_space": "smpte170m", "color_range": "pc"}, "range"),
+        ({"width": 720, "height": 576, "color_range": "pc"}, "range"),  # untagged SD is BT.601
+        ({"width": 640, "height": 480, "color_space": "smpte170m", "color_range": "tv"}, ""),
+        ({"width": 640, "height": 480}, ""),
+        ({"color_space": "bt709", "color_range": "pc"}, ""),  # full-range BT.709: as before
+        ({}, ""),  # HD without tags
+        ({"pix_fmt": "yuv420p10le", **HLG}, "sdr"),
+    ],
+)
+def test_info_narrows_only_full_range_bt601_proxies_and_keeps_the_others_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, over: dict[str, object], color: str
+) -> None:
+    """#441: a full-range BT.601 proxy becomes TV range with its BT.601 tags (not BT.709 ones);
+    limited BT.601, BT.709 and HDR sources keep their filter, so their proxies keep their key."""
+    monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
+    src = tmp_path / "a.mkv"
+    src.write_bytes(b"x")
+    info = media_info(vcodec="mpeg2video", duration=10.0, **over)
+    monkeypatch.setattr(ui, "probe", lambda _path: info)
+    media = ui.Media()
+    got = (media.info(src, "k") or (True, 0, 0, ""))[3]
+    want = {"range": encode.TV_RANGE, "sdr": encode.sdr_filter(info), "": ""}[color]
+    assert got == want == encode.preview_filter(info)
+    assert (media._proxy_key("k") == "k") == (color == "")
+    args = ui.proxy_args(src, tmp_path / "out.mp4", 1, color=got)
+    if color == "range":
+        assert args[args.index("-vf") + 1] == (
+            "scale=-2:min(720\\,ih),scale=out_range=tv,format=yuv420p"
+        )
+        assert "-colorspace" not in args  # the BT.601 tags of the frames stay
 
 
 def test_whole_proxy_of_an_hlg_source_is_converted_to_sdr(
