@@ -20,9 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Faster `assemble --transition fade` (the highlights and montage kinds): only the video around
-  each fade is re-encoded and the rest of every clip is stream-copied. The same number of frames
-  at the same times, the same audio, `final.srt` and timelines, and the copied video skips one
-  encode generation.
+  each fade is re-encoded and the rest of every clip is stream-copied. The video has the same
+  number of frames at the same times, and the audio, `final.srt` and timelines are the same; the
+  copied video skips one encode generation.
   Clip exports now carry one forced keyframe 0.5 s from each end (none with AMF), which covers
   fades up to 0.5 s (the default is 0.25 s) and makes them about 5% larger; longer fades use
   the clips' own keyframes.

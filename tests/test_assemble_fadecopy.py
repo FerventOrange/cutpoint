@@ -195,6 +195,66 @@ def test_a_piece_whose_duration_is_off_the_frame_grid_does_not_check_out(monkeyp
     assert "piece 0001.mp4 does not check out: lasts 0.733000s, not 0.733333s" in caplog.text
 
 
+def _listed(listing: Path) -> list[tuple[str, int]]:
+    """The (file, duration in microseconds) pairs of a concat listing."""
+    lines = listing.read_text(encoding="utf-8").splitlines()
+    files = [ln.removeprefix("file ") for ln in lines[0::2]]
+    durations = [ln.removeprefix("duration ") for ln in lines[1::2]]
+    assert len(files) == len(durations) == len(lines) // 2 and len(lines) % 2 == 0
+    return [(f, round(Fraction(d) * 10**6)) for f, d in zip(files, durations, strict=True)]
+
+
+@pytest.mark.parametrize("rate", [Fraction(60), Fraction(30), Fraction(30000, 1001)])
+def test_the_listed_durations_add_up_to_the_frame_grid_for_every_piece(tmp_path, rate):
+    # Fade windows of no whole microseconds between bodies of any length, 60 joins: the demuxer
+    # starts piece k at the sum of the durations before it, which must be T_k to half a us.
+    frames = [237, 44, 181, 22, 300, 44, 7] * 10
+    pieces = [(tmp_path / f"{n:04d}.mp4", f) for n, f in enumerate(frames)]
+    listing = tmp_path / "pieces.txt"
+    assemble._write_pieces(listing, pieces, rate)
+    listed = _listed(listing)
+    assert [f for f, _ in listed] == [f"'{p.resolve().as_posix()}'" for p, _ in pieces]
+    start = 0
+    for k, (_, us) in enumerate(listed):
+        start += us
+        exact = Fraction(sum(frames[: k + 1])) / rate * 10**6
+        assert abs(start - exact) <= Fraction(1, 2)
+    assert abs(start - Fraction(sum(frames)) / rate * 10**6) <= Fraction(1, 2)
+
+
+def test_a_quote_in_a_piece_path_is_escaped_in_the_listing(tmp_path):
+    listing = tmp_path / "pieces.txt"
+    assemble._write_pieces(listing, [(tmp_path / "it's.mp4", 30)], Fraction(60))
+    assert listing.read_text(encoding="utf-8").splitlines() == [
+        "file '" + (tmp_path / "it").resolve().as_posix() + "'\\''s.mp4'",
+        "duration 0.500000",
+    ]
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(("rate", "frames"), [("60", 44), ("30000/1001", 22)])
+def test_many_windows_of_no_whole_microseconds_join_on_the_frame_grid(tmp_path, rate, frames):
+    # 24 fade windows written as _encode_run writes them (90 kHz movie and track time scale):
+    # summed in whole microseconds, the 24th started a tick early (frame 748 at 60 fps).
+    window = tmp_path / "window.mp4"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-y", "-v", "error", "-f", "lavfi", "-i",
+         f"testsrc2=size=64x36:rate={rate}", "-frames:v", str(frames), "-an", "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", "-video_track_timescale", "90000", "-movie_timescale", "90000",
+         str(window)],
+        check=True,
+    )  # fmt: skip
+    listing, joined = tmp_path / "pieces.txt", tmp_path / "joined.mp4"
+    assemble._write_pieces(listing, [(window, frames)] * 24, Fraction(rate))
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i",
+         str(listing), "-c", "copy", str(joined)],
+        check=True,
+    )  # fmt: skip
+    got = assemble._video_packets(joined, Fraction(rate))  # None unless every step is a frame
+    assert got is not None and got.frames == 24 * frames
+
+
 @needs_ffmpeg
 def test_a_percent_sign_in_the_project_path_still_takes_the_fast_path(
     tmp_path, monkeypatch, caplog

@@ -720,6 +720,23 @@ def _piece_ok(
     return False
 
 
+def _write_pieces(listing: Path, pieces: list[tuple[Path, int]], fps: Fraction) -> None:
+    """Write the concat demuxer's ``listing`` of ``pieces`` (file, frames), in order.
+
+    The demuxer starts each piece where the ones before it end, adding their durations in
+    whole microseconds: a piece of no whole number of them (44 frames at 60 fps, 733333.33 us)
+    would count short, and after 17 such at 60 fps the next piece starts a tick early. Each piece
+    gets a ``duration`` from the frame grid, rounded so that the sums are the grid times to
+    half a microsecond (``T_k`` = the frames before piece ``k`` / ``fps``)."""
+    lines, before = [], 0
+    for piece, frames in pieces:
+        start, end = (round(Fraction(n) / fps * 10**6) for n in (before, before + frames))
+        lines.append("file '" + piece.resolve().as_posix().replace("'", "'\\''") + "'\n")
+        lines.append(f"duration {(end - start) // 10**6}.{(end - start) % 10**6:06d}\n")
+        before += frames
+    listing.write_text("".join(lines), encoding="utf-8")
+
+
 def _no_copy(why: str) -> bool:
     logger.info("Crossfade: re-encoding the whole video (%s)", why)
     return False
@@ -767,7 +784,8 @@ def crossfade_copy(
             return _no_copy(f"more than {COPY_MAX_SHARE:.0%} of the frames are near a fade")
         work.mkdir(exist_ok=True)
         frames = [p.frames for p in copyable]
-        ref, cpu, pieces, encoded = copyable[0], False, [], 0
+        ref, cpu, encoded = copyable[0], False, 0
+        pieces: list[tuple[Path, int]] = []  # (file, frames)
         for n, item in enumerate(plan):
             piece = work / f"{n:04d}.mp4"
             if isinstance(item, Body):
@@ -796,13 +814,8 @@ def crossfade_copy(
                 if not ok:
                     return _no_copy("a re-encoded fade does not check out")
                 encoded += want
-            pieces.append(piece)
-        listing.write_text(
-            "".join(
-                "file '" + p.resolve().as_posix().replace("'", "'\\''") + "'\n" for p in pieces
-            ),
-            encoding="utf-8",
-        )
+            pieces.append((piece, item.end - item.start if isinstance(item, Body) else want))
+        _write_pieces(listing, pieces, fps)
         args = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing)]
         for f in files:
             args += ["-i", str(f)]
