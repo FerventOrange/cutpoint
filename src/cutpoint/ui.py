@@ -151,8 +151,9 @@ STEP_STATES = {"running", "done", "skipped", "failed"}
 FRAME_WIDTH = 160  # default still width (px) for sequence thumbnails
 FRAME_MIN_W, FRAME_MAX_W = 32, 640
 FRAME_TIMEOUT_S = 30.0
+FRAME_MAX_AT = 1e7  # seconds (~115 days): cap when the length is unknown
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
-FRAME_CACHE_MAX = 500  # stills kept per project; the least recently used go first
+FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
 
@@ -1561,27 +1562,32 @@ class Media:
         proc.wait()
         return "\n".join(rest)[-500:]
 
-    def frame(self, project: Path, path: str, at: float, width: int) -> Path | None:
+    def frame(
+        self, project: Path, path: str, at: float, width: int, *, key: bool = False
+    ) -> Path | None:
         """A JPEG still of ``path`` at ``at`` s (clamped into the source), ``width`` px wide.
 
         Cached as ``ui/frames/<content key>-<centiseconds>-<width>.jpg`` and built once even when
         requested concurrently. A still goes through its source's
         :func:`~cutpoint.encode.still_filter` (HDR, BT.2020 and BT.709 sources), so it shows what
         exports show, and then its name ends in ``-<filter hash>``, so stills cached before the
-        conversion (or a changed one) are not reused. None if the source cannot be read.
+        conversion (or a changed one) are not reused. ``key``: the keyframe at or before ``at``
+        (fast, for the filmstrip), cached with ``-k`` after the width, so exact stills never get one.
+        None if the source cannot be read.
 
         Raises:
             FFmpegError: If ffmpeg decodes no image.
         """
         real = remap_source(path)
-        key, res = self._lookup(real)
-        if res is None or key is None:
+        content, res = self._lookup(real)
+        if res is None or content is None:
             return None
+        at = min(at, FRAME_MAX_AT)  # a huge time (1e308) would overflow its centiseconds
         if res[1] > 0:
             at = min(at, max(0.0, res[1] - 0.1))  # the last instants may hold no decodable frame
         cs = round(at * 100)
-        color = self.still_color.get(key, "")
-        name = f"{key}-{cs}-{width}"
+        color = self.still_color.get(content, "")
+        name = f"{content}-{cs}-{width}" + ("-k" if key else "")
         if color:  # a converted still never reuses one cached before (or with another filter)
             name += f"-{hashlib.sha1(color.encode()).hexdigest()[:8]}"
         out = _own(project, f"{UI_DIR}/frames/{name}.jpg")  # nor cached through one
@@ -1603,6 +1609,7 @@ class Media:
                             quality=5,
                             timeout=FRAME_TIMEOUT_S,
                             color=color,
+                            keyframe=key,
                         )[0]
                     _ui_folder(project, "frames")  # ui or ui/frames a file: a clear 409
                     tmp = _own(project, f"{UI_DIR}/frames/{out.stem}.{threading.get_ident()}.part")
@@ -1633,14 +1640,18 @@ class Media:
                 logger.debug("could not delete %s: %s", f.name, err)
 
     def _evict_frames(self, folder: Path) -> None:
-        """Keep at most ``FRAME_CACHE_MAX`` stills in ``folder``, dropping the least recently used."""
-        with self.lock:
-            stills: list[tuple[int, Path]] = []
-            for f in folder.glob("*.jpg"):
-                with contextlib.suppress(OSError):
-                    stills.append((f.stat().st_mtime_ns, f))
-            if len(stills) > FRAME_CACHE_MAX:
-                stills.sort()
+        """Keep at most ``FRAME_CACHE_MAX`` stills in ``folder``, dropping the least recently used.
+
+        The folder is listed without ``self.lock`` (1500 stats would hold up every other request);
+        two evictions at once pick the same oldest stills, and ``_drop_frames`` (under the lock)
+        still skips any being built."""
+        stills: list[tuple[int, Path]] = []
+        for f in folder.glob("*.jpg"):
+            with contextlib.suppress(OSError):
+                stills.append((f.stat().st_mtime_ns, f))
+        if len(stills) > FRAME_CACHE_MAX:
+            stills.sort()
+            with self.lock:
                 self._drop_frames([f for _, f in stills[: len(stills) - FRAME_CACHE_MAX]])
 
     def prune_frames(self, project: Path, paths: list[str]) -> None:
@@ -2965,8 +2976,9 @@ def create_app(port: int) -> FastAPI:
         return send(file, request, proxy=True)
 
     @served.get("/projects/{pid}/sources/{sid}/frame")
-    def source_frame(pid: str, sid: str, at: float = 0.0, w: int = FRAME_WIDTH):
-        """One still of a source (``at`` seconds in, ``w`` px wide) for thumbnails."""
+    def source_frame(pid: str, sid: str, at: float = 0.0, w: int = FRAME_WIDTH, key: bool = False):
+        """One still of a source (``at`` seconds in, ``w`` px wide) for thumbnails; ``key=1``:
+        the keyframe at or before ``at`` (the rail's filmstrip)."""
         if not math.isfinite(at) or at < 0:
             raise bad("at must be a time in seconds, 0 or more")
         if media.closing:
@@ -2975,7 +2987,7 @@ def create_app(port: int) -> FastAPI:
         if p not in media.frames_pruned:
             media.prune_frames(p, [s["path"] for s in sources.entries(p)])
         try:
-            file = media.frame(p, entry["path"], at, min(max(w, FRAME_MIN_W), FRAME_MAX_W))
+            file = media.frame(p, entry["path"], at, min(max(w, FRAME_MIN_W), FRAME_MAX_W), key=key)
         except (FFmpegError, OSError) as err:
             logger.warning("still of %s at %.2fs failed: %s", entry["name"], at, err)
             raise bad("could not extract a frame from this source", 500) from err

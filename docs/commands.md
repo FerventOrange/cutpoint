@@ -285,7 +285,7 @@ earlier clips a second Make would replace).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
-JPEGs in `<project>/ui/frames/` (at most 500 per project, least recently used evicted). Drag the
+JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
 remembered per browser. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
 pass another `--port`.
@@ -327,11 +327,17 @@ preview (moments, clips and final) and is remembered per browser; the default is
 Playback and scrubbing cover the whole source: playback runs on past the clip end, and Play at
 the end of the source starts the clip again. The trim rail under the video is a zoomable view of
 the source with the clip (gold) and the analyzed range (dashed) as markers; it opens on the clip
-plus half its length (at least 10 s) either side. "Zoom out", "Zoom in" and "Fit clip" change
-the view, the overview strip next to them shows the view in the whole source and pans it (drag
-or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
-playhead during playback. On the rail, the arrow keys move the playhead by 0.5% of the view (at
-least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
+plus half its length (at least 10 s) either side. Behind the markers, a filmstrip shows at most
+one still per 78 px (one every 78 to 156 px): the keyframe at or before each point, so a still
+can be a little early; zoomed in to under 1 s per still, exact stills instead. The stills load a
+few at a time once the view stops moving, nearest the playhead first, and are cached with the
+thumbnails; a still that fails leaves the rail's ticks showing, and after 3 failures a source
+gets no filmstrip until the page reloads. With the browser's data saver on
+(`prefers-reduced-data` or Save-Data), the rail keeps its ticks only. "Zoom out", "Zoom in" and
+"Fit clip" change the view, the overview strip next to them shows the view in the whole source
+and pans it (drag or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The
+rail follows the playhead during playback. On the rail, the arrow keys move the playhead by 0.5%
+of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
 rail widens to show it. The gold start and end edges on the rail are handles: drag them (a drag held at
 the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
 Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps

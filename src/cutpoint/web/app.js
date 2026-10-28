@@ -9,6 +9,11 @@ const MIN_VIEW = 2; // seconds: the rail's deepest zoom
 const LONG_CLIP = 600; // seconds: longer clips get a note under the trim fields
 const LABEL_MAX = 200; // characters; ui.py validate_segments rejects longer labels
 const THUMB_W = 160; // pixels requested for sequence thumbnails
+const FILM_TILE = 78; // pixels: the rail's filmstrip holds about one keyframe still per this width (#261)
+const FILM_STEP = 0.25; // seconds: filmstrip stills sit on multiples of this times a power of 2, so pans and 2x zooms reuse them
+const FILM_EXACT = 1; // seconds: a finer grid asks for exact stills; keyframe ones would repeat the same keyframe
+const FILM_WAIT = 150; // ms the view stays still before new filmstrip stills are asked for
+const FILM_FAILS = 3; // failed stills after which a source gets no filmstrip this session
 const JOB_NAMES = { analyze: 'Analysis', edit: 'One-click edit', clips: 'Clip export', extend: 'Export extension', assemble: 'Assembly' };
 const live = (status) => status === 'running' || status === 'cancelling'; // the job still holds the server
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
@@ -716,6 +721,7 @@ function drawRail(c = current()) {
     Object.assign(el.style, { left: `${(((a - from) / len) * 100).toFixed(2)}%`, width: `${(((b - a) / len) * 100).toFixed(2)}%` });
   place($('#railSel'), c.start, c.end, lo, span);
   drawGaps(c, dur, lo, hi, place);
+  drawFilm(c);
   const o = $('#railOrig');
   o.hidden = !c.cand;
   if (c.cand) place(o, c.cand.start, c.cand.end, lo, span);
@@ -803,6 +809,114 @@ function drawGaps(c, dur, lo, hi, place) {
   if (dur) fill($('#ovGaps'), 0, dur);
   else $('#ovGaps').replaceChildren();
 }
+
+// The filmstrip behind the rail (#261): keyframe stills (``key=1``, the keyframe at or before each
+// time) on a grid of FILM_STEP * 2^k seconds, so panning reuses every still and a 2x zoom every one
+// or every other one. Below FILM_EXACT, keyframes are usually further apart than the grid, so the
+// few stills of a deep zoom are exact ones (2-3x the cost each) rather than one keyframe repeated.
+// Purely decorative: a failed still is left out and the ticks show through.
+const film = { src: null, sig: '', step: 0, tiles: new Map(), timer: 0 }; // tiles: time -> <img> of film.src
+const filmFails = new Map(); // source path -> failed stills this session
+const filmOff = () => matchMedia('(prefers-reduced-data: reduce)').matches || !!navigator.connection?.saveData;
+
+/** Lay the filmstrip out over the current view: keep and move the stills it shares, drop the rest, ask for new ones once the view is still. */
+function drawFilm(c = current()) {
+  const el = $('#railFilm');
+  const src = c && srcOf(c.source);
+  const width = $('#rail').clientWidth;
+  const on = !!src?.url && !!S.view && !!width && !filmOff() && (filmFails.get(c.source) ?? 0) < FILM_FAILS;
+  const sig = on ? `${src.url}|${S.view.lo}|${S.view.hi}|${width}` : '';
+  if (sig === film.sig) return; // a trim or a poll: the view has not moved
+  film.sig = sig;
+  filmGen += 1; // stills still queued for an earlier view are dropped
+  clearTimeout(film.timer);
+  if (!on) {
+    film.tiles.clear();
+    el.replaceChildren();
+    film.src = null;
+    return;
+  }
+  const { lo, hi } = S.view;
+  const span = hi - lo;
+  const dur = durOf(c) || hi;
+  let step = FILM_STEP;
+  while (step < span / Math.ceil(width / FILM_TILE)) step *= 2;
+  if (film.src !== c.source) {
+    film.tiles.clear();
+    el.replaceChildren();
+    film.src = c.source;
+  }
+  film.step = step;
+  const times = [];
+  for (let t = Math.floor(lo / step) * step; t < Math.min(hi, dur); t += step) times.push(t);
+  const want = new Set(times);
+  for (const [t, img] of film.tiles) {
+    if (want.has(t)) continue;
+    img.remove();
+    film.tiles.delete(t);
+  }
+  let missing = false;
+  const key = step >= FILM_EXACT;
+  for (const t of times) {
+    let img = film.tiles.get(t);
+    if (img && !img.src && img.dataset.key !== String(key)) { // not loading yet: ask in this zoom's mode
+      img.remove();
+      film.tiles.delete(t);
+      img = null;
+    }
+    img ??= filmTile(c.source, src, t, key); // a loaded still stays, whichever mode
+    if (!img) continue; // failed before: the ticks show through
+    Object.assign(img.style, { left: `${(((t - lo) / span) * 100).toFixed(2)}%`, width: `${((step / span) * 100).toFixed(2)}%` });
+    if (!img.isConnected) el.append(img);
+    if (!img.src && img.dataset.queued !== 'loading') missing = true;
+  }
+  if (missing) film.timer = setTimeout(loadFilm, FILM_WAIT);
+}
+
+/** A filmstrip still of ``src`` at ``t``, loaded at once when the browser has it, or null when it failed before. */
+function filmTile(path, src, t, key) {
+  const [base, query] = src.url.split('?'); // query carries the session token, as for <video>
+  const url = `${base}/frame?${query}&at=${t}&w=${THUMB_W}${key ? '&key=1' : ''}`;
+  const state = thumbs.get(url);
+  if (state === 'failed') return null;
+  const img = h('img', { decoding: 'async', alt: '' });
+  img.draggable = false; // a dragged image would carry its URL, session token included
+  img.dataset.src = url;
+  img.dataset.key = String(key);
+  const done = (ok) => {
+    thumbs.set(url, ok ? 'ok' : 'failed');
+    if (img.dataset.queued === 'loading') {
+      img.dataset.queued = '';
+      thumbLoading -= 1;
+      pumpThumbs();
+    }
+    if (ok) {
+      img.classList.add('ok');
+      return;
+    }
+    img.remove();
+    if (film.tiles.get(t) === img) film.tiles.delete(t);
+    filmFails.set(path, (filmFails.get(path) ?? 0) + 1);
+    if (filmFails.get(path) >= FILM_FAILS && film.src === path) drawFilm(); // stop: clears the strip
+  };
+  img.onload = () => done(true);
+  img.onerror = () => done(false);
+  if (state === 'ok') img.src = url; // seen before: the browser cache serves it
+  film.tiles.set(t, img);
+  return img;
+}
+
+/** Queue the filmstrip's missing stills, nearest the playhead first, ahead of the sequence thumbnails. */
+function loadFilm() {
+  const t0 = playhead();
+  const half = film.step / 2;
+  const waiting = [...film.tiles].filter(([, img]) => !img.src && img.dataset.queued !== 'loading');
+  waiting.sort(([a], [b]) => Math.abs(a + half - t0) - Math.abs(b + half - t0));
+  filmQueue.length = 0;
+  for (const [, img] of waiting) filmQueue.push({ img, gen: filmGen });
+  pumpThumbs();
+}
+new ResizeObserver(() => drawFilm()).observe($('#rail')); // a wider rail holds more stills
 
 /** The [from, to] parts of ``src`` up to ``end`` no ready file plays yet: none unless its proxy builds. */
 function sourceGaps(src, end) {
@@ -1564,14 +1678,19 @@ const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);
 // re-render neither flashes the skeleton again nor retries a source that cannot be read.
 const thumbs = new Map(); // url -> 'ok' | 'failed'
 // New stills load a few at a time so they cannot take every connection the player's range requests need.
+// The rail's filmstrip goes first; its queue only holds the latest view's stills (``filmGen``).
 const THUMB_LOADS = 3;
 const thumbQueue = []; // <img> elements waiting for their data-src
+const filmQueue = []; // {img, gen}: filmstrip stills waiting, dropped once drawFilm moved on (gen < filmGen)
+let filmGen = 0;
 let thumbLoading = 0;
 
 function pumpThumbs() {
-  while (thumbLoading < THUMB_LOADS && thumbQueue.length) {
-    const img = thumbQueue.shift();
-    if (!img.isConnected) continue; // a re-render replaced it before its turn
+  while (thumbLoading < THUMB_LOADS && (filmQueue.length || thumbQueue.length)) {
+    const next = filmQueue.shift();
+    if (next && next.gen !== filmGen) continue; // queued for an earlier view
+    const img = next ? next.img : thumbQueue.shift();
+    if (!img.isConnected || img.src) continue; // a re-render (or the filmstrip) dropped it, or it already loads
     thumbLoading += 1;
     img.dataset.queued = 'loading';
     img.src = img.dataset.src;

@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint edit --kind` in the project's style and make the result the current export. A second
   run asks before replacing earlier clips. The presets are off, with the reason shown, for 360
   projects and for projects analyzed with options `edit` cannot repeat.
+- `cutpoint ui`: the trim rail shows a filmstrip of stills (keyframes; exact ones when zoomed in)
+  behind the clip markers, and the project's still cache keeps up to 1500 stills (#261).
 
 ### Changed
 

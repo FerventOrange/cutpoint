@@ -2791,6 +2791,7 @@ def grab_images_args(
     fmt: ImageFormat = "jpeg",
     quality: int | None = None,
     color: str = "",
+    keyframe: bool = False,
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for one :func:`grab_images` pass."""
     if (width is None) == (height is None):
@@ -2803,11 +2804,15 @@ def grab_images_args(
     args = ["-hide_banner", "-v", "error"]
     if hw is not None:
         args += hw.input_args()
+    if keyframe:  # decode only the keyframe at or before ``start``
+        args += ["-skip_frame", "nokey", "-noaccurate_seek"]
     args += ["-ss", f"{start:.3f}", "-i", str(path)]
     if duration is not None:
         args += ["-t", f"{duration:.3f}"]
     chain = f"fps={fps},{scale}" if fps is not None else scale
     args += ["-an", "-sn", "-vf", gpu_chain(hw, chain)]
+    if keyframe:  # that keyframe has a negative timestamp: the default fps mode drops it
+        args += ["-fps_mode", "passthrough"]
     args += ["-frames:v", str(count)]
     if fmt == "jpeg":
         args += ["-c:v", "mjpeg"]
@@ -2833,6 +2838,7 @@ def grab_images(
     fallback_cpu: bool = True,
     timeout: float | None = None,
     color: str = "",
+    keyframe: bool = False,
 ) -> list[bytes]:
     """Encoded stills from ``path`` (its staged copy if any), after one input seek.
 
@@ -2854,6 +2860,9 @@ def grab_images(
         timeout: Seconds per pass before ffmpeg is killed.
         color: Filters placed after the scale, e.g. :func:`~cutpoint.encode.sdr_filter`'s
             tone map of an HDR source ("" = none).
+        keyframe: Decode only the keyframe at or before ``start`` (``-skip_frame nokey
+            -noaccurate_seek``, kept by ``-fps_mode passthrough``): no decode from that
+            keyframe up to ``start``, but the still is up to one keyframe interval early.
 
     Returns:
         The encoded images in time order (at least one; the exit code is not
@@ -2880,6 +2889,7 @@ def grab_images(
             fmt=fmt,
             quality=quality,
             color=color,
+            keyframe=keyframe,
         )
         proc = _exec("ffmpeg", args, timeout, path)
         if fmt == "jpeg":
