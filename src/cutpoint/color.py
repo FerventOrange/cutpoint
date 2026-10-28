@@ -2,16 +2,17 @@
 
 A clip is measured on up to :data:`SAMPLE_FRAMES` keyframes of its inner 80 %
 (:func:`sample_stats`), seen through the same crop and BT.709 conversion as its export, and
-:func:`estimate` turns those frames into an :class:`AutoGrade`: a levels stretch, a white
-balance, a red-from-green channel mix (underwater only) and a vibrance boost, every one
-clamped. The grade is ffmpeg filters only (:meth:`AutoGrade.filter`: ``colorchannelmixer``,
-``colorlevels`` and ``vibrance`` in 16-bit RGB), so the export needs nothing new.
+:func:`estimate` turns those frames into an :class:`AutoGrade`: a levels stretch (from the
+luma; per channel underwater), a white balance, a red-from-green channel mix (underwater only)
+and a vibrance boost, every one clamped. The grade is ffmpeg filters only
+(:meth:`AutoGrade.filter`: ``colorchannelmixer``, ``colorlevels`` and ``vibrance`` in 16-bit
+RGB), so the export needs nothing new.
 
 Before a grade is used, :func:`simulate` applies it to the sampled frames in numpy and
 :func:`metrics` compares them before and after: a grade that clips more than its levels
-intend, leaves a worse cast or adds too much colour is vetoed. Clips that already look good,
-and log or flat footage from a 10-bit source (which needs the camera's LUT, ``--lut``), get
-no grade. :func:`auto_grade` caches each
+intend, leaves a worse cast, or adds or takes away too much colour is vetoed. Clips that
+already look good, and log or flat footage from a 10-bit source (which needs the camera's LUT,
+``--lut``), get no grade. :func:`auto_grade` caches each
 result in the source's cache folder (``color/<hash>.json``).
 """
 
@@ -39,11 +40,15 @@ from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, decode_raw
 logger = logging.getLogger(__name__)
 
 # Bump when the measurement or estimate changes: it keys the cache and is recorded per clip.
-COLOR_VERSION = 1
+# 2: per-channel levels for ``underwater``, the M3 drop veto and the relative cast veto.
+COLOR_VERSION = 2
 MODES = ("auto", "underwater")
-# Black and white points: from the luma, the same for every channel (production), or per
-# channel (experimental, compared by scripts/color_eval.py; not on the CLI).
+# Black and white points: from the luma, the same for every channel, or per channel. Each
+# mode uses its own (MODE_LEVELS): ``auto`` the luma's, so a clip's overall balance is left to
+# the white balance; ``underwater`` each channel's, which stretches the red the water took
+# (``levels=`` of :func:`estimate` overrides it, for scripts/color_eval.py).
 LEVELS = ("luma", "channel")
+MODE_LEVELS = {"auto": "luma", "underwater": "channel"}
 
 # Sampling: up to this many keyframes of the inner 80 % of a clip, this wide.
 SAMPLE_FRAMES = 8
@@ -83,13 +88,22 @@ GOOD_LEVELS = 0.03
 # A clip that looks underwater (for plain ``auto``'s hint): mean red below this share of
 # both green and blue.
 UNDERWATER_RED = 0.6
-# Veto: the clipped share rises by more than VETO_CLIPPED above the clipping the levels
-# intend (:func:`_intended_clipping`: the source's own plus at most the LEVELS_PERCENTILES
-# tails), the gray-world residual rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma
-# range, about a code: an invisible change), or M3 rises by more than VETO_M3_RISE.
+# Veto (:func:`_veto`): the clipped share rises by more than VETO_CLIPPED above the clipping
+# the levels intend (:func:`_intended_clipping`: the source's own plus at most the
+# LEVELS_PERCENTILES tails); the gray-world residual (a share of the luma range) gets worse;
+# M3 rises by more than VETO_M3_RISE, or falls below VETO_M3_DROP of its value (a picture
+# washed out to grey, such as flat cyan sand after an underwater grade).
+# The residual is worse when it rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma range,
+# about a code), or by more than VETO_RESIDUAL_RATIO times and more than VETO_RESIDUAL_FLOOR.
+# The relative rule catches a near-neutral clip given a cast (a GoPro clip went 0.0017 to
+# 0.0048: 2.8 times, +0.0031, within the absolute rule); its floor, half a code of 8-bit
+# (0.5 / 255), keeps rounding noise on an already neutral clip from vetoing it.
 VETO_CLIPPED = 0.005
 VETO_RESIDUAL_EPS = 0.005
+VETO_RESIDUAL_RATIO = 1.5
+VETO_RESIDUAL_FLOOR = 0.002
 VETO_M3_RISE = 0.25
+VETO_M3_DROP = 0.85
 # Vibrance is kept this far below the M3 veto, so it never vetoes the grade by itself.
 _M3_MARGIN = 0.98
 _VIBRANCE_STEPS = 10
@@ -115,6 +129,7 @@ SKIP_NO_FRAMES = "no_frames"
 VETO_CLIPPING = "veto_clipped"
 VETO_CAST = "veto_cast"
 VETO_COLOURFUL = "veto_m3"
+VETO_FADED = "veto_m3_drop"
 
 
 @dataclass(frozen=True)
@@ -532,7 +547,7 @@ def _levels_points(rgb: np.ndarray) -> tuple[float, float]:
 def _channel_points(
     rgb: np.ndarray,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    """Per-channel black and white points (``levels="channel"``, experimental): each
+    """Per-channel black and white points (``levels="channel"``, ``underwater``'s): each
     channel's median p0.5 / p99.5, each pair clamped as :func:`_levels_points` clamps the
     luma's."""
     per = np.median(
@@ -653,13 +668,23 @@ def _veto(before: Metrics, after: Metrics, intended: float) -> str | None:
     than :data:`VETO_CLIPPED` above ``intended`` (:func:`_intended_clipping`, never below
     ``before.clipped``) is vetoed: the white balance, mix or vibrance pushing more pixels
     out, or a mass of pixels at a levels point.
+
+    Cast: the residual rises by more than :data:`VETO_RESIDUAL_EPS`, or to more than
+    :data:`VETO_RESIDUAL_RATIO` times its value and by more than :data:`VETO_RESIDUAL_FLOOR`.
+    Colourfulness: M3 above ``1 +`` :data:`VETO_M3_RISE` or below :data:`VETO_M3_DROP` times
+    its value.
     """
     if after.clipped - max(intended, before.clipped) > VETO_CLIPPED:
         return VETO_CLIPPING
-    if after.residual > before.residual + VETO_RESIDUAL_EPS:
+    rise = after.residual - before.residual
+    if rise > VETO_RESIDUAL_EPS or (
+        after.residual > before.residual * VETO_RESIDUAL_RATIO and rise > VETO_RESIDUAL_FLOOR
+    ):
         return VETO_CAST
     if after.m3 > before.m3 * (1.0 + VETO_M3_RISE):
         return VETO_COLOURFUL
+    if after.m3 < before.m3 * VETO_M3_DROP:
+        return VETO_FADED
     return None
 
 
@@ -677,7 +702,7 @@ def _is_good(grade: AutoGrade) -> bool:
 
 
 def estimate(
-    stats: ColorStats, mode: str, strength: float = 1.0, levels: str = "luma"
+    stats: ColorStats, mode: str, strength: float = 1.0, levels: str | None = None
 ) -> AutoGrade:
     """The grade of a clip from its sampled frames (:func:`sample_stats`).
 
@@ -689,9 +714,10 @@ def estimate(
     skipped with the veto's name. Every result records the metrics before and predicted;
     plain ``auto`` also whether the frames look underwater (``underwater_hint``).
 
-    ``levels`` (:data:`LEVELS`): ``"luma"`` takes one black and white point from the luma
-    (what exports use); ``"channel"`` one per channel, with the white balance measured on the
-    levelled frames (experimental, for ``scripts/color_eval.py``).
+    ``levels`` (:data:`LEVELS`; None: the mode's, :data:`MODE_LEVELS`, what exports use):
+    ``"luma"`` takes one black and white point from the luma; ``"channel"`` one per channel,
+    with the white balance measured on the levelled frames. The veto's intended clipping
+    follows the points (:func:`_intended_clipping`: per channel for per-channel points).
 
     Raises:
         ValueError: For a ``mode`` other than :data:`MODES` or ``levels`` other than
@@ -699,6 +725,7 @@ def estimate(
     """
     if mode not in MODES:
         raise ValueError(f"unknown color mode {mode!r} (expected one of {list(MODES)})")
+    levels = MODE_LEVELS[mode] if levels is None else levels
     if levels not in LEVELS:
         raise ValueError(f"unknown levels {levels!r} (expected one of {list(LEVELS)})")
     before = metrics(stats.frames)

@@ -549,6 +549,20 @@ def test_extend_stops_before_any_export_on_a_color_record_it_cannot_redo(
     assert exports == []
 
 
+def test_extend_redoes_an_older_color_version_from_its_recorded_parameters(
+    tmp_path, exports, loads
+):
+    """A grade an earlier Cutpoint estimated (version 1: luma levels underwater) is redone
+    with the parameters it recorded, and keeps its version: nothing is measured again."""
+    grade = AutoGrade("underwater", black=0.05, white=0.9, gains=(1.3, 0.95, 0.9), mix=0.2)
+    old = grade.to_json()["color"] | {"version": 1}
+    clips = _graded_clips(tmp_path, None, color=old)
+    out = extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+    assert exports[0][-1] == grade and exports[0][-1].filter() == grade.filter() != ""
+    entry = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
+    assert entry["color"] == old
+
+
 def test_extend_redoes_a_skipped_color_record_ungraded(tmp_path, exports, loads):
     skipped = AutoGrade.skipped("auto", "good")
     clips = _graded_clips(tmp_path, None, **skipped.to_json())

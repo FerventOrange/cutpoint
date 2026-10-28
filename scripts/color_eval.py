@@ -4,10 +4,12 @@ cache or to any project.
 
 For every window it samples the frames an export would measure (:func:`cutpoint.color.sample_stats`,
 timed: all-intra sources decode every frame), runs :func:`cutpoint.color.estimate` for each mode
-(``auto``, ``underwater``) and levels variant (``luma``, the production one, and the
-experimental per-channel ``channel``) and prints one table per window:
+(``auto``, ``underwater``) and levels variant (``luma`` and the per-channel ``channel``; the
+one each mode exports with, :data:`cutpoint.color.MODE_LEVELS`, is marked ``*``) and prints one
+table per window:
 
-- mode, levels, skip reason (``-`` when graded; ``good``, ``log``, ``veto_*``)
+- mode, levels, skip reason (``-`` when graded; ``good``, ``log``, ``360``, ``veto_clipped``,
+  ``veto_cast``, ``veto_m3`` for too much colour, ``veto_m3_drop`` for too little)
 - gains (r g b), black and white point(s), red-from-green mix, vibrance
 - M3 colourfulness and gray-world residual, before -> predicted
 - predicted clipped share against the share the levels intend (the veto allows +0.5 points),
@@ -17,7 +19,8 @@ experimental per-channel ``channel``) and prints one table per window:
 - mean CIE76 delta E between the sampled frames and their simulated grade
 
 Vetoed grades are simulated anyway (without the veto), so the numbers and sheets show what
-the veto prevented.
+the veto prevented. A 360 source is skipped (``360``) as ``clips`` skips it: an X3 clip of
+``--project``'s ``pano.json``, or any file with an X3 camera name (``*.insv``, ``LRV_*.lrv``).
 
 Usage::
 
@@ -30,6 +33,13 @@ contact sheets (PNG, 4x2 frames of the window's inner 80 %, rendered by ffmpeg t
 export chain with :meth:`cutpoint.color.AutoGrade.filter`): ``<label>_before.png`` and
 ``<label>_<mode>_<levels>.png``. ``--json`` prints the results as JSON instead of tables.
 ``--strength``, ``--vertical`` and ``--crop W:H:X:Y`` are as on ``cutpoint clips``.
+
+``--save-stats DIR`` writes each window's sampled frames to ``DIR/<stem>_<start>-<end>.npz``
+(``<stem>``: the source's name without extension; times as ``%g`` seconds), with the arrays
+``frames`` (``(n, h, w, 3)`` ``uint8``) and ``high_bit``. ``--stats DIR`` reads them from there
+instead of decoding (the window's file by the same name; with no windows given, every ``.npz``
+in ``DIR``, its source the stem), so results can be replayed without the footage; contact
+sheets still need the source.
 """
 
 from __future__ import annotations
@@ -46,9 +56,12 @@ from typing import Any
 import numpy as np
 
 from cutpoint import color
+from cutpoint.config import resolve_project_path
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import bt709_filter, choose_format
 from cutpoint.ffmpeg_utils import probe, run
+from cutpoint.pano import project as pano_project
+from cutpoint.pano.x3 import parse_name
 from cutpoint.utils import slugify
 
 SHEET_TILE = (4, 2)
@@ -75,6 +88,45 @@ def parse_window(spec: str) -> dict[str, Any]:
     if not m:
         raise argparse.ArgumentTypeError(f"{spec!r}: expected SOURCE@START-END")
     return {"source": m[1], "start": _seconds(m[2]), "end": _seconds(m[3])}
+
+
+def stats_name(w: dict[str, Any]) -> str:
+    """File name of a window's sampled frames: ``<stem>_<start>-<end>.npz``."""
+    return f"{Path(w['source']).stem}_{w['start']:g}-{w['end']:g}.npz"
+
+
+def save_stats(path: Path, stats: color.ColorStats) -> None:
+    """Write ``stats`` as :func:`load_stats` reads it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, frames=stats.frames, high_bit=np.bool_(stats.high_bit))
+
+
+def load_stats(path: Path) -> color.ColorStats:
+    """Sampled frames :func:`save_stats` (or another tool) wrote."""
+    with np.load(path, allow_pickle=False) as data:
+        frames = np.asarray(data["frames"])
+        high_bit = bool(data["high_bit"]) if "high_bit" in data else False
+    if frames.dtype != np.uint8 or frames.ndim != 4 or frames.shape[-1] != 3:
+        raise ValueError(f"{path}: frames must be (n, h, w, 3) uint8, not {frames.dtype}")
+    return color.ColorStats(frames, high_bit)
+
+
+def stats_windows(folder: Path) -> list[dict[str, Any]]:
+    """A window for every ``<stem>_<start>-<end>.npz`` in ``folder`` (source: the stem)."""
+    windows = []
+    for f in sorted(folder.glob("*.npz")):
+        m = re.fullmatch(r"(.+)_([0-9.]+)-([0-9.]+)", f.stem)
+        if m:
+            windows.append({"source": m[1], "start": float(m[2]), "end": float(m[3])})
+    return windows
+
+
+def is_360(source: str, pano: dict[str, Any] | None) -> bool:
+    """True for a source ``clips`` renders as 360: a clip of the project's ``pano.json``
+    (``pano``, :func:`cutpoint.pano.project.load`), or an X3 camera file by name."""
+    if pano and pano_project.clip_for(pano, source) is not None:
+        return True
+    return parse_name(source) is not None
 
 
 def _label(w: dict[str, Any]) -> str:
@@ -169,27 +221,50 @@ def _sheet(
 
 
 def run_window(w: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    """Sample one window and evaluate every mode and levels variant on it."""
+    """Sample one window (or read its saved frames) and evaluate every mode and levels variant
+    on it; a 360 source only records its skip."""
     src = Path(w["source"])
-    info = probe(src)
-    fmt = choose_format([info], args.vertical)
+    label = _label(w)
+    result: dict[str, Any] = {"label": label, "source": str(src), "start": w["start"]}
+    result["end"] = w["end"]
+    if is_360(w["source"], args.pano):
+        result |= {"frames": 0, "sample_s": 0.0, "high_bit": False, "looks_underwater": False}
+        result["variants"] = [
+            {
+                "mode": mode,
+                "levels": levels,
+                "production": levels == color.MODE_LEVELS[mode],
+                "skip": color.SKIP_360,
+                "params": color.AutoGrade.skipped(mode, color.SKIP_360).params(),
+                "before": None,
+                "rg_before": None,
+            }
+            for mode in args.modes
+            for levels in args.levels
+        ]
+        return result
     crop = args.crop
     t0 = time.perf_counter()
-    stats = color.sample_stats(src, info, w["start"], w["end"], fmt, args.vertical, crop)
+    if args.stats:
+        stats = load_stats(args.stats / stats_name(w))
+        info = None
+    else:
+        info = probe(src)
+        fmt = choose_format([info], args.vertical)
+        stats = color.sample_stats(src, info, w["start"], w["end"], fmt, args.vertical, crop)
     took = time.perf_counter() - t0
-    label = _label(w)
-    result: dict[str, Any] = {
-        "label": label,
-        "source": str(src),
-        "start": w["start"],
-        "end": w["end"],
+    if args.save_stats:
+        save_stats(args.save_stats / stats_name(w), stats)
+    result |= {
         "frames": len(stats.frames),
         "sample_s": round(took, 2),
         "high_bit": stats.high_bit,
         "looks_underwater": color.looks_underwater(stats),
         "variants": [],
     }
-    if args.sheets:
+    if args.sheets and info is None and src.is_file():
+        info = probe(src)
+    if args.sheets and info is not None:
         args.sheets.mkdir(parents=True, exist_ok=True)
         base = bt709_filter(info)
         _sheet(
@@ -204,8 +279,9 @@ def run_window(w: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     for mode in args.modes:
         for levels in args.levels:
             grade = color.estimate(stats, mode, args.strength, levels)
-            rec = {"mode": mode, "levels": levels, **evaluate(stats.frames, grade)}
-            if args.sheets and rec.get("filter"):
+            rec = {"mode": mode, "levels": levels, "production": levels == color.MODE_LEVELS[mode]}
+            rec |= evaluate(stats.frames, grade)
+            if args.sheets and info is not None and rec.get("filter"):
                 chain = ",".join(f for f in (bt709_filter(info), rec["filter"]) if f)
                 out = args.sheets / f"{label}_{mode}_{levels}.png"
                 _sheet(src, w["start"], w["end"], chain, out, args.vertical, crop)
@@ -226,7 +302,7 @@ def print_table(r: dict[str, Any]) -> None:
         f"{', looks underwater' if r['looks_underwater'] else ''}"
     )
     head = (
-        f"{'mode':<10} {'levels':<7} {'skip':<12} {'gains r/g/b':<17} {'black':<17} "
+        f"{'mode':<10} {'levels':<8} {'skip':<12} {'gains r/g/b':<17} {'black':<17} "
         f"{'white':<17} {'mix':>5} {'vib':>5}  {'M3 bef->pred':<15} {'resid bef->pred':<15} "
         f"{'clip% pred/int/ch':<18} {'R/G bef->aft':<12} {'dE':>5}"
     )
@@ -235,6 +311,10 @@ def print_table(r: dict[str, Any]) -> None:
     for v in r["variants"]:
         p, b, q = v["params"], v["before"], v.get("predicted")
         gains = "/".join(f"{g:.3f}" for g in p["gains"])
+        levels = v["levels"] + ("*" if v.get("production") else "")
+        if b is None:  # 360: not sampled
+            print(f"{v['mode']:<10} {levels:<8} {v['skip']:<12}")
+            continue
         m3 = f"{b['m3']:.1f}->{q['m3']:.1f}" if q else f"{b['m3']:.1f}"
         res = f"{b['residual']:.4f}->{q['residual']:.4f}" if q else f"{b['residual']:.4f}"
         clip = (
@@ -246,7 +326,7 @@ def print_table(r: dict[str, Any]) -> None:
         rg = f"{v['rg_before']:.3f}->{v['rg_after']:.3f}" if q else f"{v['rg_before']:.3f}"
         de = f"{v['delta_e']:.2f}" if q else "-"
         print(
-            f"{v['mode']:<10} {v['levels']:<7} {v['skip'] or '-':<12} {gains:<17} "
+            f"{v['mode']:<10} {levels:<8} {v['skip'] or '-':<12} {gains:<17} "
             f"{_point(p['black']):<17} {_point(p['white']):<17} {p['mix']:>5.3f} "
             f"{p['vibrance']:>5.3f}  {m3:<15} {res:<15} {clip:<18} {rg:<12} {de:>5}"
         )
@@ -263,12 +343,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--crop", type=parse_spec, help="W:H:X:Y crop, as clips --crop")
     ap.add_argument("--sheets", type=Path, metavar="DIR", help="write contact sheets here")
     ap.add_argument("--json", action="store_true", help="print JSON instead of tables")
+    ap.add_argument(
+        "--stats", type=Path, metavar="DIR", help="read sampled frames from DIR (no decoding)"
+    )
+    ap.add_argument("--save-stats", type=Path, metavar="DIR", help="write sampled frames to DIR")
+    ap.add_argument("--project", help="project whose pano.json names the 360 sources")
     args = ap.parse_args(argv)
+    args.pano = pano_project.load(resolve_project_path(args.project)) if args.project else None
     if args.crop is not None and not isinstance(args.crop, Crop):
         ap.error("--crop: give W:H:X:Y")
     windows = list(args.windows)
     if args.windows_file:
         windows += json.loads(args.windows_file.read_text(encoding="utf-8"))
+    if not windows and args.stats:
+        windows = stats_windows(args.stats)
     if not windows:
         ap.error("give at least one window (SOURCE@START-END or --windows FILE)")
     results = [run_window(w, args) for w in windows]

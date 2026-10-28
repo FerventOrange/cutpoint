@@ -720,14 +720,18 @@ Notes:
   80 %, through the same crop and BT.709 conversion as its export, and grades it with ffmpeg
   filters only: a levels stretch (black at most 0.06, white at least 0.88), a white balance
   from the near-neutral mid-tones (60 % of the cast, at most ±12 % per channel) and a vibrance
-  boost for dull clips. `--color underwater` also borrows red from green and lets the red
-  gain reach +60 %; it is only used when asked for. `--color-strength` below 1 makes every
+  boost for dull clips. `--color underwater` also borrows red from green, takes the black and
+  white points per channel (stretching the red the water took) and lets the red gain reach
+  +60 %; it is only used when asked for. `--color-strength` below 1 makes every
   correction milder. A clip gets no grade, with the reason in its manifest entry, when it
   already looks good (`good`), is log or flat 10-bit footage (`log`: use `--lut` with the
   camera's LUT; an INFO line says so), is a `360` clip (`360`), or when a simulation on the
-  measured frames predicts more clipping than the levels intend, a worse cast or a much more
-  colorful picture (`veto_clipped`, `veto_cast`, `veto_m3`), or when its frames could not be
-  decoded (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater; it
+  measured frames predicts more clipping than the levels intend (`veto_clipped`), a worse cast
+  (`veto_cast`: the gray-world cast rises by more than 0.005 of the luma range, or to more than
+  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`) or
+  one that loses more than 15 % of its colorfulness, such as flat sand turned grey (`veto_m3_drop`;
+  correcting a very strong cast also lowers it, so deep-water clips with little red left can
+  stay ungraded), or when its frames could not be decoded (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater; it
   does not change them. `gaming` footage is graded
   only with an explicit `--color` (with a WARNING): `color` in `config.json` never applies to
   it. `--color` cannot be combined with `--lut`. Each clip records a `color` entry (method,
