@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: the backend of an assistant chat panel (local Ollama only; no page UI yet, that
+  comes in a later release). It is set by a new `assistant` section in `config.json`
+  (`provider`, `model`, `url`, `context_tokens`, `consent`; no API key), and the UI's API
+  (token header only) keeps its chat and history in `ui/assistant/chat.json` and `history.json`
+  in the project (#346).
 - `cutpoint ui`: Settings > Theme switches between Blue (the default, unchanged), Light and
   Dark. The choice is saved in the browser and applied before the page first paints; Light and
   Dark keep text, controls and focus outlines at WCAG AA contrast, and Blue keeps today's colours

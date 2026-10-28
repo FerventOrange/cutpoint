@@ -32,6 +32,11 @@ Trust boundaries:
   starts; the page has no per-run vision box.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
+* The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
+  ``?t=``. It only proposes sequence changes, which the page applies to its working sequence; it
+  writes only ``ui/assistant/chat.json`` and ``ui/assistant/history.json``, never
+  ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
+  paths) reaches the model only inside marked data blocks. Its GET routes only read.
 """
 
 from __future__ import annotations
@@ -72,6 +77,10 @@ from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, default_audio_transition
+from cutpoint.assistant import ops as ai_ops
+from cutpoint.assistant import providers as ai_providers
+from cutpoint.assistant import session as ai_session
+from cutpoint.assistant import store as ai_store
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     COMPRESS_PEAKS,
@@ -112,7 +121,7 @@ logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-MAX_SEGMENTS = 500
+MAX_SEGMENTS = ai_ops.MAX_SEGMENTS
 MAX_LOG_LINES = 300
 MAX_JOBS = 50
 MAX_EXTEND_S = 30.0
@@ -1902,8 +1911,8 @@ def validate_segments(
             raise bad(f"segment {i}: source cannot be read")
         if end > duration + 0.01:
             raise bad(f"segment {i}: end {end:g}s is past the source's {duration:g}s")
-        if not isinstance(label, str) or len(label) > 200:
-            raise bad(f"segment {i}: label must be text of at most 200 characters")
+        if not isinstance(label, str) or len(label) > ai_ops.LABEL_MAX:
+            raise bad(f"segment {i}: label must be text of at most {ai_ops.LABEL_MAX} characters")
         out.append(
             {
                 "id": sid,
@@ -2206,6 +2215,7 @@ def create_app(port: int) -> FastAPI:
         jobs.shutdown()
         media.shutdown()
         picker.shutdown()
+        app.state.assistant.shutdown()
 
     app = FastAPI(
         title="Cutpoint", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
@@ -2771,6 +2781,143 @@ def create_app(port: int) -> FastAPI:
             raise bad("unknown output", 404)
         return send(p / name, request)
 
+    # -- assistant (#346) --------------------------------------------------------------
+    # A chat turn only proposes sequence edits: the page applies one to its working sequence and
+    # reports it here for the history. Nothing below writes review.json; GET routes only read.
+    turns = ai_session.Turns()
+    app.state.assistant = turns
+
+    def assistant_provider() -> ai_providers.Provider:
+        try:
+            return ai_providers.make()
+        except ValueError as err:  # a bad Ollama port
+            raise bad(str(err), 409) from err
+
+    def assistant_state(
+        p: Path, segments: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], ai_ops.Durations, str]:
+        """``(moments, source durations, base_key)`` of the project with ``segments``."""
+        hl = _highlights(p)
+        durations = ai_ops.Durations(
+            {s["path"]: s["duration"] for s in sources.entries(p)},
+            lambda path: media.duration(remap_source(path)),
+        )
+        moments = (moments_view(hl) or {}).get("candidates") or []
+        return moments, durations, ai_ops.base_key(segments, hl)
+
+    def assistant_save(p: Path, name: str) -> None:
+        """Check ``ui/assistant/<name>`` may be written and create its folder."""
+        _own(p, f"{ai_store.FOLDER}/{name}")
+        _ui_folder(p, "assistant")
+
+    def assistant_turn(pid: str, tid: str) -> ai_session.Turn:
+        turn = turns.get(str(project_dir(pid)), tid)
+        if turn is None:
+            raise bad("unknown turn", 404)
+        return turn
+
+    @owned.get("/projects/{pid}/assistant")
+    def get_assistant(pid: str):
+        """The provider in use, the saved chat and the turn still running, if any."""
+        p = project_dir(pid)
+        running = [t.view() for t in turns.of(str(p)) if t.status == "running"]
+        return {
+            "provider": ai_providers.describe(assistant_provider()),
+            "turns": ai_store.turns(p),
+            "running": running,
+        }
+
+    @owned.post("/projects/{pid}/assistant/turns")
+    def start_turn(pid: str, body: dict[str, Any]):
+        """Ask the assistant ``text`` about the working sequence ``segments`` (default: the
+        saved review). Poll the turn for its events."""
+        p = project_dir(pid)
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > ai_session.MAX_TEXT:
+            raise bad(f"text must be 1-{ai_session.MAX_TEXT} characters")
+        raw = body.get("segments")
+        if raw is None:
+            review = _load(p, f"{UI_DIR}/review.json")
+            raw = (review.get("segments") if isinstance(review, dict) else None) or []
+        segments = validate_segments(raw, sources.entries(p), media)
+        moments, durations, key = assistant_state(p, segments)
+        transcript = ""
+        if _inside(p, "transcript.txt"):
+            with contextlib.suppress(OSError, UnicodeDecodeError):
+                transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
+        project = ai_session.Project(moments, segments, durations, transcript, key)
+        provider = assistant_provider()
+        assistant_save(p, ai_store.CHAT)
+        turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p))
+        try:
+            turns.start(str(p), turn, lambda t: ai_store.add_turn(p, t.record()))
+        except ai_session.BusyError as err:
+            raise bad(str(err), 409) from err
+        return turn.view()
+
+    @owned.get("/projects/{pid}/assistant/turns/{tid}")
+    def poll_turn(pid: str, tid: str, after: int = 0):
+        """The turn with its events from number ``after`` on."""
+        return assistant_turn(pid, tid).view(after)
+
+    @owned.post("/projects/{pid}/assistant/turns/{tid}/cancel")
+    def cancel_turn(pid: str, tid: str):
+        turn = assistant_turn(pid, tid)
+        turn.cancel()
+        return turn.view()
+
+    @owned.post("/projects/{pid}/assistant/proposals/{prop}/applied")
+    def proposal_applied(pid: str, prop: str, body: dict[str, Any]):
+        """Record that the page applied proposal ``prop`` to its working sequence ``segments``
+        (as it was before). When those or the analysis changed since the proposal was made, its
+        ops are applied again to them; the result's ``after`` is the sequence to show."""
+        p = project_dir(pid)
+        found = next(
+            ((t.id, hit) for t in turns.of(str(p)) if (hit := t.proposal(prop)) is not None), None
+        )
+        if found is None and (saved := ai_store.find_proposal(p, prop)) is not None:
+            found = (saved[0].get("id"), saved[1])
+        if found is None:
+            raise bad("unknown proposal", 404)
+        tid, proposal = found
+        before = validate_segments(body.get("segments"), sources.entries(p), media)
+        moments, durations, key = assistant_state(p, before)
+        after, changes, rebased = proposal.get("after"), proposal.get("diff"), False
+        if key != proposal.get("base_key"):
+            out = ai_ops.apply_ops(before, proposal.get("ops"), moments, durations)
+            if out.error:
+                raise bad(f"the proposal no longer applies to this sequence: {out.error}", 409)
+            after, changes, rebased = out.after, out.diff, True
+        entry = {
+            "id": secrets.token_hex(6),
+            "proposal": prop,
+            "turn": tid,
+            "summary": proposal.get("summary", ""),
+            "applied": datetime.now().isoformat(timespec="seconds"),
+            "base_key": key,
+            "rebased": rebased,
+            "before": before,
+            "after": after,
+            "diff": changes,
+        }
+        assistant_save(p, ai_store.HISTORY)
+        ai_store.add_applied(p, entry)
+        return entry
+
+    @owned.delete("/projects/{pid}/assistant/chat")
+    def clear_chat(pid: str):
+        """Forget the chat and stop a running turn; the history of applied proposals stays."""
+        p = project_dir(pid)
+        turns.clear(str(p))
+        if (p / ai_store.FOLDER / ai_store.CHAT).exists():
+            assistant_save(p, ai_store.CHAT)
+            ai_store.clear_chat(p)
+        return {"turns": []}
+
+    @owned.get("/projects/{pid}/assistant/history")
+    def get_history(pid: str):
+        return {"applied": ai_store.history(project_dir(pid))}
+
     api.include_router(secure)
     api.include_router(owned)
     api.include_router(served)
@@ -2847,3 +2994,4 @@ def run(port: int = 8765) -> None:
         app.state.jobs.shutdown()
         app.state.media.shutdown()
         app.state.picker.shutdown()
+        app.state.assistant.shutdown()
