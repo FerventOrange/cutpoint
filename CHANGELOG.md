@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `cutpoint ui`: the backend of an assistant chat panel (local Ollama only; no page UI yet, that
-  comes in a later release). It is set by a new `assistant` section in `config.json`
-  (`provider`, `model`, `url`, `context_tokens`, `consent`; no API key), and the UI's API
-  (token header only) keeps its chat and history in `ui/assistant/chat.json` and `history.json`
-  in the project (#346).
+- `cutpoint ui`: the backend of the AI Chat tab below (local Ollama only). It is set by a new
+  `assistant` section in `config.json` (`provider`, `model`, `url`, `context_tokens`, `consent`;
+  no API key), and the UI's API (token header only) keeps its chat and history in
+  `ui/assistant/chat.json` and `history.json` in the project (#346).
+- `cutpoint ui` AI Chat tab: ask a local model to find, add, remove, reorder or trim moments.
+  Each change is previewed in the Sequence tab (marked rows, moments and trim edges) before
+  Apply; Undo and Redo (Ctrl+Z, Ctrl+Y) cover manual and AI edits, and an applied change can be
+  reverted from its history (#346).
 - `cutpoint ui`: Settings > Theme switches between Blue (the default, unchanged), Light and
   Dark. The choice is saved in the browser and applied before the page first paints; Light and
   Dark keep text, controls and focus outlines at WCAG AA contrast, and Blue keeps today's colours
@@ -34,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint edit --kind` in the project's style and make the result the current export. A second
   run asks before replacing earlier clips. The presets are off, with the reason shown, for 360
   projects and for projects analyzed with options `edit` cannot repeat.
+- `cutpoint ui`: the trim rail shows a filmstrip of stills (keyframes; exact ones when zoomed in)
+  behind the clip markers, and the project's still cache keeps up to 1500 stills (#261).
 
 ### Changed
 
@@ -76,6 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest recorded a grade (`lut`/`color`) and the new run has none. The output is unchanged.
 
 ### Fixed
+
+- `assemble`: the audio and container of `final.mp4` now end with the video, to within one audio
+  frame. Cut joins ended about 24 ms late and started the video about 21 ms late, and
+  `--loudnorm` or the limiter padded the audio by about 0.1 s. The `.fcpxml` and `.otio` of cut
+  joins now end where `final.mp4` ends. Plain cut joins now re-encode the audio once (192k AAC)
+  instead of stream-copying it; the video is still stream-copied (#473).
 
 - `cutpoint ui`: stills of BT.709 and HDR sources now show the same colours as their exports.
   A JPEG is always decoded as BT.601 full range, so these stills were about 7 codes off (up to
