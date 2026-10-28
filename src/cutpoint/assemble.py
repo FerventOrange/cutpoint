@@ -28,10 +28,12 @@ import math
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from fractions import Fraction
+from itertools import pairwise
 from pathlib import Path
 
-from cutpoint import jsonout
+from cutpoint import jsonout, paths
 from cutpoint.encode import (
     A_FMT,
     AUDIO_OUT,
@@ -56,6 +58,7 @@ from cutpoint.ffmpeg_utils import (
     clip_momentary,
     encode_with_fallback,
     extract_audio,
+    ffprobe_json,
     has_soxr,
     measure_loudness,
     output_dir,
@@ -180,20 +183,27 @@ def _normalize_inputs(
     ffmpeg 9 writes the frames' primaries and transfer over the output tags, and xfade passes
     on the first input's, so one clip without them left the final without them.
     """
-    w, h, fps = infos[0].width, infos[0].height, infos[0].fps
+    fps = infos[0].fps
     fades = fades or [0.0] * len(infos)
     peaks = peaks or [""] * len(infos)
     chains = []
     for i, info in enumerate(infos):
-        color = bt709_filter(info) or (TAG_BT709 if info.color_space == "bt709" else "")
-        chains.append(
-            f"[{i}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
-            f"{color + ',' if color else ''}format=yuv420p,"
-            f"settb=AVTB,setpts=PTS-STARTPTS[v{i}]"
-        )
+        chains.append(_video_chain(i, info, infos[0]))
         chains.append(_audio_chain(i, info, fades[i], peaks=peaks[i]))
     return chains, fps
+
+
+def _video_chain(i: int, info: MediaInfo, ref: MediaInfo, trim: str = "") -> str:
+    """``[v<i>]`` from input ``i``: ``ref``'s size and rate, BT.709 (see
+    :func:`_normalize_inputs`); ``trim`` (a filter and ",") goes right after the rate."""
+    w, h, fps = ref.width, ref.height, ref.fps
+    color = bt709_filter(info) or (TAG_BT709 if info.color_space == "bt709" else "")
+    return (
+        f"[{i}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},{trim}"
+        f"{color + ',' if color else ''}format=yuv420p,"
+        f"settb=AVTB,setpts=PTS-STARTPTS[v{i}]"
+    )
 
 
 def _encode(files: list[Path], graph: str, out: Path) -> None:
@@ -378,9 +388,39 @@ def crossfade(
     still starts on the frame :func:`clip_offsets` puts it on.
 
     Each clip's audio is padded/trimmed to its video (``vduration``), which xfade and
-    :func:`clip_offsets` follow, so audio that runs on cannot push the later clips late."""
-    chains, fps = _normalize_inputs(infos, fades if audio == "cut" else None, peaks)
-    last = len(files) - 1
+    :func:`clip_offsets` follow, so audio that runs on cannot push the later clips late.
+
+    :func:`crossfade_copy` is the faster join of the same result; this is its fallback."""
+    _encode(files, ";".join(_crossfade_chains(infos, fade, peaks, audio, fades)), out)
+    return fade
+
+
+def _crossfade_chains(
+    infos: list[MediaInfo],
+    fade: float,
+    peaks: list[str] | None,
+    audio: str,
+    fades: list[float] | None,
+    *,
+    video: bool = True,
+    base: int = 0,
+) -> list[str]:
+    """The filter chains of :func:`crossfade` (``[v]`` and ``[a]``), to join with ";".
+
+    ``video=False`` leaves out the video chains (``[a]`` only) and ``base`` shifts the input
+    indexes, for :func:`crossfade_copy`, whose input 0 is the joined video: the audio is the
+    same graph, so it decodes to the same samples."""
+    if video:
+        chains, fps = _normalize_inputs(infos, fades if audio == "cut" else None, peaks)
+    else:
+        fps = infos[0].fps
+        edges = (fades if audio == "cut" else None) or [0.0] * len(infos)
+        filters = peaks or [""] * len(infos)
+        chains = [
+            _audio_chain(i + base, info, edges[i], label=i, peaks=filters[i])
+            for i, info in enumerate(infos)
+        ]
+    last = len(infos) - 1
     if audio == "cut":
         cut = audio_cut_point(fade, fps)
         for i, info in enumerate(infos):
@@ -393,25 +433,412 @@ def crossfade(
                 + (f",afade=t=out:st={end - start - edge:.6f}:d={edge:.6f}" if i < last else "")
                 + f"[at{i}]"
             )
-        pairs = "".join(f"[at{i}]" for i in range(len(files)))
-        chains.append(f"{pairs}concat=n={len(files)}:v=0:a=1[a]")
+        pairs = "".join(f"[at{i}]" for i in range(len(infos)))
+        chains.append(f"{pairs}concat=n={len(infos)}:v=0:a=1[a]")
     else:
         for i, info in enumerate(infos):
             chains.append(f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS[at{i}]")
     half_frame = 0.5 / float(fps) if fps > 0 else 0.0
     vprev, aprev = "v0", "at0"
     offsets = clip_offsets(infos, fade)
-    for i in range(1, len(files)):
+    for i in range(1, len(infos)):
         offset = max(offsets[i] - half_frame, 0.0)
         vout, aout = ("v", "a") if i == last else (f"vx{i}", f"ax{i}")
-        chains.append(
-            f"[{vprev}][v{i}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}[{vout}]"
-        )
+        if video:
+            chains.append(
+                f"[{vprev}][v{i}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}"
+                f"[{vout}]"
+            )
         if audio != "cut":
             chains.append(f"[{aprev}][at{i}]acrossfade=d={fade:.6f}[{aout}]")
         vprev, aprev = vout, aout
-    _encode(files, ";".join(chains), out)
-    return fade
+    return chains
+
+
+# --------------------------------------------------------------------------- stream-copied crossfade
+COPY_MAX_SHARE = 0.6  # re-encoding more of the frames than this: crossfade() is as fast
+
+
+@dataclass(frozen=True)
+class VideoPackets:
+    """A clip's video packets, as :func:`crossfade_copy` needs them: ``frames`` packets (one
+    per frame), the frame indexes of its ``keys`` and their ``key_times`` (s from the file
+    start, as ``-ss`` reads them), the stream ``time_base`` and the hash of its ``extradata``
+    (the encoder settings, which every piece of a stream-copied join must share), and the
+    file's ``duration`` (s), where the concat demuxer starts the next piece."""
+
+    frames: int
+    keys: tuple[int, ...]
+    key_times: tuple[float, ...]
+    time_base: Fraction
+    extradata: str
+    duration: float = 0.0
+
+
+def _video_packets(path: Path, fps: Fraction) -> VideoPackets | None:
+    """The :class:`VideoPackets` of ``path`` (one ffprobe run), or None when its video is not
+    constant ``fps`` (timestamps one frame apart) starting on a keyframe.
+
+    Raises:
+        FFmpegError: If ffprobe fails.
+    """
+    data = ffprobe_json(
+        path,
+        streams="v:0",
+        entries="packet=pts,flags:stream=time_base,extradata_hash:format=start_time,duration",
+        options=("-show_data_hash", "MD5"),
+    )
+    streams, packets = data.get("streams") or [], data.get("packets") or []
+    if not streams or not packets or any("pts" not in p for p in packets):
+        return None
+    tb = Fraction(streams[0].get("time_base") or "0")
+    if tb <= 0 or fps <= 0 or "K" not in packets[0].get("flags", ""):
+        return None
+    step = 1 / (tb * fps)  # ticks per frame
+    pts = sorted(int(p["pts"]) for p in packets)
+    if step.denominator != 1:
+        return None
+    for n, (a, b) in enumerate(pairwise(pts)):
+        if b - a != step:
+            logger.debug("%s: frame %d is %d ticks after the one before, not %s", path.name,
+                         n + 1, b - a, step)  # fmt: skip
+            return None
+    start = float(data.get("format", {}).get("start_time") or 0)
+    keyed = sorted(int(p["pts"]) for p in packets if "K" in p.get("flags", ""))
+    if keyed[0] != pts[0]:
+        return None
+    return VideoPackets(
+        frames=len(pts),
+        keys=tuple(int((k - pts[0]) / step) for k in keyed),
+        key_times=tuple(float(k * tb) - start for k in keyed),
+        time_base=tb,
+        extradata=str(streams[0].get("extradata_hash") or ""),
+        duration=float(data.get("format", {}).get("duration") or 0),
+    )
+
+
+def _why_no_copy(
+    infos: list[MediaInfo], packets: list[VideoPackets | None] | None = None
+) -> str | None:
+    """Why the clips cannot be joined by :func:`crossfade_copy`, or None if they can.
+
+    The clips (``infos``) must be H.264 4:2:0 of the first one's size and rate, tagged BT.709
+    TV range (the join's frames are, see :func:`_normalize_inputs`). With their ``packets``,
+    also constant rate from a keyframe, as many frames as their video lasts, and one time base
+    and set of encoder settings."""
+    if len(infos) < 2 or infos[0].fps <= 0:
+        return "fewer than two clips or no frame rate"
+    ref = infos[0]
+    for info in infos:
+        name = info.path.name
+        if info.vcodec != "h264" or info.pix_fmt != "yuv420p":
+            return f"{name} is not H.264 yuv420p"
+        if (info.width, info.height, info.fps) != (ref.width, ref.height, ref.fps):
+            return f"{name} differs from {ref.path.name} in size or frame rate"
+        tags = (info.color_space, info.color_primaries, info.color_transfer, info.color_range)
+        if tags != ("bt709", "bt709", "bt709", "tv") or bt709_filter(info):
+            return f"{name} is not tagged BT.709 TV range"
+    for info, p in zip(infos, packets or [], strict=False):
+        name = info.path.name
+        if p is None:
+            return f"{name} is not constant frame rate from a keyframe"
+        if p.frames != round(info.vduration * float(ref.fps)):
+            return f"{name} has {p.frames} frames for {info.vduration:.3f}s of video"
+        if p.time_base != packets[0].time_base or p.time_base.numerator != 1:
+            return f"{name} has another time base"
+        if p.extradata != packets[0].extradata:
+            return f"{name} was encoded with other settings than {ref.path.name}"
+    return None
+
+
+@dataclass(frozen=True)
+class Body:
+    """Frames [``start``, ``end``) of clip ``clip``, stream-copied (``start`` a keyframe, and
+    ``end`` one or the clip's end)."""
+
+    clip: int
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class Run:
+    """Re-encoded crossfades from clip ``i`` frame ``s`` (a keyframe) to clip ``j`` frame
+    ``e`` (exclusive; a keyframe or the clip's end): every join between them, and clips with
+    no frames to copy between their fades whole."""
+
+    i: int
+    s: int
+    j: int
+    e: int
+
+
+def run_frames(run: Run, frames: list[int], fade_frames: int) -> int:
+    """How many output frames ``run`` makes: its clips' frames, less one fade per join."""
+    inside = frames[run.i] - run.s + sum(frames[run.i + 1 : run.j]) + run.e
+    return inside - (run.j - run.i) * fade_frames
+
+
+def fade_copy_plan(packets: list[VideoPackets], fade_frames: int) -> list[Body | Run] | None:
+    """The pieces of a crossfade join of clips with ``packets`` over ``fade_frames``, in order.
+
+    Each clip but the first is copied from its first keyframe at or after the fade in, each
+    but the last up to its last keyframe at or before the fade out; the fades between are
+    re-encoded (:class:`Run`). A clip with no frames left to copy stays in the run. Returns
+    None when more than :data:`COPY_MAX_SHARE` of the output would be re-encoded.
+    """
+    frames = [p.frames for p in packets]
+    last = len(packets) - 1
+    pieces: list[Body | Run] = []
+    opened: tuple[int, int] | None = None  # (clip, frame) the current run starts at
+    for k, p in enumerate(packets):
+        head = 0 if k == 0 else next((f for f in p.keys if f >= fade_frames), p.frames)
+        tail = p.frames if k == last else max(f for f in p.keys if f <= p.frames - fade_frames)
+        if k > 0 and head >= tail and k < last:
+            continue  # nothing to copy: the run goes on through this clip
+        if opened is not None:
+            pieces.append(Run(opened[0], opened[1], k, min(head, p.frames)))
+        if head < tail:
+            pieces.append(Body(k, head, tail))
+        opened = (k, tail) if k < last else None
+    total = sum(frames) - last * fade_frames
+    encoded = sum(run_frames(r, frames, fade_frames) for r in pieces if isinstance(r, Run))
+    return None if encoded > COPY_MAX_SHARE * total else pieces
+
+
+def _encode_run(
+    enc: VideoEncoder,
+    files: list[Path],
+    infos: list[MediaInfo],
+    packets: list[VideoPackets],
+    run_: Run,
+    fade: float,
+    out: Path,
+) -> None:
+    """Encode ``run_`` into ``out`` with ``enc``: :func:`crossfade`'s video graph over its
+    clips, the first read from its keyframe ``s`` on, the last cut at frame ``e``.
+
+    The movie time scale is the clips' too: in the default 1000 Hz, a window that is no whole
+    number of milliseconds (44 frames at 60 fps) gets a rounded duration, and the concat
+    demuxer starts the next piece that much early."""
+    fps = infos[0].fps
+    half = 0.5 / float(fps)
+    offsets = clip_offsets(infos, fade)
+    t0 = offsets[run_.i] + run_.s / float(fps)
+    args, chains = ["ffmpeg", "-y", "-v", "error"], []
+    for n, k in enumerate(range(run_.i, run_.j + 1)):
+        p = packets[k]
+        if k == run_.i and run_.s > 0:  # half a frame early: the keyframe is the first kept
+            args += ["-ss", f"{p.key_times[p.keys.index(run_.s)] - half:.6f}"]
+        args += ["-i", str(files[k])]
+        trim = f"trim=end_frame={run_.e}," if k == run_.j and run_.e < p.frames else ""
+        chains.append(_video_chain(n, infos[k], infos[0], trim))
+    vprev, last = "v0", run_.j - run_.i
+    for n in range(1, last + 1):
+        offset = max(offsets[run_.i + n] - t0 - half, 0.0)
+        vout = "v" if n == last else f"vx{n}"
+        chains.append(
+            f"[{vprev}][v{n}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}[{vout}]"
+        )
+        vprev = vout
+    graph = ";".join(chains)
+    if enc.upload:
+        graph += f";[v]{enc.upload}[vgpu]"
+    frames = [q.frames for q in packets]
+    fade_frames = round(fade * float(fps))
+    args += [
+        "-filter_complex",
+        graph,
+        "-map",
+        "[vgpu]" if enc.upload else "[v]",
+        "-frames:v",
+        str(run_frames(run_, frames, fade_frames)),
+        "-an",
+        *enc.args(),
+        "-color_range",
+        "tv",
+        *BT709_TAGS,
+        "-video_track_timescale",
+        str(packets[0].time_base.denominator),
+        "-movie_timescale",
+        str(packets[0].time_base.denominator),
+        str(out),
+    ]
+    run(args)
+
+
+def _extract_body(file: Path, body: Body, p: VideoPackets, fps: Fraction, out: Path) -> None:
+    """Stream-copy frames [``body.start``, ``body.end``) of ``file`` into ``out`` (video only).
+
+    The segment muxer cuts on the keyframes at those frames (half a frame early, so the
+    keyframe opens the piece) and the middle piece is kept: packet-exact, unlike the concat
+    demuxer's inpoint/outpoint, which cut on decoding timestamps. The movie time scale is the
+    clip's, as in :func:`_encode_run`."""
+    timescale = p.time_base.denominator
+    half = 0.5 / float(fps)
+    cuts = [p.key_times[p.keys.index(f)] - half for f in (body.start, body.end) if 0 < f < p.frames]
+    assert cuts  # every body ends at a fade or starts after one
+    # Relative pattern run in out's folder: a % in the project path is no template field.
+    run([
+        "ffmpeg", "-y", "-v", "error", "-i", str(file.resolve()), "-map", "0:v:0", "-c", "copy",
+        "-f", "segment", "-segment_times", ",".join(f"{t:.6f}" for t in cuts),
+        "-reset_timestamps", "1", "-segment_format", "mp4",
+        "-segment_format_options", f"video_track_timescale={timescale}:movie_timescale={timescale}",
+        f"{out.stem}.%d.mp4",
+    ], cwd=out.parent)  # fmt: skip
+    keep = 1 if body.start > 0 else 0
+    for n in range(len(cuts) + 1):
+        piece = out.with_name(f"{out.stem}.{n}.mp4")
+        if n == keep:
+            if not piece.exists():
+                raise FFmpegError(f"the segment muxer wrote no piece {n} of {file.name}")
+            piece.replace(out)
+        else:
+            piece.unlink(missing_ok=True)
+
+
+def _piece_ok(
+    piece: Path, fps: Fraction, frames: int, ref: VideoPackets, timed: bool = True
+) -> bool:
+    """Whether ``piece`` has ``frames`` constant-rate frames from a keyframe and ``ref``'s
+    time base and encoder settings, so the concat demuxer can join it to the others; if
+    ``timed``, also a duration of those frames to half a tick (where the next piece starts).
+    Says why not at DEBUG."""
+    got = _video_packets(piece, fps)
+    want = frames / float(fps)
+    if got is None:
+        why = "not constant frame rate from a keyframe"
+    elif got.frames != frames:
+        why = f"{got.frames} frames, not {frames}"
+    elif (got.time_base, got.extradata) != (ref.time_base, ref.extradata):
+        why = "another time base or encoder settings"
+    elif timed and abs(got.duration - want) > float(ref.time_base) / 2 + 1e-6:
+        why = f"lasts {got.duration:.6f}s, not {want:.6f}s"
+    else:
+        return True
+    logger.debug("Crossfade: piece %s does not check out: %s", piece.name, why)
+    return False
+
+
+def _write_pieces(listing: Path, pieces: list[tuple[Path, int]], fps: Fraction) -> None:
+    """Write the concat demuxer's ``listing`` of ``pieces`` (file, frames), in order.
+
+    The demuxer starts each piece where the ones before it end, adding their durations in
+    whole microseconds: a piece of no whole number of them (44 frames at 60 fps, 733333.33 us)
+    would count short, and after 17 such at 60 fps the next piece starts a tick early. Each piece
+    gets a ``duration`` from the frame grid, rounded so that the sums are the grid times to
+    half a microsecond (``T_k`` = the frames before piece ``k`` / ``fps``)."""
+    lines, before = [], 0
+    for piece, frames in pieces:
+        start, end = (round(Fraction(n) / fps * 10**6) for n in (before, before + frames))
+        lines.append("file '" + piece.resolve().as_posix().replace("'", "'\\''") + "'\n")
+        lines.append(f"duration {(end - start) // 10**6}.{(end - start) % 10**6:06d}\n")
+        before += frames
+    listing.write_text("".join(lines), encoding="utf-8")
+
+
+def _no_copy(why: str) -> bool:
+    logger.info("Crossfade: re-encoding the whole video (%s)", why)
+    return False
+
+
+def crossfade_copy(
+    files: list[Path],
+    infos: list[MediaInfo],
+    out: Path,
+    fade: float,
+    peaks: list[str] | None = None,
+    audio: str = "crossfade",
+    fades: list[float] | None = None,
+) -> bool:
+    """:func:`crossfade` (same arguments) re-encoding only the video around the fades.
+
+    The clips' video between the fades is stream-copied from keyframe to keyframe
+    (:func:`fade_copy_plan`; ``cutpoint clips`` forces keyframes near both ends of every clip,
+    :func:`~cutpoint.encode.edge_keyframes`); the windows around the fades go through
+    :func:`crossfade`'s video graph (:func:`_encode_run`). The audio is :func:`crossfade`'s
+    graph over the whole join, encoded once: the same samples, no seams at the pieces. The
+    video has as many frames as :func:`crossfade`'s, so the timelines and final.srt match it.
+
+    Returns:
+        False, with one INFO line saying why and nothing written, when the clips cannot be
+        joined so (:func:`_why_no_copy`, ``CUTPOINT_FADE_COPY=0``, too little to copy, a
+        re-encoded window the copied video cannot join or an ffmpeg failure): call
+        :func:`crossfade` then.
+    """
+    if paths.env("FADE_COPY") == "0":
+        return _no_copy("CUTPOINT_FADE_COPY=0")
+    if (why := _why_no_copy(infos)) is not None:
+        return _no_copy(why)
+    fps = infos[0].fps
+    fade_frames = round(fade * float(fps))
+    work = out.with_name(f".{out.stem.lstrip('.')}.fadecopy")  # out may be hidden already
+    listing = work / "pieces.txt"
+    try:
+        packets = [_video_packets(f, fps) for f in files]
+        if (why := _why_no_copy(infos, packets)) is not None:
+            return _no_copy(why)
+        copyable = [p for p in packets if p is not None]
+        plan = fade_copy_plan(copyable, fade_frames)
+        if plan is None:
+            return _no_copy(f"more than {COPY_MAX_SHARE:.0%} of the frames are near a fade")
+        work.mkdir(exist_ok=True)
+        frames = [p.frames for p in copyable]
+        ref, cpu, encoded = copyable[0], False, 0
+        pieces: list[tuple[Path, int]] = []  # (file, frames)
+        for n, item in enumerate(plan):
+            piece = work / f"{n:04d}.mp4"
+            if isinstance(item, Body):
+                _extract_body(files[item.clip], item, copyable[item.clip], fps, piece)
+                if not _piece_ok(piece, fps, item.end - item.start, ref):
+                    return _no_copy(
+                        f"the copied video of {files[item.clip].name} does not check out"
+                    )
+            else:
+                want = run_frames(item, frames, fade_frames)
+
+                def encode(
+                    enc: VideoEncoder, item: Run = item, piece: Path = piece
+                ) -> VideoEncoder:
+                    _encode_run(enc, files, infos, copyable, item, fade, piece)
+                    return enc
+
+                enc = (
+                    encode(VideoEncoder("cpu")) if cpu else encode_with_fallback(encode, "assemble")
+                )
+                ok = _piece_ok(piece, fps, want, ref)
+                if not ok and enc.kind != "cpu":  # a GPU encoder's settings are not the clips'
+                    cpu = True  # libx264 for this window and the rest
+                    encode(VideoEncoder("cpu"))
+                    ok = _piece_ok(piece, fps, want, ref)
+                if not ok:
+                    return _no_copy("a re-encoded fade does not check out")
+                encoded += want
+            pieces.append((piece, item.end - item.start if isinstance(item, Body) else want))
+        _write_pieces(listing, pieces, fps)
+        args = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing)]
+        for f in files:
+            args += ["-i", str(f)]
+        graph = ";".join(_crossfade_chains(infos, fade, peaks, audio, fades, video=False, base=1))
+        run([*args, "-filter_complex", graph, "-map", "0:v:0", "-map", "[a]", "-c:v", "copy",
+             *AUDIO_OUT, "-movflags", "+faststart", str(out)])  # fmt: skip
+        total = sum(frames) - (len(files) - 1) * fade_frames
+        if not _piece_ok(out, fps, total, ref, timed=False):  # its audio may run on
+            out.unlink(missing_ok=True)
+            return _no_copy("the joined video does not check out")
+    except (FFmpegError, OSError) as err:
+        out.unlink(missing_ok=True)
+        lines = [line for line in str(err).splitlines() if line.strip()]
+        return _no_copy(f"ffmpeg failed: {lines[-1] if lines else err}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    logger.info(
+        "Crossfade: re-encoded %d of %d frames (%.0f%%), stream-copied the rest",
+        encoded,
+        total,
+        100 * encoded / total,
+    )
+    return True
 
 
 # --------------------------------------------------------------------------- captions
@@ -730,7 +1157,9 @@ def _join(
         return 0.0
     if transition == "fade":
         fades = _edge_fades(clips_dir, files, audio_fade) if audio == "cut" else None
-        used = crossfade(files, infos, out, fade_dur, peaks, audio, fades)
+        used = fade_dur
+        if not crossfade_copy(files, infos, out, fade_dur, peaks, audio, fades):
+            used = crossfade(files, infos, out, fade_dur, peaks, audio, fades)
         logger.info("Crossfade duration %.3fs%s", used, ", audio cut" if audio == "cut" else "")
         return used
     raise ValueError(f"Unknown transition {transition!r}")
