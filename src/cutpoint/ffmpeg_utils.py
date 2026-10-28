@@ -333,8 +333,49 @@ def snap_fps(fps: Fraction) -> Fraction:
     )
 
 
+# probe() results by (caller's path, probed path, its file_stamp); oldest dropped past the cap
+_PROBED: dict[tuple[str, str, tuple[int, int, int]], MediaInfo] = state.register_container(
+    __name__, "_PROBED", {}
+)
+_PROBED_MAX = 256
+_PROBED_LOCK = threading.Lock()
+
+
 def probe(path: Path) -> MediaInfo:
-    """Probe a media file with ffprobe (a staged copy is probed if present)."""
+    """Probe a media file with ffprobe (a staged copy is probed if present).
+
+    Memoised per caller path, probed file (the staged copy or ``path``) and its size, mtime and
+    inode, so a rewritten or newly staged file is probed again (#372). Failures are not cached;
+    :func:`clear_probe_cache` (or :func:`cutpoint.reset_state`) empties the memo.
+    """
+    from cutpoint.stage import staged_path  # noqa: PLC0415
+
+    target = staged_path(str(path))
+    stamp = file_stamp(Path(target))
+    if stamp is None:  # unreadable: let ffprobe report it, uncached
+        return _probe(path)
+    key = (str(path), target, stamp)
+    with _PROBED_LOCK:
+        hit = _PROBED.pop(key, None)
+        if hit is not None:
+            _PROBED[key] = hit  # most recently used last
+            return hit
+    info = _probe(path)
+    with _PROBED_LOCK:
+        _PROBED[key] = info
+        while len(_PROBED) > _PROBED_MAX:
+            del _PROBED[next(iter(_PROBED))]
+    return info
+
+
+def clear_probe_cache() -> None:
+    """Forget every memoised :func:`probe` result."""
+    with _PROBED_LOCK:
+        _PROBED.clear()
+
+
+def _probe(path: Path) -> MediaInfo:
+    """:func:`probe` without the memo."""
     data = ffprobe_json(path, show_format=True, show_streams=True)
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
