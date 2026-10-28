@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: "Export clips" of a 360 project first stitches the recordings it needs with the
+  Insta360 Media SDK when the SDK runs (`360 stitch`, skipping recordings already stitched), then
+  renders from the stitched equirects. The job log shows the disk estimate (about 54 GB per hour
+  of footage); too little free space, a missing SDK, no NVIDIA GPU or a failed stitch exports from the preview
+  with a WARNING, and Export says "Exported from the 360 preview (not stitched)". The new
+  `pano.auto_stitch` key (default `true`) turns it off; the command-line `clips` is unchanged.
 - Docs: how to install Ollama and the models for `--vision` and AI Chat.
 - `cutpoint ui` AI Chat: bring your own AI. `assistant.provider` can be `openai` (OpenAI, or
   LM Studio, vLLM and llama-server at `assistant.url`) or `anthropic` (default model

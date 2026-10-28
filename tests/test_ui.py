@@ -29,9 +29,11 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, cli, config, edit, encode, ffmpeg_utils, ui
+from cutpoint import cache, capabilities, cli, config, edit, encode, ffmpeg_utils, ui
 from cutpoint.assistant import session as ai_session
+from cutpoint.pano import project as pano_project
 from cutpoint.utils import find_videos
+from pano_helpers import x3clip
 
 PORT = 8765
 
@@ -225,6 +227,239 @@ def test_360_analyze_job_view_carries_the_step_plan(
     assert [s["step"] for s in res.json()["progress"]["plan"]] == [
         "scan", "views", "analyze", "events",
     ]  # fmt: skip
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
+
+
+class StitchExport:
+    """A 360 project with one recorded clip and one moment, and fake job processes.
+
+    ``spawn`` records each command; the ``360 stitch`` one exits ``stitch_code`` (after
+    ``hold`` is set, when given), the ``clips`` one writes its manifest. ``sdk_status`` and the
+    free space are mocked: the real SDK never runs.
+    """
+
+    def __init__(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        sdk: dict | None = None,
+        free: float | None = 500.0,
+        nvidia: bool = True,
+    ) -> None:
+        folder = tmp_path / "footage"
+        folder.mkdir()
+        for name in X3_CLIPS:
+            (folder / name).write_bytes(b"")
+        res = client.post("/api/projects", json={"name": "T", "source": str(folder)})
+        self.client, self.pid = client, res.json()["id"]
+        self.p = ui.project_dir(self.pid)
+        lrv = str(folder / X3_LRV)
+        self.clip = x3clip(lrv=lrv, insv=[str(folder / X3_00), str(folder / X3_10)], duration=60)
+        pano_project.save(self.p, [self.clip], [folder])
+        cand = {"id": "h001", "source": lrv, "start": 1.0, "end": 5.0, "score": 80, "label": "a"}
+        hl = {"sources": [{"path": lrv, "duration": 60.0}], "candidates": [cand], "style": "ski"}
+        cache.save_json(self.p / "highlights.json", hl)
+        self.segment = {k: cand[k] for k in ("id", "source", "start", "end", "label")}
+        self.seen: list[list[str]] = []
+        self.stitch_code = 0
+        self.stitch_lines = ["10:00:00 INFO clip 001: ok"]
+        self.clips_code = 0
+        self.clips_lines: list[str] = []
+        self.hold: threading.Event | None = None
+        self.stitching = threading.Event()
+        monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+        monkeypatch.setattr(ui, "spawn", self.spawn)
+        monkeypatch.setattr(ui, "kill_tree", lambda proc, *a, **k: proc.release.set())
+        status = {"found": True, "runs": True} if sdk is None else sdk
+        monkeypatch.setattr(ui.pano_stitch, "sdk_status", lambda: status)
+        monkeypatch.setattr(ui.pano_stitch, "free_gb", lambda _folder: free)
+        monkeypatch.setattr(capabilities, "nvidia_present", lambda: nvidia)
+
+    def spawn(self, args: list[str], **_kw: object) -> FakeProc:
+        self.seen.append(args)
+        if args[1:3] == ["360", "stitch"]:
+            proc = FakeProc(self.stitch_lines, self.stitch_code)
+            self.stitching.set()
+            if self.hold is None:
+                proc.release.set()
+            else:  # until cancelled
+                self.hold = proc.release
+            return proc
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir()
+        cache.save_json(out / "manifest.json", {"clips": []})
+        proc = FakeProc(self.clips_lines, self.clips_code)
+        proc.release.set()
+        return proc
+
+    def export(self, body: dict | None = None) -> dict:
+        """Start an export (the sequence's, unless ``body`` says otherwise); the job's view."""
+        body = body or {}
+        if body.get("picks") != "auto":
+            res = self.client.put(
+                f"/api/projects/{self.pid}/review", json={"segments": [self.segment]}
+            )
+            assert res.status_code == 200, res.text
+        res = self.client.post(f"/api/projects/{self.pid}/jobs", json={"action": "clips", **body})
+        assert res.status_code == 200, res.text
+        job = self.client.app.state.jobs.get(res.json()["id"])
+        if self.hold is None:
+            assert job.done.wait(10)
+        return job
+
+    def commands(self) -> list[list[str]]:
+        return [a[1:3] for a in self.seen]
+
+
+def test_a_360_export_stitches_the_sequence_recordings_first(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    stitch, clips = run.seen
+    (seg_file,) = run.p.glob("ui/segments-*.json")
+    assert stitch == ["cutpoint", "360", "stitch", str(run.p), "--segments", str(seg_file)]
+    assert clips[1:3] == ["clips", str(run.p)]
+    assert any("stitching 1 recording(s)" in ln and "500 GB free" in ln for ln in view["logs"])
+
+
+def test_a_360_export_of_automatic_picks_stitches_their_clips(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    assert run.export({"picks": "auto", "ids": ["h001"]}).view()["status"] == "completed"
+    assert run.seen[0] == ["cutpoint", "360", "stitch", str(run.p), "--clips", "001"]
+    assert run.commands()[1] == ["clips", str(run.p)]
+
+
+@pytest.mark.parametrize(
+    ("pano", "sdk", "said"),
+    [
+        ({"auto_stitch": False}, None, "pano.auto_stitch is off"),
+        ({}, {"found": False, "runs": False}, "SDK was not found"),
+        ({}, {"found": True, "runs": False}, "SDK does not run"),
+    ],
+    ids=["auto-stitch-off", "no-sdk", "sdk-does-not-run"],
+)
+def test_a_360_export_without_auto_stitch_or_a_working_sdk_exports_the_preview(
+    client: TestClient,
+    home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pano: dict,
+    sdk: dict | None,
+    said: str,
+) -> None:
+    set_config(home, pano=pano)
+    run = StitchExport(client, tmp_path, monkeypatch, sdk=sdk)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["clips", str(run.p)]]
+    assert any(said in ln and "360 preview (not stitched)" in ln for ln in view["logs"])
+
+
+def test_a_360_export_without_an_nvidia_gpu_skips_the_stitch_with_a_warning(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch, nvidia=False)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["clips", str(run.p)]]
+    assert any("WARNING no NVIDIA GPU; exporting the 360 preview" in ln for ln in view["logs"])
+
+
+def test_a_360_export_skips_the_stitch_with_a_warning_when_space_is_short(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch, free=ui.pano_stitch.MIN_FREE_GB + 0.1)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["clips", str(run.p)]]
+    assert any("WARNING not enough free space" in ln for ln in view["logs"])
+
+
+def test_a_360_export_of_stitched_recordings_does_not_stitch_again(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    write(pano_project.sdk_output(run.clip), b"stitched")
+    assert run.export().view()["status"] == "completed"
+    assert run.commands() == [["clips", str(run.p)]]
+
+
+def test_a_failed_stitch_still_exports_with_a_warning(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_code = 1
+    view = run.export().view()
+    assert view["status"] == "completed" and "error" not in view, view
+    assert run.commands() == [["360", "stitch"], ["clips", str(run.p)]]
+    assert any("WARNING the step before clips failed (exit code 1)" in ln for ln in view["logs"])
+
+
+def test_a_stitch_that_exits_0_after_an_error_warns_and_still_exports(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``360 stitch`` exits 0 when the SDK failed on a recording; its ERROR line says so."""
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_lines = ["10:00:00 ERROR clip 001: stitch FAILED: x"]
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["360", "stitch"], ["clips", str(run.p)]]
+    want = "WARNING the step before clips reported errors: those recordings export from the 360"
+    assert any(want in ln for ln in view["logs"])
+
+
+@pytest.mark.parametrize(
+    ("clips_lines", "error"),
+    [([], "exit code 1"), (["10:00:00 ERROR own"], "own")],
+    ids=["no-error-line", "own-error-line"],
+)
+def test_a_failed_export_after_a_failed_stitch_reports_its_own_error(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clips_lines: list[str],
+    error: str,
+) -> None:
+    """The job's error comes from the clips step, never from the stitch's ERROR lines."""
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_lines, run.stitch_code = ["10:00:00 ERROR clip 001: stitch FAILED: x"], 1
+    run.clips_lines, run.clips_code = clips_lines, 1
+    view = run.export().view()
+    assert view["status"] == "failed", view
+    assert view["error"] == error
+
+
+def test_cancelling_a_360_export_while_it_stitches_stops_both_steps(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_code = 130
+    run.hold = threading.Event()
+    job = run.export()
+    assert run.stitching.wait(10)
+    client.post(f"/api/jobs/{job.id}/cancel")
+    assert job.done.wait(10)
+    assert job.view()["status"] == "cancelled"
+    assert run.commands() == [["360", "stitch"]]  # clips never started
+
+
+def test_a_flat_export_never_stitches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, seg = cli_project(tmp_path)
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    monkeypatch.setattr(
+        ui.pano_stitch, "sdk_status", lambda: pytest.fail("a flat export asked for the SDK")
+    )
+    FakeProc().fake_spawn(monkeypatch)
+    res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
+    assert res.status_code == 200, res.text
     assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
 
 
@@ -2290,7 +2525,7 @@ def test_put_settings_vision_needs_a_boolean_and_no_folder_rules(
 
     # Only the projects folder is locked by CUTPOINT_PROJECTS_DIR or a running job.
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(tmp_path / "env"))
-    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running", proc=None)
+    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running", proc=None, cancelled=False)
     assert client.put("/api/settings", json={"vision": True}).status_code == 200
     both = {"vision": False, "projects_dir": str(tmp_path)}
     assert client.put("/api/settings", json=both).status_code == 409

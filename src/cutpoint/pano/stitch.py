@@ -587,6 +587,24 @@ def _need_gb(clip: X3Clip) -> float:
     return clip.duration / 3600 * 45 * 1.2
 
 
+def estimate_gb(clips: list[X3Clip]) -> float:
+    """Estimated size of stitching ``clips`` (GB, see :func:`_need_gb`)."""
+    return sum(map(_need_gb, clips))
+
+
+def free_gb(folder: Path) -> float | None:
+    """Free space (GB) on the drive of ``folder`` or its nearest existing parent; None if unknown."""
+    import shutil  # noqa: PLC0415
+
+    probe = Path(os.path.abspath(folder))  # noqa: PTH100 - keeps mapped drive letters
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).free / 1e9
+    except OSError:
+        return None
+
+
 def _bitrate(args: list[str] | None) -> int | None:
     """The last positive ``-bitrate`` value (bits/s) in ``args``, or None."""
     items = [str(a) for a in args or []]
