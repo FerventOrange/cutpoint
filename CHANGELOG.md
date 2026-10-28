@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cutpoint ui`: Settings > Theme switches between Blue (the default, unchanged), Light and
+  Dark. The choice is saved in the browser and applied before the page first paints; Light and
+  Dark keep text, controls and focus outlines at WCAG AA contrast, and Blue keeps today's colours
+  (#445).
+
 ## [0.3.0] - 2026-10-27
 
 ### Highlights

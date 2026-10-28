@@ -350,6 +350,143 @@ def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
     assert "nerdStats: false," in js  # off unless the browser stored "1"
 
 
+def _theme_colours(css: str, selector: str) -> dict[str, str]:
+    block = re.search(re.escape(selector) + r" \{(.*?)\n\}", css, re.S)
+    assert block, selector
+    return dict(re.findall(r"--([\w-]+): (#[0-9a-f]{6})", block[1]))
+
+
+def _contrast(a: str, b: str) -> float:
+    def lum(hex_colour: str) -> float:
+        rgb = [int(hex_colour[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() -> None:
+    """Contract pin (#445): Settings > Theme picks Blue (the default, the :root colours), Light or
+    Dark; themes only override the custom properties, the choice is stored per browser like Stats
+    for Nerds, and an inline script in <head> sets data-theme before the stylesheet paints.
+
+    Check in a browser (no browser in the test suite): pick Light in Settings, the whole page
+    recolours at once; Cancel or Escape goes back; Save and reload: still Light, with no blue
+    flash. Clear the key ``cutpoint.theme``: Blue, as before."""
+    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    settings = re.search(r'<dialog id="settingsDialog".*?</dialog>', html, re.S)
+    assert settings
+    select = re.search(r'<select id="setTheme"[^>]*>(.*?)</select>', settings[0], re.S)
+    assert select and re.findall(r'<option value="(\w+)">(\w+)</option>', select[1]) == [
+        ("blue", "Blue"),
+        ("light", "Light"),
+        ("dark", "Dark"),
+    ]
+    head = html.split("</head>")[0]
+    early = re.search(r"<script>(.*?)</script>", head, re.S)
+    assert early and "localStorage.getItem('cutpoint.theme')" in early[1] and "try {" in early[1]
+    assert "document.documentElement.dataset.theme = t" in early[1]
+    assert head.index("<script>") < head.index('href="app.css"')  # set before the styles apply
+    assert "const THEME_KEY = 'cutpoint.theme';" in js
+    assert "localStorage.removeItem(THEME_KEY)" in js  # Blue is stored as no key
+
+    blue = _theme_colours(css, ":root")
+    # no saved choice: today's colours, unchanged
+    keep = ("slate", "panel", "raise", "deep", "line", "track", "text", "muted")
+    assert {k: blue[k] for k in keep} == {
+        "slate": "#233348",
+        "panel": "#2d4058",
+        "raise": "#384e6b",
+        "deep": "#19273a",
+        "line": "#455d7d",
+        "track": "#455d7d",  # bar tracks: today's --line
+        "text": "#edf2f8",
+        "muted": "#b3c2d2",
+    }
+    assert (blue["amber"], blue["bad"], blue["ok"], blue["glow"]) == (
+        "#f3bd60",
+        "#ffa89b",
+        "#94d6a8",
+        "#ffae19",
+    )
+    # the colours rules used to hold themselves, now :root custom properties, are the same values
+    root = re.search(r":root \{(.*?)\n\}", css, re.S)
+    assert root
+    moved = {
+        "hover": "#435b7a",
+        "amber-hover": "#f7cb80",
+        "danger-ink": "#ffffff",  # was #fff
+        "danger-btn-hover": "#d23a3a",
+        "bad-bg": "#4a2c33",
+        "bad-line": "#7a4650",
+        "art": "#8195b0",
+        "well": "#0d1622",
+        "log-bg": "#101b2a",
+        "tick": "rgba(179, 194, 210, 0.2)",
+        "hatch": "rgba(179, 194, 210, 0.16)",
+        "gap-shade": "rgba(10, 18, 28, 0.45)",
+        "glow-shadow": "rgba(255, 174, 25, 0.35)",
+        "danger-tint": "rgba(224, 62, 62, 0.16)",
+        "danger-tint-line": "rgba(224, 62, 62, 0.5)",
+        "shadow": "rgba(5, 10, 18, 0.6)",
+        "backdrop": "rgba(10, 18, 28, 0.72)",
+        "scrim": "rgb(8 12 18 / 0.78)",
+        "scrim-ink": "#edf2f8",  # was var(--text)
+        "thumb-scrim": "rgba(0, 0, 0, 0.55)",
+        "thumb-scrim-ink": "#f3bd60",  # was var(--amber)
+    }
+    root_values = dict(re.findall(r"--([\w-]+): (#[0-9a-fA-F]+|rgba?\([^)]*\))", root[1]))
+    assert {k: root_values.get(k) for k in moved} == moved
+    # outside the theme blocks, rules use the custom properties, not colours of their own
+    # (comments name issues as #352; the backdrop keeps a fallback for browsers where it does not inherit)
+    rules = re.sub(
+        r"/\*.*?\*/|var\(--backdrop, [^)]*\)\)", "", css.split("\n}\n", 3)[3], flags=re.S
+    )
+    assert not re.findall(r"#[0-9a-fA-F]{3,6}\b|rgba?\(\d", rules)
+
+    for name in ("blue", "light", "dark"):
+        t = (
+            blue
+            if name == "blue"
+            else {**blue, **_theme_colours(css, f':root[data-theme="{name}"]')}
+        )
+        text = [
+            ("text", b)
+            for b in ("slate", "panel", "raise", "deep", "picked", "bar", "hover", "log-bg")
+        ]
+        text += [
+            (f, b) for f in ("muted", "amber", "bad", "ok") for b in ("slate", "panel", "deep")
+        ]
+        text += [("muted", "raise"), ("glow", "panel"), ("bad", "bad-bg"), ("amber-ink", "amber")]
+        text += [
+            ("amber-ink", "amber-hover"),
+            ("danger-ink", "danger-btn"),
+            ("danger-ink", "danger-btn-hover"),
+        ]
+        text += [("gold-ink", "gold-btn"), ("gold-ink", "gold-btn-hover")]
+        for fg, bg in text:
+            assert _contrast(t[fg], t[bg]) >= 4.5, (name, fg, bg)
+        # focus rings, the focused-card glow and other controls: 3:1 (WCAG 1.4.11)
+        ui_parts = [("amber", b) for b in ("slate", "panel", "raise", "deep", "bar")]
+        ui_parts += [
+            ("glow", "deep"),
+            ("danger", "deep"),
+            ("muted", "well"),
+            ("gold", "deep"),
+            ("gold-edge", "deep"),
+        ]
+        if name != "blue":  # Blue keeps today's borders (below 3:1)
+            ui_parts += [("line", "panel"), ("line", "slate"), ("line", "deep")]
+            # the --amber fill of progress and score bars on their track
+            ui_parts += [("amber", "track")]
+        for fg, bg in ui_parts:
+            assert _contrast(t[fg], t[bg]) >= 3, (name, fg, bg)
+    assert re.search(r':root\[data-theme="light"\] \{[^}]*color-scheme: light;', css)
+
+
 def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
     """Contract pin (#352): Clip start and Clip end on the rail are focusable sliders with a 24 px
     hit area, moved by keys and pointer drags through setRange (the path of the time fields and

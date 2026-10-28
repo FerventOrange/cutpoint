@@ -18,6 +18,8 @@ const STAGE_MIN = 360; // pixels the preview keeps when the sequence column wide
 const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
 const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for every preview video
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
+const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "dark"; absent for Blue, the default. index.html reads it too
+const THEMES = ['blue', 'light', 'dark'];
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
 
@@ -41,6 +43,7 @@ const S = {
   selected: new Set(), // sequence ids ticked for batch actions
   nerdStats: false, // Settings > Stats for Nerds: the scoring overlay on the preview
   nerdStatsWas: false, // nerdStats when Settings opened, restored by Cancel or Escape
+  themeWas: 'blue', // Settings > Theme when Settings opened, restored by Cancel or Escape
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
   renameErr: '',
@@ -2530,6 +2533,7 @@ async function openSettings() {
   $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
+  S.themeWas = $('#setTheme').value = theme();
   d.showModal();
   // a locked folder cannot be edited: start on the first control that can
   (st.projects_dir_locked ? box : input).focus();
@@ -2603,17 +2607,41 @@ function initNerdStats() {
   $('#setNerdStats').addEventListener('change', (e) => setNerdStats(e.target.checked));
 }
 
+/** The theme in use: index.html set data-theme on <html> before first paint; none is Blue. */
+function theme() {
+  return document.documentElement.dataset.theme ?? 'blue';
+}
+
+/** Switch the theme (#445): recolour the page at once and store it in this browser; Blue is stored as no key. */
+function setTheme(name) {
+  if (!THEMES.includes(name)) name = 'blue';
+  if (name === 'blue') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = name;
+  try {
+    if (name === 'blue') localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, name);
+  } catch {
+    // storage blocked or full: the theme still applies until reload
+  }
+  $('#setTheme').value = name;
+}
+
 function bindSettings() {
   const d = $('#settingsDialog');
   const gear = $('#settingsBtn');
   gear.append(icon('gear'));
   gear.addEventListener('click', openSettings);
   d.addEventListener('close', () => gear.focus());
-  $('#settingsCancel').addEventListener('click', () => {
+  $('#setTheme').addEventListener('change', (e) => setTheme(e.target.value));
+  const undo = () => {
     setNerdStats(S.nerdStatsWas);
+    setTheme(S.themeWas);
+  };
+  $('#settingsCancel').addEventListener('click', () => {
+    undo();
     d.close();
   });
-  d.addEventListener('cancel', () => setNerdStats(S.nerdStatsWas)); // Escape; not on close, which Save fires too
+  d.addEventListener('cancel', undo); // Escape; not on close, which Save fires too
   $('#settingsForm').addEventListener('submit', (e) => {
     e.preventDefault();
     if (!$('#settingsSave').hidden) saveSettings();
