@@ -573,3 +573,11 @@ def test_clips_the_fast_path_cannot_join_get_the_old_join_and_the_reason(
     assert "stream-copied the rest" not in caplog.text
     assert _frames_and_audio(final)[0] == str(120 + 105 + 90 - 2 * 30)
     assert not list(final.parent.glob(".*fadecopy*"))
+
+
+def test_packet_listing_has_no_ffprobe_timeout(monkeypatch, tmp_path):
+    """Every packet of a multi-hour clip on slow storage can take longer than the default."""
+    calls = []
+    monkeypatch.setattr(assemble, "ffprobe_json", lambda *a, **k: calls.append(k) or {})
+    assert assemble._video_packets(tmp_path / "a.mp4", Fraction(30)) is None
+    assert calls[0]["timeout"] is None
