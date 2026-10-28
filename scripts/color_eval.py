@@ -197,7 +197,7 @@ def evaluate(frames: np.ndarray, grade: color.AutoGrade) -> dict[str, Any]:
     after = color.simulate(frames, sim)
     predicted = color.metrics(after)
     intended = color._intended_clipping(before, sim)
-    red = color._red_highlights(after)
+    red = color._red_highlights(after, color._intended_high(before, sim))
     allowed = min(red, color.UNDERWATER_RED_CLIP) if grade.mode == "underwater" else 0.0
     rec |= {
         "predicted": predicted.to_json(),

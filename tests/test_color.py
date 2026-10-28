@@ -1034,6 +1034,22 @@ def test_red_highlights_count_pixels_whose_red_alone_clips_high():
     assert color._red_highlights(px[None]) == 0.25
 
 
+def test_a_red_highlight_the_levels_intend_is_counted_once():
+    frames = np.full((1, 20, 20, 3), (0.4, 0.5, 0.5), np.float32)
+    frames[0, 0, 0] = (1.0, 0.5, 0.5)  # clipped in the source
+    frames[0, 0, 1] = (0.99, 0.5, 0.5)  # red above its white point: the levels' tail
+    frames[0, 0, 2] = (0.8, 0.5, 0.5)  # red pushed out by the gain alone
+    grade = AutoGrade(
+        "underwater", black=(0.0, 0.0, 0.0), white=(0.98, 1.0, 1.0), gains=(1.3, 1.0, 1.0)
+    )
+    graded = color.simulate(frames, grade)
+    assert color._intended_clipping(frames, grade) == 2 / 400
+    assert color._red_highlights(graded) == 3 / 400
+    assert color._red_highlights(graded, color._intended_high(frames, grade)) == 1 / 400
+    # the harness reports the same share
+    assert _color_eval().evaluate(frames, grade)["red_highlights"] == 1 / 400
+
+
 def test_an_underwater_veto_without_a_saturation_record_does_not_judge_it():
     old = Metrics(m3=20.0, residual=0.1, clipped=0.0, black=0.05, white=0.9)  # version 2
     assert color._veto(old, replace(old, m3=10.0), 0.0, underwater=True) is None

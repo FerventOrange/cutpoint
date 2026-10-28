@@ -104,7 +104,8 @@ UNDERWATER_GB = 0.79
 # saturation instead (M3 counts the cast it removes as colour): below VETO_SATURATION_DROP of
 # its value (flat cyan sand turned grey: 0.57-0.58 on the #489 scuba clips, the good grades
 # 0.73-0.80). ``underwater`` also does not count pixels whose red alone clips high (the red
-# gain on a bright highlight), up to UNDERWATER_RED_CLIP of the frame, as clipping.
+# gain on a bright highlight), up to UNDERWATER_RED_CLIP of the frame, as clipping; pixels the
+# intended clipping already counts (clipped in the source, or red at its white point) only once.
 # The residual is worse when it rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma range,
 # about a code), or by more than VETO_RESIDUAL_RATIO times and more than VETO_RESIDUAL_FLOOR.
 # The relative rule catches a near-neutral clip given a cast (a GoPro clip went 0.0017 to
@@ -477,13 +478,18 @@ def _saturation(rgb: np.ndarray) -> float:
     return float(((hi - rgb.min(axis=-1)) / np.maximum(hi, 1e-6)).mean())
 
 
-def _red_highlights(frames: np.ndarray) -> float:
+def _red_highlights(frames: np.ndarray, intended: np.ndarray | None = None) -> float:
     """Share of the pixels of ``frames`` (``uint8``, or float 0-1) whose red alone is
-    clipped high: red at 255, green and blue below it, no channel at 0."""
+    clipped high: red at 255, green and blue below it, no channel at 0. Pixels set in
+    ``intended`` (an ``(n, h, w)`` mask, :func:`_intended_high`) are left out: the intended
+    clipping already counts them."""
     rgb = _float(frames)
     high = rgb >= 254.5 / 255
     low = (rgb <= 0.5 / 255).any(axis=-1)
-    return round(float((high[..., 0] & ~high[..., 1] & ~high[..., 2] & ~low).mean()), 5)
+    red = high[..., 0] & ~high[..., 1] & ~high[..., 2] & ~low
+    if intended is not None:
+        red &= ~intended
+    return round(float(red.mean()), 5)
 
 
 def metrics(frames: np.ndarray) -> Metrics:
@@ -703,6 +709,24 @@ def _intended_clipping(frames: np.ndarray, grade: AutoGrade) -> float:
     return round(float(np.mean(shares)), 5)
 
 
+def _intended_high(frames: np.ndarray, grade: AutoGrade) -> np.ndarray:
+    """Mask ``(n, h, w)`` of the pixels of ``frames`` that :func:`_intended_clipping` may
+    count as clipped high in red: those already clipped, and those whose red (the luma, for
+    one white point) after the channel mix the applied white point pushes to 1. A tail beyond
+    :data:`LEVELS_PERCENTILES` is counted only up to the tail there, so leaving all of it out
+    of :func:`_red_highlights` never allows more than the intended clipping does."""
+    g = grade.applied()
+    rgb = _float(frames)
+    mixed = simulate(rgb, AutoGrade(g.mode, mix=g.mix)) if g.mix > 0 else rgb
+    clipped = ((rgb <= 0.5 / 255) | (rgb >= 254.5 / 255)).any(axis=-1)
+    if isinstance(g.black, tuple) or isinstance(g.white, tuple):
+        lo, span = _black_span(g)
+        v = (mixed[..., 0] - lo[0]) / span[0]
+    else:
+        v = (mixed @ LUMA - g.black) / (g.white - g.black)
+    return clipped | (v >= 254.5 / 255)
+
+
 def _veto(
     before: Metrics,
     after: Metrics,
@@ -718,8 +742,8 @@ def _veto(
     than :data:`VETO_CLIPPED` above ``intended`` (:func:`_intended_clipping`, never below
     ``before.clipped``) is vetoed: the white balance, mix or vibrance pushing more pixels
     out, or a mass of pixels at a levels point. Underwater, ``red_clipped`` (the predicted
-    share of red-only highlight clipping, :func:`_red_highlights`) up to
-    :data:`UNDERWATER_RED_CLIP` does not count.
+    share of red-only highlight clipping, :func:`_red_highlights`, without the pixels
+    ``intended`` already counts) up to :data:`UNDERWATER_RED_CLIP` does not count.
 
     Cast: the residual rises by more than :data:`VETO_RESIDUAL_EPS`, or to more than
     :data:`VETO_RESIDUAL_RATIO` times its value and by more than :data:`VETO_RESIDUAL_FLOOR`.
@@ -823,7 +847,7 @@ def estimate(
         predicted,
         _intended_clipping(rgb, grade),
         underwater=underwater,
-        red_clipped=_red_highlights(graded) if underwater else 0.0,
+        red_clipped=_red_highlights(graded, _intended_high(rgb, grade)) if underwater else 0.0,
     )
     return replace(grade, skip=veto, before=before, predicted=predicted)
 
