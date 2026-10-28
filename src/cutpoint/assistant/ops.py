@@ -304,14 +304,14 @@ def _in_order(ids: list[str], old: dict[str, tuple[int, Any]]) -> set[str]:
 def diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Per row, in ``after``'s order then the removed rows: ``{id, label, changes, before,
     after}``. ``changes`` is ``["added"]``, ``["removed"]`` or any of ``moved`` (out of its old
-    order among the kept rows, counting as few rows as possible) and ``trimmed``;
-    ``before``/``after`` are ``{pos, start, end}`` or None."""
+    order among the kept rows, counting as few rows as possible), ``trimmed`` and
+    ``relabelled``; ``before``/``after`` are ``{pos, start, end, label}`` or None."""
     old = {s["id"]: (i, s) for i, s in enumerate(before, 1)}
     new_ids = {s["id"] for s in after}
     stayed = _in_order([s["id"] for s in after if s["id"] in old], old)
 
     def place(pos: int, s: dict[str, Any]) -> dict[str, Any]:
-        return {"pos": pos, "start": s["start"], "end": s["end"]}
+        return {"pos": pos, "start": s["start"], "end": s["end"], "label": s.get("label", "")}
 
     rows: list[dict[str, Any]] = []
     for i, s in enumerate(after, 1):
@@ -324,6 +324,8 @@ def diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict
                 changes.append("moved")
             if (was[1]["start"], was[1]["end"]) != (s["start"], s["end"]):
                 changes.append("trimmed")
+            if was[1].get("label", "") != s.get("label", ""):
+                changes.append("relabelled")
         rows.append(
             {
                 "id": s["id"],

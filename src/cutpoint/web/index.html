@@ -77,6 +77,8 @@
             <div class="rail-gaps" id="railGaps" aria-hidden="true"></div>
             <div class="rail-orig" id="railOrig"></div>
             <div class="rail-sel" id="railSel"></div>
+            <!-- the trim an AI Chat proposal would set (#346); the Sequence tab states its times -->
+            <div class="rail-ghost" id="railGhost" aria-hidden="true" hidden></div>
           </div>
           <input id="seek" type="range" min="0" max="1" step="0.05" value="0" aria-label="Seek in source">
           <div id="startHandle" class="rail-handle start" role="slider" tabindex="0" aria-label="Clip start" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
@@ -115,20 +117,39 @@
     <div id="sideSplit" class="splitter" role="separator" tabindex="0" aria-orientation="vertical"
          aria-controls="side" aria-label="Resize sequence column" title="Drag to resize, double-click to reset"></div>
 
-    <section class="col side" id="side" aria-label="Sequence and export">
-      <!-- Tabs (#462); a later tab (AI Chat, #346) is one more button and panel: app.js handles any number -->
+    <section class="col side" id="side" aria-label="Sequence, AI chat and export">
+      <!-- Tabs (#462, AI Chat #346): one button and panel each; app.js handles any number -->
       <div class="side-tabs" role="tablist" aria-label="Sequence column">
         <button type="button" role="tab" id="tabSequence" class="side-tab" data-tab="sequence" aria-selected="true" aria-controls="panelSequence">Sequence</button>
+        <button type="button" role="tab" id="tabAssistant" class="side-tab" data-tab="assistant" aria-selected="false" aria-controls="panelAssistant" tabindex="-1">AI Chat</button>
         <button type="button" role="tab" id="tabExport" class="side-tab" data-tab="export" aria-selected="false" aria-controls="panelExport" tabindex="-1">Export</button>
       </div>
+      <!-- outside the panels, so a hidden tab's news is still announced -->
+      <p id="chatLive" class="vh" role="status"></p>
+      <p id="sideLive" class="vh" role="status"></p>
 
       <div id="panelSequence" class="side-panel" role="tabpanel" aria-labelledby="tabSequence">
         <div class="col-head">
           <h2 id="seqTitle" tabindex="-1">Sequence</h2>
           <span id="seqTotal" class="tc muted"></span>
           <span class="spacer"></span>
+          <button type="button" id="undoBtn" class="btn small" aria-keyshortcuts="Control+Z" title="Undo (Ctrl+Z)" disabled>Undo</button>
+          <button type="button" id="redoBtn" class="btn small" aria-keyshortcuts="Control+Y Control+Shift+Z" title="Redo (Ctrl+Y)" disabled>Redo</button>
           <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
         </div>
+        <!-- An AI Chat proposal (#346), previewed in place of the sequence until Apply or Discard -->
+        <section id="propPanel" class="proposal" aria-labelledby="propTitle" hidden>
+          <h3 id="propTitle" tabindex="-1">Proposed change</h3>
+          <p id="propSummary"></p>
+          <p id="propNote" class="hint" hidden></p>
+          <ol id="propList" class="prop-list" aria-label="Sequence after the change"></ol>
+          <p id="propMsg" class="error" role="alert"></p>
+          <div class="prop-bar" role="group" aria-label="Proposed change">
+            <button type="button" id="propApply" class="btn primary" aria-describedby="dPropApply">Apply</button>
+            <button type="button" id="propDiscard" class="btn">Discard</button>
+            <span id="dPropApply" class="vh">Replaces the working sequence; Save keeps it. Ctrl+Z undoes it.</span>
+          </div>
+        </section>
         <div id="seqEmpty" class="empty"></div>
         <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
           <span id="seqSelCount" class="tc"></span>
@@ -143,6 +164,30 @@
           <ol id="removedList" class="cand-list"></ol>
         </section>
         <p id="seqLive" class="vh" role="status"></p>
+      </div>
+
+      <!-- AI Chat (#346): the assistant only proposes; a proposal is previewed in the Sequence tab -->
+      <div id="panelAssistant" class="side-panel chat" role="tabpanel" aria-labelledby="tabAssistant" hidden>
+        <div class="chat-head">
+          <div class="chat-who">
+            <h2 id="chatTitle" tabindex="-1">AI Assistant</h2>
+            <p id="chatProvider" class="muted"></p>
+          </div>
+          <button type="button" id="chatClear" class="btn small" aria-haspopup="dialog" disabled>Clear chat</button>
+        </div>
+        <p id="chatNote" class="hint" hidden></p>
+        <ol id="chatLog" class="chat-log" aria-labelledby="chatTitle"></ol>
+        <p id="chatError" class="error" role="alert"></p>
+        <details id="chatHistory" class="chat-history" hidden>
+          <summary>Applied changes</summary>
+          <ol id="historyList" class="history-list"></ol>
+        </details>
+        <form id="chatForm" class="chat-form" novalidate>
+          <label for="chatInput" class="vh">Message to the AI assistant</label>
+          <textarea id="chatInput" rows="2" maxlength="2000" autocomplete="off" aria-describedby="dChatInput" placeholder="Ask AI to find moments, edit, or generate sequences…" disabled></textarea>
+          <span id="dChatInput" class="vh">Enter sends, Shift+Enter starts a new line. Changes are only proposed: you preview them in the Sequence tab and apply them or not.</span>
+          <button type="submit" id="chatSend" class="btn primary" disabled>Send</button>
+        </form>
       </div>
 
       <div id="panelExport" class="side-panel" role="tabpanel" aria-labelledby="tabExport" hidden>

@@ -457,6 +457,17 @@ select { max-width: 100%; }
 .rail-handle:focus-visible { outline: 2px solid var(--amber-text); outline-offset: 0; }
 .rail-handle:focus-visible::before { background: var(--amber-text); }
 .rail-handle.off-view::before { opacity: 0.45; } /* its point is off the view: parked at the edge */
+/* ghost handles (#346): the trim an AI Chat proposal would set, dashed, under the real handles */
+.rail-ghost { position: absolute; top: 2px; bottom: 2px; border: 2px dashed var(--amber-text); border-top: 0; border-bottom: 0; }
+.rail-ghost.cut-l { border-left-color: transparent; }
+.rail-ghost.cut-r { border-right-color: transparent; }
+.rail-ghost::before, .rail-ghost::after {
+  content: ""; position: absolute; top: 50%; width: 6px; height: 22px; margin-top: -11px;
+  border: 1px dashed var(--amber-text); border-radius: 2px; background: var(--deep);
+}
+.rail-ghost::before { left: -4px; }
+.rail-ghost::after { right: -4px; }
+.rail-ghost.cut-l::before, .rail-ghost.cut-r::after { display: none; }
 .rail-ends { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 /* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
 .rail-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 4px; }
@@ -649,6 +660,74 @@ select { max-width: 100%; }
 .out-list { display: grid; gap: 4px; }
 .out-list a { color: var(--amber-text); overflow-wrap: anywhere; }
 
+/* AI Chat (#346): the panel fills the column, the conversation above the input */
+#panelAssistant { flex: 1 0 auto; }
+.chat-head { display: flex; align-items: flex-start; gap: 8px; }
+.chat-who { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+#chatProvider { font-size: 13px; overflow-wrap: anywhere; }
+#panelAssistant .chat-log { flex: 1 0 auto; display: grid; gap: 8px; align-content: start; }
+.msg {
+  justify-self: start; max-width: 92%; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 6px 10px;
+  background: var(--deep); border: 1px solid var(--card-line); border-radius: 10px; overflow-wrap: anywhere;
+}
+.msg p { white-space: pre-wrap; }
+.msg.user { justify-self: end; background: var(--raise); border-color: var(--line); }
+.msg.step { background: none; border: 0; padding: 0 4px; color: var(--muted); font-size: 12.5px; }
+.msg.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+.msg.pending { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+.msg.previewing { border-color: var(--amber-text); }
+.msg-meta { color: var(--muted); font-size: 12.5px; }
+.msg-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.msg-acts .btn { white-space: normal; text-align: left; }
+.msg-acts .btn[aria-pressed="true"], .msg-acts .btn.on { border-color: var(--amber-text); }
+.chat-history summary { cursor: pointer; font-weight: 650; font-size: 13px; }
+.history-list { display: grid; gap: 6px; margin-top: 6px; }
+.history-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.history-text { display: grid; flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
+/* the input stays in view at the bottom of the column while the conversation scrolls; it covers the
+   column's 20 px bottom padding too, so no message shows through below it */
+.chat-form {
+  position: sticky; bottom: -20px; z-index: 2; display: flex; align-items: flex-end; gap: 8px;
+  padding: 8px 0 14px; margin-bottom: -12px; background: var(--panel);
+}
+.chat-form textarea {
+  flex: 1 1 auto; min-width: 0; min-height: 40px; resize: vertical; font: inherit; color: var(--text);
+  background: var(--deep); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px;
+}
+.chat-form textarea:disabled { opacity: 0.6; }
+.chat-form .btn { flex: none; min-height: 40px; }
+/* a proposal previewed in the Sequence tab, in place of the sequence: each change in words, with its mark */
+#panelSequence.previewing :is(#seqList, #seqBatch, #seqEmpty, #removedPanel) { display: none; }
+.proposal { display: grid; gap: 8px; padding: 10px; background: var(--deep); border: 1px solid var(--amber-text); border-radius: 8px; }
+.proposal h3 { font-size: 14px; }
+#propSummary { overflow-wrap: anywhere; }
+#propMsg:empty { display: none; }
+.prop-list { display: grid; gap: 4px; }
+.prop-main {
+  font: inherit; color: inherit; text-align: left; cursor: pointer; width: 100%;
+  display: flex; align-items: flex-start; gap: 6px; padding: 4px 6px;
+  background: var(--slate); border: 1px solid var(--card-line); border-left: 3px solid var(--card-line); border-radius: 6px;
+}
+.prop-main:hover { border-color: var(--line); }
+.prop-main .rank { flex: none; width: 3ch; font-weight: 750; text-align: center; }
+.prop-text { display: grid; gap: 2px; min-width: 0; }
+.prop-title { font-weight: 650; overflow-wrap: anywhere; }
+.prop-time { color: var(--muted); font-size: 12.5px; }
+.prop-marks { display: flex; flex-wrap: wrap; gap: 4px; }
+.prop-mark { font-size: 12px; padding: 0 6px; border: 1px solid var(--line); border-radius: 3px; }
+.prop.added .prop-main { border-left-color: var(--ok); }
+.prop.removed .prop-main { border-left-color: var(--bad); }
+.prop.removed .prop-title { text-decoration: line-through; }
+.prop.moved .prop-main, .prop.trimmed .prop-main { border-left-color: var(--gold); }
+.prop-mark.added { color: var(--ok); border-color: var(--ok); }
+.prop-mark.removed { color: var(--bad); border-color: var(--bad); }
+.prop-bar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; background: var(--deep); }
+/* moments the assistant showed or its proposal changes: classes only, on the list's own cards */
+.cand.ai-shown { outline: 2px solid var(--amber-text); outline-offset: -2px; }
+.cand.ai-added { border-left-color: var(--ok); }
+.cand.ai-removed { border-left-color: var(--bad); }
+.cand.ai-changed { border-left-color: var(--gold); }
+
 /* jobs */
 .jobs { background: var(--deep); border-top: 1px solid var(--line); padding: 8px 16px; }
 .jobs-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -688,6 +767,7 @@ dialog form { display: grid; gap: 14px; }
   .side { order: 3; border-left: 0; border-top: 1px solid var(--line); }
   .splitter { display: none; }
   .jobs { position: sticky; bottom: 0; }
+  .chat-form, .prop-bar { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
   .top { flex-wrap: wrap; }
   .proj-pick select { max-width: 60vw; }
   .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: none; }

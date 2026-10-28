@@ -221,7 +221,8 @@ the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` retur
 job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
 
-The sequence column has two tabs, Sequence and Export. The Export tab holds one "Export &
+The sequence column has three tabs: Sequence, AI Chat (see [AI Chat](#ai-chat) below) and Export.
+The Export tab holds one "Export &
 Assembly Options" panel; each option has a hover description, and the choices are remembered per
 browser:
 
@@ -290,6 +291,11 @@ splitter to resize the side column (arrow keys, Shift, Home/End; double-click re
 remembered per browser. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
 pass another `--port`.
 
+Undo and Redo in the Sequence header (Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z) step back and forward
+through sequence edits: add, remove, reorder, rename, trim (a run of nudges to one edge within a
+second is one step), reset, and applied AI Chat changes. They keep the last 50 steps and are
+cleared when another project opens. In a text field the keys edit the text instead.
+
 Jobs run one at a time with logs and cancellation. Results remain the usual Cutpoint files;
 review choices live under `<project>/ui/`. Exports use fresh `clips_ui_*` folders and finals use
 fresh `final_ui_*` names, so earlier exports are not overwritten (a final name is also skipped
@@ -351,6 +357,36 @@ and resumes, and Escape or "Stop" ends it; removing the playing clip also stops 
 proxy is still being built is waited for, and one whose preview cannot be built is skipped.
 Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
 remote access is not supported.
+
+### AI Chat
+
+The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
+`config.json` (local Ollama only for now). Its header shows the model and provider, with a note
+that a small local model can miss moments or misread a request. Type a request and press Enter
+or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
+for …") and can be stopped with Cancel. The chat needs an analyzed project.
+
+- Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
+  the list filtered by the model's search words.
+- A proposed change opens in the Sequence tab as a preview of the new sequence: each row is
+  marked Added, Moved (old to new position), Trimmed (old to new times) or Renamed, removed clips are
+  listed as Removed, the moments are marked in the Moments list, and the trim rail shows the new
+  start and end as dashed edges. Apply replaces the working sequence (Save keeps it, Undo takes
+  it back); Discard drops the preview. Up to three alternative suggestions are previewed the same
+  way. If the sequence changed since the proposal was made (a note says so; an applied
+  proposal's button reads "Review again"), Apply makes the change on the current sequence and
+  says so, or tells you to discard it and ask again when it no longer fits. While Apply waits,
+  Discard is off and a new proposal from the chat is previewed after it.
+- "Applied changes" lists the changes applied in this project; "Revert this change" previews a
+  change that puts the sequence back as it was before, applied like any other. If the sequence
+  changes after that preview, Apply previews the revert again on it instead.
+- "Clear chat" deletes the conversation only; the sequence and the applied changes stay.
+
+Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST .../turns` and
+`GET .../turns/<turn>?after=<n>`, `POST .../turns/<turn>/cancel`,
+`POST .../proposals/<proposal>/applied`, `DELETE .../chat`, `GET .../history` and
+`POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
+and writes nothing; applying it with another sequence or without that key is refused with 409).
 
 ## capabilities
 

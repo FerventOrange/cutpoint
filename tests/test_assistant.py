@@ -421,3 +421,12 @@ def test_the_context_budget_lists_the_top_moments_that_fit(tokens: int, moments:
     listed = msgs[1]["content"].count('"seq":null')
     assert listed == moments
     assert sum(len(m["content"]) for m in msgs) <= plan.chars
+
+
+def test_diff_marks_a_label_only_change_as_relabelled() -> None:
+    """A rename alone is a change: a revert that only restores labels previews and applies."""
+    a = {"id": "m1", "source": "a.mp4", "start": 1.0, "end": 2.0, "label": "old"}
+    rows = ops.diff([a], [{**a, "label": "new"}])
+    assert rows[0]["changes"] == ["relabelled"]
+    assert (rows[0]["before"]["label"], rows[0]["after"]["label"]) == ("old", "new")
+    assert ops.diff([a], [a])[0]["changes"] == []
