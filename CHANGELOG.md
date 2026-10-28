@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--color` off (the default) the clips are unchanged (#290).
 - `--json`: a `grade_dropped` warning when `clips --force` replaces graded clips with ungraded
   ones (#290).
+- `--json`: a `color_on_gaming` warning when `--color` is given for `gaming` footage (#494).
 - `cutpoint ui`: the Moments list has a sort order next to the filter: Score (the default) or
   Position in video, which sorts by source name (natural order, so `clip2` comes before `clip10`)
   and then start time. The rank badge on each card keeps its score rank in either order. The
@@ -66,6 +67,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--color underwater` grades only clips that look underwater (mean red below 0.77 of green
+  and 0.85 of blue, green above 0.79 of blue); the others are skipped as `not_underwater`, and
+  plain `auto`'s INFO hint uses the same rule. Water bluer than that, such as open ocean, is
+  skipped too. A washed-out underwater grade is now vetoed by its saturation (below 0.63 of
+  its value: `veto_faded`) instead of its colorfulness, and red-only highlight clipping, up
+  to 3 % of the frame, no longer counts toward its clipping veto. `--color underwater` on
+  `gaming` footage logs a stronger WARNING (it still grades). Cached measurements are redone
+  (color version 3); `extend` keeps re-applying older records as they were (#494).
 - `cutpoint ui`: Smart edges is split into Speech-aware cuts and Smart tails (both on by
   default; a saved Smart edges choice carries over to both). "Analyze again" keeps a recorded
   `--recover`.

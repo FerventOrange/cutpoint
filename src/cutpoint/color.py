@@ -11,9 +11,9 @@ RGB), so the export needs nothing new.
 Before a grade is used, :func:`simulate` applies it to the sampled frames in numpy and
 :func:`metrics` compares them before and after: a grade that clips more than its levels
 intend, leaves a worse cast, or adds or takes away too much colour is vetoed. Clips that
-already look good, and log or flat footage from a 10-bit source (which needs the camera's LUT,
-``--lut``), get no grade. :func:`auto_grade` caches each
-result in the source's cache folder (``color/<hash>.json``).
+already look good, log or flat footage from a 10-bit source (which needs the camera's LUT,
+``--lut``) and, for ``underwater``, clips that do not look underwater get no grade.
+:func:`auto_grade` caches each result in the source's cache folder (``color/<hash>.json``).
 """
 
 from __future__ import annotations
@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 
 # Bump when the measurement or estimate changes: it keys the cache and is recorded per clip.
 # 2: per-channel levels for ``underwater``, the M3 drop veto and the relative cast veto.
-COLOR_VERSION = 2
+# 3: ``underwater`` grades only clips that look underwater, vetoes a washed-out result by its
+# saturation instead of its M3 and allows red-only highlight clipping (#494).
+COLOR_VERSION = 3
 MODES = ("auto", "underwater")
 # Black and white points: from the luma, the same for every channel, or per channel. Each
 # mode uses its own (MODE_LEVELS): ``auto`` the luma's, so a clip's overall balance is left to
@@ -85,14 +87,24 @@ M3_FULL = 33.0
 # least M3_FULL.
 GOOD_GAIN = 0.03
 GOOD_LEVELS = 0.03
-# A clip that looks underwater (for plain ``auto``'s hint): mean red below this share of
-# both green and blue.
-UNDERWATER_RED = 0.6
+# A clip that looks underwater (the gate of ``underwater``, and plain ``auto``'s hint): the
+# frames' mean red below UNDERWATER_RG of their mean green and UNDERWATER_RB of their mean blue,
+# and the green above UNDERWATER_GB of the blue. On the #489 windows the six scuba clips had
+# R/G 0.60-0.73, the others 0.80 and up but for a blue-sky ski clip (R/G 0.66), which the G/B
+# rule leaves out (G/B 0.72; scuba 0.86 and up). Water bluer than that (open ocean) does not
+# pass either.
+UNDERWATER_RG = 0.77
+UNDERWATER_RB = 0.85
+UNDERWATER_GB = 0.79
 # Veto (:func:`_veto`): the clipped share rises by more than VETO_CLIPPED above the clipping
 # the levels intend (:func:`_intended_clipping`: the source's own plus at most the
 # LEVELS_PERCENTILES tails); the gray-world residual (a share of the luma range) gets worse;
-# M3 rises by more than VETO_M3_RISE, or falls below VETO_M3_DROP of its value (a picture
-# washed out to grey, such as flat cyan sand after an underwater grade).
+# M3 rises by more than VETO_M3_RISE, or (``auto``) falls below VETO_M3_DROP of its value (a
+# picture washed out to grey). ``underwater`` judges a washed-out result by the median HSV
+# saturation instead (M3 counts the cast it removes as colour): below VETO_SATURATION_DROP of
+# its value (flat cyan sand turned grey: 0.57-0.58 on the #489 scuba clips, the good grades
+# 0.73-0.80). ``underwater`` also does not count pixels whose red alone clips high (the red
+# gain on a bright highlight), up to UNDERWATER_RED_CLIP of the frame, as clipping.
 # The residual is worse when it rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma range,
 # about a code), or by more than VETO_RESIDUAL_RATIO times and more than VETO_RESIDUAL_FLOOR.
 # The relative rule catches a near-neutral clip given a cast (a GoPro clip went 0.0017 to
@@ -104,6 +116,8 @@ VETO_RESIDUAL_RATIO = 1.5
 VETO_RESIDUAL_FLOOR = 0.002
 VETO_M3_RISE = 0.25
 VETO_M3_DROP = 0.85
+VETO_SATURATION_DROP = 0.63
+UNDERWATER_RED_CLIP = 0.03
 # Vibrance is kept this far below the M3 veto, so it never vetoes the grade by itself.
 _M3_MARGIN = 0.98
 _VIBRANCE_STEPS = 10
@@ -126,10 +140,12 @@ SKIP_GOOD = "good"
 SKIP_LOG = "log"
 SKIP_360 = "360"
 SKIP_NO_FRAMES = "no_frames"
+SKIP_NOT_UNDERWATER = "not_underwater"
 VETO_CLIPPING = "veto_clipped"
 VETO_CAST = "veto_cast"
 VETO_COLOURFUL = "veto_m3"
-VETO_FADED = "veto_m3_drop"
+VETO_M3_LOSS = "veto_m3_drop"  # auto
+VETO_FADED = "veto_faded"  # underwater
 
 
 @dataclass(frozen=True)
@@ -139,7 +155,8 @@ class Metrics:
     ``m3``: Hasler-Suesstrunk colourfulness (0-255 scale); ``residual``: gray-world cast,
     the largest distance of a channel mean from their average over the luma range;
     ``clipped``: share of pixels with a channel at 0 or 255; ``black`` / ``white``: luma
-    p0.5 / p99.5 (0-1).
+    p0.5 / p99.5 (0-1); ``saturation``: mean HSV saturation (None in a record of version 2 or
+    older).
     """
 
     m3: float
@@ -147,6 +164,7 @@ class Metrics:
     clipped: float
     black: float
     white: float
+    saturation: float | None = None
 
     def to_json(self) -> dict[str, float]:
         """The metrics as a manifest dict."""
@@ -156,6 +174,7 @@ class Metrics:
             "clipped": self.clipped,
             "black": self.black,
             "white": self.white,
+            "saturation": self.saturation,
         }
 
     @classmethod
@@ -163,7 +182,11 @@ class Metrics:
         """The metrics :meth:`to_json` wrote, None for none."""
         if not data:
             return None
-        return cls(*(float(data[k]) for k in ("m3", "residual", "clipped", "black", "white")))
+        sat = data.get("saturation")
+        return cls(
+            *(float(data[k]) for k in ("m3", "residual", "clipped", "black", "white")),
+            saturation=None if sat is None else float(sat),
+        )
 
 
 @dataclass(frozen=True)
@@ -448,11 +471,26 @@ def _m3(rgb: np.ndarray) -> float:
     return float(np.hypot(rg.std(), yb.std()) + 0.3 * np.hypot(rg.mean(), yb.mean()))
 
 
+def _saturation(rgb: np.ndarray) -> float:
+    """Mean HSV saturation, ``(max - min) / max``, of one ``(h, w, 3)`` 0-1 frame."""
+    hi = rgb.max(axis=-1)
+    return float(((hi - rgb.min(axis=-1)) / np.maximum(hi, 1e-6)).mean())
+
+
+def _red_highlights(frames: np.ndarray) -> float:
+    """Share of the pixels of ``frames`` (``uint8``, or float 0-1) whose red alone is
+    clipped high: red at 255, green and blue below it, no channel at 0."""
+    rgb = _float(frames)
+    high = rgb >= 254.5 / 255
+    low = (rgb <= 0.5 / 255).any(axis=-1)
+    return round(float((high[..., 0] & ~high[..., 1] & ~high[..., 2] & ~low).mean()), 5)
+
+
 def metrics(frames: np.ndarray) -> Metrics:
     """:class:`Metrics` of ``(n, h, w, 3)`` frames (``uint8``, or float 0-1): the median over
     the frames, the clipped share the mean."""
     rgb = _float(frames)
-    m3, residual, black, white, clipped = [], [], [], [], []
+    m3, residual, black, white, clipped, sat = [], [], [], [], [], []
     for f in rgb:
         luma = f @ LUMA
         lo, hi = np.percentile(luma, LEVELS_PERCENTILES)
@@ -463,12 +501,14 @@ def metrics(frames: np.ndarray) -> Metrics:
         white.append(hi)
         ends = (f <= 0.5 / 255) | (f >= 254.5 / 255)
         clipped.append(float(ends.any(axis=-1).mean()))
+        sat.append(_saturation(f))
     return Metrics(
         m3=round(float(np.median(m3)), 3),
         residual=round(float(np.median(residual)), 4),
         clipped=round(float(np.mean(clipped)), 5),
         black=round(float(np.median(black)), 4),
         white=round(float(np.median(white)), 4),
+        saturation=round(float(np.median(sat)), 4),
     )
 
 
@@ -512,10 +552,12 @@ def is_log(stats: ColorStats) -> bool:
 
 
 def looks_underwater(stats: ColorStats) -> bool:
-    """True when the frames' mean red is below :data:`UNDERWATER_RED` of both green and blue
-    (a hint for plain ``auto``; it never changes the grade)."""
+    """True when the frames' mean red is below :data:`UNDERWATER_RG` of their mean green and
+    :data:`UNDERWATER_RB` of their mean blue, and the green above :data:`UNDERWATER_GB` of the
+    blue: the clips ``underwater`` grades (:data:`SKIP_NOT_UNDERWATER` for the others) and
+    plain ``auto`` names in its hint (where it never changes the grade)."""
     r, g, b = _float(stats.frames).reshape(-1, 3).mean(axis=0)
-    return bool(r < UNDERWATER_RED * g and r < UNDERWATER_RED * b)
+    return bool(r < UNDERWATER_RG * g and r < UNDERWATER_RB * b and g > UNDERWATER_GB * b)
 
 
 def _mix(rgb: np.ndarray) -> float:
@@ -661,20 +703,32 @@ def _intended_clipping(frames: np.ndarray, grade: AutoGrade) -> float:
     return round(float(np.mean(shares)), 5)
 
 
-def _veto(before: Metrics, after: Metrics, intended: float) -> str | None:
-    """The veto a predicted result earns, None for none.
+def _veto(
+    before: Metrics,
+    after: Metrics,
+    intended: float,
+    *,
+    underwater: bool = False,
+    red_clipped: float = 0.0,
+) -> str | None:
+    """The veto a predicted result earns, None for none (``underwater``: the rules of
+    ``--color underwater``).
 
     Clipping: the p0.5 / p99.5 levels are meant to clip their tails, so only clipping more
     than :data:`VETO_CLIPPED` above ``intended`` (:func:`_intended_clipping`, never below
     ``before.clipped``) is vetoed: the white balance, mix or vibrance pushing more pixels
-    out, or a mass of pixels at a levels point.
+    out, or a mass of pixels at a levels point. Underwater, ``red_clipped`` (the predicted
+    share of red-only highlight clipping, :func:`_red_highlights`) up to
+    :data:`UNDERWATER_RED_CLIP` does not count.
 
     Cast: the residual rises by more than :data:`VETO_RESIDUAL_EPS`, or to more than
     :data:`VETO_RESIDUAL_RATIO` times its value and by more than :data:`VETO_RESIDUAL_FLOOR`.
-    Colourfulness: M3 above ``1 +`` :data:`VETO_M3_RISE` or below :data:`VETO_M3_DROP` times
-    its value.
+    Colourfulness: M3 above ``1 +`` :data:`VETO_M3_RISE` times its value; ``auto``: or below
+    :data:`VETO_M3_DROP` times; underwater: the saturation below :data:`VETO_SATURATION_DROP`
+    times its value instead.
     """
-    if after.clipped - max(intended, before.clipped) > VETO_CLIPPED:
+    allowed = min(red_clipped, UNDERWATER_RED_CLIP) if underwater else 0.0
+    if after.clipped - allowed - max(intended, before.clipped) > VETO_CLIPPED:
         return VETO_CLIPPING
     rise = after.residual - before.residual
     if rise > VETO_RESIDUAL_EPS or (
@@ -683,8 +737,15 @@ def _veto(before: Metrics, after: Metrics, intended: float) -> str | None:
         return VETO_CAST
     if after.m3 > before.m3 * (1.0 + VETO_M3_RISE):
         return VETO_COLOURFUL
-    if after.m3 < before.m3 * VETO_M3_DROP:
-        return VETO_FADED
+    if underwater:
+        if (
+            before.saturation
+            and after.saturation is not None
+            and after.saturation < before.saturation * VETO_SATURATION_DROP
+        ):
+            return VETO_FADED
+    elif after.m3 < before.m3 * VETO_M3_DROP:
+        return VETO_M3_LOSS
     return None
 
 
@@ -709,8 +770,9 @@ def estimate(
     Log or flat footage of a high-bit source is skipped (:data:`SKIP_LOG`, see
     :func:`is_log`). Otherwise, in order: the red-from-green
     mix (``underwater``), the levels on the mixed frames, the white balance on those levels,
-    the vibrance on the result. A clip that would hardly change is skipped
-    (:data:`SKIP_GOOD`); a grade the simulation at ``strength`` vetoes (:func:`_veto`) is
+    the vibrance on the result. ``underwater`` skips a clip that does not look underwater
+    (:data:`SKIP_NOT_UNDERWATER`, :func:`looks_underwater`). A clip that would hardly change is
+    skipped (:data:`SKIP_GOOD`); a grade the simulation at ``strength`` vetoes (:func:`_veto`) is
     skipped with the veto's name. Every result records the metrics before and predicted;
     plain ``auto`` also whether the frames look underwater (``underwater_hint``).
 
@@ -729,11 +791,12 @@ def estimate(
     if levels not in LEVELS:
         raise ValueError(f"unknown levels {levels!r} (expected one of {list(LEVELS)})")
     before = metrics(stats.frames)
-    hint = mode == "auto" and looks_underwater(stats)
+    underwater = mode == "underwater"
+    looks = looks_underwater(stats)
+    hint = not underwater and looks
     if is_log(stats):
         skipped = AutoGrade.skipped(mode, SKIP_LOG, strength)
         return replace(skipped, before=before, underwater_hint=hint)
-    underwater = mode == "underwater"
     rgb = _float(stats.frames)
     mix = _mix(rgb) if underwater else 0.0
     mixed = simulate(rgb, AutoGrade(mode, mix=mix)) if mix else rgb
@@ -746,11 +809,22 @@ def estimate(
         gains = _gains(mixed, black, underwater)
     grade = AutoGrade(mode, black=black, white=white, gains=gains, mix=mix, underwater_hint=hint)
     grade = _round(replace(grade, vibrance=_vibrance(rgb, grade, before)))
+    if underwater and not looks:  # the grade is kept for the record, as a veto's
+        grade = replace(grade, strength=strength)
+        predicted = metrics(simulate(rgb, grade))
+        return replace(grade, skip=SKIP_NOT_UNDERWATER, before=before, predicted=predicted)
     if _is_good(grade):
         return replace(grade, strength=strength, skip=SKIP_GOOD, before=before)
     grade = replace(grade, strength=strength)
-    predicted = metrics(simulate(rgb, grade))
-    veto = _veto(before, predicted, _intended_clipping(rgb, grade))
+    graded = simulate(rgb, grade)
+    predicted = metrics(graded)
+    veto = _veto(
+        before,
+        predicted,
+        _intended_clipping(rgb, grade),
+        underwater=underwater,
+        red_clipped=_red_highlights(graded) if underwater else 0.0,
+    )
     return replace(grade, skip=veto, before=before, predicted=predicted)
 
 

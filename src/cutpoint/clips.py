@@ -1151,9 +1151,10 @@ def _color_mode(
 ) -> str:
     """The ``--color`` mode of a run: ``color`` as given, else ``color`` in config.json; the
     config's is never applied with a ``lut`` or to ``gaming`` footage (an INFO line says so),
-    a given one on ``gaming`` footage gets a WARNING. ``known_style`` False (no analysis
-    style, as for segments without highlights.json): ``style`` is a fallback, not the footage's,
-    so it never counts as gaming.
+    a given one on ``gaming`` footage gets a WARNING (a stronger one for ``underwater``) and a
+    ``color_on_gaming`` ``--json`` warning. ``known_style`` False (no analysis style, as for
+    segments without highlights.json): ``style`` is a fallback, not the footage's, so it never
+    counts as gaming.
 
     Raises:
         jsonout.ArgumentError: For a ``color`` other than ``off`` with a ``lut``, or one not in
@@ -1179,12 +1180,20 @@ def _color_mode(
     if color != "off" and lut is not None:
         raise jsonout.ArgumentError(f"--color {color} cannot be combined with --lut; use one")
     if color != "off" and gaming:
-        logger.warning(
-            "--color %s on gaming footage (style %s): game graphics are graded too; "
-            "check the clips",
-            color,
-            style.name,
-        )
+        if color == "underwater":
+            message = (
+                f"--color underwater on gaming footage (style {style.name}): it is made for "
+                "video shot underwater and grades game graphics too, so the clips may look "
+                "worse (clips that do not look underwater stay ungraded, not_underwater); "
+                "--color auto or a LUT (--lut) fits games better"
+            )
+        else:
+            message = (
+                f"--color {color} on gaming footage (style {style.name}): game graphics are "
+                "graded too; check the clips"
+            )
+        logger.warning("%s", message)
+        jsonout.warn("color_on_gaming", message)
     return color
 
 

@@ -865,11 +865,57 @@ def test_the_veto_counts_per_channel_levels_by_the_per_channel_rule():
 
 
 def test_a_strong_cast_whose_grade_takes_much_colour_away_is_vetoed(lenient):
-    """M3 counts a cast as colour: neutralising a strong one (red at a third of green) leaves
-    the picture well below VETO_M3_DROP of its colourfulness, so it is not graded."""
+    """Neutralising a strong cast (red at a third of green) leaves the picture well below
+    VETO_SATURATION_DROP of its saturation, so it is not graded."""
     grade = color.estimate(_stats(_underwater(red=0.35)), "underwater")
     assert grade.skip == color.VETO_FADED and grade.filter() == ""
-    assert grade.predicted.m3 < grade.before.m3 * color.VETO_M3_DROP
+    assert grade.predicted.saturation < grade.before.saturation * color.VETO_SATURATION_DROP
+
+
+def test_underwater_grades_only_clips_that_look_underwater():
+    """#494: land, desktop and snow footage passed the underwater vetoes on the #489 windows;
+    the gate leaves them ungraded, keeping the grade they would have had for the record."""
+    stats = _stats(_scene())
+    assert not color.looks_underwater(stats)
+    grade = color.estimate(stats, "underwater")
+    assert grade.skip == color.SKIP_NOT_UNDERWATER and grade.filter() == ""
+    assert grade.mix == 0 and grade.predicted is not None and grade.before is not None
+    assert color.estimate(stats, "auto").skip == color.SKIP_GOOD  # auto has no gate
+
+
+@pytest.mark.parametrize(
+    ("rgb", "looks"),
+    [
+        ((0.30, 0.50, 0.45), True),  # scuba: R/G 0.60, R/B 0.67, G/B 1.11
+        ((0.38, 0.50, 0.46), True),  # R/G 0.76
+        ((0.39, 0.50, 0.46), False),  # R/G 0.78
+        ((0.30, 0.50, 0.36), True),  # R/B 0.83
+        ((0.30, 0.50, 0.35), False),  # R/B 0.857
+        ((0.30, 0.40, 0.50), True),  # G/B 0.80
+        ((0.30, 0.39, 0.50), False),  # G/B 0.78: blue sky over snow, or blue open water
+    ],
+)
+def test_looks_underwater_thresholds(rgb, looks):
+    frames = np.broadcast_to(np.array(rgb, np.float32), (2, 8, 8, 3))
+    assert color.looks_underwater(ColorStats(frames)) is looks
+
+
+def _water(tint: tuple[float, float, float]) -> np.ndarray:
+    """Synthetic water: :func:`_scene` flattened and tinted ``tint`` (r, g, b)."""
+    return _cast(_flat(_scene(), 0.05, 0.85), *tint)
+
+
+def test_green_lake_water_is_graded_and_blue_ocean_water_is_not():
+    """What the gate does with water unlike the #489 scuba clips (synthetic frames, not tuned
+    to them). Green lake water (red 0.45, blue 0.7 of green) passes the gate. Deep blue ocean
+    water (green 0.75 of blue) fails G/B > UNDERWATER_GB and is skipped: a known limitation,
+    as the rule that leaves out a blue-sky ski clip also leaves out blue water."""
+    lake = _stats(_water((0.45, 1.0, 0.7)))
+    assert color.looks_underwater(lake)
+    assert color.estimate(lake, "underwater").skip != color.SKIP_NOT_UNDERWATER
+    ocean = _stats(_water((0.3, 0.75, 1.0)))
+    assert not color.looks_underwater(ocean)
+    assert color.estimate(ocean, "underwater").skip == color.SKIP_NOT_UNDERWATER
 
 
 def test_plain_auto_never_mixes_channels_even_underwater():
@@ -948,13 +994,49 @@ def test_a_grade_that_clips_too_much_is_vetoed():
         ({"residual": 0.1045}, None, 0.01),  # 1.05 times: only the absolute rule applies
         ({"m3": 25.1}, color.VETO_COLOURFUL, 0.01),
         ({"m3": 25.0}, None, 0.01),
-        ({"m3": 16.9}, color.VETO_FADED, 0.01),
+        ({"m3": 16.9}, color.VETO_M3_LOSS, 0.01),
         ({"m3": 17.0}, None, 0.01),
+        ({"saturation": 0.1}, None, 0.01),  # auto does not judge the saturation
     ],
 )
 def test_veto_thresholds(after, veto, intended):
-    before = Metrics(m3=20.0, residual=0.1, clipped=0.01, black=0.05, white=0.9)
+    before = Metrics(m3=20.0, residual=0.1, clipped=0.01, black=0.05, white=0.9, saturation=0.5)
     assert color._veto(before, Metrics(**(before.to_json() | after)), intended) == veto
+
+
+@pytest.mark.parametrize(
+    ("after", "red", "veto"),
+    [
+        ({"saturation": 0.3149}, 0.0, color.VETO_FADED),  # below 0.63 of 0.5
+        ({"saturation": 0.3151}, 0.0, None),
+        ({"m3": 10.0}, 0.0, None),  # the M3 drop is auto's rule
+        ({"m3": 25.1}, 0.0, color.VETO_COLOURFUL),
+        ({"clipped": 0.016}, 0.0, color.VETO_CLIPPING),
+        ({"clipped": 0.026}, 0.011, None),  # red-only highlights do not count
+        ({"clipped": 0.046}, 0.04, color.VETO_CLIPPING),  # ... up to 3 points
+        ({"clipped": 0.044}, 0.04, None),
+    ],
+)
+def test_underwater_veto_thresholds(after, red, veto):
+    before = Metrics(m3=20.0, residual=0.1, clipped=0.01, black=0.05, white=0.9, saturation=0.5)
+    got = color._veto(
+        before, Metrics(**(before.to_json() | after)), 0.01, underwater=True, red_clipped=red
+    )
+    assert got == veto
+    if red:  # auto counts every clipped pixel
+        assert color._veto(before, Metrics(**(before.to_json() | after)), 0.01, red_clipped=red)
+
+
+def test_red_highlights_count_pixels_whose_red_alone_clips_high():
+    px = np.array(
+        [[[1.0, 0.5, 0.5], [1.0, 1.0, 0.5], [1.0, 0.5, 0.0], [0.9, 0.5, 0.5]]], np.float32
+    )  # red only; red and green; red high and blue crushed; nothing clipped
+    assert color._red_highlights(px[None]) == 0.25
+
+
+def test_an_underwater_veto_without_a_saturation_record_does_not_judge_it():
+    old = Metrics(m3=20.0, residual=0.1, clipped=0.0, black=0.05, white=0.9)  # version 2
+    assert color._veto(old, replace(old, m3=10.0), 0.0, underwater=True) is None
 
 
 @pytest.mark.parametrize(
@@ -976,11 +1058,23 @@ def test_a_cast_veto_is_relative_as_well_as_absolute(before, after, veto):
 
 
 @pytest.mark.parametrize(("before", "after"), [(36.0, 28.0), (26.0, 19.0)])
-def test_a_washed_out_grade_is_vetoed(before, after):
-    """Flat cyan sand an underwater grade turned grey (scuba 0824 and 0829: 0.78 and 0.73 times
-    the colourfulness)."""
+def test_a_washed_out_auto_grade_is_vetoed_by_its_colourfulness(before, after):
+    """0.78 and 0.73 times the colourfulness."""
     m = Metrics(m3=before, residual=0.2, clipped=0.0, black=0.05, white=0.9)
-    assert color._veto(m, replace(m, m3=after, residual=0.05), 0.0) == color.VETO_FADED
+    assert color._veto(m, replace(m, m3=after, residual=0.05), 0.0) == color.VETO_M3_LOSS
+
+
+@pytest.mark.parametrize(
+    ("ratio", "veto"),
+    [(0.573, color.VETO_FADED), (0.582, color.VETO_FADED), (0.726, None), (0.796, None)],
+)
+def test_a_washed_out_underwater_grade_is_vetoed_by_its_saturation(ratio, veto):
+    """Flat cyan sand an underwater grade turned grey (scuba 0824 and 0829: 0.573 and 0.582
+    times the saturation) against the good grades (0833 0.726, 0838 0.796). Their M3 fell
+    too, the good 0825's as much (0.80 times), so M3 cannot tell them apart."""
+    m = Metrics(m3=30.0, residual=0.2, clipped=0.0, black=0.05, white=0.9, saturation=0.5)
+    after = replace(m, m3=24.0, residual=0.05, saturation=0.5 * ratio)
+    assert color._veto(m, after, 0.0, underwater=True) == veto
 
 
 def test_unknown_mode_is_refused():
@@ -1419,9 +1513,8 @@ def test_real_clips_color_underwater_records_the_grade_and_extend_redoes_it(
     home, tmp_path, monkeypatch, capsys, caplog, lenient
 ):
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
-    # Neutralising this clip's cast leaves about 0.78 of its M3 (VETO_M3_DROP vetoes it); this
-    # test is about recording and redoing a grade.
-    monkeypatch.setattr(color, "VETO_M3_DROP", 0.0)
+    # This test is about recording and redoing a grade, not the vetoes.
+    monkeypatch.setattr(color, "VETO_SATURATION_DROP", 0.0)
     caplog.set_level(logging.INFO)
     src = _underwater_source(tmp_path / "reef.mkv")
     seg = [{"source": str(src), "start": 0.5, "end": 2.5, "label": "a"}]
@@ -1499,6 +1592,20 @@ def test_color_eval_script_replays_saved_frames_by_their_file_name(tmp_path, cap
     production = next(v for v in window["variants"] if v["production"])
     assert production["skip"] == color.estimate(stats, "underwater").skip
     assert isinstance(production["params"]["black"], list)
+
+
+def test_color_eval_script_replays_a_stem_with_a_dot_by_its_file_name(tmp_path, capsys):
+    """#494: ``Desktop ... 02.56.27.19.DVR.mp4`` is saved as ``...19.DVR_120-132.npz``; its
+    window's source is ``...19.DVR``, which Path.stem would cut to ``...19``."""
+    script = _color_eval()
+    name = "Desktop 2025.10.14 - 02.56.27.19.DVR_120-132.npz"
+    script.save_stats(tmp_path / name, _stats(_scene(2)))
+    (w,) = script.stats_windows(tmp_path)
+    assert (w["source"], w["start"], w["end"]) == ("Desktop 2025.10.14 - 02.56.27.19.DVR", 120, 132)
+    assert script.stats_name(w) == name
+    assert script.main(["--stats", str(tmp_path), "--json", "--modes", "auto"]) == 0
+    (window,) = json.loads(capsys.readouterr().out)
+    assert window["frames"] == 2 and window["gate"]["rg"] == pytest.approx(1.0, abs=0.2)
 
 
 def test_color_eval_script_skips_360_sources_as_clips_does(tmp_path, capsys, monkeypatch):
