@@ -5371,7 +5371,7 @@ def test_moment_order_control_is_labelled_with_score_default() -> None:
     a status region announces the change."""
     html = _web("index.html")
     label = re.search(r'<label class="order">(.*?)</label>', html, re.S)[1]
-    assert "Filter by" in label
+    assert '<span class="vh">Sort moments by</span>' in label
     sel = re.search(r'<select id="momentOrder">(.*?)</select>', label, re.S)[1]
     assert re.findall(r'<option value="(\w+)">([^<]+)</option>', sel) == [
         ("score", "Score"),
