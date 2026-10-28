@@ -5432,7 +5432,7 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
                   "optPicksAuto", "optTop", "optMaxTotal", "optIds", "optOrder",
                   "optSpeechExtend", "optSpeechLead", "optTailMin", "optTailMax",
                   "optEventTails", "optEventWindow", "optExtendStart",
-                  "optExtendEnd"}  # fmt: skip
+                  "optExtendEnd", "optColor", "optColorStrength"}  # fmt: skip
     seen = set()
     for control in controls:
         cid = re.search(r'id="(\w+)"', control)[1]
@@ -6253,3 +6253,186 @@ def test_moment_order_is_remembered_safely_and_sorts_after_filtering() -> None:
     render = re.search(r"function renderMoments\(\) \{(.*?)\n\}\n", js, re.S)[1]
     assert render.index(".filter(") < render.index("positionCompare")
     assert re.search(r"\.map\(\(c, i\) => \(\{ c, rank: i \+ 1 \}\)\)", render)
+
+
+# --- Color (#461): the export's --color and --color-strength ---
+
+
+def color_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    body: dict,
+) -> tuple[object, list[list[str]]]:
+    """Start a clips (the sequence) or edit (a preset) job with the Color fields ``body``."""
+    if action == "edit":
+        res, captured, _, _ = preset_job(client, monkeypatch, tmp_path, {"kind": "clips", **body})
+        return res, captured
+    return peaks_job(client, monkeypatch, tmp_path, {"action": action, **body})
+
+
+def _color_flags(args: list[str]) -> list[str]:
+    """The ``--color`` and ``--color-strength`` flags of ``args``, each with its value."""
+    out: list[str] = []
+    for i, a in enumerate(args):
+        if a in ("--color", "--color-strength"):
+            out += args[i : i + 2]
+    return out
+
+
+@pytest.mark.parametrize("action", ["clips", "edit"])
+@pytest.mark.parametrize(
+    ("body", "passed"),
+    [
+        ({"color": "auto"}, ["--color", "auto"]),
+        ({"color": "underwater"}, ["--color", "underwater"]),
+        ({"color": "off"}, ["--color", "off"]),  # explicit: config.json's color does not apply
+        ({"color": "auto", "color_strength": 0.7}, ["--color", "auto", "--color-strength", "0.7"]),
+        ({"color": "underwater", "color_strength": 0}, ["--color", "underwater", "--color-strength", "0"]),
+        ({"color": "auto", "color_strength": 1}, ["--color", "auto", "--color-strength", "1"]),
+        ({}, []),  # not sent: the CLI applies config.json's color itself (never to gaming)
+    ],
+)  # fmt: skip
+def test_clips_and_edit_jobs_pass_color_and_its_strength(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    body: dict,
+    passed: list[str],
+) -> None:
+    res, captured = color_job(client, monkeypatch, tmp_path, action, body)
+    assert res.status_code == 200, res.text
+    assert _color_flags(_cli_args(captured[0])) == passed  # and the CLI parses them
+
+
+@pytest.mark.parametrize("action", ["clips", "edit"])
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"color": "max"}, "color must be one of off, auto, underwater"),
+        ({"color": ""}, "color must be one of"),
+        ({"color": True}, "color must be one of"),
+        ({"color": ["auto"]}, "color must be one of"),  # not a 500
+        ({"color": 1}, "color must be one of"),
+        ({"color": "auto", "color_strength": 1.5}, "color_strength must be a number from 0 to 1"),
+        ({"color": "auto", "color_strength": -0.1}, "color_strength must be a number from 0 to 1"),
+        ({"color": "auto", "color_strength": "0.5"}, "color_strength must be a number from 0 to 1"),
+        ({"color": "auto", "color_strength": True}, "color_strength must be a number from 0 to 1"),
+        ({"color": "off", "color_strength": 0.5}, "color_strength needs color auto or underwater"),
+        ({"color_strength": 0.5}, "color_strength needs color auto or underwater"),
+        ({"color": "auto", "lut": "flat.cube"}, "color cannot be combined with lut"),
+        ({"color": "underwater", "lut": "flat.cube"}, "color cannot be combined with lut"),
+        ({"color": "auto", "color_strength": 0.5, "lut": "flat.cube"}, "color cannot be combined with lut"),
+    ],
+)  # fmt: skip
+def test_clips_and_edit_jobs_reject_a_bad_color(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    body: dict,
+    message: str,
+) -> None:
+    res, captured = color_job(client, monkeypatch, tmp_path, action, body)
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured
+
+
+def test_extend_sends_no_color_it_regrades_from_the_manifest(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``extend`` has no --color: it re-applies the grade each clip's manifest entry records."""
+    body = {"action": "extend", "speech_aware": True, "color": "auto"}
+    res, captured = peaks_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200, res.text
+    assert _color_flags(_cli_args(captured[0])) == []
+
+
+@pytest.mark.parametrize(
+    ("cfg", "shown"),
+    [(None, "off"), ("auto", "auto"), ("underwater", "underwater"), ("off", "off"),
+     ("pink", "off"), (3, "off"), (["auto"], "off")],
+)  # fmt: skip
+def test_settings_show_the_color_default(
+    client: TestClient, home: Path, cfg: object, shown: str
+) -> None:
+    """The page's Color starts on config.json's color; unset or invalid shows Off."""
+    if cfg is not None:
+        set_config(home, color=cfg)
+    assert client.get("/api/settings").json()["color"] == shown
+
+
+@pytest.mark.parametrize(("style", "gaming"), [("gaming", True), ("funny", False), (None, False)])
+def test_the_project_view_says_whether_the_footage_is_gaming(
+    client: TestClient, tmp_path: Path, style: str | None, gaming: bool
+) -> None:
+    """The page's Color starts at Off for gaming footage, as config.json's color does."""
+    p, _ = cli_project(tmp_path)
+    if style is not None:
+        hl = cache.load_json(p / "highlights.json")
+        hl["style"] = style
+        cache.save_json(p / "highlights.json", hl)
+    assert client.get("/api/projects/cli").json()["gaming"] is gaming
+
+
+def test_color_is_a_three_stop_slider_like_compress_audio_peaks() -> None:
+    """Contract pin (#461): Color is a range slider with the stops Off, Auto and Underwater, built
+    like Compress Audio Peaks, with a 0-100% Strength shown only with a grade; both name their
+    value for screen readers. The page has no LUT option, so nothing disables Color."""
+    html = _web("index.html")
+    js = _web("app.js")
+    panel = re.search(r'<fieldset class="panel color">(.*?)</fieldset>', html, re.S)[1]
+    slider = re.search(r'<input type="range" id="optColor"[^>]*>', panel)[0]
+    for attr in ('min="0"', 'max="2"', 'step="1"', 'value="0"', 'aria-labelledby="colorLegend"',
+                 'aria-describedby="dColor"', 'aria-valuetext="Off"'):  # fmt: skip
+        assert attr in slider
+    assert re.search(r'<legend id="colorLegend"[^>]*>Color</legend>', panel)
+    ticks = re.search(r'<div class="ticks" aria-hidden="true">(.*?)</div>', panel)[1]
+    assert re.findall(r"<span>(\w+)</span>", ticks) == ["Off", "Auto", "Underwater"]
+    row = re.search(
+        r'<div class="color-strength" id="colorStrengthRow" hidden>(.*?)</div>', panel, re.S
+    )[1]
+    strength = re.search(r'<input type="range" id="optColorStrength"[^>]*>', row)[0]
+    for attr in ('min="0"', 'max="100"', 'value="100"', 'aria-valuetext="Strength 100%"'):
+        assert attr in strength
+    assert '<label for="optColorStrength"' in row
+    assert "const COLOR_STOPS = ['off', 'auto', 'underwater'];" in js
+    assert "underwater: 'Underwater'" in js
+    assert "`Strength ${range.value}%`" in js
+    assert "$('#colorStrengthRow').hidden = color() === 'off';" in js
+    assert not re.search(r"\blut\b", html, re.I)  # no LUT option that would disable Color
+
+
+def test_the_page_sends_color_with_clips_and_presets_and_strength_below_100() -> None:
+    """Contract pin (#461): Export clips and One-Click Edit send ``color``; ``color_strength``
+    only with a grade and below 100% (the CLI's default is 1). Extend export and Assemble send
+    neither."""
+    js = _web("app.js")
+    options = re.search(r"function colorOptions\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "{ color: color() }" in options
+    assert "body.color !== 'off' && pct < 100" in options and "pct / 100" in options
+    for builder, sends in (("exportOptions", True), ("makePreset", True),
+                           ("extendOptions", False), ("assembleOptions", False)):  # fmt: skip
+        body = re.search(rf"function {builder}\(\) \{{\n(.*?)\n\}}", js, re.S)[1]
+        assert ("...colorOptions()" in body) is sends, builder
+
+
+def test_color_starts_from_config_json_but_never_on_for_gaming() -> None:
+    """Contract pin (#461): a project opens with the Color this browser saved for it (so a dive's
+    Underwater does not carry over to land footage), else config.json's color (GET
+    /api/settings), else Off; a gaming project opens at Off. Strength is one choice for all."""
+    js = _web("app.js")
+    start = re.search(r"function startColor\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "S.savedOpts.color_by_project?.[S.id]" in start and "S.colorDefault" in start
+    assert "setColor(S.project?.gaming ? 'off' : value);" in start
+    init = re.search(r"function initExportOptions\(\) \{\n(.*?)\n\}\n", js, re.S)[1]
+    assert "store('color_by_project', { ...mine, [S.id]: color() });" in init
+    assert "store('color'," not in init  # no browser-wide Color
+    assert "store('color_strength', Number(strength.value));" in init  # browser-wide Strength
+    assert "colorDefault: 'off'" in js
+    assert "if (COLOR_STOPS.includes(st.color)) S.colorDefault = st.color;" in js
+    adopt = re.search(r"function adopt\(p, switched\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "if (switched) startColor();" in adopt

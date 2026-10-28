@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--color` off (the default) the clips are unchanged (#290).
 - `--json`: a `grade_dropped` warning when `clips --force` replaces graded clips with ungraded
   ones (#290).
+- `cutpoint ui` Export tab: a Color slider (Off, Auto, Underwater) under Compress Audio Peaks,
+  with a Strength slider (0-100%, shown with Auto or Underwater), passed to Export clips and
+  One-Click Edit as `--color` and `--color-strength` (left out at 100%). Color is remembered per
+  project (Strength for all); a project with no choice starts on the `color`
+  key in `config.json` (`GET /api/settings` returns `color`), else Off, and at Off for gaming
+  projects (the project view's new `gaming`); a grade picked there is still sent. The jobs API
+  refuses an unknown `color`, a `color_strength` outside 0-1 or without a grade, and `color`
+  with `lut` (#461).
 - `cutpoint ui`: the Moments list has a sort order next to the filter: Score (the default) or
   Position in video, which sorts by source name (natural order, so `clip2` comes before `clip10`)
   and then start time. The rank badge on each card keeps its score rank in either order. The
