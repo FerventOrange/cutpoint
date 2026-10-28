@@ -714,7 +714,8 @@ def _cast(frames: np.ndarray, r: float, g: float, b: float) -> np.ndarray:
 @pytest.fixture
 def lenient(monkeypatch):
     """A clipping veto of 5 points instead of 0.5, for tests of what the grade does: on these
-    synthetic frames (linear tails) the levels alone clip about 0.5 % at each end."""
+    synthetic frames a cast's saturated colours and the underwater tint push a channel past
+    the white point, 2 to 3 points more than the levels intend."""
     monkeypatch.setattr(color, "VETO_CLIPPED", 0.05)
 
 
@@ -725,7 +726,7 @@ def test_a_clip_that_already_looks_good_is_skipped():
     assert grade.before is not None and grade.before.m3 >= color.M3_FULL
 
 
-def test_levels_stretch_to_the_luma_percentiles(lenient):
+def test_levels_stretch_to_the_luma_percentiles():
     grade = color.estimate(_stats(_flat(_scene(), 0.04, 0.9)), "auto")
     assert grade.skip is None
     assert 0.03 < grade.black <= color.MAX_BLACK
@@ -762,7 +763,7 @@ def test_white_balance_corrects_part_of_a_cast_from_the_neutral_mid_tones():
 def test_white_balance_gains_are_clamped(monkeypatch):
     monkeypatch.setattr(color, "MAX_GAIN", 0.05)
     gains = color._gains(_cast(_scene()[:, :29], 1.08, 1.0, 0.9), 0.0, underwater=False)
-    assert gains[2] == pytest.approx(1.05)  # 1.067 unclamped
+    assert gains[2] == pytest.approx(1.05)  # 1.062 unclamped
     assert gains[0] == pytest.approx(0.952, abs=1e-3)  # within the clamp
 
 
@@ -785,7 +786,7 @@ def test_a_cast_clip_gets_a_grade_that_reduces_the_cast(lenient):
     assert "colorlevels=" in grade.filter() and "colorchannelmixer" not in grade.filter()
 
 
-def test_vibrance_lifts_dull_colour_within_the_m3_veto(lenient):
+def test_vibrance_lifts_dull_colour_within_the_m3_veto():
     dull = _scene() * 0.3 + (_scene() @ color.LUMA)[..., None] * 0.7
     grade = color.estimate(_stats(_flat(dull, 0.03, 0.93)), "auto")
     assert 0 < grade.vibrance <= color.MAX_VIBRANCE
@@ -794,12 +795,25 @@ def test_vibrance_lifts_dull_colour_within_the_m3_veto(lenient):
     assert "vibrance=intensity=" in grade.filter()
 
 
-def test_log_footage_is_never_graded():
-    flat = _flat(_scene() * 0.3 + 0.35, 0.08, 0.8)  # low saturation, lifted blacks
-    stats = _stats(flat)
+def _log_like() -> np.ndarray:
+    return _flat(_scene() * 0.3 + 0.35, 0.08, 0.8)  # low saturation, lifted blacks
+
+
+def test_flat_looking_10_bit_footage_is_skipped_as_log():
+    stats = replace(_stats(_log_like()), high_bit=True)
     assert color.is_log(stats)
     grade = color.estimate(stats, "auto")
     assert (grade.skip, grade.filter()) == (color.SKIP_LOG, "")
+
+
+def test_flat_looking_8_bit_footage_is_graded():
+    """The rule of ``encode.warn_if_log``: 8-bit footage is not log; hazy 8-bit clips get a
+    grade, the veto guarding it."""
+    stats = _stats(_log_like())
+    assert not stats.high_bit and not color.is_log(stats)
+    grade = color.estimate(stats, "auto")
+    assert grade.skip is None, grade
+    assert grade.filter() != ""
 
 
 def _underwater() -> np.ndarray:
@@ -833,17 +847,49 @@ def test_mix_is_capped_and_none_once_red_is_there():
     assert color._mix(_scene()) == 0.0
 
 
-def test_a_two_sided_stretch_clipping_both_tails_is_vetoed():
-    """p0.5 / p99.5 levels clip about 0.5 % of the pixels at each end; together that is more
-    than the 0.5-point veto (the plan's numbers, for the harness to check on real footage)."""
-    grade = color.estimate(_stats(_flat(_scene(), 0.04, 0.9)), "auto")
+def test_a_two_sided_stretch_clipping_both_tails_is_not_vetoed():
+    """p0.5 / p99.5 levels clip about 0.5 % of the pixels at each end: more than 0.5 points
+    in all, but that is the clipping they intend, so only clipping beyond it is vetoed."""
+    frames = color._float(_stats(_flat(_scene(), 0.04, 0.9)).frames)
+    grade = color.estimate(ColorStats(frames), "auto")
     assert (grade.black, grade.white) == (color.MAX_BLACK, color.MIN_WHITE)
-    assert grade.skip == color.VETO_CLIPPING
+    assert grade.skip is None, grade
+    assert grade.predicted.clipped - grade.before.clipped > color.VETO_CLIPPED
+    assert grade.predicted.clipped <= color._intended_clipping(frames, grade) + color.VETO_CLIPPED
 
 
-def test_a_grade_that_clips_too_much_is_vetoed(lenient):
+def test_intended_clipping_is_the_source_s_own_plus_the_levels_tails_at_most():
+    frames = color._float(_stats(_flat(_scene(), 0.04, 0.9)).frames)
+    frames[:, :2, :8] = 1.0  # already clipped: 16 of 9216 pixels
+    already = 16 / frames[0, ..., 0].size
+    tails = color.LEVELS_PERCENTILES[0] / 100 + 1 - color.LEVELS_PERCENTILES[1] / 100
+    assert color._intended_clipping(frames, AutoGrade("auto")) == pytest.approx(already, abs=1e-5)
+    grade = AutoGrade("auto", black=0.06, white=0.88)
+    assert already < color._intended_clipping(frames, grade) <= already + tails
+    # a weaker grade's points are nearer 0 and 1 and intend less
+    weaker = color._intended_clipping(frames, replace(grade, strength=0.3))
+    assert weaker < color._intended_clipping(frames, grade)
+
+
+def test_clipping_beyond_the_levels_intent_is_vetoed():
+    """The same two-sided stretch with a strong white balance gain: red is pushed out on top
+    of the levels' tails."""
+    frames = color._float(_stats(_flat(_scene(), 0.04, 0.9)).frames)
+    before = color.metrics(frames)
+    grade = AutoGrade("auto", black=0.06, white=0.88, gains=(1.3, 1.0, 1.0))
+    after = color.metrics(color.simulate(frames, grade))
+    intended = color._intended_clipping(frames, grade)
+    assert after.clipped - intended > color.VETO_CLIPPED
+    assert color._veto(before, after, intended) == color.VETO_CLIPPING
+    plain = color.metrics(color.simulate(frames, replace(grade, gains=(1.0, 1.0, 1.0))))
+    assert color._veto(before, plain, intended) is None
+
+
+def test_a_grade_that_clips_too_much_is_vetoed():
     frames = _flat(_scene(), 0.04, 0.95)
-    frames[:, :, :40] = 0.05  # a third of every frame sits at the black point and would clip
+    # a third of every frame sits at the black point and would clip: far more than the p0.5
+    # tail the levels intend
+    frames[:, :, :40] = 0.05
     grade = color.estimate(_stats(frames), "auto")
     assert grade.skip == color.VETO_CLIPPING
     assert grade.filter() == ""
@@ -851,19 +897,22 @@ def test_a_grade_that_clips_too_much_is_vetoed(lenient):
 
 
 @pytest.mark.parametrize(
-    ("after", "veto"),
+    ("after", "veto", "intended"),
     [
-        ({"clipped": 0.016}, color.VETO_CLIPPING),
-        ({"clipped": 0.015}, None),
-        ({"residual": 0.106}, color.VETO_CAST),
-        ({"residual": 0.1045}, None),
-        ({"m3": 25.1}, color.VETO_COLOURFUL),
-        ({"m3": 25.0}, None),
+        ({"clipped": 0.016}, color.VETO_CLIPPING, 0.01),
+        ({"clipped": 0.015}, None, 0.01),
+        ({"clipped": 0.026}, color.VETO_CLIPPING, 0.02),
+        ({"clipped": 0.0249}, None, 0.02),
+        ({"clipped": 0.016}, color.VETO_CLIPPING, 0.0),  # never below the source's own
+        ({"residual": 0.106}, color.VETO_CAST, 0.01),
+        ({"residual": 0.1045}, None, 0.01),
+        ({"m3": 25.1}, color.VETO_COLOURFUL, 0.01),
+        ({"m3": 25.0}, None, 0.01),
     ],
 )
-def test_veto_thresholds(after, veto):
+def test_veto_thresholds(after, veto, intended):
     before = Metrics(m3=20.0, residual=0.1, clipped=0.01, black=0.05, white=0.9)
-    assert color._veto(before, Metrics(**(before.to_json() | after))) == veto
+    assert color._veto(before, Metrics(**(before.to_json() | after)), intended) == veto
 
 
 def test_unknown_mode_is_refused():
@@ -913,7 +962,7 @@ def test_identity_and_skipped_grades_have_no_filter():
     assert AutoGrade("auto", black=0.05, skip=color.VETO_CAST).filter() == ""
 
 
-def test_manifest_entry_records_the_grade_and_reads_it_back(lenient):
+def test_manifest_entry_records_the_grade_and_reads_it_back():
     grade = color.estimate(_stats(_cast(_flat(_scene(), 0.03, 0.93), 1.1, 1.0, 0.88)), "auto", 0.7)
     entry = grade.to_json()
     assert set(entry["color"]) == {
@@ -1021,10 +1070,10 @@ def decodes(monkeypatch):
 
     monkeypatch.setattr(color, "decode_raw", fake)
 
-    def run(n: int) -> tuple[ColorStats, list[dict]]:
+    def run(n: int, **over) -> tuple[ColorStats, list[dict]]:
         count[0] = n
         calls.clear()
-        info = media_info(**BT709)
+        info = media_info(**(BT709 | over))
         return color.sample_stats(Path("v.mp4"), info, 10.0, 20.0, FMT), calls
 
     return run
@@ -1036,6 +1085,20 @@ def test_sampling_reads_keyframes_of_the_inner_80_percent_on_the_cpu(decodes):
     (call,) = calls
     assert call["keyframes_only"] and call["hwaccel"] is None
     assert (call["start"], call["duration"]) == pytest.approx((11.0, 8.0))
+
+
+@pytest.mark.parametrize(
+    ("over", "high_bit"),
+    [
+        ({}, False),
+        ({"pix_fmt": "yuv420p10le"}, True),
+        ({"pix_fmt": "p010le"}, True),
+        ({"pix_fmt": "yuv420p10le", **HLG}, False),  # tone-mapped: not checked for log
+    ],
+)
+def test_sampling_records_a_high_bit_source_like_the_log_warning(decodes, over, high_bit):
+    stats, _ = decodes(2, **over)
+    assert stats.high_bit is high_bit
 
 
 def test_sampling_keeps_at_most_8_frames_spread_over_the_clip(decodes):
@@ -1181,8 +1244,7 @@ def _cast_source(path: Path) -> Path:
 
 
 @needs_ffmpeg
-def test_real_sampling_and_grade_of_a_cast_clip(tmp_path, monkeypatch):
-    monkeypatch.setattr(color, "VETO_CLIPPED", 0.05)  # see ``lenient``
+def test_real_sampling_and_grade_of_a_cast_clip(tmp_path, lenient):
     src = _cast_source(tmp_path / "warm.mkv")
     info = ffmpeg_utils.probe(src)
     fmt = encode.choose_format([info], False)

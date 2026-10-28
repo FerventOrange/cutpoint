@@ -8,9 +8,10 @@ clamped. The grade is ffmpeg filters only (:meth:`AutoGrade.filter`: ``colorchan
 ``colorlevels`` and ``vibrance`` in 16-bit RGB), so the export needs nothing new.
 
 Before a grade is used, :func:`simulate` applies it to the sampled frames in numpy and
-:func:`metrics` compares them before and after: a grade that clips more, leaves a worse cast
-or adds too much colour is vetoed. Clips that already look good, and log or flat footage
-(which needs the camera's LUT, ``--lut``), get no grade. :func:`auto_grade` caches each
+:func:`metrics` compares them before and after: a grade that clips more than its levels
+intend, leaves a worse cast or adds too much colour is vetoed. Clips that already look good,
+and log or flat footage from a 10-bit source (which needs the camera's LUT, ``--lut``), get
+no grade. :func:`auto_grade` caches each
 result in the source's cache folder (``color/<hash>.json``).
 """
 
@@ -25,7 +26,15 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.crop import Crop
-from cutpoint.encode import TAG_BT709, OutputFormat, bt709_filter, log_stats, looks_log
+from cutpoint.encode import (
+    _HIGH_BIT_RE,
+    TAG_BT709,
+    OutputFormat,
+    bt709_filter,
+    color_kind,
+    log_stats,
+    looks_log,
+)
 from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, decode_raw
 
 logger = logging.getLogger(__name__)
@@ -72,9 +81,10 @@ GOOD_LEVELS = 0.03
 # A clip that looks underwater (for plain ``auto``'s hint): mean red below this share of
 # both green and blue.
 UNDERWATER_RED = 0.6
-# Veto: the clipped share rises by more than VETO_CLIPPED, the gray-world residual rises by
-# more than VETO_RESIDUAL_EPS (0.5 % of the luma range, about a code: an invisible change),
-# or M3 rises by more than VETO_M3_RISE.
+# Veto: the clipped share rises by more than VETO_CLIPPED above the clipping the levels
+# intend (:func:`_intended_clipping`: the source's own plus at most the LEVELS_PERCENTILES
+# tails), the gray-world residual rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma
+# range, about a code: an invisible change), or M3 rises by more than VETO_M3_RISE.
 VETO_CLIPPED = 0.005
 VETO_RESIDUAL_EPS = 0.005
 VETO_M3_RISE = 0.25
@@ -273,9 +283,15 @@ def _levels(black: float, white: float, gains: tuple[float, float, float]) -> st
 
 @dataclass
 class ColorStats:
-    """Sampled frames of a clip: ``frames`` is ``(n, height, width, 3)`` BT.709 RGB ``uint8``."""
+    """Sampled frames of a clip: ``frames`` is ``(n, height, width, 3)`` BT.709 RGB ``uint8``.
+
+    ``high_bit``: the source is 10-bit or deeper and gets no HDR conversion, the sources
+    :func:`~cutpoint.encode.warn_if_log` checks; only those can be skipped as log (8-bit
+    footage that looks flat is graded, the veto guarding it).
+    """
 
     frames: np.ndarray
+    high_bit: bool = False
 
 
 def sample_filter(
@@ -343,7 +359,9 @@ def sample_stats(
                     kept, stride = kept[::2], stride * 2
             k += 1
     except FFmpegError as err:
-        logger.debug("no keyframe of %s in %.2f-%.2f s: %s", src.name, start, end, err)
+        logger.debug(
+            "sampling of %s %.2f-%.2f s stopped after %d frames: %s", src.name, start, end, k, err
+        )
     if not kept:
         frames = decode_raw(
             src,
@@ -359,7 +377,8 @@ def sample_stats(
         finally:
             frames.close()
     pick = np.unique(np.linspace(0, len(kept) - 1, min(SAMPLE_FRAMES, len(kept))).round())
-    return ColorStats(np.stack([kept[int(i)] for i in pick]))
+    high_bit = bool(_HIGH_BIT_RE.search(info.pix_fmt)) and not color_kind(info)
+    return ColorStats(np.stack([kept[int(i)] for i in pick]), high_bit)
 
 
 # -- measurement, simulation and estimate --------------------------------------------------------
@@ -421,8 +440,12 @@ def simulate(frames: np.ndarray, grade: AutoGrade) -> np.ndarray:
 
 
 def is_log(stats: ColorStats) -> bool:
-    """True when the frames look like log or flat footage (:func:`~cutpoint.encode.looks_log`
-    on the median of their :func:`~cutpoint.encode.log_stats`)."""
+    """True when a high-bit source's frames (``stats.high_bit``, the rule of
+    :func:`~cutpoint.encode.warn_if_log`) look like log or flat footage
+    (:func:`~cutpoint.encode.looks_log` on the median of their
+    :func:`~cutpoint.encode.log_stats`)."""
+    if not stats.high_bit:
+        return False
     sat, black, white = np.median([log_stats(f) for f in stats.frames], axis=0)
     return looks_log(float(sat), float(black), float(white))
 
@@ -521,9 +544,35 @@ def _round(grade: AutoGrade) -> AutoGrade:
     )
 
 
-def _veto(before: Metrics, after: Metrics) -> str | None:
-    """The veto a predicted result earns (see :data:`VETO_CLIPPED`), None for none."""
-    if after.clipped - before.clipped > VETO_CLIPPED:
+def _intended_clipping(frames: np.ndarray, grade: AutoGrade) -> float:
+    """The clipped share (as :func:`metrics` counts it) that ``grade``'s levels are meant to
+    cause on ``frames``: the pixels already clipped, plus those whose luma (after the
+    channel mix) the applied black and white points push to 0 or 1, at most the
+    :data:`LEVELS_PERCENTILES` tail at each end (ties at a point and saturated colours a
+    channel pushes out are not intended). A clamped point intends less than its tail."""
+    g = grade.applied()
+    rgb = _float(frames)
+    mixed = simulate(rgb, AutoGrade(g.mode, mix=g.mix)) if g.mix > 0 else rgb
+    tails = (LEVELS_PERCENTILES[0] / 100, 1.0 - LEVELS_PERCENTILES[1] / 100)
+    shares = []
+    for f, m in zip(rgb, mixed, strict=True):
+        clipped = ((f <= 0.5 / 255) | (f >= 254.5 / 255)).any(axis=-1)
+        v = (m @ LUMA - g.black) / (g.white - g.black)
+        low = float((~clipped & (v <= 0.5 / 255)).mean())
+        high = float((~clipped & (v >= 254.5 / 255)).mean())
+        shares.append(float(clipped.mean()) + min(low, tails[0]) + min(high, tails[1]))
+    return round(float(np.mean(shares)), 5)
+
+
+def _veto(before: Metrics, after: Metrics, intended: float) -> str | None:
+    """The veto a predicted result earns, None for none.
+
+    Clipping: the p0.5 / p99.5 levels are meant to clip their tails, so only clipping more
+    than :data:`VETO_CLIPPED` above ``intended`` (:func:`_intended_clipping`, never below
+    ``before.clipped``) is vetoed: the white balance, mix or vibrance pushing more pixels
+    out, or a mass of pixels at a levels point.
+    """
+    if after.clipped - max(intended, before.clipped) > VETO_CLIPPED:
         return VETO_CLIPPING
     if after.residual > before.residual + VETO_RESIDUAL_EPS:
         return VETO_CAST
@@ -548,7 +597,8 @@ def _is_good(grade: AutoGrade) -> bool:
 def estimate(stats: ColorStats, mode: str, strength: float = 1.0) -> AutoGrade:
     """The grade of a clip from its sampled frames (:func:`sample_stats`).
 
-    Log or flat footage is skipped (:data:`SKIP_LOG`). Otherwise, in order: the red-from-green
+    Log or flat footage of a high-bit source is skipped (:data:`SKIP_LOG`, see
+    :func:`is_log`). Otherwise, in order: the red-from-green
     mix (``underwater``), the levels on the mixed frames, the white balance on those levels,
     the vibrance on the result. A clip that would hardly change is skipped
     (:data:`SKIP_GOOD`); a grade the simulation at ``strength`` vetoes (:func:`_veto`) is
@@ -574,7 +624,8 @@ def estimate(stats: ColorStats, mode: str, strength: float = 1.0) -> AutoGrade:
         return replace(grade, strength=strength, skip=SKIP_GOOD, before=before)
     grade = replace(grade, strength=strength)
     predicted = metrics(simulate(rgb, grade))
-    return replace(grade, skip=_veto(before, predicted), before=before, predicted=predicted)
+    veto = _veto(before, predicted, _intended_clipping(rgb, grade))
+    return replace(grade, skip=veto, before=before, predicted=predicted)
 
 
 # -- cache --------------------------------------------------------------------------------------
