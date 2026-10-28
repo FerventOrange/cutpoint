@@ -92,8 +92,9 @@ class OcrParams:
 # 10: new menu text is STATIC_TEXT_LINES texts that stay for STATIC_TEXT_SHARE of the part;
 # 11: screens with TEXT_LINES lines of new text that stay, TEXT_TOGETHER first read together,
 # are menus too (:func:`text_frames`)
-# 12: feeds without team colours read icon kill lines ("name [icon] name", FeedParser._icon_line);
-# icon kill events keep their most complete names, "row_notices" feeds read other rows as notices
+# 12: "row_notices" feeds without team colours read icon kill lines ("name [icon] name",
+# FeedParser._icon_line) and other rows as notices; icon kill events keep their most complete
+# names and are dropped on menu frames
 GENERIC_VERSION = 12
 
 
@@ -1138,8 +1139,9 @@ class FeedParser:
     * icon feeds without words, where an entry is a coloured *actor* line and
       a differently coloured *target* line (``"entry": "two_line"``, War
       Thunder) or two coloured names on one row (``"entry": "one_line"``);
-      without a colour map (a discovered preset), a row of two names split by an
-      icon gap is a kill, left name first (:meth:`_icon_line`).
+      without a colour map, in a discovered icon feed (``"row_notices": true``), a
+      row of two names split by an icon gap is a kill, left name first
+      (:meth:`_icon_line`).
 
     Team colours come from the preset (``"colors": {"red": "enemy", "blue":
     "ally", ...}``, keyed by the colour names :func:`text_hue` returns). A kill
@@ -1340,7 +1342,8 @@ class FeedParser:
         self, img: np.ndarray, names: list[tuple], line: str, conf: float
     ) -> tuple[dict[str, Any] | None, bool]:
         """A kill from an icon kill line ("name [weapon icon] name", no kill word) when the
-        preset maps no colours to teams: two name boxes ``names`` at least
+        preset maps no colours to teams and its feed has ``row_notices`` (a feed discovery
+        found as an icon feed): exactly two name boxes ``names`` at least
         :data:`ICON_GAP` text heights apart, or one box split by :func:`icon_split`. The
         left name is the killer (the usual order); both must read as names
         (:func:`_icon_name`). Returns the kill (or None) and whether the row has an icon
@@ -1348,8 +1351,10 @@ class FeedParser:
         :func:`icon_split`) are kept as ``killer_hue`` and ``victim_hue``."""
         if not names:
             return None, False
-        if len(names) >= 2:
-            (ba, ta, _), (bb, tb, _) = names[0], names[-1]
+        if len(names) > 2:  # menu rows ("PLAY | STORE | OPERATORS"), no name pair
+            return None, False
+        if len(names) == 2:
+            (ba, ta, _), (bb, tb, _) = names
             h = float(np.median([max(p[1] for p in b) - min(p[1] for p in b) for b in (ba, bb)]))
             if min(p[0] for p in bb) - max(p[0] for p in ba) < ICON_GAP * h:
                 return None, False
@@ -1429,12 +1434,13 @@ class FeedParser:
                     [i for i in row if len(norm(i[1])) >= 2], gap=14 * self.scale
                 )
                 if not self.colors:
-                    ev, gap = self._icon_line(img, names, line, conf)
-                    if ev:
-                        out.append(ev)
-                        used.add(k)
-                    elif gap:
-                        gapped.add(k)
+                    if self.row_notices:  # a discovered icon feed
+                        ev, gap = self._icon_line(img, names, line, conf)
+                        if ev:
+                            out.append(ev)
+                            used.add(k)
+                        elif gap:
+                            gapped.add(k)
                     continue
                 if len(names) < 2:
                     continue
@@ -2433,12 +2439,18 @@ class OcrInterpretation:
             feeds = {r.name for r in self.regions if r.kind == "feed"}
 
             def feed_event(e: dict[str, Any]) -> bool:
-                """Feed sightings and kills (kills come from the feed region): never dropped;
-                feed rows read as notices (``row_notices``) are dropped like other notices.
+                """Feed sightings and kills (kills come from the feed region): never dropped
+                but icon kills (:func:`kept`); feed rows read as notices (``row_notices``)
+                are dropped like other notices.
                 This assumes menus do not cover the feed region; a scoreboard drawn over it
                 is kept."""
                 t = e.get("type")
                 return t == "kill" or (e.get("region") in feeds and t != "notice")
+
+            def kept(e: dict[str, Any]) -> bool:
+                """Feed events kept on menu frames: not icon kills (``"entry": "icon"``), as
+                two words of a menu row ("Subtitles | Enabled") can read as one."""
+                return feed_event(e) and e.get("entry") != "icon"
 
             tracked = tracker.events
             feed_times = {t for e in tracked if feed_event(e) for t in e["_times"]}
@@ -2477,7 +2489,7 @@ class OcrInterpretation:
                     max_gap,
                 )
             menu = {f["t"] for f in frames if rules[f["id"]] != "none"}
-            tracker.drop_sightings(menu, keep=feed_event)
+            tracker.drop_sightings(menu, keep=kept)
             stats["menu_frames"] = len(menu)
             stats["static_frames"] = sum(r == "static" for r in rules.values())
             stats["text_frames"] = sum(r == "text" for r in rules.values())

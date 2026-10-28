@@ -9,6 +9,7 @@ import pytest
 from cutpoint.events.killfeed import EventTracker, FeedParser, _icon_cut, icon_split
 
 BLUE, ORANGE, BLACK, WHITE = (230, 140, 30), (30, 140, 240), (10, 10, 10), (255, 255, 255)
+ICON = {"row_notices": True}  # a discovered icon feed's preset ``feed``
 
 
 def _line(widths: tuple[int, int, int] = (110, 70, 120), h: int = 30) -> np.ndarray:
@@ -35,7 +36,7 @@ def test_icon_split_of_one_box() -> None:
 
 def test_one_box_line_is_a_kill() -> None:
     img = _line()
-    evs = FeedParser({}, ("Boxer7",), 1.0).parse(img, [_item(0, 300, "AlderBoxer7")])
+    evs = FeedParser(ICON, ("Boxer7",), 1.0).parse(img, [_item(0, 300, "AlderBoxer7")])
     assert len(evs) == 1
     ev = evs[0]
     assert (ev["type"], ev["killer"], ev["victim"]) == ("kill", "Alder", "Boxer7")
@@ -46,25 +47,46 @@ def test_one_box_line_is_a_kill() -> None:
 def test_two_boxes_split_by_an_icon_gap_are_a_kill() -> None:
     img = _line()
     items = [_item(0, 110, "Alder"), _item(180, 300, "Boxer7")]
-    evs = FeedParser({}, (), 1.0).parse(img, items)
+    evs = FeedParser(ICON, (), 1.0).parse(img, items)
     assert [(e["killer"], e["victim"]) for e in evs] == [("Alder", "Boxer7")]
 
 
 def test_plain_rows_are_no_kills() -> None:
     img = np.full((30, 300, 3), BLACK, np.uint8)
     img[8:22, 10:290:7] = WHITE
-    parser = FeedParser({}, (), 1.0)
-    assert parser.parse(img, [_item(0, 300, "Alder has found the bombs")]) == []
+    parser = FeedParser(ICON, (), 1.0)
+
+    def kills(items: list) -> list:
+        return [e for e in parser.parse(img, items) if e["type"] == "kill"]
+
+    assert kills([_item(0, 300, "Alder has found the bombs")]) == []
     # two boxes without an icon gap, and readouts across one
-    assert parser.parse(img, [_item(0, 110, "Alder"), _item(116, 300, "Boxer7")]) == []
-    assert parser.parse(img, [_item(0, 90, "FPS:106"), _item(160, 300, "GPU:8.5")]) == []
+    assert kills([_item(0, 110, "Alder"), _item(116, 300, "Boxer7")]) == []
+    assert kills([_item(0, 90, "FPS:106"), _item(160, 300, "GPU:8.5")]) == []
+
+
+def test_icon_lines_need_the_flag() -> None:
+    """Without ``row_notices`` (a preset that is no discovered icon feed) icon lines are
+    not read: two words split by a gap are often a menu row ("Brightness | Medium")."""
+    img = _line()
+    parser = FeedParser({}, ("Boxer7",), 1.0)
+    assert parser.parse(img, [_item(0, 300, "AlderBoxer7")]) == []
+    assert parser.parse(img, [_item(0, 110, "Alder"), _item(180, 300, "Boxer7")]) == []
+
+
+def test_three_boxes_are_no_kill() -> None:
+    """A row of three words split by gaps (a menu bar) pairs no names."""
+    img = np.full((30, 420, 3), BLACK, np.uint8)
+    img[8:22, 10:410:7] = WHITE
+    items = [_item(0, 80, "PLAY"), _item(160, 250, "STORE"), _item(330, 420, "OPERATORS")]
+    assert [e["type"] for e in FeedParser(ICON, (), 1.0).parse(img, items)] == ["notice"]
 
 
 def test_colour_map_keeps_the_mapped_rule() -> None:
     """A preset with team colours keeps its one-line rule: the icon split is for presets
     without a colour map."""
     img = _line()
-    parser = FeedParser({"colors": {"blue": "ally", "orange": "enemy"}}, (), 1.0)
+    parser = FeedParser(ICON | {"colors": {"blue": "ally", "orange": "enemy"}}, (), 1.0)
     assert parser.parse(img, [_item(0, 300, "AlderBoxer7")]) == []
 
 
@@ -81,13 +103,13 @@ def test_row_notices_read_other_feed_rows() -> None:
         [[[0, 30], [300, 30], [300, 60], [0, 60]], "Kip has left the game", 0.9],
         [[[0, 60], [300, 60], [300, 90], [0, 90]], "FPS:106GPU:8.5", 0.9],
     ]
-    evs = FeedParser({"row_notices": True}, (), 1.0).parse(img, items)
+    evs = FeedParser(ICON, (), 1.0).parse(img, items)
     assert [(e["type"], e["text"]) for e in evs] == [
         ("kill", "Alder > Boxer7"),
         ("notice", "Kip has left the game"),
     ]
     assert evs[1]["unknown"]
-    assert FeedParser({}, (), 1.0).parse(img, items)[1:] == []  # off without the flag
+    assert FeedParser({}, (), 1.0).parse(img, items) == []  # off without the flag
 
 
 def _track(parser: FeedParser, reads: list[tuple[float, list[tuple[str, str]], float]]) -> list:
@@ -110,7 +132,7 @@ def test_icon_kill_keeps_its_most_complete_names() -> None:
     flag of the read with the player's whole name."""
     reads = [(1.0, [("Alder", "Boxe")], 0.99), (1.3, [("Alder", "Boxer7")], 0.9)]
     reads.append((1.6, [("A1der", "Boxe")], 0.99))  # a misread and cut read: not taken
-    (ev,) = _track(FeedParser({}, ("Boxer7",), 1.0), reads)
+    (ev,) = _track(FeedParser(ICON, ("Boxer7",), 1.0), reads)
     assert (ev["killer"], ev["victim"], ev["text"]) == ("Alder", "Boxer7", "Alder > Boxer7")
     assert ev["confidence"] == 0.99
     assert ev["player_death"] and not ev["player_kill"]
@@ -122,7 +144,7 @@ def test_two_kills_of_one_killer_stay_two() -> None:
     killer = "AlderwoodRanger2024"
     first, second = (killer, "Boxer7"), (killer, "Kip")
     reads = [(1.0, [first], 0.9), (1.3, [second, first], 0.9)]
-    evs = _track(FeedParser({}, (), 1.0), reads)
+    evs = _track(FeedParser(ICON, (), 1.0), reads)
     assert sorted(e["text"] for e in evs) == [f"{killer} > Boxer7", f"{killer} > Kip"]
 
 
@@ -135,14 +157,18 @@ def test_two_kills_of_one_killer_stay_two() -> None:
     ],
 )
 def test_misread_short_names_stay_one_kill(reads: list[tuple[str, str]]) -> None:
-    evs = _track(FeedParser({}, (), 1.0), [(1.0 + 0.3 * i, [r], 0.9) for i, r in enumerate(reads)])
+    evs = _track(
+        FeedParser(ICON, (), 1.0), [(1.0 + 0.3 * i, [r], 0.9) for i, r in enumerate(reads)]
+    )
     assert [e["text"] for e in evs] == [" > ".join(reads[0])]
 
 
 def test_a_read_with_junk_once_does_not_win() -> None:
     """The longest read seen twice wins over a longer read seen once."""
     reads = [("Alder", "Boxer7"), ("Alder", "Boxer7"), ("Alder", "Boxer7 Zx")]
-    evs = _track(FeedParser({}, (), 1.0), [(1.0 + 0.3 * i, [r], 0.9) for i, r in enumerate(reads)])
+    evs = _track(
+        FeedParser(ICON, (), 1.0), [(1.0 + 0.3 * i, [r], 0.9) for i, r in enumerate(reads)]
+    )
     assert [e["text"] for e in evs] == ["Alder > Boxer7"]
 
 

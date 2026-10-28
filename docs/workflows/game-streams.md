@@ -64,9 +64,12 @@ twice its height). Kill feeds without kill words: when at least 30% of the frame
 region at a screen edge show two names split by an icon gap (in at least 3 bursts, with at least 4 different names, at least one of them on both sides of an icon gap somewhere in the region),
 discovery proposes it as a `feed` even if names repeat or it shows one row at a time. A short clip
 in which no player both kills and dies is therefore not found as a feed. The written
-preset then gets `"feed": {"row_notices": true}`, so the feed's other rows (a name and text, such as
+preset then gets `"feed": {"row_notices": true}`. The parser reads icon lines (exactly two names
+split by an icon gap) as kills only with a preset whose `feed` has `row_notices` and no team
+`colors`, that is a discovered icon feed; the feed's other rows (a name and text, such as
 "X has found the bombs") become notices; such rows that stay longer than 20 s, like lobby text, are
-dropped. With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed.
+dropped. With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed,
+and icon kills read on menu frames (a settings row such as "Subtitles | Enabled") are dropped too.
 A game that already has a preset does not pick this up: discovery does not run for it and the old
 preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
 preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or

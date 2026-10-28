@@ -743,3 +743,33 @@ def test_row_notices_that_stay_are_no_feed_lines(tmp_path: Path, monkeypatch) ->
     events, _ = _run(tmp_path, monkeypatch, _Engine(screen, (NOTICE, FEED)), preset)
     notices = [(e["text"], e["t"]) for e in events if e.get("region") == "feed"]
     assert notices == [("Kip has left the game", 10.0)]  # not the 60 s "Waiting" row
+
+
+def _menu_over_feed(t: float) -> list[tuple[str, float, float]]:
+    """The options menu at 20-30 s, with settings rows ("name | value") in the feed's
+    area; an icon kill line (two names an icon apart) at 40-43 s."""
+    if 20 <= t < 30:
+        rows = [("Brightness", "Medium"), ("Subtitles", "Enabled")]
+        feed = [(a, 1410, 100 + 40 * r) for r, (a, _) in enumerate(rows)]
+        feed += [(b, 1640, 100 + 40 * r) for r, (_, b) in enumerate(rows)]
+        return _menu() + feed
+    out = [("Hold", 900, 820)]
+    if 40 <= t < 43:
+        out += [("Alder", 1410, 100), ("Boxer7", 1640, 100)]
+    return out
+
+
+def test_menu_rows_over_an_icon_feed_are_no_kills(tmp_path: Path, monkeypatch) -> None:
+    """Settings rows of a menu over a discovered icon feed (``row_notices``) read as icon
+    lines on the menu frames; those kills are dropped with the menu, the kill after it
+    stays. Without the flag no icon line is read."""
+    engine = _Engine(_menu_over_feed, (NOTICE, FEED))
+    preset = _feed_preset() | {"feed": {"row_notices": True}}
+    events, stats = _run(tmp_path, monkeypatch, engine, preset)
+    assert stats["menu_frames"] == 30
+    kills = [(e["killer"], e["victim"], e["t"]) for e in events if e["type"] == "kill"]
+    assert kills == [("Alder", "Boxer7", 40.0)]
+    (plain := tmp_path / "plain").mkdir()
+    events, stats = _run(plain, monkeypatch, engine, _feed_preset())
+    assert stats["menu_frames"] == 30
+    assert [e for e in events if e["type"] == "kill"] == []
