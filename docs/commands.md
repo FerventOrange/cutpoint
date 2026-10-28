@@ -575,7 +575,7 @@ never replaced: the run stops with an error before exporting; move or rename it.
 folder, `clips --force` refuses before any export a non-empty output folder that is a drive
 root, a mount point or a bind mount; use `--out` with a folder on that drive. An empty drive
 root or mount point is exported into directly, each clip under a temporary name until it is
-complete; a failed run there may keep the finished clips; with `export_workers` above 1 these can include clips after the failed one, without their `.srt`.
+complete; a failed run there may keep the finished clips. With `export_workers` above 1 these can include clips after the failed one, and some of them may have no `.srt`.
 
 One run at a time works on a folder: `clips`, `extend` and `assemble` hold the lock file
 `.<folder>.cutpoint-lock` next to it while they run, so a second run never removes the first
