@@ -104,8 +104,10 @@ UNDERWATER_GB = 0.79
 # saturation instead (M3 counts the cast it removes as colour): below VETO_SATURATION_DROP of
 # its value (flat cyan sand turned grey: 0.57-0.58 on the #489 scuba clips, the good grades
 # 0.73-0.80). ``underwater`` also does not count pixels whose red alone clips high (the red
-# gain on a bright highlight), up to UNDERWATER_RED_CLIP of the frame, as clipping; pixels the
-# intended clipping already counts (clipped in the source, or red at its white point) only once.
+# gain on a bright highlight), up to UNDERWATER_RED_CLIP of the frame, as clipping; pixels
+# clipped in the source and the red tail the levels intend are left out of that allowance, but
+# green/blue tail pixels the gains hold below 1 while red clips stay in it (an overlap with the
+# intended clipping of at most the green/blue tails).
 # The residual is worse when it rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma range,
 # about a code), or by more than VETO_RESIDUAL_RATIO times and more than VETO_RESIDUAL_FLOOR.
 # The relative rule catches a near-neutral clip given a cast (a GoPro clip went 0.0017 to
@@ -482,7 +484,8 @@ def _red_highlights(frames: np.ndarray, intended: np.ndarray | None = None) -> f
     """Share of the pixels of ``frames`` (``uint8``, or float 0-1) whose red alone is
     clipped high: red at 255, green and blue below it, no channel at 0. Pixels set in
     ``intended`` (an ``(n, h, w)`` mask, :func:`_intended_high`) are left out: the intended
-    clipping already counts them."""
+    clipping already counts them (it may also count some of the rest, see
+    :func:`_intended_high`)."""
     rgb = _float(frames)
     high = rgb >= 254.5 / 255
     low = (rgb <= 0.5 / 255).any(axis=-1)
@@ -714,7 +717,9 @@ def _intended_high(frames: np.ndarray, grade: AutoGrade) -> np.ndarray:
     count as clipped high in red: those already clipped, and those whose red (the luma, for
     one white point) after the channel mix the applied white point pushes to 1. A tail beyond
     :data:`LEVELS_PERCENTILES` is counted only up to the tail there, so leaving all of it out
-    of :func:`_red_highlights` never allows more than the intended clipping does."""
+    of :func:`_red_highlights` never allows more than the intended clipping does. With
+    per-channel points, green or blue tail pixels the gains hold below 1 while red clips are
+    not in the mask, though :func:`_intended_clipping` counts them."""
     g = grade.applied()
     rgb = _float(frames)
     mixed = simulate(rgb, AutoGrade(g.mode, mix=g.mix)) if g.mix > 0 else rgb
@@ -742,8 +747,10 @@ def _veto(
     than :data:`VETO_CLIPPED` above ``intended`` (:func:`_intended_clipping`, never below
     ``before.clipped``) is vetoed: the white balance, mix or vibrance pushing more pixels
     out, or a mass of pixels at a levels point. Underwater, ``red_clipped`` (the predicted
-    share of red-only highlight clipping, :func:`_red_highlights`, without the pixels
-    ``intended`` already counts) up to :data:`UNDERWATER_RED_CLIP` does not count.
+    share of red-only highlight clipping, :func:`_red_highlights`, without the pixels clipped
+    in the source and the red tail the levels intend) up to :data:`UNDERWATER_RED_CLIP` does
+    not count; green/blue tail pixels the gains hold below 1 while red clips stay in it, so
+    it can overlap ``intended`` by up to the green/blue tails.
 
     Cast: the residual rises by more than :data:`VETO_RESIDUAL_EPS`, or to more than
     :data:`VETO_RESIDUAL_RATIO` times its value and by more than :data:`VETO_RESIDUAL_FLOOR`.
