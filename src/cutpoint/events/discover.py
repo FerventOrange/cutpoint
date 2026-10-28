@@ -21,6 +21,11 @@ changes*:
       fewer than :data:`FEED_SCORE_ROWS` of them a "+" number alone, grown up
       and down by rows that continue it at its row pitch but show too rarely to be
       dynamic (:func:`_grow_feed`, up to twice its height);
+        - icon feeds: such a region whose lines are often icon kill lines (two names
+          split by an icon gap, :func:`_icon_lines`) is a feed even with one row at a
+          time and few names that repeat (no readout either); the preset then gets
+          ``"feed": {"row_notices": true}``, so its rows that are no kills are read as
+          notices;
     - ``popup``: such lines, but :data:`FEED_SCORE_ROWS` of them a "+" number
       alone (score popups: a value over a label, "+10" / "CRATE OPENED"); not read, and
       no extra notice comes from inside them;
@@ -97,6 +102,23 @@ FEED_GROW_MAX = 2.0
 # 0.42 and 0.47, feeds and every other stack 0.04 at most.
 FEED_SCORE_ROWS = 0.3
 _SCORE_RE = re.compile(r"\+\s?\d[\d,.]*")
+# Icon kill lines ("name [weapon icon] name", no kill word): a line of two name-like boxes
+# (_NAME_RE: one token, no ":" "%" "/" as in "FPS:106" or "3/4", half its letters and digits
+# letters) split by a gap of FEED_ICON_GAP to FEED_ICON_GAP_MAX text heights. A side region
+# of small text is a feed even with one row per frame and names that repeat (few players)
+# when FEED_ICON_SHARE of its frames with text show such a line, in FEED_ICON_BURSTS bursts,
+# with FEED_ICON_NAMES distinct names, FEED_ICON_BOTH of them on both sides of a line
+# somewhere (players kill and die; a two-label HUD notice such as "Capture [icon] Alpha"
+# keeps its verbs left and its targets right). Measured: R6 feeds 0.42 and 0.45 (6 and 10
+# names, 2 of them on both sides), every other side region of R6, War Thunder, Destiny 2 and
+# BF6 0.08 at most.
+FEED_ICON_GAP = 1.0
+FEED_ICON_GAP_MAX = 8.0
+FEED_ICON_SHARE = 0.3
+FEED_ICON_BURSTS = 3
+FEED_ICON_NAMES = 4
+FEED_ICON_BOTH = 1
+_NAME_RE = re.compile(r"[^\s:%/]+")
 # Outside notices (notice_proposals): text that keeps appearing outside every covered region.
 # A left-over box is NOTICE_MIN_H px to NOTICE_MAX_H of the frame height tall; text in
 # NOTICE_STATIC_SHARE of its source's frames, or on NOTICE_STATIC_CELLS static cells, is a
@@ -421,27 +443,70 @@ def _label_variety(texts: list[str]) -> float:
     return len({s for s in stripped if s}) / max(1, len(texts))
 
 
+def _lines(bs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """The boxes of one frame grouped into lines, each in x order: boxes whose y-ranges
+    overlap by half the shorter box's height or more share a line."""
+    lines: list[list[dict[str, Any]]] = []
+    for b in sorted(bs, key=lambda b: b["y0"]):
+        h = b["y1"] - b["y0"]
+        for ln in lines:
+            if any(
+                min(b["y1"], o["y1"]) - max(b["y0"], o["y0"]) >= 0.5 * min(h, o["y1"] - o["y0"])
+                for o in ln
+            ):
+                ln.append(b)
+                break
+        else:
+            lines.append([b])
+    return [sorted(ln, key=lambda o: o["x0"]) for ln in lines]
+
+
 def _score_rows(frames: list[list[dict[str, Any]]]) -> float:
     """Share of the lines whose text is a "+" number alone ("+10", "+1,000"). A line is
     the boxes of one frame whose y-ranges overlap by half the shorter box's height or
-    more, joined in x order, so a shorter or bottom-aligned "+N" box next to a name
-    stays on the name's line instead of counting as a row of its own."""
-    rows: list[str] = []
-    for bs in frames:
-        lines: list[list[dict[str, Any]]] = []
-        for b in sorted(bs, key=lambda b: b["y0"]):
-            h = b["y1"] - b["y0"]
-            for ln in lines:
-                if any(
-                    min(b["y1"], o["y1"]) - max(b["y0"], o["y0"]) >= 0.5 * min(h, o["y1"] - o["y0"])
-                    for o in ln
-                ):
-                    ln.append(b)
-                    break
-            else:
-                lines.append([b])
-        rows += ["".join(o["text"] for o in sorted(ln, key=lambda o: o["x0"])) for ln in lines]
+    more (:func:`_lines`), joined in x order, so a shorter or bottom-aligned "+N" box next
+    to a name stays on the name's line instead of counting as a row of its own."""
+    rows = ["".join(o["text"] for o in ln) for bs in frames for ln in _lines(bs)]
     return sum(bool(_SCORE_RE.fullmatch(t.strip())) for t in rows) / max(1, len(rows))
+
+
+def _name_like(text: str) -> bool:
+    """One token of 3+ letters and digits, half of them letters, without ":" "%" "/"."""
+    t = text.strip()
+    n = sum(c.isalnum() for c in t)
+    return n >= 3 and sum(c.isalpha() for c in t) >= 0.5 * n and bool(_NAME_RE.fullmatch(t))
+
+
+def _icon_lines(
+    inside: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+) -> tuple[float, int, int, int]:
+    """Icon kill lines in a region: (share of its frames with one, bursts, distinct names,
+    names seen both left and right of an icon gap).
+
+    An icon line ("name [weapon icon] name", no kill word) has two adjacent name-like
+    boxes (:func:`_name_like`) split by a gap of :data:`FEED_ICON_GAP` to
+    :data:`FEED_ICON_GAP_MAX` times their median height. Names count lower-cased, letters
+    only."""
+    hits, bursts, left, right = 0, set(), set(), set()
+    for f, bs in inside:
+        found = False
+        for ln in _lines(bs):
+            for a, b in pairwise(ln):
+                h = float(np.median([a["y1"] - a["y0"], b["y1"] - b["y0"]]))
+                gap = b["x0"] - a["x1"]
+                if (
+                    FEED_ICON_GAP * h <= gap <= FEED_ICON_GAP_MAX * h
+                    and _name_like(a["text"])
+                    and _name_like(b["text"])
+                ):
+                    found = True
+                    left.add(re.sub(r"[^a-z]", "", a["text"].lower()))
+                    right.add(re.sub(r"[^a-z]", "", b["text"].lower()))
+        if found:
+            hits += 1
+            bursts.add((f["source"], f["burst"]))
+    names, both = (left | right) - {""}, (left & right) - {""}
+    return hits / max(1, len(inside)), len(bursts), len(names), len(both)
 
 
 def _sighting_variety(band: list[tuple[str, tuple[str, int], float, str]]) -> float:
@@ -722,9 +787,19 @@ def cluster_regions(
         variety = _label_variety(texts)
         alpha = _alpha_share(texts)
         side = min(cx, 1 - cx) < 0.3  # feeds hug the left/right edge
-        if variety < 0.15 or alpha < 0.45:
+        icon_share, icon_bursts, icon_names, icon_both = _icon_lines(inside)
+        # a feed of icon kill lines shows one or two rows, and its few names repeat
+        icon_feed = (
+            side
+            and med_h < 0.034 * REF_H
+            and icon_share >= FEED_ICON_SHARE
+            and icon_bursts >= FEED_ICON_BURSTS
+            and icon_names >= FEED_ICON_NAMES
+            and icon_both >= FEED_ICON_BOTH
+        )
+        if (variety < 0.15 or alpha < 0.45) and not icon_feed:
             kind = "readout"  # gauges, compass, ammo: labels fixed, numbers change
-        elif mean_rows >= 1.3 and side and med_h < 0.034 * REF_H:
+        elif (mean_rows >= 1.3 or icon_feed) and side and med_h < 0.034 * REF_H:
             if scores >= FEED_SCORE_ROWS:
                 kind = "popup"  # score popups: a value over a label, not read
             else:
@@ -757,6 +832,9 @@ def cluster_regions(
                     "median_text_h": round(med_h, 1),
                     "mean_rows": round(mean_rows, 2),
                     "score_rows": round(scores, 3),
+                    "icon_lines": round(icon_share, 3),
+                    "icon_names": [icon_names, icon_both],
+                    "icon_feed": icon_feed,
                     "label_variety": round(variety, 3),
                     "alpha_share": round(alpha, 3),
                     "change_rate": round(float(chg_rate[gy0:gy1, gx0:gx1].mean()), 3),
@@ -1418,12 +1496,16 @@ def discover_regions(
         proposals,
         out_dir / "overlay.jpg",
     )
+    names = {r.name for r in regions if r.kind == "feed"}
+    icon = any(p["evidence"].get("icon_feed") for p in proposals if p.get("name") in names)
     preset = {
         "game": game,
         "reference": [REF_W, REF_H],
         "source": "discovered",
         "regions": [asdict(r) for r in regions] + (extra_regions if covered is None else []),
         "banner_phrases": [],
+        # an icon feed's other rows ("Kip has left the game") are notices
+        **({"feed": {"row_notices": True}} if icon else {}),
         "discovery": {
             **maps["stats"],
             "params": asdict(params),

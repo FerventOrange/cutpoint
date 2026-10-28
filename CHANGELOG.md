@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lean had no limit; it is now capped at `pano.max_follow_deg` (default 30 deg), so at most
   9 deg shows. On the measured Insta360 footage no 10 s window is over the 12 deg QA cap (55
   were), and riding footage is unchanged (#442).
+- HUD region discovery finds icon kill feeds (`name [icon] name`, such as Rainbow Six Siege) at a
+  screen edge as `feed` regions, and the generic parser reads their lines as kills, using the name
+  boxes' colours and the gap between them. It reads icon lines (exactly two names) only with a
+  preset whose `feed` has `row_notices` (a discovered icon feed), and drops icon kills read on menu
+  frames; an icon kill first read as a still screen opens is not taken as feed activity. Other rows of such a feed ("X has found the bombs")
+  become notices, and a kill takes both names from its most complete read that repeats, or from the most complete read when none repeats (#433). A game that already has a preset keeps it: move the old preset away and run `analyze` or `events` again, or run `events --discover-regions` and copy the new `proposal.json`'s `feed` region and `"feed": {"row_notices": true}` into the preset by hand; the new region needs new OCR reads.
 - `clips --force` and `extend` on macOS (and on case-insensitive drives elsewhere, such as exFAT
   or FAT drives on Linux, NTFS only when mounted case-insensitive) no longer fail when the old
   manifest.json names a clip in another case than the folder (`001_A.mp4` listed, `001_a.mp4` on
