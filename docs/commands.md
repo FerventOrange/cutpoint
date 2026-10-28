@@ -171,7 +171,7 @@ you already use when installing or running.
 Open the complete printed loopback URL, including `#t=…`; keep it private because it grants access
 to local footage. The workspace can create/open projects, analyze standard video,
 preview and trim candidates, save and reorder a sequence, export clips, and assemble a final
-video with optional fades, loudness normalization, [peak compression](#peak-compression) and
+video with optional fades (video and audio set separately), loudness normalization, [peak compression](#peak-compression) and
 captions. Nothing is uploaded. A camera
 folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 analyze --scan`
 (see [360 video](workflows/360.md#in-the-ui)). It does not expose the action-cam commands or the
@@ -197,17 +197,17 @@ keeps the Ollama model, URL and vision-top the last analysis recorded.
 and keywords over the top-left corner of the preview. It shows as soon as you tick it; Save keeps
 it, in the browser (local storage), not in `config.json`, and Cancel or Escape undoes it.
 Theme picks the colours: Blue (the default, today's colours), Light or Dark (both keep text,
-controls and focus outlines at WCAG AA contrast). It recolours the UI at once and, like Stats for
+controls and focus outlines at WCAG AA contrast). Dark has lighter panels; Light uses the same
+yellow for buttons and fills as the other themes, with darker amber for text, focus rings, the selected tab, checkboxes and sliders. It recolours the UI at once and, like Stats for
 Nerds, Save keeps it in the browser and Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
-in the column header. "Analyze again" asks for confirmation first. "Show folder" also appears
-next to "Export clips" (the latest export
-folder, `clips_ui_*`) and next to "Assemble" (the project folder, which holds the final videos and
-their `.srt` subtitles and `.fcpxml` and `.otio` timelines), once that folder exists.
+in the column header. "Analyze again" asks for confirmation first. The Export tab has one "Show Exports
+Folder" button: it opens the latest export's `clips_ui_*` folder, or the project folder (final
+videos, `.srt`, `.fcpxml`, `.otio`) once that export is assembled.
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
 Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
@@ -220,6 +220,23 @@ the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` retur
 `progress` (`total` and `steps`, ordered by step; for a 360 analysis also `plan`, the steps the
 job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
+
+The sequence column has two tabs, Sequence and Export. The Export tab holds one "Export &
+assembly options" panel; each option has a hover description, and the choices are remembered per
+browser:
+
+| Option | Effect | Default |
+|---|---|---|
+| Vertical 9:16 | Exports and assembles vertical clips | off |
+| Burn in captions | `assemble --captions` | off |
+| Smart edges | Exports with `--speech-aware` and `--smart-tail` instead of the exact trims | on |
+| Normalize loudness | `--loudnorm` | on |
+| Link Transitions | On: the audio transition follows the video (Cut gives Cut, Fade gives Crossfade) and the audio select is disabled | on |
+| Video transition | Cut or Fade (`--transition`) | Cut |
+| Audio transition | Cut or Crossfade (`--audio-transition`); Crossfade is unavailable under a video Cut | follows the video |
+| Compress Audio Peaks | None, Light or Max (`off`, `light`, `strong`) | Light |
+
+The padding field is gone from the UI; `clips --extend` and [`extend`](#extend) still work.
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
@@ -239,11 +256,11 @@ the job has about 12 s to remove its partial files before its process tree is en
 proxies: 5 s). Assembly uses the latest successful UI export, not any subsequent unexported sequence changes. Failed/cancelled exports
 may leave partial output folders, which are not offered for assembly.
 
-"Compress peaks" (Off, Light or Strong), next to "Normalize loudness", is passed as
+The "Compress Audio Peaks" slider (None, Light or Max) is passed as
 `--compress-peaks` to both the clips export and the assembly, so an export bakes it into its clips
 and the assembly compresses only the clips exported without it. It starts on
-[`compress_peaks`](configuration.md#compress_peaks) in `config.json` (default off; `GET
-/api/settings` returns it as `compress_peaks`), and a job sent without it uses that value; other
+[`compress_peaks`](configuration.md#compress_peaks) in `config.json` when that sets it, else on
+Light (`GET /api/settings` returns `compress_peaks` and `compress_peaks_set`), and a job sent without it uses that value; other
 values are refused with 400. Previews do not apply it.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
@@ -715,7 +732,7 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
 
 ```text
 cutpoint assemble <clips_dir> [--out final.mp4] [--transition cut|fade] [--fade-dur 0.25]
-                  [--audio-fade S] [--loudnorm] [--compress-peaks off|light|strong]
+                  [--audio-transition cut|crossfade] [--audio-fade S] [--loudnorm] [--compress-peaks off|light|strong]
                   [--captions] [--model MODEL] [--json]
 ```
 
@@ -731,6 +748,13 @@ into a clip renamed during review are read from its manifest entry, matched by s
   is 7 frames, 0.2336 s) so video, audio and `final.srt` use the same length: at least one
   frame and at most 45% of the shortest clip. When one frame is more than that, the clips are
   joined with cuts (WARNING).
+- `--audio-transition cut|crossfade` sets the audio join separately. Default: it follows
+  `--transition` (`cut` gives `cut`, `fade` gives `crossfade`). `--transition cut
+  --audio-transition crossfade` is refused (`bad_args`, exit 2): a crossfade under a hard cut
+  cannot stay in sync without source audio. `--transition fade --audio-transition cut` cuts the
+  audio in the middle of the video dissolve; the `.fcpxml` then has no audio crossfade and
+  leaves the audio cut point to the editor (probably the start of the dissolve), while the
+  `.otio` matches `final.mp4` exactly.
 - `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
   then measures the result and redoes the pass with a lower ceiling if the true peak is above
   -1.5 dBTP. Very peaky material can land up to about 1 LU below target.

@@ -149,3 +149,45 @@ def test_write_timelines_passes_fade_to_both_formats(tmp_path):
     assert len(ET.parse(fcp).getroot().findall(".//transition")) == 2
     v1, _ = _read_otio(oti).tracks
     assert sum(1 for c in v1 if type(c).__name__ == "Transition") == 2
+
+
+def test_fcpxml_audio_cut_dissolves_carry_no_audio_crossfade(tmp_path):
+    path = write_fcpxml(_clips("111"), tmp_path / "a.fcpxml", "a", FADE, audio_cut=True)
+    text = path.read_text(encoding="utf-8")
+    transitions = ET.parse(path).getroot().findall(".//transition")
+    assert len(transitions) == 2
+    for tr in transitions:
+        assert tr.find("filter-video") is not None  # the picture still dissolves
+        assert tr.find("filter-audio") is None
+    assert "Audio Crossfade" not in text and "FFAudioTransition" not in text
+
+
+def test_otio_audio_cut_hard_cuts_at_the_same_frame_with_equal_track_lengths(tmp_path):
+    clips = _clips()
+    tl = _read_otio(write_otio(clips, tmp_path / "a.otio", "a", FADE, audio_cut=True))
+    v1, a1 = tl.tracks
+    starts = [round(o * 30) for o in clip_offsets(clips, FADE)]
+    assert sum(1 for k, _, _ in _layout(v1) if k == "Transition") == 2
+    audio = _layout(a1)
+    assert not any(k == "Transition" for k, _, _ in audio)  # hard cuts
+    assert v1.duration().value == a1.duration().value  # audio frames == video frames
+    # each incoming audio clip starts half the fade (7 whole frames of 15) into its dissolve
+    cut = XF // 2
+    assert [s for k, s, _ in audio if k == "Clip"] == [starts[0], starts[1] + cut, starts[2] + cut]
+    heard = [c.source_range.start_time.value for c in a1 if type(c).__name__ == "Clip"]
+    assert heard == [0, cut, cut]
+
+
+def test_otio_audio_cut_keeps_a_clip_without_audio_as_a_gap_in_line(tmp_path):
+    clips = _clips("101")
+    tl = _read_otio(write_otio(clips, tmp_path / "a.otio", "a", FADE, audio_cut=True))
+    v1, a1 = tl.tracks
+    assert v1.duration().value == a1.duration().value
+    assert [type(c).__name__ for c in a1] == ["Clip", "Gap", "Clip"]
+
+
+def test_write_timelines_passes_audio_cut_to_both_formats(tmp_path):
+    fcp, oti = write_timelines(_clips("11"), tmp_path / "f.mp4", FADE, audio_cut=True)
+    assert "Audio Crossfade" not in fcp.read_text(encoding="utf-8")
+    tl = _read_otio(oti)
+    assert not any(type(c).__name__ == "Transition" for c in tl.tracks[1])

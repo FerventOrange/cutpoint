@@ -12,10 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui`: Settings > Theme switches between Blue (the default, unchanged), Light and
   Dark. The choice is saved in the browser and applied before the page first paints; Light and
   Dark keep text, controls and focus outlines at WCAG AA contrast, and Blue keeps today's colours
-  (#445).
+  (#445). The Dark theme's panels are lighter, and Light uses the same yellow for buttons and
+  fills as the other themes (#466).
+- `assemble --audio-transition cut|crossfade` sets the audio join apart from `--transition`; by
+  default it follows it. `--transition cut --audio-transition crossfade` is refused (exit 2) (#466).
 
 ### Changed
 
+- `cutpoint ui`: the sequence column has Sequence and Export tabs. Export holds one "Export &
+  assembly options" panel (vertical, captions, Smart edges, loudness, linked transitions, video
+  and audio transition, Compress Audio Peaks; remembered per browser) and one "Show Exports
+  Folder" button. The padding field is removed; `--extend` and `extend` remain. New defaults:
+  Smart edges (`--speech-aware --smart-tail`) and Normalize loudness are on, and Compress Audio
+  Peaks is Light unless `compress_peaks` is set in config.json; a saved browser choice wins (#466).
 - Faster runs: a source is probed with ffprobe once per run instead of 3 to 5 times (about 0.1 s
   each). The result is reused until the file, or its staged copy, changes; results are unchanged
   (#372).

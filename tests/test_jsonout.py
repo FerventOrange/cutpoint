@@ -369,3 +369,37 @@ def test_subprocess_systemexit_message_keeps_exit_1(home, tmp_path, json_flag):
         assert envelope(proc.stdout)["error"] == {"code": "bad_args", "message": "bad override"}
     else:
         assert proc.stdout == ""
+
+
+@pytest.mark.parametrize("json_flag", [True, False], ids=["json", "plain"])
+def test_assemble_refuses_an_audio_crossfade_at_cuts_with_exit_2(capsys, json_flag):
+    argv = ["assemble", "clips", "--transition", "cut", "--audio-transition", "crossfade"]
+    with pytest.raises(SystemExit) as exc:
+        cli.main([*argv, "--json"] if json_flag else argv)
+    assert exc.value.code == 2
+    out, err = capsys.readouterr()
+    assert "--transition fade" in err and "usage: cutpoint" in err
+    if json_flag:
+        doc = envelope(out)
+        assert doc["command"] == "assemble" and doc["ok"] is False
+        assert doc["error"]["code"] == "bad_args" and "--transition fade" in doc["error"]["message"]
+    else:
+        assert out == ""
+
+
+@pytest.mark.parametrize(
+    ("extra", "audio"),
+    [
+        ([], None),  # follows --transition, decided in assemble()
+        (["--transition", "fade"], None),
+        (["--transition", "fade", "--audio-transition", "cut"], "cut"),
+        (["--transition", "fade", "--audio-transition", "crossfade"], "crossfade"),
+        (["--audio-transition", "cut"], "cut"),
+    ],
+)
+def test_assemble_audio_transition_reaches_assemble(monkeypatch, tmp_path, extra, audio):
+    calls = []
+    monkeypatch.setattr(cli, "assemble", lambda *a, **kw: calls.append(kw) or tmp_path / "f.mp4")
+    args = cli.build_parser().parse_args(["assemble", str(tmp_path), *extra])
+    cli._cmd_assemble(args)
+    assert calls[0]["audio_transition"] == audio

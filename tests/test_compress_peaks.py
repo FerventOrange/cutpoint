@@ -511,7 +511,7 @@ def test_assemble_limits_without_loudnorm_whenever_compress_peaks_is_on(
     )  # fmt: skip
 
     def join(files, infos, clips_dir, out, *a):
-        calls["join_peaks"] = a[-1]
+        calls["join_peaks"] = a[3]  # transition, fade_dur, audio_fade, peaks, audio_transition
         out.write_bytes(b"joined")
         return 0.0
 
@@ -522,7 +522,7 @@ def test_assemble_limits_without_loudnorm_whenever_compress_peaks_is_on(
 
     monkeypatch.setattr(assemble, "_join", join)
     monkeypatch.setattr(assemble, "normalize_with_ceiling", ceiling)
-    monkeypatch.setattr(assemble, "write_timelines", lambda i, out, f: (out, out))
+    monkeypatch.setattr(assemble, "write_timelines", lambda i, out, f, **_: (out, out))
     monkeypatch.setattr("cutpoint.srt.write_final_srt", lambda *a, **k: None)
     assemble.assemble(d, tmp_path / "final.mp4", compress_peaks=preset)
     assert calls.get("ceiling", "not run") == (False if limited else "not run")

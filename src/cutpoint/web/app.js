@@ -20,6 +20,18 @@ const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for eve
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
 const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "dark"; absent for Blue, the default. index.html reads it too
 const THEMES = ['blue', 'light', 'dark'];
+const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
+// localStorage: the Export & assembly options the user changed, by option ({link: false, ...}); the rest keep their defaults
+const OPTS_KEY = 'cutpoint.exportOptions';
+// Export & assembly options for a viewer who changed none; Compress peaks starts from config.json's
+// compress_peaks when it sets one, else Light
+const OPT_DEFAULTS = {
+  vertical: false, captions: false, smart_edges: true, loudnorm: true, link: true,
+  transition: 'cut', audio_transition: 'cut', compress_peaks: 'light',
+};
+const PEAK_STOPS = ['off', 'light', 'strong']; // the Compress Audio Peaks slider's stops, left to right
+const PEAK_NAMES = { off: 'None', light: 'Light', strong: 'Max' };
+const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the audio transition of each video one
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
 
@@ -27,6 +39,7 @@ const S = {
   styles: [],
   canReveal: false, // the server can open a folder in this machine's file manager
   canPick: false, // the server can show this machine's own open dialog
+  savedOpts: {}, // the Export & assembly options this browser stored (initExportOptions)
   projects: [],
   id: null,
   project: null,
@@ -1897,10 +1910,7 @@ function seqRow(s, i, n) {
 function renderSequence() {
   const segs = S.segments;
   const total = segs.reduce((n, s) => n + (s.end - s.start), 0);
-  const pad = Number($('#optExtend').value) || 0;
-  $('#seqTotal').textContent = segs.length
-    ? `${segs.length} clip${segs.length > 1 ? 's' : ''}, ${fmtLen(total)}${pad > 0 ? ` (about ${fmtLen(total + 2 * pad * segs.length)} padded)` : ''}`
-    : '';
+  $('#seqTotal').textContent = segs.length ? `${segs.length} clip${segs.length > 1 ? 's' : ''}, ${fmtLen(total)}` : '';
   if (!S.project) setEmpty($('#seqEmpty'));
   else if (!segs.length) setEmpty($('#seqEmpty'), h('p', {}, 'Nothing in the sequence yet. Add moments from the list, then trim and reorder them here. Clips are exported in this order.'));
   else setEmpty($('#seqEmpty'));
@@ -2233,13 +2243,25 @@ function renderBusy() {
   }
   set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
   set('#assembleBtn', !p || busy || !p.clips, busy ? why : 'Export clips first.');
-  // Never disabled by a job: showing a folder is harmless. Without a project both are hidden too,
-  // so the fieldsets being disabled below never catches them.
-  $('#revealClipsBtn').hidden = !p?.clips || !S.canReveal;
-  $('#revealOutBtn').hidden = !p?.outputs?.length || !S.canReveal;
+  // Never disabled by a job: showing a folder is harmless.
+  const target = exportsFolder(p);
+  const reveal = $('#revealExportBtn');
+  reveal.hidden = !target || !S.canReveal;
+  reveal.dataset.target = target ?? '';
+  reveal.title = target === 'outputs' ? 'Shows the folder of the final video' : target ? 'Shows the folder of the exported clips' : '';
   $('#exportPanel').disabled = !p;
-  $('#assemblePanel').disabled = !p;
   renderSteps();
+}
+
+/**
+ * The folder "Show Exports Folder" opens: the final video's ('outputs') when the current export
+ * has one, else the export's clips; for a project with finals but no export (made on the command
+ * line), theirs. Null while nothing has been exported.
+ */
+function exportsFolder(p) {
+  const final = p?.outputs?.some((o) => /\.mp4$/i.test(o.name));
+  if (p?.clips) return final && p.final_current ? 'outputs' : 'clips';
+  return p?.outputs?.length ? 'outputs' : null;
 }
 
 // ---------- analysis steps ----------
@@ -2439,10 +2461,23 @@ async function startJob(action, extra = {}) {
   }
 }
 
+/** Compress Audio Peaks as sent to the server: 'off', 'light' or 'strong'. */
+function peaks() {
+  return PEAK_STOPS[Number($('#optPeaks').value)] ?? 'off';
+}
+
 function exportOptions() {
-  const extend = Number($('#optExtend').value);
-  if (!Number.isFinite(extend) || extend < 0 || extend > 30) throw new Error('Padding must be between 0 and 30 seconds.');
-  return { vertical: $('#optVertical').checked, extend, compress_peaks: $('#optPeaks').value };
+  return { vertical: $('#optVertical').checked, smart_edges: $('#optSmart').checked, compress_peaks: peaks() };
+}
+
+function assembleOptions() {
+  return {
+    transition: $('#optTransition').value,
+    audio_transition: $('#optAudioTransition').value,
+    loudnorm: $('#optLoudnorm').checked,
+    compress_peaks: peaks(),
+    captions: $('#optCaptions').checked,
+  };
 }
 
 // ---------- jobs ----------
@@ -2822,11 +2857,122 @@ function initVolume() {
   return toggleMute;
 }
 
+/**
+ * The sequence column's tabs (Sequence, Export; more can be added as a button and a panel): click,
+ * or arrow keys and Home/End on the focused tab, which select as they move (automatic activation).
+ * The choice is remembered per browser; without storage it lasts the session.
+ */
+function initSideTabs() {
+  const tabs = [...document.querySelectorAll('#side [role=tab]')];
+  const select = (tab, focus = false) => {
+    for (const t of tabs) {
+      const on = t === tab;
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+      $(`#${t.getAttribute('aria-controls')}`).hidden = !on;
+    }
+    if (focus) tab.focus();
+    try {
+      if (tab === tabs[0]) localStorage.removeItem(TAB_KEY);
+      else localStorage.setItem(TAB_KEY, tab.dataset.tab);
+    } catch {
+      // storage blocked or full: the tab still shows until reload
+    }
+  };
+  let saved = null;
+  try {
+    saved = localStorage.getItem(TAB_KEY);
+  } catch {
+    // storage blocked: start on the first tab
+  }
+  select(tabs.find((t) => t.dataset.tab === saved) ?? tabs[0]);
+  for (const t of tabs) t.addEventListener('click', () => select(t));
+  $('#side [role=tablist]').addEventListener('keydown', (e) => {
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    const next = { ArrowLeft: i - 1, ArrowRight: i + 1, Home: 0, End: tabs.length - 1 }[e.key];
+    if (next == null) return;
+    e.preventDefault();
+    select(tabs[(next + tabs.length) % tabs.length], true);
+  });
+}
+
+/**
+ * Export & assembly options: each change is remembered per browser (only the options the user
+ * changed, so the others follow OPT_DEFAULTS); without storage they last the session. Link
+ * Transitions makes the audio transition follow the video one; a crossfade needs a video fade
+ * (the CLI refuses it on cuts), so it is unavailable with Cut.
+ */
+function initExportOptions() {
+  let saved = {};
+  try {
+    const v = JSON.parse(localStorage.getItem(OPTS_KEY));
+    if (v && typeof v === 'object') saved = v;
+  } catch {
+    // storage blocked or unreadable: the defaults
+  }
+  const store = (key, value) => {
+    saved[key] = value;
+    try {
+      localStorage.setItem(OPTS_KEY, JSON.stringify(saved));
+    } catch {
+      // storage blocked or full: the choice still applies until reload
+    }
+  };
+  const checks = { vertical: '#optVertical', captions: '#optCaptions', smart_edges: '#optSmart', loudnorm: '#optLoudnorm', link: '#optLink' };
+  for (const [key, id] of Object.entries(checks)) {
+    $(id).checked = typeof saved[key] === 'boolean' ? saved[key] : OPT_DEFAULTS[key];
+    $(id).addEventListener('change', (e) => {
+      store(key, e.target.checked);
+      if (key === 'link') syncAudio();
+    });
+  }
+  const video = $('#optTransition');
+  const audio = $('#optAudioTransition');
+  video.value = saved.transition in LINKED_AUDIO ? saved.transition : OPT_DEFAULTS.transition;
+  audio.value = Object.values(LINKED_AUDIO).includes(saved.audio_transition) ? saved.audio_transition : OPT_DEFAULTS.audio_transition;
+  video.addEventListener('change', () => {
+    store('transition', video.value);
+    syncAudio();
+  });
+  audio.addEventListener('change', () => store('audio_transition', audio.value));
+  syncAudio();
+  const range = $('#optPeaks');
+  range.addEventListener('input', () => {
+    setPeaks(peaks());
+    store('compress_peaks', peaks());
+  });
+  setPeaks(PEAK_STOPS.includes(saved.compress_peaks) ? saved.compress_peaks : OPT_DEFAULTS.compress_peaks);
+  return saved;
+}
+
+/** Put the audio transition in line with Link Transitions and the video transition. */
+function syncAudio() {
+  const video = $('#optTransition').value;
+  const audio = $('#optAudioTransition');
+  const linked = $('#optLink').checked;
+  const fade = audio.querySelector('option[value=crossfade]');
+  fade.disabled = !linked && video === 'cut';
+  fade.title = fade.disabled ? 'A crossfade needs the Fade video transition.' : '';
+  if (linked) audio.value = LINKED_AUDIO[video];
+  else if (fade.disabled && audio.value === 'crossfade') audio.value = 'cut';
+  audio.disabled = linked;
+}
+
+/** Set the Compress Audio Peaks slider to ``value`` ('off', 'light' or 'strong'). */
+function setPeaks(value) {
+  const range = $('#optPeaks');
+  range.value = String(Math.max(0, PEAK_STOPS.indexOf(value)));
+  range.setAttribute('aria-valuetext', PEAK_NAMES[peaks()]);
+}
+
 function bind() {
   initSplitter();
   const toggleMute = initVolume();
   bindSettings();
   initNerdStats();
+  initSideTabs();
+  S.savedOpts = initExportOptions();
   showPlaying(false);
   trimInputs.start = trimField('start', 'Clip Start');
   trimInputs.end = trimField('end', 'Clip End');
@@ -2859,7 +3005,6 @@ function bind() {
     (c.seg ? removeSeg : addSeg)(c.id);
     $('#seqLive').textContent = `${c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
   });
-  $('#optExtend').addEventListener('input', renderSequence);
   $('#seqPlayBtn').addEventListener('click', () => (S.seqPlay ? seqStop() : seqStart()));
   $('#seqRemoveSel').addEventListener('click', removeSelected);
   $('#seqClearSel').addEventListener('click', () => {
@@ -2870,25 +3015,10 @@ function bind() {
   $('#analyzeBtn').addEventListener('click', analyzeAgain);
   $('#revealHeadBtn').prepend(icon('folder'));
   $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
-  for (const [id, target] of [['#revealClipsBtn', 'clips'], ['#revealOutBtn', 'outputs']]) {
-    $(id).prepend(icon('folder'));
-    $(id).addEventListener('click', (e) => revealFolder(e.currentTarget, target));
-  }
-  $('#clipsBtn').addEventListener('click', () => {
-    try {
-      startJob('clips', exportOptions());
-    } catch (e) {
-      fail(e);
-    }
-  });
-  $('#assembleBtn').addEventListener('click', () =>
-    startJob('assemble', {
-      transition: $('#optTransition').value,
-      loudnorm: $('#optLoudnorm').checked,
-      compress_peaks: $('#optPeaks').value,
-      captions: $('#optCaptions').checked,
-    }),
-  );
+  $('#revealExportBtn').prepend(icon('folder'));
+  $('#revealExportBtn').addEventListener('click', (e) => revealFolder(e.currentTarget, e.currentTarget.dataset.target));
+  $('#clipsBtn').addEventListener('click', () => startJob('clips', exportOptions()));
+  $('#assembleBtn').addEventListener('click', () => startJob('assemble', assembleOptions()));
   $('#cancelBtn').addEventListener('click', async () => {
     if (!S.active) return;
     $('#cancelBtn').disabled = true;
@@ -2964,8 +3094,10 @@ async function main() {
     fail(e);
   }
   try {
-    // compress_peaks in config.json is the default; the select keeps Off if it cannot be read
-    $('#optPeaks').value = (await api('/api/settings')).compress_peaks ?? 'off';
+    // A compress_peaks set in config.json is the default, unless this browser saved a choice; the
+    // slider keeps Light if it cannot be read
+    const st = await api('/api/settings');
+    if (!PEAK_STOPS.includes(S.savedOpts.compress_peaks) && st.compress_peaks_set) setPeaks(st.compress_peaks);
   } catch {
     // the project list has reported a config.json the server rejects
   }
