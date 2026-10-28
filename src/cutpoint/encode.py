@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 CLIP_SHORT_S = 0.3  # an exported clip this much shorter than asked = truncated read
 SAFE_END_MARGIN_S = 0.3  # trimmed re-encode stops this far before the failure
+# Keyframes forced this far (s) from both ends of every clip, so ``assemble --transition fade``
+# re-encodes a fade of up to 0.5 s (default 0.25 s) plus little more and stream-copies the rest
+# (#463). One per end costs about 5% in clip size; longer fades use the clips' own keyframes.
+EDGE_KEYFRAMES_S = (0.5,)
 
 # Common audio of clips and assembled videos: 48 kHz stereo, AAC 192k.
 A_FMT = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
@@ -731,6 +735,25 @@ def _export(
     )
 
 
+def edge_keyframes(enc: VideoEncoder, dur: float) -> list[str]:
+    """``-force_key_frames`` at :data:`EDGE_KEYFRAMES_S` from the start and the end of a
+    ``dur`` s clip (times inside it only).
+
+    They must be IDR frames, as only those are keyframes in the MP4: NVENC needs
+    ``-forced-idr 1``; libx264 (closed GOP) and VAAPI make every forced keyframe IDR. AMF
+    makes them plain I frames (only the size cost), so it gets none: its clips keep only the
+    encoder's own keyframes, which ``assemble`` reads instead (larger re-encoded windows, same
+    result).
+    """
+    if enc.kind == "amf":
+        return []
+    times = sorted({t for d in EDGE_KEYFRAMES_S for t in (d, dur - d) if 0 < t < dur})
+    if not times:
+        return []
+    idr = ["-forced-idr", "1"] if enc.kind == "nvenc" else []
+    return ["-force_key_frames", ",".join(f"{t:.3f}" for t in times), *idr]
+
+
 def _encode(
     enc: VideoEncoder,
     src: Path,
@@ -781,6 +804,7 @@ def _encode(
         "-map",
         "[a]",
         *enc.args(),
+        *edge_keyframes(enc, dur),
         "-color_range",
         "tv",
         *(BT709_TAGS if color else []),

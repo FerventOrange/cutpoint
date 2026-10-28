@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster `assemble --transition fade` (the highlights and montage kinds): only the video around
+  each fade is re-encoded and the rest of every clip is stream-copied. The frames, audio,
+  `final.srt` and timelines stay the same, and the copied video skips one encode generation.
+  Clip exports now carry one forced keyframe 0.5 s from each end (none with AMF), which covers
+  fades up to 0.5 s (the default is 0.25 s) and makes them about 5% larger; longer fades use
+  the clips' own keyframes.
+  `CUTPOINT_FADE_COPY=0` re-encodes the whole video as before (#463).
 - `cutpoint ui`: the sequence column has Sequence and Export tabs. Export holds one "Export &
   Assembly Options" panel (vertical, captions, Smart edges, loudness, linked transitions, video
   and audio transition, Compress Audio Peaks; remembered per browser) and one "Show Exports
