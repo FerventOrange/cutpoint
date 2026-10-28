@@ -722,6 +722,45 @@ class TestStitchTimeout:
         assert project.stitch_timeout_s() is None
 
 
+class TestAutoStitch:
+    def test_on_by_default(self):
+        assert project.auto_stitch() is True
+        _config(stitched_dir="x")  # a pano section without the key
+        assert project.auto_stitch() is True
+
+    def test_off(self):
+        _config(auto_stitch=False)
+        assert project.auto_stitch() is False
+
+    @pytest.mark.parametrize("value", ["false", 0, None])
+    def test_not_a_boolean(self, value):
+        _config(auto_stitch=value)
+        with pytest.raises(ValueError, match="auto_stitch"):
+            project.auto_stitch()
+
+
+class TestSpaceEstimate:
+    def test_estimate_adds_up_the_clips(self, clip):
+        clip.duration = 3600.0
+        assert stitch.estimate_gb([clip, clip]) == pytest.approx(2 * stitch._need_gb(clip))
+        assert stitch.estimate_gb([]) == 0
+
+    def test_free_space_of_a_folder_not_made_yet(self, tmp_path, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            "shutil.disk_usage", lambda p: seen.append(Path(p)) or SimpleNamespace(free=5e9)
+        )
+        assert stitch.free_gb(tmp_path / "a" / "b") == pytest.approx(5.0)
+        assert seen == [tmp_path]  # its nearest existing parent
+
+    def test_free_space_unknown(self, tmp_path, monkeypatch):
+        def fail(_p):
+            raise OSError("offline")
+
+        monkeypatch.setattr("shutil.disk_usage", fail)
+        assert stitch.free_gb(tmp_path) is None
+
+
 # --------------------------------------------------------------------------- SDK discovery
 def _fake_exe(root: Path, folder: str, name: str | None = None) -> Path:
     p = root / folder / "bin" / (name or project.SDK_EXE_NAME)

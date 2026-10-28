@@ -236,6 +236,7 @@ Settings for the optional 360 module. Every key is optional.
 | `sdk_exe` | Path of the Insta360 Media SDK executable. `CUTPOINT_INSTA360_SDK` overrides it. Default: auto-detected under `<CUTPOINT_HOME>\sdk\insta360\`. See [insta360-sdk.md](insta360-sdk.md) |
 | `stitched_dir` | Where `cutpoint 360 stitch` writes equirects. Default `<CUTPOINT_HOME>\360-stitched`. About 54 GB per hour of footage |
 | `stitch_timeout_s` | Kill one clip's stitch after this many seconds. Default: no limit |
+| `auto_stitch` | `true` (default) or `false`. When true, the SDK runs and an NVIDIA GPU is present, "Export clips" in `cutpoint ui` first stitches the recordings a 360 export needs (about 54 GB per hour of footage in `stitched_dir`). `false` exports from the dual-fisheye preview. The command-line `clips` never stitches. See [360 video](workflows/360.md#auto-stitch-on-export) |
 | `stitch_args` | SDK arguments placed after the input and output. Replaces the defaults. See [insta360-sdk.md](insta360-sdk.md) |
 | `studio_dirs` | Folders searched for Insta360 Studio equirect exports. Default `<CUTPOINT_HOME>\360-studio`; `_stitched\`, `export\` and `Export\` next to the camera files are always searched |
 | `default_style` | `--style` of `cutpoint 360 analyze` when none is given. Default `ski` |

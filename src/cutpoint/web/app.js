@@ -2483,15 +2483,17 @@ function renderExport() {
   const p = S.project;
   const clips = p?.clips;
   const st = $('#exportState');
+  // A 360 clip rendered from the dual-fisheye preview: no SDK, pano.auto_stitch off or the stitch skipped.
+  const note = clips?.clips?.some((c) => c.pano?.preview) ? ' Exported from the 360 preview (not stitched).' : '';
   if (!p) st.textContent = '';
   else if (picks() === 'auto') {
     st.textContent = !p.highlights?.candidates?.length ? 'Analyze the footage to export automatic picks.'
-      : clips ? `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips. Automatic picks export the best moments of the analysis.`
+      : clips ? `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips.${note} Automatic picks export the best moments of the analysis.`
         : 'Nothing exported yet. Automatic picks export the best moments of the analysis.';
   } else if (!S.segments.length) st.textContent = 'Add moments to the sequence to export them.';
   else if (!clips) st.textContent = 'Nothing exported yet. Exporting saves the sequence first.';
-  else if (exportMatches()) st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and matches this sequence.`;
-  else st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and differs from this sequence. Export again to update it.`;
+  else if (exportMatches()) st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and matches this sequence.${note}`;
+  else st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and differs from this sequence.${note} Export again to update it.`;
   renderBusy();
 }
 
