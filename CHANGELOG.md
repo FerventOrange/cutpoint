@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: "Export clips" of a 360 project first stitches the recordings it needs with the
+  Insta360 Media SDK when the SDK runs (`360 stitch`, skipping recordings already stitched), then
+  renders from the stitched equirects. The job log shows the disk estimate (about 54 GB per hour
+  of footage); too little free space, a missing SDK, no NVIDIA GPU or a failed stitch exports from the preview
+  with a WARNING, and Export says "Exported from the 360 preview (not stitched)". The new
+  `pano.auto_stitch` key (default `true`) turns it off; the command-line `clips` is unchanged.
 - Docs: how to install Ollama and the models for `--vision` and AI Chat.
 - `cutpoint ui` AI Chat: bring your own AI. `assistant.provider` can be `openai` (OpenAI, or
   LM Studio, vLLM and llama-server at `assistant.url`) or `anthropic` (default model
@@ -50,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--json`: a `grade_dropped` warning when `clips --force` replaces graded clips with ungraded
   ones (#290).
 - `--json`: a `color_on_gaming` warning when `--color` is given for `gaming` footage (#494).
+- `cutpoint ui` Export tab: a Color slider (Off, Auto, Underwater) under Compress Audio Peaks,
+  with a Strength slider (0-100%, shown with Auto or Underwater), passed to Export clips and
+  One-Click Edit as `--color` and `--color-strength` (left out at 100%). Color is remembered per
+  project (Strength for all); a project with no choice starts on the `color`
+  key in `config.json` (`GET /api/settings` returns `color`), else Off, and at Off for gaming
+  projects (the project view's new `gaming`); a grade picked there is still sent. The jobs API
+  refuses an unknown `color`, a `color_strength` outside 0-1 or without a grade, and `color`
+  with `lut` (#461).
 - `cutpoint ui`: the Moments list has a sort order next to the filter: Score (the default) or
   Position in video, which sorts by source name (natural order, so `clip2` comes before `clip10`)
   and then start time. The rank badge on each card keeps its score rank in either order. The
@@ -116,6 +130,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
+  instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
+  there are none.
+- `cutpoint ui`: the final video in the Export tab no longer plays on under Play sequence. It
+  kept playing while its tab was hidden, so its audio ran over every sequence clip. Starting
+  the preview or leaving the Export tab now pauses it, and playing it stops Play sequence. Play sequence also no longer
+  cuts a clip short, or stalls, when it moves to a clip whose start is inside the preview part
+  already playing but whose end is not: it loads a part that covers the whole clip. A clip, or a
+  moment, of another source whose times fall inside the preview part already playing no longer
+  plays that source's picture and sound in its place.
 - `assemble`: the audio and container of `final.mp4` now end with the video, to within one audio
   frame. Cut joins ended about 24 ms late and started the video about 21 ms late, and
   `--loudnorm` or the limiter padded the audio by about 0.1 s. The `.fcpxml` and `.otio` of cut

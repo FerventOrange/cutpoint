@@ -239,6 +239,8 @@ browser:
 | Video transition | Cut or Fade (`--transition`) | Cut |
 | Audio transition | Cut or Crossfade (`--audio-transition`); Crossfade is unavailable under a video Cut | follows the video |
 | Compress Audio Peaks | None, Light or Max (`off`, `light`, `strong`) | Light |
+| Color | Off, Auto or Underwater (`--color`), in Export clips and One-Click Edit; Extend export keeps each clip's grade | `color` in `config.json`, else Off; Off for gaming projects |
+| Strength | 0-100% of the Color correction (`--color-strength`, left out at 100%); shown with Auto or Underwater | 100% |
 
 The padding field is gone from the UI; `clips --extend` and [`extend`](#extend) still work. A saved
 "Smart edges" choice from an earlier version carries over to both Speech-aware cuts and Smart tails.
@@ -315,6 +317,17 @@ and the assembly compresses only the clips exported without it. It starts on
 [`compress_peaks`](configuration.md#compress_peaks) in `config.json` when that sets it, else on
 Light (`GET /api/settings` returns `compress_peaks` and `compress_peaks_set`), and a job sent without it uses that value; other
 values are refused with 400. Previews do not apply it.
+
+The "Color" slider (Off, Auto or Underwater) and its Strength are sent as `color` and
+`color_strength` (0-1) with the clips and edit jobs and passed as `--color` and
+`--color-strength`. A job sent without `color` passes no flag, so the CLI applies
+[`color`](configuration.md#color) in `config.json` itself (never to gaming footage). A project
+opens with the choice this browser saved for that project (Color is remembered per project,
+Strength for all), else `color` in `config.json` (`GET /api/settings` returns `color`), else Off;
+a gaming project (the project view's `gaming`) opens at Off, and a grade
+picked there is still sent (the CLI warns). An unknown `color`, a `color_strength` outside 0-1 or
+without `auto` or `underwater`, and `color` together with `lut` are refused with 400. The UI has
+no LUT option. Previews do not apply the grade.
 
 For codecs the browser cannot preview directly, selecting a source starts a local H.264/AAC proxy
 under `<project>/ui/proxy/`. Multiple audio tracks are mixed for preview, all of them (clip export leaves out tracks that

@@ -74,7 +74,9 @@ documents every key.
     per run). Default: none.
 
 ``pano``
-    Insta360 settings, read by :func:`cutpoint.pano.project.pano_config`.
+    Insta360 settings, read by :func:`cutpoint.pano.project.pano_config`. ``auto_stitch``
+    (default ``true``): ``cutpoint ui`` exports of a 360 project stitch the recordings they need
+    with the Insta360 SDK first, when it runs (:func:`cutpoint.pano.project.auto_stitch`).
 
 ``assistant``
     The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default; ``openai`` for OpenAI

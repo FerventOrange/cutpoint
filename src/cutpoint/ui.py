@@ -92,6 +92,7 @@ from cutpoint.backends import ollama_url
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     ASSISTANT_PROVIDERS,
+    COLOR_MODES,
     COMPRESS_PEAKS,
     assistant_settings,
     get_config,
@@ -113,6 +114,8 @@ from cutpoint.ffmpeg_utils import (
     probe,
     video_encoder,
 )
+from cutpoint.pano import project as pano_project
+from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
 from cutpoint.styles import get_style, learned_styles, style_names
@@ -547,10 +550,11 @@ def require_config() -> None:
 
 def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     """The settings for config ``data``: the projects folder, the vision default and the export
-    default of Compress peaks, so other invalid keys in ``config.json`` do not hide them; a wrongly
-    typed ``projects_dir`` is shown as is, to replace, a ``vision`` that is not ``true`` as off and
-    an unknown ``compress_peaks`` as off."""
+    defaults of Compress peaks and Color, so other invalid keys in ``config.json`` do not hide
+    them; a wrongly typed ``projects_dir`` is shown as is, to replace, a ``vision`` that is not
+    ``true`` as off and an unknown ``compress_peaks`` or ``color`` as off."""
     peaks = data.get("compress_peaks")
+    color = data.get("color")
     try:
         folder = str(resolve_projects_dir(data))
     except TypeError:
@@ -564,6 +568,8 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
         # whether config.json sets it: the page's Compress peaks then starts from it, else Light
         "compress_peaks_set": peaks in COMPRESS_PEAKS,
+        # the page's Color starts from it (Off when unset), never with a grade on gaming footage
+        "color": color if isinstance(color, str) and color in COLOR_MODES else "off",
         "assistant": assistant_view(data),
     }
 
@@ -775,6 +781,7 @@ class Job:
         self.plan = plan  # the steps the command will report (``{step, label}``), if known
         self.status = "running"
         self.logs: deque[str] = deque(maxlen=MAX_LOG_LINES)
+        self.logged = 0  # lines ever added to ``logs`` (it drops the oldest past its size)
         # Latest update per step (``parse_progress``), keyed by step: the CLI's PROGRESS lines.
         self.steps: dict[str, dict[str, Any]] = {}
         self.steps_total: int | None = None
@@ -790,11 +797,17 @@ class Job:
         if step is None:
             if line.strip():
                 self.logs.append(line.rstrip())
+                self.logged += 1
             return
         total = step.pop("total")
         if total is not None:
             self.steps_total = total
         self.steps[step["step"]] = step  # replaced, never changed in place: ``view`` copies it
+
+    def note(self, level: str, message: str) -> None:
+        """A log line of the server's own, in the CLI's ``HH:MM:SS LEVEL message`` form."""
+        self.logs.append(f"{datetime.now():%H:%M:%S} {level} {message}")
+        self.logged += 1
 
     def interrupt_steps(self) -> None:
         """The job failed or was stopped: a step still running will not finish."""
@@ -837,50 +850,119 @@ class Jobs:
         on_success: Callable[[], None] | None = None,
         check: Callable[[], None] | None = None,
         plan: list[dict[str, str]] | None = None,
+        before: Callable[[Job], list[str] | None] | None = None,
     ) -> Job:
         """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it.
-        ``plan``: the steps it will report, shown as waiting before their first update."""
+        ``plan``: the steps it will report, shown as waiting before their first update.
+        ``before``: runs in the job's thread first and returns a command to run ahead of
+        ``args``, or None; that command failing (or ``before`` raising) only warns, then
+        ``args`` runs. Cancel stops both."""
         with self.lock:
             if any(j.status == "running" for j in self.jobs.values()):
                 raise bad("another job is already running", 409)
             if check:
                 check()
             job = Job(project_id, action, plan)
-            try:
-                job.proc = spawn(args)
-            except OSError as err:
-                raise bad(f"could not start job: {err}", 500) from err
+            if before is None:
+                try:
+                    job.proc = spawn(args)
+                except OSError as err:
+                    raise bad(f"could not start job: {err}", 500) from err
             for old in [k for k, j in self.jobs.items() if j.status != "running"][
                 : max(0, len(self.jobs) + 1 - MAX_JOBS)
             ]:
                 del self.jobs[old]
             self.jobs[job.id] = job
-        threading.Thread(target=self._watch, args=(job, on_success), daemon=True).start()
+        threading.Thread(
+            target=self._watch, args=(job, args, on_success, before), daemon=True
+        ).start()
         return job
 
+    def _spawn(self, job: Job, args: list[str]) -> bool:
+        """Start ``args`` as the job's process, unless it was cancelled; False if it was."""
+        with self.lock:  # a Cancel either sees this process or stops the job before it starts
+            if job.cancelled:
+                return False
+            job.proc = spawn(args)
+        return True
+
     @staticmethod
-    def _watch(job: Job, on_success: Callable[[], None] | None) -> None:
+    def _follow(job: Job) -> int:
+        """Read the job's process output into the job until it exits; its exit code."""
         proc = job.proc
         assert proc is not None and proc.stdout is not None
+        for line in proc.stdout:
+            try:
+                job.add_output(line)
+            except Exception:  # one odd line must not end the watcher: keep it as text
+                logger.exception("job %s could not read an output line", job.id)
+                job.logs.append(line.rstrip())
+                job.logged += 1
+        return proc.wait()
+
+    def _first(self, job: Job, before: Callable[[Job], list[str] | None]) -> None:
+        """Run the command ``before`` asks for ahead of the job's own; a failure only warns."""
         try:
-            for line in proc.stdout:
+            first = before(job)
+        except Exception as err:
+            logger.exception("job %s: the step before it failed", job.id)
+            job.note("WARNING", f"skipped the step before {job.action}: {err}")
+            return
+        if first is None:
+            return
+        try:
+            if not self._spawn(job, first):
+                return
+        except OSError as err:
+            job.note("WARNING", f"could not start the step before {job.action}: {err}")
+            return
+        start = job.logged
+        code = self._follow(job)
+        with self.lock:
+            job.proc = None  # exited: a Cancel from now on has nothing of it to stop
+        if code != 0 and not job.cancelled:
+            job.interrupt_steps()
+            job.note("WARNING", f"the step before {job.action} failed (exit code {code})")
+        elif code == 0 and job.logged > start:
+            # e.g. 360 stitch exits 0 when the SDK failed on a recording: it logs an ERROR
+            said = list(job.logs)[-(job.logged - start) :]
+            if any(re.search(r"\bERROR\s", ln) for ln in said):
+                job.note(
+                    "WARNING",
+                    f"the step before {job.action} reported errors: those recordings export "
+                    "from the 360 preview",
+                )
+
+    def _watch(
+        self,
+        job: Job,
+        args: list[str],
+        on_success: Callable[[], None] | None,
+        before: Callable[[Job], list[str] | None] | None = None,
+    ) -> None:
+        try:
+            mark = 0  # the job's own error is an ERROR line of its own command
+            if before is not None:
+                self._first(job, before)
+                mark = job.logged
                 try:
-                    job.add_output(line)
-                except Exception:  # one odd line must not end the watcher: keep it as text
-                    logger.exception("job %s could not read an output line", job.id)
-                    job.logs.append(line.rstrip())
-            code = proc.wait()
+                    started = self._spawn(job, args)
+                except OSError as err:
+                    job.error, job.status = f"could not start job: {err}", "failed"
+                    return
+                if not started:
+                    job.interrupt_steps()
+                    job.status = "cancelled"
+                    return
+            code = self._follow(job)
             if job.cancelled or code != 0:
                 job.interrupt_steps()
             if job.cancelled:
                 job.status = "cancelled"
             elif code != 0:
+                own = list(job.logs)[-(job.logged - mark) :] if job.logged > mark else []
                 last = next(
-                    (
-                        m.group(1)
-                        for ln in reversed(job.logs)
-                        if (m := re.search(r"ERROR\s+(.*)", ln))
-                    ),
+                    (m.group(1) for ln in reversed(own) if (m := re.search(r"ERROR\s+(.*)", ln))),
                     None,
                 )
                 job.error, job.status = last or f"exit code {code}", "failed"
@@ -907,24 +989,28 @@ class Jobs:
         """Stop the job in the background and return at once; it reads "cancelling" until it exits."""
         job = self.get(job_id)
         with self.lock:  # one killer per job, however often Cancel is pressed
-            start = job.status == "running" and job.proc is not None and not job.cancelled
+            start = job.status == "running" and not job.cancelled
             if start:
-                job.cancelled = True
-        if start:
-            threading.Thread(target=kill_tree, args=(job.proc,), daemon=True).start()
+                job.cancelled = True  # also between two steps: the next one never starts
+            proc = job.proc
+        if start and proc is not None:
+            threading.Thread(target=kill_tree, args=(proc,), daemon=True).start()
         return job
 
     def shutdown(self) -> None:
         # One by one: at most one job runs at a time (``start``), so this waits JOB_STOP_S at most.
         for job in list(self.jobs.values()):
-            if job.status != "running" or job.proc is None:
+            if job.status != "running":
                 continue
             with self.lock:  # as in ``cancel``: did a killer already send the TERM?
                 stopping, job.cancelled = job.cancelled, True
+                proc = job.proc
+            if proc is None:  # between two steps: the next one never starts
+                continue
             if not stopping:
-                kill_tree(job.proc)
+                kill_tree(proc)
             elif not job.done.wait(JOB_STOP_S):  # a second TERM could cut short its cleanup
-                kill_tree(job.proc, term=False)
+                kill_tree(proc, term=False)
 
 
 # Proxies: a keyframe every PROXY_GOP frames and at most PROXY_FPS_MAX fps keep seeks quick (the
@@ -2335,6 +2421,15 @@ def ui_styles() -> list[str]:
     return names
 
 
+def _gaming_style(name: object) -> bool:
+    """``name`` is a ``gaming`` style (or one based on it): config.json's ``color`` never grades
+    it, so the page's Color starts at Off for it."""
+    try:
+        return get_style(str(name)).base == "gaming" if name else False
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def _ski_style(name: str) -> bool:
     """``name`` is a telemetry-driven action-cam style (``kind`` ski), accepted for 360 sources."""
     try:
@@ -2358,6 +2453,30 @@ def _compress_peaks(body: dict[str, Any]) -> list[str]:
     if v not in COMPRESS_PEAKS:
         raise bad(f"compress_peaks must be one of {', '.join(COMPRESS_PEAKS)}")
     return ["--compress-peaks", v]
+
+
+def _color_args(body: dict[str, Any]) -> list[str]:
+    """``--color`` and ``--color-strength`` with the page's choice. Not sent: no flag, so the CLI
+    applies ``color`` in config.json itself (never to gaming footage, which an explicit flag
+    would grade). The page has no LUT, but a ``lut`` with a grade is refused as the CLI refuses
+    ``--color`` with ``--lut``."""
+    color = body.get("color")
+    strength = body.get("color_strength")
+    if color is not None and (not isinstance(color, str) or color not in COLOR_MODES):
+        raise bad(f"color must be one of {', '.join(COLOR_MODES)}")
+    if body.get("lut") is not None and (color not in (None, "off") or strength is not None):
+        raise bad("color cannot be combined with lut; use one")
+    if strength is None:
+        return [] if color is None else ["--color", color]
+    if (
+        isinstance(strength, bool)
+        or not isinstance(strength, (int, float))
+        or not 0 <= strength <= 1
+    ):
+        raise bad("color_strength must be a number from 0 to 1")
+    if color not in ("auto", "underwater"):
+        raise bad("color_strength needs color auto or underwater")
+    return ["--color", color, "--color-strength", f"{float(strength):g}"]
 
 
 def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
@@ -2493,6 +2612,75 @@ def _auto_picks(body: dict[str, Any], hl: dict[str, Any] | None) -> list[str]:
             raise bad(f"order must be one of {', '.join(CLIP_ORDERS)}")
         args += ["--order", order]
     return args
+
+
+PREVIEW_NOTE = "exporting from the 360 preview (not stitched)"
+
+
+def stitch_first(
+    job: Job, project: Path, seg_file: Path | None, picks: dict[str, Any]
+) -> list[str] | None:
+    """``cutpoint 360 stitch`` for the recordings a 360 export needs that are not stitched yet,
+    or None (``pano.auto_stitch`` off, no working SDK or NVIDIA GPU, all stitched, too little
+    free space).
+
+    ``seg_file``: the export's segments file; else ``picks`` (``top``, ``ids``, ``max_total``)
+    choose the moments as ``clips`` will. Says why in the job log; never raises for a reason
+    to skip (``Jobs.start`` turns anything else into a warning too).
+    """
+    try:
+        on = pano_project.auto_stitch()
+    except ValueError as err:
+        job.note("WARNING", f"{err}; {PREVIEW_NOTE}")
+        return None
+    if not on:
+        job.note("INFO", f"pano.auto_stitch is off: {PREVIEW_NOTE}")
+        return None
+    sdk = pano_stitch.sdk_status()
+    if not sdk.get("runs"):
+        why = "does not run" if sdk.get("found") else "was not found"
+        job.note("WARNING", f"the Insta360 SDK {why} (see cutpoint 360 status): {PREVIEW_NOTE}")
+        return None
+    from cutpoint import capabilities  # noqa: PLC0415
+
+    if not capabilities.nvidia_present():  # the SDK needs one: the stitch would likely fail
+        job.note("WARNING", "no NVIDIA GPU; exporting the 360 preview")
+        return None
+    if seg_file is not None:
+        sources = [m["source"] for m in cache.read_json(seg_file)]
+    else:
+        from cutpoint.planning import select_moments  # noqa: PLC0415
+
+        sources = [m["source"] for m in select_moments(project, **picks)[0]]
+    recorded = pano_project.load(project)
+    chosen = {c.clip_id: c for s in sources if (c := pano_project.clip_for(recorded, s))}
+    missing = [c for _, c in sorted(chosen.items()) if not pano_project.sdk_output(c).is_file()]
+    if not missing:
+        if chosen:
+            job.note("INFO", f"the {len(chosen)} recording(s) of this export are stitched")
+        return None
+    need = pano_stitch.estimate_gb(missing)
+    out_dir = pano_project.stitched_dir()
+    free = pano_stitch.free_gb(out_dir)
+    room = "unknown" if free is None else f"{free:.0f} GB"
+    job.note(
+        "INFO",
+        f"stitching {len(missing)} recording(s) with the Insta360 SDK first: about "
+        f"{need:.0f} GB in {out_dir} ({room} free)",
+    )
+    if free is None:
+        job.note("WARNING", f"cannot read the free space in {out_dir}: {PREVIEW_NOTE}")
+        return None
+    if free - need < pano_stitch.MIN_FREE_GB:
+        job.note(
+            "WARNING",
+            f"not enough free space in {out_dir} (needs about {need:.0f} GB plus "
+            f"{pano_stitch.MIN_FREE_GB:.0f} GB to spare): {PREVIEW_NOTE}",
+        )
+        return None
+    if seg_file is not None:  # the stitch skips the recordings already stitched
+        return cutpoint_cmd("360", "stitch", str(project), "--segments", str(seg_file))
+    return cutpoint_cmd("360", "stitch", str(project), "--clips", *(c.clip_id for c in missing))
 
 
 def create_app(port: int) -> FastAPI:
@@ -2797,6 +2985,8 @@ def create_app(port: int) -> FastAPI:
             "id": pid,
             "name": meta.get("name") or pid,
             "style": meta.get("style") or (hl or {}).get("style") or "",
+            # the page's Color starts at Off for gaming footage, as config.json's color does
+            "gaming": _gaming_style(meta.get("style") or (hl or {}).get("style")),
             "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
             "highlights": moments_view(hl),
@@ -2868,6 +3058,7 @@ def create_app(port: int) -> FastAPI:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         on_success: Callable[[], None] | None = None
         prepare: Callable[[], None] | None = None
+        before: Callable[[Job], list[str] | None] | None = None  # a step ahead of ``args``
         written: list[Path] = []  # files ``prepare`` wrote, removed if the job does not start
         plan: list[dict[str, str]] | None = None
         if action == "analyze" and meta.get("kind") == "360":
@@ -2928,7 +3119,11 @@ def create_app(port: int) -> FastAPI:
                 args.append("--vertical")
             if force:  # the user confirmed replacing the earlier run's clips
                 args.append("--force")
-            args += _compress_peaks(body) + _vision_args((hl or {}).get("settings") or {})
+            args += (
+                _compress_peaks(body)
+                + _color_args(body)
+                + _vision_args((hl or {}).get("settings") or {})
+            )
 
             def prepare() -> None:
                 _ui_folder(p)  # a command-line project has no ui folder for exports.json yet
@@ -2991,7 +3186,7 @@ def create_app(port: int) -> FastAPI:
                     "--event-window", _seconds(body, "event_window", MAX_TIMING_S, positive=True)
                 )
             )
-            peaks = _compress_peaks(body)
+            peaks = _compress_peaks(body) + _color_args(body)
             out_name = fresh_name(p, f"clips_ui_{stamp}")
             seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
             _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the export
@@ -3027,6 +3222,11 @@ def create_app(port: int) -> FastAPI:
                 args += ["--extend", f"{float(extend):g}"]
             args += _opt("--extend-start", extend_start) + _opt("--extend-end", extend_end)
             args += peaks
+            if meta.get("kind") == "360":  # stitch the recordings first (pano.auto_stitch)
+                chosen = {k: body.get(k) for k in ("top", "ids", "max_total")}
+
+                def before(job: Job) -> list[str] | None:
+                    return stitch_first(job, p, seg_file if segments else None, chosen)
 
             def on_success() -> None:
                 if not (p / out_name / "manifest.json").is_file():
@@ -3118,7 +3318,7 @@ def create_app(port: int) -> FastAPI:
                 prepare()  # only once the job may start: a refused one leaves no file behind
 
         try:
-            return jobs.start(pid, action, args, on_success, same_folder, plan).view()
+            return jobs.start(pid, action, args, on_success, same_folder, plan, before).view()
         except HTTPException:  # for example the command could not be started
             for f in written:
                 with contextlib.suppress(OSError):

@@ -29,9 +29,11 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, cli, config, edit, encode, ffmpeg_utils, ui
+from cutpoint import cache, capabilities, cli, config, edit, encode, ffmpeg_utils, ui
 from cutpoint.assistant import session as ai_session
+from cutpoint.pano import project as pano_project
 from cutpoint.utils import find_videos
+from pano_helpers import x3clip
 
 PORT = 8765
 
@@ -225,6 +227,239 @@ def test_360_analyze_job_view_carries_the_step_plan(
     assert [s["step"] for s in res.json()["progress"]["plan"]] == [
         "scan", "views", "analyze", "events",
     ]  # fmt: skip
+    assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
+
+
+class StitchExport:
+    """A 360 project with one recorded clip and one moment, and fake job processes.
+
+    ``spawn`` records each command; the ``360 stitch`` one exits ``stitch_code`` (after
+    ``hold`` is set, when given), the ``clips`` one writes its manifest. ``sdk_status`` and the
+    free space are mocked: the real SDK never runs.
+    """
+
+    def __init__(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        sdk: dict | None = None,
+        free: float | None = 500.0,
+        nvidia: bool = True,
+    ) -> None:
+        folder = tmp_path / "footage"
+        folder.mkdir()
+        for name in X3_CLIPS:
+            (folder / name).write_bytes(b"")
+        res = client.post("/api/projects", json={"name": "T", "source": str(folder)})
+        self.client, self.pid = client, res.json()["id"]
+        self.p = ui.project_dir(self.pid)
+        lrv = str(folder / X3_LRV)
+        self.clip = x3clip(lrv=lrv, insv=[str(folder / X3_00), str(folder / X3_10)], duration=60)
+        pano_project.save(self.p, [self.clip], [folder])
+        cand = {"id": "h001", "source": lrv, "start": 1.0, "end": 5.0, "score": 80, "label": "a"}
+        hl = {"sources": [{"path": lrv, "duration": 60.0}], "candidates": [cand], "style": "ski"}
+        cache.save_json(self.p / "highlights.json", hl)
+        self.segment = {k: cand[k] for k in ("id", "source", "start", "end", "label")}
+        self.seen: list[list[str]] = []
+        self.stitch_code = 0
+        self.stitch_lines = ["10:00:00 INFO clip 001: ok"]
+        self.clips_code = 0
+        self.clips_lines: list[str] = []
+        self.hold: threading.Event | None = None
+        self.stitching = threading.Event()
+        monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+        monkeypatch.setattr(ui, "spawn", self.spawn)
+        monkeypatch.setattr(ui, "kill_tree", lambda proc, *a, **k: proc.release.set())
+        status = {"found": True, "runs": True} if sdk is None else sdk
+        monkeypatch.setattr(ui.pano_stitch, "sdk_status", lambda: status)
+        monkeypatch.setattr(ui.pano_stitch, "free_gb", lambda _folder: free)
+        monkeypatch.setattr(capabilities, "nvidia_present", lambda: nvidia)
+
+    def spawn(self, args: list[str], **_kw: object) -> FakeProc:
+        self.seen.append(args)
+        if args[1:3] == ["360", "stitch"]:
+            proc = FakeProc(self.stitch_lines, self.stitch_code)
+            self.stitching.set()
+            if self.hold is None:
+                proc.release.set()
+            else:  # until cancelled
+                self.hold = proc.release
+            return proc
+        out = Path(args[args.index("--out") + 1])
+        out.mkdir()
+        cache.save_json(out / "manifest.json", {"clips": []})
+        proc = FakeProc(self.clips_lines, self.clips_code)
+        proc.release.set()
+        return proc
+
+    def export(self, body: dict | None = None) -> dict:
+        """Start an export (the sequence's, unless ``body`` says otherwise); the job's view."""
+        body = body or {}
+        if body.get("picks") != "auto":
+            res = self.client.put(
+                f"/api/projects/{self.pid}/review", json={"segments": [self.segment]}
+            )
+            assert res.status_code == 200, res.text
+        res = self.client.post(f"/api/projects/{self.pid}/jobs", json={"action": "clips", **body})
+        assert res.status_code == 200, res.text
+        job = self.client.app.state.jobs.get(res.json()["id"])
+        if self.hold is None:
+            assert job.done.wait(10)
+        return job
+
+    def commands(self) -> list[list[str]]:
+        return [a[1:3] for a in self.seen]
+
+
+def test_a_360_export_stitches_the_sequence_recordings_first(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    stitch, clips = run.seen
+    (seg_file,) = run.p.glob("ui/segments-*.json")
+    assert stitch == ["cutpoint", "360", "stitch", str(run.p), "--segments", str(seg_file)]
+    assert clips[1:3] == ["clips", str(run.p)]
+    assert any("stitching 1 recording(s)" in ln and "500 GB free" in ln for ln in view["logs"])
+
+
+def test_a_360_export_of_automatic_picks_stitches_their_clips(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    assert run.export({"picks": "auto", "ids": ["h001"]}).view()["status"] == "completed"
+    assert run.seen[0] == ["cutpoint", "360", "stitch", str(run.p), "--clips", "001"]
+    assert run.commands()[1] == ["clips", str(run.p)]
+
+
+@pytest.mark.parametrize(
+    ("pano", "sdk", "said"),
+    [
+        ({"auto_stitch": False}, None, "pano.auto_stitch is off"),
+        ({}, {"found": False, "runs": False}, "SDK was not found"),
+        ({}, {"found": True, "runs": False}, "SDK does not run"),
+    ],
+    ids=["auto-stitch-off", "no-sdk", "sdk-does-not-run"],
+)
+def test_a_360_export_without_auto_stitch_or_a_working_sdk_exports_the_preview(
+    client: TestClient,
+    home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pano: dict,
+    sdk: dict | None,
+    said: str,
+) -> None:
+    set_config(home, pano=pano)
+    run = StitchExport(client, tmp_path, monkeypatch, sdk=sdk)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["clips", str(run.p)]]
+    assert any(said in ln and "360 preview (not stitched)" in ln for ln in view["logs"])
+
+
+def test_a_360_export_without_an_nvidia_gpu_skips_the_stitch_with_a_warning(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch, nvidia=False)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["clips", str(run.p)]]
+    assert any("WARNING no NVIDIA GPU; exporting the 360 preview" in ln for ln in view["logs"])
+
+
+def test_a_360_export_skips_the_stitch_with_a_warning_when_space_is_short(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch, free=ui.pano_stitch.MIN_FREE_GB + 0.1)
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["clips", str(run.p)]]
+    assert any("WARNING not enough free space" in ln for ln in view["logs"])
+
+
+def test_a_360_export_of_stitched_recordings_does_not_stitch_again(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    write(pano_project.sdk_output(run.clip), b"stitched")
+    assert run.export().view()["status"] == "completed"
+    assert run.commands() == [["clips", str(run.p)]]
+
+
+def test_a_failed_stitch_still_exports_with_a_warning(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_code = 1
+    view = run.export().view()
+    assert view["status"] == "completed" and "error" not in view, view
+    assert run.commands() == [["360", "stitch"], ["clips", str(run.p)]]
+    assert any("WARNING the step before clips failed (exit code 1)" in ln for ln in view["logs"])
+
+
+def test_a_stitch_that_exits_0_after_an_error_warns_and_still_exports(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``360 stitch`` exits 0 when the SDK failed on a recording; its ERROR line says so."""
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_lines = ["10:00:00 ERROR clip 001: stitch FAILED: x"]
+    view = run.export().view()
+    assert view["status"] == "completed", view
+    assert run.commands() == [["360", "stitch"], ["clips", str(run.p)]]
+    want = "WARNING the step before clips reported errors: those recordings export from the 360"
+    assert any(want in ln for ln in view["logs"])
+
+
+@pytest.mark.parametrize(
+    ("clips_lines", "error"),
+    [([], "exit code 1"), (["10:00:00 ERROR own"], "own")],
+    ids=["no-error-line", "own-error-line"],
+)
+def test_a_failed_export_after_a_failed_stitch_reports_its_own_error(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clips_lines: list[str],
+    error: str,
+) -> None:
+    """The job's error comes from the clips step, never from the stitch's ERROR lines."""
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_lines, run.stitch_code = ["10:00:00 ERROR clip 001: stitch FAILED: x"], 1
+    run.clips_lines, run.clips_code = clips_lines, 1
+    view = run.export().view()
+    assert view["status"] == "failed", view
+    assert view["error"] == error
+
+
+def test_cancelling_a_360_export_while_it_stitches_stops_both_steps(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = StitchExport(client, tmp_path, monkeypatch)
+    run.stitch_code = 130
+    run.hold = threading.Event()
+    job = run.export()
+    assert run.stitching.wait(10)
+    client.post(f"/api/jobs/{job.id}/cancel")
+    assert job.done.wait(10)
+    assert job.view()["status"] == "cancelled"
+    assert run.commands() == [["360", "stitch"]]  # clips never started
+
+
+def test_a_flat_export_never_stitches(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, seg = cli_project(tmp_path)
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    monkeypatch.setattr(
+        ui.pano_stitch, "sdk_status", lambda: pytest.fail("a flat export asked for the SDK")
+    )
+    FakeProc().fake_spawn(monkeypatch)
+    res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
+    assert res.status_code == 200, res.text
     assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
 
 
@@ -2290,7 +2525,7 @@ def test_put_settings_vision_needs_a_boolean_and_no_folder_rules(
 
     # Only the projects folder is locked by CUTPOINT_PROJECTS_DIR or a running job.
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(tmp_path / "env"))
-    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running", proc=None)
+    client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running", proc=None, cancelled=False)
     assert client.put("/api/settings", json={"vision": True}).status_code == 200
     both = {"vision": False, "projects_dir": str(tmp_path)}
     assert client.put("/api/settings", json=both).status_code == 409
@@ -5363,6 +5598,63 @@ def _web(name: str) -> str:
     return (ui.WEB_DIR / name).read_text(encoding="utf-8")
 
 
+def test_the_360_empty_state_counts_recordings_apart_from_the_360() -> None:
+    """Contract pin: a 360 project with no moments reads "360 footage: N recording(s) found"
+    (or "No 360 recordings found"), never "N 360 clips found", which read as 5,360."""
+    js = _web("app.js")
+    body = re.search(r"function renderUnanalyzed\(.*?\n\}\n", js, re.S)[0]
+    assert "`360 footage: ${n} recording${n === 1 ? '' : 's'} found`" in body
+    assert "'No 360 recordings found'" in body
+    assert not re.search(r"\$\{n\} 360", js)  # no count directly before "360"
+
+
+def test_stage_and_final_video_never_sound_together() -> None:
+    """Contract pin: the Export tab's final video plays on while its tab is hidden, so "Play
+    sequence" (or a moment) starting on the stage pauses it, and playing it stops the sequence
+    (or pauses the stage). Before, its audio ran on under every sequence clip."""
+    js = _web("app.js")
+    stage_play = re.search(r"onStage\('play', \(\) => \{(.*?)\n\}\);", js, re.S)[1]
+    assert "finalVideo.pause();" in stage_play
+    final_play = re.search(
+        r"finalVideo\.addEventListener\('play', \(\) => \{(.*?)\n\}\);", js, re.S
+    )
+    assert final_play and "if (S.seqPlay) seqStop();" in final_play[1]
+    # off the sequence it pauses the stage and cancels a resume at a window's end, which would
+    # start the stage again (and so pause the final video) once the next window loads
+    assert re.search(r"else \{\s*cancelResume\(\);[^\n]*\n\s*v\.pause\(\);", final_play[1])
+
+
+def test_a_hidden_side_tab_pauses_its_videos() -> None:
+    """Contract pin: leaving the Export tab pauses its final video, which would otherwise play
+    on unseen (a hidden element keeps playing)."""
+    js = _web("app.js")
+    body = js[js.index("function initSideTabs(") : js.index("function initMomentOrder(")]
+    assert "panel.hidden = !on;" in body
+    assert "if (!on) for (const vid of panel.querySelectorAll('video')) vid.pause();" in body
+    html = _web("index.html")
+    export = html[html.index('id="panelExport"') :]
+    assert '<video id="finalVideo"' in export  # the video this pauses lives in a tab panel
+
+
+def test_play_sequence_keeps_a_window_proxy_only_when_it_covers_the_whole_clip() -> None:
+    """Contract pin: during "Play sequence" the stage keeps its loaded window proxy for the next
+    clip of the same source only when the window plays all of it, as ``fileFor`` decides. A
+    window covering the clip's start alone was kept and sought, so the clip was cut short at
+    the window's end or the sequence stalled waiting for a file that never loaded."""
+    js = _web("app.js")
+    # a file of the clip's own source: a window of another source whose times hold the clip
+    # played that source's picture and sound as the clip
+    holds = re.search(r"const holdsClip = \(c\) => \{(.*?)\n\};", js, re.S)[1]
+    assert "ofSource(src)" in holds and "coversSeg(r, c, sourceDur(c.source))" in holds
+    body = js[js.index("function stageVideo(") : js.index("/** Stop a video element")]
+    keep = "const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(c));"
+    assert keep in body
+    assert "if (fits && (keep || p))" in body and "if (!keep) loadFile(src, p, at);" in body
+    playing_on = re.search(r"const playingOn = ([^;]*);", body)[1]
+    assert "ofSource(src)" in playing_on
+    assert playing_on.endswith("&& (!S.seqPlay || holdsClip(c))")
+
+
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     """Contract pin (#462, #346): the column has a Sequence, an AI Chat and an Export tab, each
     controlling a labelled tabpanel; only the selected tab is in the tab order (roving
@@ -5432,7 +5724,7 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
                   "optPicksAuto", "optTop", "optMaxTotal", "optIds", "optOrder",
                   "optSpeechExtend", "optSpeechLead", "optTailMin", "optTailMax",
                   "optEventTails", "optEventWindow", "optExtendStart",
-                  "optExtendEnd"}  # fmt: skip
+                  "optExtendEnd", "optColor", "optColorStrength"}  # fmt: skip
     seen = set()
     for control in controls:
         cid = re.search(r'id="(\w+)"', control)[1]
@@ -6253,3 +6545,186 @@ def test_moment_order_is_remembered_safely_and_sorts_after_filtering() -> None:
     render = re.search(r"function renderMoments\(\) \{(.*?)\n\}\n", js, re.S)[1]
     assert render.index(".filter(") < render.index("positionCompare")
     assert re.search(r"\.map\(\(c, i\) => \(\{ c, rank: i \+ 1 \}\)\)", render)
+
+
+# --- Color (#461): the export's --color and --color-strength ---
+
+
+def color_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    body: dict,
+) -> tuple[object, list[list[str]]]:
+    """Start a clips (the sequence) or edit (a preset) job with the Color fields ``body``."""
+    if action == "edit":
+        res, captured, _, _ = preset_job(client, monkeypatch, tmp_path, {"kind": "clips", **body})
+        return res, captured
+    return peaks_job(client, monkeypatch, tmp_path, {"action": action, **body})
+
+
+def _color_flags(args: list[str]) -> list[str]:
+    """The ``--color`` and ``--color-strength`` flags of ``args``, each with its value."""
+    out: list[str] = []
+    for i, a in enumerate(args):
+        if a in ("--color", "--color-strength"):
+            out += args[i : i + 2]
+    return out
+
+
+@pytest.mark.parametrize("action", ["clips", "edit"])
+@pytest.mark.parametrize(
+    ("body", "passed"),
+    [
+        ({"color": "auto"}, ["--color", "auto"]),
+        ({"color": "underwater"}, ["--color", "underwater"]),
+        ({"color": "off"}, ["--color", "off"]),  # explicit: config.json's color does not apply
+        ({"color": "auto", "color_strength": 0.7}, ["--color", "auto", "--color-strength", "0.7"]),
+        ({"color": "underwater", "color_strength": 0}, ["--color", "underwater", "--color-strength", "0"]),
+        ({"color": "auto", "color_strength": 1}, ["--color", "auto", "--color-strength", "1"]),
+        ({}, []),  # not sent: the CLI applies config.json's color itself (never to gaming)
+    ],
+)  # fmt: skip
+def test_clips_and_edit_jobs_pass_color_and_its_strength(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    body: dict,
+    passed: list[str],
+) -> None:
+    res, captured = color_job(client, monkeypatch, tmp_path, action, body)
+    assert res.status_code == 200, res.text
+    assert _color_flags(_cli_args(captured[0])) == passed  # and the CLI parses them
+
+
+@pytest.mark.parametrize("action", ["clips", "edit"])
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"color": "max"}, "color must be one of off, auto, underwater"),
+        ({"color": ""}, "color must be one of"),
+        ({"color": True}, "color must be one of"),
+        ({"color": ["auto"]}, "color must be one of"),  # not a 500
+        ({"color": 1}, "color must be one of"),
+        ({"color": "auto", "color_strength": 1.5}, "color_strength must be a number from 0 to 1"),
+        ({"color": "auto", "color_strength": -0.1}, "color_strength must be a number from 0 to 1"),
+        ({"color": "auto", "color_strength": "0.5"}, "color_strength must be a number from 0 to 1"),
+        ({"color": "auto", "color_strength": True}, "color_strength must be a number from 0 to 1"),
+        ({"color": "off", "color_strength": 0.5}, "color_strength needs color auto or underwater"),
+        ({"color_strength": 0.5}, "color_strength needs color auto or underwater"),
+        ({"color": "auto", "lut": "flat.cube"}, "color cannot be combined with lut"),
+        ({"color": "underwater", "lut": "flat.cube"}, "color cannot be combined with lut"),
+        ({"color": "auto", "color_strength": 0.5, "lut": "flat.cube"}, "color cannot be combined with lut"),
+    ],
+)  # fmt: skip
+def test_clips_and_edit_jobs_reject_a_bad_color(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+    body: dict,
+    message: str,
+) -> None:
+    res, captured = color_job(client, monkeypatch, tmp_path, action, body)
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured
+
+
+def test_extend_sends_no_color_it_regrades_from_the_manifest(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``extend`` has no --color: it re-applies the grade each clip's manifest entry records."""
+    body = {"action": "extend", "speech_aware": True, "color": "auto"}
+    res, captured = peaks_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200, res.text
+    assert _color_flags(_cli_args(captured[0])) == []
+
+
+@pytest.mark.parametrize(
+    ("cfg", "shown"),
+    [(None, "off"), ("auto", "auto"), ("underwater", "underwater"), ("off", "off"),
+     ("pink", "off"), (3, "off"), (["auto"], "off")],
+)  # fmt: skip
+def test_settings_show_the_color_default(
+    client: TestClient, home: Path, cfg: object, shown: str
+) -> None:
+    """The page's Color starts on config.json's color; unset or invalid shows Off."""
+    if cfg is not None:
+        set_config(home, color=cfg)
+    assert client.get("/api/settings").json()["color"] == shown
+
+
+@pytest.mark.parametrize(("style", "gaming"), [("gaming", True), ("funny", False), (None, False)])
+def test_the_project_view_says_whether_the_footage_is_gaming(
+    client: TestClient, tmp_path: Path, style: str | None, gaming: bool
+) -> None:
+    """The page's Color starts at Off for gaming footage, as config.json's color does."""
+    p, _ = cli_project(tmp_path)
+    if style is not None:
+        hl = cache.load_json(p / "highlights.json")
+        hl["style"] = style
+        cache.save_json(p / "highlights.json", hl)
+    assert client.get("/api/projects/cli").json()["gaming"] is gaming
+
+
+def test_color_is_a_three_stop_slider_like_compress_audio_peaks() -> None:
+    """Contract pin (#461): Color is a range slider with the stops Off, Auto and Underwater, built
+    like Compress Audio Peaks, with a 0-100% Strength shown only with a grade; both name their
+    value for screen readers. The page has no LUT option, so nothing disables Color."""
+    html = _web("index.html")
+    js = _web("app.js")
+    panel = re.search(r'<fieldset class="panel color">(.*?)</fieldset>', html, re.S)[1]
+    slider = re.search(r'<input type="range" id="optColor"[^>]*>', panel)[0]
+    for attr in ('min="0"', 'max="2"', 'step="1"', 'value="0"', 'aria-labelledby="colorLegend"',
+                 'aria-describedby="dColor"', 'aria-valuetext="Off"'):  # fmt: skip
+        assert attr in slider
+    assert re.search(r'<legend id="colorLegend"[^>]*>Color</legend>', panel)
+    ticks = re.search(r'<div class="ticks" aria-hidden="true">(.*?)</div>', panel)[1]
+    assert re.findall(r"<span>(\w+)</span>", ticks) == ["Off", "Auto", "Underwater"]
+    row = re.search(
+        r'<div class="color-strength" id="colorStrengthRow" hidden>(.*?)</div>', panel, re.S
+    )[1]
+    strength = re.search(r'<input type="range" id="optColorStrength"[^>]*>', row)[0]
+    for attr in ('min="0"', 'max="100"', 'value="100"', 'aria-valuetext="Strength 100%"'):
+        assert attr in strength
+    assert '<label for="optColorStrength"' in row
+    assert "const COLOR_STOPS = ['off', 'auto', 'underwater'];" in js
+    assert "underwater: 'Underwater'" in js
+    assert "`Strength ${range.value}%`" in js
+    assert "$('#colorStrengthRow').hidden = color() === 'off';" in js
+    assert not re.search(r"\blut\b", html, re.I)  # no LUT option that would disable Color
+
+
+def test_the_page_sends_color_with_clips_and_presets_and_strength_below_100() -> None:
+    """Contract pin (#461): Export clips and One-Click Edit send ``color``; ``color_strength``
+    only with a grade and below 100% (the CLI's default is 1). Extend export and Assemble send
+    neither."""
+    js = _web("app.js")
+    options = re.search(r"function colorOptions\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "{ color: color() }" in options
+    assert "body.color !== 'off' && pct < 100" in options and "pct / 100" in options
+    for builder, sends in (("exportOptions", True), ("makePreset", True),
+                           ("extendOptions", False), ("assembleOptions", False)):  # fmt: skip
+        body = re.search(rf"function {builder}\(\) \{{\n(.*?)\n\}}", js, re.S)[1]
+        assert ("...colorOptions()" in body) is sends, builder
+
+
+def test_color_starts_from_config_json_but_never_on_for_gaming() -> None:
+    """Contract pin (#461): a project opens with the Color this browser saved for it (so a dive's
+    Underwater does not carry over to land footage), else config.json's color (GET
+    /api/settings), else Off; a gaming project opens at Off. Strength is one choice for all."""
+    js = _web("app.js")
+    start = re.search(r"function startColor\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "S.savedOpts.color_by_project?.[S.id]" in start and "S.colorDefault" in start
+    assert "setColor(S.project?.gaming ? 'off' : value);" in start
+    init = re.search(r"function initExportOptions\(\) \{\n(.*?)\n\}\n", js, re.S)[1]
+    assert "store('color_by_project', { ...mine, [S.id]: color() });" in init
+    assert "store('color'," not in init  # no browser-wide Color
+    assert "store('color_strength', Number(strength.value));" in init  # browser-wide Strength
+    assert "colorDefault: 'off'" in js
+    assert "if (COLOR_STOPS.includes(st.color)) S.colorDefault = st.color;" in js
+    adopt = re.search(r"function adopt\(p, switched\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "if (switched) startColor();" in adopt

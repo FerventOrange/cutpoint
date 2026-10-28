@@ -15,12 +15,15 @@
       "max_follow_deg": 30,
       "imu_offset_s": 0.0,
       "equirect_yaw_offset": 0.0,
-      "default_style": "ski"
+      "default_style": "ski",
+      "auto_stitch": true
     }
 
 ``stitched_dir`` and ``studio_dirs`` default to ``<CUTPOINT_HOME>/360-stitched``
 and ``<CUTPOINT_HOME>/360-studio``; ``default_style`` is the ``--style`` of
-``cutpoint 360 analyze`` when none is given (default ``ski``).
+``cutpoint 360 analyze`` when none is given (default ``ski``). ``auto_stitch`` (default
+``true``): ``cutpoint ui`` exports of a 360 project first stitch the recordings they need with
+the SDK, when it runs (the command-line ``clips`` never stitches).
 
 ``CUTPOINT_INSTA360_SDK`` (path of ``MediaSDKTest``, ``.exe`` on Windows) overrides ``sdk_exe``.
 When neither is set, the SDK is auto-detected under
@@ -111,6 +114,18 @@ def default_studio_dirs() -> tuple[Path, ...]:
 def default_style() -> str:
     """``--style`` of ``cutpoint 360 analyze`` when none is given (``pano.default_style``)."""
     return str(pano_config().get("default_style") or DEFAULT_STYLE)
+
+
+def auto_stitch() -> bool:
+    """``cutpoint ui`` stitches a 360 export's recordings first (``pano.auto_stitch``, default on).
+
+    Raises:
+        ValueError: If ``pano.auto_stitch`` is set but is not true or false.
+    """
+    raw = pano_config().get("auto_stitch", True)
+    if not isinstance(raw, bool):
+        raise ValueError(f"{paths.config_file()}: 'pano.auto_stitch' must be true or false")
+    return raw
 
 
 def stitched_dir() -> Path:

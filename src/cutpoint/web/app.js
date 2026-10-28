@@ -46,6 +46,8 @@ const OPT_FIELDS = {
 };
 const PEAK_STOPS = ['off', 'light', 'strong']; // the Compress Audio Peaks slider's stops, left to right
 const PEAK_NAMES = { off: 'None', light: 'Light', strong: 'Max' };
+const COLOR_STOPS = ['off', 'auto', 'underwater']; // the Color slider's stops, left to right (--color)
+const COLOR_NAMES = { off: 'Off', auto: 'Auto', underwater: 'Underwater' };
 const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the audio transition of each video one
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
@@ -55,6 +57,7 @@ const S = {
   canReveal: false, // the server can open a folder in this machine's file manager
   canPick: false, // the server can show this machine's own open dialog
   savedOpts: {}, // the Export & Assembly Options this browser stored (initExportOptions)
+  colorDefault: 'off', // config.json's color (GET /api/settings): Color's default when this browser saved none
   projects: [],
   id: null,
   project: null,
@@ -177,6 +180,12 @@ const offsetOf = () => Number(v.dataset.offset) || 0;
 const loaded = () => (v.dataset.url ? { lo: offsetOf(), hi: v.dataset.hi ? Number(v.dataset.hi) : null } : null);
 /** The stage player holds a file of ``src``: its original or whole proxy, or one of its window proxies. */
 const ofSource = (src) => !!v.dataset.url && (v.dataset.url === src.url || v.dataset.url.startsWith(`${src.url.split('?')[0]}/window/`));
+/** The stage player's file plays all of clip ``c`` ({source, start, end}): a file of its source, whole or a window covering it. */
+const holdsClip = (c) => {
+  const r = loaded();
+  const src = srcOf(c.source);
+  return !!r && !!src && ofSource(src) && (r.hi == null || coversSeg(r, c, sourceDur(c.source)));
+};
 const inLoaded = (t, dur) => {
   const r = loaded();
   return !!r && (r.hi == null || covers(r, t, dur));
@@ -350,6 +359,7 @@ function adopt(p, switched) {
   }
   if (!current()) S.focus = S.segments[0]?.id ?? cands()[0]?.id ?? null;
   clearTimeout(S.prepTimer);
+  if (switched) startColor();
   renderAll(switched);
   if (switched) loadAssistant();
 }
@@ -492,7 +502,7 @@ function folderArt() {
 const sourceErrorText = (p) =>
   `The source folder cannot be found or read (${p.source_error}). Reconnect the drive, or set a source remap in Settings.`;
 
-/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its clips). */
+/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its recordings). */
 function renderUnanalyzed(el, n, error, pano) {
   const state = `${n}|${error}|${pano}`;
   if (el.dataset.n === state) return; // polling re-renders; keep the button (and its focus)
@@ -503,12 +513,12 @@ function renderUnanalyzed(el, n, error, pano) {
       ? h('p', { class: 'fresh-error', text: error })
       : h('p', { class: `fresh-count${n ? '' : ' none'}` },
         pano
-          ? (n ? `${n} 360 clip${n === 1 ? '' : 's'} found` : 'No 360 clips found')
+          ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
           : (n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory')),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', {
       text: pano
-        ? 'Analyze footage to read the 360 clips, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
+        ? 'Analyze footage to read the 360 recordings, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
         : 'Analyze footage to transcribe audio and rank the strongest moments.',
     }),
     h('button', {
@@ -1174,9 +1184,11 @@ function stageVideo(seekC) {
     const p = playable(src, at);
     // "Play sequence" plays a clip only from a file covering all of it: a window ending inside it would cut it short
     const fits = !S.seqPlay || readyFor(src, c);
-    if (fits && ((mine && inLoaded(at, durOf(c))) || p)) {
+    // and keeps the loaded file only when it covers all of the clip too (``fileFor`` picks the same)
+    const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(c));
+    if (fits && (keep || p)) {
       if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src); // no window request brings it
-      if (!mine || !inLoaded(at, durOf(c))) loadFile(src, p, at);
+      if (!keep) loadFile(src, p, at);
       else if (seekC) seekTo(seekC.start);
       return;
     }
@@ -1224,8 +1236,10 @@ function stageVideo(seekC) {
   }
   forgetPrepared(src); // ready: a later change to the file prepares again
   const p = playable(src, 0);
-  // A window proxy playing on switches to the whole proxy at the next pause or seek.
-  const playingOn = v.dataset.hi && !v.paused && !v.error && inLoaded(want ?? playhead(c), durOf(c));
+  // A window proxy of this source playing on switches to the whole proxy at the next pause or
+  // seek; during "Play sequence" only while it covers all of the clip.
+  const playingOn = v.dataset.hi && ofSource(src) && !v.paused && !v.error && inLoaded(want ?? playhead(c), durOf(c))
+    && (!S.seqPlay || holdsClip(c));
   if (v.dataset.url !== p.url && !playingOn) {
     loadFile(src, p, want ?? (ofSource(src) ? playhead(c) : c.start));
   } else if (seekC) seekTo(seekC.start);
@@ -1457,7 +1471,18 @@ function showPlaying(playing) {
   b.replaceChildren(icon(playing ? 'pause' : 'play'));
 }
 
+// One preview sounds at a time: the stage (a moment or "Play sequence") and the Export tab's final
+// video, which plays on while its tab is hidden, pause each other.
+const finalVideo = $('#finalVideo');
+finalVideo.addEventListener('play', () => {
+  if (S.seqPlay) seqStop();
+  else {
+    cancelResume(); // a resume at a window's end would start the stage again
+    v.pause();
+  }
+});
 onStage('play', () => {
+  finalVideo.pause();
   resumeAt = null;
   showPlaying(true);
   follow(playhead()); // Play shows the playhead, also after a pan away from it
@@ -2458,15 +2483,17 @@ function renderExport() {
   const p = S.project;
   const clips = p?.clips;
   const st = $('#exportState');
+  // A 360 clip rendered from the dual-fisheye preview: no SDK, pano.auto_stitch off or the stitch skipped.
+  const note = clips?.clips?.some((c) => c.pano?.preview) ? ' Exported from the 360 preview (not stitched).' : '';
   if (!p) st.textContent = '';
   else if (picks() === 'auto') {
     st.textContent = !p.highlights?.candidates?.length ? 'Analyze the footage to export automatic picks.'
-      : clips ? `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips. Automatic picks export the best moments of the analysis.`
+      : clips ? `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips.${note} Automatic picks export the best moments of the analysis.`
         : 'Nothing exported yet. Automatic picks export the best moments of the analysis.';
   } else if (!S.segments.length) st.textContent = 'Add moments to the sequence to export them.';
   else if (!clips) st.textContent = 'Nothing exported yet. Exporting saves the sequence first.';
-  else if (exportMatches()) st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and matches this sequence.`;
-  else st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and differs from this sequence. Export again to update it.`;
+  else if (exportMatches()) st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and matches this sequence.${note}`;
+  else st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and differs from this sequence.${note} Export again to update it.`;
   renderBusy();
 }
 
@@ -2726,6 +2753,19 @@ function peaks() {
   return PEAK_STOPS[Number($('#optPeaks').value)] ?? 'off';
 }
 
+/** Color as sent to the server: 'off', 'auto' or 'underwater'. */
+function color() {
+  return COLOR_STOPS[Number($('#optColor').value)] ?? 'off';
+}
+
+/** Color and its Strength for Export clips and One-Click Edit; Strength only below 100% (the CLI's default is 1). */
+function colorOptions() {
+  const body = { color: color() };
+  const pct = Number($('#optColorStrength').value);
+  if (body.color !== 'off' && pct < 100) body.color_strength = pct / 100;
+  return body;
+}
+
 /** 'sequence' (hand-picked) or 'auto' (Clips to Export). */
 function picks() {
   return $('#optPicksAuto').checked ? 'auto' : 'sequence';
@@ -2758,7 +2798,7 @@ function extendOptions() {
 function exportOptions() {
   const body = {
     picks: picks(), vertical: $('#optVertical').checked, smart_tail: $('#optTail').checked, compress_peaks: peaks(),
-    ...extendOptions(), ...fields('tail_min', 'tail_max', 'event_window'),
+    ...colorOptions(), ...extendOptions(), ...fields('tail_min', 'tail_max', 'event_window'),
   };
   if (body.picks === 'auto') Object.assign(body, fields('top', 'max_total', 'ids'), $('#optOrder').value ? { order: $('#optOrder').value } : {});
   if (!$('#optEventTails').disabled) body.event_tails = $('#optEventTails').value;
@@ -2772,7 +2812,7 @@ function exportOptions() {
 async function makePreset() {
   await refreshProject(); // preset_taken as it is now, not when the page last loaded
   if (!S.project) return;
-  const body = { kind: $('#optKind').value, vertical: $('#optVertical').checked, compress_peaks: peaks() };
+  const body = { kind: $('#optKind').value, vertical: $('#optVertical').checked, compress_peaks: peaks(), ...colorOptions() };
   const dir = body.vertical ? 'clips_vertical' : 'clips';
   if (S.project?.preset_taken?.includes(dir)) {
     const text = `The ${dir} folder holds the clips of an earlier run. This run replaces the clips it lists and assembles final.mp4 again; other files stay.`;
@@ -3822,7 +3862,9 @@ function initSideTabs() {
       const on = t === tab;
       t.setAttribute('aria-selected', String(on));
       t.tabIndex = on ? 0 : -1;
-      $(`#${t.getAttribute('aria-controls')}`).hidden = !on;
+      const panel = $(`#${t.getAttribute('aria-controls')}`);
+      panel.hidden = !on;
+      if (!on) for (const vid of panel.querySelectorAll('video')) vid.pause(); // the Export tab's final video: not heard unseen
     }
     if (focus) tab.focus();
     try {
@@ -3957,6 +3999,22 @@ function initExportOptions() {
     store('compress_peaks', peaks());
   });
   setPeaks(PEAK_STOPS.includes(saved.compress_peaks) ? saved.compress_peaks : OPT_DEFAULTS.compress_peaks);
+  const tint = $('#optColor');
+  tint.addEventListener('input', () => {
+    setColor(color());
+    if (!S.id) return;
+    // per project: a grade for one footage (Underwater on a dive) does not carry over to the next
+    const mine = saved.color_by_project && typeof saved.color_by_project === 'object' ? saved.color_by_project : {};
+    store('color_by_project', { ...mine, [S.id]: color() });
+  });
+  const strength = $('#optColorStrength');
+  strength.addEventListener('input', () => {
+    setColorStrength(Number(strength.value));
+    store('color_strength', Number(strength.value));
+  });
+  const pct = saved.color_strength;
+  setColorStrength(Number.isFinite(pct) && pct >= 0 && pct <= 100 ? pct : 100);
+  setColor('off'); // startColor sets a project's
   return saved;
 }
 
@@ -4004,6 +4062,34 @@ function setPeaks(value) {
   const range = $('#optPeaks');
   range.value = String(Math.max(0, PEAK_STOPS.indexOf(value)));
   range.setAttribute('aria-valuetext', PEAK_NAMES[peaks()]);
+}
+
+/** Set the Color slider to ``value`` ('off', 'auto' or 'underwater'); Strength shows only with a grade. */
+function setColor(value) {
+  const range = $('#optColor');
+  range.value = String(Math.max(0, COLOR_STOPS.indexOf(value)));
+  range.setAttribute('aria-valuetext', COLOR_NAMES[color()]);
+  $('#colorStrengthRow').hidden = color() === 'off';
+}
+
+/** Set Color's Strength slider to ``pct`` (0-100). */
+function setColorStrength(pct) {
+  const range = $('#optColorStrength');
+  range.value = String(pct);
+  range.setAttribute('aria-valuetext', `Strength ${range.value}%`);
+  $('#colorStrengthOut').textContent = `${range.value}%`;
+}
+
+/**
+ * The Color a project opens with: the choice this browser saved for it (color_by_project), else
+ * color in config.json, else Off. Never a grade for gaming footage (config.json's color does not
+ * apply to it either); a grade the user then picks is still sent, and the CLI warns. Strength is
+ * one choice for every project.
+ */
+function startColor() {
+  const mine = S.savedOpts.color_by_project?.[S.id];
+  const value = COLOR_STOPS.includes(mine) ? mine : S.colorDefault;
+  setColor(S.project?.gaming ? 'off' : value);
 }
 
 function bind() {
@@ -4162,6 +4248,8 @@ async function main() {
     // slider keeps Light if it cannot be read
     const st = await api('/api/settings');
     if (!PEAK_STOPS.includes(S.savedOpts.compress_peaks) && st.compress_peaks_set) setPeaks(st.compress_peaks);
+    // likewise config.json's color, applied as each project opens (startColor: Off for gaming)
+    if (COLOR_STOPS.includes(st.color)) S.colorDefault = st.color;
   } catch {
     // the project list has reported a config.json the server rejects
   }
