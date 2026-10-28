@@ -735,7 +735,7 @@ def test_swap_in_moves_a_file_named_in_two_cases_once(tmp_path, monkeypatch):
     write(dst / "001_a.srt", "old")
     if not (dst / "001_A.SRT").exists():
         pytest.skip("case-sensitive file system")
-    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
+    monkeypatch.setattr(ffmpeg_utils, "path_key", lambda p, _folder=None: p.lower())
     write(dst / "001_a.mp4", "old")
     new = tmp_path / "staged"
     write(new / "001_a.mp4", "new")
@@ -757,7 +757,7 @@ def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacemen
     write(dst / "001_a.mp4", "old")
     if not (dst / "001_A.MP4").exists():
         pytest.skip("case-sensitive file system")
-    monkeypatch.setattr(ffmpeg_utils, "path_key", str.lower)  # also on macOS
+    monkeypatch.setattr(ffmpeg_utils, "path_key", lambda p, _folder=None: p.lower())
     write(dst / "manifest.json", "old manifest")
     new = tmp_path / "staged"
     write(new / "001_a.mp4", "new")
@@ -1446,7 +1446,7 @@ def test_manifest_entries_counts_a_case_variant_on_disk_as_the_listed_clip(
     """On a case-insensitive file system (path_key folds case) the listed ``003_C.mp4`` is the
     ``003_c.mp4`` on disk, so ``x.mp4`` of the same size is not it renamed; on a
     case-sensitive one the listed clip is gone. Patched, so both run on every OS."""
-    monkeypatch.setattr(planning, "path_key", key)
+    monkeypatch.setattr(planning, "path_key", lambda p, _folder=None: key(p))
     write(tmp_path / "003_c.mp4", b"ccc")
     write(tmp_path / "x.mp4", b"ccc")
     write(tmp_path / "manifest.json", json.dumps({"clips": [{"file": "003_C.mp4", "size": 3}]}))

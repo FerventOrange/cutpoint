@@ -233,3 +233,39 @@ def video(home, tmp_path, monkeypatch) -> Path:
         check=True,
     )  # fmt: skip
     return out
+
+
+@pytest.fixture
+def case_insensitive(monkeypatch):
+    """Call with a folder to make it case-insensitive: ``config.folds_case`` is True for it,
+    and ``Path.exists`` / ``is_file`` / ``is_symlink`` / ``replace`` find a name there in
+    another case (``replace`` onto a name in another case replaces that file)."""
+    folders: set[Path] = set()
+    real_folds = config.folds_case
+    real = {n: getattr(Path, n) for n in ("exists", "is_file", "is_symlink", "replace")}
+
+    def actual(p: Path) -> Path:
+        p = Path(p)
+        if p.parent.absolute() in folders and not os.path.lexists(p) and p.parent.is_dir():
+            for entry in p.parent.iterdir():
+                if entry.name.lower() == p.name.lower():
+                    return entry
+        return p
+
+    def replace(self: Path, target: str | os.PathLike[str]) -> Path:
+        target = Path(target)
+        if (variant := actual(target)) != target:
+            variant.unlink()
+        return real["replace"](actual(self), target)
+
+    for name in ("exists", "is_file", "is_symlink"):
+        monkeypatch.setattr(
+            Path, name, lambda self, *a, _f=real[name], **k: _f(actual(self), *a, **k)
+        )
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(
+        config,
+        "folds_case",
+        lambda f: Path(f).absolute() in folders or real_folds(f),
+    )
+    return lambda folder: folders.add(Path(folder).absolute())

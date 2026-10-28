@@ -1220,7 +1220,7 @@ def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
         OSError: The first error, after every file was tried.
     """
     errors: list[OSError] = []
-    old = {path_key(n) for n in journal["old"]}
+    old = {path_key(n, dst) for n in journal["old"]}
     for name in journal["old"]:
         src = bak / name
         if src.exists() or src.is_symlink():  # else it never left dst
@@ -1231,7 +1231,7 @@ def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
     for name in journal["new"]:
         # never a user file: swap_in records every existing name as old (once per path_key,
         # so a case variant of a new name is the same file and is not deleted)
-        if path_key(name) not in old:
+        if path_key(name, dst) not in old:
             f = dst / name
             try:
                 retry_locked(partial(f.unlink, missing_ok=True), f, "delete")
@@ -1366,8 +1366,9 @@ def staged_dir(dst: Path, *, direct_if_empty: bool = False) -> Iterator[Path]:
 
 def file_keys(path: Path) -> set[Any]:
     """Identities of the file ``path`` for :func:`same_file`: its resolved path (case-folded
-    on Windows) and, where the file system has them, its device and inode numbers, so a
-    symlink, a hard link or another spelling of the same file matches. Empty if missing."""
+    where names are case-insensitive) and, where the file system has them, its device and
+    inode numbers, so a symlink, a hard link or another spelling of the same file matches.
+    Empty if missing."""
     keys: set[Any] = set()
     try:
         st = path.stat()
@@ -1427,7 +1428,7 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     names = sorted((p.name for p in new.iterdir()), key=lambda n: (n == "manifest.json", n))
     # one file per path_key (the first spelling): a case variant would move it twice
     present = {
-        path_key(n): n
+        path_key(n, dst): n
         for n in reversed([*old, *names])
         if (dst / n).exists() or (dst / n).is_symlink()
     }

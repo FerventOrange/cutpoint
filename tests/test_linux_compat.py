@@ -51,8 +51,9 @@ def test_norm_path_windows_is_lowercase_backslash(plat):
     assert config.path_key("D:\\Clip.MP4") == "d:\\clip.mp4"
 
 
-def test_norm_path_posix_keeps_case_and_slashes(plat):
+def test_norm_path_posix_keeps_case_and_slashes(plat, monkeypatch):
     plat("linux")
+    monkeypatch.setattr(config, "folds_case", lambda _f: False)  # / folds on macOS
     assert config.norm_path("/Data/Trip/") == "/Data/Trip"
     assert config.path_key("/Data/Clip.MP4") == "/Data/Clip.MP4"
 
