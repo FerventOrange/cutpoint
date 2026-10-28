@@ -222,7 +222,7 @@ job will report as `step` and `label`). A Cutpoint version that sends no steps s
 the log in Jobs only, as before.
 
 The sequence column has two tabs, Sequence and Export. The Export tab holds one "Export &
-assembly options" panel; each option has a hover description, and the choices are remembered per
+Assembly Options" panel; each option has a hover description, and the choices are remembered per
 browser:
 
 | Option | Effect | Default |

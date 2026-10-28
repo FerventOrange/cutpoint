@@ -20,11 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `cutpoint ui`: the sequence column has Sequence and Export tabs. Export holds one "Export &
-  assembly options" panel (vertical, captions, Smart edges, loudness, linked transitions, video
+  Assembly Options" panel (vertical, captions, Smart edges, loudness, linked transitions, video
   and audio transition, Compress Audio Peaks; remembered per browser) and one "Show Exports
   Folder" button. The padding field is removed; `--extend` and `extend` remain. New defaults:
   Smart edges (`--speech-aware --smart-tail`) and Normalize loudness are on, and Compress Audio
   Peaks is Light unless `compress_peaks` is set in config.json; a saved browser choice wins (#466).
+- `cutpoint ui`: each moment card shows where the moment lies in its source (the moment in gold
+  on a strip of the whole source, read-only) instead of the score bar; the score is in the strip's
+  hover title and in Stats for Nerds.
 - Faster runs: a source is probed with ffprobe once per run instead of 3 to 5 times (about 0.1 s
   each). The result is reused until the file, or its staged copy, changes; results are unchanged
   (#372).
