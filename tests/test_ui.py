@@ -5363,6 +5363,16 @@ def _web(name: str) -> str:
     return (ui.WEB_DIR / name).read_text(encoding="utf-8")
 
 
+def test_the_360_empty_state_counts_recordings_apart_from_the_360() -> None:
+    """Contract pin: a 360 project with no moments reads "360 footage: N recording(s) found"
+    (or "No 360 recordings found"), never "N 360 clips found", which read as 5,360."""
+    js = _web("app.js")
+    body = re.search(r"function renderUnanalyzed\(.*?\n\}\n", js, re.S)[0]
+    assert "`360 footage: ${n} recording${n === 1 ? '' : 's'} found`" in body
+    assert "'No 360 recordings found'" in body
+    assert not re.search(r"\$\{n\} 360", js)  # no count directly before "360"
+
+
 def test_stage_and_final_video_never_sound_together() -> None:
     """Contract pin: the Export tab's final video plays on while its tab is hidden, so "Play
     sequence" (or a moment) starting on the stage pauses it, and playing it stops the sequence

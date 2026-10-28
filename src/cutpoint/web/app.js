@@ -502,7 +502,7 @@ function folderArt() {
 const sourceErrorText = (p) =>
   `The source folder cannot be found or read (${p.source_error}). Reconnect the drive, or set a source remap in Settings.`;
 
-/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its clips). */
+/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its recordings). */
 function renderUnanalyzed(el, n, error, pano) {
   const state = `${n}|${error}|${pano}`;
   if (el.dataset.n === state) return; // polling re-renders; keep the button (and its focus)
@@ -513,12 +513,12 @@ function renderUnanalyzed(el, n, error, pano) {
       ? h('p', { class: 'fresh-error', text: error })
       : h('p', { class: `fresh-count${n ? '' : ' none'}` },
         pano
-          ? (n ? `${n} 360 clip${n === 1 ? '' : 's'} found` : 'No 360 clips found')
+          ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
           : (n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory')),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', {
       text: pano
-        ? 'Analyze footage to read the 360 clips, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
+        ? 'Analyze footage to read the 360 recordings, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
         : 'Analyze footage to transcribe audio and rank the strongest moments.',
     }),
     h('button', {

@@ -115,6 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
+  instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
+  there are none.
 - `cutpoint ui`: the final video in the Export tab no longer plays on under Play sequence. It
   kept playing while its tab was hidden, so its audio ran over every sequence clip. Starting
   the preview or leaving the Export tab now pauses it, and playing it stops Play sequence. Play sequence also no longer
