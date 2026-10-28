@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Peaks is Light unless `compress_peaks` is set in config.json; a saved browser choice wins (#466).
 - `cutpoint ui`: each moment card shows where the moment lies in its source (the moment in gold
   on a strip of the whole source, read-only) instead of the score bar; the score is in the strip's
-  hover title and in Stats for Nerds.
+  hover title and in Stats for Nerds (#467).
 - Faster runs: a source is probed with ffprobe once per run instead of 3 to 5 times (about 0.1 s
   each). The result is reused until the file, or its staged copy, changes; results are unchanged
   (#372).
