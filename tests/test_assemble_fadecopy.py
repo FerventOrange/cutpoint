@@ -137,6 +137,64 @@ def test_the_copied_crossfade_has_the_old_frames_and_audio(tmp_path, monkeypatch
     assert not list(new.parent.glob(".*fadecopy*"))
 
 
+def _movie_duration(path: Path) -> Fraction:
+    """The duration in the MP4's movie header (mvhd), in its own time scale."""
+    data = path.read_bytes()
+    at = data.index(b"mvhd") + 4
+    if data[at] == 1:  # version 1: 64-bit times
+        scale, length = int.from_bytes(data[at + 20 : at + 24]), data[at + 24 : at + 32]
+    else:
+        scale, length = int.from_bytes(data[at + 12 : at + 16]), data[at + 16 : at + 20]
+    return Fraction(int.from_bytes(length), scale)
+
+
+@needs_ffmpeg
+def test_a_60_fps_window_of_no_whole_milliseconds_takes_the_fast_path(
+    tmp_path, monkeypatch, caplog
+):
+    # 0.5 s keyframes and a 16-frame fade at 60 fps: 30 + 30 - 16 = 44-frame windows, 0.7333 s.
+    # In a 1000 Hz movie header the concat demuxer started the next piece off the frame grid.
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
+    clips = _export_clips(tmp_path, "60", SHORT)
+    kw = {"transition": "fade", "fade_dur": 16 / 60}
+    monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
+    old = shutil.move(assemble.assemble(clips, **kw), tmp_path / "old.mp4")
+    monkeypatch.delenv("CUTPOINT_FADE_COPY")
+    windows, real = [], assemble._encode_run
+
+    def encode_run(enc, files, infos, packets, run_, fade, out):
+        real(enc, files, infos, packets, run_, fade, out)
+        frames = assemble.run_frames(run_, [p.frames for p in packets], round(fade * 60))
+        windows.append((frames, _movie_duration(out), out.parent.name))
+
+    monkeypatch.setattr(assemble, "_encode_run", encode_run)
+    caplog.clear()
+    caplog.set_level(logging.INFO)
+    new = assemble.assemble(clips, **kw)
+    assert "stream-copied the rest" in caplog.text
+    assert "re-encoding the whole video" not in caplog.text
+    assert [w[:2] for w in windows] == [(44, Fraction(44, 60))] * 2
+    assert {w[2] for w in windows} == {".final.part.fadecopy"}  # not "..final.part"
+    assert _frames_and_audio(new) == _frames_and_audio(old)
+    assert _frames_and_audio(new)[0] == str(240 + 210 + 180 - 2 * 16)
+    assert assemble._video_packets(new, Fraction(60)) is not None  # one frame apart throughout
+    assert not list(new.parent.glob(".*fadecopy*"))
+
+
+def test_a_piece_whose_duration_is_off_the_frame_grid_does_not_check_out(monkeypatch, caplog):
+    # 44 frames at 60 fps stored as 733 ms: the next piece would start 30 ticks early.
+    caplog.set_level(logging.DEBUG)
+    ref = VideoPackets(44, (0,), (0.0,), Fraction(1, 90000), "MD5:x", 44 / 60)
+    for duration, ok in ((44 / 60, True), (0.733, False)):
+        monkeypatch.setattr(
+            assemble, "_video_packets", lambda *a, d=duration: replace(ref, duration=d)
+        )
+        assert assemble._piece_ok(Path("0001.mp4"), Fraction(60), 44, ref) is ok
+        assert assemble._piece_ok(Path("final.mp4"), Fraction(60), 44, ref, timed=False)
+    assert "piece 0001.mp4 does not check out: lasts 0.733000s, not 0.733333s" in caplog.text
+
+
 @needs_ffmpeg
 def test_a_percent_sign_in_the_project_path_still_takes_the_fast_path(
     tmp_path, monkeypatch, caplog

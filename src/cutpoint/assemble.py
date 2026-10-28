@@ -464,13 +464,15 @@ class VideoPackets:
     """A clip's video packets, as :func:`crossfade_copy` needs them: ``frames`` packets (one
     per frame), the frame indexes of its ``keys`` and their ``key_times`` (s from the file
     start, as ``-ss`` reads them), the stream ``time_base`` and the hash of its ``extradata``
-    (the encoder settings, which every piece of a stream-copied join must share)."""
+    (the encoder settings, which every piece of a stream-copied join must share), and the
+    file's ``duration`` (s), where the concat demuxer starts the next piece."""
 
     frames: int
     keys: tuple[int, ...]
     key_times: tuple[float, ...]
     time_base: Fraction
     extradata: str
+    duration: float = 0.0
 
 
 def _video_packets(path: Path, fps: Fraction) -> VideoPackets | None:
@@ -483,7 +485,7 @@ def _video_packets(path: Path, fps: Fraction) -> VideoPackets | None:
     data = ffprobe_json(
         path,
         streams="v:0",
-        entries="packet=pts,flags:stream=time_base,extradata_hash:format=start_time",
+        entries="packet=pts,flags:stream=time_base,extradata_hash:format=start_time,duration",
         options=("-show_data_hash", "MD5"),
     )
     streams, packets = data.get("streams") or [], data.get("packets") or []
@@ -494,8 +496,13 @@ def _video_packets(path: Path, fps: Fraction) -> VideoPackets | None:
         return None
     step = 1 / (tb * fps)  # ticks per frame
     pts = sorted(int(p["pts"]) for p in packets)
-    if step.denominator != 1 or any(b - a != step for a, b in pairwise(pts)):
+    if step.denominator != 1:
         return None
+    for n, (a, b) in enumerate(pairwise(pts)):
+        if b - a != step:
+            logger.debug("%s: frame %d is %d ticks after the one before, not %s", path.name,
+                         n + 1, b - a, step)  # fmt: skip
+            return None
     start = float(data.get("format", {}).get("start_time") or 0)
     keyed = sorted(int(p["pts"]) for p in packets if "K" in p.get("flags", ""))
     if keyed[0] != pts[0]:
@@ -506,6 +513,7 @@ def _video_packets(path: Path, fps: Fraction) -> VideoPackets | None:
         key_times=tuple(float(k * tb) - start for k in keyed),
         time_base=tb,
         extradata=str(streams[0].get("extradata_hash") or ""),
+        duration=float(data.get("format", {}).get("duration") or 0),
     )
 
 
@@ -608,7 +616,11 @@ def _encode_run(
     out: Path,
 ) -> None:
     """Encode ``run_`` into ``out`` with ``enc``: :func:`crossfade`'s video graph over its
-    clips, the first read from its keyframe ``s`` on, the last cut at frame ``e``."""
+    clips, the first read from its keyframe ``s`` on, the last cut at frame ``e``.
+
+    The movie time scale is the clips' too: in the default 1000 Hz, a window that is no whole
+    number of milliseconds (44 frames at 60 fps) gets a rounded duration, and the concat
+    demuxer starts the next piece that much early."""
     fps = infos[0].fps
     half = 0.5 / float(fps)
     offsets = clip_offsets(infos, fade)
@@ -648,6 +660,8 @@ def _encode_run(
         *BT709_TAGS,
         "-video_track_timescale",
         str(packets[0].time_base.denominator),
+        "-movie_timescale",
+        str(packets[0].time_base.denominator),
         str(out),
     ]
     run(args)
@@ -658,7 +672,9 @@ def _extract_body(file: Path, body: Body, p: VideoPackets, fps: Fraction, out: P
 
     The segment muxer cuts on the keyframes at those frames (half a frame early, so the
     keyframe opens the piece) and the middle piece is kept: packet-exact, unlike the concat
-    demuxer's inpoint/outpoint, which cut on decoding timestamps."""
+    demuxer's inpoint/outpoint, which cut on decoding timestamps. The movie time scale is the
+    clip's, as in :func:`_encode_run`."""
+    timescale = p.time_base.denominator
     half = 0.5 / float(fps)
     cuts = [p.key_times[p.keys.index(f)] - half for f in (body.start, body.end) if 0 < f < p.frames]
     assert cuts  # every body ends at a fade or starts after one
@@ -667,7 +683,7 @@ def _extract_body(file: Path, body: Body, p: VideoPackets, fps: Fraction, out: P
         "ffmpeg", "-y", "-v", "error", "-i", str(file.resolve()), "-map", "0:v:0", "-c", "copy",
         "-f", "segment", "-segment_times", ",".join(f"{t:.6f}" for t in cuts),
         "-reset_timestamps", "1", "-segment_format", "mp4",
-        "-segment_format_options", f"video_track_timescale={p.time_base.denominator}",
+        "-segment_format_options", f"video_track_timescale={timescale}:movie_timescale={timescale}",
         f"{out.stem}.%d.mp4",
     ], cwd=out.parent)  # fmt: skip
     keep = 1 if body.start > 0 else 0
@@ -681,15 +697,27 @@ def _extract_body(file: Path, body: Body, p: VideoPackets, fps: Fraction, out: P
             piece.unlink(missing_ok=True)
 
 
-def _piece_ok(piece: Path, fps: Fraction, frames: int, ref: VideoPackets) -> bool:
+def _piece_ok(
+    piece: Path, fps: Fraction, frames: int, ref: VideoPackets, timed: bool = True
+) -> bool:
     """Whether ``piece`` has ``frames`` constant-rate frames from a keyframe and ``ref``'s
-    time base and encoder settings, so the concat demuxer can join it to the others."""
+    time base and encoder settings, so the concat demuxer can join it to the others; if
+    ``timed``, also a duration of those frames to half a tick (where the next piece starts).
+    Says why not at DEBUG."""
     got = _video_packets(piece, fps)
-    return (
-        got is not None
-        and got.frames == frames
-        and (got.time_base, got.extradata) == (ref.time_base, ref.extradata)
-    )
+    want = frames / float(fps)
+    if got is None:
+        why = "not constant frame rate from a keyframe"
+    elif got.frames != frames:
+        why = f"{got.frames} frames, not {frames}"
+    elif (got.time_base, got.extradata) != (ref.time_base, ref.extradata):
+        why = "another time base or encoder settings"
+    elif timed and abs(got.duration - want) > float(ref.time_base) / 2 + 1e-6:
+        why = f"lasts {got.duration:.6f}s, not {want:.6f}s"
+    else:
+        return True
+    logger.debug("Crossfade: piece %s does not check out: %s", piece.name, why)
+    return False
 
 
 def _no_copy(why: str) -> bool:
@@ -727,7 +755,7 @@ def crossfade_copy(
         return _no_copy(why)
     fps = infos[0].fps
     fade_frames = round(fade * float(fps))
-    work = out.with_name(f".{out.stem}.fadecopy")
+    work = out.with_name(f".{out.stem.lstrip('.')}.fadecopy")  # out may be hidden already
     listing = work / "pieces.txt"
     try:
         packets = [_video_packets(f, fps) for f in files]
@@ -766,7 +794,7 @@ def crossfade_copy(
                     encode(VideoEncoder("cpu"))
                     ok = _piece_ok(piece, fps, want, ref)
                 if not ok:
-                    return _no_copy("a re-encoded fade does not match the clips' encoder settings")
+                    return _no_copy("a re-encoded fade does not check out")
                 encoded += want
             pieces.append(piece)
         listing.write_text(
@@ -782,7 +810,7 @@ def crossfade_copy(
         run([*args, "-filter_complex", graph, "-map", "0:v:0", "-map", "[a]", "-c:v", "copy",
              *AUDIO_OUT, "-movflags", "+faststart", str(out)])  # fmt: skip
         total = sum(frames) - (len(files) - 1) * fade_frames
-        if not _piece_ok(out, fps, total, ref):
+        if not _piece_ok(out, fps, total, ref, timed=False):  # its audio may run on
             out.unlink(missing_ok=True)
             return _no_copy("the joined video does not check out")
     except (FFmpegError, OSError) as err:
