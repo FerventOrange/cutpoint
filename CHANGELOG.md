@@ -78,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `assemble`: the audio and container of `final.mp4` now end with the video, to within one audio
+  frame. Cut joins ended about 24 ms late and started the video about 21 ms late, and
+  `--loudnorm` or the limiter padded the audio by about 0.1 s. The `.fcpxml` and `.otio` of cut
+  joins now end where `final.mp4` ends. Plain cut joins now re-encode the audio once (192k AAC)
+  instead of stream-copying it; the video is still stream-copied (#473).
+
 - `cutpoint ui`: stills of BT.709 and HDR sources now show the same colours as their exports.
   A JPEG is always decoded as BT.601 full range, so these stills were about 7 codes off (up to
   32 on saturated colours). They are now converted to BT.601 before encoding, which rebuilds them

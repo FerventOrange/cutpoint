@@ -127,7 +127,8 @@ def test_write_timelines_without_fade_stays_hard_cuts(tmp_path):
     root = ET.parse(fcp).getroot()
     assert root.find(".//transition") is None
     assert root.find(".//effect") is None
-    # cuts follow the container duration and sit back to back
+    # cuts follow the container duration and sit back to back; the last clip lasts its
+    # video, where final.mp4 ends (cut_audio_ends)
     assert [c.get("offset") for c in root.iter("asset-clip")] == [
         "0s",
         f"{round(4.1 * 30)}/30s",
@@ -135,13 +136,15 @@ def test_write_timelines_without_fade_stays_hard_cuts(tmp_path):
     ]
     assert (
         root.find(".//sequence").get("duration")
-        == f"{round(4.1 * 30) + round(5.1 * 30) + round(6.1 * 30)}/30s"
+        == f"{round(4.1 * 30) + round(5.1 * 30) + round(6.0 * 30)}/30s"
     )
+    assert list(root.iter("asset-clip"))[-1].get("duration") == f"{round(6.0 * 30)}/30s"
     tl = _read_otio(oti)
     for track in tl.tracks:
         layout = _layout(track)
         assert [k for k, _, _ in layout] == ["Clip"] * 3
         assert [s for _, s, _ in layout] == [0, 123, 276]
+        assert layout[-1][2] == round(6.0 * 30)
 
 
 def test_write_timelines_passes_fade_to_both_formats(tmp_path):
