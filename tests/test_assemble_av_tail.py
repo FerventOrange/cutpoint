@@ -80,7 +80,10 @@ def test_post_process_keeps_the_audio_up_to_a_late_video_end(monkeypatch, tmp_pa
 
 @pytest.fixture(scope="module")
 def exported(tmp_path_factory) -> Path:
-    return _export_clips(tmp_path_factory.mktemp("av_tail"), "30", SHORT)
+    # The fade pieces are CPU-encoded, so the clips must be too (else NVENC clips fail the check).
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+        return _export_clips(tmp_path_factory.mktemp("av_tail"), "30", SHORT)
 
 
 def _make_clips(exported: Path, tmp_path: Path, audio_extra: float) -> Path:
