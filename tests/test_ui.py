@@ -29,7 +29,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, cli, config, encode, ui
+from cutpoint import cache, cli, config, edit, encode, ui
 from cutpoint.utils import find_videos
 
 PORT = 8765
@@ -785,6 +785,28 @@ def test_reanalyze_keeps_recorded_excludes_and_recursion(
     assert wait_job(client)["status"] == "completed"
     names = {s["name"] for s in client.get("/api/projects/cli-made").json()["sources"]}
     assert names == {"keep.mp4", "nested.mp4"}
+
+
+@pytest.mark.parametrize(("recover", "passed"), [(True, True), (False, False), ("yes", False)])
+def test_reanalyze_keeps_a_recorded_recover(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recover: object,
+    passed: bool,
+) -> None:
+    """Analyze again on a project made with --recover keeps the parts past a read error."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "funny"
+    hl["settings"]["recover"] = recover
+    cache.save_json(p / "highlights.json", hl)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    res = client.post("/api/projects/cli/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert ("--recover" in captured[0]) is passed
+    cli.build_parser().parse_args(captured[0][3:])
 
 
 @pytest.mark.parametrize(
@@ -5218,26 +5240,31 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
 
 
-def test_export_panel_has_the_options_and_actions_and_no_padding_field() -> None:
-    """Contract pin (#462): the Export tab holds every export and assembly option and the two
-    actions; the old padding field (``#optExtend``) is gone from the page and its script."""
+def test_export_panel_has_the_options_and_actions_and_no_single_padding_field() -> None:
+    """Contract pin (#462): the Export tab holds every export and assembly option and the
+    actions; the old single padding field (``#optExtend``) stays gone: padding is a start and an
+    end field, sent as ``extend_start`` / ``extend_end``, never as ``extend``."""
     html = _web("index.html")
     export = re.search(r'<div id="panelExport".*?\n      </div>\n    </section>', html, re.S)[0]
     ids = set(re.findall(r'\bid="(\w+)"', export))
     assert {
-        "exportPanel", "optVertical", "optCaptions", "optSmart", "optLoudnorm", "optLink",
-        "optTransition", "optAudioTransition", "optPeaks", "clipsBtn", "assembleBtn",
-        "revealExportBtn", "exportState", "outputs", "finalVideo",
+        "exportPanel", "optVertical", "optCaptions", "optSpeech", "optTail", "optLoudnorm",
+        "optLink", "optTransition", "optAudioTransition", "optPeaks", "clipsBtn", "assembleBtn",
+        "extendBtn", "revealExportBtn", "exportState", "outputs", "finalVideo", "optPicksSeq",
+        "optPicksAuto", "optExtendStart", "optExtendEnd",
     } <= ids  # fmt: skip
-    assert "optExtend" not in html and "optExtend" not in _web("app.js")
+    assert 'id="optExtend"' not in html and "'#optExtend'" not in _web("app.js")
     assert "Padding per side" not in html
     assert re.search(r'<select id="optAudioTransition"[^>]*>(.*?)</select>', html, re.S)
     values = re.findall(
         r'value="(\w+)"', re.search(r'<select id="optAudioTransition".*?</select>', html, re.S)[0]
     )
     assert values == ["cut", "crossfade"]
-    # the page does not send a padding any more; the server still accepts one
-    assert not re.search(r"\bextend\s*:", _web("app.js"))
+    # the page sends no single padding; the server still accepts one
+    js = _web("app.js")
+    for builder in ("exportOptions", "extendOptions"):
+        body = re.search(rf"function {builder}\(\) \{{\n(.*?)\n\}}", js, re.S)[1]
+        assert not re.search(r"\bextend\s*:", body), builder
 
 
 def test_every_export_option_is_described_for_screen_readers() -> None:
@@ -5248,8 +5275,12 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
         r'<fieldset class="panel opts" id="exportPanel">.*?</fieldset>\s*</fieldset>', html, re.S
     )[0]
     controls = re.findall(r"<(?:input|select)\b[^>]*>", panel)
-    option_ids = {"optVertical", "optCaptions", "optSmart", "optLoudnorm", "optLink",
-                  "optTransition", "optAudioTransition", "optPeaks"}  # fmt: skip
+    option_ids = {"optVertical", "optCaptions", "optSpeech", "optTail", "optLoudnorm", "optLink",
+                  "optTransition", "optAudioTransition", "optPeaks", "optPicksSeq",
+                  "optPicksAuto", "optTop", "optMaxTotal", "optIds", "optOrder",
+                  "optSpeechExtend", "optSpeechLead", "optTailMin", "optTailMax",
+                  "optEventTails", "optEventWindow", "optExtendStart",
+                  "optExtendEnd"}  # fmt: skip
     seen = set()
     for control in controls:
         cid = re.search(r'id="(\w+)"', control)[1]
@@ -5262,8 +5293,9 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
 
 
 def test_export_option_defaults_are_smart_edges_loudnorm_link_on_and_light_peaks() -> None:
-    """Contract pin (#462): a viewer who changed nothing gets Smart edges, Normalize loudness and
-    Link Transitions on and Light peaks; Vertical and captions off. The markup and the script's
+    """Contract pin (#462): a viewer who changed nothing gets Speech-aware cuts and Smart tails
+    (Smart edges before), Normalize loudness and Link Transitions on, Light peaks, the sequence
+    as the clips and Event tails on Auto; Vertical and captions off. The markup and the script's
     defaults agree, and the slider's stops are None, Light, Max."""
     html = _web("index.html")
     js = _web("app.js")
@@ -5271,10 +5303,12 @@ def test_export_option_defaults_are_smart_edges_loudnorm_link_on_and_light_peaks
     def checked(cid: str) -> bool:
         return " checked" in re.search(rf'<input[^>]*id="{cid}"[^>]*>', html)[0]
 
-    assert [checked(c) for c in ("optSmart", "optLoudnorm", "optLink")] == [True] * 3
+    assert [checked(c) for c in ("optSpeech", "optTail", "optLoudnorm", "optLink")] == [True] * 4
+    assert checked("optPicksSeq") and not checked("optPicksAuto")
     assert [checked(c) for c in ("optVertical", "optCaptions")] == [False] * 2
     defaults = re.search(r"const OPT_DEFAULTS = \{(.*?)\};", js, re.S)[1]
-    for pair in ("smart_edges: true", "loudnorm: true", "link: true", "vertical: false",
+    for pair in ("speech_aware: true", "smart_tail: true", "picks: 'sequence'",
+                 "event_tails: 'auto'", "order: ''", "loudnorm: true", "link: true", "vertical: false",
                  "captions: false", "transition: 'cut'", "audio_transition: 'cut'",
                  "compress_peaks: 'light'"):  # fmt: skip
         assert pair in defaults
@@ -5287,7 +5321,9 @@ def test_export_option_defaults_are_smart_edges_loudnorm_link_on_and_light_peaks
 
 def test_the_page_sends_the_new_options_with_its_jobs() -> None:
     js = _web("app.js")
-    assert "smart_edges: $('#optSmart').checked" in js
+    assert "smart_tail: $('#optTail').checked" in js
+    assert "speech_aware: $('#optSpeech').checked" in js
+    assert "saved.smart_edges" in js  # a stored Smart edges choice is both boxes' default
     assert "audio_transition: $('#optAudioTransition').value" in js
 
 
@@ -5304,3 +5340,526 @@ def test_focus_rings_use_the_amber_text_colour_so_light_theme_keeps_contrast() -
     assert re.search(r":focus-visible \{ outline: 2px solid var\(--amber-text\)", css)
     light = re.search(r':root\[data-theme="light"\][^{]*\{(.*?)\}', css, re.S)
     assert light and "--amber-text:" in light[1]
+
+
+# --- Direct controls for clips and extend options (#462) ---
+
+
+def options_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: dict,
+    *,
+    candidates: int = 3,
+) -> tuple[object, list[list[str]], list[Callable[[], None] | None], Path]:
+    """Start ``body``'s job on a command-line project with ``candidates`` analysed moments (ids
+    h001...), a one-moment review and a vertical export ``clips_ui_1``; the jobs lock check runs,
+    so the segments file is written. Returns the response, the argv, the on_success callbacks
+    and the project folder."""
+    p, seg = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["candidates"] = [
+        {"id": f"h{i:03d}", "source": seg["source"], "start": i, "end": i + 2, "score": 50}
+        for i in range(1, candidates + 1)
+    ]
+    cache.save_json(p / "highlights.json", hl)
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    (p / "clips_ui_1").mkdir()
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
+    (p / "clips_ui_1" / "001_a.mp4").write_bytes(b"x")
+    cache.save_json(
+        p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1", "vertical": True}]}
+    )
+    captured: list[list[str]] = []
+    done: list[Callable[[], None] | None] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest):
+        captured.append(args)
+        done.append(on_success)
+        same_folder()  # the check under the jobs lock, which writes the segments file
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    return client.post("/api/projects/cli/jobs", json=body), captured, done, p
+
+
+def _cli_args(args: list[str]) -> list[str]:
+    """``args`` without the interpreter prefix, after checking the CLI parses them as given."""
+    assert args[:3] == ui.cutpoint_cmd()
+    cli.build_parser().parse_args(args[3:])  # exits (SystemExit) on an option it does not know
+    return args[3:]
+
+
+def _after(args: list[str], flag: str) -> str:
+    assert args.count(flag) == 1, args
+    return args[args.index(flag) + 1]
+
+
+def test_the_default_page_options_export_exactly_what_smart_edges_did(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The page's defaults (sequence, Speech-aware cuts and Smart tails on, Event tails Auto,
+    blank numbers) build the argv and segments file Smart edges built before #462."""
+    page = {"action": "clips", "picks": "sequence", "vertical": False, "speech_aware": True,
+            "smart_tail": True, "event_tails": "auto", "compress_peaks": "light"}  # fmt: skip
+    old = {"action": "clips", "vertical": False, "smart_edges": True, "compress_peaks": "light"}
+    runs = []
+    for body in (page, old):
+        res, captured, _, p = options_job(client, monkeypatch, tmp_path, body)
+        assert res.status_code == 200, res.text
+        args = _cli_args(captured[0])
+        # the output and segments names carry a per-second stamp: the runs may land in different seconds
+        norm = [re.sub(r"\d{8}-\d{6}", "STAMP", a.replace(str(p), "P")) for a in args]
+        runs.append((norm, _segments_written(p)))
+        shutil.rmtree(p)
+    assert runs[0] == runs[1]
+    args, segments = runs[0]
+    assert args[:3] == ["clips", "P", "--segments"] and args[4] == "--out"
+    assert args[6:] == ["--smart-tail", "--speech-aware", "--compress-peaks", "light"]
+    assert "smart_tail" not in segments[0] and "speech_aware" not in segments[0]
+
+
+@pytest.mark.parametrize(("speech", "tail"), [(True, False), (False, True), (False, False)])
+def test_clips_job_speech_aware_and_smart_tail_are_separate_choices(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    speech: bool,
+    tail: bool,
+) -> None:
+    body = {"action": "clips", "speech_aware": speech, "smart_tail": tail}
+    res, captured, _, p = options_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert ("--speech-aware" in args, "--smart-tail" in args) == (speech, tail)
+    assert "--no-speech-aware" not in args and "--no-smart-tail" not in args
+    (seg,) = _segments_written(p)
+    # an exact trim is the segment's own setting; the flag decides otherwise
+    assert seg.get("speech_aware", True) is speech and seg.get("smart_tail", True) is tail
+
+
+def test_clips_job_passes_the_timing_and_padding_fields_it_was_sent(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    body = {"action": "clips", "speech_aware": True, "smart_tail": True, "event_tails": "on",
+            "speech_max_extend": 3, "speech_max_lead": 1.25, "tail_min": 0, "tail_max": 4.5,
+            "event_window": 6, "extend_start": 1.5, "extend_end": 0}  # fmt: skip
+    res, captured, _, _ = options_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    expect = {"--speech-max-extend": "3", "--speech-max-lead": "1.25", "--tail-min": "0",
+              "--tail-max": "4.5", "--event-window": "6", "--extend-start": "1.5",
+              "--extend-end": "0"}  # fmt: skip
+    assert {flag: _after(args, flag) for flag in expect} == expect
+    assert "--event-tails" in args and "--extend" not in args
+
+
+@pytest.mark.parametrize(
+    ("value", "flag"), [("auto", None), ("on", "--event-tails"), ("off", "--no-event-tails")]
+)
+def test_clips_job_passes_event_tails_on_or_off_and_nothing_for_auto(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str, flag: str
+) -> None:
+    body = {"action": "clips", "smart_tail": True, "event_tails": value}
+    res, captured, _, _ = options_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert [a for a in args if "event-tails" in a] == ([flag] if flag else [])
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"picks": "best"}, "picks must be 'sequence' or 'auto'"),
+        ({"top": 3}, "need automatic picks"),
+        ({"order": "score"}, "need automatic picks"),
+        ({"speech_aware": "yes"}, "speech_aware must be true or false"),
+        ({"smart_tail": 1}, "smart_tail must be true or false"),
+        ({"event_tails": "maybe"}, "event_tails must be"),
+        ({"event_tails": ["on"]}, "event_tails must be"),  # not a 500 (unhashable)
+        ({"smart_tail": False, "event_tails": "on"}, "event tails need smart tails"),
+        ({"speech_max_extend": -1}, "speech_max_extend must be 0-60 seconds"),
+        ({"speech_max_lead": 61}, "speech_max_lead must be 0-60 seconds"),
+        ({"tail_min": "1"}, "tail_min must be 0-60 seconds"),
+        ({"tail_max": True}, "tail_max must be 0-60 seconds"),
+        ({"event_window": 0}, "event_window must be above 0-60 seconds"),
+        ({"extend_start": 31}, "extend_start must be 0-30 seconds"),
+        ({"extend_end": [1]}, "extend_end must be 0-30 seconds"),
+    ],
+)
+def test_clips_job_refuses_option_values_the_cli_would_not_get(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra: dict, message: str
+) -> None:
+    res, captured, _, p = options_job(client, monkeypatch, tmp_path, {"action": "clips", **extra})
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured and not list(p.rglob("segments-*.json"))
+
+
+@pytest.mark.parametrize(
+    ("extra", "selection"),
+    [
+        ({}, []),  # the style's count and order
+        ({"top": 2, "max_total": 60, "order": "score"},
+         ["--top", "2", "--max-total", "60", "--order", "score"]),
+        ({"ids": ["h003", "h001"], "order": "chronological"},
+         ["--ids", "h003", "h001", "--order", "chronological"]),
+        ({"max_total": 12.5}, ["--max-total", "12.5"]),
+    ],
+)  # fmt: skip
+def test_automatic_picks_hand_the_selection_to_the_cli(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra: dict,
+    selection: list[str],
+) -> None:
+    body = {"action": "clips", "picks": "auto", "speech_aware": False, "smart_tail": True, **extra}
+    res, captured, _, p = options_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert args[:2] == ["clips", str(p)] and "--segments" not in args
+    assert args[2 : 2 + len(selection)] == selection
+    assert _after(args, "--out").startswith(str(p / "clips_ui_"))
+    # explicit both ways: the style's defaults must not override what the page showed
+    assert "--smart-tail" in args and "--no-speech-aware" in args
+    assert not list(p.rglob("segments-*.json"))  # no segments file for automatic picks
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"top": 2, "ids": ["h001"]}, "give top or ids, not both"),
+        ({"top": 0}, "top must be a whole number"),
+        ({"top": 1.5}, "top must be a whole number"),
+        ({"top": True}, "top must be a whole number"),
+        ({"top": 501}, "top must be a whole number"),
+        ({"ids": ["h009"]}, "ids must be different candidate ids"),  # not in the analysis
+        ({"ids": ["h001", "h001"]}, "ids must be different candidate ids"),
+        ({"ids": ["--force"]}, "ids must be different candidate ids"),
+        ({"ids": "h001"}, "ids must be different candidate ids"),
+        ({"ids": []}, "ids must be different candidate ids"),
+        ({"ids": [1]}, "ids must be different candidate ids"),
+        ({"max_total": 0}, "max_total must be above 0"),
+        ({"max_total": -5}, "max_total must be above 0"),
+        ({"order": "arc"}, "order must be one of story, score, chronological"),
+    ],
+)
+def test_automatic_picks_refuse_a_bad_selection(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra: dict, message: str
+) -> None:
+    body = {"action": "clips", "picks": "auto", **extra}
+    res, captured, _, _ = options_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured
+
+
+def test_automatic_picks_need_an_analysis(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    body = {"action": "clips", "picks": "auto"}
+    res, captured, _, _ = options_job(client, monkeypatch, tmp_path, body, candidates=0)
+    assert res.status_code == 400, res.text
+    assert "analyze the footage before exporting automatic picks" in res.json()["detail"]
+    assert not captured
+
+
+@pytest.mark.parametrize(
+    ("extra", "tail"),
+    [
+        ({}, ["--no-speech-aware"]),
+        ({"extend_start": 1, "extend_end": 2.5, "speech_aware": True, "speech_max_extend": 4},
+         ["--start", "1", "--end", "2.5", "--speech-aware", "--speech-max-extend", "4"]),
+        ({"extend_end": 3}, ["--end", "3", "--no-speech-aware"]),
+    ],
+)  # fmt: skip
+def test_extend_job_re_exports_the_latest_export_into_a_new_folder(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra: dict, tail: list
+) -> None:
+    res, captured, done, p = options_job(
+        client, monkeypatch, tmp_path, {"action": "extend", **extra}
+    )
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    out = Path(args[3])
+    assert args[:3] == ["extend", str(p / "clips_ui_1"), "--out"] and args[4:] == tail
+    assert out.parent == p and out.name.startswith("clips_ui_") and not out.exists()
+    # once the CLI wrote the folder, it is the current export (vertical as its source)
+    out.mkdir()
+    cache.save_json(out / "manifest.json", {"clips": []})
+    (out / "001_a.mp4").write_bytes(b"x")
+    done[0]()
+    exports = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert [(e["dir"], e["vertical"], e["final"]) for e in exports[1:]] == [(out.name, True, None)]
+    assert client.get("/api/projects/cli").json()["clips"]["dir"] == out.name
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"extend_start": -1}, "extend_start must be 0-30 seconds"),
+        ({"extend_end": "2"}, "extend_end must be 0-30 seconds"),
+        ({"speech_aware": "on"}, "speech_aware must be true or false"),
+        ({"speech_max_lead": 99}, "speech_max_lead must be 0-60 seconds"),
+    ],
+)
+def test_extend_job_refuses_bad_values(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra: dict, message: str
+) -> None:
+    res, captured, _, _ = options_job(client, monkeypatch, tmp_path, {"action": "extend", **extra})
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured
+
+
+def test_extend_job_needs_an_export(client: TestClient, tmp_path: Path) -> None:
+    cli_project(tmp_path)
+    res = client.post("/api/projects/cli/jobs", json={"action": "extend"})
+    assert res.status_code == 400, res.text
+    assert res.json()["detail"] == "export clips before extending them"
+
+
+def test_the_export_tab_offers_the_direct_controls_with_labels() -> None:
+    """Contract pin (#462): each new control is a native, labelled input whose limits match the
+    server's, and the page sends each under the option name the server reads."""
+    html = _web("index.html")
+    js = _web("app.js")
+    for cid in ("optTop", "optMaxTotal", "optIds", "optOrder", "optSpeechExtend", "optSpeechLead",
+                "optTailMin", "optTailMax", "optEventTails", "optEventWindow", "optExtendStart",
+                "optExtendEnd"):  # fmt: skip
+        assert re.search(rf'<label for="{cid}"[^>]*>[^<]+</label>', html), cid
+    radios = re.findall(r'<input type="radio" name="optPicks"[^>]*value="(\w+)"', html)
+    assert radios == ["sequence", "auto"]
+    assert re.search(r'id="optPicksSeq"[^>]*checked', html)
+
+    def limits(cid: str) -> tuple[str, str]:
+        tag = re.search(rf'<input[^>]*id="{cid}"[^>]*>', html)[0]
+        return re.search(r'min="([\d.]+)"', tag)[1], re.search(r'max="([\d.]+)"', tag)[1]
+
+    assert limits("optTop") == ("1", str(ui.MAX_SEGMENTS))
+    assert limits("optMaxTotal")[1] == f"{ui.MAX_TOTAL_S:g}"
+    assert limits("optExtendStart") == limits("optExtendEnd") == ("0", f"{ui.MAX_EXTEND_S:g}")
+    for cid in ("optSpeechExtend", "optSpeechLead", "optTailMin", "optTailMax"):
+        assert limits(cid) == ("0", f"{ui.MAX_TIMING_S:g}")
+    assert limits("optEventWindow")[1] == f"{ui.MAX_TIMING_S:g}"
+
+    def values(sid: str) -> list[str]:
+        return re.findall(r'value="(\w*)"', re.search(rf'<select id="{sid}".*?</select>', html)[0])
+
+    assert sorted(values("optOrder")) == sorted(["", *ui.CLIP_ORDERS])
+    assert values("optEventTails") == list(ui.EVENT_TAILS)
+    fields = re.search(r"const OPT_FIELDS = \{(.*?)\};", js, re.S)[1]
+    for key in ("top", "max_total", "ids", "speech_max_extend", "speech_max_lead", "tail_min",
+                "tail_max", "event_window", "extend_start", "extend_end"):  # fmt: skip
+        assert re.search(rf"\b{key}: '#opt\w+'", fields), key
+    assert "startJob('extend', body)" in js and "extendOptions()" in js
+    assert "extend: 'Export extension'" in js  # the Jobs bar names the job
+
+
+# --- One-click presets: cutpoint edit --kind (#462) ---
+
+
+def preset_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: dict,
+    *,
+    settings: dict | None = None,
+    meta: dict | None = None,
+) -> tuple[object, list[list[str]], list[Callable[[], None] | None], Path]:
+    """Start ``body``'s edit job on a command-line project analysed in the funny style (extra
+    ``settings`` recorded, an optional ``ui/meta.json``). Returns as :func:`options_job`."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "funny"
+    hl["settings"].update(settings or {})
+    cache.save_json(p / "highlights.json", hl)
+    if meta is not None:
+        write(p / "ui" / "meta.json", json.dumps(meta))
+    captured: list[list[str]] = []
+    done: list[Callable[[], None] | None] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest):
+        captured.append(args)
+        done.append(on_success)
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    return client.post("/api/projects/cli/jobs", json={"action": "edit", **body}), captured, done, p
+
+
+@pytest.mark.parametrize("kind", list(edit.KINDS))
+def test_a_preset_runs_edit_with_its_kind_in_the_projects_own_style(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    res, captured, _, p = preset_job(client, monkeypatch, tmp_path, {"kind": kind})
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    src = str(tmp_path / "clip.mp4")
+    assert args == ["edit", src, "--kind", kind, "--style", "funny", "--out", str(p),
+                    "--compress-peaks", "off", "--no-vision"]  # fmt: skip
+
+
+def test_a_preset_passes_vertical_compress_peaks_and_the_settings_vision(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, vision=True)
+    body = {"kind": "montage", "vertical": True, "compress_peaks": "strong"}
+    settings = {"vision_top": 12, "ollama_model": "m:1"}  # what the analysis recorded
+    res, captured, _, _ = preset_job(client, monkeypatch, tmp_path, body, settings=settings)
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert "--vertical" in args and _after(args, "--compress-peaks") == "strong"
+    assert args[-3:] == ["--vision", "--vision-top=12", "--ollama-model=m:1"]
+    assert "--force" not in args
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({}, "kind must be one of highlights, montage, clips, funny-moments"),
+        ({"kind": "trailer"}, "kind must be one of"),
+        ({"kind": ["clips"]}, "kind must be one of"),  # not a 500 (unhashable)
+        ({"kind": {"k": 1}}, "kind must be one of"),
+        ({"kind": "clips", "vertical": "yes"}, "vertical must be true or false"),
+        ({"kind": "clips", "force": 1}, "force must be true or false"),
+        ({"kind": "clips", "compress_peaks": "max"}, "compress_peaks must be one of"),
+    ],
+)
+def test_a_preset_refuses_bad_values(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict, message: str
+) -> None:
+    res, captured, _, _ = preset_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured
+
+
+@pytest.mark.parametrize(
+    ("settings", "meta", "reason"),
+    [
+        ({"exclude": ["*.lrv"]}, None, "--exclude or --recursive"),
+        ({"recursive": True}, None, "--exclude or --recursive"),
+        ({}, {"kind": "360", "style": "funny", "source": "x"}, "360 projects"),
+        # edit has no --model or --no-scenes: it would transcribe or detect scenes again
+        ({"whisper_model": "large-v3", "whisper_device": "cuda"}, None, "large-v3 model"),
+        ({"whisper_model": "medium", "whisper_device": "cpu"}, None, "medium model"),
+        ({"scenes": False}, None, "--no-scenes"),
+        ({"recover": True}, None, "--recover"),
+        ({"language": "en"}, None, "--language"),
+        ({"max_candidates": 40}, None, "--max-candidates"),
+    ],
+)
+def test_presets_are_off_with_the_reason_where_edit_cannot_remake_the_analysis(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    settings: dict,
+    meta: dict | None,
+    reason: str,
+) -> None:
+    body = {"kind": "highlights"}
+    res, captured, _, _ = preset_job(
+        client, monkeypatch, tmp_path, body, settings=settings, meta=meta
+    )
+    assert res.status_code == 400, res.text
+    assert reason in res.json()["detail"] and not captured
+    assert reason in client.get("/api/projects/cli").json()["preset_problem"]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {},
+        {
+            "whisper_model": "small",
+            "whisper_device": "cpu",
+            "scenes": True,
+            "language": None,
+            "max_candidates": None,
+            "recover": False,
+        },
+        {"whisper_model": "medium", "whisper_device": "cuda", "exclude": [], "recursive": False},
+    ],
+)
+def test_a_project_edit_can_remake_has_no_preset_problem(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings: dict
+) -> None:
+    res, *_ = preset_job(client, monkeypatch, tmp_path, {"kind": "clips"}, settings=settings)
+    assert res.status_code == 200, res.text
+    view = client.get("/api/projects/cli").json()
+    assert (view["preset_problem"], view["preset_taken"]) == (None, [])
+
+
+@pytest.mark.parametrize("vertical", [False, True])
+def test_a_preset_replaces_an_earlier_runs_clips_only_when_confirmed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, vertical: bool
+) -> None:
+    name = "clips_vertical" if vertical else "clips"
+    body = {"kind": "clips", "vertical": vertical}
+    res, captured, _, p = preset_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200 and "--force" not in captured[0]  # nothing there yet
+    write(p / name / "001_a.mp4")  # what that run exported
+    assert client.get("/api/projects/cli").json()["preset_taken"] == [name]
+    res = client.post("/api/projects/cli/jobs", json={"action": "edit", **body})
+    assert res.status_code == 409, res.text
+    assert "confirm to replace" in res.json()["detail"] and len(captured) == 1
+    res = client.post("/api/projects/cli/jobs", json={"action": "edit", **body, "force": True})
+    assert res.status_code == 200, res.text
+    assert "--force" in _cli_args(captured[1])
+
+
+def test_a_finished_preset_is_the_current_export_with_its_final(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    res, _, done, p = preset_job(client, monkeypatch, tmp_path, {"kind": "montage"})
+    assert res.status_code == 200, res.text
+    # an earlier run's entry for the same folder is replaced, other exports stay
+    cache.save_json(
+        p / "ui" / "exports.json",
+        {"exports": [{"dir": "clips", "final": "old.mp4"}, {"dir": "clips_ui_1", "final": None}]},
+    )
+    with pytest.raises(RuntimeError, match="without its clips and final"):
+        done[0]()
+    write(p / "clips" / "001_a.mp4")
+    cache.save_json(p / "clips" / "manifest.json", {"clips": []})
+    write(p / "final.mp4")
+    done[0]()
+    exports = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert [(e["dir"], e["final"], e.get("vertical")) for e in exports] == [
+        ("clips_ui_1", None, None),
+        ("clips", "final.mp4", False),
+    ]
+    view = client.get("/api/projects/cli").json()
+    assert view["clips"]["dir"] == "clips" and view["final_current"] is True
+
+
+def test_the_export_tab_offers_the_presets_and_asks_before_replacing() -> None:
+    """Contract pin (#462): the preset select lists edit's kinds; Make sends ``force`` only after
+    the shared confirm dialog, and the page shows the server's reason when presets are off."""
+    html = _web("index.html")
+    js = _web("app.js")
+    assert re.search(r'<label for="optKind"[^>]*>Preset</label>', html)
+    kinds = re.findall(
+        r'value="([\w-]+)"', re.search(r'<select id="optKind".*?</select>', html, re.S)[0]
+    )
+    assert kinds == list(edit.KINDS)
+    make_btn = re.search(r'<button type="button" id="makeBtn"[^>]*>Make</button>', html)[0]
+    assert 'aria-describedby="dMake presetWhy"' in make_btn  # the reason it is off, if it is
+    # short option text, so the selects read fully in a 290 px column (details in titles)
+    for sid in ("optKind", "optOrder"):
+        select = re.search(rf'<select id="{sid}".*?</select>', html, re.S)[0]
+        names = re.findall(r">([^<]+)</option>", select)
+        assert names and max(map(len, names)) <= 14, names
+    make = re.search(r"async function makePreset\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    # the folders as they are now: refreshed before deciding whether to ask
+    assert make.index("await refreshProject()") < make.index("preset_taken")
+    assert make.index("confirmAction('Replace the clips of the earlier preset run?'") < make.index(
+        "body.force = true"
+    )
+    assert "startJob('edit', body)" in make and "preset_taken" in make
+    assert "p?.preset_problem" in js and "#presetWhy" in js

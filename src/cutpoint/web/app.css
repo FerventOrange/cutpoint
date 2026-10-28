@@ -182,7 +182,7 @@ input, select {
   font: inherit; color: var(--text); background: var(--deep); border: 1px solid var(--line);
   border-radius: 4px; padding: 6px 8px; min-height: 34px; min-width: 0;
 }
-input[type=checkbox] { min-height: 0; width: 16px; height: 16px; accent-color: var(--amber-text); }
+input[type=checkbox], input[type=radio] { min-height: 0; width: 16px; height: 16px; accent-color: var(--amber-text); }
 input[type=number] { width: 7em; }
 select { max-width: 100%; }
 
@@ -618,6 +618,12 @@ select { max-width: 100%; }
 .opt-grid label { color: var(--text); }
 .opt-grid select { width: 100%; }
 .opt-grid select:disabled { opacity: 0.6; }
+.opt-grid input { width: 100%; }
+.opt-grid input[type=number] { width: 7em; max-width: 100%; justify-self: start; }
+.opt-grid input:disabled, .opt-grid label.off { opacity: 0.6; }
+/* Clips to Export and Cut Timing: nested panels in the options */
+.opts .picks, .opts .timing { gap: 2px; margin-top: 6px; }
+.opts .picks legend, .opts .timing legend { font-weight: 550; font-size: 14.5px; }
 .opts .peaks { gap: 2px; margin-top: 6px; }
 .opts .peaks legend { font-weight: 550; font-size: 14.5px; }
 .peaks input[type=range] { width: 100%; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
@@ -625,6 +631,9 @@ select { max-width: 100%; }
 /* Export clips and Assemble side by side, Show Exports Folder across under them */
 .export-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .export-acts .btn { min-height: 40px; }
+#extendBtn { grid-column: 1 / -1; }
+.presets { margin-top: 12px; }
+.presets .opt-grid { margin: 0; }
 #revealExportBtn { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 6px; }
 #finalVideo { width: 100%; background: var(--well); border-radius: 4px; max-height: 40dvh; }
 .out-list { display: grid; gap: 4px; }

@@ -22,8 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `assemble --audio-transition cut|crossfade` sets the audio join apart from `--transition`; by
   default it follows it. `--transition cut --audio-transition crossfade` is refused (exit 2) (#466).
 
+- `cutpoint ui` Export tab: "Clips to Export" exports the sequence (default) or automatic picks
+  (Top moments, Max total, Candidate ids, Order), and "Cut Timing" sets the speech, tail, event
+  tail and extend limits; a blank field keeps the CLI default. "Extend export" runs `extend` on
+  the latest export into a new `clips_ui_<stamp>` folder.
+- `cutpoint ui` One-Click Edit: Highlights, Montage, Clips and Funny moments presets run
+  `cutpoint edit --kind` in the project's style and make the result the current export. A second
+  run asks before replacing earlier clips. The presets are off, with the reason shown, for 360
+  projects and for projects analyzed with options `edit` cannot repeat.
+
 ### Changed
 
+- `cutpoint ui`: Smart edges is split into Speech-aware cuts and Smart tails (both on by
+  default; a saved Smart edges choice carries over to both). "Analyze again" keeps a recorded
+  `--recover`.
 - Faster `assemble --transition fade` (the highlights and montage kinds): only the video around
   each fade is re-encoded and the rest of every clip is stream-copied. The video has the same
   number of frames at the same times, and the audio, `final.srt` and timelines are the same; the
