@@ -455,10 +455,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- The bundled game HUD presets (`r6.json`, `wt.json`) and the game-name
-  hints that picked them. Detection uses each preset's `match` field. To keep a game preset, copy
-  yours to the user presets folder (`cutpoint paths`), where `"builtin": true` is honoured, or let
-  region discovery write one (#8).
+- The built-in Rainbow Six Siege HUD preset and the bundled War Thunder preset (`wt.json`), and the
+  game-name hints that picked them. Footage of these games now has no preset: the first `analyze`
+  (gaming or funny) or `events` run discovers the HUD regions and installs a preset (several minutes
+  on CPU OCR), and kill detection can differ from 0.2.0. A preset you wrote yourself keeps working
+  from the user presets folder (`cutpoint paths`), where `"builtin": true` keeps the original R6
+  interpretation. Presets are matched by their `match` field (#8).
 
 ### Fixed
 
