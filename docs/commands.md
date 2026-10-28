@@ -229,14 +229,58 @@ browser:
 |---|---|---|
 | Vertical 9:16 | Exports and assembles vertical clips | off |
 | Burn in captions | `assemble --captions` | off |
-| Smart edges | Exports with `--speech-aware` and `--smart-tail` instead of the exact trims | on |
+| Speech-aware cuts | `--speech-aware` | on |
+| Smart tails | `--smart-tail` | on |
 | Normalize loudness | `--loudnorm` | on |
 | Link Transitions | On: the audio transition follows the video (Cut gives Cut, Fade gives Crossfade) and the audio select is disabled | on |
 | Video transition | Cut or Fade (`--transition`) | Cut |
 | Audio transition | Cut or Crossfade (`--audio-transition`); Crossfade is unavailable under a video Cut | follows the video |
 | Compress Audio Peaks | None, Light or Max (`off`, `light`, `strong`) | Light |
 
-The padding field is gone from the UI; `clips --extend` and [`extend`](#extend) still work.
+The padding field is gone from the UI; `clips --extend` and [`extend`](#extend) still work. A saved
+"Smart edges" choice from an earlier version carries over to both Speech-aware cuts and Smart tails.
+
+The Export tab has more controls above and below that panel. A blank Cut Timing field keeps the
+CLI default.
+
+**Clips to Export.** By default the export is the sequence, as hand-picked. Automatic picks
+export from the ranked moments instead:
+
+| Control | CLI flag |
+|---|---|
+| Top moments | `--top` |
+| Max total | `--max-total` |
+| Candidate ids (replaces Top moments) | `--ids` |
+| Order: Style, Story, Best first or Chronological | `--order` |
+
+**Cut Timing.**
+
+| Control | CLI flag |
+|---|---|
+| Max end move | `--speech-max-extend` |
+| Max start move | `--speech-max-lead` |
+| Tail min / Tail max | `--tail-min` / `--tail-max` |
+| Event tails: Auto, On or Off | (Auto: no flag) / `--event-tails` / `--no-event-tails` |
+| Event window | `--event-window` |
+| Extend start / Extend end | `--extend-start` / `--extend-end` |
+
+**Extend export** runs [`extend`](#extend) on the latest export into a new `clips_ui_<stamp>`
+folder. The result becomes the current export.
+
+**One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs
+`cutpoint edit --kind <preset>` in the project's own style, with the Vertical and Compress Audio
+Peaks choices and the vision choice from Settings. Clips go to `clips` (`clips_vertical` when
+vertical); `final.mp4` and `<name>-final.mp4` become the current export. If earlier clips exist,
+a second run asks before replacing them and passes `--force` only when you confirm. The presets
+are off, with the reason shown, for 360 projects and for projects analyzed with `--exclude` or
+`--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`
+or `--recover`.
+
+"Analyze again" keeps a recorded `--recover`.
+
+API: the clips job accepts the new fields, `/api/jobs` takes the new `extend` and `edit` actions,
+and the project view reports `preset_problem` (why the presets are off) and `preset_taken` (the
+earlier clips a second Make would replace).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
