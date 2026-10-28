@@ -5,6 +5,8 @@ The model is the scripted ``FakeProvider`` of ``test_assistant``.
 
 from __future__ import annotations
 
+import json
+import logging
 import threading
 import time
 from collections.abc import Iterator
@@ -17,10 +19,12 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
+from conftest import set_config
 from cutpoint import cache, ui
-from cutpoint.assistant import providers
+from cutpoint.assistant import keys, providers
 from cutpoint.assistant import store as ai_store
-from test_assistant import FakeProvider, Reply, call
+from test_assistant import FakeProvider, Reply, _Resp, call
+from test_assistant_byo import FakeRing
 
 PORT = 8765
 
@@ -108,7 +112,9 @@ def test_a_proposal_is_applied_rebased_or_refused_and_kept_in_the_history(
         ),
     )
     view = ask(client, "add the fall first", seq)
-    assert view["status"] == "done" and view["provider"]["label"] == "Local: fake-model"
+    assert (
+        view["status"] == "done" and view["provider"]["label"] == "Fake · fake-model · this machine"
+    )
     show, prop = view["events"]
     assert show == {"n": 0, "kind": "show", "ids": [ids[2]], "note": "the fall"}
     assert [s["id"] for s in prop["after"]] == [ids[2], *ids[:2]]
@@ -301,3 +307,260 @@ def test_an_applied_change_is_reverted_through_a_previewed_proposal(
     res = client.post(f"{base}/history/old1/revert", json={"segments": seq})
     assert res.status_code == 409 and "can no longer be reverted" in res.json()["detail"]
     assert not (p / "ui" / "review.json").exists()
+
+
+# -- bring your own AI (#346 PR 3): consent, keys, settings ----------------------------------
+
+SECRET = "plain-secret-key-never-shown-42"
+
+
+@pytest.fixture(autouse=True)
+def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No real key variable or keyring reaches a test."""
+    for name in keys.ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(keys, "_keyring", lambda: None)
+    monkeypatch.setattr(keys, "_SEEN", set())
+
+
+class HostedFake(FakeProvider):
+    name = "anthropic"
+    local = False
+    host = "api.anthropic.com"
+
+
+def test_a_local_provider_needs_no_consent(client: TestClient, monkeypatch, proj) -> None:
+    use(monkeypatch, FakeProvider([]))
+    got = client.get("/api/projects/cli/assistant").json()
+    assert got["consent"] == {
+        "needed": False,
+        "key": None,
+        "host": "localhost",
+        "missing_key": None,
+    }
+    res = client.post("/api/assistant/consent", json={"key": "fake@localhost"})
+    assert res.status_code == 409
+
+
+def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
+    client: TestClient, monkeypatch, proj, home: Path
+) -> None:
+    p, seq, _ids = proj
+    hello = Reply("Hello", [], {"role": "assistant", "content": "Hello"})
+    fake = use(monkeypatch, HostedFake([hello]))
+    want = "anthropic@api.anthropic.com"
+    got = client.get("/api/projects/cli/assistant").json()
+    assert got["consent"] == {
+        "needed": True,
+        "key": want,
+        "host": "api.anthropic.com",
+        "missing_key": None,
+    }
+    assert got["provider"]["local"] is False
+    assert got["provider"]["label"] == "Anthropic · fake-model · api.anthropic.com"
+
+    turns = "/api/projects/cli/assistant/turns"
+    res = client.post(turns, json={"text": "hi", "segments": seq})
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert "agree first" in detail and "file names" in detail and "api.anthropic.com" in detail
+    assert fake.requests == [] and not (p / "ui" / "assistant").exists()
+
+    bad = client.post("/api/assistant/consent", json={"key": "anthropic@elsewhere"})
+    assert bad.status_code == 409
+    for _ in range(2):  # agreeing again keeps one entry
+        ok = client.post("/api/assistant/consent", json={"key": want})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["consent"]["needed"] is False
+    saved = json.loads((home / "config.json").read_text("utf-8"))
+    assert saved["assistant"]["consent"] == [want]
+    assert client.get("/api/projects/cli/assistant").json()["consent"]["needed"] is False
+    view = ask(client, "hi", seq)
+    assert view["status"] == "done" and len(fake.requests) == 1
+
+
+def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    res = client.get("/api/settings")
+    got = res.json()["assistant"]
+    assert SECRET not in res.text
+    assert got["provider"] == "ollama" and got["model"] == "" and got["url"] == ""
+    assert got["keys"] == {"anthropic": "env", "openai": None} and got["keyring"] is False
+    assert [p["name"] for p in got["providers"]] == ["ollama", "openai", "anthropic"]
+    claude = got["providers"][2]
+    assert claude["default_model"] == "claude-sonnet-5-5"
+    assert claude["models"] == ["claude-sonnet-5-5", "claude-opus-5-5"]
+    assert claude["key_env"] == ["CUTPOINT_ASSISTANT_API_KEY", "ANTHROPIC_API_KEY"]
+
+    set_config(home, assistant={"consent": ["x@y"]})
+    asked: list[dict] = []
+
+    def get(url, **kw):
+        asked.append({"url": url, **kw})
+        return _Resp({"id": "claude-opus-5-5"})
+
+    monkeypatch.setattr(providers.requests, "get", get)
+    body = {"assistant": {"provider": "anthropic", "model": "claude-opus-5-5", "url": ""}}
+    res = client.put("/api/settings", json=body)
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["assistant_check"] is None and out["assistant"]["provider"] == "anthropic"
+    assert out["assistant_note"] is None  # the official host checks the key
+    assert asked[0]["url"].endswith("/v1/models/claude-opus-5-5")
+    assert asked[0]["headers"]["x-api-key"] == SECRET  # only ever in a header
+    text = (home / "config.json").read_text("utf-8")
+    assert json.loads(text)["assistant"] == {
+        "consent": ["x@y"],
+        "provider": "anthropic",
+        "model": "claude-opus-5-5",
+        "url": "",
+    }
+    assert SECRET not in text and SECRET not in res.text
+    view = client.get("/api/projects/cli/assistant")
+    assert view.json()["provider"]["label"] == "Anthropic · claude-opus-5-5 · api.anthropic.com"
+    assert view.json()["consent"]["needed"] is True and SECRET not in view.text
+
+    # saved even when it cannot answer yet; the check says why
+    res = client.put("/api/settings", json={"assistant": {"provider": "openai", "model": "m"}})
+    assert res.status_code == 200 and "No API key for OpenAI" in res.json()["assistant_check"]
+
+    for bad in (
+        {"provider": "gemini"},
+        {"url": "ftp://box"},
+        {"url": "http://a b"},
+        {"model": 42},
+        {"key": SECRET},
+        {},
+    ):
+        res = client.put("/api/settings", json={"assistant": bad})
+        assert res.status_code == 400, bad
+    assert SECRET not in (home / "config.json").read_text("utf-8")
+
+
+def test_a_key_is_saved_in_the_keyring_and_never_sent_back(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    assert res.status_code == 501 and "keyring extra" in res.json()["detail"]
+    assert SECRET not in res.text
+
+    ring = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: ring)
+    res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    assert res.status_code == 200, res.text
+    official = {"anthropic": "api.anthropic.com", "openai": "api.openai.com"}
+    assert res.json() == {"keys": {"anthropic": None, "openai": "keyring"}, "key_hosts": official}
+    assert ring.saved == {("cutpoint", "openai"): SECRET}
+    settings = client.get("/api/settings")
+    assert settings.json()["assistant"]["keys"]["openai"] == "keyring"
+    assert settings.json()["assistant"]["keyring"] is True
+    assert SECRET not in settings.text
+    assert not (home / "config.json").exists()  # a key is never written there
+    res = client.post("/api/assistant/key/clear", json={"provider": "openai"})
+    assert res.json() == {"keys": {"anthropic": None, "openai": None}, "key_hosts": official}
+    assert ring.saved == {}
+    res = client.post("/api/assistant/key", json={"provider": "ollama", "key": "k"})
+    assert res.status_code == 400
+    bad = client.post("/api/assistant/key", json={"provider": "openai", "key": "has space"})
+    assert bad.status_code == 400 and "has space" not in bad.text
+
+
+def test_a_key_is_saved_for_the_configured_base_url_host(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    ring = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: ring)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-0123456789abcdef")
+    set_config(home, assistant={"provider": "openai", "url": "https://openrouter.ai/api/v1"})
+    view = client.get("/api/settings").json()["assistant"]
+    openai = next(p for p in view["providers"] if p["name"] == "openai")
+    assert openai["key_env"] == ["CUTPOINT_ASSISTANT_API_KEY"]  # OPENAI_API_KEY is not for it
+    assert view["keys"]["openai"] is None and view["key_hosts"]["openai"] == "openrouter.ai"
+    res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    assert res.status_code == 200, res.text
+    assert res.json()["keys"]["openai"] == "keyring"
+    assert ring.saved == {("cutpoint", "openai@openrouter.ai"): SECRET}
+    client.post("/api/assistant/key/clear", json={"provider": "openai"})
+    assert ring.saved == {}
+
+
+def test_the_app_redacts_keys_from_its_logs(client: TestClient) -> None:
+    """create_app adds the redaction filter to every root handler."""
+    handlers = logging.getLogger().handlers
+    assert handlers and all(keys._FILTER in h.filters for h in handlers)
+
+
+def test_uvicorn_log_handlers_get_the_redaction_filter() -> None:
+    """uvicorn's own handlers (set up by its Config) are filtered too."""
+    loggers = [logging.getLogger(name) for name in ("uvicorn", "uvicorn.error", "uvicorn.access")]
+    added = [logging.StreamHandler() for _ in loggers]
+    for log, handler in zip(loggers, added, strict=True):
+        log.addHandler(handler)
+    try:
+        keys.redact_logs()
+        assert all(keys._FILTER in h.filters for h in added)
+    finally:
+        for log, handler in zip(loggers, added, strict=True):
+            log.removeHandler(handler)
+
+
+EVIL_URLS = [r"https://evil.example\@api.openai.com/v1", r"http://evil.example\@127.0.0.1:1234/v1"]
+
+
+@pytest.mark.parametrize("url", EVIL_URLS)
+def test_settings_refuse_a_url_whose_host_depends_on_the_parser(client: TestClient, url) -> None:
+    res = client.put("/api/settings", json={"assistant": {"provider": "openai", "url": url}})
+    assert res.status_code == 400 and "backslash" in res.json()["detail"]
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic", "ollama"])
+@pytest.mark.parametrize(
+    "url", ["https://evil.example@api.openai.com/v1", "http://user:pw@127.0.0.1:11434"]
+)
+def test_settings_refuse_a_url_with_a_user_name_or_password(
+    client: TestClient, home: Path, provider, url
+) -> None:
+    res = client.put("/api/settings", json={"assistant": {"provider": provider, "url": url}})
+    assert res.status_code == 400
+    assert res.json()["detail"] == "assistant.url must not contain a user name or password"
+    assert not (home / "config.json").exists()
+
+
+def test_settings_never_show_the_password_of_a_url(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "http://user:s3cretpw@box:11434")
+    set_config(home, assistant={"provider": "ollama", "url": "http://me:0therpw@nas:11434"})
+    res = client.get("/api/settings")
+    assert res.status_code == 200
+    assert "s3cretpw" not in res.text and "0therpw" not in res.text and "user:" not in res.text
+    got = res.json()["assistant"]
+    ollama = next(p for p in got["providers"] if p["name"] == "ollama")
+    assert ollama["default_url"] == "http://box:11434" and got["url"] == "http://nas:11434"
+
+
+def test_a_saved_key_for_another_host_is_not_called_checked(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    """OpenRouter lists its models without a key: passing the check proves nothing about it."""
+    monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", SECRET)
+    monkeypatch.setattr(providers.requests, "get", lambda url, **kw: _Resp({"data": []}))
+    body = {"provider": "openai", "model": "m", "url": "https://openrouter.ai/api/v1"}
+    out = client.put("/api/settings", json={"assistant": body}).json()
+    assert out["assistant_check"] is None
+    assert out["assistant_note"] == providers.KEY_CHECKED_LATER
+
+
+def test_a_missing_key_comes_before_the_consent_box(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    set_config(home, assistant={"provider": "anthropic"})
+    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    assert got["needed"] is True and got["key"] == "anthropic@api.anthropic.com"
+    assert "No API key for Anthropic" in got["missing_key"]
+    assert "CUTPOINT_ASSISTANT_API_KEY" in got["missing_key"] and "Settings" in got["missing_key"]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
+    got = client.get("/api/projects/cli/assistant")
+    assert got.json()["consent"]["missing_key"] is None and SECRET not in got.text
