@@ -94,16 +94,57 @@ def test_sdr_and_untagged_sources_get_no_conversion(tags):
 # -- UI stills (#412) ----------------------------------------------------------------------------
 
 
+TO_JPEG_709 = "colorspace=all=bt470bg:iall=bt709:range=pc:fast=1"
+
+
 @pytest.mark.parametrize("tags", [HLG, PQ])
-def test_hdr_still_is_tone_mapped_after_the_scale(tags):
-    color = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **tags), BOTH)
+def test_hdr_still_is_tone_mapped_then_made_bt601_after_the_scale(tags):
+    info = media_info(pix_fmt="yuv420p10le", **tags)
+    color = encode.still_filter(info, BOTH)
+    assert color == f"{encode.sdr_filter(info, BOTH)},{TO_JPEG_709}"
     args = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, quality=5, color=color)
     assert args[args.index("-vf") + 1] == f"scale=160:-2,{color}"
 
 
-@pytest.mark.parametrize("tags", [{}, BT709, BT601])
-def test_sdr_still_command_is_unchanged(tags):
-    color = encode.sdr_filter(media_info(**tags), BOTH)
+@pytest.mark.parametrize(
+    "tags",
+    [
+        {},  # HD without a matrix tag: BT.709, as exports read it
+        BT709,
+        FULL_BT709,  # the colorspace filter reads the frames' range
+        {**SD, **BT709},
+        {"color_space": "bt709", "color_primaries": "smpte170m"},  # the matrix decides
+    ],
+)
+def test_bt709_still_is_converted_to_the_bt601_full_range_of_a_jpeg(tags):
+    """#441: the mjpeg encoder only re-tags, and every decoder reads a JPEG as BT.601."""
+    assert encode.still_filter(media_info(**tags), BOTH) == TO_JPEG_709
+
+
+def test_smpte240m_still_is_converted_to_bt601():
+    info = media_info(color_space="smpte240m", **SD)
+    assert encode.still_filter(info, BOTH) == (
+        "colorspace=all=bt470bg:iall=smpte240m:range=pc:fast=1"
+    )
+
+
+@pytest.mark.parametrize("tags", [{"color_space": "gbr"}, {"color_space": "fcc"}])
+def test_other_matrices_keep_todays_still(tags):
+    assert encode.still_filter(media_info(**tags), BOTH) == ""
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        SD,
+        {**SD, **BT601},
+        BT601,  # tagged HD
+        BT601 | {"color_range": "pc", "pix_fmt": "yuvj420p"},
+        {"color_space": "bt470bg", "color_primaries": "bt470bg"},
+    ],
+)
+def test_bt601_still_command_is_unchanged(tags):
+    color = encode.still_filter(media_info(**tags), BOTH)
     args = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, quality=5, color=color)
     assert args == [
         "-hide_banner", "-v", "error", "-ss", "5.000", "-i", "v.mp4", "-an", "-sn",
@@ -114,11 +155,36 @@ def test_sdr_still_command_is_unchanged(tags):
 
 def test_hdr_still_without_zscale_keeps_todays_command_and_warns(caplog):
     info = media_info(path=Path("hdr-still.mp4"), pix_fmt="yuv420p10le", **PQ)
-    color = encode.sdr_filter(info, frozenset({"scale"}))
+    color = encode.still_filter(info, frozenset({"scale"}))
     assert color == ""
     assert "no zscale or tonemap filter" in caplog.text
     args = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, color=color)
     assert args[args.index("-vf") + 1] == "scale=160:-2"
+
+
+# -- UI proxies (#441) --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        BT601 | {"color_range": "pc", "pix_fmt": "yuvj420p"},
+        {**SD, "color_range": "pc"},  # untagged SD is BT.601
+        {"color_space": "bt470bg", "color_range": "pc"},
+    ],
+)
+def test_full_range_bt601_proxy_is_only_narrowed_to_tv_range(tags):
+    assert encode.TV_RANGE == "scale=out_range=tv"
+    assert encode.preview_filter(media_info(**tags), BOTH) == encode.TV_RANGE
+
+
+@pytest.mark.parametrize(
+    "tags", [BT601, SD, BT709, FULL_BT709, {}, {"color_range": "pc"}, HLG, PQ, {**SD, **HLG}]
+)
+def test_other_proxies_keep_the_sdr_filter(tags):
+    """Same filter string as before #441, so their proxies keep their names."""
+    info = media_info(**tags)
+    assert encode.preview_filter(info, BOTH) == encode.sdr_filter(info, BOTH)
 
 
 # -- BT.601 to BT.709 (#290) -------------------------------------------------------------------
@@ -482,6 +548,46 @@ def test_real_bt601_export_is_bt709_data_and_tags(tmp_path, monkeypatch):
     want = _rgb(src, "bt601")
     assert np.abs(_rgb(out, "bt709") - want).mean() < 1.5
     assert np.abs(_rgb(src, "bt709") - want).mean() > 4.0
+
+
+def _jpeg_rgb(image: bytes, tmp_path: Path) -> np.ndarray:
+    """A JPEG as float RGB, read as every decoder does: BT.601, full range."""
+    path = tmp_path / "still.jpg"
+    path.write_bytes(image)
+    vf = (
+        "scale=320:180:flags=accurate_rnd+full_chroma_int:"
+        "in_color_matrix=bt601:in_range=pc:out_range=pc,format=rgb24"
+    )
+    frames = ffmpeg_utils.decode_raw(path, size=(320, 180), vf=vf, hwaccel=None)
+    return next(iter(frames))[1].astype(np.float32)
+
+
+def _bar_means(rgb: np.ndarray) -> np.ndarray:
+    """Mean RGB inside each of the seven top colour bars of a 320x180 smptebars frame."""
+    w = rgb.shape[1] / 7
+    return np.array([rgb[20:100, int(i * w + w / 4) : int(i * w + 3 * w / 4)].mean((0, 1))
+                     for i in range(7)])  # fmt: skip
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(("data", "tag"), [("bt709", "bt709"), ("bt709", None), ("bt601", None)])
+def test_real_still_shows_the_colours_of_the_export(tmp_path, monkeypatch, data, tag):
+    """#441: before it, a BT.709 still was about 7 codes off (32 max) on bars."""
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    src = tmp_path / "src.mkv"
+    _bars(src, "1280x720" if data == "bt709" else "320x240", tag, data)
+    info = ffmpeg_utils.probe(src)
+    out = tmp_path / "001.mp4"
+    fmt = encode.OutputFormat(info.width, info.height, 30)
+    encode.export_clip(src, info, 0.0, 1.0, out, fmt, False)
+    color = encode.still_filter(info)
+    assert bool(color) == (data == "bt709")
+    [image] = ffmpeg_utils.grab_images(src, 0.5, width=320, hwaccel=None, color=color)
+    got, want = _bar_means(_jpeg_rgb(image, tmp_path)), _bar_means(_rgb(out, "bt709"))
+    assert np.abs(got - want).mean() < 1.5
+    if color:  # the still of before
+        [old] = ffmpeg_utils.grab_images(src, 0.5, width=320, hwaccel=None)
+        assert np.abs(_bar_means(_jpeg_rgb(old, tmp_path)) - want).mean() > 4.0
 
 
 @needs_ffmpeg

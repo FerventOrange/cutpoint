@@ -81,7 +81,7 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_values,
 )
-from cutpoint.encode import BT709_TAGS, sdr_filter
+from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
     EncoderUnavailableError,
@@ -823,9 +823,9 @@ def proxy_args(
 
     ``encoder``: a GPU encoder (NVENC, VAAPI or AMF), else libx264. Decoding stays on the CPU:
     ``-hwaccel cuda`` halved the CPU time but made the build two to three times slower on an RTX 3080.
-    ``color``: the source's :func:`~cutpoint.encode.sdr_filter` (HDR and BT.2020 become SDR
-    Rec.709, tagged so). ``lo``/``hi``: only that part of the source, in seconds (a window
-    proxy, whose 0 is ``lo``).
+    ``color``: the source's :func:`~cutpoint.encode.preview_filter` (HDR and BT.2020 become SDR
+    Rec.709, tagged so; full-range BT.601 becomes TV range, its tags kept). ``lo``/``hi``: only
+    that part of the source, in seconds (a window proxy, whose 0 is ``lo``).
     """
     mix = audio_mix_filter(audio_streams)
     audio = ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else ["-map", "0:a:0?"]
@@ -843,7 +843,7 @@ def proxy_args(
     return [
         "ffmpeg", "-y", "-nostdin", "-v", "error", *start, "-i", str(real), "-map", "0:v:0",
         *audio, "-vf", vf, *video,
-        *(BT709_TAGS if color else []), *length,
+        *(BT709_TAGS if color and color != TV_RANGE else []), *length,
         "-g", str(PROXY_GOP), "-fpsmax", str(PROXY_FPS_MAX),
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out),
     ]  # fmt: skip
@@ -917,7 +917,8 @@ class Media:
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        # key -> (browser plays it as is, duration, audio tracks, sdr_filter of a proxy) or None
+        # key -> (browser plays it as is, duration, audio tracks, preview_filter of a proxy)
+        # or None
         self.probed: dict[str, tuple[bool, float, int, str] | None] = {}
         # (project, key) -> "preparing" | "failed": each project builds its own proxy file
         self.proxies: dict[tuple[Path, str], str] = {}
@@ -946,7 +947,8 @@ class Media:
         self.frame_locks: dict[str, tuple[threading.Lock, int]] = {}
         self.frame_slots = threading.BoundedSemaphore(FRAME_SLOTS)
         self.frames_pruned: set[Path] = set()  # projects whose stale stills went this run
-        # key -> sdr_filter of its stills (#412): also for a source the browser plays as is
+        # key -> still_filter of its stills (#412, #441): also for a source the browser plays
+        # as is
         self.still_color: dict[str, str] = {}
 
     @staticmethod
@@ -959,8 +961,8 @@ class Media:
 
     def info(self, real: Path, key: str) -> tuple[bool, float, int, str] | None:
         """``(browser plays it as is, duration, audio tracks, colour filter of its proxy)``, or
-        None if unreadable. The filter is :func:`~cutpoint.encode.sdr_filter`'s, "" for a source
-        that plays as is."""
+        None if unreadable. The filter is :func:`~cutpoint.encode.preview_filter`'s, "" for a
+        source that plays as is."""
         if key not in self.probed:
             try:
                 i = probe(real)
@@ -971,8 +973,8 @@ class Media:
                     and i.acodec in BROWSER_AUDIO
                     and i.audio_streams <= 1  # a browser plays one track; exports mix them all
                 )
-                color = sdr_filter(i)
-                self.still_color[key] = color
+                color = preview_filter(i)
+                self.still_color[key] = still_filter(i)
                 self.probed[key] = (ok, i.duration, i.audio_streams, "" if ok else color)
             except (FFmpegError, OSError, ValueError, KeyError):
                 self.probed[key] = None
@@ -1543,10 +1545,10 @@ class Media:
         """A JPEG still of ``path`` at ``at`` s (clamped into the source), ``width`` px wide.
 
         Cached as ``ui/frames/<content key>-<centiseconds>-<width>.jpg`` and built once even when
-        requested concurrently. An HDR or BT.2020 source's still goes through its
-        :func:`~cutpoint.encode.sdr_filter`, as exports do, and its name ends in ``-<filter hash>``,
-        so stills cached before the conversion (or a changed one) are not reused. None if the
-        source cannot be read.
+        requested concurrently. A still goes through its source's
+        :func:`~cutpoint.encode.still_filter` (HDR, BT.2020 and BT.709 sources), so it shows what
+        exports show, and then its name ends in ``-<filter hash>``, so stills cached before the
+        conversion (or a changed one) are not reused. None if the source cannot be read.
 
         Raises:
             FFmpegError: If ffmpeg decodes no image.
@@ -1560,7 +1562,7 @@ class Media:
         cs = round(at * 100)
         color = self.still_color.get(key, "")
         name = f"{key}-{cs}-{width}"
-        if color:  # a tone-mapped still never reuses one cached before (or with another filter)
+        if color:  # a converted still never reuses one cached before (or with another filter)
             name += f"-{hashlib.sha1(color.encode()).hexdigest()[:8]}"
         out = _own(project, f"{UI_DIR}/frames/{name}.jpg")  # nor cached through one
         if out.is_file():
