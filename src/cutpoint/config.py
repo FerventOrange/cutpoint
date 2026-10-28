@@ -47,6 +47,12 @@ documents every key.
     overrides it. Auto picks the first GPU encoder that really encodes, else libx264; a named
     GPU encoder that does not work is an error (see :func:`cutpoint.ffmpeg_utils.video_encoder`).
 
+``export_workers``
+    Clips ``cutpoint clips`` (and ``edit``) export at once: ``auto`` (default: 2 with a GPU
+    encoder, 1 with libx264, which already uses every core) or a number, clamped to 1-3 (NVENC
+    session limits). ``CUTPOINT_EXPORT_WORKERS`` overrides it. A run with a 360 clip exports
+    one clip at a time.
+
 ``vision``
     ``true`` rates the top candidates of ``cutpoint analyze`` and ``cutpoint edit`` with the local
     Ollama vision model unless ``--no-vision`` is given (``--vision`` turns it on for one run).
@@ -91,6 +97,7 @@ logger = logging.getLogger(__name__)
 
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
+MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,7 @@ class Config:
     vision: bool = False
     analysis_skip: tuple[str, ...] = ()
     compress_peaks: str = "off"
+    export_workers: int | None = None  # None: auto
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -173,7 +181,8 @@ _LOADED: dict[tuple, Config] = {}
 def _config_key(path: Path) -> tuple:
     """What :func:`get_config` depends on: the file's identity (one stat; None when missing),
     ``CUTPOINT_HOME`` (the default folders) and the ``CUTPOINT_*`` overrides it reads."""
-    env = tuple(paths.env(name) for name in ("PROJECTS_DIR", "STAGE_DIR", "VIDEO_ENCODER"))
+    names = ("PROJECTS_DIR", "STAGE_DIR", "VIDEO_ENCODER", "EXPORT_WORKERS")
+    env = tuple(paths.env(name) for name in names)
     return (path, file_stamp(path), paths.home(), *env)
 
 
@@ -241,7 +250,29 @@ def _load_config(path: Path) -> Config:
         data.get("vision") is True,
         skip,
         peaks,
+        _export_workers(path, data),
     )
+
+
+def _export_workers(path: Path, data: dict) -> int | None:
+    """``export_workers`` (``CUTPOINT_EXPORT_WORKERS`` first) clamped to 1-3; None for auto."""
+    env = paths.env("EXPORT_WORKERS")
+    value = env if env is not None else data.get("export_workers", "auto")
+    where = "CUTPOINT_EXPORT_WORKERS" if env is not None else f"{path}: export_workers"
+    if isinstance(value, str) and value.strip().lower() in ("", "auto"):
+        return None
+    try:
+        if isinstance(value, bool | float):  # int() would accept them
+            raise ValueError
+        n = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{where} is {value!r}; expected auto or a number of clips") from None
+    return min(max(n, 1), MAX_EXPORT_WORKERS)
+
+
+def export_workers() -> int | None:
+    """Clips exported at once (``export_workers`` in ``config.json``); None for auto."""
+    return get_config().export_workers
 
 
 def _analysis_skip(path: Path, data: dict) -> tuple[str, ...]:

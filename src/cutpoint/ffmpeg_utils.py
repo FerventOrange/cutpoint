@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 
 SOFT_STOP_S = 5.0  # a stopped child (ffmpeg; a UI job after CTRL_BREAK) gets this long
 PROGRESS_DRAIN_S = 5.0  # run_progress reads the rest of the progress pipe this long after exit
+# a failed child in a ChildScope waits this long for the cancel of a Ctrl+C (3 polls of the
+# controlling thread, clips.POLL_S) before its exit counts as an ffmpeg failure
+STOP_GRACE_S = 0.3
 
 
 class FFmpegError(RuntimeError):
@@ -150,6 +153,75 @@ def _stop_child(proc: subprocess.Popen, err: BaseException) -> None:
                 proc.wait(SOFT_STOP_S)
 
 
+class ChildScope:
+    """ffmpeg runs of worker threads that a controlling thread can stop (parallel export, #464).
+
+    A thread inside :func:`child_scope` registers every :func:`run` child here. After
+    :meth:`cancel` no new child starts, and a child that ends (stopped by the same Ctrl+C or
+    Ctrl+Break as Python, or by :meth:`kill`) raises KeyboardInterrupt instead of
+    FFmpegError, so its ``.part`` is removed and no CPU retry follows
+    (:func:`encode_with_fallback` retries FFmpegError only). ffmpeg can get the Ctrl+C and
+    exit before the controlling thread cancels, so a child that fails waits up to
+    :data:`STOP_GRACE_S` for a cancel before its exit counts as a failure.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._procs: set[subprocess.Popen] = set()
+        self._stopped = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._stopped.is_set()
+
+    def wait_cancelled(self, timeout: float) -> bool:
+        """Whether the scope is cancelled within ``timeout`` seconds."""
+        return self._stopped.wait(timeout)
+
+    def check(self) -> None:
+        """Raise KeyboardInterrupt once the scope is cancelled."""
+        if self.cancelled:
+            raise KeyboardInterrupt
+
+    def cancel(self) -> None:
+        """Start no new child; running ones go on until they exit or :meth:`kill`."""
+        self._stopped.set()
+
+    def kill(self) -> None:
+        """Cancel and kill every running child."""
+        with self._lock:
+            self._stopped.set()
+            procs = list(self._procs)
+        for proc in procs:
+            with suppress(OSError):
+                proc.kill()
+
+    def add(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._procs.add(proc)
+            if not self.cancelled:
+                return
+        with suppress(OSError):  # cancelled while it started
+            proc.kill()
+
+    def discard(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._procs.discard(proc)
+
+
+_SCOPE = threading.local()
+
+
+@contextmanager
+def child_scope(scope: ChildScope) -> Iterator[ChildScope]:
+    """Register this thread's :func:`run` children in ``scope`` (see :class:`ChildScope`)."""
+    _SCOPE.current = scope
+    try:
+        yield scope
+    finally:
+        _SCOPE.current = None
+
+
 def run(
     args: list[str],
     *,
@@ -165,10 +237,15 @@ def run(
     cmd = _command(args[0], args[1:])
     logger.debug("exec: %s", subprocess.list2cmdline(cmd))
     pipe = subprocess.PIPE if capture else None
+    scope: ChildScope | None = getattr(_SCOPE, "current", None)
+    if scope is not None:
+        scope.check()
     proc = subprocess.Popen(
         cmd, stdout=pipe, stderr=pipe, text=True, encoding="utf-8", errors="replace", cwd=cwd
     )
     try:
+        if scope is not None:
+            scope.add(proc)
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as err:
         proc.kill()
@@ -177,8 +254,15 @@ def run(
     except BaseException as err:
         _stop_child(proc, err)
         raise
+    finally:
+        if scope is not None:
+            scope.discard(proc)
+    if scope is not None:
+        scope.check()  # stopped from outside: not an ffmpeg failure
     out = (stdout or "") + (stderr or "")
     if proc.returncode != 0:
+        if scope is not None and scope.wait_cancelled(STOP_GRACE_S):
+            raise KeyboardInterrupt  # ffmpeg got the Ctrl+C before the scope was cancelled
         raise FFmpegError(f"{args[0]} failed (exit {exit_code(proc.returncode)}):\n{_tail(out)}")
     return out
 
@@ -990,6 +1074,19 @@ def _pick_encoder(choice: str) -> VideoEncoder:
 # Codecs of auto-chosen GPU encoders that failed on real footage while libx264 then worked:
 # the rest of the run encodes on the CPU instead of failing and retrying every clip.
 _GPU_ENCODE_FAILED: set[str] = state.register_container(__name__, "_GPU_ENCODE_FAILED", set())
+# Codecs whose GPU encode failed while the CPU redo still runs (#464), with the number of
+# such redos: parallel exports starting a clip then use the CPU too, as after the failure.
+_GPU_ENCODE_SUSPECT: dict[str, int] = state.register_container(__name__, "_GPU_ENCODE_SUSPECT", {})
+_GPU_FAILED_LOCK = threading.Lock()
+
+
+def _unmark_suspect(codec: str) -> None:
+    """End one CPU redo of ``codec`` in :data:`_GPU_ENCODE_SUSPECT` (hold the lock)."""
+    left = _GPU_ENCODE_SUSPECT.get(codec, 1) - 1
+    if left > 0:
+        _GPU_ENCODE_SUSPECT[codec] = left
+    else:
+        _GPU_ENCODE_SUSPECT.pop(codec, None)
 
 
 def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T:
@@ -1007,7 +1104,9 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
             fails (the message names the setting that switches to the CPU).
     """
     choice = get_config().video_encoder
-    enc = VideoEncoder("cpu") if _GPU_ENCODE_FAILED and choice == "auto" else video_encoder()
+    with _GPU_FAILED_LOCK:
+        failed = bool(_GPU_ENCODE_FAILED or _GPU_ENCODE_SUSPECT)
+    enc = VideoEncoder("cpu") if failed and choice == "auto" else video_encoder()
     try:
         return encode(enc)
     except FFmpegError as err:
@@ -1025,10 +1124,20 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
             enc.codec,
             _first_error_line(err),
         )
-    result = encode(VideoEncoder("cpu"))
-    if enc.codec not in _GPU_ENCODE_FAILED:
-        logger.info("Encoding the rest of this run with libx264 instead of %s", enc.codec)
+        with _GPU_FAILED_LOCK:  # parallel export (#464): no new GPU encode during the redo
+            _GPU_ENCODE_SUSPECT[enc.codec] = _GPU_ENCODE_SUSPECT.get(enc.codec, 0) + 1
+    try:
+        result = encode(VideoEncoder("cpu"))
+    except BaseException:
+        with _GPU_FAILED_LOCK:  # not the encoder's failure: later clips may use the GPU
+            _unmark_suspect(enc.codec)
+        raise
+    with _GPU_FAILED_LOCK:  # parallel export (#464): one INFO line
+        _unmark_suspect(enc.codec)
+        first = enc.codec not in _GPU_ENCODE_FAILED
         _GPU_ENCODE_FAILED.add(enc.codec)
+    if first:
+        logger.info("Encoding the rest of this run with libx264 instead of %s", enc.codec)
     return result
 
 

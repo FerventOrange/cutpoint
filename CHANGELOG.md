@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Folder" button. The padding field is removed; `--extend` and `extend` remain. New defaults:
   Smart edges (`--speech-aware --smart-tail`) and Normalize loudness are on, and Compress Audio
   Peaks is Light unless `compress_peaks` is set in config.json; a saved browser choice wins (#466).
+- Faster exports with a GPU encoder: `clips` and `edit` export 2 clips at a time with NVENC,
+  VAAPI or AMF, and still 1 with libx264. The new `export_workers` setting (`auto`, or 1 to 3;
+  `CUTPOINT_EXPORT_WORKERS` overrides it) changes this. The clips, their names and manifest.json
+  are the same as before, and a failure or Ctrl+C still stops every export and removes its
+  partial file (#464).
 - `cutpoint ui`: each moment card shows where the moment lies in its source (the moment in gold
   on a strip of the whole source, read-only) instead of the score bar; the score is in the strip's
   hover title and in Stats for Nerds (#467).

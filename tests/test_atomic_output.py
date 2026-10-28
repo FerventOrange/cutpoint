@@ -22,6 +22,13 @@ from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, plannin
 from cutpoint.ffmpeg_utils import FFmpegError
 
 
+@pytest.fixture(autouse=True)
+def cpu_encoder(monkeypatch):
+    """Runs with two or more clips choose the number of parallel exports (#464) from the
+    encoder: pin libx264 so no test probes this machine's GPUs."""
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+
+
 def _dies_midway(exc: BaseException):
     def run(args, **_kw):
         Path(args[-1]).write_bytes(b"truncated")  # ffmpeg had started writing
