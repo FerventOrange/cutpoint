@@ -5833,7 +5833,7 @@ def test_advanced_export_options_are_hidden_until_a_browser_setting_shows_them()
     assert "h('span', { class: 'adv', text: `Latest export (" in render
     assert render.count("latest(") == 3 and "st.textContent" not in render
     for shown in ("say(`${note} Automatic picks", "say(note)", "say('Add moments to the sequence",
-                  "say(` It differs from this sequence.${note} Export again"):  # fmt: skip
+                  "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
         assert shown in render, shown
     # no 360 note makes say() null: every branch drops it, so "null" is never rendered
     assert "const show = (...parts) => st.replaceChildren(...parts.filter(Boolean));" in render

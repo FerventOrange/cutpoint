@@ -2502,7 +2502,7 @@ function renderExport() {
   } else if (!S.segments.length) show(say('Add moments to the sequence to export them.'));
   else if (!clips) show(say('Nothing exported yet. Exporting saves the sequence first.'));
   else if (exportMatches()) show(latest(' and matches this sequence.'), say(note));
-  else show(latest('.'), say(` It differs from this sequence.${note} Export again to update it.`));
+  else show(latest('.'), say(` The latest export differs from this sequence.${note} Export again to update it.`));
   renderBusy();
 }
 
