@@ -1636,8 +1636,9 @@ LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when th
 # in 0-255 grey levels: still video and its compression noise stay below 1, a moving game view
 # changes by tens of levels, a menu cursor or a small animation by a few) and no frame is
 # missing (a gap over STATIC_MAX_GAP_S, e.g. a skipped bad range, ends it). The frames within
-# STATIC_FEED_GUARD_S of feed activity (a feed sighting or a kill) are taken out, so kills in
-# still gameplay (scoped, spectating) are never dropped; the rest of a run is a static screen
+# STATIC_FEED_GUARD_S of feed activity (a feed sighting or a kill, but not an icon kill first
+# read within STATIC_FEED_GUARD_S of a still run's start: menu rows open with the screen) are
+# taken out, so kills in still gameplay (scoped, spectating) are never dropped; the rest of a run is a static screen
 # where at least STATIC_MIN_FRAMES frames hold still for at least STATIC_MIN_S when it shows new
 # menu text, else STATIC_BARE_MIN_S. New menu text is at least STATIC_TEXT_LINES texts the
 # generic interpreter reads that are no preset phrase (``unknown`` notice or big text lines, so
@@ -2440,8 +2441,8 @@ class OcrInterpretation:
 
             def feed_event(e: dict[str, Any]) -> bool:
                 """Feed sightings and kills (kills come from the feed region): never dropped
-                but icon kills (:func:`kept`); feed rows read as notices (``row_notices``)
-                are dropped like other notices.
+                but icon kills (:func:`kept`, :func:`feed_activity`); feed rows read as
+                notices (``row_notices``) are dropped like other notices.
                 This assumes menus do not cover the feed region; a scoreboard drawn over it
                 is kept."""
                 t = e.get("type")
@@ -2452,8 +2453,24 @@ class OcrInterpretation:
                 two words of a menu row ("Subtitles | Enabled") can read as one."""
                 return feed_event(e) and e.get("entry") != "icon"
 
+            # still screens' opening times: menu rows read as icon kills open with the
+            # screen, a real kill turns up partway through a still stretch
+            opened = [
+                run[0]["t"]
+                for run in still_stretches(self.frame_boxes)
+                if run[0].get("still") is not None and len(run) >= STATIC_MIN_FRAMES
+            ]
+
+            def feed_activity(e: dict[str, Any]) -> bool:
+                """Feed events that guard still frames from the static rule: not icon kills
+                first read within STATIC_FEED_GUARD_S of a still screen's opening."""
+                if not feed_event(e):
+                    return False
+                t0 = e["_times"][0]
+                return kept(e) or all(abs(t0 - t) > STATIC_FEED_GUARD_S for t in opened)
+
             tracked = tracker.events
-            feed_times = {t for e in tracked if feed_event(e) for t in e["_times"]}
+            feed_times = {t for e in tracked if feed_activity(e) for t in e["_times"]}
             # new menu text: when texts that are no preset phrase were first read, until when
             # shown; ``end`` moves only on the frames a region is read, so it is padded by one
             # read interval

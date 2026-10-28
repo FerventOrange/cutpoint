@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screen edge as `feed` regions, and the generic parser reads their lines as kills, using the name
   boxes' colours and the gap between them. It reads icon lines (exactly two names) only with a
   preset whose `feed` has `row_notices` (a discovered icon feed), and drops icon kills read on menu
-  frames. Other rows of such a feed ("X has found the bombs")
+  frames; an icon kill first read as a still screen opens is not taken as feed activity. Other rows of such a feed ("X has found the bombs")
   become notices, and a kill takes both names from its most complete read that repeats, or from the most complete read when none repeats (#433). A game that already has a preset keeps it: move the old preset away and run `analyze` or `events` again, or run `events --discover-regions` and copy the new `proposal.json`'s `feed` region and `"feed": {"row_notices": true}` into the preset by hand; the new region needs new OCR reads.
 
 ## [0.3.0] - 2026-10-27

@@ -69,7 +69,9 @@ split by an icon gap) as kills only with a preset whose `feed` has `row_notices`
 `colors`, that is a discovered icon feed; the feed's other rows (a name and text, such as
 "X has found the bombs") become notices; such rows that stay longer than 20 s, like lobby text, are
 dropped. With such a preset, menu and scoreboard frames produce no OCR events outside the kill feed,
-and icon kills read on menu frames (a settings row such as "Subtitles | Enabled") are dropped too.
+and icon kills read on menu frames (a settings row such as "Subtitles | Enabled") are dropped too;
+an icon kill first read as a still screen opens is not taken as feed activity, so a still menu
+is still found as one.
 A game that already has a preset does not pick this up: discovery does not run for it and the old
 preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
 preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or

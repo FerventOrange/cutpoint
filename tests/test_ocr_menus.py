@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 
 from cutpoint.events import killfeed
 from cutpoint.events.common import Source
@@ -773,3 +774,42 @@ def test_menu_rows_over_an_icon_feed_are_no_kills(tmp_path: Path, monkeypatch) -
     events, stats = _run(plain, monkeypatch, engine, _feed_preset())
     assert stats["menu_frames"] == 30
     assert [e for e in events if e["type"] == "kill"] == []
+
+
+def _rows_on_quiet_menu(t: float) -> list[tuple[str, float, float]]:
+    """The quiet menu at 20-30 s with 3 settings rows in the feed's area."""
+    out = _quiet_menu(t)
+    if 20 <= t < 30:
+        rows = [("Brightness", "Medium"), ("Subtitles", "Enabled"), ("Capture", "Alpha")]
+        out += [(a, 1410, 100 + 40 * r) for r, (a, _) in enumerate(rows)]
+        out += [(b, 1640, 100 + 40 * r) for r, (_, b) in enumerate(rows)]
+    return out
+
+
+def test_rows_on_a_still_menu_over_an_icon_feed_are_no_kills(tmp_path: Path, monkeypatch) -> None:
+    """Rows of a still menu read as icon kills open with the screen: no feed activity,
+    so the static rule finds the menu and drops them with its text."""
+    engine = _Engine(_rows_on_quiet_menu, (NOTICE, FEED))
+    preset = _feed_preset() | {"feed": {"row_notices": True}}
+    events, stats = _run(tmp_path, monkeypatch, engine, preset, still=lambda t: 20 <= t < 30)
+    assert stats["menu_frames"] == stats["static_frames"] == 30
+    assert [e for e in events if e["type"] == "kill"] == []
+    assert not [e for e in events if 20 <= e["t"] < 30]
+
+
+@pytest.mark.parametrize("end", [28.0, 31.0, 36.0])
+def test_icon_kill_in_still_gameplay_is_kept(tmp_path: Path, monkeypatch, end: float) -> None:
+    """An icon kill that turns up partway through still gameplay (shown 4, 7 or 12 s)
+    is feed activity."""
+
+    def screen(t: float) -> list[tuple[str, float, float]]:
+        out = [("Hold", 900, 820)]
+        if 24 <= t < end:
+            out += [("Alder", 1410, 100), ("Boxer7", 1640, 100)]
+        return out
+
+    engine = _Engine(screen, (NOTICE, FEED))
+    preset = _feed_preset() | {"feed": {"row_notices": True}}
+    events, _ = _run(tmp_path, monkeypatch, engine, preset, still=lambda t: 20 <= t < 40)
+    kills = [(e["killer"], e["victim"], e["t"]) for e in events if e["type"] == "kill"]
+    assert kills == [("Alder", "Boxer7", 24.0)]
