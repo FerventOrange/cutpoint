@@ -114,63 +114,78 @@
     <div id="sideSplit" class="splitter" role="separator" tabindex="0" aria-orientation="vertical"
          aria-controls="side" aria-label="Resize sequence column" title="Drag to resize, double-click to reset"></div>
 
-    <section class="col side" id="side" aria-labelledby="seqTitle">
-      <div class="col-head">
-        <h2 id="seqTitle" tabindex="-1">Sequence</h2>
-        <span id="seqTotal" class="tc muted"></span>
-        <span class="spacer"></span>
-        <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
+    <section class="col side" id="side" aria-label="Sequence and export">
+      <!-- Tabs (#462); a later tab (AI Chat, #346) is one more button and panel: app.js handles any number -->
+      <div class="side-tabs" role="tablist" aria-label="Sequence column">
+        <button type="button" role="tab" id="tabSequence" class="side-tab" data-tab="sequence" aria-selected="true" aria-controls="panelSequence">Sequence</button>
+        <button type="button" role="tab" id="tabExport" class="side-tab" data-tab="export" aria-selected="false" aria-controls="panelExport" tabindex="-1">Export</button>
       </div>
-      <div id="seqEmpty" class="empty"></div>
-      <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
-        <span id="seqSelCount" class="tc"></span>
-        <span class="spacer"></span>
-        <button type="button" id="seqRemoveSel" class="btn small danger">Remove selected</button>
-        <button type="button" id="seqClearSel" class="btn small">Clear</button>
-      </div>
-      <ol id="seqList" class="seq-list"></ol>
-      <section id="removedPanel" class="removed" aria-labelledby="removedTitle" hidden>
-        <h3 id="removedTitle">Removed clips</h3>
-        <p class="muted">Not ranked moments. Listed until the page reloads.</p>
-        <ol id="removedList" class="cand-list"></ol>
-      </section>
-      <p id="seqLive" class="vh" role="status"></p>
 
-      <fieldset class="panel" id="exportPanel">
-        <legend>Export clips</legend>
-        <label class="check"><input type="checkbox" id="optVertical"> Vertical 9:16</label>
-        <label class="field">Padding per side (seconds)
-          <input type="number" id="optExtend" min="0" max="30" step="0.5" value="0" inputmode="decimal">
-        </label>
+      <div id="panelSequence" class="side-panel" role="tabpanel" aria-labelledby="tabSequence">
+        <div class="col-head">
+          <h2 id="seqTitle" tabindex="-1">Sequence</h2>
+          <span id="seqTotal" class="tc muted"></span>
+          <span class="spacer"></span>
+          <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
+        </div>
+        <div id="seqEmpty" class="empty"></div>
+        <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
+          <span id="seqSelCount" class="tc"></span>
+          <span class="spacer"></span>
+          <button type="button" id="seqRemoveSel" class="btn small danger">Remove selected</button>
+          <button type="button" id="seqClearSel" class="btn small">Clear</button>
+        </div>
+        <ol id="seqList" class="seq-list"></ol>
+        <section id="removedPanel" class="removed" aria-labelledby="removedTitle" hidden>
+          <h3 id="removedTitle">Removed clips</h3>
+          <p class="muted">Not ranked moments. Listed until the page reloads.</p>
+          <ol id="removedList" class="cand-list"></ol>
+        </section>
+        <p id="seqLive" class="vh" role="status"></p>
+      </div>
+
+      <div id="panelExport" class="side-panel" role="tabpanel" aria-labelledby="tabExport" hidden>
+        <!-- Each option's description: a title on hover, and the same words for screen readers (aria-describedby) -->
+        <fieldset class="panel opts" id="exportPanel">
+          <legend>Export &amp; assembly options</legend>
+          <label class="check" title="Exports the clips as 9:16 vertical video (1080x1920, center crop) for Shorts, Reels and TikTok."><input type="checkbox" id="optVertical" aria-describedby="dVertical"> Vertical 9:16</label>
+          <span id="dVertical" class="vh">Exports the clips as 9:16 vertical video (1080x1920, center crop) for Shorts, Reels and TikTok.</span>
+          <label class="check" title="Transcribes the final video and burns its words onto the picture as captions."><input type="checkbox" id="optCaptions" aria-describedby="dCaptions"> Burn in captions</label>
+          <span id="dCaptions" class="vh">Transcribes the final video and burns its words onto the picture as captions.</span>
+          <label class="check" title="Moves cuts off mid-word and lets reactions finish instead of using your exact trims."><input type="checkbox" id="optSmart" aria-describedby="dSmart" checked> Smart edges</label>
+          <span id="dSmart" class="vh">Moves cuts off mid-word and lets reactions finish instead of using your exact trims.</span>
+          <label class="check" title="Evens the final video to a standard streaming loudness (-14 LUFS)."><input type="checkbox" id="optLoudnorm" aria-describedby="dLoudnorm" checked> Normalize loudness</label>
+          <span id="dLoudnorm" class="vh">Evens the final video to a standard streaming loudness (-14 LUFS).</span>
+          <label class="check" title="Keeps the audio transition matched to the video transition: Cut with Cut, Crossfade with Fade."><input type="checkbox" id="optLink" aria-describedby="dLink" checked> Link Transitions</label>
+          <span id="dLink" class="vh">Keeps the audio transition matched to the video transition: Cut with Cut, Crossfade with Fade.</span>
+          <div class="opt-grid">
+            <label for="optTransition" title="How the picture changes from one clip to the next: a hard cut or a short fade.">Video transition</label>
+            <select id="optTransition" aria-describedby="dTransition"><option value="cut">Cut</option><option value="fade">Fade</option></select>
+            <span id="dTransition" class="vh">How the picture changes from one clip to the next: a hard cut or a short fade.</span>
+            <label for="optAudioTransition" title="How the sound changes from one clip to the next: a hard cut or a short crossfade, which needs the Fade video transition.">Audio transition</label>
+            <select id="optAudioTransition" aria-describedby="dAudioTransition"><option value="cut">Cut</option><option value="crossfade">Crossfade</option></select>
+            <span id="dAudioTransition" class="vh">How the sound changes from one clip to the next: a hard cut or a short crossfade, which needs the Fade video transition.</span>
+          </div>
+          <fieldset class="panel peaks">
+            <legend id="peaksLegend" title="Evens out loud peaks such as shouts and explosions and levels the clips, in Export clips and Assemble.">Compress Audio Peaks</legend>
+            <input type="range" id="optPeaks" min="0" max="2" step="1" value="1" aria-labelledby="peaksLegend" aria-describedby="dPeaks" aria-valuetext="Light">
+            <div class="ticks" aria-hidden="true"><span>None</span><span>Light</span><span>Max</span></div>
+            <span id="dPeaks" class="vh">Evens out loud peaks such as shouts and explosions and levels the clips, in Export clips and Assemble.</span>
+          </fieldset>
+        </fieldset>
         <p id="exportState" class="muted"></p>
-        <div class="panel-acts">
+        <div class="export-acts">
           <button type="button" id="clipsBtn" class="btn primary">Export clips</button>
-          <button type="button" id="revealClipsBtn" class="btn outline" aria-label="Show folder of the exported clips" hidden>Show folder</button>
-        </div>
-      </fieldset>
-
-      <fieldset class="panel" id="assemblePanel">
-        <legend>Assemble final video</legend>
-        <label class="field">Transition
-          <select id="optTransition"><option value="cut">Cut</option><option value="fade">Fade</option></select>
-        </label>
-        <label class="check"><input type="checkbox" id="optLoudnorm"> Normalize loudness</label>
-        <label class="field" title="Evens out loud peaks such as shouts and explosions, and levels the clips.">Compress peaks
-          <select id="optPeaks" aria-describedby="peaksHint"><option value="off">Off</option><option value="light">Light</option><option value="strong">Strong</option></select>
-        </label>
-        <small id="peaksHint" class="muted">Also used by Export clips.</small>
-        <label class="check"><input type="checkbox" id="optCaptions"> Burn in captions</label>
-        <div class="panel-acts">
           <button type="button" id="assembleBtn" class="btn primary">Assemble</button>
-          <button type="button" id="revealOutBtn" class="btn outline" aria-label="Show folder of the final video" hidden>Show folder</button>
+          <button type="button" id="revealExportBtn" class="btn outline" hidden>Show Exports Folder</button>
         </div>
-      </fieldset>
 
-      <section class="panel" id="outputs" aria-labelledby="outTitle" hidden>
-        <h3 id="outTitle">Final video</h3>
-        <video id="finalVideo" controls playsinline preload="metadata"></video>
-        <ul id="outList" class="out-list"></ul>
-      </section>
+        <section class="panel" id="outputs" aria-labelledby="outTitle" hidden>
+          <h3 id="outTitle">Final video</h3>
+          <video id="finalVideo" controls playsinline preload="metadata"></video>
+          <ul id="outList" class="out-list"></ul>
+        </section>
+      </div>
     </section>
   </main>
 

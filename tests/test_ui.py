@@ -458,7 +458,7 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
             for b in ("slate", "panel", "raise", "deep", "picked", "bar", "hover", "log-bg")
         ]
         text += [
-            (f, b) for f in ("muted", "amber", "bad", "ok") for b in ("slate", "panel", "deep")
+            (f, b) for f in ("muted", "amber-text", "bad", "ok") for b in ("slate", "panel", "deep")
         ]
         text += [("muted", "raise"), ("glow", "panel"), ("bad", "bad-bg"), ("amber-ink", "amber")]
         text += [
@@ -470,7 +470,8 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
         for fg, bg in text:
             assert _contrast(t[fg], t[bg]) >= 4.5, (name, fg, bg)
         # focus rings, the focused-card glow and other controls: 3:1 (WCAG 1.4.11)
-        ui_parts = [("amber", b) for b in ("slate", "panel", "raise", "deep", "bar")]
+        # --amber-text: focus rings and amber text; --amber is the fill, with --amber-ink on it
+        ui_parts = [("amber-text", b) for b in ("slate", "panel", "raise", "deep", "bar")]
         ui_parts += [
             ("glow", "deep"),
             ("danger", "deep"),
@@ -485,6 +486,10 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
         for fg, bg in ui_parts:
             assert _contrast(t[fg], t[bg]) >= 3, (name, fg, bg)
     assert re.search(r':root\[data-theme="light"\] \{[^}]*color-scheme: light;', css)
+    # the selected tab's underline and the range accents use that token, not the --amber fill
+    assert re.search(r'\.side-tab\[aria-selected="true"\][^{]*\{[^}]*var\(--amber-text\)', css)
+    for rule in re.findall(r"[^{}]*input\[type=range\][^{}]*\{[^}]*accent-color[^}]*\}", css):
+        assert "accent-color: var(--amber-text)" in rule, rule
 
 
 def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
@@ -5047,3 +5052,235 @@ def test_a_cancelled_job_interrupts_its_running_step(monkeypatch: pytest.MonkeyP
     assert job.done.wait(10)
     assert job.view()["status"] == "cancelled"
     assert [s["state"] for s in job.view()["progress"]["steps"]] == ["interrupted", "skipped"]
+
+
+# --- Export options: Smart edges, Audio transition (#462) ---
+
+
+def _segments_written(p: Path) -> list[dict]:
+    (seg_file,) = list(p.rglob("segments-*.json"))
+    return json.loads(seg_file.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("body", "smart"),
+    [({}, False), ({"smart_edges": False}, False), ({"smart_edges": True}, True)],
+)
+def test_clips_job_smart_edges_hands_the_trims_to_the_smart_flags(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict, smart: bool
+) -> None:
+    p, seg = cli_project(tmp_path)
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    captured: list[list[str]] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest):
+        captured.append(args)
+        same_folder()  # the check under the jobs lock, which writes the segments file
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    res = client.post("/api/projects/cli/jobs", json={"action": "clips", **body})
+    assert res.status_code == 200, res.text
+    args = captured[0]
+    assert ("--smart-tail" in args) is smart and ("--speech-aware" in args) is smart
+    (seg,) = _segments_written(p)
+    if smart:  # the flags decide: no per-segment override
+        assert "smart_tail" not in seg and "speech_aware" not in seg
+    else:  # today's behaviour: exactly the user's trims
+        assert seg["smart_tail"] is False and seg["speech_aware"] is False
+    assert (seg["start"], seg["end"]) == (1, 4.5)
+
+
+@pytest.mark.parametrize("value", ["true", 1, 0, None, ["x"]])
+def test_clips_job_rejects_a_non_boolean_smart_edges(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: object
+) -> None:
+    res, captured = peaks_job(
+        client, monkeypatch, tmp_path, {"action": "clips", "smart_edges": value}
+    )
+    assert res.status_code == 400, res.text
+    assert "smart_edges must be true or false" in res.json()["detail"]
+    assert not captured
+
+
+@pytest.mark.parametrize(
+    ("body", "audio"),
+    [
+        ({}, "cut"),  # old pages send none: follows the video
+        ({"transition": "cut"}, "cut"),
+        ({"transition": "fade"}, "crossfade"),
+        ({"transition": "fade", "audio_transition": "cut"}, "cut"),
+        ({"transition": "fade", "audio_transition": "crossfade"}, "crossfade"),
+        ({"transition": "cut", "audio_transition": "cut"}, "cut"),
+    ],
+)
+def test_assemble_job_passes_the_audio_transition(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict, audio: str
+) -> None:
+    res, captured = peaks_job(client, monkeypatch, tmp_path, {"action": "assemble", **body})
+    assert res.status_code == 200, res.text
+    args = captured[0]
+    assert args.count("--audio-transition") == 1
+    assert args[args.index("--audio-transition") + 1] == audio
+    assert args[args.index("--transition") + 1] == body.get("transition", "cut")
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"transition": "cut", "audio_transition": "crossfade"}, "needs the fade"),
+        ({"audio_transition": "crossfade"}, "needs the fade"),  # transition defaults to cut
+        ({"transition": "fade", "audio_transition": "echo"}, "audio_transition must be"),
+        ({"transition": "fade", "audio_transition": None}, "audio_transition must be"),
+    ],
+)
+def test_assemble_job_refuses_an_audio_transition_that_does_not_fit(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: dict,
+    message: str,
+) -> None:
+    res, captured = peaks_job(client, monkeypatch, tmp_path, {"action": "assemble", **body})
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured
+
+
+@pytest.mark.parametrize(
+    ("cfg", "is_set", "shown"),
+    [
+        (None, False, "off"),
+        ("light", True, "light"),
+        ("strong", True, "strong"),
+        ("off", True, "off"),
+        ("loud", False, "off"),  # invalid: not a default the page should start from
+        (3, False, "off"),
+    ],
+)
+def test_settings_say_whether_config_json_sets_compress_peaks(
+    client: TestClient, home: Path, cfg: object, is_set: bool, shown: str
+) -> None:
+    """The page starts Compress Audio Peaks on Light unless config.json sets a value."""
+    if cfg is not None:
+        set_config(home, compress_peaks=cfg)
+    st = client.get("/api/settings").json()
+    assert (st["compress_peaks_set"], st["compress_peaks"]) == (is_set, shown)
+
+
+# --- Web contract pins for the Export tab (#462) ---
+
+
+def _web(name: str) -> str:
+    return (ui.WEB_DIR / name).read_text(encoding="utf-8")
+
+
+def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
+    """Contract pin (#462): the column has a Sequence and an Export tab, each controlling a
+    labelled tabpanel; only the selected tab is in the tab order (roving tabindex)."""
+    html = _web("index.html")
+    (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
+    tabs = re.findall(r"<button\b[^>]*>", tablist)
+    assert len(tabs) == 2 and all('role="tab"' in t for t in tabs)
+    panels = dict(
+        re.findall(r'<div id="(\w+)"[^>]*role="tabpanel"[^>]*aria-labelledby="(\w+)"', html)
+    )
+    assert panels == {"panelSequence": "tabSequence", "panelExport": "tabExport"}
+    for tab in tabs:
+        tab_id = re.search(r'id="(\w+)"', tab)[1]
+        controls = re.search(r'aria-controls="(\w+)"', tab)[1]
+        assert panels[controls] == tab_id  # tab and panel name each other
+    assert 'aria-selected="true"' in tabs[0] and 'aria-selected="false"' in tabs[1]
+    assert "tabindex" not in tabs[0] and 'tabindex="-1"' in tabs[1]
+    export_panel = re.search(r'<div id="panelExport"[^>]*>', html)[0]
+    assert " hidden" in export_panel  # Sequence is the tab shown first
+    js = _web("app.js")
+    assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
+
+
+def test_export_panel_has_the_options_and_actions_and_no_padding_field() -> None:
+    """Contract pin (#462): the Export tab holds every export and assembly option and the two
+    actions; the old padding field (``#optExtend``) is gone from the page and its script."""
+    html = _web("index.html")
+    export = re.search(r'<div id="panelExport".*?\n      </div>\n    </section>', html, re.S)[0]
+    ids = set(re.findall(r'\bid="(\w+)"', export))
+    assert {
+        "exportPanel", "optVertical", "optCaptions", "optSmart", "optLoudnorm", "optLink",
+        "optTransition", "optAudioTransition", "optPeaks", "clipsBtn", "assembleBtn",
+        "revealExportBtn", "exportState", "outputs", "finalVideo",
+    } <= ids  # fmt: skip
+    assert "optExtend" not in html and "optExtend" not in _web("app.js")
+    assert "Padding per side" not in html
+    assert re.search(r'<select id="optAudioTransition"[^>]*>(.*?)</select>', html, re.S)
+    values = re.findall(
+        r'value="(\w+)"', re.search(r'<select id="optAudioTransition".*?</select>', html, re.S)[0]
+    )
+    assert values == ["cut", "crossfade"]
+    # the page does not send a padding any more; the server still accepts one
+    assert not re.search(r"\bextend\s*:", _web("app.js"))
+
+
+def test_every_export_option_is_described_for_screen_readers() -> None:
+    """Contract pin (#462): each option names a description element (aria-describedby) that
+    exists in the page and is not empty, so hover titles are not the only help."""
+    html = _web("index.html")
+    panel = re.search(
+        r'<fieldset class="panel opts" id="exportPanel">.*?</fieldset>\s*</fieldset>', html, re.S
+    )[0]
+    controls = re.findall(r"<(?:input|select)\b[^>]*>", panel)
+    option_ids = {"optVertical", "optCaptions", "optSmart", "optLoudnorm", "optLink",
+                  "optTransition", "optAudioTransition", "optPeaks"}  # fmt: skip
+    seen = set()
+    for control in controls:
+        cid = re.search(r'id="(\w+)"', control)[1]
+        seen.add(cid)
+        described = re.search(r'aria-describedby="(\w+)"', control)
+        assert described, f"{cid} has no aria-describedby"
+        text = re.search(rf'<span id="{described[1]}"[^>]*>(.+?)</span>', panel, re.S)
+        assert text and len(text[1].strip()) > 20, f"{cid}: description missing or empty"
+    assert seen == option_ids
+
+
+def test_export_option_defaults_are_smart_edges_loudnorm_link_on_and_light_peaks() -> None:
+    """Contract pin (#462): a viewer who changed nothing gets Smart edges, Normalize loudness and
+    Link Transitions on and Light peaks; Vertical and captions off. The markup and the script's
+    defaults agree, and the slider's stops are None, Light, Max."""
+    html = _web("index.html")
+    js = _web("app.js")
+
+    def checked(cid: str) -> bool:
+        return " checked" in re.search(rf'<input[^>]*id="{cid}"[^>]*>', html)[0]
+
+    assert [checked(c) for c in ("optSmart", "optLoudnorm", "optLink")] == [True] * 3
+    assert [checked(c) for c in ("optVertical", "optCaptions")] == [False] * 2
+    defaults = re.search(r"const OPT_DEFAULTS = \{(.*?)\};", js, re.S)[1]
+    for pair in ("smart_edges: true", "loudnorm: true", "link: true", "vertical: false",
+                 "captions: false", "transition: 'cut'", "audio_transition: 'cut'",
+                 "compress_peaks: 'light'"):  # fmt: skip
+        assert pair in defaults
+    assert "const PEAK_STOPS = ['off', 'light', 'strong'];" in js
+    slider = re.search(r'<input type="range" id="optPeaks"[^>]*>', html)[0]
+    assert 'min="0"' in slider and 'max="2"' in slider and 'value="1"' in slider  # Light
+    # config.json's compress_peaks, when it sets one, beats the Light default
+    assert "compress_peaks_set" in js
+
+
+def test_the_page_sends_the_new_options_with_its_jobs() -> None:
+    js = _web("app.js")
+    assert "smart_edges: $('#optSmart').checked" in js
+    assert "audio_transition: $('#optAudioTransition').value" in js
+
+
+def test_focus_rings_use_the_amber_text_colour_so_light_theme_keeps_contrast() -> None:
+    """Contract pin (#462): --amber is a fill (dark ink on it); focus rings and amber text use
+    --amber-text, which Light darkens. test_settings_offer_blue_light_and_dark_themes... holds
+    the contrast ratios."""
+    css = _web("app.css")
+    rings = re.findall(r"[^{}]*:focus-visible[^{}]*\{[^}]*outline[^}]*\}", css)
+    assert rings
+    for rule in rings:
+        for colour in re.findall(r"outline(?:-color)?:[^;]*var\((--[\w-]+)\)", rule):
+            assert colour == "--amber-text", rule
+    assert re.search(r":focus-visible \{ outline: 2px solid var\(--amber-text\)", css)
+    light = re.search(r':root\[data-theme="light"\][^{]*\{(.*?)\}', css, re.S)
+    assert light and "--amber-text:" in light[1]

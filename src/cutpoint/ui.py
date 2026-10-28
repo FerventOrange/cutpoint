@@ -71,6 +71,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths, progress
+from cutpoint.assemble import AUDIO_TRANSITIONS, default_audio_transition
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     COMPRESS_PEAKS,
@@ -532,6 +533,8 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "vision": data.get("vision") is True,
         "vision_model": default_model(),
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
+        # whether config.json sets it: the page's Compress peaks then starts from it, else Light
+        "compress_peaks_set": peaks in COMPRESS_PEAKS,
     }
 
 
@@ -2548,6 +2551,7 @@ def create_app(port: int) -> FastAPI:
             ):
                 raise bad(f"extend must be 0-{MAX_EXTEND_S:g} seconds")
             vertical = _flag(body, "vertical")
+            smart = _flag(body, "smart_edges")
             peaks = _compress_peaks(body)
             out_name = fresh_name(p, f"clips_ui_{stamp}")
             seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
@@ -2555,9 +2559,13 @@ def create_app(port: int) -> FastAPI:
 
             def prepare() -> None:
                 _ui_folder(p)  # a command-line project has no ui folder yet
-                # Exactly the trims the user made, in their order: no smart tails or speech snapping.
+                # The user's trims, in their order. Exactly them unless Smart edges is on: then
+                # the segments leave smart tails and speech snapping to the flags below.
                 cache.save_json(
-                    seg_file, [{**s, "smart_tail": False, "speech_aware": False} for s in segments]
+                    seg_file,
+                    segments
+                    if smart
+                    else [{**s, "smart_tail": False, "speech_aware": False} for s in segments],
                 )
                 written.append(seg_file)
 
@@ -2566,6 +2574,8 @@ def create_app(port: int) -> FastAPI:
             )
             if vertical:
                 args.append("--vertical")
+            if smart:
+                args += ["--smart-tail", "--speech-aware"]
             if extend:
                 args += ["--extend", f"{float(extend):g}"]
             args += peaks
@@ -2586,6 +2596,12 @@ def create_app(port: int) -> FastAPI:
             transition = body.get("transition", "cut")
             if transition not in ("cut", "fade"):
                 raise bad("transition must be 'cut' or 'fade'")
+            # Old pages send none: the audio follows the video, as before
+            audio_transition = body.get("audio_transition", default_audio_transition(transition))
+            if audio_transition not in AUDIO_TRANSITIONS:
+                raise bad("audio_transition must be 'cut' or 'crossfade'")
+            if transition == "cut" and audio_transition == "crossfade":
+                raise bad("an audio crossfade needs the fade video transition")
             exp_dir = exp["dir"]
             stem = fresh_name(
                 p,
@@ -2599,6 +2615,8 @@ def create_app(port: int) -> FastAPI:
                 str(p / f"{stem}.mp4"),
                 "--transition",
                 transition,
+                "--audio-transition",
+                audio_transition,
                 *_compress_peaks(body),
             )
             if _flag(body, "loudnorm"):

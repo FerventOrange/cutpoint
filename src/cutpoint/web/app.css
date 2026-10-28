@@ -7,8 +7,9 @@
   --track: #455d7d; /* behind the --amber fill of progress and score bars */
   --text: #edf2f8;
   --muted: #b3c2d2;
-  --amber: #f3bd60;
+  --amber: #f3bd60; /* fills: primary buttons, the skip link, tags, bars on --track */
   --amber-ink: #2a1d06;
+  --amber-text: #f3bd60; /* amber text, focus rings, state marks (selected tab, checkbox and slider accents); darker in Light */
   --bad: #ffa89b;
   --ok: #94d6a8;
   --glow: #ffae19; /* focused sequence card */
@@ -50,18 +51,21 @@
 }
 /* Settings > Theme (#445). Blue is :root above, the default; index.html sets data-theme before
    first paint from this browser's storage. Light and Dark keep text at 4.5:1 and focus rings and
-   control borders at 3:1; Blue keeps today's colours (its borders are below 3:1). */
+   control borders at 3:1; Blue keeps today's colours (its borders are below 3:1). All three fill
+   with the same amber (--amber, dark ink on it); Light's --amber-text is a darker amber, as the
+   fill is too pale for text and focus rings on its light surfaces. */
 :root[data-theme="light"] {
   --slate: #edf1f6;
   --panel: #ffffff;
   --raise: #e2e8f0;
   --deep: #dfe5ed;
   --line: #718096; /* 3:1 or more on panel, slate and deep: control borders */
-  --track: #aeb9c7; /* --amber fill 3.2:1 on it; lighter than --line so the fill reads */
+  --track: #5f6b7a; /* --amber fill 3.2:1 on it */
   --text: #17212e;
   --muted: #475669;
-  --amber: #8a5300; /* text and focus rings on light backgrounds */
-  --amber-ink: #ffffff;
+  --amber: #f3bd60; /* the fill of the other themes; 1.7:1 on white, so never text */
+  --amber-ink: #2a1d06;
+  --amber-text: #8a5300; /* text and focus rings on light backgrounds: 4.5:1 or more */
   --bad: #b02a1f;
   --ok: #1b6e37;
   --glow: #9c4f00;
@@ -77,7 +81,7 @@
   --gold-btn-hover: #efd697;
   --gold-ink: #533800;
   --hover: #d0d9e4;
-  --amber-hover: #724400;
+  --amber-hover: #f7cb80;
   --danger-btn-hover: #ab2424;
   --bad-bg: #fbe6e3;
   --bad-line: #e2a49c;
@@ -95,14 +99,14 @@
   color-scheme: light;
 }
 :root[data-theme="dark"] {
-  --slate: #17191c;
-  --panel: #1f2226;
-  --raise: #2c3036;
+  --slate: #2a2d32; /* between --deep and --panel */
+  --panel: #454950;
+  --raise: #4f545b; /* controls: lighter than the panel */
   --deep: #111315;
-  --line: #6b737e; /* 3:1 or more on panel, slate and deep */
-  --track: #656c76; /* --amber fill 3.1:1 on it, itself 3:1 on panel, slate and deep */
+  --line: #9ba3ad; /* 3:1 or more on panel, slate and deep */
+  --track: #666c75; /* --amber fill 3.1:1 on it */
   --text: #e8eaed;
-  --muted: #abb2bb;
+  --muted: #c8ced5; /* 4.5:1 or more on panel, raise, slate and deep */
   --amber: #f3bd60;
   --amber-ink: #2a1d06;
   --bad: #ff9e90;
@@ -110,13 +114,13 @@
   --glow: #ffae19;
   --danger: #ff6b6b;
   --danger-btn: #c42f2f;
-  --card-line: #2c3036;
-  --picked: #22303f;
-  --bar: #30353c;
-  --hover: #3a4048;
+  --card-line: #5c626b;
+  --picked: #31445a;
+  --bar: #4b5057;
+  --hover: #5a6069;
   --bad-bg: #3d2427;
   --bad-line: #6e3e44;
-  --art: #7d858f;
+  --art: #969ea8;
   --well: #090a0c;
   --log-bg: #0c0e10;
   --tick: rgba(171, 178, 187, 0.2);
@@ -156,7 +160,7 @@ h3 { font-size: 13px; font-weight: 650; }
 .skip { position: absolute; left: 8px; top: -60px; z-index: 10; background: var(--amber); color: var(--amber-ink); padding: 8px 12px; border-radius: 4px; }
 .skip:focus { top: 8px; }
 
-:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--amber-text); outline-offset: 2px; }
 
 /* controls */
 .btn {
@@ -178,7 +182,7 @@ input, select {
   font: inherit; color: var(--text); background: var(--deep); border: 1px solid var(--line);
   border-radius: 4px; padding: 6px 8px; min-height: 34px; min-width: 0;
 }
-input[type=checkbox] { min-height: 0; width: 16px; height: 16px; accent-color: var(--amber); }
+input[type=checkbox] { min-height: 0; width: 16px; height: 16px; accent-color: var(--amber-text); }
 input[type=number] { width: 7em; }
 select { max-width: 100%; }
 
@@ -194,10 +198,10 @@ select { max-width: 100%; }
   display: flex; align-items: center; gap: 12px; padding: 8px 16px;
   background: var(--deep); border-bottom: 1px solid var(--line);
 }
-.brand { font-size: 17px; font-weight: 750; letter-spacing: -0.01em; color: var(--amber); }
+.brand { font-size: 17px; font-weight: 750; letter-spacing: -0.01em; color: var(--amber-text); }
 .proj-pick select { min-width: 12em; max-width: 30vw; }
 .save { color: var(--muted); }
-.save.unsaved { color: var(--amber); }
+.save.unsaved { color: var(--amber-text); }
 /* gear: square, icon only */
 .icon-btn { display: grid; place-items: center; padding: 0; width: 34px; }
 .icon-btn .icon { width: 20px; height: 20px; }
@@ -220,7 +224,7 @@ select { max-width: 100%; }
   width: 8px; cursor: col-resize; touch-action: none;
 }
 .splitter::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: transparent; transition: background-color var(--ease); }
-.splitter:hover::after, .splitter.dragging::after, .splitter:focus-visible::after { background: var(--amber); }
+.splitter:hover::after, .splitter.dragging::after, .splitter:focus-visible::after { background: var(--amber-text); }
 .splitter:focus-visible { outline: none; }
 .splitter:focus-visible::after { width: 4px; } /* a thicker amber bar is the focus indicator */
 /* position: the column is the containing block of the absolute .vh labels in its rows, so its overflow
@@ -232,6 +236,24 @@ select { max-width: 100%; }
 .side { border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
 .side > * { flex: none; }
 .side .col-head { margin-bottom: 0; }
+/* the column's tabs (Sequence | Export): a band across the top like the moments header; the selected
+   tab is underlined in amber, the others muted */
+.side-tabs {
+  display: flex; gap: 4px; margin: -12px -14px 0; padding: 0 10px;
+  background: var(--slate); border-bottom: 1px solid var(--line);
+}
+.side-tab {
+  font: inherit; font-weight: 650; color: var(--muted); background: none; cursor: pointer;
+  border: 0; border-bottom: 3px solid transparent; padding: 9px 12px 7px; min-height: 40px;
+}
+.side-tab:hover { color: var(--text); }
+.side-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--amber-text); }
+.side-tab:focus-visible { outline-offset: -2px; }
+.side-panel { display: flex; flex-direction: column; gap: 12px; }
+.side-panel > * { flex: none; }
+/* the title stays for screen readers and as a focus target; the tab shows it */
+.side .col-head { position: relative; }
+.side .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* moments header band: count centred; "Analyze again" and "Show folder" on the right, or below it when there is no room; the title is visually hidden */
 .moments { container: moments / inline-size; }
 .moments .col-head {
@@ -290,7 +312,7 @@ select { max-width: 100%; }
 .step-state { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .step-detail, .step-bar { grid-column: 2 / -1; }
 .step-detail { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
-.step[data-state=running] .step-state { color: var(--amber); }
+.step[data-state=running] .step-state { color: var(--amber-text); }
 .step[data-state=done] .step-icon, .step[data-state=done] .step-state { color: var(--ok); }
 .step[data-state=skipped] .step-icon, .step[data-state=skipped] .step-state,
 .step[data-state=cancelled] .step-icon, .step[data-state=cancelled] .step-state { color: var(--muted); }
@@ -314,14 +336,14 @@ select { max-width: 100%; }
   background: var(--slate); border: 1px solid transparent; border-left: 3px solid var(--line);
   border-radius: 4px; padding: 4px 6px 4px 0;
 }
-.cand.picked { border-left-color: var(--amber); }
-.cand[aria-current] { background: var(--deep); border-color: var(--line); border-left-color: var(--amber); }
+.cand.picked { border-left-color: var(--amber-text); }
+.cand[aria-current] { background: var(--deep); border-color: var(--line); border-left-color: var(--amber-text); }
 .cand-main {
   font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer;
   display: grid; gap: 3px; padding: 6px 8px; min-width: 0; border-radius: 4px;
 }
 .cand-top { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
-.rank { color: var(--amber); font-weight: 650; min-width: 2.2em; }
+.rank { color: var(--amber-text); font-weight: 650; min-width: 2.2em; }
 .cand-title { font-weight: 600; overflow-wrap: anywhere; }
 .cand-time { color: var(--muted); font-size: 13px; }
 .tag { font-size: 12px; color: var(--amber-ink); background: var(--amber); border-radius: 3px; padding: 0 5px; }
@@ -336,7 +358,7 @@ select { max-width: 100%; }
 .prep { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 3px; min-width: 6.4em; font-size: 11.5px; line-height: 16px; font-weight: 500; color: var(--muted); }
 .prep .icon { width: 12px; height: 12px; flex: none; }
 .prep[data-state=ready] { color: var(--ok); }
-.prep[data-state=encoding] { color: var(--amber); }
+.prep[data-state=encoding] { color: var(--amber-text); }
 .seq-dur .prep { margin-left: 8px; min-width: 0; vertical-align: -2px; }
 
 /* preview: meta and add/remove on one row at the top (the title is visually hidden); video, transport bar,
@@ -375,7 +397,7 @@ select { max-width: 100%; }
 /* mute toggle and volume slider; the slider keeps the amber of the other controls */
 .vol { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .vol .icon-btn { min-width: 0; flex: none; }
-.vol input[type=range] { width: 7em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber); }
+.vol input[type=range] { width: 7em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
 
 /* the cut rail: the moment in its surrounding footage; the ticks hold the place of a future filmstrip */
 .rail {
@@ -420,9 +442,9 @@ select { max-width: 100%; }
   background: var(--gold-edge); border-radius: 2px; box-shadow: 0 0 0 1px var(--deep);
 }
 .rail-handle.end::before { left: 7px; }
-.rail-handle:hover::before, .rail-handle.dragging::before { background: var(--amber); }
-.rail-handle:focus-visible { outline: 2px solid var(--amber); outline-offset: 0; }
-.rail-handle:focus-visible::before { background: var(--amber); }
+.rail-handle:hover::before, .rail-handle.dragging::before { background: var(--amber-text); }
+.rail-handle:focus-visible { outline: 2px solid var(--amber-text); outline-offset: 0; }
+.rail-handle:focus-visible::before { background: var(--amber-text); }
 .rail-handle.off-view::before { opacity: 0.45; } /* its point is off the view: parked at the edge */
 .rail-ends { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 /* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
@@ -512,11 +534,11 @@ select { max-width: 100%; }
 .seq.selected .seq-card { background: var(--picked); }
 .seq[aria-current] .seq-card { border-color: var(--glow); box-shadow: 0 0 0 1px var(--glow), 0 0 10px var(--glow-shadow); }
 .seq.dragging .seq-card { opacity: 0.55; }
-.seq.playing .seq-card { border-left: 3px solid var(--amber); }
+.seq.playing .seq-card { border-left: 3px solid var(--amber-text); }
 /* the playing clip: a play icon over its thumbnail, not colour alone */
 .seq-now { position: absolute; inset: 0; display: grid; place-items: center; background: var(--thumb-scrim); color: var(--thumb-scrim-ink); }
 .seq-thumb .seq-now .icon { visibility: visible; width: 20px; height: 20px; }
-.seq.drop .seq-card { box-shadow: 0 -3px 0 var(--amber); }
+.seq.drop .seq-card { box-shadow: 0 -3px 0 var(--amber-text); }
 .seq-main {
   font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer;
   display: flex; align-items: center; gap: 6px; padding: 2px; min-width: 0; flex: 0 1 auto; border-radius: 4px;
@@ -588,21 +610,33 @@ select { max-width: 100%; }
 .panel > h3 { padding: 0; }
 .panel .btn { justify-self: start; }
 .panel:disabled { opacity: 0.6; }
-#peaksHint { margin-top: -6px; font-size: 12px; }
-/* the primary action, then its Show folder; they wrap onto two rows in a narrow side column */
 .panel-acts { display: flex; flex-wrap: wrap; gap: 8px; }
 .panel-acts .btn { white-space: nowrap; }
-#revealClipsBtn, #revealOutBtn { display: flex; align-items: center; gap: 6px; }
+/* Export & assembly options: the checkboxes, then the transitions with their names on the left */
+.opts { gap: 4px; }
+.opts .check { min-height: 30px; }
+.opt-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 12px; margin: 6px 0 4px; }
+.opt-grid label { color: var(--text); }
+.opt-grid select { width: 100%; }
+.opt-grid select:disabled { opacity: 0.6; }
+.opts .peaks { gap: 2px; margin-top: 6px; }
+.opts .peaks legend { font-weight: 550; font-size: 14.5px; }
+.peaks input[type=range] { width: 100%; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
+.peaks .ticks { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+/* Export clips and Assemble side by side, Show Exports Folder across under them */
+.export-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.export-acts .btn { min-height: 40px; }
+#revealExportBtn { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 6px; }
 #finalVideo { width: 100%; background: var(--well); border-radius: 4px; max-height: 40dvh; }
 .out-list { display: grid; gap: 4px; }
-.out-list a { color: var(--amber); overflow-wrap: anywhere; }
+.out-list a { color: var(--amber-text); overflow-wrap: anywhere; }
 
 /* jobs */
 .jobs { background: var(--deep); border-top: 1px solid var(--line); padding: 8px 16px; }
 .jobs-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .jobs h2 { font-size: 14px; }
 .job-status { overflow-wrap: anywhere; flex: 1 1 20ch; min-width: 0; }
-.job-status[data-status=running], .job-status[data-status=cancelling] { color: var(--amber); }
+.job-status[data-status=running], .job-status[data-status=cancelling] { color: var(--amber-text); }
 .job-status[data-status=completed] { color: var(--ok); }
 .job-status[data-status=failed] { color: var(--bad); }
 .job-status[data-status=cancelled] { color: var(--muted); }
@@ -644,7 +678,7 @@ dialog form { display: grid; gap: 14px; }
 /* reduced motion: static stand-ins that still read as busy, not a frozen ring or a stalled 40% bar */
 @media (prefers-reduced-motion: reduce) {
   .indeterminate::after { animation: none; width: 100%; background: repeating-linear-gradient(90deg, var(--amber) 0 6px, transparent 6px 10px); }
-  .spin { animation: none; width: auto; height: auto; border: 0; border-radius: 0; color: var(--amber); align-self: baseline; }
+  .spin { animation: none; width: auto; height: auto; border: 0; border-radius: 0; color: var(--amber-text); align-self: baseline; }
   .spin::before { content: "\25B6\FE0E"; } /* ▶, text style (not emoji) */
   .seq-thumb.loading::after { animation: none; background: var(--panel); }
   * { scroll-behavior: auto !important; transition: none !important; }
