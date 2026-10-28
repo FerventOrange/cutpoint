@@ -4,19 +4,23 @@ BT.709, log warning, the automatic grade (``color.py``, #290 stage 2)."""
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, cache, color, encode, ffmpeg_utils
+from conftest import media_info, needs_ffmpeg, run_json, write
+from cutpoint import assemble, cache, color, encode, extend, ffmpeg_utils
+from cutpoint.boundaries import SpeechSettings
 from cutpoint.color import AutoGrade, ColorStats, Metrics
 from cutpoint.crop import Crop
 from cutpoint.ffmpeg_utils import FFmpegError, VideoEncoder
+from cutpoint.planning import Padding
 
 BOTH = frozenset({"zscale", "tonemap", "scale"})
 HLG = {"color_transfer": "arib-std-b67", "color_primaries": "bt2020", "color_space": "bt2020nc"}
@@ -425,7 +429,7 @@ def test_flat_10_bit_source_warns_once_and_suggests_a_lut(grabs, caplog):
         encode.warn_if_log(src, media_info(src, pix_fmt="yuv420p10le", **BT709), at)
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert grabs == [src] and len(warnings) == 1
-    assert "GX010001.MP4 looks like log/flat footage" in warnings[0] and "LUT" in warnings[0]
+    assert "GX010001.MP4 looks like log/flat footage" in warnings[0] and "--lut FILE" in warnings[0]
 
 
 def test_export_clip_checks_the_source_for_log_footage(grabs, caplog, monkeypatch, tmp_path):
@@ -786,7 +790,11 @@ def test_a_cast_clip_gets_a_grade_that_reduces_the_cast(lenient):
     assert "colorlevels=" in grade.filter() and "colorchannelmixer" not in grade.filter()
 
 
-def test_vibrance_lifts_dull_colour_within_the_m3_veto():
+def test_vibrance_lifts_dull_colour_within_the_m3_veto(monkeypatch):
+    # The dull patches pass for near-neutral and give a white balance under 1 % that moves the
+    # gray-world mean 0.003 of the range, which the cast veto rejects (VETO_RESIDUAL_FLOOR);
+    # this test is about the vibrance.
+    monkeypatch.setattr(color, "_gains", lambda *_a: (1.0, 1.0, 1.0))
     dull = _scene() * 0.3 + (_scene() @ color.LUMA)[..., None] * 0.7
     grade = color.estimate(_stats(_flat(dull, 0.03, 0.93)), "auto")
     assert 0 < grade.vibrance <= color.MAX_VIBRANCE
@@ -816,20 +824,52 @@ def test_flat_looking_8_bit_footage_is_graded():
     assert grade.filter() != ""
 
 
-def _underwater() -> np.ndarray:
-    return _cast(_flat(_scene(), 0.05, 0.8), 0.35, 1.0, 0.95)
+def _underwater(n: int = 4, red: float = 0.55) -> np.ndarray:
+    """:func:`_scene` with a cyan cast: red at ``red`` (mean red/green about ``red``)."""
+    return _cast(_flat(_scene(n), 0.05, 0.8), red, 1.0, 0.95)
 
 
 def test_underwater_borrows_red_from_green_and_lifts_red(lenient):
     stats = _stats(_underwater())
     assert color.looks_underwater(stats)
     grade = color.estimate(stats, "underwater")
+    assert grade.skip is None, grade
     assert 0 < grade.mix <= color.MAX_MIX
     assert 1 + color.MAX_GAIN < grade.gains[0] <= 1 + color.MAX_RED_GAIN
     assert "colorchannelmixer=rr=" in grade.filter()
     graded = color.simulate(stats.frames, grade).reshape(-1, 3).mean(axis=0)
     before = color._float(stats.frames).reshape(-1, 3).mean(axis=0)
-    assert graded[0] / graded[1] > before[0] / before[1] + 0.3
+    assert graded[0] / graded[1] > before[0] / before[1] + 0.2
+
+
+def test_underwater_levels_are_per_channel_and_auto_s_follow_the_luma():
+    stats = _stats(_underwater())
+    under = color.estimate(stats, "underwater")
+    assert isinstance(under.black, tuple) and isinstance(under.white, tuple)
+    assert under == color.estimate(stats, "underwater", levels="channel")
+    auto = color.estimate(stats, "auto")
+    assert isinstance(auto.black, float) and auto == color.estimate(stats, "auto", levels="luma")
+
+
+def test_the_veto_counts_per_channel_levels_by_the_per_channel_rule():
+    """Per-channel points intend each channel's own tails: the veto's intended clipping is the
+    per-channel rule's, not the luma's."""
+    stats = _stats(_underwater())
+    rgb = color._float(stats.frames)
+    grade = color.estimate(stats, "underwater")
+    luma = replace(grade, black=max(grade.black), white=min(grade.white))
+    assert color._intended_clipping(rgb, grade) != color._intended_clipping(rgb, luma)
+    predicted = color.metrics(color.simulate(rgb, replace(grade, skip=None)))
+    want = color._veto(grade.before, predicted, color._intended_clipping(rgb, grade))
+    assert grade.skip == want
+
+
+def test_a_strong_cast_whose_grade_takes_much_colour_away_is_vetoed(lenient):
+    """M3 counts a cast as colour: neutralising a strong one (red at a third of green) leaves
+    the picture well below VETO_M3_DROP of its colourfulness, so it is not graded."""
+    grade = color.estimate(_stats(_underwater(red=0.35)), "underwater")
+    assert grade.skip == color.VETO_FADED and grade.filter() == ""
+    assert grade.predicted.m3 < grade.before.m3 * color.VETO_M3_DROP
 
 
 def test_plain_auto_never_mixes_channels_even_underwater():
@@ -905,14 +945,42 @@ def test_a_grade_that_clips_too_much_is_vetoed():
         ({"clipped": 0.0249}, None, 0.02),
         ({"clipped": 0.016}, color.VETO_CLIPPING, 0.0),  # never below the source's own
         ({"residual": 0.106}, color.VETO_CAST, 0.01),
-        ({"residual": 0.1045}, None, 0.01),
+        ({"residual": 0.1045}, None, 0.01),  # 1.05 times: only the absolute rule applies
         ({"m3": 25.1}, color.VETO_COLOURFUL, 0.01),
         ({"m3": 25.0}, None, 0.01),
+        ({"m3": 16.9}, color.VETO_FADED, 0.01),
+        ({"m3": 17.0}, None, 0.01),
     ],
 )
 def test_veto_thresholds(after, veto, intended):
     before = Metrics(m3=20.0, residual=0.1, clipped=0.01, black=0.05, white=0.9)
     assert color._veto(before, Metrics(**(before.to_json() | after)), intended) == veto
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "veto"),
+    [
+        # gopro 0079 underwater: 2.8 times and +0.0031, within the absolute rule
+        (0.0017, 0.0048, color.VETO_CAST),
+        (0.001, 0.0031, color.VETO_CAST),  # +0.0021
+        (0.001, 0.0029, None),  # +0.0019: below the floor (half an 8-bit code)
+        (0.004, 0.0059, None),  # +0.0019
+        (0.01, 0.0149, None),  # 1.49 times, +0.0049
+        (0.01, 0.0151, color.VETO_CAST),  # 1.51 times, +0.0051 (both rules)
+        (0.1, 0.1049, None),
+    ],
+)
+def test_a_cast_veto_is_relative_as_well_as_absolute(before, after, veto):
+    m = Metrics(m3=20.0, residual=before, clipped=0.0, black=0.05, white=0.9)
+    assert color._veto(m, replace(m, residual=after), 0.0) == veto
+
+
+@pytest.mark.parametrize(("before", "after"), [(36.0, 28.0), (26.0, 19.0)])
+def test_a_washed_out_grade_is_vetoed(before, after):
+    """Flat cyan sand an underwater grade turned grey (scuba 0824 and 0829: 0.78 and 0.73 times
+    the colourfulness)."""
+    m = Metrics(m3=before, residual=0.2, clipped=0.0, black=0.05, white=0.9)
+    assert color._veto(m, replace(m, m3=after, residual=0.05), 0.0) == color.VETO_FADED
 
 
 def test_unknown_mode_is_refused():
@@ -991,6 +1059,74 @@ def test_estimated_parameters_are_rounded():
     grade = color.estimate(_stats(_cast(_flat(_scene(), 0.03, 0.93), 1.1, 1.0, 0.88)), "auto")
     for v in (grade.black, grade.white, *grade.gains, grade.mix, grade.vibrance):
         assert v == round(v, 4)
+
+
+def _warm() -> np.ndarray:
+    return _cast(_flat(_scene(), 0.03, 0.93), 1.1, 1.0, 0.88)
+
+
+def test_per_channel_levels_give_a_point_per_channel_and_luma_stays_as_it_was():
+    stats = _stats(_warm())
+    chan = color.estimate(stats, "auto", levels="channel")
+    assert isinstance(chan.black, tuple) and isinstance(chan.white, tuple)
+    assert len(chan.black) == len(chan.white) == 3 and len(set(chan.white)) > 1
+    luma = color.estimate(stats, "auto")
+    assert isinstance(luma.black, float) and isinstance(luma.white, float)
+    assert luma == color.estimate(stats, "auto", levels="luma")
+
+
+def test_unknown_levels_are_refused():
+    with pytest.raises(ValueError, match="unknown levels"):
+        color.estimate(_stats(_scene()), "auto", levels="rgb")
+
+
+def test_per_channel_points_give_each_channel_its_own_colorlevels_and_survive_the_manifest():
+    grade = AutoGrade("auto", black=(0.02, 0.05, 0.08), white=(0.9, 0.95, 0.85))
+    vf = grade.filter()
+    for c, lo, hi in (("r", "0.02000", "0.90000"), ("g", "0.05000", "0.95000"),
+                      ("b", "0.08000", "0.85000")):  # fmt: skip
+        assert f"{c}imin={lo}:{c}imax={hi}:{c}omax=1.00000" in vf
+    entry = json.loads(json.dumps({"file": "001_a.mp4", **grade.to_json()}))
+    assert entry["color"]["params"]["black"] == [0.02, 0.05, 0.08]
+    back = AutoGrade.from_entry(entry)
+    assert back == grade and isinstance(back.black, tuple) and back.filter() == vf
+    # strength scales each channel's point
+    half = replace(grade, strength=0.5).applied()
+    assert half.black == pytest.approx((0.01, 0.025, 0.04))
+
+
+def test_only_plain_auto_notes_that_frames_look_underwater():
+    stats = _stats(_underwater())
+    assert color.estimate(stats, "auto").underwater_hint
+    assert not color.estimate(stats, "underwater").underwater_hint
+    assert not color.estimate(_stats(_scene()), "auto").underwater_hint
+    assert AutoGrade("auto", black=0.05, underwater_hint=True) == AutoGrade("auto", black=0.05)
+
+
+def test_the_underwater_hint_survives_the_cache(monkeypatch, tmp_path):
+    src = tmp_path / "v.mp4"
+    src.write_bytes(b"x")
+    calls: list[tuple] = []
+    stats = _stats(_underwater())
+    monkeypatch.setattr(color, "sample_stats", lambda *a, **kw: calls.append(a) or stats)
+    info = media_info(src, **BT709)
+    first = color.auto_grade(src, info, 1.0, 5.0, "auto", FMT)
+    again = color.auto_grade(src, info, 1.0, 5.0, "auto", FMT)
+    assert len(calls) == 1 and first.underwater_hint and again.underwater_hint
+
+
+@pytest.mark.parametrize(
+    ("tags", "high_bit"),
+    [
+        ({"pix_fmt": "yuv420p10le"} | BT709, True),
+        ({"pix_fmt": "yuv420p10le"}, True),  # untagged
+        ({"pix_fmt": "yuv420p"} | BT709, False),
+        ({"pix_fmt": "yuv420p10le"} | HLG, False),  # HDR gets the tone map, not the log check
+    ],
+    ids=["10-bit-709", "10-bit-untagged", "8-bit", "10-bit-hlg"],
+)
+def test_is_high_bit_sdr(tags, high_bit):
+    assert encode.is_high_bit_sdr(media_info(**tags)) is high_bit
 
 
 # -- metrics and simulation ---------------------------------------------------------------------
@@ -1178,6 +1314,7 @@ SIM_GRADES = [
     AutoGrade("underwater", mix=0.35),
     AutoGrade("underwater", mix=0.3, black=0.04, white=0.92, gains=(1.6, 1.0, 0.88), vibrance=0.15),
     AutoGrade("auto", black=0.05, white=0.9, gains=(1.1, 1.0, 0.9), vibrance=0.2, strength=0.5),
+    AutoGrade("auto", black=(0.02, 0.05, 0.08), white=(0.9, 0.95, 0.85), gains=(1.1, 1.0, 0.9)),
 ]
 
 
@@ -1258,3 +1395,121 @@ def test_real_sampling_and_grade_of_a_cast_clip(tmp_path, lenient):
     # the grade runs where the export puts it
     vf = fmt.video_filter(False, None, color=grade.filter())
     ffmpeg_utils.run(["ffmpeg", "-v", "error", "-i", str(src), "-vf", vf, "-f", "null", "-"])
+
+
+def _underwater_source(path: Path) -> Path:
+    """3 s of :func:`_underwater` frames, 128x72 at 10 fps, BT.709 tv range, FFV1."""
+    frames = _underwater(30)
+    tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+    subprocess.run(
+        [
+            *(shutil.which("ffmpeg"), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24"),
+            *("-s", "128x72", "-r", "10", "-i", "-"),
+            *("-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv444p"),
+            *("-c:v", "ffv1", "-color_range", "tv", *tags, str(path)),
+        ],
+        input=np.round(frames * 255).astype(np.uint8).tobytes(),
+        check=True,
+    )  # fmt: skip
+    return path
+
+
+@needs_ffmpeg
+def test_real_clips_color_underwater_records_the_grade_and_extend_redoes_it(
+    home, tmp_path, monkeypatch, capsys, caplog, lenient
+):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    # Neutralising this clip's cast leaves about 0.78 of its M3 (VETO_M3_DROP vetoes it); this
+    # test is about recording and redoing a grade.
+    monkeypatch.setattr(color, "VETO_M3_DROP", 0.0)
+    caplog.set_level(logging.INFO)
+    src = _underwater_source(tmp_path / "reef.mkv")
+    seg = [{"source": str(src), "start": 0.5, "end": 2.5, "label": "a"}]
+    segments = write(tmp_path / "seg.json", json.dumps(seg))
+    code, doc = run_json(
+        capsys, ["clips", "reef", "--segments", str(segments), "--color", "underwater"]
+    )
+    assert code == 0, doc["error"]
+    clips_dir = home / "projects" / "reef" / "clips"
+    entry = json.loads((clips_dir / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
+    grade = AutoGrade.from_entry(entry)
+    assert grade is not None and grade.skip is None and grade.mix > 0, entry["color"]
+    assert (clips_dir / "001_a.mp4").stat().st_size > 0
+    assert "gaming" not in caplog.text  # no highlights.json: the style is unknown, not gaming
+
+    seen = []
+
+    def spy(*args):
+        seen.append(args[-1])
+        return encode.export_clip_checked(*args)
+
+    def no_measuring(*_a, **_kw):
+        raise AssertionError("extend measured the color again")
+
+    monkeypatch.setattr(extend, "export_clip_checked", spy)
+    monkeypatch.setattr(color, "sample_stats", no_measuring)
+    out = extend.extend_clips(clips_dir, Padding(0.25, 0.25), speech=SpeechSettings(enabled=False))
+    assert seen == [grade] and seen[0].filter() == grade.filter() != ""
+    redone = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
+    assert redone["color"]["params"] == entry["color"]["params"]
+    assert (out / "001_a.mp4").stat().st_size > 0
+
+
+def _color_eval():
+    import importlib.util  # noqa: PLC0415
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "color_eval.py"
+    spec = importlib.util.spec_from_file_location("color_eval", path)
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    return script
+
+
+@needs_ffmpeg
+def test_color_eval_script_reports_every_mode_and_levels_variant(tmp_path, capsys, lenient):
+    script = _color_eval()
+    src = _underwater_source(tmp_path / "reef.mkv")
+    saved = tmp_path / "stats"
+    assert script.main([f"{src}@0.5-2.5", "--json", "--save-stats", str(saved)]) == 0
+
+    (window,) = json.loads(capsys.readouterr().out)
+    assert window["frames"] > 0
+    assert {(v["mode"], v["levels"]) for v in window["variants"]} == {
+        (m, lv) for m in color.MODES for lv in color.LEVELS
+    }
+    assert {(v["mode"], v["levels"]) for v in window["variants"] if v["production"]} == set(
+        color.MODE_LEVELS.items()
+    )
+    # the saved frames replay to the same results without decoding
+    assert [f.name for f in saved.iterdir()] == ["reef_0.5-2.5.npz"]
+    assert script.main([f"{src}@0.5-2.5", "--json", "--stats", str(saved)]) == 0
+    (again,) = json.loads(capsys.readouterr().out)
+    assert again["variants"] == window["variants"]
+
+
+def test_color_eval_script_replays_saved_frames_by_their_file_name(tmp_path, capsys):
+    script = _color_eval()
+    stats = _stats(_underwater())
+    script.save_stats(tmp_path / "GX010819_3-17.npz", replace(stats, high_bit=True))
+    assert script.main(["--stats", str(tmp_path), "--json", "--modes", "underwater"]) == 0
+    (window,) = json.loads(capsys.readouterr().out)
+    assert (window["source"], window["start"], window["end"]) == ("GX010819", 3.0, 17.0)
+    assert window["high_bit"] and window["frames"] == len(stats.frames)
+    production = next(v for v in window["variants"] if v["production"])
+    assert production["skip"] == color.estimate(stats, "underwater").skip
+    assert isinstance(production["params"]["black"], list)
+
+
+def test_color_eval_script_skips_360_sources_as_clips_does(tmp_path, capsys, monkeypatch):
+    script = _color_eval()
+    lrv = tmp_path / "LRV_20250101_120000_01_001.lrv"
+    monkeypatch.setattr(script, "probe", lambda *_a: pytest.fail("a 360 source was sampled"))
+    assert script.main([f"{lrv}@1-9", "--json"]) == 0
+    (window,) = json.loads(capsys.readouterr().out)
+    assert {v["skip"] for v in window["variants"]} == {color.SKIP_360}
+    # a project's 360 clip by its pano.json, whatever its name
+    clip = str(tmp_path / "clip.mp4")
+    pano = {script.pano_project.norm(clip): SimpleNamespace(source=clip)}
+    assert script.is_360(clip, pano)
+    assert not script.is_360(clip, None) and not script.is_360(str(tmp_path / "b.mp4"), pano)

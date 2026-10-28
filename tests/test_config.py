@@ -258,6 +258,7 @@ def test_remap_source_keeps_a_unc_source_excluded_by_a_drive_glob(
         ("stage_dir", ["a"]),
         ("ollama_url", 5),
         ("video_encoder", 5),
+        ("color", 5),
         ("source_remap", ["a"]),
         ("source_remap", {"D:/": 5}),
         ("source_remap_exclude", "D:/"),
@@ -277,6 +278,23 @@ def test_wrongly_typed_config_value_is_one_error_not_a_traceback(home, caplog, k
     if (key, value) == ("player_tags", 5):
         assert "player_tags must be a list" in errors[0].getMessage()
     assert all(r.exc_info is None for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("data", "want"),
+    [({}, "off"), ({"color": None}, "off"), ({"color": "auto"}, "auto"),
+     ({"color": "underwater"}, "underwater")],
+)  # fmt: skip
+def test_color_config_default(home, data, want):
+    set_config(home, **data)
+    assert config.color_default() == want
+
+
+@pytest.mark.parametrize("value", ["sepia", "Auto"])
+def test_color_config_with_an_unknown_mode_is_one_error(home, caplog, value):
+    set_config(home, color=value)
+    assert cli.main(["paths"]) == 1
+    assert "color is" in caplog.text and "expected one of off, auto, underwater" in caplog.text
 
 
 def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):

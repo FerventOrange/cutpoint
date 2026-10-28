@@ -63,6 +63,11 @@ documents every key.
     ``cutpoint clips``, ``assemble`` and ``edit`` when ``--compress-peaks`` is not given
     (see :data:`cutpoint.encode.PEAK_PRESETS`).
 
+``color``
+    ``off`` (default), ``auto`` or ``underwater``: the automatic colour correction of
+    ``cutpoint clips`` and ``edit`` when ``--color`` is not given (see :mod:`cutpoint.color`).
+    Never applied to ``gaming`` footage (only ``--color`` grades it) nor with ``--lut``.
+
 ``analysis``
     ``{"skip": [...]}``: analysis steps ``cutpoint analyze`` and ``cutpoint edit`` leave out
     by default, any of ``reactions``, ``keyframes`` and ``crashes`` (``--skip`` overrides it
@@ -108,6 +113,7 @@ logger = logging.getLogger(__name__)
 
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
+COLOR_MODES = ("off", "auto", "underwater")  # --color; the grades are cutpoint.color.MODES
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
 ASSISTANT_PROVIDERS = ("ollama", "openai", "anthropic")
 MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
@@ -140,6 +146,7 @@ class Config:
     compress_peaks: str = "off"
     export_workers: int | None = None  # None: auto
     assistant: AssistantSettings = field(default_factory=AssistantSettings)
+    color: str = "off"
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -238,7 +245,14 @@ state.register_dict_cache(get_config, _LOADED)
 def _load_config(path: Path) -> Config:
     """:func:`get_config` without the cache."""
     data = load_config_data(path)
-    for key in ("projects_dir", "stage_dir", "ollama_url", "video_encoder", "compress_peaks"):
+    for key in (
+        "projects_dir",
+        "stage_dir",
+        "ollama_url",
+        "video_encoder",
+        "compress_peaks",
+        "color",
+    ):
         _check_type(path, data, key, _is_str, "a string")
     _check_type(path, data, "source_remap", _is_str_map, "an object mapping strings to strings")
     _check_type(path, data, "source_remap_exclude", _is_str_list, "a list of strings")
@@ -264,6 +278,9 @@ def _load_config(path: Path) -> Config:
         raise ValueError(
             f"{path}: compress_peaks is {peaks!r}; expected one of {', '.join(COMPRESS_PEAKS)}"
         )
+    color = data.get("color") or "off"
+    if color not in COLOR_MODES:
+        raise ValueError(f"{path}: color is {color!r}; expected one of {', '.join(COLOR_MODES)}")
     return Config(
         projects,
         pairs,
@@ -277,6 +294,7 @@ def _load_config(path: Path) -> Config:
         peaks,
         _export_workers(path, data),
         _assistant(path, data),
+        color,
     )
 
 
@@ -417,6 +435,12 @@ def compress_peaks_default() -> str:
     """Peak compression preset when ``--compress-peaks`` is not given (``compress_peaks`` in
     ``config.json``; default ``off``)."""
     return get_config().compress_peaks
+
+
+def color_default() -> str:
+    """Automatic colour correction when ``--color`` is not given (``color`` in
+    ``config.json``; default ``off``)."""
+    return get_config().color
 
 
 def player_tags() -> tuple[str, ...]:

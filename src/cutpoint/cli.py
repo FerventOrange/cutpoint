@@ -30,8 +30,10 @@ from cutpoint.assemble import AUDIO_TRANSITIONS, assemble, check_transitions
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import export_clips
 from cutpoint.config import (
+    COLOR_MODES,
     COMPRESS_PEAKS,
     analysis_skip,
+    color_default,
     compress_peaks_default,
     get_config,
     projects_dir,
@@ -96,6 +98,36 @@ def _add_lut_arguments(p: argparse.ArgumentParser) -> None:
         metavar="0-1",
         help="how much of the --lut grade to apply, blended with the ungraded video (default: 1)",
     )
+
+
+def _add_color_arguments(p: argparse.ArgumentParser) -> None:
+    """``--color off|auto|underwater`` and ``--color-strength 0-1`` (see cutpoint.color)."""
+    p.add_argument(
+        "--color",
+        choices=COLOR_MODES,
+        default=None,
+        help="automatic color correction per clip: auto (levels, white balance, vibrance) or "
+        "underwater (also restores red); clips that already look good, log/flat footage (use "
+        "--lut) and 360 clips are left as they are. Recorded in clips/manifest.json; not with "
+        "--lut (default: color in config.json, never for gaming footage, else off)",
+    )
+    p.add_argument(
+        "--color-strength",
+        type=unit_float,
+        metavar="0-1",
+        help="how much of the --color correction to apply (default: 1)",
+    )
+
+
+def _color(a: argparse.Namespace, lut: Lut | None) -> tuple[str | None, float]:
+    """``--color`` (None: config.json's) and ``--color-strength``, checked against ``--lut``."""
+    if lut is not None and a.color not in (None, "off"):
+        raise jsonout.ArgumentError(f"--color {a.color} cannot be combined with --lut; use one")
+    if lut is not None and a.color_strength is not None:
+        raise jsonout.ArgumentError("--color-strength does not apply to --lut (use --lut-strength)")
+    if a.color_strength is not None and (a.color or color_default()) == "off":
+        raise jsonout.ArgumentError("--color-strength needs --color auto or underwater")
+    return a.color, 1.0 if a.color_strength is None else a.color_strength
 
 
 def _lut(a: argparse.Namespace) -> Lut | None:
@@ -166,6 +198,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
     jsonout.set_project(project)
     jsonout.output("kind", a.kind)
     lut = _lut(a)  # before hours of analysis
+    color, color_strength = _color(a, lut)
     run_edit(
         targets,
         project,
@@ -180,6 +213,8 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         skip=_skip(a),
         compress_peaks=_compress_peaks(a),
         lut=lut,
+        color=color,
+        color_strength=color_strength,
     )
 
 
@@ -200,6 +235,7 @@ def _cmd_clips(a: argparse.Namespace) -> None:
     project = resolve_project_path(a.project)
     jsonout.set_project(project)
     lut = _lut(a)
+    color, color_strength = _color(a, lut)
     segments = resolve_project_path(a.segments, bare_names=False) if a.segments else None
     if segments is not None and not a.mix and not segments.is_file():
         if segments.is_dir():
@@ -239,6 +275,8 @@ def _cmd_clips(a: argparse.Namespace) -> None:
         size=a.size,
         compress_peaks=_compress_peaks(a),
         lut=lut,
+        color=color,
+        color_strength=color_strength,
     )
 
 
@@ -900,6 +938,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_skip_argument(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
     _add_lut_arguments(ed)
+    _add_color_arguments(ed)
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit)
 
@@ -1052,6 +1091,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_pano_arguments(cl, "auto")
     _add_compress_peaks_argument(cl, "baked into every clip with a true-peak limiter")
     _add_lut_arguments(cl)
+    _add_color_arguments(cl)
     _add_json_argument(cl)
     cl.set_defaults(func=_cmd_clips)
 

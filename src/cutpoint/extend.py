@@ -16,7 +16,7 @@ after smart tails and event tails, to the final in/out points:
   ``.srt`` subtitles for the new range (see :mod:`cutpoint.srt`).
 
 ``cutpoint extend`` re-exports an existing clips folder from its ``manifest.json``
-(source, in and out points, crop, ``--lut`` grade, format), keeping the exact file names and
+(source, in and out points, crop, ``--lut`` or ``--color`` grade, format), keeping the exact file names and
 order of the clips *still in the folder*, so renames and deletions made
 during review are respected. Per-clip speech-aware caps come from the
 manifest entry (``speech_max_extend`` / ``speech_max_lead``, set by a
@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import boundaries, cache, jsonout, srt
+from cutpoint.color import COLOR_VERSION, AutoGrade
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import (
@@ -218,6 +219,29 @@ def _read_path(e: dict[str, Any]) -> Path:
     return src
 
 
+def _recorded_grade(name: str, entry: dict[str, Any]) -> Grade | None:
+    """The grade manifest ``entry`` of clip ``name`` records (:func:`grade_from_entry`).
+
+    Raises:
+        ValueError: If its ``color`` record cannot be read, or a newer Cutpoint wrote it
+            (:data:`~cutpoint.color.COLOR_VERSION`): the clip would be re-exported ungraded.
+    """
+    color = entry.get("color")
+    try:
+        grade = grade_from_entry(entry)
+        version = int(color.get("version", COLOR_VERSION)) if isinstance(color, dict) else 0
+    except (TypeError, ValueError, KeyError, IndexError) as err:
+        raise ValueError(f"{name}: manifest.json has an unreadable grade ({err})") from None
+    if color and not isinstance(grade, AutoGrade) and not entry.get("lut"):
+        raise ValueError(f"{name}: manifest.json has a color record this Cutpoint cannot read")
+    if isinstance(grade, AutoGrade) and version > COLOR_VERSION:
+        raise ValueError(
+            f"{name}: its color grade is version {version}, newer than this Cutpoint's "
+            f"{COLOR_VERSION}; update Cutpoint"
+        )
+    return grade
+
+
 def _reusable(
     old: dict[str, Any] | None, new: dict[str, Any], same_format: bool, audio_fade: float
 ) -> bool:
@@ -284,7 +308,7 @@ def extend_clips(
             ``extend_end`` per side) replacing ``padding`` for those clips
             (all recorded in the new manifest).
         reuse_dir: An earlier output folder. A clip whose new source, in/out
-            points, crop, LUT grade, format and fade equal its entry there is copied
+            points, crop, grade, format and fade equal its entry there is copied
             instead of re-encoded (never for 360 clips).
 
     Returns:
@@ -400,16 +424,24 @@ def _extend_locked(
             plans.append(ExtendPlan(f.name, e, src, info, start, end, rec, _pick(e)))
 
         apply_overrides(plans, clip_overrides, padding)
-        # The grade a clip recorded is redone; a LUT must still load (before any export).
+        # The grade a clip recorded is redone; a LUT must still load, a color grade be readable
+        # (before any export). A color grade keeps its recorded parameters: not measured again.
         checked: dict[Lut, Lut] = {}
         grades: dict[str, Grade | None] = {}
         for plan in plans:
-            grade = grade_from_entry(plan.entry)
+            grade = _recorded_grade(plan.name, plan.entry)
             if isinstance(grade, Lut):
                 if grade not in checked:
                     checked[grade] = check_lut(grade.path, grade.strength, f"{plan.name}: lut")
                 grade = checked[grade]
             grades[plan.name] = grade
+        recolored = sum(1 for g in grades.values() if isinstance(g, AutoGrade) and g.filter())
+        if recolored:
+            logger.info(
+                "%d clip(s) are graded with the --color parameters their manifest recorded "
+                "(not measured again for the new range)",
+                recolored,
+            )
         reuse_by_file: dict[str, dict[str, Any]] = {}
         reuse_same_format = False
         if reuse_dir is not None:

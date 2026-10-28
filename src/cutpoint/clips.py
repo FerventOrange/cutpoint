@@ -22,8 +22,17 @@ from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, jsonout, sources, srt
 from cutpoint.audio_tracks import export_tracks
+from cutpoint.color import SKIP_360, SKIP_LOG, AutoGrade, auto_grade
+from cutpoint.config import (
+    COLOR_MODES,
+    color_default,
+    is_absolute_any,
+    path_key,
+    remap_source,
+    source_path,
+    unc_path,
+)
 from cutpoint.config import export_workers as configured_workers
-from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import (
     GRADE_KEYS,
@@ -1101,22 +1110,143 @@ def _replaced_files(
     )
 
 
+# The option that made each manifest.json grade key (:data:`~cutpoint.encode.GRADE_KEYS`).
+_GRADE_OPTIONS = {"lut": "--lut", "color": "--color"}
+
+
+def _graded_keys(entry: Any) -> list[str]:
+    """The :data:`~cutpoint.encode.GRADE_KEYS` a manifest entry was graded with (a ``color``
+    record the clip got no grade from, ``skip`` set, does not count)."""
+    if not isinstance(entry, dict):
+        return []
+    color = entry.get("color")
+    return [
+        k
+        for k in GRADE_KEYS
+        if entry.get(k) and not (k == "color" and isinstance(color, dict) and color.get("skip"))
+    ]
+
+
 def _warn_dropped_grade(out_dir: Path) -> None:
-    """WARNING when the manifest.json ``--force`` replaces graded clips (a ``lut`` or ``color``
-    key, :data:`~cutpoint.encode.GRADE_KEYS`) and this run grades none: the grade is not
-    carried over, the flags of this run decide."""
+    """WARNING (and a ``grade_dropped`` --json warning) when the manifest.json ``--force``
+    replaces graded clips (a ``lut`` or ``color`` key, :data:`~cutpoint.encode.GRADE_KEYS`)
+    and this run grades none: the grade is not carried over, the flags of this run decide."""
     manifest = cache.load_json(out_dir / "manifest.json")
     listed = manifest.get("clips") if isinstance(manifest, dict) else None
-    graded = [e for e in listed or [] if isinstance(e, dict) and any(e.get(k) for k in GRADE_KEYS)]
+    graded = [e for e in listed or [] if _graded_keys(e)]
     if graded:
-        keys = sorted({k for e in graded for k in GRADE_KEYS if e.get(k)})
-        logger.warning(
-            "%s: %d clip(s) of the replaced manifest.json were graded (%s); this run grades "
-            "none, so the new clips are ungraded (give --lut again to keep the grade)",
-            out_dir,
-            len(graded),
-            ", ".join(keys),
+        keys = sorted({k for e in graded for k in _graded_keys(e)})
+        again = " or ".join(_GRADE_OPTIONS[k] for k in keys)
+        message = (
+            f"{out_dir}: {len(graded)} clip(s) of the replaced manifest.json were graded "
+            f"({', '.join(keys)}); this run grades none, so the new clips are ungraded (give "
+            f"{again} again to keep the grade)"
         )
+        logger.warning("%s", message)
+        jsonout.warn("grade_dropped", message, [out_dir / "manifest.json"])
+
+
+def _color_mode(
+    color: str | None, lut: Lut | None, style: Style, *, known_style: bool = True
+) -> str:
+    """The ``--color`` mode of a run: ``color`` as given, else ``color`` in config.json; the
+    config's is never applied with a ``lut`` or to ``gaming`` footage (an INFO line says so),
+    a given one on ``gaming`` footage gets a WARNING. ``known_style`` False (no analysis
+    style, as for segments without highlights.json): ``style`` is a fallback, not the footage's,
+    so it never counts as gaming.
+
+    Raises:
+        jsonout.ArgumentError: For a ``color`` other than ``off`` with a ``lut``, or one not in
+            :data:`~cutpoint.config.COLOR_MODES`.
+    """
+    gaming = known_style and style.base == "gaming"
+    if color is None:
+        mode = color_default()
+        if mode == "off" or lut is not None:
+            return "off"
+        if gaming:
+            logger.info(
+                "color %s in config.json is not applied to gaming footage (style %s); "
+                "give --color %s to grade it",
+                mode,
+                style.name,
+                mode,
+            )
+            return "off"
+        return mode
+    if color not in COLOR_MODES:
+        raise jsonout.ArgumentError(f"--color {color}: expected one of {', '.join(COLOR_MODES)}")
+    if color != "off" and lut is not None:
+        raise jsonout.ArgumentError(f"--color {color} cannot be combined with --lut; use one")
+    if color != "off" and gaming:
+        logger.warning(
+            "--color %s on gaming footage (style %s): game graphics are graded too; "
+            "check the clips",
+            color,
+            style.name,
+        )
+    return color
+
+
+def _color_grades(
+    plans: list[ClipPlan], mode: str, strength: float, fmt: OutputFormat, vertical: bool
+) -> list[Grade | None]:
+    """Each plan's automatic grade (:func:`~cutpoint.color.auto_grade`, measured through the
+    plan's crop and ``vertical`` as its export), 360 clips skipped
+    (:data:`~cutpoint.color.SKIP_360`); INFO lines sum them up, name the log/flat clips (for
+    ``--lut``) and, for ``auto``, the clips that look underwater."""
+    logger.info(
+        "Measuring the color of %d clip(s) (--color %s, strength %g)", len(plans), mode, strength
+    )
+    grades: list[AutoGrade] = []
+    for plan in plans:
+        if plan.pano:
+            grade = AutoGrade.skipped(mode, SKIP_360, strength)
+        else:
+            grade = auto_grade(
+                plan.src,
+                plan.info,
+                plan.start,
+                plan.end,
+                mode,
+                fmt,
+                strength=strength,
+                vertical=vertical,
+                crop=plan.crop,
+            )
+        logger.debug("  %s: color %s", plan.name, grade.to_json()["color"])
+        grades.append(grade)
+    names = [p.name for p in plans]
+
+    def named(skip: str) -> list[str]:
+        return [n for n, g in zip(names, grades, strict=True) if g.skip == skip]
+
+    if pano := named(SKIP_360):
+        logger.info("Color: %d 360 clip(s) are not graded: %s", len(pano), ", ".join(pano))
+    if log := named(SKIP_LOG):
+        logger.info(
+            "Color: %s look like log/flat footage and are not graded; use --lut with the "
+            "camera's LUT for them",
+            ", ".join(log),
+        )
+    if hint := [n for n, g in zip(names, grades, strict=True) if g.underwater_hint]:
+        logger.info(
+            "Color: %s look underwater; --color underwater corrects underwater colors "
+            "(--color auto does not)",
+            ", ".join(hint),
+        )
+    skipped: dict[str, int] = {}
+    for g in grades:
+        if g.skip:
+            skipped[g.skip] = skipped.get(g.skip, 0) + 1
+    logger.info(
+        "Color %s: %d of %d clips graded%s",
+        mode,
+        sum(1 for g in grades if g.filter()),
+        len(grades),
+        "; not graded: " + ", ".join(f"{k} {n}" for k, n in skipped.items()) if skipped else "",
+    )
+    return list(grades)
 
 
 @contextmanager
@@ -1163,6 +1293,8 @@ def export_clips(
     size: tuple[int, int] | None = None,
     compress_peaks: str = "off",
     lut: Lut | None = None,
+    color: str | None = None,
+    color_strength: float = 1.0,
 ) -> Path:
     """Export moments as normalised, numbered clips plus manifest.json.
 
@@ -1213,6 +1345,12 @@ def export_clips(
     BT.709 conversion (:func:`~cutpoint.encode.lut_filter`), recorded per clip as ``lut`` and
     ``lut_strength`` so ``extend`` grades the same way; ``assemble`` leaves the grade as is.
 
+    ``color`` (``off``, ``auto`` or ``underwater``; None: ``color`` in config.json, never
+    for ``gaming`` footage nor with ``lut``, see :func:`_color_mode`) at ``color_strength``
+    (0-1): each clip gets its own automatic grade (:func:`~cutpoint.color.auto_grade`),
+    recorded per clip as ``color`` (skipped clips too, with the reason) so ``extend`` grades
+    the same way without measuring again. It cannot be combined with ``lut``.
+
     360 sources (Insta360 X3 clips registered in ``<project>/pano.json`` by
     ``cutpoint 360 scan``) are rendered to flat video along a director path (see
     :mod:`cutpoint.pano.render`): ``pano_source`` picks the input
@@ -1231,7 +1369,10 @@ def export_clips(
         FileNotFoundError: If highlights.json / segments / a source is missing.
         FileExistsError: If the clips folder is non-empty and ``force`` is False.
         ValueError: If the selection or a crop is invalid.
+        jsonout.ArgumentError: For ``color`` with ``lut``, or ``color_strength`` outside 0-1.
     """
+    if not 0 <= color_strength <= 1:
+        raise jsonout.ArgumentError(f"--color-strength {color_strength:g}: must be from 0 to 1")
     if crop is not None:
         try:
             parse_spec(crop)  # fail before any work
@@ -1239,6 +1380,7 @@ def export_clips(
             raise jsonout.ArgumentError(str(err)) from None
     highlights = cache.load_json(project / "highlights.json")
     language = ((highlights or {}).get("settings") or {}).get("language")
+    known_style = isinstance(highlights, dict) and "style" in highlights
     style_name = (highlights or {}).get("style", "gaming")
     if segments is not None:
         ordered = load_segments(segments)
@@ -1251,6 +1393,7 @@ def export_clips(
         order = order or get_style(style_name).default_order
         ordered = order_moments(chosen, order)
     style: Style = get_style(style_name)
+    color_mode = _color_mode(color, lut, style, known_style=known_style)
     base_tail = TailSettings.from_style(
         style, enabled=smart_tail_on, tail_min=tail_min, tail_max=tail_max
     )
@@ -1345,6 +1488,8 @@ def export_clips(
         )
         peaks, makeup = peak_filters(plans, compress_peaks)
         grades: list[Grade | None] = [lut] * len(plans)
+        if color_mode != "off":
+            grades = _color_grades(plans, color_mode, color_strength, fmt, vertical)
         if force and not any(grades):
             _warn_dropped_grade(out_dir)
         workers = export_workers(plans)

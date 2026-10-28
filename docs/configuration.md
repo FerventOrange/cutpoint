@@ -77,6 +77,7 @@ with `_` are ignored.
   "export_workers": "auto",
   "vision": false,
   "compress_peaks": "off",
+  "color": "off",
   "analysis": {"skip": []},
   "assistant": {"provider": "ollama", "model": "", "context_tokens": 8192}
 }
@@ -155,6 +156,12 @@ that `clips`, `assemble` and `edit` use when `--compress-peaks` is not given (`l
 `strong` include a makeup gain that keeps the overall loudness, at most 6 and 10 dB). Other
 values are rejected. `cutpoint ui` starts its "Compress Audio Peaks" slider on this value (Light when the key is unset) and passes the choice
 to its exports and assemblies; it does not change the key.
+
+### color
+
+`off` (default), `auto` or `underwater`: the [automatic color correction](commands.md#clips)
+that `clips` and `edit` use when `--color` is not given. It never applies to `gaming` footage
+(only an explicit `--color` grades it) nor to a run with `--lut`. Other values are rejected.
 
 ### analysis
 

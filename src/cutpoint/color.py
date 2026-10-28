@@ -2,16 +2,17 @@
 
 A clip is measured on up to :data:`SAMPLE_FRAMES` keyframes of its inner 80 %
 (:func:`sample_stats`), seen through the same crop and BT.709 conversion as its export, and
-:func:`estimate` turns those frames into an :class:`AutoGrade`: a levels stretch, a white
-balance, a red-from-green channel mix (underwater only) and a vibrance boost, every one
-clamped. The grade is ffmpeg filters only (:meth:`AutoGrade.filter`: ``colorchannelmixer``,
-``colorlevels`` and ``vibrance`` in 16-bit RGB), so the export needs nothing new.
+:func:`estimate` turns those frames into an :class:`AutoGrade`: a levels stretch (from the
+luma; per channel underwater), a white balance, a red-from-green channel mix (underwater only)
+and a vibrance boost, every one clamped. The grade is ffmpeg filters only
+(:meth:`AutoGrade.filter`: ``colorchannelmixer``, ``colorlevels`` and ``vibrance`` in 16-bit
+RGB), so the export needs nothing new.
 
 Before a grade is used, :func:`simulate` applies it to the sampled frames in numpy and
 :func:`metrics` compares them before and after: a grade that clips more than its levels
-intend, leaves a worse cast or adds too much colour is vetoed. Clips that already look good,
-and log or flat footage from a 10-bit source (which needs the camera's LUT, ``--lut``), get
-no grade. :func:`auto_grade` caches each
+intend, leaves a worse cast, or adds or takes away too much colour is vetoed. Clips that
+already look good, and log or flat footage from a 10-bit source (which needs the camera's LUT,
+``--lut``), get no grade. :func:`auto_grade` caches each
 result in the source's cache folder (``color/<hash>.json``).
 """
 
@@ -27,11 +28,10 @@ import numpy as np
 from cutpoint import cache
 from cutpoint.crop import Crop
 from cutpoint.encode import (
-    _HIGH_BIT_RE,
     TAG_BT709,
     OutputFormat,
     bt709_filter,
-    color_kind,
+    is_high_bit_sdr,
     log_stats,
     looks_log,
 )
@@ -40,8 +40,15 @@ from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, decode_raw
 logger = logging.getLogger(__name__)
 
 # Bump when the measurement or estimate changes: it keys the cache and is recorded per clip.
-COLOR_VERSION = 1
+# 2: per-channel levels for ``underwater``, the M3 drop veto and the relative cast veto.
+COLOR_VERSION = 2
 MODES = ("auto", "underwater")
+# Black and white points: from the luma, the same for every channel, or per channel. Each
+# mode uses its own (MODE_LEVELS): ``auto`` the luma's, so a clip's overall balance is left to
+# the white balance; ``underwater`` each channel's, which stretches the red the water took
+# (``levels=`` of :func:`estimate` overrides it, for scripts/color_eval.py).
+LEVELS = ("luma", "channel")
+MODE_LEVELS = {"auto": "luma", "underwater": "channel"}
 
 # Sampling: up to this many keyframes of the inner 80 % of a clip, this wide.
 SAMPLE_FRAMES = 8
@@ -81,13 +88,22 @@ GOOD_LEVELS = 0.03
 # A clip that looks underwater (for plain ``auto``'s hint): mean red below this share of
 # both green and blue.
 UNDERWATER_RED = 0.6
-# Veto: the clipped share rises by more than VETO_CLIPPED above the clipping the levels
-# intend (:func:`_intended_clipping`: the source's own plus at most the LEVELS_PERCENTILES
-# tails), the gray-world residual rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma
-# range, about a code: an invisible change), or M3 rises by more than VETO_M3_RISE.
+# Veto (:func:`_veto`): the clipped share rises by more than VETO_CLIPPED above the clipping
+# the levels intend (:func:`_intended_clipping`: the source's own plus at most the
+# LEVELS_PERCENTILES tails); the gray-world residual (a share of the luma range) gets worse;
+# M3 rises by more than VETO_M3_RISE, or falls below VETO_M3_DROP of its value (a picture
+# washed out to grey, such as flat cyan sand after an underwater grade).
+# The residual is worse when it rises by more than VETO_RESIDUAL_EPS (0.5 % of the luma range,
+# about a code), or by more than VETO_RESIDUAL_RATIO times and more than VETO_RESIDUAL_FLOOR.
+# The relative rule catches a near-neutral clip given a cast (a GoPro clip went 0.0017 to
+# 0.0048: 2.8 times, +0.0031, within the absolute rule); its floor, half a code of 8-bit
+# (0.5 / 255), keeps rounding noise on an already neutral clip from vetoing it.
 VETO_CLIPPED = 0.005
 VETO_RESIDUAL_EPS = 0.005
+VETO_RESIDUAL_RATIO = 1.5
+VETO_RESIDUAL_FLOOR = 0.002
 VETO_M3_RISE = 0.25
+VETO_M3_DROP = 0.85
 # Vibrance is kept this far below the M3 veto, so it never vetoes the grade by itself.
 _M3_MARGIN = 0.98
 _VIBRANCE_STEPS = 10
@@ -113,6 +129,7 @@ SKIP_NO_FRAMES = "no_frames"
 VETO_CLIPPING = "veto_clipped"
 VETO_CAST = "veto_cast"
 VETO_COLOURFUL = "veto_m3"
+VETO_FADED = "veto_m3_drop"
 
 
 @dataclass(frozen=True)
@@ -164,14 +181,17 @@ class AutoGrade:
 
     mode: str
     strength: float = 1.0
-    black: float = 0.0
-    white: float = 1.0
+    black: float | tuple[float, float, float] = 0.0
+    white: float | tuple[float, float, float] = 1.0
     gains: tuple[float, float, float] = (1.0, 1.0, 1.0)
     mix: float = 0.0
     vibrance: float = 0.0
     skip: str | None = None
     before: Metrics | None = field(default=None, compare=False)
     predicted: Metrics | None = field(default=None, compare=False)
+    # Plain ``auto`` only: the sampled frames look underwater (:func:`looks_underwater`), for
+    # an INFO hint; it never changes the grade and is not recorded in manifest.json.
+    underwater_hint: bool = field(default=False, compare=False)
 
     def applied(self) -> AutoGrade:
         """This grade with the strength folded into the parameters (and strength 1)."""
@@ -179,8 +199,8 @@ class AutoGrade:
         return replace(
             self,
             strength=1.0,
-            black=self.black * s,
-            white=1.0 - (1.0 - self.white) * s,
+            black=_per(self.black, lambda b: b * s),
+            white=_per(self.white, lambda w: 1.0 - (1.0 - w) * s),
             gains=tuple(1.0 + (g - 1.0) * s for g in self.gains),  # type: ignore[arg-type]
             mix=self.mix * s,
             vibrance=self.vibrance * s,
@@ -202,7 +222,7 @@ class AutoGrade:
         steps = []
         if g.mix > 0:
             steps.append(f"colorchannelmixer=rr={1.0 - g.mix:.5f}:rg={g.mix:.5f}")
-        if g.black > 0 or g.white < 1 or any(k != 1 for k in g.gains):
+        if max(_rgb(g.black)) > 0 or min(_rgb(g.white)) < 1 or any(k != 1 for k in g.gains):
             steps.append(_levels(g.black, g.white, g.gains))
         if g.vibrance > 0:
             steps.append(f"vibrance=intensity={g.vibrance:.5f}:{_VIBRANCE_OPTS}")
@@ -213,8 +233,8 @@ class AutoGrade:
     def params(self) -> dict[str, Any]:
         """The full-strength parameters as a manifest dict."""
         return {
-            "black": self.black,
-            "white": self.white,
+            "black": _json_point(self.black),
+            "white": _json_point(self.white),
             "gains": list(self.gains),
             "mix": self.mix,
             "vibrance": self.vibrance,
@@ -246,8 +266,8 @@ class AutoGrade:
         return cls(
             mode=color["method"],
             strength=float(color.get("strength", 1.0)),
-            black=float(p.get("black", 0.0)),
-            white=float(p.get("white", 1.0)),
+            black=_read_point(p.get("black", 0.0)),
+            white=_read_point(p.get("white", 1.0)),
             gains=(float(gains[0]), float(gains[1]), float(gains[2])),
             mix=float(p.get("mix", 0.0)),
             vibrance=float(p.get("vibrance", 0.0)),
@@ -262,19 +282,50 @@ class AutoGrade:
         return cls(mode=mode, strength=strength, skip=reason)
 
 
-def _levels(black: float, white: float, gains: tuple[float, float, float]) -> str:
-    """``colorlevels`` mapping each channel to ``(x - black) * gain / (white - black)``.
+def _rgb(point: float | tuple[float, float, float]) -> tuple[float, float, float]:
+    """A black or white point as one value per channel (r, g, b)."""
+    if isinstance(point, tuple | list):
+        return float(point[0]), float(point[1]), float(point[2])
+    return float(point), float(point), float(point)
+
+
+def _per(point: float | tuple[float, float, float], f: Any) -> Any:
+    """``f`` applied to a point, per channel for a per-channel one."""
+    if isinstance(point, tuple):
+        return tuple(f(v) for v in point)
+    return f(point)
+
+
+def _json_point(point: float | tuple[float, float, float]) -> float | list[float]:
+    """A point for manifest.json: a number, or ``[r, g, b]`` for a per-channel one."""
+    return list(point) if isinstance(point, tuple) else point
+
+
+def _read_point(value: Any) -> float | tuple[float, float, float]:
+    """A point :func:`_json_point` wrote."""
+    if isinstance(value, list | tuple):
+        return float(value[0]), float(value[1]), float(value[2])
+    return float(value)
+
+
+def _levels(
+    black: float | tuple[float, float, float],
+    white: float | tuple[float, float, float],
+    gains: tuple[float, float, float],
+) -> str:
+    """``colorlevels`` mapping each channel to ``(x - black) * gain / (white - black)`` (a
+    per-channel point gives each channel its own).
 
     The input white of a channel is where that line reaches 1; a gain below 1 can put it
     above 1 (outside the filter's range), so the output white is lowered instead.
     """
     opts = []
-    for c, gain in zip("rgb", gains, strict=True):
-        k = gain / (white - black)
-        imax, omax = black + 1.0 / k, 1.0
+    for c, gain, lo, hi in zip("rgb", gains, _rgb(black), _rgb(white), strict=True):
+        k = gain / (hi - lo)
+        imax, omax = lo + 1.0 / k, 1.0
         if imax > 1.0:
-            imax, omax = 1.0, (1.0 - black) * k
-        opts.append(f"{c}imin={black:.5f}:{c}imax={imax:.5f}:{c}omax={omax:.5f}")
+            imax, omax = 1.0, (1.0 - lo) * k
+        opts.append(f"{c}imin={lo:.5f}:{c}imax={imax:.5f}:{c}omax={omax:.5f}")
     return "colorlevels=" + ":".join(opts)
 
 
@@ -377,8 +428,7 @@ def sample_stats(
         finally:
             frames.close()
     pick = np.unique(np.linspace(0, len(kept) - 1, min(SAMPLE_FRAMES, len(kept))).round())
-    high_bit = bool(_HIGH_BIT_RE.search(info.pix_fmt)) and not color_kind(info)
-    return ColorStats(np.stack([kept[int(i)] for i in pick]), high_bit)
+    return ColorStats(np.stack([kept[int(i)] for i in pick]), is_high_bit_sdr(info))
 
 
 # -- measurement, simulation and estimate --------------------------------------------------------
@@ -422,6 +472,16 @@ def metrics(frames: np.ndarray) -> Metrics:
     )
 
 
+def _black_span(g: AutoGrade) -> tuple[Any, Any]:
+    """The black point and ``white - black`` of ``g`` for numpy: floats, or float32 arrays
+    (r, g, b) for per-channel points."""
+    if not isinstance(g.black, tuple) and not isinstance(g.white, tuple):
+        return g.black, g.white - g.black
+    lo, hi = _rgb(g.black), _rgb(g.white)
+    span = [w - b for b, w in zip(lo, hi, strict=True)]
+    return np.asarray(lo, np.float32), np.asarray(span, np.float32)
+
+
 def simulate(frames: np.ndarray, grade: AutoGrade) -> np.ndarray:
     """``frames`` (``uint8``, or float 0-1) as :meth:`AutoGrade.filter` grades them, in
     float 0-1: the strength folded in, each filter's result clipped as ffmpeg stores it."""
@@ -429,8 +489,9 @@ def simulate(frames: np.ndarray, grade: AutoGrade) -> np.ndarray:
     rgb = _float(frames).copy()
     if g.mix > 0:
         rgb[..., 0] = np.clip((1.0 - g.mix) * rgb[..., 0] + g.mix * rgb[..., 1], 0.0, 1.0)
-    k = np.asarray(g.gains, np.float32) / (g.white - g.black)
-    rgb = np.clip((rgb - g.black) * k, 0.0, 1.0)
+    lo, span = _black_span(g)
+    k = np.asarray(g.gains, np.float32) / span
+    rgb = np.clip((rgb - lo) * k, 0.0, 1.0)
     if g.vibrance > 0:
         # vf_vibrance: each channel moves away from the luma by 1 + v * (1 - saturation)
         sat = rgb.max(axis=-1, keepdims=True) - rgb.min(axis=-1, keepdims=True)
@@ -466,15 +527,35 @@ def _mix(rgb: np.ndarray) -> float:
     return min(MAX_MIX, (MIX_TARGET - ratio) / (1.0 - ratio))
 
 
-def _levels_points(rgb: np.ndarray) -> tuple[float, float]:
-    """Black and white points: the median luma p0.5 / p99.5, clamped (see :data:`MAX_BLACK`,
+def _clamp_points(lo: float, hi: float) -> tuple[float, float]:
+    """Black and white points ``lo`` / ``hi`` clamped (see :data:`MAX_BLACK`,
     :data:`MIN_WHITE`, :data:`MAX_STRETCH`; a stretch above it moves both points back
     toward 0 and 1 in proportion)."""
-    lo, hi = np.median([np.percentile(f @ LUMA, LEVELS_PERCENTILES) for f in rgb], axis=0)
     black, white = min(float(lo), MAX_BLACK), max(float(hi), MIN_WHITE)
     if white - black < 1.0 / MAX_STRETCH:
         t = (1.0 - 1.0 / MAX_STRETCH) / (black + 1.0 - white)
         black, white = black * t, 1.0 - (1.0 - white) * t
+    return black, white
+
+
+def _levels_points(rgb: np.ndarray) -> tuple[float, float]:
+    """Black and white points: the median luma p0.5 / p99.5, clamped (:func:`_clamp_points`)."""
+    lo, hi = np.median([np.percentile(f @ LUMA, LEVELS_PERCENTILES) for f in rgb], axis=0)
+    return _clamp_points(lo, hi)
+
+
+def _channel_points(
+    rgb: np.ndarray,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Per-channel black and white points (``levels="channel"``, ``underwater``'s): each
+    channel's median p0.5 / p99.5, each pair clamped as :func:`_levels_points` clamps the
+    luma's."""
+    per = np.median(
+        [np.percentile(f.reshape(-1, 3), LEVELS_PERCENTILES, axis=0) for f in rgb], axis=0
+    )
+    points = [_clamp_points(per[0, c], per[1, c]) for c in range(3)]
+    black = (points[0][0], points[1][0], points[2][0])
+    white = (points[0][1], points[1][1], points[2][1])
     return black, white
 
 
@@ -536,8 +617,8 @@ def _round(grade: AutoGrade) -> AutoGrade:
     """``grade`` with its parameters rounded to 4 decimals (they go to the manifest)."""
     return replace(
         grade,
-        black=round(grade.black, 4),
-        white=round(grade.white, 4),
+        black=_per(grade.black, lambda v: round(v, 4)),
+        white=_per(grade.white, lambda v: round(v, 4)),
         gains=tuple(round(g, 4) for g in grade.gains),  # type: ignore[arg-type]
         mix=round(grade.mix, 4),
         vibrance=round(grade.vibrance, 4),
@@ -555,8 +636,24 @@ def _intended_clipping(frames: np.ndarray, grade: AutoGrade) -> float:
     mixed = simulate(rgb, AutoGrade(g.mode, mix=g.mix)) if g.mix > 0 else rgb
     tails = (LEVELS_PERCENTILES[0] / 100, 1.0 - LEVELS_PERCENTILES[1] / 100)
     shares = []
+    per_channel = isinstance(g.black, tuple) or isinstance(g.white, tuple)
+    lo, span = _black_span(g)
     for f, m in zip(rgb, mixed, strict=True):
         clipped = ((f <= 0.5 / 255) | (f >= 254.5 / 255)).any(axis=-1)
+        if per_channel:  # each channel's points intend its own tails
+            v = (m - lo) / span
+            low_c = ~clipped[..., None] & (v <= 0.5 / 255)
+            high_c = ~clipped[..., None] & (v >= 254.5 / 255)
+            low = min(
+                float(low_c.any(axis=-1).mean()),
+                sum(min(float(low_c[..., c].mean()), tails[0]) for c in range(3)),
+            )
+            high = min(
+                float(high_c.any(axis=-1).mean()),
+                sum(min(float(high_c[..., c].mean()), tails[1]) for c in range(3)),
+            )
+            shares.append(float(clipped.mean()) + low + high)
+            continue
         v = (m @ LUMA - g.black) / (g.white - g.black)
         low = float((~clipped & (v <= 0.5 / 255)).mean())
         high = float((~clipped & (v >= 254.5 / 255)).mean())
@@ -571,13 +668,23 @@ def _veto(before: Metrics, after: Metrics, intended: float) -> str | None:
     than :data:`VETO_CLIPPED` above ``intended`` (:func:`_intended_clipping`, never below
     ``before.clipped``) is vetoed: the white balance, mix or vibrance pushing more pixels
     out, or a mass of pixels at a levels point.
+
+    Cast: the residual rises by more than :data:`VETO_RESIDUAL_EPS`, or to more than
+    :data:`VETO_RESIDUAL_RATIO` times its value and by more than :data:`VETO_RESIDUAL_FLOOR`.
+    Colourfulness: M3 above ``1 +`` :data:`VETO_M3_RISE` or below :data:`VETO_M3_DROP` times
+    its value.
     """
     if after.clipped - max(intended, before.clipped) > VETO_CLIPPED:
         return VETO_CLIPPING
-    if after.residual > before.residual + VETO_RESIDUAL_EPS:
+    rise = after.residual - before.residual
+    if rise > VETO_RESIDUAL_EPS or (
+        after.residual > before.residual * VETO_RESIDUAL_RATIO and rise > VETO_RESIDUAL_FLOOR
+    ):
         return VETO_CAST
     if after.m3 > before.m3 * (1.0 + VETO_M3_RISE):
         return VETO_COLOURFUL
+    if after.m3 < before.m3 * VETO_M3_DROP:
+        return VETO_FADED
     return None
 
 
@@ -587,14 +694,16 @@ def _is_good(grade: AutoGrade) -> bool:
     :data:`M3_FULL`)."""
     return (
         all(abs(g - 1.0) <= GOOD_GAIN for g in grade.gains)
-        and grade.black <= GOOD_LEVELS
-        and grade.white >= 1.0 - GOOD_LEVELS
+        and max(_rgb(grade.black)) <= GOOD_LEVELS
+        and min(_rgb(grade.white)) >= 1.0 - GOOD_LEVELS
         and grade.mix == 0
         and grade.vibrance == 0
     )
 
 
-def estimate(stats: ColorStats, mode: str, strength: float = 1.0) -> AutoGrade:
+def estimate(
+    stats: ColorStats, mode: str, strength: float = 1.0, levels: str | None = None
+) -> AutoGrade:
     """The grade of a clip from its sampled frames (:func:`sample_stats`).
 
     Log or flat footage of a high-bit source is skipped (:data:`SKIP_LOG`, see
@@ -602,23 +711,40 @@ def estimate(stats: ColorStats, mode: str, strength: float = 1.0) -> AutoGrade:
     mix (``underwater``), the levels on the mixed frames, the white balance on those levels,
     the vibrance on the result. A clip that would hardly change is skipped
     (:data:`SKIP_GOOD`); a grade the simulation at ``strength`` vetoes (:func:`_veto`) is
-    skipped with the veto's name. Every result records the metrics before and predicted.
+    skipped with the veto's name. Every result records the metrics before and predicted;
+    plain ``auto`` also whether the frames look underwater (``underwater_hint``).
+
+    ``levels`` (:data:`LEVELS`; None: the mode's, :data:`MODE_LEVELS`, what exports use):
+    ``"luma"`` takes one black and white point from the luma; ``"channel"`` one per channel,
+    with the white balance measured on the levelled frames. The veto's intended clipping
+    follows the points (:func:`_intended_clipping`: per channel for per-channel points).
 
     Raises:
-        ValueError: For a ``mode`` other than :data:`MODES`.
+        ValueError: For a ``mode`` other than :data:`MODES` or ``levels`` other than
+            :data:`LEVELS`.
     """
     if mode not in MODES:
         raise ValueError(f"unknown color mode {mode!r} (expected one of {list(MODES)})")
+    levels = MODE_LEVELS[mode] if levels is None else levels
+    if levels not in LEVELS:
+        raise ValueError(f"unknown levels {levels!r} (expected one of {list(LEVELS)})")
     before = metrics(stats.frames)
+    hint = mode == "auto" and looks_underwater(stats)
     if is_log(stats):
-        return replace(AutoGrade.skipped(mode, SKIP_LOG, strength), before=before)
+        skipped = AutoGrade.skipped(mode, SKIP_LOG, strength)
+        return replace(skipped, before=before, underwater_hint=hint)
     underwater = mode == "underwater"
     rgb = _float(stats.frames)
     mix = _mix(rgb) if underwater else 0.0
     mixed = simulate(rgb, AutoGrade(mode, mix=mix)) if mix else rgb
-    black, white = _levels_points(mixed)
-    gains = _gains(mixed, black, underwater)
-    grade = AutoGrade(mode, black=black, white=white, gains=gains, mix=mix)
+    if levels == "channel":
+        black, white = _channel_points(mixed)
+        lo, span = _black_span(AutoGrade(mode, black=black, white=white))
+        gains = _gains((mixed - lo) / span, 0.0, underwater)
+    else:
+        black, white = _levels_points(mixed)
+        gains = _gains(mixed, black, underwater)
+    grade = AutoGrade(mode, black=black, white=white, gains=gains, mix=mix, underwater_hint=hint)
     grade = _round(replace(grade, vibrance=_vibrance(rgb, grade, before)))
     if _is_good(grade):
         return replace(grade, strength=strength, skip=SKIP_GOOD, before=before)
@@ -673,7 +799,7 @@ def auto_grade(
     entry = cache.load_json(path)
     got = AutoGrade.from_entry(entry) if isinstance(entry, dict) else None
     if got is not None:
-        return got
+        return replace(got, underwater_hint=entry.get("underwater_hint") is True)
     try:
         stats = sample_stats(src, info, start, end, fmt, vertical, crop)
     except FFmpegError as err:
@@ -681,5 +807,5 @@ def auto_grade(
         return AutoGrade.skipped(mode, SKIP_NO_FRAMES, strength)
     grade = estimate(stats, mode, strength)
     path.parent.mkdir(parents=True, exist_ok=True)
-    cache.save_json(path, grade.to_json())
+    cache.save_json(path, grade.to_json() | {"underwater_hint": grade.underwater_hint})
     return grade

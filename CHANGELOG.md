@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fills as the other themes (#466).
 - `assemble --audio-transition cut|crossfade` sets the audio join apart from `--transition`; by
   default it follows it. `--transition cut --audio-transition crossfade` is refused (exit 2) (#466).
+- `clips` and `edit --color auto|underwater` and `--color-strength 0-1`: automatic color
+  correction per clip (levels, white balance, vibrance; `underwater` also restores red, with
+  per-channel levels), measured on each clip and vetoed when a simulation predicts clipping, a
+  worse cast, or too much or too little color.
+  Clips that look good, log footage (use `--lut`) and 360 clips are left as they are. Not with
+  `--lut`. The `color` key in `config.json` sets a default (`off`), never applied to `gaming`
+  footage. `manifest.json` records each clip's `color` entry and `extend` re-applies it. With
+  `--color` off (the default) the clips are unchanged (#290).
+- `--json`: a `grade_dropped` warning when `clips --force` replaces graded clips with ungraded
+  ones (#290).
 - `cutpoint ui`: the Moments list has a sort order next to the filter: Score (the default) or
   Position in video, which sorts by source name (natural order, so `clip2` comes before `clip10`)
   and then start time. The rank badge on each card keeps its score rank in either order. The

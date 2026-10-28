@@ -122,6 +122,13 @@ def color_kind(info: MediaInfo) -> str | None:
     return None
 
 
+def is_high_bit_sdr(info: MediaInfo) -> bool:
+    """True for a 10-bit (or deeper) source that gets no HDR or BT.2020 conversion
+    (:func:`color_kind`): the sources :func:`warn_if_log` checks and whose log look
+    :mod:`cutpoint.color` skips."""
+    return bool(_HIGH_BIT_RE.search(info.pix_fmt)) and not color_kind(info)
+
+
 def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
     """Filters converting an HDR or BT.2020 source to SDR Rec.709, "" for any other source.
 
@@ -336,11 +343,12 @@ class Lut:
 
 
 def grade_from_entry(entry: dict[str, Any]) -> Grade | None:
-    """The grade a manifest entry records (:meth:`Grade.to_json`), None for an ungraded clip.
+    """The grade a manifest entry records (:meth:`Grade.to_json`), None for an ungraded clip:
+    a ``--lut`` grade (:meth:`Lut.from_entry`) or a ``--color`` one
+    (:meth:`cutpoint.color.AutoGrade.from_entry`, skipped ones included)."""
+    from cutpoint.color import AutoGrade  # noqa: PLC0415 - it imports this module
 
-    Today only a ``--lut`` grade (:meth:`Lut.from_entry`).
-    """
-    return Lut.from_entry(entry)
+    return Lut.from_entry(entry) or AutoGrade.from_entry(entry)
 
 
 def check_lut(path: Path | str, strength: float = 1.0, what: str = "--lut") -> Lut:
@@ -413,7 +421,7 @@ def warn_if_log(src: Path, info: MediaInfo, at: float) -> None:
     64x36 frame of ``src`` at ``at`` s; a failed grab skips the check.
     """
     key = f"log:{src}"
-    if key in _color_noted or color_kind(info) or not _HIGH_BIT_RE.search(info.pix_fmt):
+    if key in _color_noted or not is_high_bit_sdr(info):
         return
     _color_noted.add(key)
     w, h = _LOG_FRAME
@@ -440,7 +448,8 @@ def warn_if_log(src: Path, info: MediaInfo, at: float) -> None:
     if looks_log(sat, black, white):
         logger.warning(
             "%s looks like log/flat footage (10-bit, saturation %.2f, luma %.2f-%.2f): "
-            "clips keep that look; apply your camera's LUT in an editor for normal colors",
+            "clips keep that look; give your camera's LUT with --lut FILE or apply it in an editor "
+            "for normal colors",
             src.name,
             sat,
             black,

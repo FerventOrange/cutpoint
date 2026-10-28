@@ -69,7 +69,7 @@ def test_edit_runs_the_steps_in_order_and_names_the_final(pipeline, home):
     assert calls[0][1] == ([video], "funny", project)
     assert calls[1][2] == {
         "top": 8, "max_total": None, "order": "chronological", "vertical": False, "force": False,
-        "compress_peaks": "off", "lut": None,
+        "compress_peaks": "off", "lut": None, "color": None, "color_strength": 1.0,
     }  # fmt: skip
     assert calls[2][1] == (project / "clips",)
     assert calls[2][2] == {
