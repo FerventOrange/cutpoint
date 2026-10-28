@@ -180,6 +180,12 @@ const offsetOf = () => Number(v.dataset.offset) || 0;
 const loaded = () => (v.dataset.url ? { lo: offsetOf(), hi: v.dataset.hi ? Number(v.dataset.hi) : null } : null);
 /** The stage player holds a file of ``src``: its original or whole proxy, or one of its window proxies. */
 const ofSource = (src) => !!v.dataset.url && (v.dataset.url === src.url || v.dataset.url.startsWith(`${src.url.split('?')[0]}/window/`));
+/** The stage player's file plays all of clip ``c`` ({source, start, end}): a file of its source, whole or a window covering it. */
+const holdsClip = (c) => {
+  const r = loaded();
+  const src = srcOf(c.source);
+  return !!r && !!src && ofSource(src) && (r.hi == null || coversSeg(r, c, sourceDur(c.source)));
+};
 const inLoaded = (t, dur) => {
   const r = loaded();
   return !!r && (r.hi == null || covers(r, t, dur));
@@ -1178,9 +1184,11 @@ function stageVideo(seekC) {
     const p = playable(src, at);
     // "Play sequence" plays a clip only from a file covering all of it: a window ending inside it would cut it short
     const fits = !S.seqPlay || readyFor(src, c);
-    if (fits && ((mine && inLoaded(at, durOf(c))) || p)) {
+    // and keeps the loaded file only when it covers all of the clip too (``fileFor`` picks the same)
+    const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(c));
+    if (fits && (keep || p)) {
       if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src); // no window request brings it
-      if (!mine || !inLoaded(at, durOf(c))) loadFile(src, p, at);
+      if (!keep) loadFile(src, p, at);
       else if (seekC) seekTo(seekC.start);
       return;
     }
@@ -1228,8 +1236,10 @@ function stageVideo(seekC) {
   }
   forgetPrepared(src); // ready: a later change to the file prepares again
   const p = playable(src, 0);
-  // A window proxy playing on switches to the whole proxy at the next pause or seek.
-  const playingOn = v.dataset.hi && !v.paused && !v.error && inLoaded(want ?? playhead(c), durOf(c));
+  // A window proxy of this source playing on switches to the whole proxy at the next pause or
+  // seek; during "Play sequence" only while it covers all of the clip.
+  const playingOn = v.dataset.hi && ofSource(src) && !v.paused && !v.error && inLoaded(want ?? playhead(c), durOf(c))
+    && (!S.seqPlay || holdsClip(c));
   if (v.dataset.url !== p.url && !playingOn) {
     loadFile(src, p, want ?? (ofSource(src) ? playhead(c) : c.start));
   } else if (seekC) seekTo(seekC.start);
@@ -1461,7 +1471,18 @@ function showPlaying(playing) {
   b.replaceChildren(icon(playing ? 'pause' : 'play'));
 }
 
+// One preview sounds at a time: the stage (a moment or "Play sequence") and the Export tab's final
+// video, which plays on while its tab is hidden, pause each other.
+const finalVideo = $('#finalVideo');
+finalVideo.addEventListener('play', () => {
+  if (S.seqPlay) seqStop();
+  else {
+    cancelResume(); // a resume at a window's end would start the stage again
+    v.pause();
+  }
+});
 onStage('play', () => {
+  finalVideo.pause();
   resumeAt = null;
   showPlaying(true);
   follow(playhead()); // Play shows the playhead, also after a pan away from it
@@ -3839,7 +3860,9 @@ function initSideTabs() {
       const on = t === tab;
       t.setAttribute('aria-selected', String(on));
       t.tabIndex = on ? 0 : -1;
-      $(`#${t.getAttribute('aria-controls')}`).hidden = !on;
+      const panel = $(`#${t.getAttribute('aria-controls')}`);
+      panel.hidden = !on;
+      if (!on) for (const vid of panel.querySelectorAll('video')) vid.pause(); // the Export tab's final video: not heard unseen
     }
     if (focus) tab.focus();
     try {

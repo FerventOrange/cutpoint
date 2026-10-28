@@ -118,6 +118,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
   instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
   there are none.
+- `cutpoint ui`: the final video in the Export tab no longer plays on under Play sequence. It
+  kept playing while its tab was hidden, so its audio ran over every sequence clip. Starting
+  the preview or leaving the Export tab now pauses it, and playing it stops Play sequence. Play sequence also no longer
+  cuts a clip short, or stalls, when it moves to a clip whose start is inside the preview part
+  already playing but whose end is not: it loads a part that covers the whole clip. A clip, or a
+  moment, of another source whose times fall inside the preview part already playing no longer
+  plays that source's picture and sound in its place.
 - `assemble`: the audio and container of `final.mp4` now end with the video, to within one audio
   frame. Cut joins ended about 24 ms late and started the video about 21 ms late, and
   `--loudnorm` or the limiter padded the audio by about 0.1 s. The `.fcpxml` and `.otio` of cut
