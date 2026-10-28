@@ -77,7 +77,8 @@ with `_` are ignored.
   "export_workers": "auto",
   "vision": false,
   "compress_peaks": "off",
-  "analysis": {"skip": []}
+  "analysis": {"skip": []},
+  "assistant": {"provider": "ollama", "model": "", "context_tokens": 8192}
 }
 ```
 
@@ -168,6 +169,21 @@ Default: none. Other step names are rejected.
 ### export_workers
 
 How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at a time with a GPU encoder (`video_encoder`), which otherwise sits mostly idle on short clips, and 1 with libx264, which already uses every core. A number sets it; values are clamped to 1-3, as consumer NVIDIA cards allow only a few NVENC sessions at once. `CUTPOINT_EXPORT_WORKERS` overrides it. A run with a 360 clip exports one clip at a time. The clips, their names and manifest.json are the same as with 1, and the per-clip log lines come in clip order; warnings from an export are logged when they happen. The first failure or Ctrl+C stops every export in progress and removes its partial file. One difference: with `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs. When NVENC has no free encode session (consumer NVIDIA drivers limit them, and ShadowPlay or OBS may hold one), the clip is not redone on the CPU: the rest of the run exports one clip at a time (one INFO line, "NVENC has no free encode session; exporting one clip at a time") and the clip is encoded on the GPU again once it runs alone; only if that fails too is it redone on the CPU as above.
+
+### assistant
+
+Settings for the `cutpoint ui` assistant. Only the backend exists so far: the UI's API serves it
+(`/api/projects/{id}/assistant`, token header only), but the page has no chat panel yet. It
+writes `ui/assistant/chat.json` and `history.json` in the project. There is no API key setting.
+
+- `provider`: `ollama` (default, the only one).
+- `model`: Ollama model name. Empty (default) is auto: `qwen3.5:9b` if Ollama has it pulled, else
+  the vision model (`CUTPOINT_VISION_MODEL`, default `qwen3-vl:8b`).
+- `url`: Ollama base URL. Empty (default) uses `ollama_url`.
+- `context_tokens`: the model's context size, a whole number of at least 2048 (default 8192).
+- `consent`: list of provider names the user agreed to send project text to (default none).
+
+Other values are rejected.
 
 ### pano
 
