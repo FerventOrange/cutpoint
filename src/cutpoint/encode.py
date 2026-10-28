@@ -160,8 +160,9 @@ def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
     # clip (Xiaomi 14T Pro). mobius at npl=203 (diffuse white is 1.0, peak 1000/203) keeps
     # midtones linear and came within 3 % (-2.7 %, mean luma error 1.6 % against 9.5 %).
     # mobius had looked milky (lifted shadows) at npl=100, which puts diffuse white at 2.0.
-    # On PQ the HLG chain was 15 % too bright, so PQ keeps hable. desat>0 greys bright
-    # colours. CPU cost: about 30 fps at 1080p (8 threads), so HDR sources export slower;
+    # On PQ (Eclipse, Swan) the HLG chain was 15 % too bright, so PQ keeps hable (Jellyfin
+    # HDR10: -21 % with hable and with libplacebo peak_detect=0, a dynamic-peak gap).
+    # desat>0 greys bright colours. CPU cost: about 30 fps at 1080p (8 threads), so HDR sources export slower;
     # SDR sources never run it.
     if kind == "HLG":
         npl, tone = 203, f"mobius:param=0.5:peak={HLG_PEAK_NITS / 203:.3f}:desat=0"

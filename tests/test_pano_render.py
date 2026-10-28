@@ -285,7 +285,8 @@ class TestRenderSegmentSendcmd:
     def test_hdr_source_is_tone_mapped_and_tagged_bt709(self, clip, tmp_path, ffmpeg, monkeypatch):
         """#289: the 360 render converts HLG footage to SDR Rec.709 like a flat export."""
         hlg = {"color_transfer": "arib-std-b67", "color_primaries": "bt2020"}
-        monkeypatch.setattr(render, "probe", lambda p: media_info(duration=1.0, **hlg))
+        info = media_info(duration=1.0, **hlg)
+        monkeypatch.setattr(render, "probe", lambda p: info)
         monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
         path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
         render.render_segment(
@@ -293,7 +294,7 @@ class TestRenderSegmentSendcmd:
         )
         args = ffmpeg[0]
         assert ":round=down,zscale=tin=arib-std-b67:" in self._filter(args)
-        assert "tonemap=tonemap=hable:desat=0,zscale=" in self._filter(args)
+        assert f"{encode.sdr_filter(info)},format=yuv420p" in self._filter(args)
         assert "m=bt709:r=tv,format=yuv420p" in self._filter(args)
         i = args.index("-color_range")
         assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
