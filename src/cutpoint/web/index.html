@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cutpoint</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23f3bd60'/%3E%3Cpath d='M6 4v8l6-4z' fill='%23222'/%3E%3C/svg%3E">
+  <!-- Settings > Theme (#445): set before the stylesheet paints, so a saved Light or Dark never flashes Blue -->
+  <script>try { const t = localStorage.getItem('cutpoint.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
   <link rel="stylesheet" href="app.css">
   <script type="module" src="app.js"></script>
 </head>
@@ -234,6 +236,17 @@
         <legend>Preview</legend>
         <label class="check"><input type="checkbox" id="setNerdStats" aria-describedby="setNerdStatsHint"> Stats for Nerds</label>
         <p id="setNerdStatsHint" class="hint">Shows each moment's score, rank and signals over the top-left corner of the preview. Off by default. Shows at once; Save keeps it, in this browser.</p>
+      </fieldset>
+      <fieldset class="panel">
+        <legend>Appearance</legend>
+        <label class="field">Theme
+          <select id="setTheme" aria-describedby="setThemeHint">
+            <option value="blue">Blue</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <p id="setThemeHint" class="hint">Blue by default. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
       <p id="settingsError" class="error" role="alert"></p>
       <div class="dialog-actions">

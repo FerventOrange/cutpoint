@@ -196,6 +196,9 @@ keeps the Ollama model, URL and vision-top the last analysis recorded.
 "Stats for Nerds" (off by default) shows the open moment's score, rank, analyzed times, signals
 and keywords over the top-left corner of the preview. It shows as soon as you tick it; Save keeps
 it, in the browser (local storage), not in `config.json`, and Cancel or Escape undoes it.
+Theme picks the colours: Blue (the default, today's colours), Light or Dark (both keep text,
+controls and focus outlines at WCAG AA contrast). It recolours the UI at once and, like Stats for
+Nerds, Save keeps it in the browser and Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
