@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dark keep text, controls and focus outlines at WCAG AA contrast, and Blue keeps today's colours
   (#445).
 
+### Changed
+
+- Faster runs: a source is probed with ffprobe once per run instead of 3 to 5 times (about 0.1 s
+  each). The result is reused until the file, or its staged copy, changes; results are unchanged
+  (#372).
+
 ### Fixed
 
 - `cutpoint ui`: stills of BT.709 and HDR sources now show the same colours as their exports.
