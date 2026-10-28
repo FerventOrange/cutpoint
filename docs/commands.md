@@ -726,8 +726,9 @@ Notes:
   already looks good (`good`), is log or flat 10-bit footage (`log`: use `--lut` with the
   camera's LUT; an INFO line says so), is a `360` clip (`360`), or when a simulation on the
   measured frames predicts more clipping than the levels intend, a worse cast or a much more
-  colorful picture (`veto_clipped`, `veto_cast`, `veto_m3`). Plain `auto` logs an INFO line
-  naming clips that look underwater; it does not change them. `gaming` footage is graded
+  colorful picture (`veto_clipped`, `veto_cast`, `veto_m3`), or when its frames could not be
+  decoded (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater; it
+  does not change them. `gaming` footage is graded
   only with an explicit `--color` (with a WARNING): `color` in `config.json` never applies to
   it. `--color` cannot be combined with `--lut`. Each clip records a `color` entry (method,
   version, strength, parameters, skip reason, metrics before and predicted), and `extend`
