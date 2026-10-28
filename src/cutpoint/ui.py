@@ -939,7 +939,7 @@ class Media:
         self.window_wake = threading.Condition(self.lock)
         self.window_lane: threading.Thread | None = None  # started with the first window
         self.proxies_pruned: set[Path] = set()  # projects whose proxy leftovers went this run
-        # (project, content key) of HDR sources whose proxies of an earlier tone map went
+        # (project, content key) of colour-filtered sources whose unfiltered proxies went
         self.tone_maps_pruned: set[tuple[Path, str]] = set()
         self.closing = False
         self.gpu_failed = False  # a proxy failed with the GPU encoder and worked with libx264
@@ -982,8 +982,9 @@ class Media:
 
     def _proxy_key(self, key: str | None) -> str | None:
         """The key naming a source's proxies (whole, windows, builds): its content key, mixed
-        with the colour filter of a probed source that has one, so a changed tone map rebuilds
-        HDR proxies while the others keep their names. Never runs ffprobe."""
+        with the colour filter of a probed source that has one (HDR, BT.2020, full-range
+        BT.601), so a changed filter rebuilds its proxies while the others keep their names.
+        Never runs ffprobe."""
         res = self.probed.get(key) if key else None
         if res is None or not res[3]:
             return key
@@ -1249,8 +1250,9 @@ class Media:
                 logger.debug("could not delete %s: %s", f.name, err)
 
     def _drop_earlier_tone_map(self, project: Path, content: str) -> None:
-        """Once per run: delete an HDR source's proxies named by its content key alone (built
-        with an earlier tone map), unless written or used in the last PROXY_PRUNE_GRACE_S."""
+        """Once per run: delete the proxies of a source with a colour filter (HDR, BT.2020,
+        full-range BT.601) named by its content key alone (built before it had one), unless
+        written or used in the last PROXY_PRUNE_GRACE_S."""
         folder = project / UI_DIR / "proxy"
         cutoff = time.time_ns() - int(PROXY_PRUNE_GRACE_S * 1e9)
         with self.lock:
@@ -1333,10 +1335,11 @@ class Media:
         for PROXY_OFFLINE_PRUNE_S (it may be the offline source's), and the readable sources are
         probed only when such a proxy has been idle that long.
 
-        A proxy no known key names may be of an HDR source not probed yet (its proxy key holds
-        the colour filter): sources are then probed, in order, until every such proxy is
-        matched, so this may run ffprobe. Proxies an HDR source's content key names (an earlier
-        tone map) go in :meth:`prepare` instead, so no other source is probed for them."""
+        A proxy no known key names may be of a source with a colour filter (HDR, BT.2020,
+        full-range BT.601) not probed yet (its proxy key holds the filter): sources are then
+        probed, in order, until every such proxy is matched, so this may run ffprobe. Proxies
+        such a source's content key names (built before it had a filter) go in :meth:`prepare`
+        instead, so no other source is probed for them."""
         folder = project / UI_DIR / "proxy"
         if project in self.proxies_pruned:
             return

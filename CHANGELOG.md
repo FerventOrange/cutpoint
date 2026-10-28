@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   32 on saturated colours). They are now converted to BT.601 before encoding, which rebuilds them
   once under a new name. Previews of full-range BT.601 sources are encoded in TV range like
   exports, keeping their BT.601 tags. BT.601 stills and every other preview are unchanged (#441).
+- HLG (HDR) exports, `cutpoint ui` previews and stills are brighter: they came out about 16 %
+  darker than a reference tone map (libplacebo bt.2390), and now are within about 3 % on the
+  measured phone clip. HLG is tone-mapped with `mobius` at 203-nit diffuse white instead of
+  `hable`; previews and stills of HLG sources are rebuilt once. PQ and every other source are
+  unchanged (#449).
 
 ## [0.3.0] - 2026-10-27
 

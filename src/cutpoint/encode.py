@@ -51,6 +51,8 @@ AUDIO_SHORT_S = 0.02
 # a BT.2020 SDR source only changes primaries/matrix. Every other source keeps today's chain.
 HDR_TRANSFERS = {"arib-std-b67": "HLG", "smpte2084": "PQ"}
 BT2020_TRANSFERS = ("bt2020-10", "bt2020-12")
+# Nominal peak of HLG (BT.2100 reference display); its tone map's peak is this over npl (#449).
+HLG_PEAK_NITS = 1000
 # Probed tags zscale takes as input values (same names as ffprobe's); others fall back to BT.2020.
 _ZSCALE_PRIMARIES = ("bt709", "bt2020")
 _ZSCALE_MATRICES = ("bt709", "bt2020nc", "bt2020c")
@@ -119,11 +121,11 @@ def color_kind(info: MediaInfo) -> str | None:
 def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
     """Filters converting an HDR or BT.2020 source to SDR Rec.709, "" for any other source.
 
-    HLG and PQ are linearised, tone-mapped (``tonemap=hable``) and re-encoded as BT.709
-    with ``zscale``; BT.2020 SDR only changes primaries and matrix. They go after the
-    scale and before ``format=yuv420p``. ``filters`` is this ffmpeg's filter list (default
-    :func:`~cutpoint.ffmpeg_utils.ffmpeg_filters`); without ``zscale`` (or ``tonemap``)
-    a WARNING says so once per source and the chain stays as it was.
+    HLG and PQ are linearised, tone-mapped (``tonemap``: mobius for HLG, hable for PQ) and
+    re-encoded as BT.709 with ``zscale``; BT.2020 SDR only changes primaries and matrix. They
+    go after the scale and before ``format=yuv420p``. ``filters`` is this ffmpeg's filter
+    list (default :func:`~cutpoint.ffmpeg_utils.ffmpeg_filters`); without ``zscale`` (or
+    ``tonemap``) a WARNING says so once per source and the chain stays as it was.
     """
     kind = color_kind(info)
     if kind is None:
@@ -151,17 +153,24 @@ def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
         return f"zscale=tin={tin}:pin={pin}:min={min_}:t=bt709:p=bt709:m=bt709:r=tv"
     # Every zscale names its input and output: a step reading untagged frames fails
     # ("no path between colorspaces"), and a zscale ``pin`` does not tag its output.
-    # At npl=100, HLG/PQ diffuse white (203 nits) is linear 2.0. hable rolls it off close
-    # to libplacebo (not used: it needs Vulkan): on real HLG phone clips its median luma
-    # was 0.62-0.66 against libplacebo's 0.54-0.57. mobius (0.81-0.84) kept midtones
-    # linear and squeezed the rest into the top (milky, lifted shadows), npl=203 came out
-    # too dark (0.49-0.52) and desat>0 greys bright colours. The peak is 1000 nits unless
-    # the frames carry light-level metadata, so PQ maps like HLG. A synthetic chart once
-    # suggested hable was too dark; real footage does not. CPU cost: about 30 fps at 1080p
-    # (8 threads), so HDR sources export slower; SDR sources never run it.
+    # Reference: libplacebo bt.2390 (not used: it needs Vulkan), mean luma of 3 frames each.
+    # PQ: at npl=100 diffuse white (203 nits) is linear 2.0 and hable rolls it off close to
+    # the reference (Eclipse +1.4 %, Swan -0.6 %); the peak is 1000 nits unless the frames
+    # carry light-level metadata. HLG (#449): the same chain was 16 % darker on a real phone
+    # clip (Xiaomi 14T Pro). mobius at npl=203 (diffuse white is 1.0, peak 1000/203) keeps
+    # midtones linear and came within 3 % (-2.7 %, mean luma error 1.6 % against 9.5 %).
+    # mobius had looked milky (lifted shadows) at npl=100, which puts diffuse white at 2.0.
+    # On PQ (Eclipse, Swan) the HLG chain was 15 % too bright, so PQ keeps hable (Jellyfin
+    # HDR10: -21 % with hable and with libplacebo peak_detect=0, a dynamic-peak gap).
+    # desat>0 greys bright colours. CPU cost: about 30 fps at 1080p (8 threads), so HDR sources export slower;
+    # SDR sources never run it.
+    if kind == "HLG":
+        npl, tone = 203, f"mobius:param=0.5:peak={HLG_PEAK_NITS / 203:.3f}:desat=0"
+    else:
+        npl, tone = 100, "hable:desat=0"
     return (
-        f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl=100:p=bt709,"
-        "format=gbrpf32le,tonemap=tonemap=hable:desat=0,"
+        f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl={npl}:p=bt709,"
+        f"format=gbrpf32le,tonemap=tonemap={tone},"
         "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
     )
 
