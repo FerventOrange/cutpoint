@@ -40,10 +40,21 @@
       </div>
       <div id="analyzeSteps" class="steps" hidden></div>
       <p id="analyzeStepsStatus" class="vh" role="status"></p>
-      <label class="filter" id="filterWrap" hidden>
-        <span class="vh">Filter moments by label or transcript</span>
-        <input id="filter" type="search" placeholder="Filter by label or words spoken" autocomplete="off">
-      </label>
+      <div class="filter-row" id="filterWrap" hidden>
+        <label class="filter">
+          <span class="vh">Filter moments by label or transcript</span>
+          <input id="filter" type="search" placeholder="Filter by label or words spoken" autocomplete="off">
+        </label>
+        <!-- Moment order (#469); the rank badge keeps the score rank in either order -->
+        <label class="order">
+          <span class="vh">Sort moments by</span>
+          <select id="momentOrder">
+            <option value="score">Score</option>
+            <option value="position">Position in video</option>
+          </select>
+        </label>
+        <p id="orderLive" class="vh" role="status"></p>
+      </div>
       <div id="momentsEmpty" class="empty"></div>
       <ol id="candList" class="cand-list"></ol>
     </section>
