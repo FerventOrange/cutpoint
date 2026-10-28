@@ -30,6 +30,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `paths.py`, `config.py` | `CUTPOINT_HOME` and every data location; `config.json`, projects folder, source remap |
 | `analyze.py`, `sources.py` | Signals, peak picking, merging, snapping, `highlights.json`; cached audio and transcripts per source |
 | `transcribe.py`, `vision.py`, `backends.py` | faster-whisper wrapper; Ollama client; Ollama URL handling |
+| `assistant/` | Backend of the `cutpoint ui` assistant: `providers.py` (Ollama), `session.py` (turns), `context.py`, `ops.py`, `store.py` (`ui/assistant/chat.json`, `history.json`); no page UI yet |
 | `styles.py` | Built-in styles and learned styles |
 | `planning.py`, `clips.py`, `encode.py` | Moment selection and padding; ordering, export and manifest; format choice and frame-accurate encode |
 | `tail.py`, `boundaries.py`, `crop.py` | Smart tails, speech-aware in/out points, cropping |

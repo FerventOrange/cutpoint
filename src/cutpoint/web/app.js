@@ -9,7 +9,7 @@ const MIN_VIEW = 2; // seconds: the rail's deepest zoom
 const LONG_CLIP = 600; // seconds: longer clips get a note under the trim fields
 const LABEL_MAX = 200; // characters; ui.py validate_segments rejects longer labels
 const THUMB_W = 160; // pixels requested for sequence thumbnails
-const JOB_NAMES = { analyze: 'Analysis', clips: 'Clip export', assemble: 'Assembly' };
+const JOB_NAMES = { analyze: 'Analysis', edit: 'One-click edit', clips: 'Clip export', extend: 'Export extension', assemble: 'Assembly' };
 const live = (status) => status === 'running' || status === 'cancelling'; // the job still holds the server
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
 const SIDE_MIN = 290; // pixels; the column's CSS default is 290-380
@@ -26,10 +26,18 @@ const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the mo
 // localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults
 const OPTS_KEY = 'cutpoint.exportOptions';
 // Export & Assembly Options for a viewer who changed none; Compress peaks starts from config.json's
-// compress_peaks when it sets one, else Light
+// compress_peaks when it sets one, else Light. Speech-aware cuts and Smart tails were one Smart edges
+// box before: a stored smart_edges is the default of both.
 const OPT_DEFAULTS = {
-  vertical: false, captions: false, smart_edges: true, loudnorm: true, link: true,
+  vertical: false, captions: false, speech_aware: true, smart_tail: true, loudnorm: true, link: true,
   transition: 'cut', audio_transition: 'cut', compress_peaks: 'light',
+  picks: 'sequence', order: '', event_tails: 'auto', kind: 'highlights',
+};
+// The Export tab's number and text fields, by the option they send; blank sends nothing (the CLI's default)
+const OPT_FIELDS = {
+  top: '#optTop', max_total: '#optMaxTotal', ids: '#optIds', speech_max_extend: '#optSpeechExtend',
+  speech_max_lead: '#optSpeechLead', tail_min: '#optTailMin', tail_max: '#optTailMax',
+  event_window: '#optEventWindow', extend_start: '#optExtendStart', extend_end: '#optExtendEnd',
 };
 const PEAK_STOPS = ['off', 'light', 'strong']; // the Compress Audio Peaks slider's stops, left to right
 const PEAK_NAMES = { off: 'None', light: 'Light', strong: 'Max' };
@@ -2238,7 +2246,11 @@ function renderExport() {
   const clips = p?.clips;
   const st = $('#exportState');
   if (!p) st.textContent = '';
-  else if (!S.segments.length) st.textContent = 'Add moments to the sequence to export them.';
+  else if (picks() === 'auto') {
+    st.textContent = !p.highlights?.candidates?.length ? 'Analyze the footage to export automatic picks.'
+      : clips ? `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips. Automatic picks export the best moments of the analysis.`
+        : 'Nothing exported yet. Automatic picks export the best moments of the analysis.';
+  } else if (!S.segments.length) st.textContent = 'Add moments to the sequence to export them.';
   else if (!clips) st.textContent = 'Nothing exported yet. Exporting saves the sequence first.';
   else if (exportMatches()) st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and matches this sequence.`;
   else st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and differs from this sequence. Export again to update it.`;
@@ -2268,7 +2280,15 @@ function renderBusy() {
     out.classList.toggle('progress', own);
     if (out.textContent !== big.title) out.textContent = big.title; // live region: announce changes only
   }
-  set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
+  if (picks() === 'auto') set('#clipsBtn', !p || busy || !p.highlights?.candidates?.length, busy ? why : 'Analyze the footage first.');
+  else set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
+  set('#extendBtn', !p || busy || !p.clips, busy ? why : 'Export clips first.');
+  const preset = p?.preset_problem || (p && !p.sources?.length ? 'Add videos to the source folder first.' : '');
+  set('#makeBtn', !p || busy || !!preset, busy ? why : preset);
+  const presetWhy = $('#presetWhy');
+  presetWhy.hidden = !preset;
+  if (presetWhy.textContent !== preset) presetWhy.textContent = preset;
+  $('#presetPanel').disabled = !p;
   set('#assembleBtn', !p || busy || !p.clips, busy ? why : 'Export clips first.');
   // Never disabled by a job: showing a folder is harmless.
   const target = exportsFolder(p);
@@ -2493,8 +2513,60 @@ function peaks() {
   return PEAK_STOPS[Number($('#optPeaks').value)] ?? 'off';
 }
 
+/** 'sequence' (hand-picked) or 'auto' (Clips to Export). */
+function picks() {
+  return $('#optPicksAuto').checked ? 'auto' : 'sequence';
+}
+
+/** The fields among ``keys`` that are filled in and enabled, as numbers (ids: a list). */
+function fields(...keys) {
+  const out = {};
+  for (const key of keys) {
+    const el = $(OPT_FIELDS[key]);
+    const v = el.value.trim();
+    if (el.disabled || !v) continue;
+    out[key] = key === 'ids' ? v.split(/[\s,]+/).filter(Boolean) : Number(v);
+  }
+  return out;
+}
+
+/** False (and the browser shows why) when one of the fields a job sends (``body``) is out of its range. */
+function validOptions(body) {
+  const bad = Object.keys(body).filter((key) => key in OPT_FIELDS).map((key) => $(OPT_FIELDS[key])).find((el) => !el.checkValidity());
+  bad?.reportValidity();
+  return !bad;
+}
+
+/** Extend export's options (Export clips sends them too): speech-aware cuts and the padding. */
+function extendOptions() {
+  return { speech_aware: $('#optSpeech').checked, ...fields('speech_max_extend', 'speech_max_lead', 'extend_start', 'extend_end') };
+}
+
 function exportOptions() {
-  return { vertical: $('#optVertical').checked, smart_edges: $('#optSmart').checked, compress_peaks: peaks() };
+  const body = {
+    picks: picks(), vertical: $('#optVertical').checked, smart_tail: $('#optTail').checked, compress_peaks: peaks(),
+    ...extendOptions(), ...fields('tail_min', 'tail_max', 'event_window'),
+  };
+  if (body.picks === 'auto') Object.assign(body, fields('top', 'max_total', 'ids'), $('#optOrder').value ? { order: $('#optOrder').value } : {});
+  if (!$('#optEventTails').disabled) body.event_tails = $('#optEventTails').value;
+  return body;
+}
+
+/**
+ * One-Click Edit (``edit --kind``): asks first when the preset's clips folder holds an earlier
+ * run's clips, and only then sends ``force`` (the CLI replaces them only with --force).
+ */
+async function makePreset() {
+  await refreshProject(); // preset_taken as it is now, not when the page last loaded
+  if (!S.project) return;
+  const body = { kind: $('#optKind').value, vertical: $('#optVertical').checked, compress_peaks: peaks() };
+  const dir = body.vertical ? 'clips_vertical' : 'clips';
+  if (S.project?.preset_taken?.includes(dir)) {
+    const text = `The ${dir} folder holds the clips of an earlier run. This run replaces the clips it lists and assembles final.mp4 again; other files stay.`;
+    if (!(await confirmAction('Replace the clips of the earlier preset run?', text, 'Replace'))) return;
+    body.force = true;
+  }
+  startJob('edit', body);
 }
 
 function assembleOptions() {
@@ -2972,14 +3044,45 @@ function initExportOptions() {
       // storage blocked or full: the choice still applies until reload
     }
   };
-  const checks = { vertical: '#optVertical', captions: '#optCaptions', smart_edges: '#optSmart', loudnorm: '#optLoudnorm', link: '#optLink' };
+  const checks = { vertical: '#optVertical', captions: '#optCaptions', speech_aware: '#optSpeech', smart_tail: '#optTail', loudnorm: '#optLoudnorm', link: '#optLink' };
+  const edges = typeof saved.smart_edges === 'boolean' ? saved.smart_edges : undefined; // the old Smart edges box
   for (const [key, id] of Object.entries(checks)) {
-    $(id).checked = typeof saved[key] === 'boolean' ? saved[key] : OPT_DEFAULTS[key];
+    const was = typeof saved[key] === 'boolean' ? saved[key] : key === 'speech_aware' || key === 'smart_tail' ? edges : undefined;
+    $(id).checked = was ?? OPT_DEFAULTS[key];
     $(id).addEventListener('change', (e) => {
       store(key, e.target.checked);
       if (key === 'link') syncAudio();
+      else syncTiming();
     });
   }
+  for (const [key, id] of Object.entries(OPT_FIELDS)) {
+    if (typeof saved[key] === 'string') $(id).value = saved[key];
+    $(id).addEventListener('change', (e) => {
+      store(key, e.target.value);
+      syncTiming();
+    });
+  }
+  const order = $('#optOrder');
+  const events = $('#optEventTails');
+  order.value = [...order.options].some((o) => o.value === saved.order) ? saved.order : OPT_DEFAULTS.order;
+  events.value = [...events.options].some((o) => o.value === saved.event_tails) ? saved.event_tails : OPT_DEFAULTS.event_tails;
+  order.addEventListener('change', () => store('order', order.value));
+  const kind = $('#optKind');
+  kind.value = [...kind.options].some((o) => o.value === saved.kind) ? saved.kind : OPT_DEFAULTS.kind;
+  kind.addEventListener('change', () => store('kind', kind.value));
+  events.addEventListener('change', () => {
+    store('event_tails', events.value);
+    syncTiming();
+  });
+  $(saved.picks === 'auto' ? '#optPicksAuto' : '#optPicksSeq').checked = true;
+  for (const radio of document.querySelectorAll('input[name=optPicks]')) {
+    radio.addEventListener('change', () => {
+      store('picks', picks());
+      syncTiming();
+      renderExport();
+    });
+  }
+  syncTiming();
   const video = $('#optTransition');
   const audio = $('#optAudioTransition');
   video.value = saved.transition in LINKED_AUDIO ? saved.transition : OPT_DEFAULTS.transition;
@@ -2997,6 +3100,32 @@ function initExportOptions() {
   });
   setPeaks(PEAK_STOPS.includes(saved.compress_peaks) ? saved.compress_peaks : OPT_DEFAULTS.compress_peaks);
   return saved;
+}
+
+/**
+ * Enable the Export tab's fields that apply: the automatic-pick fields with Automatic picks, Top
+ * moments without candidate ids (the CLI takes one or the other), the speech caps with Speech-aware
+ * cuts, the tail lengths with Smart tails. The sequence's moments keep their exact ends with Smart
+ * tails off, which turns event tails off too, so Event tails is not sent then.
+ */
+function syncTiming() {
+  const auto = picks() === 'auto';
+  const able = (id, on) => {
+    const el = $(id);
+    el.disabled = !on;
+    document.querySelector(`label[for=${el.id}]`)?.classList.toggle('off', !on);
+  };
+  $('#autoOpts').hidden = !auto;
+  able('#optTop', auto && !$('#optIds').value.trim());
+  for (const id of ['#optMaxTotal', '#optIds', '#optOrder']) able(id, auto);
+  const speech = $('#optSpeech').checked;
+  const tail = $('#optTail').checked;
+  able('#optSpeechExtend', speech);
+  able('#optSpeechLead', speech);
+  able('#optTailMin', tail);
+  able('#optTailMax', tail);
+  able('#optEventTails', auto || tail);
+  able('#optEventWindow', (auto || tail) && $('#optEventTails').value !== 'off');
 }
 
 /** Put the audio transition in line with Link Transitions and the video transition. */
@@ -3071,8 +3200,17 @@ function bind() {
   $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
   $('#revealExportBtn').prepend(icon('folder'));
   $('#revealExportBtn').addEventListener('click', (e) => revealFolder(e.currentTarget, e.currentTarget.dataset.target));
-  $('#clipsBtn').addEventListener('click', () => startJob('clips', exportOptions()));
+  $('#clipsBtn').addEventListener('click', () => {
+    const body = exportOptions();
+    if (validOptions(body)) startJob('clips', body);
+  });
   $('#assembleBtn').addEventListener('click', () => startJob('assemble', assembleOptions()));
+  $('#extendBtn').addEventListener('click', () => {
+    const body = extendOptions();
+    if (validOptions(body)) startJob('extend', body);
+  });
+  $('#optIds').addEventListener('input', syncTiming);
+  $('#makeBtn').addEventListener('click', makePreset);
   $('#cancelBtn').addEventListener('click', async () => {
     if (!S.active) return;
     $('#cancelBtn').disabled = true;

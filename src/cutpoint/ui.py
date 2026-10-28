@@ -1,7 +1,7 @@
 """``cutpoint ui``: local browser workspace for the standard-video highlight workflow.
 
 A loopback-only FastAPI app (optional ``ui`` extra) that serves ``cutpoint/web`` and a small JSON
-API over the projects folder. Heavy work (analyze, clips, assemble) runs as ordinary
+API over the projects folder. Heavy work (analyze, clips, extend, assemble) runs as ordinary
 ``python -m cutpoint ...`` child processes, one at a time, so the browser and the CLI share one
 implementation. Source videos are only ever read.
 
@@ -32,6 +32,11 @@ Trust boundaries:
   starts; the page has no per-run vision box.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
+* The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
+  ``?t=``. It only proposes sequence changes, which the page applies to its working sequence; it
+  writes only ``ui/assistant/chat.json`` and ``ui/assistant/history.json``, never
+  ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
+  paths) reaches the model only inside marked data blocks. Its GET routes only read.
 """
 
 from __future__ import annotations
@@ -72,6 +77,10 @@ from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, default_audio_transition
+from cutpoint.assistant import ops as ai_ops
+from cutpoint.assistant import providers as ai_providers
+from cutpoint.assistant import session as ai_session
+from cutpoint.assistant import store as ai_store
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     COMPRESS_PEAKS,
@@ -82,6 +91,7 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_values,
 )
+from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
@@ -112,10 +122,14 @@ logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-MAX_SEGMENTS = 500
+MAX_SEGMENTS = ai_ops.MAX_SEGMENTS
 MAX_LOG_LINES = 300
 MAX_JOBS = 50
 MAX_EXTEND_S = 30.0
+MAX_TIMING_S = 60.0  # speech caps, tail lengths and the event window the page may send
+MAX_TOTAL_S = 36000.0  # clips --max-total
+CLIP_ORDERS = ("story", "score", "chronological")  # clips --order without --mix
+EVENT_TAILS = {"auto": [], "on": ["--event-tails"], "off": ["--no-event-tails"]}
 # A stopped job gets this long before the hard kill: its own soft stop waits SOFT_STOP_S for
 # ffmpeg, then kills it and waits SOFT_STOP_S again, and only then removes the partial file;
 # the rest is for that removal and the interpreter's exit (#257).
@@ -1902,8 +1916,8 @@ def validate_segments(
             raise bad(f"segment {i}: source cannot be read")
         if end > duration + 0.01:
             raise bad(f"segment {i}: end {end:g}s is past the source's {duration:g}s")
-        if not isinstance(label, str) or len(label) > 200:
-            raise bad(f"segment {i}: label must be text of at most 200 characters")
+        if not isinstance(label, str) or len(label) > ai_ops.LABEL_MAX:
+            raise bad(f"segment {i}: label must be text of at most {ai_ops.LABEL_MAX} characters")
         out.append(
             {
                 "id": sid,
@@ -2195,6 +2209,141 @@ def _compress_peaks(body: dict[str, Any]) -> list[str]:
     return ["--compress-peaks", v]
 
 
+def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
+    """The inputs and style a project's analysis runs on: the source the user picked, else (made
+    on the command line) the recorded inputs; either may be missing."""
+    inputs = (
+        [meta["source"]] if meta.get("source") else (hl or {}).get("settings", {}).get("inputs")
+    )
+    return inputs, meta.get("style") or (hl or {}).get("style")
+
+
+def _vision_args(st: dict[str, Any]) -> list[str]:
+    """Vision options for an analysis: the Settings value now (explicit, so the job and the page
+    agree even if config.json changes before the CLI reads it) and the recorded Ollama options."""
+    args = ["--vision" if get_config().vision else "--no-vision"]
+    vision_top = st.get("vision_top")
+    if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
+        args.append(f"--vision-top={vision_top}")
+    for key, opt in (("ollama_url", "--ollama-url"), ("ollama_model", "--ollama-model")):
+        if isinstance(st.get(key), str) and st[key]:
+            args.append(f"{opt}={st[key]}")
+    return args
+
+
+def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | None:
+    """Why ``cutpoint edit`` cannot remake this project's analysis (None when it can)."""
+    if meta.get("kind") == "360":
+        return "Presets are not available for 360 projects (cutpoint edit has no 360 mode)."
+    st = (hl or {}).get("settings") or {}
+    if st.get("exclude") or st.get("recursive") is True:
+        return (
+            "Presets are not available here: this project's analysis used --exclude or "
+            "--recursive, which cutpoint edit does not take."
+        )
+    # edit has no --model or --no-scenes: it would transcribe again with the default model or
+    # detect scenes, and rewrite highlights.json. The default model is Transcriber's for the
+    # device the analysis ran on.
+    model = st.get("whisper_model")
+    if model is not None and model != ("medium" if st.get("whisper_device") == "cuda" else "small"):
+        return (
+            f"Presets are not available here: this project was transcribed with the {model} "
+            "model (analyze --model), which cutpoint edit does not take."
+        )
+    if st.get("scenes") is False:
+        return (
+            "Presets are not available here: this project's analysis used --no-scenes, which "
+            "cutpoint edit does not take."
+        )
+    if st.get("recover") is True:
+        return (
+            "Presets are not available here: this project's analysis used --recover, which "
+            "cutpoint edit does not take."
+        )
+    # nor --language or --max-candidates (recorded as None when not given)
+    for key, opt in (("language", "--language"), ("max_candidates", "--max-candidates")):
+        if st.get(key) is not None:
+            return (
+                f"Presets are not available here: this project's analysis used {opt}, which "
+                "cutpoint edit does not take."
+            )
+    inputs, style = _analysis_inputs(meta, hl)
+    if not inputs or not style:
+        return "Presets need a recorded source to analyze."
+    return None
+
+
+def preset_taken(p: Path) -> list[str]:
+    """The folders a preset writes (``clips``, ``clips_vertical``) that hold files already, so
+    ``edit`` needs ``--force``."""
+    taken = []
+    for name in ("clips", "clips_vertical"):
+        with contextlib.suppress(OSError):
+            if (p / name).is_dir() and any((p / name).iterdir()):
+                taken.append(name)
+    return taken
+
+
+def _seconds(body: dict[str, Any], key: str, hi: float, *, positive: bool = False) -> float | None:
+    """``body[key]`` as seconds, 0 (or above 0 with ``positive``) to ``hi``; None when not sent."""
+    v = body.get(key)
+    if v is None:
+        return None
+    if (
+        isinstance(v, bool)
+        or not isinstance(v, (int, float))
+        or not math.isfinite(v)
+        or v > hi
+        or v < 0
+        or (positive and v == 0)
+    ):
+        raise bad(f"{key} must be {'above 0' if positive else '0'}-{hi:g} seconds")
+    return float(v)
+
+
+def _opt(flag: str, v: float | None) -> list[str]:
+    return [] if v is None else [flag, f"{v:g}"]
+
+
+def _speech_args(body: dict[str, Any]) -> list[str]:
+    """``--speech-max-extend`` / ``--speech-max-lead`` when the page sent them."""
+    return _opt("--speech-max-extend", _seconds(body, "speech_max_extend", MAX_TIMING_S)) + _opt(
+        "--speech-max-lead", _seconds(body, "speech_max_lead", MAX_TIMING_S)
+    )
+
+
+def _auto_picks(body: dict[str, Any], hl: dict[str, Any] | None) -> list[str]:
+    """``clips`` selection flags for automatic picks: ``--top`` or ``--ids``, ``--max-total`` and
+    ``--order``, each only when sent (else the CLI's defaults: the style's count and order)."""
+    cands = (hl or {}).get("candidates")
+    if not isinstance(cands, list) or not cands:
+        raise bad("analyze the footage before exporting automatic picks")
+    top, ids, order = body.get("top"), body.get("ids"), body.get("order")
+    if top is not None and ids is not None:
+        raise bad("give top or ids, not both")
+    args: list[str] = []
+    if top is not None:
+        if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= MAX_SEGMENTS:
+            raise bad(f"top must be a whole number from 1 to {MAX_SEGMENTS}")
+        args += ["--top", str(top)]
+    if ids is not None:
+        known = {c.get("id") for c in cands if isinstance(c, dict)}
+        if (
+            not isinstance(ids, list)
+            or not 0 < len(ids) <= MAX_SEGMENTS
+            or len(set(map(repr, ids))) != len(ids)
+            or not all(isinstance(i, str) and SAFE_NAME.fullmatch(i) and i in known for i in ids)
+        ):
+            raise bad("ids must be different candidate ids of this analysis, such as h001")
+        args += ["--ids", *ids]
+    args += _opt("--max-total", _seconds(body, "max_total", MAX_TOTAL_S, positive=True))
+    if order is not None:
+        if order not in CLIP_ORDERS:
+            raise bad(f"order must be one of {', '.join(CLIP_ORDERS)}")
+        args += ["--order", order]
+    return args
+
+
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
@@ -2206,6 +2355,7 @@ def create_app(port: int) -> FastAPI:
         jobs.shutdown()
         media.shutdown()
         picker.shutdown()
+        app.state.assistant.shutdown()
 
     app = FastAPI(
         title="Cutpoint", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
@@ -2433,6 +2583,10 @@ def create_app(port: int) -> FastAPI:
             "outputs": [{"name": n, "url": url(pid, "outputs", n)} for n in outputs],
             # The first listed final is the current export's own (or, with no export, the
             # newest); false while that export is not assembled yet and an earlier final leads.
+            # One-click presets (edit --kind): why they are off, else null; the folders whose
+            # earlier clips a run would replace (the page asks first).
+            "preset_problem": preset_problem(meta, hl),
+            "preset_taken": preset_taken(p),
             "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
             "sources": found,
             # The picked folder could not be listed (gone, unreadable): a field, so Settings
@@ -2507,12 +2661,7 @@ def create_app(port: int) -> FastAPI:
                 args += ["--only", *only]
             plan = [{"step": s, "label": progress.LABELS[s]} for s in progress.PANO_STEPS]
         elif action == "analyze":
-            inputs = (
-                [meta["source"]]
-                if meta.get("source")
-                else (hl or {}).get("settings", {}).get("inputs")
-            )
-            style = meta.get("style") or (hl or {}).get("style")
+            inputs, style = _analysis_inputs(meta, hl)
             if not inputs or not style:
                 raise bad("project has no recorded source to analyze")
             _own(p, "highlights.json")  # the analysis rewrites it
@@ -2525,24 +2674,71 @@ def create_app(port: int) -> FastAPI:
                 args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
             if st.get("recursive") is True:
                 args.append("--recursive")
-            # The Settings value now, first analysis or again; explicit, so the job and the
-            # page agree even if config.json changes before the CLI reads it.
-            args.append("--vision" if get_config().vision else "--no-vision")
-            vision_top = st.get("vision_top")
-            if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
-                args.append(f"--vision-top={vision_top}")
-            for key, opt in (("ollama_url", "--ollama-url"), ("ollama_model", "--ollama-model")):
-                if isinstance(st.get(key), str) and st[key]:
-                    args.append(f"{opt}={st[key]}")
-        elif action == "clips":
-            raw = _load(p, f"{UI_DIR}/review.json")
-            segments = validate_segments(
-                (raw.get("segments") or []) if isinstance(raw, dict) else [],
-                sources.entries(p),
-                media,
+            if st.get("recover") is True:  # or the parts past a read error drop out
+                args.append("--recover")
+            args += _vision_args(st)
+        elif action == "edit":
+            # A one-click preset: analyze (cached), clips and assemble as `edit --kind` says, in
+            # the project's own style so its analysis and moments stay as they are.
+            kind = body.get("kind")
+            if not isinstance(kind, str) or kind not in KINDS:
+                raise bad(f"kind must be one of {', '.join(KINDS)}")
+            if why := preset_problem(meta, hl):
+                raise bad(why)
+            inputs, style = _analysis_inputs(meta, hl)
+            vertical = _flag(body, "vertical")
+            force = _flag(body, "force")
+            clips_name = "clips_vertical" if vertical else "clips"
+            final_name = "final_vertical.mp4" if vertical else "final.mp4"
+            _own(p, "highlights.json")  # the analysis rewrites it
+            _own(p, clips_name)
+            _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the edit
+            if clips_name in preset_taken(p) and not force:
+                raise bad(
+                    f"{clips_name} holds the clips of an earlier run; confirm to replace", 409
+                )
+            args = cutpoint_cmd(
+                "edit", *map(str, inputs), "--kind", kind, "--style", str(style), "--out", str(p)
             )
-            if not segments:
-                raise bad("choose at least one moment before exporting clips")
+            if vertical:
+                args.append("--vertical")
+            if force:  # the user confirmed replacing the earlier run's clips
+                args.append("--force")
+            args += _compress_peaks(body) + _vision_args((hl or {}).get("settings") or {})
+
+            def prepare() -> None:
+                _ui_folder(p)  # a command-line project has no ui folder for exports.json yet
+
+            def on_success() -> None:
+                if (
+                    not (p / clips_name / "manifest.json").is_file()
+                    or not (p / final_name).is_file()
+                ):
+                    raise RuntimeError("edit finished without its clips and final video")
+                items = [e for e in load_exports(p) if e["dir"] != clips_name]  # replaced
+                items.append(
+                    {"dir": clips_name, "created": stamp, "vertical": vertical, "final": final_name}
+                )
+                cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+
+        elif action == "clips":
+            picks = body.get("picks", "sequence")
+            if picks not in ("sequence", "auto"):
+                raise bad("picks must be 'sequence' or 'auto'")
+            if picks == "auto":  # the CLI picks from highlights.json (clips --top/--ids)
+                selection = _auto_picks(body, hl)
+                segments = []
+            else:
+                if any(body.get(k) is not None for k in ("top", "ids", "max_total", "order")):
+                    raise bad("top, ids, max_total and order need automatic picks")
+                raw = _load(p, f"{UI_DIR}/review.json")
+                segments = validate_segments(
+                    (raw.get("segments") or []) if isinstance(raw, dict) else [],
+                    sources.entries(p),
+                    media,
+                )
+                if not segments:
+                    raise bad("choose at least one moment before exporting clips")
             extend = body.get("extend", 0)
             if (
                 isinstance(extend, bool)
@@ -2550,8 +2746,27 @@ def create_app(port: int) -> FastAPI:
                 or not 0 <= extend <= MAX_EXTEND_S
             ):
                 raise bad(f"extend must be 0-{MAX_EXTEND_S:g} seconds")
+            extend_start = _seconds(body, "extend_start", MAX_EXTEND_S)
+            extend_end = _seconds(body, "extend_end", MAX_EXTEND_S)
             vertical = _flag(body, "vertical")
+            # Smart edges (older pages) is both; each of its halves can be sent on its own.
             smart = _flag(body, "smart_edges")
+            speech = _flag({"speech_aware": smart, **body}, "speech_aware")
+            tails = _flag({"smart_tail": smart, **body}, "smart_tail")
+            event_tails = body.get("event_tails", "auto")
+            if not isinstance(event_tails, str) or event_tails not in EVENT_TAILS:
+                raise bad("event_tails must be 'auto', 'on' or 'off'")
+            if segments and not tails and event_tails == "on":
+                # each segment's "smart_tail": false turns event tails off too
+                raise bad("event tails need smart tails for the sequence's moments")
+            timing = (
+                _speech_args(body)
+                + _opt("--tail-min", _seconds(body, "tail_min", MAX_TIMING_S))
+                + _opt("--tail-max", _seconds(body, "tail_max", MAX_TIMING_S))
+                + _opt(
+                    "--event-window", _seconds(body, "event_window", MAX_TIMING_S, positive=True)
+                )
+            )
             peaks = _compress_peaks(body)
             out_name = fresh_name(p, f"clips_ui_{stamp}")
             seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
@@ -2559,30 +2774,64 @@ def create_app(port: int) -> FastAPI:
 
             def prepare() -> None:
                 _ui_folder(p)  # a command-line project has no ui folder yet
-                # The user's trims, in their order. Exactly them unless Smart edges is on: then
-                # the segments leave smart tails and speech snapping to the flags below.
-                cache.save_json(
-                    seg_file,
-                    segments
-                    if smart
-                    else [{**s, "smart_tail": False, "speech_aware": False} for s in segments],
-                )
+                if not segments:  # automatic picks: no segments file
+                    return
+                # The user's trims, in their order. Exactly them unless Speech-aware cuts or Smart
+                # tails is on: then the segments leave that to the flags below.
+                off = {} if speech else {"speech_aware": False}
+                if not tails:
+                    off = {"smart_tail": False, **off}
+                cache.save_json(seg_file, [{**s, **off} for s in segments])
                 written.append(seg_file)
 
-            args = cutpoint_cmd(
-                "clips", str(p), "--segments", str(seg_file), "--out", str(p / out_name)
-            )
+            if segments:
+                args = cutpoint_cmd(
+                    "clips", str(p), "--segments", str(seg_file), "--out", str(p / out_name)
+                )
+            else:
+                args = cutpoint_cmd("clips", str(p), *selection, "--out", str(p / out_name))
             if vertical:
                 args.append("--vertical")
-            if smart:
-                args += ["--smart-tail", "--speech-aware"]
+            if segments:  # an exact trim is a per-segment setting, not a flag
+                args += ["--smart-tail"] if tails else []
+                args += ["--speech-aware"] if speech else []
+            else:  # explicit, so the style's defaults do not override what the page showed
+                args.append("--smart-tail" if tails else "--no-smart-tail")
+                args.append("--speech-aware" if speech else "--no-speech-aware")
+            args += EVENT_TAILS[event_tails] + timing
             if extend:
                 args += ["--extend", f"{float(extend):g}"]
+            args += _opt("--extend-start", extend_start) + _opt("--extend-end", extend_end)
             args += peaks
 
             def on_success() -> None:
                 if not (p / out_name / "manifest.json").is_file():
                     raise RuntimeError("clips finished without a manifest")
+                items = load_exports(p)
+                items.append(
+                    {"dir": out_name, "created": stamp, "vertical": vertical, "final": None}
+                )
+                cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+
+        elif action == "extend":
+            exp = current_export(p)
+            if exp is None or not clip_files(p / exp["dir"]):
+                raise bad("export clips before extending them")
+            src_dir = exp["dir"]
+            vertical = exp.get("vertical") is True
+            pad = _opt("--start", _seconds(body, "extend_start", MAX_EXTEND_S)) + _opt(
+                "--end", _seconds(body, "extend_end", MAX_EXTEND_S)
+            )
+            out_name = fresh_name(p, f"clips_ui_{stamp}")
+            _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the export
+            args = cutpoint_cmd("extend", str(p / src_dir), "--out", str(p / out_name), *pad)
+            # explicit: extend snaps to speech by default, the page may have it off
+            args.append("--speech-aware" if _flag(body, "speech_aware") else "--no-speech-aware")
+            args += _speech_args(body)
+
+            def on_success() -> None:
+                if not (p / out_name / "manifest.json").is_file():
+                    raise RuntimeError("extend finished without a manifest")
                 items = load_exports(p)
                 items.append(
                     {"dir": out_name, "created": stamp, "vertical": vertical, "final": None}
@@ -2634,7 +2883,7 @@ def create_app(port: int) -> FastAPI:
                 cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
         else:
-            raise bad("action must be 'analyze', 'clips' or 'assemble'")
+            raise bad("action must be 'analyze', 'edit', 'clips', 'extend' or 'assemble'")
 
         def same_folder() -> None:
             # Under the jobs lock, like the settings change: a folder changed since ``p`` was
@@ -2771,6 +3020,143 @@ def create_app(port: int) -> FastAPI:
             raise bad("unknown output", 404)
         return send(p / name, request)
 
+    # -- assistant (#346) --------------------------------------------------------------
+    # A chat turn only proposes sequence edits: the page applies one to its working sequence and
+    # reports it here for the history. Nothing below writes review.json; GET routes only read.
+    turns = ai_session.Turns()
+    app.state.assistant = turns
+
+    def assistant_provider() -> ai_providers.Provider:
+        try:
+            return ai_providers.make()
+        except ValueError as err:  # a bad Ollama port
+            raise bad(str(err), 409) from err
+
+    def assistant_state(
+        p: Path, segments: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], ai_ops.Durations, str]:
+        """``(moments, source durations, base_key)`` of the project with ``segments``."""
+        hl = _highlights(p)
+        durations = ai_ops.Durations(
+            {s["path"]: s["duration"] for s in sources.entries(p)},
+            lambda path: media.duration(remap_source(path)),
+        )
+        moments = (moments_view(hl) or {}).get("candidates") or []
+        return moments, durations, ai_ops.base_key(segments, hl)
+
+    def assistant_save(p: Path, name: str) -> None:
+        """Check ``ui/assistant/<name>`` may be written and create its folder."""
+        _own(p, f"{ai_store.FOLDER}/{name}")
+        _ui_folder(p, "assistant")
+
+    def assistant_turn(pid: str, tid: str) -> ai_session.Turn:
+        turn = turns.get(str(project_dir(pid)), tid)
+        if turn is None:
+            raise bad("unknown turn", 404)
+        return turn
+
+    @owned.get("/projects/{pid}/assistant")
+    def get_assistant(pid: str):
+        """The provider in use, the saved chat and the turn still running, if any."""
+        p = project_dir(pid)
+        running = [t.view() for t in turns.of(str(p)) if t.status == "running"]
+        return {
+            "provider": ai_providers.describe(assistant_provider()),
+            "turns": ai_store.turns(p),
+            "running": running,
+        }
+
+    @owned.post("/projects/{pid}/assistant/turns")
+    def start_turn(pid: str, body: dict[str, Any]):
+        """Ask the assistant ``text`` about the working sequence ``segments`` (default: the
+        saved review). Poll the turn for its events."""
+        p = project_dir(pid)
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > ai_session.MAX_TEXT:
+            raise bad(f"text must be 1-{ai_session.MAX_TEXT} characters")
+        raw = body.get("segments")
+        if raw is None:
+            review = _load(p, f"{UI_DIR}/review.json")
+            raw = (review.get("segments") if isinstance(review, dict) else None) or []
+        segments = validate_segments(raw, sources.entries(p), media)
+        moments, durations, key = assistant_state(p, segments)
+        transcript = ""
+        if _inside(p, "transcript.txt"):
+            with contextlib.suppress(OSError, UnicodeDecodeError):
+                transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
+        project = ai_session.Project(moments, segments, durations, transcript, key)
+        provider = assistant_provider()
+        assistant_save(p, ai_store.CHAT)
+        turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p))
+        try:
+            turns.start(str(p), turn, lambda t: ai_store.add_turn(p, t.record()))
+        except ai_session.BusyError as err:
+            raise bad(str(err), 409) from err
+        return turn.view()
+
+    @owned.get("/projects/{pid}/assistant/turns/{tid}")
+    def poll_turn(pid: str, tid: str, after: int = 0):
+        """The turn with its events from number ``after`` on."""
+        return assistant_turn(pid, tid).view(after)
+
+    @owned.post("/projects/{pid}/assistant/turns/{tid}/cancel")
+    def cancel_turn(pid: str, tid: str):
+        turn = assistant_turn(pid, tid)
+        turn.cancel()
+        return turn.view()
+
+    @owned.post("/projects/{pid}/assistant/proposals/{prop}/applied")
+    def proposal_applied(pid: str, prop: str, body: dict[str, Any]):
+        """Record that the page applied proposal ``prop`` to its working sequence ``segments``
+        (as it was before). When those or the analysis changed since the proposal was made, its
+        ops are applied again to them; the result's ``after`` is the sequence to show."""
+        p = project_dir(pid)
+        found = next(
+            ((t.id, hit) for t in turns.of(str(p)) if (hit := t.proposal(prop)) is not None), None
+        )
+        if found is None and (saved := ai_store.find_proposal(p, prop)) is not None:
+            found = (saved[0].get("id"), saved[1])
+        if found is None:
+            raise bad("unknown proposal", 404)
+        tid, proposal = found
+        before = validate_segments(body.get("segments"), sources.entries(p), media)
+        moments, durations, key = assistant_state(p, before)
+        after, changes, rebased = proposal.get("after"), proposal.get("diff"), False
+        if key != proposal.get("base_key"):
+            out = ai_ops.apply_ops(before, proposal.get("ops"), moments, durations)
+            if out.error:
+                raise bad(f"the proposal no longer applies to this sequence: {out.error}", 409)
+            after, changes, rebased = out.after, out.diff, True
+        entry = {
+            "id": secrets.token_hex(6),
+            "proposal": prop,
+            "turn": tid,
+            "summary": proposal.get("summary", ""),
+            "applied": datetime.now().isoformat(timespec="seconds"),
+            "base_key": key,
+            "rebased": rebased,
+            "before": before,
+            "after": after,
+            "diff": changes,
+        }
+        assistant_save(p, ai_store.HISTORY)
+        ai_store.add_applied(p, entry)
+        return entry
+
+    @owned.delete("/projects/{pid}/assistant/chat")
+    def clear_chat(pid: str):
+        """Forget the chat and stop a running turn; the history of applied proposals stays."""
+        p = project_dir(pid)
+        turns.clear(str(p))
+        if (p / ai_store.FOLDER / ai_store.CHAT).exists():
+            assistant_save(p, ai_store.CHAT)
+            ai_store.clear_chat(p)
+        return {"turns": []}
+
+    @owned.get("/projects/{pid}/assistant/history")
+    def get_history(pid: str):
+        return {"applied": ai_store.history(project_dir(pid))}
+
     api.include_router(secure)
     api.include_router(owned)
     api.include_router(served)
@@ -2847,3 +3233,4 @@ def run(port: int = 8765) -> None:
         app.state.jobs.shutdown()
         app.state.media.shutdown()
         app.state.picker.shutdown()
+        app.state.assistant.shutdown()

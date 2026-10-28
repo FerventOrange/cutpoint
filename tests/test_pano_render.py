@@ -390,7 +390,7 @@ class TestRenderSegmentSendcmd:
         path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
         render.render_segment(
             clip, path, 3.0, 4.0, tmp_path / "g.mp4", src=_src("equirect", True),
-            work_dir=tmp_path, lut=lut,
+            work_dir=tmp_path, grade=lut,
         )  # fmt: skip
         assert f"round=down,{encode.TAG_BT709},{lut.filter()},format=yuv420p[v]" in self._filter(
             ffmpeg[0]

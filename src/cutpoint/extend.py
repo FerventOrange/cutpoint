@@ -40,7 +40,14 @@ from typing import Any
 from cutpoint import boundaries, cache, jsonout, srt
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
-from cutpoint.encode import Lut, OutputFormat, check_lut, export_clip_checked
+from cutpoint.encode import (
+    Grade,
+    Lut,
+    OutputFormat,
+    check_lut,
+    export_clip_checked,
+    grade_from_entry,
+)
 from cutpoint.ffmpeg_utils import (
     MediaInfo,
     atomic_output,
@@ -229,7 +236,7 @@ def _reusable(
         and abs(float(old["start"]) - new["start"]) < 1e-3
         and abs(float(old["end"]) - new["end"]) < 1e-3
         and old.get("crop") == new.get("crop")
-        and Lut.from_entry(old) == Lut.from_entry(new)
+        and grade_from_entry(old) == grade_from_entry(new)
         and float(old.get("audio_fade", 0.25)) == float(audio_fade)
     )
 
@@ -393,13 +400,16 @@ def _extend_locked(
             plans.append(ExtendPlan(f.name, e, src, info, start, end, rec, _pick(e)))
 
         apply_overrides(plans, clip_overrides, padding)
-        # The --lut grade a clip recorded is redone; its LUT must still load (before any export).
+        # The grade a clip recorded is redone; a LUT must still load (before any export).
         checked: dict[Lut, Lut] = {}
-        luts: dict[str, Lut | None] = {}
+        grades: dict[str, Grade | None] = {}
         for plan in plans:
-            if (lut := Lut.from_entry(plan.entry)) is not None and lut not in checked:
-                checked[lut] = check_lut(lut.path, lut.strength, f"{plan.name}: lut")
-            luts[plan.name] = checked[lut] if lut is not None else None
+            grade = grade_from_entry(plan.entry)
+            if isinstance(grade, Lut):
+                if grade not in checked:
+                    checked[grade] = check_lut(grade.path, grade.strength, f"{plan.name}: lut")
+                grade = checked[grade]
+            grades[plan.name] = grade
         reuse_by_file: dict[str, dict[str, Any]] = {}
         reuse_same_format = False
         if reuse_dir is not None:
@@ -516,7 +526,7 @@ def _extend_locked(
                     kind=e.get("kind"),
                     reuse_path=old,
                     source_mode=None if pano_source else pano_rec.get("mode"),
-                    lut=luts[name],
+                    grade=grades[name],
                 )
             else:
                 box = parse_spec(e.get("crop"))
@@ -531,7 +541,7 @@ def _extend_locked(
                     box if isinstance(box, Crop) else None,
                     audio_fade,
                     "",  # extend does not compress peaks (warned above)
-                    luts[name],
+                    grades[name],
                 )
             if read_err and read_err["end"] < end:
                 end = read_err["end"]

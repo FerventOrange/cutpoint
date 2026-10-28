@@ -71,6 +71,13 @@ documents every key.
 ``pano``
     Insta360 settings, read by :func:`cutpoint.pano.project.pano_config`.
 
+``assistant``
+    The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default), ``model`` (default:
+    ``qwen3.5:9b`` when Ollama has it pulled, else the vision model ``CUTPOINT_VISION_MODEL``
+    or ``qwen3-vl:8b``), ``url`` (default: the Ollama URL above), ``context_tokens`` (the
+    model's context size, default 8192) and ``consent`` (providers the user agreed to send
+    project text to). API keys are never read from or written to this file.
+
 The analysis cache key is canonicalised through the same table (a remapped
 path is keyed as its original), so a remapped source with the same size and
 mtime keeps its cache.
@@ -98,6 +105,19 @@ logger = logging.getLogger(__name__)
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
+ASSISTANT_PROVIDERS = ("ollama",)
+MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
+
+
+@dataclass(frozen=True)
+class AssistantSettings:
+    """The ``assistant`` section of ``config.json`` (see :mod:`cutpoint.assistant`)."""
+
+    provider: str = "ollama"
+    model: str = ""  # "": auto (Ollama: qwen3.5:9b if pulled, else the vision model)
+    url: str = ""  # "": the provider's default (Ollama: cutpoint.backends.ollama_url)
+    context_tokens: int = 8192
+    consent: tuple[str, ...] = ()  # providers the user agreed to send project text to
 
 
 @dataclass(frozen=True)
@@ -115,6 +135,7 @@ class Config:
     analysis_skip: tuple[str, ...] = ()
     compress_peaks: str = "off"
     export_workers: int | None = None  # None: auto
+    assistant: AssistantSettings = field(default_factory=AssistantSettings)
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -251,6 +272,7 @@ def _load_config(path: Path) -> Config:
         skip,
         peaks,
         _export_workers(path, data),
+        _assistant(path, data),
     )
 
 
@@ -268,6 +290,44 @@ def _export_workers(path: Path, data: dict) -> int | None:
     except (TypeError, ValueError):
         raise ValueError(f"{where} is {value!r}; expected auto or a number of clips") from None
     return min(max(n, 1), MAX_EXPORT_WORKERS)
+
+
+def _assistant(path: Path, data: dict) -> AssistantSettings:
+    """The ``assistant`` section of config ``data``, checked."""
+    _check_type(path, data, "assistant", lambda v: isinstance(v, dict), "an object")
+    section = data.get("assistant") or {}
+    checks = (
+        ("provider", _is_str, "a string"),
+        ("model", _is_str, "a string"),
+        ("url", _is_str, "a string"),
+        ("consent", _is_str_list, "a list of provider names"),
+    )
+    for key, ok, what in checks:
+        _check_type(path, {f"assistant.{key}": section.get(key)}, f"assistant.{key}", ok, what)
+    provider = (section.get("provider") or "ollama").strip().lower()
+    if provider not in ASSISTANT_PROVIDERS:
+        raise ValueError(
+            f"{path}: assistant.provider is {provider!r}; "
+            f"expected one of {', '.join(ASSISTANT_PROVIDERS)}"
+        )
+    tokens = section.get("context_tokens", 8192)
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < MIN_CONTEXT_TOKENS:
+        raise ValueError(
+            f"{path}: assistant.context_tokens is {tokens!r}; "
+            f"expected a whole number of at least {MIN_CONTEXT_TOKENS}"
+        )
+    return AssistantSettings(
+        provider,
+        (section.get("model") or "").strip(),
+        (section.get("url") or "").strip(),
+        tokens,
+        tuple(dict.fromkeys(section.get("consent") or ())),
+    )
+
+
+def assistant_settings() -> AssistantSettings:
+    """The ``assistant`` section of ``config.json`` (defaults when it is missing)."""
+    return get_config().assistant
 
 
 def export_workers() -> int | None:
