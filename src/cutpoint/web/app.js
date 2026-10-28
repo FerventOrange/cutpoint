@@ -21,9 +21,9 @@ const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerd
 const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "dark"; absent for Blue, the default. index.html reads it too
 const THEMES = ['blue', 'light', 'dark'];
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
-// localStorage: the Export & assembly options the user changed, by option ({link: false, ...}); the rest keep their defaults
+// localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults
 const OPTS_KEY = 'cutpoint.exportOptions';
-// Export & assembly options for a viewer who changed none; Compress peaks starts from config.json's
+// Export & Assembly Options for a viewer who changed none; Compress peaks starts from config.json's
 // compress_peaks when it sets one, else Light
 const OPT_DEFAULTS = {
   vertical: false, captions: false, smart_edges: true, loudnorm: true, link: true,
@@ -39,7 +39,7 @@ const S = {
   styles: [],
   canReveal: false, // the server can open a folder in this machine's file manager
   canPick: false, // the server can show this machine's own open dialog
-  savedOpts: {}, // the Export & assembly options this browser stored (initExportOptions)
+  savedOpts: {}, // the Export & Assembly Options this browser stored (initExportOptions)
   projects: [],
   id: null,
   project: null,
@@ -341,7 +341,6 @@ function renderMoments() {
   }
 
   const q = S.filter.trim().toLowerCase();
-  const max = Math.max(...list.map((c) => c.score), 1e-9);
   const multi = new Set(list.map((c) => c.source)).size > 1;
   const items = list
     .map((c, i) => ({ c, rank: i + 1 }))
@@ -361,8 +360,7 @@ function renderMoments() {
             h('span', { class: 'cand-time tc' },
               `${fmt(c.start)} to ${fmt(c.end)}, ${(c.end - c.start).toFixed(1)} s`,
               multi ? ` in ${baseName(c.source)}` : ''),
-            h('span', { class: 'score', title: `Score ${c.score.toFixed(3)}` },
-              h('span', { style: `width:${Math.max(2, (c.score / max) * 100)}%` })),
+            sourceStrip(c),
             c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null),
           h('button', {
             type: 'button', class: 'btn small', 'data-act': 'toggle',
@@ -378,6 +376,28 @@ function renderMoments() {
   if (hadFocus && !empty.contains(document.activeElement))
     ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
+}
+
+/**
+ * A card's read-only strip (as the preview's overview): the whole source, the moment in gold and
+ * the parts no ready file plays yet hatched. Empty while the source's length is unknown. The time
+ * line above states the times, so it is hidden from screen readers; the hover title keeps the score.
+ */
+function sourceStrip(c) {
+  const dur = sourceDur(c.source);
+  const pct = (t) => `${((t / dur) * 100).toFixed(2)}%`;
+  const at = (a, b) => {
+    const lo = Math.max(0, Math.min(dur, a));
+    return { style: `left:${pct(lo)};width:${pct(Math.max(0, Math.min(dur, b) - lo))}` };
+  };
+  // A moment at the source's end keeps its min-width (app.css), flush with the right edge.
+  const lo = Math.max(0, Math.min(dur, c.start));
+  const clip = `left:min(${pct(lo)}, calc(100% - 4px));width:${pct(Math.max(0, Math.min(dur, c.end) - lo))}`;
+  return h('span', { class: 'cand-strip', 'aria-hidden': 'true', title: `Score ${c.score.toFixed(3)}` },
+    ...(dur ? [
+      h('span', { class: 'rail-gaps' }, ...sourceGaps(srcOf(c.source), dur).map(([a, b]) => h('span', at(a, b)))),
+      h('span', { class: 'cand-strip-clip', style: clip }),
+    ] : []));
 }
 
 /**
@@ -760,17 +780,7 @@ function moveHandle(which, t, widen = true) {
  */
 function drawGaps(c, dur, lo, hi, place) {
   const src = srcOf(c.source);
-  const gaps = [];
-  if (src && ['needs-proxy', 'preparing'].includes(src.status)) {
-    const wins = [...(src.windows ?? [])].sort((a, b) => a.lo - b.lo);
-    const end = dur || Math.max(hi, ...wins.map((w) => w.hi));
-    let at = 0;
-    for (const w of wins) {
-      if (w.lo > at) gaps.push([at, w.lo]);
-      at = Math.max(at, w.hi);
-    }
-    if (at < end) gaps.push([at, end]);
-  }
+  const gaps = sourceGaps(src, dur || Math.max(hi, ...(src?.windows ?? []).map((w) => w.hi)));
   const fill = (el, from, to) => {
     const sig = `${from}|${to}|${gaps.join(';')}`;
     if (el.dataset.sig === sig) return;
@@ -784,6 +794,19 @@ function drawGaps(c, dur, lo, hi, place) {
   fill($('#railGaps'), lo, hi);
   if (dur) fill($('#ovGaps'), 0, dur);
   else $('#ovGaps').replaceChildren();
+}
+
+/** The [from, to] parts of ``src`` up to ``end`` no ready file plays yet: none unless its proxy builds. */
+function sourceGaps(src, end) {
+  const gaps = [];
+  if (!src || !['needs-proxy', 'preparing'].includes(src.status)) return gaps;
+  let at = 0;
+  for (const w of [...(src.windows ?? [])].sort((a, b) => a.lo - b.lo)) {
+    if (w.lo > at) gaps.push([at, w.lo]);
+    at = Math.max(at, w.hi);
+  }
+  if (at < end) gaps.push([at, end]);
+  return gaps;
 }
 
 /** Move the rail view to [lo, hi] (kept inside the source) and redraw it. */
@@ -2898,7 +2921,7 @@ function initSideTabs() {
 }
 
 /**
- * Export & assembly options: each change is remembered per browser (only the options the user
+ * Export & Assembly Options: each change is remembered per browser (only the options the user
  * changed, so the others follow OPT_DEFAULTS); without storage they last the session. Link
  * Transitions makes the audio transition follow the video one; a crossfade needs a video fade
  * (the CLI refuses it on cuts), so it is unavailable with Cut.
