@@ -9,449 +9,208 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-10-27
 
+### Highlights
+
+- `cutpoint edit <video...> --kind highlights|montage|clips|funny-moments` goes from footage to a
+  finished video with `.srt` subtitles in one command.
+- Agent support: a `--json` result envelope on stdout for every command, and
+  `cutpoint skill install` / `skill print` for Claude Code.
+- Color: HDR (HLG, PQ) and BT.2020 footage is tone mapped to SDR Rec.709 instead of coming out
+  washed out, all exported clips are tagged BT.709, and `--lut` applies a 3D LUT you supply.
+- Audio: `--compress-peaks` evens out loud peaks, and a recording that writes the same audio to
+  several tracks (OBS) is no longer summed into a clipped, too loud clip.
+- Hardware: Linux AMD GPUs decode H.264 with VAAPI, decoders follow the GPUs detected, and
+  `CUTPOINT_VIDEO_DECODER=cpu` is the escape hatch.
+- Analysis: `analyze` and `edit` now run the reactions, keyframes and crashes steps themselves;
+  game HUD reading ignores menu and lobby screens, learns more event text and reads faster; the
+  Ollama vision rating is opt-in.
+- Safer exports and cancelling: exports are all or nothing, Ctrl+C and Ctrl+Break remove partial
+  files, and a lock stops two runs on one clips folder. Security: `cutpoint ui` and the Docker
+  image are hardened.
+- `cutpoint ui` is a fuller workspace: trim handles, whole-source scrubbing, fast moment previews,
+  Play sequence, Insta360 360 projects and Settings.
+
 ### Added
 
-- UI: the clip start and end markers on the trim rail are handles: drag them (mouse or touch;
-  a drag held at the rail's edge pans a zoomed view) or focus one and use the arrow keys (0.1 s,
-  Shift 1 s), PageUp/PageDown (5 s) and Home/End. They keep the clip at least 0.1 s long and
-  inside the source, update the time fields like "Use playhead", and screen readers announce
-  them as sliders ("Clip end, 0:06.50"). Space still plays and pauses (#352).
-- UI: a "Stats for Nerds" setting (off by default, remembered per browser) shows the open
-  moment's score, rank, analyzed times, signals and keywords as a small overlay in the top-left
-  of the preview. The scoring line under the transcript is gone (#353).
-- Linux AMD GPUs decode limited-range 8-bit 4:2:0 H.264 with VAAPI for analysis, HUD OCR, 360
-  view sampling and 360 renders. HEVC, 10-bit, 4:4:4 and full-range (`yuvj420p`) sources still
-  decode on the CPU, and a failed GPU decode falls back to the CPU (#22).
-- `docs/pipeline.md`: diagrams of the flow from source footage to the finished video, and the
-  `edit --kind` presets.
-- HUD region discovery proposes up to 2 extra `notice` regions (`extra_notice`,
-  `extra_notice2`) where text keeps showing outside every discovered region, such as a brief
-  message at the top edge or small text inside the screen-centre big-text area, which reads
-  only tall text. It uses the frames discovery already read, so it adds no OCR. A text line
-  needs to stay at one screen anchor in at least 3 bursts and change: one or two texts that
-  come back burst after burst and stay on screen (a map or mode label, a lobby line, OCR
-  misreads of either counted as one, a phrase with another name not), a few short readouts
-  such as a gauge, static labels and partial scoreboards are left out. A new preset gets these regions, marked `"origin": "outside"`. For a game that
-  already has a preset, `--discover-regions` writes them only to `suggested_regions` in
-  `proposal.json` and never changes the preset file, and the preset's own `"outside"`
-  regions count against the 2, so a preset that has 2 gets no more suggestions.
-  `events --json` reports their number as `suggested` (#314).
-- The OCR layer keeps a raw read of each source: per frame, the HUD text it read and the few
-  pixel rows its colour rules need, in `cache/<source>/ocr-raw-*` (the two most recently used per
-  source). When an update changes only how HUD text is interpreted, the next run replays it in
-  seconds, with no OCR, instead of reading the footage again, and an interrupted read resumes
-  near where it stopped. The first run after this update still reads the footage once. The raw
-  read holds OCR text, so it is git-ignored and never written inside a git checkout (#315).
-- `--compress-peaks off|light|strong` on `clips`, `assemble` and `edit` (and the
-  `compress_peaks` key in `config.json`; default `off`) pulls sudden loud peaks such as
-  shouts, laughs into the mic, gunshots and mic bumps down toward the speech level, and evens
-  out loudness between clips. One compressor threshold is set from the typical level of all
-  the clips, and each clip gets a capped gain toward their mean. A makeup gain after the
-  compressor, one for the whole set, then brings the clips back to the overall loudness they
-  had: without it, Strong left six clips of an R6 round 6.2 LU quieter (-27.1 LUFS against
-  -20.9 with `off`); with it, the set is within 0.1 LU of `off` while its loudness range still
-  drops from 15.3 to 7.0 LU. The makeup is measured on the compressed audio (one more
-  audio-only pass per clip) and capped so that a clip's leveling gain plus its makeup never
-  exceed the preset's maximum boost (6 dB light, 10 dB strong), so near-silent clips are not
-  lifted into their noise. `clips` bakes it into every clip, followed by a true-peak limiter,
-  and records it in `manifest.json` (`compress_peaks` and `compress_peaks_makeup_db`), so
-  `assemble` does not compress those clips again. `assemble` applies it to the other clips and always ends
-  with the true-peak limiter, also without `--loudnorm`. On an R6 montage with commentary and
-  GoPro wind (`assemble --loudnorm`), the loudest moment went from 12.2 dB above speech to
-  7.5 dB (light) or 5.2 dB (strong), and the loudness spread between clips went from 9.9 to
-  4.3 or 4.7 LU. The true peak stays below -1.5 dBTP. With `off`, the output is unchanged
-  (#326).
-- The UI has a "Compress peaks" select (Off, Light, Strong) next to "Normalize loudness". It
-  starts on `compress_peaks` in `config.json` (now also in `GET /api/settings`), and the choice
-  is passed as `--compress-peaks` to the clips export and the assembly; the server refuses other
-  values with 400 (#326).
-- When the browser cannot play a source, the UI previews the selected moment within seconds:
-  the server first encodes a short proxy of the moment (10 s before it to 20 s after it) while
-  the whole-source proxy builds in a second lane. Scrubbing or playing outside it prepares that
-  part the same way ("Preparing this part of the source…"). The whole-source proxy replaces
-  them once it is ready, and HDR sources' proxies are converted to SDR. `POST
-  /api/projects/{id}/sources/{sid}/prepare` takes an optional `{lo, hi}` body, and each source
-  in the project view lists its ready `windows` and `pending` ones (#323).
-- Play sequence plays a clip as soon as a short proxy covers it, without waiting for the whole
-  source's proxy, and queues the next clips' proxies in playback order (`queue: true` in the
-  `prepare` body). Moment and sequence rows show whether their preview is ready, encoding or
-  queued, the trim rail hatches the parts of the source that cannot play yet, and the preview
-  shows "Full preview 42%" while the whole-source proxy builds (`proxy` and `progress` on each
-  source). Playing near the end of a short proxy prepares the next part ahead, and playback
-  that still has to wait for it plays on by itself once it is ready; inside a long moment it
-  waits only for the part it stopped at, not a proxy of the whole moment (#323).
-- The UI transcript box marks words Whisper was unsure of (confidence below 50%) with a dotted
-  underline and shows the confidence on hover; screen readers hear "(unsure)" after the word.
-  Transcripts now store each word's `probability`, and `highlights.json` candidates list those
-  words in `transcript_unsure` (`[index, confidence]`). A source transcribed before this keeps
-  its cached transcript on a new `analyze`, so its moments show plain text until it is
-  re-transcribed (delete its `cache/<source>/transcript-*.json`, or analyze with another
-  `--model`) (#327).
-- The UI has a "Play sequence" button that previews the cut. It plays the sequence clips back to
-  back from their sources or proxies (hard cuts, no export), highlights and announces the playing
-  clip, lets you click a row to jump, and stops with Escape. Trims apply while it plays. It waits
-  for a preview that is still being prepared ("Preparing preview of <name>…"), and clicking the
-  next row skips it (#325).
-- The UI makes projects from Insta360 X3 footage (a folder, or one file for that clip). "Analyze
-  footage" runs `cutpoint 360 analyze --scan` and shows the steps Read 360 clips, 360 views,
-  Transcription and ranking, and Events and re-rank. Exported clips are reframed by the automatic
-  director (ffmpeg `dfisheye` on Linux unless an SDK stitch or Studio export exists). Folders
-  that mix 360 and regular videos are still refused (#341). Vision rating is not used for 360
-  (#320).
-- `cutpoint 360 analyze --scan FOLDER...` scans and analyzes in one command, and with
-  `CUTPOINT_PROGRESS=1` it reports the four 360 steps (#320).
-- `analyze` and `edit` run the reactions (PANNs sound events, and the voice layer when crashes
-  run), keyframes (HUD OCR with discovery for `gaming` and `funny`, the CLIP visual layer for
-  `action`, `ski` and `sport` with CUDA) and crashes (action-cam) steps, one after another, then
-  rank. Without the `events` extra or the model files a step is skipped with an INFO line;
-  nothing is downloaded. The llama-server VLM layer stays in `events` and `edit --events`.
-- `--skip reactions|keyframes|crashes` on `analyze` and `edit`, and `analysis.skip` in
-  `config.json`.
-- `CUTPOINT_PROGRESS=1` prints `PROGRESS {...}` step lines on stderr for `analyze` (6 steps) and
-  `edit` (8 steps).
-- `step_failed` JSON warning: an analysis step failed and the run continued without it.
-- Analysis steps in the UI: while an analysis runs, the Moments column lists each step under
-  "Analyze footage" (or under the header for "Analyze again") with its state (waiting, running
-  with a percentage when known, done, skipped with the reason, failed with the error); a step
-  still running when the job fails reads "interrupted", a cancelled one "cancelled", and steps
-  that never started "not run". The UI starts its jobs with
-  `CUTPOINT_PROGRESS=1` and keeps the `PROGRESS` lines out of the job log; `GET /api/jobs`
-  returns them per job as `progress` (`total`, `steps`).
-- `--json` on `events`. It reports the `events.json` and `events.txt` paths, the layers, the
-  event and window counts, `highlights.json` once re-ranked (and `highlights.pre-events.json`
-  when the run created it), and when written `crashes.json`, the contact sheets and the HUD
-  discovery files. A missing `events` extra is `missing_extra`; an unreachable source is
-  `footage_unreachable` (also on `360 analyze`), a skipped ski re-rank `highlights_not_updated`
-  (#4).
-- A default for the Ollama vision rating: "Rate frames with a local vision model (Ollama)" in
-  the UI's Settings saves `"vision": true` or `false` in `config.json` (default false, so nothing
-  changes unless you turn it on). Every analysis the UI starts follows it and passes `--vision`
-  or `--no-vision` explicitly. `cutpoint analyze` and `cutpoint edit`
-  use it when neither `--vision` nor `--no-vision` is given, so `--no-vision` now skips vision
-  that the setting turns on. A `vision` that is not true or false is rejected.
-  `GET`/`PUT /api/settings` carry `vision` (and `vision_model`, read-only); `PUT` may send
-  `projects_dir`, `vision` or both.
-- Reaction points for event types: the preset `events` fields `reaction` (0-12 points once per
-  candidate) and `styles` (limits `score` and `reaction` to some styles). `player_deaths` now
-  defaults to `reaction` 8 for `funny`: laughter, a scream or speech after a pause that starts
-  within 6 s after a player death adds 8 points once per candidate. It is rescored from the cache and needs `player_tags` or `--player`.
-- `--json` on `crashes` and `profile`. `crashes` reports the `crashes.json` path, the crash
-  count, each crash with its `crashes.json` keys (`id`, `source`, `t0`, `t1`, `confidence`,
-  `confirmed`, `origin`, `clip`, `sheet`), the `activity.json` path and the profile name; a
-  missing CLIP or torch is `missing_extra`. New warning codes: `footage_unreachable`,
-  `no_telemetry`, `no_visual_layer`, `highlights_not_updated` and `context_not_applied`. An
-  unknown `--activity` is `bad_args` (still exit 1) (#4).
-- Docs for the `--json` result envelope: a "JSON output" section in `docs/commands.md` (envelope,
-  error and warning codes, `outputs` keys per command), `--json` in the options of each command
-  that has it, and `AGENTS.md`, the skill and the FAQ no longer call it planned; `events`,
-  `crashes` and `profile` are still planned (#4).
-- `--json` result envelope, starting with `cutpoint paths --json`: the command writes exactly one
-  JSON object to stdout, `{"ok", "command", "schema": 1, "project", "outputs", "warnings",
-  "error"}`, with `error.code` one of `bad_args`, `not_found`, `ffmpeg_missing`,
-  `missing_extra`, `output_not_empty`, `interrupted` or `error`. Logs, stray output and the
-  output of child processes go to stderr; exit codes are unchanged. Other commands follow;
-  the existing `--json` of `profile` is unchanged (#4).
-- `--json` on `analyze`, `clips`, `assemble`, `edit` and `extend`: `outputs` lists the files
-  written (absolute paths) and their key facts, such as the candidate count, each clip with its
-  subtitles, source and times, and the final video's duration. `edit` writes one envelope with
-  the outputs and warnings of all its steps. Clips kept in a clips folder give a `kept_clips`
-  warning, and a vision rating that could not run (Ollama or the model not available) gives a
-  `vision_unavailable` warning; a bad `--crop`, `--size` or `--clip-override`, unknown `--ids`,
-  or `extend` with nothing to do, is `bad_args` (still exit 1). `extend`'s "Kept" warning now names the folder by its absolute
-  path, and an in-place `extend` gives it for clips without a manifest entry instead of saying
-  they were skipped (#4).
-- `--json` on `capabilities`, `mix`, `stage`, `setup` and every `360` subcommand (`scan`,
-  `analyze`, `status`, `director`, `stitch`, `check`, `qa`, `repair`). `outputs` holds the files
-  written (absolute paths) and their key numbers: `mix` the segments, report and sheet files and
-  each moment with its duration; `stage` each file with its source, staged copy, size and
-  whether it was `copied` or `skipped` (`--list`: the staged copies, `--clear`: the count
-  removed); `setup` per component each file with its size and whether it was `downloaded`,
-  `found` or is `missing`, and for `pip` the missing modules; the `360` commands their
-  `pano.json`, path JSONs, previews, sheets, `qa.json` or stitched files, never the Insta360
-  SDK's own output. New warning codes: `torch_no_cuda`, `sdk_needs_nvidia`,
-  `exclusions_ignored`, `content_qa_failed`, `nothing_staged_under_input`,
-  `events_extra_missing`, `events_not_in_highlights`, `not_a_360_clip`,
-  `vl_check_unavailable`, `stitch_failed`, `qa_clips_skipped` and `qa_clips_stale`. `stage`
-  without inputs, a bad `mix --quotas` and a bad `360 director --out-name` are `bad_args`
-  (still exit 1) (#4).
-- `cutpoint skill install [--dir DIR] [--force]` installs a Claude Code skill
-  (`~/.claude/skills/cutpoint/SKILL.md` by default) so an agent finds Cutpoint for requests such
-  as "edit this video" or "find the best moments" and runs the edit loop; it points to
-  `cutpoint guide` for details. A differing installed skill is kept unless `--force` is given.
-  `cutpoint skill print` prints the skill to stdout (#1).
 - `cutpoint edit <video...> --kind highlights|montage|clips|funny-moments` runs `analyze`,
   `clips` and `assemble` in one command and copies the result to `<video>-final.mp4` and
   `<video>-final.srt` in the project folder. Each kind sets the style, selection, clip order,
   transition, loudness normalisation and captions; `--style`, `--top`, `--max-total`,
-  `--vertical`, `--force` and `--events` override it. `--vision` / `--no-vision` work as on
-  `analyze` (default: Ollama rating if reachable) (#2).
+  `--vertical`, `--force` and `--events` override it, and `--vision-top`, `--ollama-url` and
+  `--ollama-model` work as on `analyze` (#2).
 - SRT subtitles: `clips` writes `001_<label>.srt` next to each clip and `assemble` writes
   `final.srt` (`final_vertical.srt`, ...) next to the final video, from the cached transcripts
-  of `analyze`, timed to the clip and to the joined timeline including crossfades and padding.
-  No transcription runs for them; without a cached transcript there is no `.srt` and one INFO
-  line. `clips --force` replaces only the `.srt` files its old `manifest.json` lists (#5).
+  of `analyze`, timed to the clip and to the joined timeline. No transcription runs for them;
+  without a cached transcript there is no `.srt` and one INFO line. `clips --force` replaces only
+  the `.srt` files its old `manifest.json` lists (#5).
+- `--json` result envelope: the command writes exactly one JSON object to stdout, `{"ok",
+  "command", "schema": 1, "project", "outputs", "warnings", "error"}`, with `error.code` one of
+  `bad_args`, `not_found`, `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `interrupted` or
+  `error`. Logs and child process output go to stderr; exit codes are unchanged. It is available
+  on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `events`, `crashes`, `profile`,
+  `capabilities`, `mix`, `stage`, `setup` and every `360` subcommand. `outputs` lists the files
+  written (absolute paths) and their key facts, and `warnings` carry codes such as `kept_clips`,
+  `kept_sources`, `step_failed`, `vision_unavailable`, `footage_unreachable`, `no_telemetry`,
+  `no_visual_layer`, `highlights_not_updated` and `context_not_applied`. Documented in the "JSON
+  output" section of `docs/commands.md` (#4).
+- `cutpoint skill install [--dir DIR] [--force]` installs a Claude Code skill
+  (`~/.claude/skills/cutpoint/SKILL.md` by default) so an agent finds Cutpoint for requests such
+  as "edit this video" and runs the edit loop; `cutpoint skill print` prints it to stdout (#1).
+- `--lut FILE` (a `.cube` or `.3dl` 3D LUT) and `--lut-strength 0-1` (default 1) on `clips` and
+  `edit` grade every clip, `360` renders included, after the BT.709 conversion. Use the LUT made
+  for the footage's log or flat profile; Cutpoint ships none. `clips/manifest.json` records `lut`
+  and `lut_strength` per clip, and `extend` grades its re-exports the same way. Without `--lut`
+  the output is unchanged (#290).
+- `--compress-peaks off|light|strong` on `clips`, `assemble` and `edit` (and the `compress_peaks`
+  key in `config.json`; default `off`) pulls sudden loud peaks such as shouts, gunshots and mic
+  bumps down toward the speech level, evens out loudness between clips, and keeps the set at its
+  overall loudness with a makeup gain and a true-peak limiter. `clips` bakes it into every clip
+  and records it in `manifest.json` (`compress_peaks`, `compress_peaks_makeup_db`), so `assemble`
+  does not compress those clips again. On an R6 montage with commentary and wind, the loudest
+  moment went from 12.2 dB above speech to 7.5 dB (light) or 5.2 dB (strong). The UI has a
+  matching "Compress peaks" select (#326).
+- `analyze` and `edit` run the reactions (PANNs sound events, and the voice layer when crashes
+  run), keyframes (HUD OCR with discovery for `gaming` and `funny`, the CLIP visual layer for
+  `action`, `ski` and `sport` with CUDA) and crashes (action-cam) steps, one after another, then
+  rank. Without the `events` extra or the model files a step is skipped with an INFO line;
+  nothing is downloaded. `--skip reactions|keyframes|crashes` (and `analysis.skip` in
+  `config.json`) leaves steps out, `CUTPOINT_PROGRESS=1` prints `PROGRESS {...}` step lines on
+  stderr, and a failed step gives a `step_failed` warning and the run continues without it.
+- Linux AMD GPUs decode limited-range 8-bit 4:2:0 H.264 with VAAPI for analysis, HUD OCR, 360
+  view sampling and 360 renders. HEVC, 10-bit, 4:4:4 and full-range sources still decode on the
+  CPU, and a failed GPU decode falls back to the CPU (#22). `CUTPOINT_VIDEO_DECODER=cpu` decodes
+  everything on the CPU, an escape hatch for a GPU decoder that misbehaves on real footage.
 - `cutpoint capabilities` reports torch (installed, version, CUDA or CPU-only build, whether it
-  reaches the GPU). On a machine with a usable NVIDIA driver, a CPU-only torch gives a warning
-  with the exact reinstall command for the install type (clone, tool install, pip), and a CUDA
-  build that cannot reach the GPU gives driver advice. It also reports the Insta360 Media SDK
-  (found or not) and warns that the SDK needs an NVIDIA GPU when none is found; `360 stitch`
-  logs the same warning before it runs. New JSON keys: `torch` and `insta360_sdk` (#22).
-- `cutpoint ui` preview player has a mute button and a volume slider next to Play, shared by
-  moments, clips and the final video and remembered per browser (default unmuted at 100%). `M`
-  toggles mute (#142).
-- `cutpoint ui` New Project "Choose video…" and "Choose folder…" buttons open the operating
-  system's own file or folder dialog on the computer running the server (Windows: system dialog
-  through tkinter; Linux, with a display: zenity, falling back to kdialog; macOS: osascript)
-  through `POST /api/pick`. Where no dialog is available (headless, Docker, or an SSH session on
-  Windows and macOS) the buttons are hidden;
-  the Source field always accepts a typed or pasted full path.
-- `cutpoint ui` Settings (gear button in the header) sets the projects folder, saved as
-  `projects_dir` in `config.json` through `GET`/`PUT /api/settings`. The folder must exist or only
-  its last part may be missing (it is created), and it must be writable. Existing projects are not
-  moved. The setting is read-only when `CUTPOINT_PROJECTS_DIR` is set and cannot change while a job
-  is running.
-- `cutpoint ui` sequence rows show a thumbnail per clip, served by
-  `GET /api/projects/{pid}/sources/{sid}/frame` and cached in `<project>/ui/frames/` (at most 500
-  per project, least recently used evicted, stale stills removed). Rows support inline rename,
-  remove with a confirm popover, multi-select with batch remove, up/down buttons and drag reorder.
-- `cutpoint ui` Moments empty state for a project that is not analyzed yet: the number of videos
-  found, "No moments analyzed yet", an "Analyze footage" button and a "Show folder" button.
-  After analysis, "Show folder" sits next to "Analyze again" in the column header.
-  "Show folder" opens the folder of the project's videos in the system file manager through
-  `POST /api/projects/{pid}/reveal` (token-protected; it only opens the project's own source
-  folder). The button is hidden where no file manager is available (for example Docker, or Linux
-  without a display); `/api/session` reports `can_reveal`.
-- `cutpoint ui` "Show folder" buttons next to "Export clips" (opens the latest export folder,
-  `clips_ui_*`) and next to "Assemble" (opens the project folder holding the latest final video
-  and its `.fcpxml` and `.otio` timelines). Each appears only once that folder exists and
-  where a file manager is available. `POST /api/projects/{pid}/reveal` takes
-  `?target=sources|clips|outputs` (default `sources`); the server resolves every path itself.
-- Resizable side column in the UI (drag, keyboard, double-click to reset); width is remembered per
-  browser.
-- `360 qa` counts the bad frames (blocked or low information) that `360 director --vl-check`
-  stored in the path JSON: a clip fails with more than 1 inside its span; clips without a `vl`
-  record are judged as before and `qa` does not call Ollama. `qa.json` gets a per-clip `vl`
-  field and the edit totals `vl_checked` and `vl_bad`, and the log table a `vl` column (#16).
-- `final.fcpxml` and `final.otio` hold a cross-dissolve at each join when `assemble` uses
-  `--transition fade` (and for `edit` kinds that crossfade). It starts on the edit, and the
-  clips and total length match `final.mp4`; with cuts the timelines are unchanged. On the OTIO
-  audio track a clip without audio now leaves a gap, so later audio stays in sync (#246).
+  reaches the GPU) with the exact reinstall command when a CPU-only torch meets an NVIDIA driver,
+  and the Insta360 Media SDK (found or not; `360 stitch` warns that it needs an NVIDIA GPU). New
+  JSON keys: `torch` and `insta360_sdk` (#22).
+- `cutpoint ui` trim and preview: the preview plays and scrubs the whole source, and the clip
+  start and end are handles on a trim rail that you drag, or focus and move with the arrow keys
+  (0.1 s, Shift 1 s), PageUp/PageDown and Home/End, with zoom, an overview strip and screen
+  reader sliders. "Use playhead" and `[` / `]` set the start or end anywhere in the source
+  (#324, #352).
+- `cutpoint ui` previews sources the browser cannot play within seconds: the server first
+  encodes a short proxy of the selected moment while the whole-source proxy builds, and HDR
+  proxies are converted to SDR. "Play sequence" previews the cut back to back, starting a clip as
+  soon as a short proxy covers it. Rows show whether a preview is ready, encoding or queued, and
+  the trim rail hatches the parts that cannot play yet. `POST
+  /api/projects/{id}/sources/{sid}/prepare` takes an optional `{lo, hi}` body (#323, #325).
+- `cutpoint ui` makes projects from Insta360 X3 footage (`.insv` and `.lrv` files are recognised,
+  and a folder mixing 360 and regular videos is refused). "Analyze footage" runs `cutpoint 360
+  analyze --scan`, which scans and analyzes in one command. While an analysis runs, the Moments
+  column lists each step with its state, and `GET /api/jobs` returns them as `progress` (#320,
+  #341).
+- `cutpoint ui` workspace additions: a Settings dialog for the projects folder (`projects_dir`
+  in `config.json`, `GET`/`PUT /api/settings`) and the vision default; a "Stats for Nerds" overlay
+  (off by default); a mute button and volume slider (`M` toggles mute); native file and folder
+  dialogs for New Project (`POST /api/pick`); "Show folder" buttons for sources, clip exports
+  and finals (`POST /api/projects/{pid}/reveal`); sequence thumbnails with inline rename,
+  multi-select, remove and drag reorder; and a resizable side column (#142, #353).
+- The UI transcript marks words Whisper was unsure of (confidence below 50%). Transcripts now store
+  each word's `probability`, and `highlights.json` candidates list those words in
+  `transcript_unsure`. A source transcribed before this keeps its cached transcript until it is
+  re-transcribed (delete its `cache/<source>/transcript-*.json`, or analyze with another `--model`)
+  (#327).
 - HUD presets can define event types with an `events` list (`name`, `when` matchers, `score`,
-  `max`, `payoff`, `tail_s`, `seed`) and the vision prompt's `title`, `view` and `hype`: custom
-  events add to the highlight boost, extend clip ends and set the priority of vision windows.
-  Preset types are checked before the built-in ones and can replace them (#8).
-- `docs/commands.md` lists measured analysis costs (GPU and CPU), how to force a CPU run with
-  `CUDA_VISIBLE_DEVICES=-1`, and that no cache key includes the device (the transcript is reused
-  only with the same `--model`).
-- `clips` and `edit` take `--lut FILE` (a `.cube` or `.3dl` 3D LUT) and `--lut-strength 0-1`
-  (default 1) to grade every clip, `360` renders included, with ffmpeg `lut3d` (tetrahedral)
-  after the BT.709 conversion; below 1 the grade is blended over the ungraded picture. Use the
-  LUT made for the footage's log or flat profile (for example GoPro Flat to Rec.709); Cutpoint
-  ships none. The file is checked before any work (`not_found` when missing, `bad_args` for
-  another extension, a LUT ffmpeg cannot load or a strength outside 0-1). `clips/manifest.json`
-  records `lut` (absolute path) and `lut_strength` per clip, and `extend` grades its
-  re-exports the same way. Without `--lut` the output is unchanged (#290).
-- `CUTPOINT_VIDEO_DECODER=cpu` decodes every video on the CPU instead of NVDEC or VAAPI, an
-  escape hatch for a GPU decoder that passes its test decode but misbehaves on real footage.
-  Unset, the GPU decoder is detected as before.
+  `max`, `payoff`, `tail_s`, `seed`, plus `reaction` for 0-12 points once per candidate and
+  `styles`) and the vision prompt's `title`, `view` and `hype`. `player_deaths` now defaults to
+  `reaction` 8 for `funny`. Preset types are checked before the built-in ones and can replace
+  them (#8).
+- HUD region discovery proposes up to 2 extra `notice` regions (`extra_notice`, `extra_notice2`)
+  where text keeps showing outside every discovered region. A new preset gets them, marked
+  `"origin": "outside"`; for a game that already has a preset, `--discover-regions` writes them only
+  to `suggested_regions` in `proposal.json`. `events --json` reports their number as `suggested`
+  (#314).
+- The OCR layer keeps a raw read of each source in `cache/<source>/ocr-raw-*`. When an update
+  changes only how HUD text is interpreted, the next run replays it in seconds, with no OCR, and an
+  interrupted read resumes near where it stopped. The first run after this update still reads the
+  footage once. The raw read holds OCR text, so it is git-ignored and never written inside a git
+  checkout (#315).
+- `final.fcpxml` and `final.otio` hold a cross-dissolve at each join when `assemble` uses
+  `--transition fade`, matching `final.mp4`; on the OTIO audio track a clip without audio now
+  leaves a gap, so later audio stays in sync (#246).
+- `360 qa` counts the bad frames that `360 director --vl-check` stored in the path JSON (a clip
+  fails with more than 1 inside its span); `qa.json` gets a per-clip `vl` field and the totals
+  `vl_checked` and `vl_bad` (#16).
 
 ### Changed
 
-- Exported clips are now always tagged BT.709. BT.601 SDR sources (NVIDIA DVR/ShadowPlay-style
-  `smpte170m` captures, `bt470bg`, `smpte240m`, and SD below 720 lines and 1280 columns without
-  a matrix tag) are converted to BT.709 with ffmpeg's `colorspace` filter, logged once per
-  source. HD without a matrix tag is tagged BT.709 with no pixel change, and BT.709 sources are
-  unchanged. This fixes hue shifts when `assemble --transition cut` joins clips from mixed
-  sources. `assemble` re-encodes (crossfades, mixed formats) do the same per clip, so clips
-  exported before this change join new ones without a color shift (#290, #289).
-- Decoding follows the GPUs detected here: NVDEC is probed only with an NVIDIA GPU and VAAPI
-  only on AMD render nodes, each with a one-clip test decode, so an AMD machine no longer tries
-  CUDA first, and logs the decoder it chose once at INFO (`Video decoder: ...`); a failed
-  NVIDIA probe is logged too (#22).
-- The UI's preview proxies use the GPU encoder exports use (NVENC or VAAPI, per
-  `video_encoder`), not NVENC only. VAAPI proxies measured 0.6 to 1.0 times libx264's size on
-  AMD, so they have no rate cap; AMF proxies stay on libx264 until measured (#22, #430).
-- `events` no longer retries a failed CPU decode as if it were a GPU one (#429).
-- `analyze` reads scene cuts with PySceneDetect's `seconds` property (the old call is deprecated) (#22).
 - **BREAKING:** `clips --force` and `extend` refuse a `manifest.json` Cutpoint did not write
   (another `generator`, or no `clips` list of entries with a `file`) and one they cannot read,
   stopping with an `ERROR` before exporting; move or rename it. An unreadable manifest used to
   be replaced (#145).
-- `360 qa` measures the horizon tilt of each clip from the v360 commands its render emitted,
-  so it catches render roll errors that the old model prediction could not (#12). Each `.cmd`
-  file now starts with a `# cutpoint-v360 ...` line holding the starting rotation; ffmpeg
-  skips it and renders are unchanged. Clips rendered before this fall back to the model with
-  an INFO line until they are re-rendered. The horizons in `qa.json` gain `source`
-  (`commands` or `model`).
-- `analyze --vision` with Ollama down uses the vision ratings already cached for the top
-  candidates instead of skipping the rating. The `vision_unavailable` warning gives the
-  counts, and `settings.vision.uncached` in `highlights.json` is the number of top candidates
-  with no cached rating. The cache now records the Ollama model's digest: a model pulled again
-  under the same tag is rated again, and with Ollama down the cached ratings for the tag are
-  used. Ratings cached before this change have no digest and are rated again once (#413).
-- `analyze` on `gaming` and `funny` footage starts the HUD OCR of the keyframes step in the
-  background while transcription, scene detection and the reactions step use the GPU, instead
-  of after them. It runs only when Whisper runs on CUDA, every game has a HUD preset, a source
-  read without errors and the GPU has at least 2 GB of VRAM free and 8 GB in all (unknown
-  counts as enough). `events.json`, `highlights.json`, the OCR caches and the progress steps
-  are the same as before, and so are the log lines and their order, apart from rare `-v` debug
-  lines of helper threads and a `resuming the OCR read` line when a background read is handed
-  back to its turn; Ctrl+C still exits with 130 and leaves no partial
-  files. `CUTPOINT_ANALYZE_OVERLAP=0` turns it off (#375).
-- Experimental and off by default: `CUTPOINT_ANALYZE_SHARED_DECODE=split` makes the scene
-  detection proxy of `analyze` in the same CUDA decode as the background HUD OCR, spooling the
-  OCR frames to the source's cache folder. The spool grows by as much as the OCR read lags
-  behind the decode, about 4 GB on a 446 s 1080p clip; the mode is skipped when the drive lacks
-  room for the whole file's worst case (every OCR frame) plus 1 GB. It applies to a whole,
-  clean source of up to 30 minutes with one video stream; the scene cuts, `events.json`,
-  `highlights.json` and the OCR caches are the same as with it off, and INFO lines give the
-  timings (#375).
-- The docs of `CUTPOINT_ANALYZE_SHARED_DECODE=split` say what happens to its ffmpeg when
-  Cutpoint is killed, per ffmpeg version, and what removes the leftover spool (#375).
-- `CUTPOINT_ANALYZE_SHARED_DECODE=split` keeps at most 8 spool files (about 2 GB) on disk:
-  when the OCR read lags that far behind, the decode, and the scene proxy with it, waits for it
-  to catch up. A 446 s 1080p clip peaked at about 4 GB before. The mode now needs free disk for
-  that cap (or every OCR frame of a shorter source) plus 1 GB, instead of every OCR frame of the
-  source plus 1 GB; the output is the same (#402).
-- The OCR layer of `analyze` and `events` reads HUD text faster on the CPU: it splits its 4
-  threads over 2 OCR engines that run at once (the regions of a frame, then the text rows of a
-  region), on a machine with at least 4 CPUs. On a 4-vCPU machine the OCR read of a 300 s
-  game clip took 286 s instead of 345 s, for about 140 MB more memory. The OCR results, the
-  caches and `events.json` are unchanged; HUD discovery still uses one engine (#403).
-- The HUD OCR engine (the OCR layer and HUD discovery) runs on at most 4 CPU threads (fewer on
-  a machine with fewer CPUs) instead of one per core. CPU OCR stops scaling at about 4 threads:
-  on an 8-core CPU a 1280 px discovery frame took 3.3 s instead of 4.0 s, about 18% faster. The
-  OCR results are unchanged (#374).
-- The UI preview plays and scrubs the whole source; playback no longer stops at the clip end. The
-  clip start and end are markers on a trim rail with Zoom out, Zoom in and Fit clip buttons and an
-  overview strip to pan (keyboard: arrows, PageUp/PageDown, Home/End; the wheel pans, Ctrl+wheel
-  zooms). "Use playhead" and `[` / `]` set the start or end anywhere in the source. A clip longer
-  than 10 minutes shows a note (#324).
+- Exported clips are now always tagged BT.709. BT.601 SDR sources (`smpte170m`, `bt470bg`,
+  `smpte240m`, and SD without a matrix tag) are converted to BT.709 with ffmpeg's `colorspace`
+  filter; HD without a matrix tag is tagged with no pixel change. This fixes hue shifts when
+  `assemble --transition cut` joins clips from mixed sources. `assemble` re-encodes and
+  `--captions` output are tagged the same way, and so are clips graded with `--lut` on older ffmpeg
+  (#289, #290).
+- The Ollama vision rating is opt-in for every style: `analyze` and `edit` use it only with
+  `--vision`, or when `"vision": true` in `config.json` (the UI Settings checkbox) turns it on by
+  default, which `--no-vision` then skips. Before, it ran whenever Ollama was reachable (except for
+  `ski`), loading about 7 GB into GPU memory unasked. The rating now runs after the events
+  ranking, and the Ollama model is unloaded after the pass, also when it fails or is interrupted.
+  The style setting `vision_default` is gone. `highlights.json` records `settings.vision_requested`,
+  `vision_top` and the Ollama URL and model, so re-analysis (`cutpoint events`, the UI Analyze
+  action) keeps them; a project analyzed before this change is re-analyzed without vision.
+- Vision ratings are cached per source in `cache/<source>/vision-ratings.json` (keyed by the model
+  and its digest, prompts, options, frame size and frame times) and saved as they arrive. A rerun
+  asks Ollama only about candidates it has not rated, and with Ollama down `analyze --vision` uses
+  the cached ratings; the `vision_unavailable` warning gives the counts. Ratings cached before
+  this have no digest and are rated again once (#377, #413).
 - `analyze` writes `events.json` and `events.txt` (and `crashes.json` for action footage) and
-  ranks with them. `highlights.json` is written once, atomically, at the end: a cancelled run
-  leaves the previous file. The analysis score stays in each candidate's `score_pre_events`;
-  `highlights.pre-events.json` is written only when the analysis was not ranked with events
-  yet.
-- The vision rating (`--vision`) now rates the top candidates after the events ranking.
-- The vision ratings (`--vision`) are cached per source in `cache/<source>/vision-ratings.json`,
-  keyed by the model, the style's prompts and options, the frame size and the frame times (not
-  the Ollama URL). A rerun asks Ollama only about candidates it has not rated, with the same
-  ratings and the same `highlights.json` as the first run, and logs how many ratings came from
-  the cache and how many were asked. Each rating is saved as it arrives, so an interrupted run
-  keeps them; failed or unreadable replies are not cached. A first run is unchanged (#377).
-- Re-running `analyze` keeps the `--game` of the last `cutpoint events` run (read from
-  `events.json`), and its `--player` tags when `player_tags` in `config.json` is empty; it logs
-  an INFO line when it does.
-- Inside `analyze`, the `no_visual_layer` warning of the crashes step says why there is no
-  visual layer (no CUDA GPU, left out by `--skip` or `analysis.skip`, or the `events` extra
-  missing) instead of asking for `cutpoint events`.
-- A self-kill (the player is both killer and victim in a kill feed, generic verb-style feeds
-  and the built-in coloured-box feed alike) no longer counts as a player kill: a new default
-  event type `self_kills`, checked after `teamkills` and before `player_deaths` and
-  `player_kills`, adds 3 points each (half a kill, at most 3 counted) in every style. It stays a
-  tail payoff and a VLM seed but no longer counts toward DOUBLE/TRIPLE KILL streaks,
-  `signals.events` gains a `self_kills` count, and the VLM hint says
-  "the PLAYER killed themselves". Its points are rescored from the cache; streaks are rebuilt on
-  the next `cutpoint events` run (OCR is reused). It needs `player_tags` or `--player`.
-- The `all` extra now includes `ui`, so `cutpoint[all]` and `uv sync --extra all` also install
-  the browser workspace (`cutpoint ui`). The missing-extra hint for a clone mentions
-  `--extra all`.
+  ranks with them. `highlights.json`, `transcript.txt` and these files are written together at
+  the end, so a cancelled run leaves the previous files as they were. The analysis score stays in
+  each candidate's `score_pre_events`; `highlights.pre-events.json` is written only when the
+  analysis was not ranked with events yet (#408).
+- Decoding follows the GPUs detected: NVDEC is probed only with an NVIDIA GPU and VAAPI only on AMD
+  render nodes, so an AMD machine no longer tries CUDA first, and the chosen decoder is logged once
+  (`Video decoder: ...`). `events` no longer retries a failed CPU decode as a GPU one (#22, #429).
+- `cutpoint ui` preview proxies use the GPU encoder exports use (NVENC or VAAPI, per
+  `video_encoder`), have a keyframe every 30 frames and at most 30 fps so seeking is quick, and the
+  UI's jobs and proxy encodes run at below-normal priority so the desktop and browser stay
+  responsive (#22, #430).
+- `analyze` on `gaming` and `funny` footage starts the HUD OCR in the background while
+  transcription, scene detection and the reactions step use the GPU. It needs Whisper on CUDA, a
+  HUD preset for every game and enough free VRAM; the results are unchanged.
+  `CUTPOINT_ANALYZE_OVERLAP=0` turns it off. Experimental and off by default:
+  `CUTPOINT_ANALYZE_SHARED_DECODE=split` shares one CUDA decode between scene detection and the
+  OCR, spooling frames to the source's cache folder (at most 8 spool files, about 2 GB) (#375,
+  #402).
+- Less CPU time in analysis: the HUD OCR runs on at most 4 threads and, on a machine with at least
+  4 CPUs, splits them over 2 OCR engines (a 300 s game clip took 286 s instead of 345 s). The voice
+  layer reuses the PANNs model, and `cutpoint 360 analyze` loads CLIP once and recomputes only the
+  selfie view in its second pass. Results are unchanged; `vram_mib.<layer>.baseline_mib` in
+  `events.json` is now the monitor's first reading during the layer (#372, #374, #376, #403).
+- A self-kill (the player is both killer and victim in a kill feed) no longer counts as a player
+  kill: a new default event type `self_kills` adds 3 points each in every style and no longer counts
+  toward DOUBLE/TRIPLE KILL streaks. The player's own death in a kill feed no longer adds the kill
+  boost either (new default event type `player_deaths`). Both need `player_tags` or `--player`; run
+  `cutpoint events` to rebuild streaks.
+- Re-running `analyze` keeps the `--game` of the last `cutpoint events` run, and its `--player`
+  tags when `player_tags` in `config.json` is empty.
 - The HUD presets folder in `CUTPOINT_HOME` (`cutpoint paths`) is now trusted like the bundled
   folder: `"builtin": true` is honoured there, and only project `hud_presets` folders ignore it
-  (with a WARNING). User and bundled presets never get a separate VLM cache key; a project preset
-  gets one only when its prompt differs from the user (or bundled) preset of the same game key.
-  After adding a user preset with `title`, `view` or `hype`, or editing those fields in one, run `cutpoint events <project> --force vlm`.
-- The Ollama vision rating is opt-in for every style: `analyze` and `edit` use it only with
-  `--vision`, and `cutpoint ui` only when vision is turned on in Settings. Before, it ran whenever Ollama was reachable (except for `ski`),
-  loading about 7 GB into GPU memory unasked. `--no-vision` is still accepted and changes
-  nothing. The `vision_unavailable` warning now only comes with `--vision`. `highlights.json`
-  records the request as `settings.vision_requested`; re-analyzing (`cutpoint events`) uses
-  vision only if the earlier run asked for it, so a project analyzed before this change (no
-  record) is re-analyzed without it. The style setting `vision_default` is gone. Building an activity profile
-  (`profile`, `crashes`) and `360 director --vl-check` also unload the vision model when they
-  are done with it (`--vl-check` also when it fails or is interrupted). With CLIP installed,
-  building a profile now unloads only that model, not every model loaded in Ollama.
-- `profile --json` writes the result envelope: the `activity.json` record it printed before is
-  under `outputs` with the same keys, plus `activity_file` (its path) (#4).
-- `cutpoint capabilities --json` writes the result envelope: the report it printed before is now
-  its `outputs`, with the same keys (`platform`, `gpu_vendors_present`, `video_encoders`,
-  `active_video_encoder`, `transcription`, `llama_cpp`, `torch`, `insta360_sdk`); read
-  `outputs.torch` instead of `torch`. The torch and Insta360 SDK warnings are also in
-  `warnings` (#4).
-- `cutpoint 360 repair --json` writes the result envelope: the report it printed before is now
-  its `outputs`, with the same keys (`segments`, `written`, `findings`, `skipped`, `trimmed`,
-  `dropped`, `added`, `capped`, `exclusions`, `rendered_s`, `content_qa`) plus `exclude_file`;
-  the repair summary is now logged to stderr with `--json` too (#4).
-- `cutpoint 360 qa --json` is the result envelope. `--json-only` (skip the contact sheets) is
-  unchanged; `--json` no longer abbreviates it (#4).
-- `cutpoint ui` runs its jobs (analyze, clips, assemble, ...) and proxy encodes at below-normal
-  priority (Windows `BELOW_NORMAL_PRIORITY_CLASS`; elsewhere `nice -n 10` when available), and
-  the ffmpeg they start inherits it, so the desktop and the browser stay responsive. Cancelling a
-  job works as before.
-- `cutpoint ui` preview proxies have a keyframe every 30 frames and at most 30 fps, so seeking in
-  a proxy is about as quick as in the source (the encoder default allowed up to ~0.4 s per seek).
-- `cutpoint ui` encodes preview proxies with NVENC (`h264_nvenc`) when it works on the machine and
-  `video_encoder` is `auto` or `nvenc`, with a bitrate cap that keeps the file near libx264's
-  size; otherwise, and when an NVENC encode fails (it is retried with libx264, which is then used
-  for the rest of the run), with libx264 as before. On a 1080p60 recording this took about half
-  the CPU time of libx264.
-- `cutpoint edit` takes `analyze`'s `--vision-top`, `--ollama-url` and `--ollama-model` with the
-  same defaults and checks (`--vision-top` must be greater than 0) and passes them to the analysis.
-- The UI's New Project Source field no longer has the in-browser "Browse" button and folder
-  browser; the `/api/browse` endpoint is removed.
-- The UI's "Remove from sequence" button moved above the video preview.
-- `cutpoint ui`: the preview is re-laid out and fits the window without scrolling. At the top,
-  the moment's name and source on one row with "Add to sequence" (the Preview title is kept for
-  screen readers only); the video letterboxed in a full-width panel that takes the height the
-  other rows leave (up to 16:9 of the column width, at least 180 px; a very short window scrolls
-  the column), above one transport bar (small clock on the left, a play/pause icon button in the
-  middle, mute and volume on the right); a full-width trim rail with tick divisions and a gold
-  selection; then Clip Start, the transcript in a rounded box and Clip End side by side, each
-  field with "-0.5 s", "Use playhead" and "+0.5 s" in one row; the score and signals are a small
-  line under them. There is no keyboard hints line; the shortcuts (Space, M, `[` and `]`) work
-  as before, Play's tooltip names Space and the "Use playhead" tooltips name `"["` and `"]"`. In
-  a narrow column Clip Start and Clip End go above the transcript, then stack.
-- The UI's Moments column header no longer shows the "Moments" title (kept for screen readers);
-  after analysis it shows the moment count, "Analyze again" and "Show folder".
-- CI installs a small `ocr-test` dependency group (the OCR engine, no torch), so a new slow test
-  runs real HUD discovery on a generated clip on Linux and Windows (#373).
-- Tests carry `slow`, `ffmpeg` and `hardware` pytest markers. `uv run pytest` still runs everything
-  except `hardware`; `uv run pytest -m "not slow and not ffmpeg"` is a faster local run.
-- The `dev` extra is replaced by a `dev` dependency group that `uv sync` and `uv run` install by
-  default, so `uv run pytest` works in a fresh clone; `--extra dev` is no longer accepted (#122).
-- `cutpoint 360 qa` on a missing folder says "clips folder not found", like `360 check` and
-  `360 stitch --from-clips` (#200).
-- `cutpoint 360 qa` checks `--size` when the command line is parsed: a bad value is a usage
-  error (exit 2, like `clips --size`), also with `--paths`.
-- The Docker base image is pinned by digest (Dependabot proposes updates), and CI builds the
-  image and runs `--version`, `capabilities` and a non-root `paths`; a weekly workflow also
-  builds the `INSTALL_EVENTS=true` image and imports `librosa` and `torch` (#121).
-- `cutpoint 360 director` paths are evaluated with a monotone cubic (PCHIP) between keys instead
-  of linear interpolation: speed no longer jumps at keys and a value never overshoots its keys.
-  A key interval falls back to exact linear where the cubic would pan faster than the nearby
-  linear speed, or go over a `360 qa` pan limit that linear stays under (for example a move
-  between two stops or the fastest stretch), so the peak pan speed never rises above linear and
-  qa pan gates are not made worse. Yaw across +-180 degrees stays smooth, shots with 2 keys are
-  unchanged and repeated key times still act as a step. Existing `360 director --preview` videos
-  are reused and keep the old motion until deleted; paths are not re-planned (#14).
-- Less fixed overhead in the events steps of `analyze` and `cutpoint events`: the voice layer
-  reuses the PANNs model the audio layer loaded instead of loading it again (closed after the
-  voice layer, before the next model loads), and the VRAM monitor around each layer no longer
-  waits on nvidia-smi when it starts and stops (about 0.2 s per layer on Windows). In
-  `events.json`, `vram_mib.<layer>.baseline_mib` is now the monitor's first reading during the
-  layer instead of one taken before it, and a layer shorter than one reading reports `null`
-  for `baseline_mib` and `peak_mib`. Results are unchanged (#372).
-- `cutpoint 360 analyze` loads the CLIP model once instead of twice (about 4-5 s saved): the
-  model the 360 view layer loaded waits in system memory, not on the GPU, while transcription
-  and the audio layers run, and the crash step's dense check reuses it. It is kept only when
-  the events steps run and a clip has no cached dense check yet; otherwise it is freed after
-  the views as before. Results are unchanged (#376).
-- When the wearer is not at the default mount, `cutpoint 360 analyze` now recomputes only
-  the selfie view in the 360 view layer's second pass. The person detector and the person
-  crops are reused from the first pass. The second pass still decodes the proxy again and
-  embeds all 9 views together, so the cached views are byte-identical to a full recompute.
-  `-v` logs how long that pass took, and `elapsed_s` / `gpu_s` in the `pano-views-*.json`
-  meta now cover both passes (#376).
+  (with a WARNING). After adding or editing `title`, `view` or `hype` in a user preset, run
+  `cutpoint events <project> --force vlm`.
+- `--json` of `profile`, `capabilities`, `360 repair` and `360 qa` now writes the result envelope:
+  the report each printed before is under `outputs` with the same keys (read `outputs.torch`
+  instead of `torch`), and `360 qa --json` no longer abbreviates `--json-only` (#4).
+- `360 qa` measures the horizon tilt of each clip from the v360 commands its render emitted, so it
+  catches render roll errors the old model prediction could not. Each `.cmd` file now starts with a
+  `# cutpoint-v360 ...` line; clips rendered before this fall back to the model until re-rendered
+  (#12).
+- `cutpoint 360 director` paths are evaluated with a monotone cubic (PCHIP) between keys instead of
+  linear interpolation, so speed no longer jumps at keys and a value never overshoots. Existing
+  `360 director --preview` videos keep the old motion until deleted (#14).
+- The `all` extra now includes `ui`, so `cutpoint[all]` and `uv sync --extra all` also install the
+  browser workspace. The `dev` extra is replaced by a `dev` dependency group that `uv sync` and
+  `uv run` install by default; `--extra dev` is no longer accepted (#122).
+- `cutpoint ui` layout: the preview is re-laid out to fit the window without scrolling (name and
+  "Add to sequence" on one row, a full-width video and one transport bar, then Clip Start, the
+  transcript and Clip End), the Moments header shows the count, "Analyze again" and "Show folder",
+  and "Remove from sequence" moved above the preview. The shortcuts (Space, M, `[`, `]`) work as
+  before.
 
 ### Removed
 
@@ -461,677 +220,162 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on CPU OCR), and kill detection can differ from 0.2.0. A preset you wrote yourself keeps working
   from the user presets folder (`cutpoint paths`), where `"builtin": true` keeps the original R6
   interpretation. Presets are matched by their `match` field (#8).
+- The in-browser "Browse" button and folder browser in the UI's New Project Source field, and the
+  `/api/browse` endpoint.
 
 ### Fixed
 
-- `assemble --captions` (and `edit` kinds with captions) tags the re-encoded final video
-  BT.709 (`-color_range tv` and BT.709 primaries, transfer and matrix) when the joined video is
-  BT.709, instead of relying on the tags ffmpeg carries over.
-- UI: a trim handle drag is ended as soon as another moment or project opens (or Play sequence
-  moves on), so the handle no longer stays amber until the next pointer event.
-- `AGENTS.md`: `bad_args` exits 2 only for command-line errors; option values a command checks
-  itself (a `--lut` file, `--clip-override`, ...) exit 1, as `docs/commands.md` says. That
-  list now names a `--lut` file that is not `.cube`/`.3dl`, unreadable or that ffmpeg cannot
-  load, and `--lut-strength` without `--lut` (a missing `--lut` file is `not_found`).
-- UI: thumbnails of HDR (HLG, PQ) and BT.2020 sources are converted to SDR Rec.709 as exports
-  are, so they no longer look washed out (#412). On a PQ sample the mean saturation went from
-  0.38 to 0.64 (the SDR copy: 0.67). Without `zscale` they stay as before, with the same
-  warning as exports. Thumbnails of other sources are unchanged; ones cached before are rebuilt.
-- `cutpoint ui` deletes preview proxies that are no longer current: the whole proxies of
-  sources that changed or left, and HDR proxies and windows built with an earlier tone map,
-  also when no current one sits beside them. It leaves a proxy file written or played in the
-  last hour, so a second UI on the same project no longer deletes a proxy it is encoding or
-  serving, and skips a file it cannot delete (open on Windows) until a later run. While a
-  source cannot be read (an offline drive), no proxy is deleted for matching no source (#411).
-- `cutpoint ui` no longer keeps stale preview proxies and windows forever on a project with a
-  drive that stays offline: while a source cannot be read, one that matches no readable source
-  is deleted once it has not been written or played for 30 days.
-- The HUD OCR menu test finds menus that keep moving (lobbies, operator select, deploy maps,
-  result screens) by their text: at least 5 lines of new text that stay on screen, 3 of them
-  first read together, for at least 3 s. Their notices no longer reach `events.json`
-  (`stats.ocr.<source>.text_frames` counts the frames) (#409).
-- Clips graded with `--lut` are tagged BT.709 (matrix, primaries, transfer, tv range) on older
-  ffmpeg too: ffmpeg 6.1 left the matrix tag unset, so `assemble` read SD clips as BT.601.
-- A `llama-server` start no longer leaves its log file handle open in the parent.
-- HUD region discovery no longer takes a column of score popups (a "+10" value over a label)
-  for the kill feed (#410). On two R6 recordings the discovered `feed` region held only popups
-  and pre-round text, no kill line: it was OCR'd at the full rate and gave no events. A stack
-  where 30% or more of the rows are a "+" number alone is now a `popup` proposal: it gets no
-  region, and no extra notice region is proposed inside it, so its labels don't come back as
-  notice events. War Thunder's feed and crew box are found as before. Existing presets are not
-  changed; delete a discovered preset to discover it again.
-- `clips --force`, `extend` and `assemble` no longer lose or mix up work when a folder is
-  touched by two runs or an interrupted one (#145):
-  - `assemble` puts back or removes the staging and backup folders (`.<folder>.cutpoint-tmp`,
-    `.<folder>.cutpoint-bak`) that an interrupted `clips --force` or `extend` left.
-  - `clips`, `extend` and `assemble` hold a lock file `.<folder>.cutpoint-lock` next to the
-    folder; a second run on it stops with an `ERROR` naming the process that holds it. A lock
-    left by a killed run is taken over.
-  - `manifest.json` records each clip's size and `"generator": "cutpoint"`, so a clip renamed
-    during review is reported as one Cutpoint exported, and `assemble` still reads its audio
-    fade and compression from the manifest. Older manifests still work, matched by name.
-  - `extend` reports files that are sources of the clips as `kept_sources`, not as "added by
-    hand?" (`kept_sources` now comes from `clips` and `extend`).
-- UI: the page's own files (`index.html`, `app.css`, the JS modules) are revalidated on each
-  load (`Cache-Control: no-cache`), so an update's CSS and JS are used at once; a stale cached
-  `app.css` had brought back the page scrolling past the Jobs bar (#415).
-- Ctrl+C during an `analyze` step after the transcription (reactions, keyframes, crashes,
-  ranking or vision) left a new `transcript.txt` next to the previous `highlights.json`, or in
-  an otherwise empty new project folder. `analyze` now writes `transcript.txt` with
-  `highlights.json` at the end (same content), and its event layers read the transcript from
-  memory, so a cancelled run leaves both files as they were.
-- Ctrl+C during `analyze` left a new `events.json`, `events.txt`, `crashes.json`, `crash_check\`
-  sheets, `activity.json`, or for ski `telemetry.json` and `ski_features\` (stale features were
-  deleted at the start). They are now written with `highlights.json` at the end, so a cancelled
-  run leaves them as they were. A UI or agent watching the project folder no longer sees these
-  files until `analyze` finishes (#408).
-- Clips of a recording with the same audio on several tracks (OBS writes its mix to every
-  enabled track) came out 20·log10(N) dB too loud and clipped, because every track was summed.
-  `clips`, `extend` and `edit` now compare the tracks on six 3 s windows across each source
-  (once, cached per source in `audio-tracks.json`, about 1-4 s) and leave out a track that
-  copies an earlier one, with an INFO line naming the tracks kept. Tracks count as copies when
-  their levels match within 0.5 dB and the energy of their difference is at least 15 dB below
-  them. Each clip of such a source then checks the left-out tracks again on its whole span, in
-  one-second chunks, and keeps a track that differs in any chunk, so a mic callout between the
-  windows is not lost. This check reads the clip's span once more: about 0.4 s for a 20 s clip
-  and 3 s for a 3 min clip once the footage has been read, and up to about 8 s for 3 min from a
-  slow network share. Sources with one track, or with no copied track, are not checked again. On
-  a 5-track OBS recording the clip went from -17.8 LUFS and +3.1 dBTP to -31.5 LUFS and -5.9
-  dBTP, as track 1 alone (-31.4 LUFS, -5.8 dBTP). Distinct tracks such as game and mic are still
-  summed at full level, an all-silent extra track is kept, and single-track sources get exactly
-  the same ffmpeg command as before. Copies encoded at a different bitrate, sample rate or
-  channel layout are not always recognised and are still summed (#365).
-- A rerun of `events` (or `analyze`) whose audio events are all cached no longer loads the
-  PANNs sound model when a source's cached result is empty, which cost about 6 s; a source
-  without cached audio no longer loads it either. The events are unchanged; `stats.audio_device`
-  is then left out, as `stats.voice.device` and `stats.visual.device` are for a layer that only
-  read its cache (#370).
-- `analyze --language` no longer reuses a transcript cached for another language: a
-  source transcribed with the detected language returned that cached transcript, and Whisper
-  never ran in the forced one. A forced language now has its own cache file,
-  `transcript-<model>-<language>.json`. Without `--language` the name stays
-  `transcript-<model>.json`, so existing transcripts are still used. Subtitles of `clips`,
-  `extend` and `assemble`, the crash words and the reaction rescoring read the transcript of
-  the language the project's analysis used (`settings.language` in `highlights.json`), and
-  `assemble --captions` transcribes the burned-in captions in that language. A
-  transcript made with `--language` before this fix is cached under the plain name, so a run
-  without `--language` still reuses it; delete `cache/<source>/transcript-*.json` to
-  transcribe the source again (#371).
-- Mined `candidate_phrases` (profile version 6) no longer include parts of hint and tutorial
-  sentences shown only briefly, which the static hint test misses. A phrase found only inside
-  sentences of more than 5 words (a number, gamertag or separator such as `|`, `/` or `:` ends
-  one; commas and brackets do not), with the same text right around it each time (OCR read the
-  sentence a little differently, so its parts showed without the rest), is left out. Short banners, banners read in one box with a stats line and phrases
-  in log lines with changing names or gamertags around them stay (#313).
-- Mined `candidate_phrases` (profile version 7) also leave out short hint and control-prompt
-  lines: phrases in separate boxes that never show without one another at no more than 2
-  moments (a prompt cluster), a phrase whose sentence ends with `.`, `?` or an ellipsis (`...`,
-  `…`, and their Unicode equivalents such as `。` and `？`) in at least half of the frames it is
-  in, and, when some phrase is found in 2 or more recordings, a phrase found in only one of
-  them. A banner ending with `!` stays. With a single recording, or recordings that share no
-  phrase, the last rule is skipped. No command writes candidate phrases yet, so analysis
-  results do not change (#313).
-- When the short proxy of a part of the source fails twice, the UI preview stops waiting on
-  "Preparing this part of the source…" and shows why, with a Retry button. The server's
-  warning now names ffmpeg's last lines (or its exit code), and each source in the project view
-  lists its `failed` windows with a `reason` until they are asked for again (#323).
-- A single gameplay notice read in still gameplay (a scoped or binocular view held still for
-  over 5 s) no longer makes the OCR layer treat the stretch as a menu and drop the notice
-  (#319). New menu text now needs at least 2 text lines that are no preset phrase, each on
-  screen for at least half of the still stretch: a menu shows many lines that stay, a notice is
-  one line or one box that flashes. A still screen with only one line of new text now has to
-  hold still 10 s to count as a menu, as one without new text. The first run with a JSON preset
-  interprets the footage again (replayed from the raw OCR cache when it has one).
-- UI: the arrow keys on the trim rail move the playhead by 0.5% of the visible view (at least
-  0.05 s) instead of a fixed 0.05 s, so they move on a zoomed-out long source too. The play
-  button shows Play, not Pause, while a clip waits for its preview ("Preparing preview of
-  <name>…" in "Play sequence", or a preview being prepared on the stage) (#356, #357).
-- UI: on a wide window the page no longer scrolls past the Jobs bar. The screen-reader-only
-  labels in the moment rows were not clipped by their scrolling column, so a long list of
-  moments made the whole page taller than the window (#354).
-- HDR footage (HLG or PQ) and BT.2020 footage came out washed out: it was cut down to 8 bits
-  with its HDR or BT.2020 tags kept, so players and editors that ignore those tags showed it
-  with faded colors. `clips`, `extend` and `360` renders now convert it to SDR Rec.709 with
-  `zscale` and `tonemap` (hable), and tag the clip bt709. The tone mapping costs CPU time,
-  about 30 fps at 1080p on 8 threads. On real HLG phone clips the median luma is 0.62-0.66,
-  against 0.54-0.57 for libplacebo's tone mapping (not used: ffmpeg runs it on Vulkan). PQ and
-  BT.2020 were checked on synthetic clips. Without `zscale` in the ffmpeg build, a WARNING
-  says so and the clip is exported as before. SDR and untagged sources get exactly the same
-  ffmpeg command as before. 10-bit SDR footage that looks log or flat in one small frame gets a
-  WARNING suggesting the camera's LUT; no LUT is applied. `probe` now reads the four color tags
-  (#289).
-- 360 analysis in the UI shows its planned steps as "Waiting" right away, instead of "Waiting for
-  output..." until the first step starts (#320).
-- `--vision`: the Ollama rating no longer outranks the analysis. A rating (0-10) was blended in
-  as a 0-100 term next to style scores of about 15-27, so it pulled every rated score toward
-  rating × 10: a middling 5/10 lifted a candidate past the unrated ones, and even a 0-2/10
-  rating replaced the clip's label. It now scales the candidate's score instead: 5/10 leaves it
-  as is, 10/10 lifts it and 0/10 lowers it by the style's `vision_weight` (about 20-45%), capped
-  at 100; candidates that were not rated keep their score. The model's label replaces the clip's
-  only from a rating of 7, so low ratings no longer name clips `boring-run-no-action`; every
-  rated candidate keeps the model's label in `vision_label` (#284).
-- A clip whose source audio ends before the clip does (for example a clip at the very end of a
-  recording whose audio track is shorter than its video) ended with an abrupt cut: the audio
-  fade-out started after the audio had ended. `clips`, `assemble` and `360` renders now end the
-  fade-out where the audio ends. Measured with a 1.0 s tone in a 1.5 s clip and a 0.25 s fade, the
-  last 50 ms drop from -20.8 dB (unfaded) to -31.4 dB. When the audio covers the clip, or its
-  length is unknown (for example MKV without stream durations), nothing changes (#250).
-- An ffmpeg step that reports progress (audio extract, scene proxy) could wait forever after
-  ffmpeg had exited, when another process still held ffmpeg's progress output open; an analysis
-  then never finished. The step now ends when ffmpeg exits, after reading the rest of the
-  progress for up to 5 s (#338).
-- New Project in the UI: a folder that has files but no supported videos now says which file
-  types it found (for example "no supported videos found (found 12 .insv, 3 .lrv)") instead of
-  the generic message (#321).
-- Insta360 X3 `.insv` and `.lrv` files are recognised in the UI. The file picker has an
-  "Insta360 360 video" filter, so they show without "All files", and a folder mixing 360 and
-  regular videos is refused with a clear message (#320).
-- With reduced motion on (for example Windows "Animation effects" off), a running analysis
-  step showed a frozen spinner and looked stuck. It now shows a still ▶ and an elapsed time that
-  counts up, and the indeterminate progress bars show as a still dashed bar. Nothing changes with
-  animations on (#322).
-- A discovered kill feed grows by rows seen in fewer frames. A full feed is rare (4 of 59 frames
-  in a 10-minute match), so its oldest rows showed in too few frames (a row needed 5% of the
-  feed's frames) and a 6-row feed stopped at its common rows. A row seen in 2 or more frames is
-  now added when it shows in 2 bursts, with a different text per burst (sighting variety 0.75 or
-  more, ignoring case, digits, punctuation and box order, so a static label is not added), and at
-  least half of its frames show the full feed (the feed's row next to it and all others but one;
-  so a notice or chat line next to the feed is not added); the
-  burst minimum, the twice-the-height limit and the screen-edge stop are unchanged. With `-v`,
-  the feed growth line lists every row tried, with its full-feed frames and sighting variety,
-  ending in `ok: frames`, `ok: varied` or `stop: <reason>`. An installed discovered preset is
-  kept: run `cutpoint events <project> --discover-regions` (it reuses the cached discovery OCR)
-  and copy the new `proposal.json` over the preset, or delete the preset so the next run
-  installs a new one.
-- HUD region discovery no longer drops every frame of a game with a busy HUD as a menu. A frame
-  counted as a menu or scoreboard above 28 text boxes; busy HUDs show 50 to 100 in every frame.
-  Now a frame with at least 24 boxes is a menu when their centres fill at least half of the
-  screen centre (6 x 4 cells of a coarse 8 x 6 grid) or when it has at least twice the median
-  box count of its recording. Mined `candidate_phrases` (profile version 3) use the same frames
-  and now also find mixed-case texts ("Shield Saver", kept in their most common casing and only
-  when that casing shows in two thirds of their bursts), words OCR joined
-  ("blockedShieldSaver:x1"), and phrases inside longer lines once numbers, timestamps,
-  gamertags, multipliers ("x2") and player tags are cut out; a name-like slot at either end is
-  not mined: a word that takes 4 or more different values next to a fixed phrase of 2 or more
-  words, or next to a single word when it also varies elsewhere, as the names in
-  "<name> blocked <name>" lines do. Banner families that share a word ("GATE SECURED",
-  "HILL SECURED") are all kept. The proposal
-  lists the OCR records of its run (`discovery.frames`), and mining reads only those. Discovery
-  params record `menu_min_boxes`, `menu_cover` and `menu_jump` instead of `menu_boxes`.
-- HUD phrases are learned from real event text, and menus no longer produce OCR events. The OCR
-  layer (JSON presets) drops the events of menu and scoreboard frames, by the test discovery uses
-  on the text boxes it detects in the preset's regions other than feeds (a full feed is no menu);
-  the first run re-reads the footage (new OCR cache). A multi-word phrase now matches only whole
-  words, at runtime and in mining: "Hullbreached" still matches "Hull breached", but a short
-  phrase is no longer found inside a longer word. A kill-feed kill word of fewer than 7 letters
-  matches only as a whole word ("assist" is not found in "assistance"); a longer one may be joined
-  to a name on one side ("Ashdestroyed Kip"). Mined `candidate_phrases` (profile version 4) need 2 occurrences in gameplay frames
-  at least 2 s apart instead of 2 bursts, also come from notice regions (so smaller centre text,
-  below the 36 px of the big-text check, is mined there), and include 2 to 5-word parts of longer
-  sentences. A discovered kill feed grows by the rows above or below it that show only when the
-  feed is full, up to twice its height. Built-in presets keep their OCR cache: run
-  `cutpoint events <project> --force ocr` for the new matching.
-- HUD discovery follow-ups. The `keyframes` step reports a percentage while discovery runs:
-  discovery takes the first half of the bar ("discovering HUD: n/N frames"), the per-source OCR
-  the rest ("reading HUD text: source i/N"), so the bar no longer sits still for minutes on a
-  first run. A discovered kill feed's top and bottom rows are now the outermost rows seen in
-  enough frames, not the outermost box: one stray box near the feed's edge (an icon read as
-  text) no longer stops the feed from growing. Mined `candidate_phrases` (profile version 5)
-  leave out static hint lines: a phrase in at least 25% of a recording's gameplay frames whose
-  sightings span at least half of it (recordings with 8 or more sampled bursts). With `-v`,
-  the OCR layer logs one line per menu frame and per frame with an OCR event (box count,
-  centre cover, median, thresholds and the rule: cover, jump, list or none), and discovery logs
-  why a feed stopped growing; neither line holds OCR text.
-- Menus with little text (hangar, crew and loadout screens: as few text boxes as a busy HUD)
-  no longer produce OCR events. The OCR layer (JSON presets) also counts a frame as a menu when
-  the screen holds still: a 32x18 grey thumbnail of the HUD area it already decodes (no extra
-  decode) stays within 3 grey levels of the stretch's first frame for at least 5 s. Feed
-  activity always wins: frames within 2 s of a feed sighting or a kill are never static, so
-  kills in still gameplay (scoped, spectating) stay. A missing stretch of frames (a skipped bad
-  range) ends a still run, and a static screen needs at least 3 frames. The test runs only when
-  the preset's regions cover at least a quarter of the frame (`stats.ocr.<source>.static_area`),
-  so a few small corner regions over still sky are no menu. Such frames count in
-  `stats.ocr.<source>.menu_frames` and, on their own, in `static_frames`; the `-v` menu line
-  shows the still time and the rule `static`. The first run re-reads the footage (new OCR
-  cache). The `keyframes` step's percentage now also rises while each source is read, instead of
-  once per source, and the menu line prints both the cover (0.5) and the list (0.25) thresholds.
-- Menu frames no longer drop kills, and still gameplay is no static screen (#312). The OCR layer
-  (JSON presets) keeps every kill and feed sighting in a frame the menu tests flag (a kill comes
-  from the feed region, which shows no menu), where the box tests (cover, jump, list) dropped
-  them. A still HUD area counts as a static screen after 5 s only when new menu text shows: text
-  that is no preset phrase, first read in the still stretch or up to 2 s before it; otherwise it
-  must hold still for 10 s. Still gameplay (scoped, about 6 s) keeps its banners, while menus
-  (hangar, crew and spawn screens hold still for 17 s or more) and result screens with words of
-  their own are still left out. The `-v` menu line shows both minimums and `menu text yes`, `no`
-  or `-`. The first run re-reads the footage (new OCR cache).
-- `events` with the crash layer logs each unreachable source once, not twice: the crash layer
-  logs it at debug level, since `events` already warned.
-- `events` with the VLM layer off (`--no-vlm`, or `vlm` not selected) logs the VLM window lines
-  at debug level instead of info.
-- `events` loads CLIP once per run: the crash dense check reuses the visual layer's model.
-- `crashes` and the `events` crash layer no longer miss a rider who fell from a high speed to a
-  stop. A candidate below the 0.2 prefilter still gets the dense check when the speed dropped
-  from at least 40 km/h to 4 km/h or less within 10 s, not on a lift, at most 5 such extra
-  checks per project. A 71 to 0.4 km/h stop scored below the prefilter and was dropped. For
-  these extra checks the dense score can only raise the confidence, never lower it. The log
-  line now says how many candidates were checked densely.
-- `analyze --style ski` without the `events` extra (no torch) can score a cached visual layer:
-  the aesthetic head is read with numpy. `cutpoint setup` checks the downloaded aesthetic head's
-  size and SHA-256, and an unreadable head points to `cutpoint setup --only visual`.
-- `analyze` (and `edit`) unloads the Ollama vision model right after the vision pass, also when
-  it fails or is interrupted, instead of leaving it in GPU memory (about 7 GB for qwen3-vl:8b)
-  for Ollama's default 5 minutes. Only the model the run used is unloaded; if unloading fails,
-  the run goes on (a DEBUG line).
-- The vision retry for the `ski` style now asks about skiing (jumps, crashes, chairlifts) like
-  the first attempt, not about menus and scoreboards.
-- In generic (verb-style) kill feeds the player's own deaths no longer count
-  as player kills in the highlight boost, so moments with deaths rank lower. The
-  teamkill check for "REVERSE FRIENDLY FIRE" now matches the start of a banner, like payoff
-  banners.
-- The player's own death in the built-in coloured-box kill feed no longer adds the kill boost:
-  a new default event type `player_deaths` is checked after `teamkills` and before `player_kills`.
-  The death is still a tail payoff and a VLM seed, so the reaction after it stays; a self-kill
-  counts as `self_kills` (see above). This needs the player's name in `player_tags` or `--player`. The VLM
-  hint now says "the PLAYER died" or "the PLAYER's kill" for built-in feed kills too.
-- `--style ski`: a stretch of footage at one score (a 15-30 s `cutpoint events` VLM window, a
-  long fast section) gives one clip instead of several back-to-back clips that filled the top
-  10. Each pick takes the run around its peak that stays above 70% of it, centred on a flat top,
-  and a lower peak with no dip between it and an earlier pick counts as part of that moment;
-  peaks separated by a dip, such as two jumps on one run, are still picked. On the Day-1 test
-  footage without events the top 10 went from 6 to 10 distinct moments. `cutpoint mix` picks
-  its ski candidates the same way, so a long stretch now gives it fewer candidates (#282).
-- `--style ski`: friends in view no longer lift the lift/stop mask, and the VLM `friends_faces`
-  tag counts less as action: scaled by 1 - idle/10, so not at all in a window the VLM tags as
-  fully `chairlift`, `standing_talking` or `lodge`, nor on a lift or while stopped. Standing and
-  chatting at the top or unloading from a chairlift no longer gets the top VLM score; friends
-  while riding still raise a moment. A learned preset's `mask_friends` above 0 now means a hard
-  mask (0 is still the soft mask), and `cutpoint fit` and `cutpoint refmatch` fit the soft and
-  the hard mask once each instead of six thresholds that now give the same result. Saved
-  features still count friends in `vlm` until `analyze --style ski` is re-run; refit learned
-  presets after that (#283).
-- `cutpoint ui` no longer logs a `ConnectionResetError` (`[WinError 10054]`) ERROR traceback each
-  time the browser cancels a video request, such as on a seek or when switching sources.
+- HDR footage (HLG or PQ) and BT.2020 footage came out washed out, because it was cut down to 8
+  bits with its HDR tags kept. `clips`, `extend` and `360` renders now convert it to SDR Rec.709
+  with `zscale` and `tonemap` (hable) and tag it bt709, and UI thumbnails are converted the same
+  way. This costs CPU time (about 30 fps at 1080p on 8 threads). Without `zscale` in the ffmpeg
+  build a WARNING says so and the clip is exported as before; SDR sources get the same ffmpeg
+  command as before. 10-bit footage that looks log or flat gets a WARNING suggesting the camera's
+  LUT. `probe` now reads the four color tags (#289, #412).
+- Clips of a recording with the same audio on several tracks (OBS writes its mix to every enabled
+  track) came out 20·log10(N) dB too loud and clipped, because every track was summed. `clips`,
+  `extend` and `edit` now leave out a track that copies an earlier one (checked once per source,
+  cached in `audio-tracks.json`, and again over each clip's span), with an INFO line naming the
+  tracks kept. Distinct tracks such as game and mic are still summed, and single-track sources are
+  unchanged (#365).
+- Audio and subtitle sync in `assemble`: with hard cuts, with `--transition fade` and in
+  `final.srt`, a clip whose audio ran past (or fell short of) its video no longer drifts later
+  audio; crossfades are rounded to whole frames; `--fade-dur` must be greater than 0 (a fade under
+  one frame used to cut the video short); and a clip whose source audio ends before the clip ends
+  its fade-out where the audio ends (#235, #238, #243, #250).
 - `assemble --loudnorm`, and every `edit` kind that normalises loudness, no longer fails with
   "Requested resampling engine is unavailable" on ffmpeg builds without libsoxr (such as the
-  gyan.dev "essentials" build). The limiter uses soxr only when the build has it, else ffmpeg's
-  default resampler.
-- `cutpoint ui` shows one banner when the server restarted or the link's session token is stale
-  ("The Cutpoint server restarted or this link expired. Open the new link printed in the
-  terminal.") and stops polling, prepare retries and timers, instead of failing repeatedly.
-  Other 403 errors (host or origin guard) are unchanged.
-- `cutpoint ui` applies edits to `source_remap` and `source_remap_exclude` in `config.json` on
-  the next request; the cached source list used to keep the old mapping for up to 60 s.
-- `cutpoint ui` no longer probes every source with ffprobe when a project opens (200 sources took
-  about 12 s, now about 0.1 s). Each source is probed when the player first loads it.
-- `cutpoint ui` shows the real error for an unanalyzed project whose source folder is missing or
-  unreadable, with how to fix it (reconnect the drive or set a source remap), instead of "No
-  videos found".
-- `cutpoint ui` lists an unanalyzed project's sources from the `source_remap` target when the
-  source folder has moved.
-- `cutpoint ui` caches each project's source list, so preview and media requests no longer re-list
-  the source folder or re-read `highlights.json` on every request, which was slow on network
-  shares. Changes are picked up on the next request: the cache is checked against
-  `highlights.json`, `ui/meta.json` and the picked folder's modification time, with a 60 s
-  backstop (#129).
-- `highlights.json` errors now read "has no sources list" / "has no candidates list", and
-  `{"candidates": null}` gives this error instead of a crash.
-- `extend --force` (and in-place `extend`) also replaces leftover `.part` files from a hard-killed
-  run. Its "Kept" warning now matches `clips`, including the wording when there is no manifest.
-- Re-analyzing a project (`cutpoint events`) keeps `vision_top` and the Ollama URL and model; the `cutpoint ui` Analyze action keeps them too.
-  `analyze` now stores them in the `highlights.json` settings; an automatic `vision_top` stays
-  automatic.
-- `cutpoint ui`: a clip removed from the Sequence and added back returns to its previous position
-  (clamped to the current length) instead of going to the end. Removed clips that are not ranked
-  moments are listed under "Removed clips" with an "Add back" button until the page reloads (#128).
-- `cutpoint ui`: the outputs panel also offers each final's `.srt` subtitles (`final.srt`,
-  `final_ui_*.srt`, `<name>-final.srt`) for download, served as plain text.
-- A `highlights.json` without a `sources` list now gives an error naming the file and saying to
-  re-run `cutpoint analyze`, instead of a `KeyError` traceback, in `events`, `crashes`, `refmatch`
-  and `profile`/activity.
-- A corrupt, unreadable or non-object `highlights.json` now gives an error naming the file and
-  saying to re-run `cutpoint analyze`, in `clips`, `events`, the commands that read highlights
-  through them, and re-analysis. Before, it was reported as missing or crashed with a traceback;
-  a missing file still gives the old message (#228).
-- `cutpoint ui`: the assemble job also picks a fresh final name when that final's `.srt` (for
-  example `final_ui_1.srt`) already exists, so it no longer overwrites it (#224).
-- `cutpoint ui`: a cancelled job shows "stopping" (status `cancelling` in `/api/jobs`) until its
-  process exits, and Cancel is disabled meanwhile (#225).
-- `cutpoint ui`: Cancel gives the job about 12 s (2 x the 5 s soft stop plus a margin) to remove
-  its partial files before ending the process tree. Before, it was 5 s, which could end the job
-  while it was still stopping ffmpeg or MediaSDKTest and leave a large partial file. The Cancel
-  request returns at once and the job shows "stopping" until it exits. Preview proxies are still
-  stopped after 5 s (#257).
-- `cutpoint ui` has a favicon (#226).
-- `cutpoint ui`: the outputs panel lists every final video in the project folder (`final.mp4`,
-  `final_*.mp4`, `<name>-final.mp4`, ...), newest first with the export's own final first, each
-  with its `.fcpxml` and `.otio`. Until a new export is assembled, the preview of an earlier
-  final is titled "Earlier final" (#227).
-- `assemble` with hard cuts and added audio fades (clips without a baked fade) trims each
-  clip's audio to where the next clip starts (its container duration), as the video and
-  `final.srt` already do. Clips whose audio ran past their video drifted: 3 such clips gave
-  6.6 s of video and 6.0 s of audio, now both 6.6 s. Clips cutpoint exports change by under
-  half a frame (#235).
-- `assemble --fade-dur` must be greater than 0 (exit 2), and a crossfade lasts at least one
-  frame (shorter fades are raised to one frame, INFO). `0` or a fade under one frame used to
-  cut the video short: two 2 s clips at 25 fps gave 2.04 s of video. A clip too short for a
-  one-frame crossfade makes the join use cuts (WARNING) (#238).
-- `assemble --transition fade` pads or trims each clip's audio to its video before the
-  crossfade, as the video and `final.srt` already follow the video. A clip whose audio ran past
-  its video pushed the later audio late: a 2 s clip with 2.3 s of audio crossfaded with a 2 s
-  clip gave 3.76 s of video and 4.06 s of audio, now both 3.76 s.
-  The fix also covers clips whose audio is shorter than the clip or missing: such audio no longer
-  pulls the later clips' audio early or leaves extra audio.
-- `extend` into a folder with a manifest (in place, or `--out` with `--force`) removes the `.srt`
-  the old manifest lists for a clip deleted during review, as `clips --force` does. Before, the
-  new manifest dropped the clip's entry and kept its `.srt`, which was then unlisted and never
-  replaced or removed by a later run. An `.srt` the old manifest does not list stays (#239).
-- `extend --out DIR --force` removes a clip that `DIR`'s manifest lists but this run does not
-  re-export (deleted from the input folder during review), with its `.srt`, as `clips --force`
-  does. Before, both stayed in `DIR` but not in the new manifest, so the clip was reported as
-  added by hand, `assemble` included it, and no later run replaced or removed the `.srt`.
-  Clips and `.srt` files the old manifest does not list still stay.
-- `clips --force` replaces only the clips and `.srt` files whose name is spelled on disk as
-  the old `manifest.json` lists it, as `extend` does. On a case-insensitive file system a clip
-  renamed in case only during review (listed `001_joke.mp4`, renamed `001_Joke.mp4`) and its
-  `.srt` were removed without a warning when the new run did not write that name; they now
-  stay, and the WARNING about kept clips names the clip. A listed `.srt` renamed in case only
-  still goes, under its new spelling, when `clips --force` or `extend` writes or replaces its
-  clip, so no `.srt` with the old cues stays unlisted when the new run has no transcript.
-- `assemble --transition fade` rounds the crossfade to whole frames (of the first clip's
-  rate) and uses that length for the video, the audio and the cut offsets in `final.srt`.
-  xfade used whole frames while the audio and subtitles used the exact fade: 0.25 s at
-  29.97 fps over 2 joins gave 6.039 s of video and 6.000 s of audio. Crossfade times are also
-  passed to ffmpeg to the microsecond instead of the millisecond, and each xfade offset half a
-  frame early (the fade starts on the same frame), so rounded timestamps of earlier joins no
-  longer add a frame from the third clip on (#243).
-- `extend` writes each re-exported clip's `.srt` for its new range and records it in the
-  manifest (`srt`), in place and with `--out`. In place, the `.srt` the old manifest lists is
-  replaced (removed when the source has no cached transcript), so no subtitles with the old
-  timing stay beside the clip; an `.srt` the manifest does not list is never overwritten, as
-  with `clips --force` (follow-up to #213).
-- `clips --force` and `extend --out DIR --force` no longer replace a hand-added or renamed
-  `.mp4` that has the name of a new clip but is not in the old `manifest.json` (without a
-  readable manifest, any existing `.mp4` with a new clip's name). The run stops with exit 1
-  before exporting anything, and an ERROR names the files and says to move or rename them
-  (follow-up to #213).
-- `final.srt` with cut transitions no longer drifts when a clip's audio runs past its video.
-  Each clip is placed where the cut join really starts it: at the end of the previous file (its
-  container duration), not of its video. Crossfades are unchanged (follow-up to #213).
-- `cutpoint analyze .` or a drive root (`analyze D:\`) without `--out` no longer gets a
-  project with an empty name, and a folder named with dots (`trip.2024`) is no longer cut at the
-  last dot: the default project is named as for `edit` (a file's name without extension, the
-  folder's full name, `project` for a drive root). A project made from such a folder by an
-  earlier version keeps its old name (`trip`); pass `--out trip` to keep using it.
-- `clips --top` and `--max-total`, and `360 director --top` and `360 stitch --top` /
-  `--max-total`, reject 0 and negative values as usage errors (exit 2); `clips --top -1` used to
-  select all but one moment.
-- `analyze --vision-top` and `--max-candidates` reject 0 and negative values, and
-  `--must-include-crash` values outside 0 to 1 (0 still turns it off), as usage errors (exit 2);
-  `--vision-top -3` used to send all but the last 3 candidates to the vision model.
-- Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check (for
-  example `360 analyze` with cached views but no cached event layers) no longer fails with
-  `WinError 127` on `cudnn_cnn64_9.dll`. On Windows the GPU check imports torch first when it is
-  installed, so torch loads its own cuDNN before the `gpu` extra's newer one (#215).
-- `cutpoint ui`: when `<project>/ui/proxy` or `<project>/ui/frames` is a file instead of a folder,
-  preparing a preview fails with a WARNING "<project>/ui/proxy is not a folder; remove or rename
-  it" and a thumbnail request gives a 409 error with the same message for `ui/frames`, like
-  `<project>/ui` itself (#184), instead of a logged traceback or a 500 error; nothing is left
-  behind (#198).
-- Re-running the analysis recorded in `highlights.json` (as `crashes --reanalyze` and `events` on
-  a ski project do) reports an existing but empty `highlights.json` (`{}`), one without its style
-  and sources, or one that holds a list, text or a number instead of an object, as "records no
-  analysis; run 'cutpoint analyze' again" instead of "not found" or a `KeyError` or
-  `AttributeError` traceback (#200).
-- A failed or interrupted audio extraction (`analyze`, `assemble --captions`) now removes its
-  temporary `.tmp.wav` file in the cache folder or next to the final video.
-- On Ctrl+C or Ctrl+Break, Cutpoint now waits for ffmpeg to exit (at most 5 s, then stops it and
-  waits again) before removing a partial `.part` export or `.tmp.wav` file, so on Windows the file
-  is no longer left behind while ffmpeg still holds it open (#199). The exit code stays 130.
-- `cutpoint 360 stitch` now stops MediaSDKTest like ffmpeg: on Ctrl+C or Ctrl+Break (or the UI's
-  cancel) it gets at most 5 s to exit before it is killed; on `pano.stitch_timeout_s` it is killed
-  at once. Either way Cutpoint then waits at most 5 s for it, instead of up to 30 s after the kill (#229).
-- On Windows, `cutpoint 360 repair` retries writing its segments backup (`<name>.bak.json`) for a
-  moment while another program (a virus scanner) briefly holds the file, like its other writes.
-- `cutpoint ui` project metadata edge cases (#184): a preview proxy is not built or moved into
-  place when `ui/proxy` became a link outside the project while queued or encoding (its temporary
-  file is removed); one unreadable entry in the projects folder is skipped instead of failing the
-  project list with a 500 error; saving the review when `<project>/ui` is a file or a broken link
-  inside the project gives a 409 error "<project>/ui is not a folder; remove or rename it" instead
-  of a 500 error (a clips export gives it if `ui` changes during the request), and nothing is
-  created through the link (preparing a preview then fails with a WARNING naming it, without a
-  traceback); a clips export refused because another job is running or the
-  projects folder changed, or whose command could not be started, no longer leaves a
-  `segments-*.json` file behind.
-- On Windows, `clips --force`, `extend` in place and `extend --out ... --force` refuse a volume
-  mounted into an NTFS folder (for example `C:\mnt\vol`) with the mount-point message instead of
-  calling it a drive root. A real drive root (`C:\`, a UNC share root) keeps the drive-root
-  message (#185).
-- On Windows, a source read through `source_remap` from a disconnected mapped drive is now
-  recorded in its network form (`\\server\share\...`), the same as `analyze` records it, so
-  exclusions and carried segments match it (#181); older `Z:\...` entries still match. Clip
-  manifests (`clips/manifest.json` `source`) now record `\\server\share\...` instead of
-  `Z:\...` for a remapped mapped drive.
-- On Windows, a `source_remap_exclude` glob written for a mapped drive (`Z:\...`) now also
-  excludes the same file recorded in its network form (`\\server\share\...`), and the reverse, so
-  an excluded source is no longer read from its remap copy (#193). Everything excluded before
-  stays excluded; a drive whose mapping cannot be read is compared as before.
-- A failed or interrupted `cutpoint 360 repair --out <new folder>` removes the folders it created
-  for `--out`, only while they are empty; existing folders and files are kept (#189).
-- A failed or interrupted (Ctrl+C) `analyze`, `stage`, refmatch check-frames run, `cutpoint ui`
-  proxy build or `cutpoint ui` new-project request now removes the output folders that run
-  created, only while they are empty; pre-existing folders are never removed. The same holds for
-  `cutpoint 360 qa`, the 360 paths QA, `cutpoint 360 stitch` (before the first SDK run; a Ctrl+C
-  during the SDK keeps the stitched folder because it holds the clip's log) and `events` region
-  discovery (on a first run no `discovery/<game>/` folder or empty `ocr.jsonl` is left)
-  (#194).
-- A failed `--out` such as `a/new/../x` left the new empty folder `a/new` behind (`assemble`,
-  `clips`, `extend` and the pano commands, through `output_dir`); it is now removed, and the
-  existing `a` is kept (#194, #189).
-- On Windows, a staged copy is now used when its source is read through a `subst` drive letter
-  and was staged under the folder that drive maps to, or the reverse (for example a
-  `source_remap` prefix spelled `Q:\Footage` with `Q:` a `subst` of `D:\Footage`). Before, the
-  run read the slow source again. Index keys and copy names are unchanged, so nothing has to be
-  staged again (#186).
-- `cutpoint mix` and `cutpoint 360 repair` match carried segments, `telemetry.json` start times
-  and ordering to candidates, and `360 repair` matches crash impacts to segments, by the resolved,
-  normalised source path (symlinks, `a/../b` spellings); `360 repair` reads a relative source in
-  the segments file against that file's folder, so a re-mix keeps carried clips and their ids. On
-  Windows a drive-relative source such as `D:a.insv` in `mix_exclude.json` is ignored with a
-  WARNING instead of silently never matching, and the rest of the file loads (`360 repair` keeps
-  the entry in the file when it rewrites it). `360 repair` stores one exclusion for a span already
-  stored under another spelling of its source (#181).
-- `cutpoint ui`: saving the review or exporting clips in a project made on the command line (no
-  `ui` folder yet) no longer fails with a 500 error; the `ui` folder is created first. The project
-  list no longer shows a folder that cannot be opened (for example one that is a symlink or
-  junction to outside the projects folder). A job whose result could not be recorded (see #168)
-  shows the reason as its error, without a `409:` prefix or a traceback in the server log.
-- `cutpoint mix` and `cutpoint 360 repair` match an exclusion in `mix_exclude.json` to a segment
-  by the resolved, normalised path of its source, so symlinks and spellings such as `a/../b`
-  match in both commands and in every repair step. On Windows, `clips --segments` rejects a
-  drive-relative source such as `D:foo.mp4` with the same message as `360 repair`.
-  A relative `source` in `mix_exclude.json` (or the file given to `mix --exclude-file`) is now read
-  against that file's folder instead of never matching, so `mix` honours exclusions written by older
-  `360 repair` versions (#175).
-- `cutpoint ui` on Windows: cancelling a job now sends `CTRL_BREAK_EVENT` to its process group
-  first and waits up to 5 seconds, so the command removes its partial files and exits 130; only
-  then does `taskkill /T /F` run (also the fallback when the UI has no console, for example under
-  pythonw). The UI no longer treats a hidden leftover `.<name>.part.mp4` as an exported clip when
-  deciding whether there is something to assemble (#125).
-- Windows: a JSON result file (`highlights.json`, `manifest.json`, cache files, ...) that stays
-  locked now gives the same "open in another program" error naming the file as a locked clip,
-  instead of a bare `PermissionError`. For "Access is denied" (error 5) the hint also says the
-  file or its folder may be read-only. llama-server and `360 stitch` exit codes are shown signed
-  with their hex form, e.g. `-1073741819 (0xC0000005)`, like ffmpeg's. A failed `360 director`
-  run, or a failed 360 `clips`/`extend` run, no longer leaves an empty `pano_paths/<name>` folder
-  it created (#146).
-- `360 repair --out` into a folder that does not exist creates it instead of failing with
-  FileNotFoundError; a file in the way is an error naming it, and `--out` pointing at an existing
-  folder says `<path> is a folder, not a segments file` before any work. Exclusions written by
-  earlier versions with a relative source (as spelt in a hand-written segments file) are taken
-  against the folder of the `mix_exclude.json` holding them, and written back absolute with new
-  ones. A `cutpoint mix` segment whose source goes through a symlink now matches its rendered clip
-  instead of being skipped as stale. On Windows, a drive-relative source (`D:clip.insv`) is an
-  error asking for the full path (#151).
-- Windows: Ctrl+Break (or `CTRL_BREAK_EVENT` sent to the process group) now stops a command
-  like Ctrl+C: partial files are removed and the exit code is 130 instead of `0xC000013A`.
-  AGENTS.md notes which ways of stopping Cutpoint on Windows give 130 and which end it without
-  cleanup (exit 1, or -1 from Stop-Process) (#148).
-- A running `cutpoint ui` (or any long-running process) now picks up edits to `config.json`
-  without a restart. Valid edits apply; a config broken after startup is reported (HTTP 409 in the
-  UI) until it is fixed. A changed `video_encoder` applies to the next encode (#137).
-- `cutpoint ui` changing the projects folder (`PUT /api/settings`) and starting a job are now
-  mutually exclusive: a job started from a second tab while the folder changes can no longer run
-  against the old folder; the settings change is refused with 409 instead, and starting a job
-  is refused with 409 if the folder changed after the project was opened (#143).
-- `clips --segments`, `360 director --segments`, `360 stitch --segments` and
-  `360 repair --segments` pointing at an existing folder now say `<path> is a folder, not a
-  segments file`. `360 repair --segments` also says "Segments file not found" for a missing path
-  instead of "not a segments list" (#150).
-- `360 repair` now says `<path> is not valid JSON: not UTF-8 text (save it as UTF-8)` for a
-  UTF-16 `--segments` or `--qa` file (and `<path> is not valid JSON: ...` for broken JSON)
-  instead of "not a segments list" or "QA report not found". `--qa <folder>` says `<path> is a
-  folder, not a QA report`, and a `--qa` file that is not a JSON object says `<path>: not a QA
-  report` instead of crashing (follow-up to #150).
-- A `--segments` file saved with a UTF-8 BOM (Windows PowerShell 5.1) now loads for `clips`,
-  `360 director` and `360 stitch`; a UTF-16 file gives `<path> is not valid JSON` naming the file
-  (#150).
-- A wrongly typed `config.json` value (for example `"projects_dir": 5`) now gives one
-  `ERROR` line, `<config path>: <key> must be <type>, not <found>`, and exit code 1 instead of a
-  traceback, in the CLI and in `cutpoint ui` jobs; the UI's 409 response shows the same message
-  (#138, #140). `source_remap_exclude` given as a single string is now rejected instead of being
-  split per character.
-- `config.json` saved with a UTF-8 byte order mark (Windows PowerShell 5.1
-  `Set-Content -Encoding UTF8`) is now accepted; a UTF-16 file gives the
-  "Invalid config file <path>" error.
-- In a segments file, `null` for `tail`, `extend`, `extend_start` or `extend_end` now means
-  unset instead of an error, and NaN is rejected for every seconds key (including `min_start` and
-  `max_end`) with "must be a number of seconds". An unreadable segments or QA JSON file now says
-  `<path> cannot be read: <reason>` instead of a raw `PermissionError`, and a JSON file that is
-  not UTF-8 gives "not UTF-8 text (save it as UTF-8)" in every reader.
-- Config file errors now read `Invalid config file <path> is not valid JSON: ...` or
-  `Invalid config file <path> cannot be read: ...`.
-- JSON files saved with a UTF-8 BOM (Windows Notepad, PowerShell) are read correctly, one in
-  another encoding (UTF-16, ANSI) counts as unreadable instead of failing with a traceback, and
-  `cutpoint ui` leaves out a learned style that fails to load, with a WARNING naming its file,
-  instead of failing the request (#126).
-- `extend <clips_dir> --out DIR --force` into a non-empty `DIR` now exports into a hidden staging
-  folder and swaps the result in only when every clip succeeded (#147), like in-place `extend` and
-  `clips --force`: a failure or Ctrl+C leaves `DIR` unchanged. Files in `DIR` that the run does not
-  write stay, and a WARNING names the `.mp4` clips left there that were not re-exported (`assemble`
-  includes them). Same-named files are overwritten as before. `--out` pointing at a non-empty drive root or mount point with `--force` is refused before any export.
-- `clips --force` into a non-empty folder and in-place `extend`, where the clips folder is a
-  drive root, a mount point or a Linux bind mount, are now refused before any export with one
-  ERROR line naming the folder and saying to use `--out` with a folder on that drive. A drive
-  root crashed with an "empty name" error, and a mount point or bind mount failed with a
-  permission error or a cross-device rollback only after every clip was exported.
-  `extend --out DIR --force` into such a non-empty `DIR` gives the same message, and a
-  bind-mounted `DIR` is caught too. `clips` into an empty drive root or mount point exports
-  straight into it, as `extend --out` does (a failed run there may keep the finished clips);
-  every other folder is still staged (#160).
-- A `source_remap` key spelled the Windows way (for example `D:\Videos` -> `/mnt/d/Videos`) now
-  applies on Linux and macOS (#149). It matches Windows-style sources case-insensitively with
-  either slash, so a Windows project (or `clips --segments` with `D:\` sources) opened on Linux
-  finds its footage. Stage keys for Windows-form sources are built as on Windows (no
-  current-folder prefix, case-insensitive: `d:\videos\t\x.mp4`), so `stage` and `stage --clear`
-  accept any spelling of such a path. Reading a staged copy accepts either slash and any case of
-  the `source_remap` prefix; below the prefix the case must match the staged file. The analysis cache key becomes
-  `D:\Videos\T\x.mp4` (was `D:\Videos/T/x.mp4`), so those files are analyzed once more and
-  staged copies under such a key must be staged once more. Old copies stay until
-  `cutpoint stage --clear` with no targets; `--clear <target>` does not match old keys.
-- `cutpoint stage` on Linux and macOS keeps files that differ only in case below a Windows-form
-  `source_remap` prefix (`T/x.mp4` and `T/X.MP4`) apart: each gets its own copy and index entry,
-  the second is no longer reported as "Already staged" or replaces the first's entry, and reading
-  one never returns the other's copy. Index entries now record the exact path below the prefix
-  (`"rel"`); existing entries keep working without a new copy and get it the next time `stage`
-  sees them. A running process (`cutpoint ui`) now picks up copies staged by another process and
-  an edited `stage_dir` or `source_remap` without a restart, and stops using a copy that was
-  deleted or truncated by hand (#163).
-- `cutpoint ui` with an invalid `config.json` (not JSON, a rejected value or a wrongly typed one)
-  no longer fails with a 500 and an empty project list (#133). Project routes answer 409 with the
-  config file and the error, the banner shows it, and Settings stays usable to fix the projects
-  folder. A rejected `video_encoder` now names where it came from: `config.json` or
-  `CUTPOINT_VIDEO_ENCODER`.
-- `cutpoint ui` project picker shows "Projects unavailable" instead of staying empty when the
-  project list cannot be loaded (for example an invalid `config.json`), and "New project" is
-  disabled until a later load succeeds. A new project that cannot be opened after creation shows
-  the error on the banner (#152).
-- `clips --segments` with a missing file now says what a relative path was resolved against (#127);
-  a Windows path starting with `\` or `/` is shown as typed, without that note.
-- Segment ids: a generated `sNNN` id that a user id already uses gets a letter suffix (`s002b`),
-  and duplicate user ids are an error naming both segments, in `clips` and `360 repair` (#120).
-- `360 repair` resolves relative `source` paths in a hand-written segments file against the
-  file's folder, as `clips` does, and writes exclusions with the absolute path. A written-back
-  segments file in the same folder keeps the spelling you used; with `--out` in another folder
-  the path is absolute (#119).
-- Exports no longer leave a broken file under the real name (#109). Clips, `extend`, 360 renders
-  and `final.mp4` are written to a hidden `.<name>.part.mp4` and renamed when complete. A failed
-  or cancelled export (Ctrl+C, or the UI cancel on Linux and macOS) leaves no partial file and
-  removes the temp file. A hard kill (SIGKILL, or the UI cancel on Windows, which uses
-  `taskkill /F`) can leave a hidden `.part.mp4`; every command ignores it and `clips --force`
-  removes it.
-- `clips --force` and `extend --out <clips_dir> --force` replace the folder all or nothing
-  (#109). The new clips are exported into a hidden `.<folder>.cutpoint-tmp` next to the folder
-  and swapped in only when every clip succeeded. Before, `clips --force` deleted the old clips
-  and `manifest.json` first, so a failed or cancelled run left an empty folder, and an in-place
-  `extend` stopped by a locked clip left a mix of new and old clips and a `clips.tmp` folder.
-  Now a failure (a GPU encode error, Ctrl+C, a clip locked by another program) leaves the old
-  clips and manifest untouched and no temp folder. `clips --force` replaces only what an earlier
-  cutpoint run made: the clips listed in the old `manifest.json`, leftover `.part.mp4` files and
-  the names it writes, plus `manifest.json`. Before, it deleted every `.mp4` in the folder, so
-  with `--out` pointing at the folder of the footage it deleted the source video it had just
-  read. Now a file the run reads is never replaced (a new clip name that is a source stops the
-  run with an error before any export); any other `.mp4` (a clip renamed during review or added
-  by hand) stays and is assembled, with a WARNING naming it; with
-  no readable old manifest only the new names are replaced. After a hard kill mid-swap, the
-  next `clips` or `extend` on that folder puts the old clips back from `.<folder>.cutpoint-bak` (if its record is unreadable, it stops with an error and leaves the backup for you to restore by hand).
-  A failed fresh `clips` run now leaves no partial clips, so it can be re-run without `--force`.
-  A leftover `.<folder>.cutpoint-bak` or `.cutpoint-tmp` that cannot be removed (a file in it
-  still open, on Windows) now stops the next run with an error that names the folder and says
-  to close the program or delete the folder, instead of a raw `[WinError 32]`.
-- A failed run of `clips`, `extend` or `assemble` no longer leaves behind an empty output folder
-  that it created. When a file stays locked on Windows (open in a player, an editor or a virus
-  scanner), the error now names the file and says to close it and re-run. ffmpeg crash codes
-  show signed with their hex value, for example `exit -1073741819 (0xC0000005)` (#109).
+  gyan.dev "essentials" build).
+- Exports are all or nothing. Clips, `extend`, 360 renders and `final.mp4` are written to a hidden
+  `.<name>.part.mp4` and renamed when complete, and `clips --force` and `extend --out <clips_dir>
+  --force` export into a hidden `.<folder>.cutpoint-tmp` and swap it in only when every clip
+  succeeded. A failure, GPU encode error or Ctrl+C leaves the old clips and manifest untouched, and
+  a failed fresh `clips` run leaves no partial clips or empty output folder. After a hard kill the
+  next run puts the old clips back from `.<folder>.cutpoint-bak`. A drive root, mount point or
+  bind mount is refused before any export with a message to use `--out` (#109, #147, #160, #185).
+- `clips --force` and `extend` replace only what Cutpoint made: the clips and `.srt` files listed in
+  the old `manifest.json`, spelled as on disk. Before, `clips --force` deleted every `.mp4` in the
+  folder, which with `--out` pointing at the footage's folder deleted the source video. A file the
+  run reads is never replaced, hand-added or renamed clips stay (with a WARNING) and are assembled,
+  a hand-added `.mp4` with a new clip's name stops the run before exporting, and `extend` writes the
+  `.srt` of each re-exported clip and removes those of deleted clips (#145, #213, #239).
+- `clips`, `extend` and `assemble` hold a lock file `.<folder>.cutpoint-lock`; a second run on the
+  folder stops with an `ERROR` naming the process that holds it, and a lock left by a killed run
+  is taken over. `manifest.json` records each clip's size and `"generator": "cutpoint"`; older
+  manifests still work, matched by name. `assemble` restores or removes the staging and backup
+  folders an interrupted run left, and `kept_sources` now comes from `clips` and `extend` (#145).
 - With `video_encoder` `auto`, if a GPU encode (NVENC, AMF or VAAPI) fails on real footage, that
-  clip, 360 render or final video is redone once on the CPU (libx264) with one WARNING, and the
-  rest of the run uses the CPU. A forced GPU encoder is not retried; its error now says to set
-  `CUTPOINT_VIDEO_ENCODER=cpu` or `"video_encoder": "cpu"` in `config.json` (#109).
-- A failed GPU encoder probe (`cutpoint capabilities`, or a video encoder forced with
-  `CUTPOINT_VIDEO_ENCODER`) now reports ffmpeg's first real error, for example "Cannot load
-  libcuda.so.1", instead of the trailing "Nothing was written into output file" or "Conversion
-  failed!" lines. Forcing `vaapi` on Windows or macOS now says "VAAPI is Linux-only" (#113).
-- `cutpoint 360 repair --segments` works on a hand-written segments file (the
-  `[{source, start, end, label}]` format of `clips --segments`) instead of crashing with
-  `KeyError: 'id'`. For a file not written by `cutpoint mix`, affected segments are trimmed to
-  their longest clean part or dropped; nothing is refilled, your segments (and ids, if any) are
-  kept, and only `mix_exclude.json` is updated. A segment missing `source`, `start` or `end`
-  (or with non-numeric times) gives an `ERROR` line instead of a traceback (#110).
-- UI: removing the staged clip with the stage button and clicking again no longer removes a
-  different clip; it re-adds the same one, keeping its name.
-- `cutpoint ui` binds the port before printing the URL; on a busy port it exits 1 with an error
-  naming the port and suggesting `--port`.
+  clip, 360 render or final video is redone once on the CPU with one WARNING and the rest of the run
+  uses the CPU. A forced GPU encoder is not retried, and a failed encoder probe reports ffmpeg's
+  first real error (#109, #113).
+- Cancelling and Ctrl+C: Cutpoint waits for ffmpeg to exit (at most 5 s) before removing a partial
+  `.part` export or `.tmp.wav` file, `360 stitch` stops MediaSDKTest the same way, and failed or
+  interrupted runs of `analyze`, `stage`, `360 qa`, `360 stitch`, `360 repair`, the UI and `events`
+  discovery remove the output folders they created while empty. On Windows, Ctrl+Break stops a
+  command like Ctrl+C (partial files removed, exit 130). In `cutpoint ui`, Cancel sends
+  `CTRL_BREAK_EVENT` first and gives the job about 12 s to clean up, and the job shows "stopping"
+  until it exits (#125, #148, #189, #194, #199, #225, #229, #257).
+- HUD OCR menu detection: lobbies, operator and map select, result screens and other menus (also
+  ones with little text, which hold still) no longer produce OCR events, while kills and banners in
+  still gameplay (a scoped view) are kept. A frame counts as a menu from several lines of new text
+  that stay on screen, or from a screen that holds still; the first run with a JSON preset
+  re-reads the footage (replayed from the raw OCR cache when it has one). New stats:
+  `stats.ocr.<source>.menu_frames`, `static_frames`, `text_frames`, `static_area` (#312, #319, #409).
+- HUD region discovery: a busy HUD is no longer dropped as a menu, a column of score popups is no
+  longer taken for the kill feed (it becomes a `popup` proposal with no region), a discovered kill
+  feed grows by rows seen in fewer frames and ignores one stray box at its edge, and the
+  `keyframes` step shows a percentage during discovery. Existing presets are not changed: run
+  `cutpoint events <project> --discover-regions` and copy the new `proposal.json`, or delete a
+  discovered preset to discover it again (#410).
+- HUD phrase matching and mined `candidate_phrases` (profile versions 3 to 7): a multi-word phrase
+  matches only whole words, mining finds mixed-case texts and phrases inside longer lines, and it
+  leaves out gamertag slots, hint and tutorial sentences and control prompts. No command writes
+  candidate phrases yet, so analysis results do not change. Built-in presets keep their OCR cache:
+  run `cutpoint events <project> --force ocr` for the new matching (#313).
+- `--vision`: the Ollama rating no longer outranks the analysis. It now scales the candidate's score
+  (5/10 leaves it as is, 10/10 lifts it and 0/10 lowers it by the style's `vision_weight`, capped
+  at 100), and the model's label replaces the clip's only from a rating of 7; every rated candidate
+  keeps it in `vision_label` (#284).
+- `analyze --language` no longer reuses a transcript cached for another language: a forced
+  language has its own cache file `transcript-<model>-<language>.json`. A transcript made with
+  `--language` before this fix is cached under the plain name; delete
+  `cache/<source>/transcript-*.json` to transcribe again (#371).
+- `crashes` and the `events` crash layer no longer miss a rider who fell from a high speed to a
+  stop (a drop from at least 40 km/h to 4 km/h or less within 10 s, off a lift, now gets the dense
+  check).
+- `--style ski`: a stretch of footage at one score gives one clip instead of several back-to-back
+  clips (the top 10 went from 6 to 10 distinct moments on the test footage; `cutpoint mix` picks the
+  same way), and friends in view no longer lift the lift/stop mask or give the top VLM score to
+  standing and chatting at a chairlift. Saved features count friends in `vlm` until `analyze
+  --style ski` is re-run; refit learned presets after that. `analyze --style ski` also scores a
+  cached visual layer without the `events` extra (#282, #283).
+- An ffmpeg step that reports progress (audio extract, scene proxy) could wait forever after ffmpeg
+  had exited, so an analysis never finished; it now ends when ffmpeg exits (#338).
+- `cutpoint ui` previews and projects: stale preview proxies are deleted (also when a source drive
+  stays offline, after 30 days), a project's source list is cached and sources are probed only when
+  the player loads them (200 sources took about 12 s to open, now about 0.1 s), edits to
+  `source_remap` apply on the next request, and a clip removed from the Sequence and added back
+  returns to its position (#128, #129, #411).
+- `cutpoint ui` errors and banners: one banner when the server restarted or the link expired; the
+  real error for an unanalyzed project whose source folder is missing; "Projects unavailable" and
+  409 responses with the config file and error for an invalid `config.json`, while Settings stays
+  usable; a port in use exits 1 with a hint; and no `ConnectionResetError` traceback when the
+  browser cancels a video request (#133, #152).
+- `cutpoint ui` page and outputs: the page no longer scrolls past the Jobs bar on a wide window and
+  its files are revalidated on each load (#354, #415), a running analysis no longer looks frozen
+  with reduced motion on (#322), the outputs panel lists every final with its `.fcpxml`, `.otio`
+  and `.srt` (newest first), the assemble job no longer overwrites an existing final's `.srt`, and
+  the UI has a favicon (#224, #226, #227).
+- `cutpoint ui` project folder edge cases: when `ui`, `ui/proxy` or `ui/frames` is a file or a
+  broken link, the UI gives a 409 error naming it instead of a 500 or traceback; an unreadable
+  entry in the projects folder is skipped; saving the review in a command-line project creates the
+  `ui` folder; and a failed export leaves no `segments-*.json` behind (#184, #198).
+- New Project in the UI says which file types it found in a folder with no supported videos
+  (#321).
+- Windows paths and `source_remap`: a remapped mapped drive is recorded in its network form
+  (`\\server\share\...`) and `source_remap_exclude` matches both spellings (clip manifests now record
+  `\\server\share\...` instead of `Z:\...`); a staged copy is used when its source is read through
+  a `subst` drive letter; and `cutpoint mix` and `360 repair` match exclusions and carried segments
+  by the resolved path, read a relative `source` against its file's folder and reject a
+  drive-relative `D:a.insv` (#119, #175, #181, #186, #193).
+- A `source_remap` key spelled the Windows way (`D:\Videos` -> `/mnt/d/Videos`) now applies on Linux
+  and macOS, case-insensitively with either slash, and `stage` keeps files that differ only in case
+  apart. The analysis cache key becomes `D:\Videos\T\x.mp4`, so those files are analyzed and staged
+  once more; old staged copies stay until `cutpoint stage --clear` with no targets (#149, #163).
+- Config and JSON files: a wrongly typed `config.json` value gives one `ERROR` line and exit 1
+  instead of a traceback (`source_remap_exclude` given as a single string is rejected); a running
+  `cutpoint ui` picks up edits to `config.json` without a restart; JSON files saved with a UTF-8 BOM
+  are read and other encodings give a clear error; a corrupt or incomplete `highlights.json` says
+  to re-run `cutpoint analyze`; and `--segments` errors name the problem (a folder, a missing
+  file, invalid JSON), with `null` for `tail` and `extend` keys now meaning unset (#126, #137, #138,
+  #140, #150, #200, #228).
+- Argument validation: `clips --top` and `--max-total`, `360 director --top`, `360 stitch --top`
+  and `--max-total`, `analyze --vision-top` and `--max-candidates` reject 0 and negative values, and
+  `--must-include-crash` values outside 0 to 1, as usage errors (exit 2); `360 qa --size` is checked
+  when the command line is parsed. `clips --top -1` used to select all but one moment.
+- `cutpoint analyze .` or a drive root without `--out` no longer gets a project with an empty name,
+  and a folder named with dots (`trip.2024`) is no longer cut at the last dot. A project made from
+  such a folder by an earlier version keeps its old name; pass `--out trip` to keep using it.
+- `cutpoint 360 repair --segments` works on a hand-written segments file instead of crashing with
+  `KeyError: 'id'`, `360 repair --out` into a new folder creates it, duplicate segment ids are an
+  error, and `cutpoint mix` matches a segment whose source goes through a symlink (#110, #120, #151).
+- Windows with the `events` and `gpu` extras: importing torch after whisper's GPU check no longer
+  fails with `WinError 127` on `cudnn_cnn64_9.dll` (#215). A JSON result file that stays locked now
+  gives the same "open in another program" error as a locked clip, and ffmpeg, llama-server and
+  `360 stitch` crash codes show signed with their hex form (#146).
 
 ### Security
 
 - `cutpoint ui` ignores an `exports.json` entry whose export folder (`dir`) or final video
-  (`final`) is `.`, `..` or does not start with a letter, digit or `_`, so a hand-edited or corrupted file can no longer point
-  outside the project folder (#141).
-- `cutpoint ui` also ignores an `exports.json` export folder or final video (and its
-  `.fcpxml`/`.otio` timelines) that a symlink or Windows junction inside the project resolves
-  to outside the project folder, so neither is shown, served nor opened in the file manager
-  (an export whose `manifest.json` resolves outside is ignored too); a broken symlink named like the next
-  `final_*.mp4` or `clips_ui_*` output counts as taken, so no output is written through it
-  (#155).
-- `cutpoint ui` treats a project metadata file (`highlights.json`, and `meta.json`,
-  `review.json` and `exports.json` in the project's `ui` folder) that a symlink or Windows
-  junction inside the project resolves to outside the project folder as missing, so it is
-  neither read nor makes the folder a project; saving the review, exporting clips (its
-  `segments-*.json` file and `exports.json`), recording an assembled final and analyzing
-  (`highlights.json`) refuse with a 409 error naming the file instead of writing through the link.
-  The preview and thumbnail caches (`ui/proxy`, `ui/frames`) are not used either when they, or
-  the `ui` folder, resolve outside the project: no proxy or still is served, built or written
-  there (preparing a preview or loading a thumbnail gives a 409 error) and stale stills there are
-  never deleted (#168).
+  (`final`) is `.`, `..`, does not start with a letter, digit or `_`, or that a symlink or Windows
+  junction resolves to outside the project folder, so a hand-edited or corrupted file can no longer
+  point outside the project: such an export is neither shown, served nor opened in the file manager,
+  and no output is written through a link (#141, #155).
+- `cutpoint ui` treats a project metadata file (`highlights.json`, and `meta.json`, `review.json`
+  and `exports.json` in the project's `ui` folder) that a symlink or Windows junction resolves to
+  outside the project folder as missing, and refuses to save the review, export clips, record a final
+  or analyze through it (409 error naming the file). The preview and thumbnail caches (`ui/proxy`,
+  `ui/frames`) are not used either when they resolve outside the project (#168).
 - Docker image (#112): uv is pinned by version and digest instead of an unpinned `curl | sh`
   install; the container runs as the non-root user `cutpoint` (uid 1000, build arguments
   `CUTPOINT_UID` / `CUTPOINT_GID`) owning `/data`; `git` and `curl` are no longer installed; and
@@ -1142,6 +386,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-10-22
 
+### Highlights
+
+- Optional `ui` extra and `cutpoint ui`: a browser workspace for analysis, moment preview, trim and
+  reordering, clip export and final assembly.
+- AMD GPU video encoding (VAAPI/AMF) next to NVENC, probed at run time with software fallback, and
+  `cutpoint capabilities` to report what is usable.
+- Linux support: llama.cpp downloaded by `cutpoint setup`, a `./cutpoint` wrapper and a Docker
+  recipe for the browser workspace.
+- Upgrade notes: the CUDA libraries for GPU Whisper moved to the `gpu` extra, `video_encoder`
+  `auto` can now pick AMD encoders, and CLIP-derived caches must be rebuilt.
+- Footage on drives moved or remapped with `source_remap`, and offline footage, is handled across
+  `analyze`, `crashes`, `events`, `clips`, `extend` and the `360` commands.
+- `cutpoint setup` downloads faster and verifies what it downloads, and missing-extra messages give
+  the install command that matches the install type.
+
 ### Added
 
 - Optional `ui` extra and `cutpoint ui`: a loopback-only browser workspace for standard-video
@@ -1151,204 +410,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime-probed AMD video encoding (VAAPI/AMF) alongside NVENC, with software fallback,
   `video_encoder` / `CUTPOINT_VIDEO_ENCODER` overrides, and `cutpoint capabilities [--json]`
   reporting hardware presence separately from usable encoding and transcription support.
-- Windows llama.cpp Vulkan/CPU asset selection alongside CUDA, and `CUTPOINT_LLAMA_BACKEND`
-  overrides on Windows and Linux. AMD faster-whisper transcription remains CPU-only.
-- `cutpoint --version`.
-- Linux: `cutpoint setup` downloads the official llama.cpp Linux build (the oldest CUDA build
-  with cudart in the newest llama.cpp release, 12.8 today, when an NVIDIA driver is detected;
-  otherwise Vulkan, otherwise CPU). `llama-server`
-  is found via `CUTPOINT_LLAMA_SERVER`, the bundled build, then `PATH`.
-- `./cutpoint` POSIX shell wrapper that runs the repo `.venv`, like `cutpoint.cmd`.
-- Linux Docker recipe (`Dockerfile`, `.dockerignore` build-context exclusions) for the CPU browser
-  workspace, with an optional `INSTALL_EVENTS` build argument; see the getting-started guide.
+- llama.cpp backends: Windows Vulkan/CPU assets alongside CUDA, and on Linux `cutpoint setup`
+  downloads the official llama.cpp build (CUDA when an NVIDIA driver is detected, otherwise Vulkan,
+  otherwise CPU). `CUTPOINT_LLAMA_BACKEND` overrides the choice on both, and `llama-server` is
+  found via `CUTPOINT_LLAMA_SERVER`, the bundled build, then `PATH`. AMD faster-whisper
+  transcription remains CPU-only.
+- Linux Docker recipe (`Dockerfile`, `.dockerignore`) for the CPU browser workspace, with an
+  optional `INSTALL_EVENTS` build argument; see the getting-started guide.
+- `cutpoint --version`, and a `./cutpoint` POSIX shell wrapper that runs the repo `.venv`, like
+  `cutpoint.cmd`.
 
 ### Changed
 
-- `cutpoint setup` downloads the PANNs checkpoint from a Hugging Face mirror first (much faster than
-  Zenodo) and falls back to Zenodo. It verifies size and sha256, and moves to the next source when
-  one fails or starts too slowly. `CUTPOINT_PANNS_URL` is tried first when set (#30).
 - **Upgrade note:** the CUDA libraries for GPU Whisper moved to the `gpu` extra; the base install
   is CPU-only and about 3.6 GB smaller. NVIDIA users: add `gpu` (`uv sync --extra gpu ...`,
   `uv tool install "cutpoint[gpu]" --reinstall`); `all` includes it. Without it, Whisper uses the
   CPU and logs one INFO line with the install command (#27).
-- `cutpoint setup` logs which host each download comes from ("downloading <file> from <host>", or
-  "resuming ..."), so a fallback to a slower mirror is visible. Mirror warnings name only the host
-  (#52).
-- Project paths can be written `projects/<name>/...` on every OS; docs use forward slashes.
-- Path matching (`source_remap`, `stage` keys) is case-sensitive on Linux and stays
-  case-insensitive on Windows.
-- Linux: stage index keys changed; run `cutpoint stage --clear` (without inputs) and stage again.
-  Ski features are recomputed once.
-- **Upgrade note:** CLIP-derived caches change. On existing projects, run `cutpoint events` again
-  (and `cutpoint 360 analyze` for 360 footage) before `crashes`, `profile`, `mix` or
-  `refmatch --taste`; until then those commands find no visual data. `crashes` then recomputes its
-  dense scores, and text embeddings are recomputed on first use. Taste heads trained with
-  `refmatch --taste` before 0.2.0 were fit on the old (GELU) CLIP embeddings; re-train them.
+- **Upgrade note:** CLIP-derived caches change, because the CLIP model for `events` and `crashes`
+  now uses `ViT-L-14-quickgelu` to match the OpenAI weights (the checkpoint is unchanged). On
+  existing projects, run `cutpoint events` again (and `cutpoint 360 analyze` for 360 footage)
+  before `crashes`, `profile`, `mix` or `refmatch --taste`; until then those commands find no
+  visual data. Taste heads trained with `refmatch --taste` before 0.2.0 must be re-trained.
 - **Upgrade note:** `video_encoder` `auto` now selects AMF (Windows, AMD GPUs) or VAAPI (Linux,
   AMD and Intel GPUs) when it probes as usable, where 0.1.0 used libx264; set
   `"video_encoder": "cpu"` in `config.json` or `CUTPOINT_VIDEO_ENCODER=cpu` to keep software
   encoding.
+- Project paths can be written `projects/<name>/...` on every OS. Path matching (`source_remap`,
+  `stage` keys) is case-sensitive on Linux and stays case-insensitive on Windows; on Linux the stage
+  index keys changed, so run `cutpoint stage --clear` (without inputs) and stage again. Ski features
+  are recomputed once.
+- `cutpoint setup` downloads the PANNs checkpoint from a Hugging Face mirror first (much faster than
+  Zenodo) and falls back to Zenodo, verifies size and sha256, and logs which host each download
+  comes from. `CUTPOINT_PANNS_URL` is tried first when set (#30, #52).
 
 ### Fixed
 
-- `crashes`: camera knocks while boarding a lift no longer count as a crash. On-lift damping now
-  also uses the CLIP lift rides that `mix` uses for 360 footage without GPS (Insta360 X3), and it
-  reaches 5 s past the event, so contact in the lift line just before the ride is damped too (#15).
-- `stage --clear <inputs>` selects exactly the files `stage <inputs>` would copy: it lists the
-  original folder as `stage` does (read through `source_remap`) and honours `--recursive` and
-  `--exclude`. Previously it listed only the remapped folder and ignored sub-folders, so some
-  staged copies were not removed (#103).
-- `stage --clear <inputs>` clears each input on its own. An input that no longer exists (nor its
-  `source_remap` target) clears the copies recorded under its path in the stage index, honouring
-  `--recursive` and `--exclude`; with none recorded it logs a warning. Previously such a copy could
-  only be removed by a bare `--clear`, and one missing input stopped the other inputs' copies from
-  being cleared. `stage --help` now describes `--exclude` and `--recursive`.
-- The CLIP model for `events` and `crashes` uses `ViT-L-14-quickgelu` to match the OpenAI
-  weights instead of building them with GELU. The checkpoint is unchanged; cached visual
-  features (including 360 views), text embeddings and dense crash scores are recomputed (see the
-  upgrade note under Changed).
-- Install instructions load `$HOME/.local/bin/env` after the uv installer so `uv` works in a fresh
-  shell.
-- `stage --exclude` matches the original path of footage read through `source_remap`, as
-  `analyze --exclude` does, instead of the remapped location. Files are still copied from where
-  `analyze` reads them (#93).
-- `clips`, `extend`, `360 analyze`, `360 director`, `360 stitch` and `360 status` now read footage
-  whose raw folder moved through `source_remap`. Previously ffmpeg failed with "No such file", and
-  `360 analyze` skipped every moved clip with "no _00_.insv for the IMU". `360 status` finds the
-  Studio export next to both the original and the moved camera folder. The project keeps recording
-  the original paths (#92).
-- From an editable clone install on Windows with a CPU-only torch, the install command for a
-  missing `events` or `all` extra now notes that the `uv pip install ... -e` form needs
-  `--reinstall-package torch --reinstall-package torchvision` with an NVIDIA GPU, as uv keeps the
-  installed CPU torch otherwise. `uv sync` already installs the locked CUDA build (#96).
-- From a clone installed with plain pip on Windows, the install command for a missing `events` or
-  `all` extra now notes `--extra-index-url https://download.pytorch.org/whl/cu126` for an NVIDIA
-  GPU (plus `--force-reinstall` when a CPU-only torch is installed), as the non-editable pip hint
-  does. pip ignores the project's CUDA torch index and would install the CPU build (#104).
-- The install command for a missing extra puts its notes in one parenthetical joined with "; "
-  instead of up to three in a row, e.g. `... -e ".[events]" (from the repository; with an NVIDIA
-  GPU add ... so torch uses CUDA; PowerShell: in cmd drop the leading &)`.
-- `analyze` records its inputs in `highlights.json` `settings.inputs` as absolute paths, keeping
-  your spelling (no symlink or mapped-drive resolution). Relative inputs were stored as given, so
-  `crashes --reanalyze` or ski `events` run from another directory wrongly reported the footage as
-  moved, or re-analyzed whatever matched the relative path there. Projects analyzed earlier with
-  relative inputs keep them until `analyze` runs again (#78).
-- With `--recursive`, a sub-folder that matches `--exclude` (for example `*/that/*`) is skipped
-  entirely, so an unreadable excluded folder no longer logs a warning. The "Input not readable"
-  error no longer depends on Python version behaviour (it uses `stat`) (#94).
-- `crashes` and `events` skip footage that is not reachable (offline drive, moved file) with a
-  warning and continue, and fail before writing anything when none is reachable. With a source
-  skipped, `crashes` and ski `events` leave `highlights.json` unchanged instead of re-running the
-  analysis; other `events` styles re-rank with the events found (#57).
-- `crashes` (default `--reanalyze`) and ski `events` no longer exit 1 with "Input not found" after
-  writing results, or silently drop footage from `highlights.json`, when an input or source is not
-  at the path `analyze` recorded (moved, or only reachable through `source_remap`). They warn that
-  `highlights.json` is left unchanged and exit 0 (#67). Remapped footage is now re-analyzed (#80).
-- `analyze` with `source_remap` active records the original path, not the remapped copy, in
-  `highlights.json`, the `transcript.txt` headers, read errors, `telemetry.json` and ski feature
-  metadata, while still reading the files through the remap. Once the copy is removed and the
-  footage is back at its original path, `crashes`, `events` and `clips` find it instead of skipping
-  it as "footage not reachable". Caches are reused. Projects analyzed with a remap before this fix
-  keep the copy paths until `analyze` runs again; rerun `crashes` and `events` afterwards so
-  their results match the new paths (#77).
-- `analyze` on an input whose original path is gone but which `source_remap` maps to an existing
-  location reads from that location instead of failing with `Input not found`, and records the
-  original spelling; for folders, `--recursive` and `--exclude` patterns match the original paths.
-  `crashes --reanalyze` and ski `events` re-analyze such remapped projects instead of skipping
-  them. They still warn and leave `highlights.json` unchanged only when re-analysis would fail,
-  drop a source or re-key one, for example a file moved out of a folder input that still exists,
-  or a 0.1.0 project that recorded the copy path (rerun `analyze` for those) (#80).
-- Windows: a `source_remap` key and an input on a mapped network drive match whether each is
-  written with the drive letter (`Z:\Footage`) or in UNC form (`\\server\share\Footage`), also
-  while the drive is disconnected. `analyze` records such a remapped input in UNC form, like a
-  reachable one, so a project no longer mixes both spellings of the same footage, and the
-  analysis cache and `stage` keys of a remapped copy match the original's (#95).
-- `extend` reads each clip's source through `source_remap` like `clips` does, instead of the
-  remapped copy recorded in the manifest's `read_from`. Once the copy is removed and the footage
-  is back at its original path, `extend` finds it instead of failing on the deleted copy;
-  `read_from` is used only when the source cannot be found and the copy still exists. The new
-  manifest records where each clip was read from, and `--reuse` still copies unchanged clips when
-  only the read location changed (#91).
+- `source_remap` and moved footage: `analyze` records the original path (absolute, in your
+  spelling) instead of the remapped copy and reads from the remap when the original is gone;
+  `clips`, `extend`, `360 analyze`, `360 director`, `360 stitch` and `360 status` read footage whose
+  folder moved through `source_remap`; `crashes --reanalyze` and ski `events` re-analyze remapped
+  projects and no longer exit 1 with "Input not found". Projects analyzed with a remap or relative
+  inputs before this keep the old paths until `analyze` runs again (#77, #78, #80, #91, #92).
+- `stage --clear <inputs>` selects exactly the files `stage <inputs>` would copy (honouring
+  `--recursive` and `--exclude`) and clears each input on its own, also one that no longer exists,
+  and `stage --exclude` matches the original path of footage read through `source_remap` (#93,
+  #103).
+- Windows: a `source_remap` key and an input on a mapped network drive match whether written with
+  the drive letter (`Z:\Footage`) or in UNC form (`\\server\share\Footage`), also while the drive is
+  disconnected, and `analyze` records it in UNC form (#95).
+- `crashes`, `events`, `mix`, `profile`, `360 director` and other commands that read cached data
+  skip footage that is not reachable (offline drive, moved file) with a warning instead of failing,
+  and `crashes` and ski `events` leave `highlights.json` unchanged when a source was skipped. They
+  fail before writing anything when none is reachable (#15, #46, #57, #67, #82).
 - Missing-extra messages now give the install command that matches the install type:
   `uv tool install "cutpoint[...]" --reinstall` for tool installs (keeping the extras, source and
-  package index already in use, with a CUDA PyTorch index note on Windows, and on Linux for
-  drivers too old for CUDA 13), `pip install "cutpoint[...]"` for PyPI installs, and the
-  `uv sync --extra` form only in a clone. The pip commands can be pasted into PowerShell.
-- The missing-extra install hint no longer shows the CUDA PyTorch index note (or the Linux driver
-  note) for tool installs from a clone directory, an editable install or a git URL, which already
-  get CUDA torch from Cutpoint's own `[tool.uv.sources]`; it appears only for wheel, sdist, URL
-  and PyPI installs (#61).
-- The missing-extra hint for an editable install (`uv pip install -e <clone>`) into a venv other
-  than the clone's `.venv` no longer suggests `uv sync --extra X`, which installs into the clone's
-  `.venv` and not the running environment. It suggests `uv sync` only when Cutpoint runs from the
-  clone's `.venv`; otherwise it gives `uv pip install --python "<python>" -e "<clone path>[X]"`
-  (#83).
-- `cutpoint events` checks for the `events` extra before unloading Ollama models (part of #23).
-- The Ollama default URL is `http://127.0.0.1:11434`; `localhost` could hang on some Windows
-  machines (#15).
-- The Ollama check reports "not reachable" instead of raising on a non-JSON reply (#15).
-- `mix`, `profile`, `crashes` and other commands that read cached visual data skip offline footage with a warning instead of failing (#15).
-- `360 director --preview` no longer crashes for a clip without a low-res `.lrv` proxy (#15).
-- `360 director` and other readers of cached voice data skip offline footage with a "footage not reachable" warning instead of crashing (#46).
-- `cutpoint mix` with nothing selected (no candidate fits `--target`, or every candidate is excluded) fails with `ERROR Nothing selected in <project>: ...` and exit code 1, writes no files, and no longer crashes with `ZeroDivisionError` (#47).
-- The Ollama availability check reports "not reachable" instead of raising when `/api/tags` returns JSON that is not an object (#49).
-- Missing-extra install hints leave out explicit uv indexes (with a note to keep your uv config), show the CUDA PyTorch note also with a mirror or CPU index configured without repeating `--index-strategy`, and, when CPU-only torch is installed, add `--reinstall-package torch --reinstall-package torchvision` (uv pip) or `--force-reinstall` (pip) (#50).
-- `360 director` no longer creates folders for a project that does not exist (#15).
-- `extend` keeps a backup of a director path file before re-planning over it and never overwrites an earlier one: repeated re-plans keep `<file>.bak`, `<file>.1.bak`, and so on (#15).
-- `360 director` keeps a hand-edited path file as `<file>.bak` (then `<file>.1.bak`, and so on) before re-planning over it, like `extend` does, and never overwrites an earlier backup (#48).
-- An input folder or file that cannot be read (no permission, stale network mount, name too long) gives a clear `Input not readable` error instead of a traceback. Unreadable subfolders are skipped with a warning during a folder scan, a `source_remap` target that cannot be checked falls back to the original path, and a backup is not written when its name cannot be checked (#79).
-- Backups of 360 path files and of `mix_segments.json` are written atomically (temp file, then rename), so a full disk or a failed write never leaves a truncated backup or a truncated `mix_segments.json` (#81).
-- `cutpoint 360 director --out-name` keeps the path file of a segment that is no longer selected as `<file>.bak` instead of deleting it (#58).
-- `cutpoint 360 director --out-name` retries removing a deselected segment's files on the next run if they could not be removed (for example, a preview open in a player on Windows), says so accurately in the log, and no longer makes a needless "re-planned" backup when a renumbered segment's old name is reused (#69).
-- The missing-extra hint for `uv pip install` from a clone directory or git URL no longer asks for the PyTorch index flags on Windows, because uv applies Cutpoint's own CUDA index; it only adds `--reinstall-package torch --reinstall-package torchvision` when CPU-only torch is installed. Wheel and sdist installs and `pip` still get the flags (#71).
-- `mix --target` must be greater than 0 (#15).
-- `360 repair` no longer leaves a `mix_segments.bak.json` behind when the re-run mix fails (for example "Nothing selected"); the backup is written only after the new mix succeeds (#60).
-- `cutpoint 360 repair` no longer overwrites an earlier `mix_segments.bak.json`; it uses the next free name (`mix_segments.1.bak.json`, ...), and an `--out` that names the segments file by another path (relative, `..`) still gets a backup (#68).
-- A malformed `CUTPOINT_PANNS_URL` (e.g. `http://[foo`) is now treated as a failed mirror: setup logs a warning naming the bad value (without any `user:password@`) and continues with the Hugging Face and Zenodo mirrors (#59).
-- `cutpoint setup` no longer logs credentials, paths or query strings from `CUTPOINT_PANNS_URL`, including values without `//` (such as `user:token@host/x`) and in error messages; only the host is shown (#70).
-- `cutpoint setup` verifies llama.cpp downloads against the sha256 digest GitHub publishes: a
-  corrupt cached archive is downloaded again, and a mismatch aborts and keeps the existing
-  install (#35).
-- `cutpoint setup` installs llama.cpp into a staging folder and swaps it in, so switching
-  builds or using `--force` no longer leaves stale files in `tools/llama.cpp`. A failed or
-  interrupted install keeps the previous one, and setup refuses to replace a `tools/llama.cpp` it
-  did not install (no `VERSION.txt`). If a running `llama-server` keeps the previous build from
-  being deleted (Windows), setup warns and the next `cutpoint setup --only llama` removes
-  `tools/llama.cpp.old` once the server is stopped (#36).
+  package index in use), `pip install "cutpoint[...]"` for PyPI installs, and the `uv sync --extra`
+  form only in a clone, with the CUDA PyTorch index notes shown only where they apply (#34, #50, #61,
+  #71, #83, #96, #104).
 - `cutpoint events` and `cutpoint 360 analyze` check that the model files and tools the selected
   layers need are installed before unloading Ollama models, importing torch or starting a long
   analyze. One error lists every missing file and the `cutpoint setup --only ...` command (#23,
-  #31). Runs whose results are cached now also need the model files.
-- `cutpoint profile` and `cutpoint crashes` only unload Ollama models when the CLIP steps can run
-  (#32).
-- `cutpoint profile --context` logs a warning when the context could not be applied (Ollama model
-  unavailable, no usable answer), and falls back to a library profile when the context names
-  exactly one, for example "mtb" (#24).
-- `cutpoint.cmd` and `cutpoint.ps1` header comments now say the `.venv` from `uv sync` is all
-  they need.
-- GPU Whisper on Linux: the pip-installed CUDA libraries are preloaded.
-- Remote-mount detection works on Linux.
-- A failed `cutpoint analyze` no longer leaves an empty project folder behind: it removes only a
-  folder that run created and that is still empty (#26).
-- The Hugging Face "unauthenticated requests" warning is printed once, in Cutpoint's log format,
-  instead of twice (#25).
-- The missing-extra hint keeps the install's source: a local folder or git commit instead of the
-  PyPI release. For `uv tool install` it keeps the package index flags (`--default-index` when that
-  was used) and the pinned `--python`, and pip installs on Windows get the CUDA PyTorch index note
-  for `events` (#34).
-- Projects created on Windows (sources like `D:\Videos\x.mp4`) show correct source file names
-  on Linux. Reading the files still needs a `source_remap` entry.
-- Clearer ffmpeg-not-found hint on Linux.
-- Caption font is chosen with `fc-match sans-serif` on Linux.
-- Insta360 X3 file lookup is case-insensitive on Linux.
-- Insta360 SDK runs get the needed `LD_LIBRARY_PATH` on Linux.
-- `llama-server` is cleaned up when the parent process dies on Linux.
-- Project and JSON files respect the umask instead of fixed permissions.
-- `cutpoint crashes --force` logs a source without readable GoPro telemetry at INFO instead of
-  DEBUG only (#37).
-- Insta360 X3: the `_00_` IMU file is reported with its on-disk spelling on every OS; Windows and
-  macOS showed the queried name when the case differed (#33).
-- `cutpoint 360 analyze` no longer crashes when the footage becomes unreachable before the events re-rank. It warns, leaves `highlights.json` as written before the events, exits 0, and asks you to rerun once the footage is back (#82).
+  #31).
+- `cutpoint setup` verifies llama.cpp downloads against the sha256 digest GitHub publishes and
+  installs into a staging folder that is swapped in, so a corrupt download or a failed install keeps
+  the previous one (#35, #36). It no longer logs credentials, paths or query strings from
+  `CUTPOINT_PANNS_URL`, and a malformed value is treated as a failed mirror (#59, #70).
+- `crashes`: camera knocks while boarding a lift no longer count as a crash (#15).
+- `cutpoint 360 director`, `extend` and `360 repair` keep a backup of a path file or
+  `mix_segments.json` before re-planning over it and never overwrite an earlier one
+  (`<file>.bak`, `<file>.1.bak`, ...), backups are written atomically, and `360 repair` leaves no
+  backup behind when the re-run mix fails. `360 director --out-name` keeps the path file of a
+  deselected segment as a backup (#15, #48, #58, #60, #68, #69, #81).
+- `cutpoint mix` with nothing selected fails with `ERROR Nothing selected in <project>: ...` and
+  exit code 1 instead of crashing, and `mix --target` must be greater than 0 (#15, #47).
+- The Ollama default URL is `http://127.0.0.1:11434` (`localhost` could hang on some Windows
+  machines), and the Ollama check reports "not reachable" instead of raising on a non-JSON reply
+  (#15, #49).
+- `cutpoint profile --context` logs a warning when the context could not be applied and falls back
+  to a library profile when the context names exactly one, for example "mtb"; `profile` and
+  `crashes` only unload Ollama models when the CLIP steps can run (#24, #32).
+- An input folder or file that cannot be read gives a clear `Input not readable` error instead of a
+  traceback, and a failed `cutpoint analyze` no longer leaves an empty project folder behind (#26,
+  #79).
+- Linux: GPU Whisper preloads the pip-installed CUDA libraries, remote-mount detection works,
+  Insta360 X3 file lookup is case-insensitive, SDK runs get the needed `LD_LIBRARY_PATH`,
+  `llama-server` is cleaned up when the parent process dies, project and JSON files respect the
+  umask, the caption font is chosen with `fc-match sans-serif`, and projects created on Windows show
+  correct source file names (reading the files still needs a `source_remap` entry) (#33).
 
 ## [0.1.0] - 2026-10-21
 
