@@ -663,6 +663,34 @@ def test_moment_ids_survive_reanalysis_without_relinking_saved_trims(
     assert client.get(f"/api/projects/{pid}").json()["review"]["segments"] == [old]
 
 
+def test_moment_cards_get_the_cli_candidate_id_that_ids_takes(tmp_path: Path) -> None:
+    """#487: the payload keeps the CLI id (h001) next to the internal id, and Candidate ids
+    (``clips --ids``) takes exactly what the cards show."""
+    src = str(tmp_path / "a.mp4")
+    hl = {
+        "candidates": [{"id": f"h00{i}", "source": src, "start": i, "end": i + 5.0} for i in (1, 2)]
+    }
+    view = ui.moments_view(hl)["candidates"]
+    assert [c["cli_id"] for c in view] == ["h001", "h002"]
+    assert all(c["id"] not in ("h001", "h002") for c in view)  # the internal id stays the hash
+    shown = [c["cli_id"] for c in view][::-1]
+    assert ui._auto_picks({"ids": shown}, hl) == ["--ids", "h002", "h001"]
+
+
+def test_moment_cards_show_the_cli_id_as_text_and_filter_by_it() -> None:
+    """#487: the id is real text with a screen-reader prefix, not a tooltip; data-id stays the
+    internal id (markMoments, AI highlights and the sequence use it)."""
+    render = _js_function(_web("app.js"), "renderMoments")
+    assert "h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id)" in render
+    assert "'data-id': c.id" in render
+    assert re.search(r"\.filter\(\(\{ c \}\) => [^\n]*c\.cli_id", render)
+    assert (
+        ".cand-id {" in _web("app.css")
+        and "white-space: nowrap" in _web("app.css").split(".cand-id {")[1].split("}")[0]
+    )
+    assert "by the ids on the moment cards" in _web("index.html")
+
+
 def test_media_supports_range_and_only_serves_project_sources(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

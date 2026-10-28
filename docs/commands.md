@@ -251,7 +251,7 @@ export from the ranked moments instead:
 |---|---|
 | Top moments | `--top` |
 | Max total | `--max-total` |
-| Candidate ids (replaces Top moments) | `--ids` |
+| Candidate ids (replaces Top moments): the ids on the moment cards, such as `h001` | `--ids` |
 | Order: Style, Story, Best first or Chronological | `--order` |
 
 **Cut Timing.**

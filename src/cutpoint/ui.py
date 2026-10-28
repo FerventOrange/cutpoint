@@ -2014,7 +2014,8 @@ def source_folder(p: Path) -> Path | None:
 
 
 def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Keep saved trims attached to source intervals, not mutable CLI ranks."""
+    """Keep saved trims attached to source intervals, not mutable CLI ranks; ``cli_id`` keeps the
+    CLI id (h001) that the cards show and ``clips --ids`` takes."""
     if hl is None:
         return None
     return {
@@ -2022,6 +2023,7 @@ def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
         "candidates": [
             {
                 **c,
+                "cli_id": c.get("id"),
                 "id": hashlib.sha1(
                     f"{os.path.realpath(c['source'])}|{float(c['start'])}|{float(c['end'])}".encode()
                 ).hexdigest()[:12],

@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Position in video, which sorts by source name (natural order, so `clip2` comes before `clip10`)
   and then start time. The rank badge on each card keeps its score rank in either order. The
   choice is remembered per browser (#469).
+- `cutpoint ui`: each moment card shows its candidate id from `highlights.json` (`h001`), the id
+  that Candidate ids in the Export tab and `clips --ids` take, and the moments filter matches it
+  (#487).
 
 - `cutpoint ui` Export tab: "Clips to Export" exports the sequence (default) or automatic picks
   (Top moments, Max total, Candidate ids, Order), and "Cut Timing" sets the speech, tail, event
