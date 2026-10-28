@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cutpoint edit <video...> --kind highlights|montage|clips|funny-moments` goes from footage to a
   finished video with `.srt` subtitles in one command.
-- Agent support: a `--json` result envelope on stdout for every command, and
-  `cutpoint skill install` / `skill print` for Claude Code.
+- Agent support: a `--json` result envelope on stdout for the main commands (`analyze`, `clips`, `assemble`,
+  `edit` and more; see Added), and `cutpoint skill install` / `skill print` for Claude Code.
 - Color: HDR (HLG, PQ) and BT.2020 footage is tone mapped to SDR Rec.709 instead of coming out
   washed out, all exported clips are tagged BT.709, and `--lut` applies a 3D LUT you supply.
 - Audio: `--compress-peaks` evens out loud peaks, and a recording that writes the same audio to
@@ -193,9 +193,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   folder: `"builtin": true` is honoured there, and only project `hud_presets` folders ignore it
   (with a WARNING). After adding or editing `title`, `view` or `hype` in a user preset, run
   `cutpoint events <project> --force vlm`.
-- `--json` of `profile`, `capabilities`, `360 repair` and `360 qa` now writes the result envelope:
-  the report each printed before is under `outputs` with the same keys (read `outputs.torch`
-  instead of `torch`), and `360 qa --json` no longer abbreviates `--json-only` (#4).
+- `--json` of `profile`, `capabilities`, `360 repair` and `360 qa` now writes the result envelope. For
+  `profile`, `capabilities` and `360 repair` the report each printed before is now under `outputs`
+  with the same keys (read `outputs.torch` instead of `torch`), and `360 qa --json` is now the
+  envelope instead of abbreviating `--json-only` (#4).
 - `360 qa` measures the horizon tilt of each clip from the v360 commands its render emitted, so it
   catches render roll errors the old model prediction could not. Each `.cmd` file now starts with a
   `# cutpoint-v360 ...` line; clips rendered before this fall back to the model until re-rendered
@@ -251,8 +252,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --force` export into a hidden `.<folder>.cutpoint-tmp` and swap it in only when every clip
   succeeded. A failure, GPU encode error or Ctrl+C leaves the old clips and manifest untouched, and
   a failed fresh `clips` run leaves no partial clips or empty output folder. After a hard kill the
-  next run puts the old clips back from `.<folder>.cutpoint-bak`. A drive root, mount point or
-  bind mount is refused before any export with a message to use `--out` (#109, #147, #160, #185).
+  next run puts the old clips back from `.<folder>.cutpoint-bak`. When `clips --force` or `extend`
+  would replace a folder that is a drive root, mount point or bind mount, the run is refused before
+  any export with a message to use `--out` (#109, #147, #160, #185).
 - `clips --force` and `extend` replace only what Cutpoint made: the clips and `.srt` files listed in
   the old `manifest.json`, spelled as on disk. Before, `clips --force` deleted every `.mp4` in the
   folder, which with `--out` pointing at the footage's folder deleted the source video. A file the
@@ -286,7 +288,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feed grows by rows seen in fewer frames and ignores one stray box at its edge, and the
   `keyframes` step shows a percentage during discovery. Existing presets are not changed: run
   `cutpoint events <project> --discover-regions` and copy the new `proposal.json`, or delete a
-  discovered preset to discover it again (#410).
+  discovered preset to discover it again. Discovery params record `menu_min_boxes`, `menu_cover`
+  and `menu_jump` instead of `menu_boxes` (#410).
 - HUD phrase matching and mined `candidate_phrases` (profile versions 3 to 7): a multi-word phrase
   matches only whole words, mining finds mixed-case texts and phrases inside longer lines, and it
   leaves out gamertag slots, hint and tutorial sentences and control prompts. No command writes
@@ -306,8 +309,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--style ski`: a stretch of footage at one score gives one clip instead of several back-to-back
   clips (the top 10 went from 6 to 10 distinct moments on the test footage; `cutpoint mix` picks the
   same way), and friends in view no longer lift the lift/stop mask or give the top VLM score to
-  standing and chatting at a chairlift. Saved features count friends in `vlm` until `analyze
-  --style ski` is re-run; refit learned presets after that. `analyze --style ski` also scores a
+  standing and chatting at a chairlift. A learned preset's `mask_friends` above 0 now means a hard mask (0 is still the soft mask). Saved
+  features count friends in `vlm` until `analyze --style ski` is re-run; refit learned presets
+  after that. `analyze --style ski` also scores a
   cached visual layer without the `events` extra (#282, #283).
 - An ffmpeg step that reports progress (audio extract, scene proxy) could wait forever after ffmpeg
   had exited, so an analysis never finished; it now ends when ffmpeg exits (#338).
@@ -450,7 +454,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clips`, `extend`, `360 analyze`, `360 director`, `360 stitch` and `360 status` read footage whose
   folder moved through `source_remap`; `crashes --reanalyze` and ski `events` re-analyze remapped
   projects and no longer exit 1 with "Input not found". Projects analyzed with a remap or relative
-  inputs before this keep the old paths until `analyze` runs again (#77, #78, #80, #91, #92).
+  inputs before this keep the old paths until `analyze` runs again; rerun `crashes` and `events` afterwards so their
+  results match the new paths (#77, #78, #80, #91, #92).
 - `stage --clear <inputs>` selects exactly the files `stage <inputs>` would copy (honouring
   `--recursive` and `--exclude`) and clears each input on its own, also one that no longer exists,
   and `stage --exclude` matches the original path of footage read through `source_remap` (#93,
@@ -470,7 +475,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint events` and `cutpoint 360 analyze` check that the model files and tools the selected
   layers need are installed before unloading Ollama models, importing torch or starting a long
   analyze. One error lists every missing file and the `cutpoint setup --only ...` command (#23,
-  #31).
+  #31). Runs whose results are cached now also need the model files.
 - `cutpoint setup` verifies llama.cpp downloads against the sha256 digest GitHub publishes and
   installs into a staging folder that is swapped in, so a corrupt download or a failed install keeps
   the previous one (#35, #36). It no longer logs credentials, paths or query strings from
