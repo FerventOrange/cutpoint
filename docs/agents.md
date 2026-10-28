@@ -3,7 +3,9 @@
 Cutpoint is a command-line tool, so any agent that can run shell commands can drive it:
 Claude Code, Codex, Grok CLI, or a script. Analysis runs locally (ffmpeg, Whisper, optional
 Ollama and llama.cpp models), so the agent only issues commands and reads small JSON and text
-files. No video is sent to an API, and local Qwen models are the default for the model features.
+files. No video is sent to an API, and local models are the default for the model features. The AI
+Chat in `cutpoint ui` can optionally use a hosted provider with your own API key; it then sends
+text (moment labels, transcript snippets, file names, times), never video.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install

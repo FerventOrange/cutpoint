@@ -374,7 +374,8 @@ send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_AP
 go only to `api.anthropic.com` and `api.openai.com`; a key for another host (OpenRouter, a LAN
 server) comes from `CUTPOINT_ASSISTANT_API_KEY` or is saved for that base URL, and goes only over
 `https://` ([keys](configuration.md#assistant)). Settings only says "set (env)", "set
-(keyring)" or "not set"; the page never receives a key.
+(keyring)" or "not set"; the page never receives a key. To install Ollama and its models, see
+[getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
@@ -1055,8 +1056,10 @@ reuse it.
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
 
 Needs the visual layer of `events` for detection, and Ollama with a Qwen model
-(`CUTPOINT_VISION_MODEL`) for new profiles and `--context`. Without them it falls back to the
-nearest library profile or `generic`, and tries again on the next run.
+(`CUTPOINT_VISION_MODEL`;
+[install](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) for new profiles
+and `--context`. Without them it falls back to the nearest library profile or `generic`, and
+tries again on the next run.
 
 ## mix
 
