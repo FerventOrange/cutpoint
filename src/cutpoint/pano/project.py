@@ -282,7 +282,8 @@ def camera_dirs(project: Path) -> list[Path]:
 
 
 def norm(path: str | Path) -> str:
-    """Forward-slash path for lookups (case-folded on Windows, see :func:`path_key`)."""
+    """Forward-slash path for lookups (case-folded where its folder is case-insensitive, see
+    :func:`path_key`)."""
     return path_key(str(path).replace("\\", "/"))
 
 
@@ -291,9 +292,9 @@ def clip_for(clips: dict[str, X3Clip], source: str | Path) -> X3Clip | None:
     hit = clips.get(norm(source))
     if hit is not None:
         return hit
-    name = path_key(source_path(source).name)
+    name, key = source_path(source).name, source_path(norm(source)).name
     for c in clips.values():
-        if path_key(source_path(c.source).name) == name:
+        if source_path(c.source).name == name or source_path(norm(c.source)).name == key:
             return c
     return None
 

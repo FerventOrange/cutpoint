@@ -135,11 +135,19 @@ class ClipSubtitles:
     ``protected``: :func:`~cutpoint.config.path_key` of ``.srt`` names in the clips folder
     that an earlier run did not write; a clip with such a name gets no ``.srt``.
     ``language``: the transcript language, as in :func:`words_lookup`.
+    ``folder``: the clips folder the keys of ``protected`` were made for (default: the
+    folder each clip is written to).
     """
 
-    def __init__(self, protected: set[str] | None = None, language: str | None = None) -> None:
+    def __init__(
+        self,
+        protected: set[str] | None = None,
+        language: str | None = None,
+        folder: Path | None = None,
+    ) -> None:
         self.words = words_lookup(language)
         self.protected = protected or set()
+        self.folder = folder
         self.no_words: list[str] = []
         self.not_written: list[str] = []
 
@@ -153,7 +161,7 @@ class ClipSubtitles:
             self.no_words.append(source)
             return None
         name = clip.with_suffix(".srt").name
-        if path_key(name) in self.protected:
+        if path_key(name, self.folder or clip.parent) in self.protected:
             self.not_written.append(name)
             return None
         write_srt(clip.with_suffix(".srt"), clip_cues(w, start, end))
@@ -297,8 +305,12 @@ def listed_files(out_dir: Path) -> list[str] | None:
 def unlisted_srts(out_dir: Path, listed: list[str] | None) -> set[str]:
     """:func:`~cutpoint.config.path_key` of the ``.srt`` files in ``out_dir`` that
     ``listed`` (:func:`listed_files`) does not name: no subtitles are written under them."""
-    ours = {path_key(n) for n in listed or []}
-    return {k for f in out_dir.glob("*.srt") if f.is_file() and (k := path_key(f.name)) not in ours}
+    ours = {path_key(n, out_dir) for n in listed or []}
+    return {
+        k
+        for f in out_dir.glob("*.srt")
+        if f.is_file() and (k := path_key(f.name, out_dir)) not in ours
+    }
 
 
 def check_unlisted_clips(out_dir: Path, new: list[str], listed: list[str] | None) -> None:
@@ -311,12 +323,14 @@ def check_unlisted_clips(out_dir: Path, new: list[str], listed: list[str] | None
     """
     if not out_dir.is_dir():
         return
-    ours = {path_key(n) for n in listed or []}
-    names = {path_key(n) for n in new}
+    ours = {path_key(n, out_dir) for n in listed or []}
+    names = {path_key(n, out_dir) for n in new}
     hits = [
         p.name
         for p in sorted(out_dir.iterdir())
-        if (k := path_key(p.name)) in names and k not in ours and (p.is_file() or p.is_symlink())
+        if (k := path_key(p.name, out_dir)) in names
+        and k not in ours
+        and (p.is_file() or p.is_symlink())
     ]
     if hits:
         why = (

@@ -209,19 +209,19 @@ def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_sr
 
 @pytest.mark.parametrize("where", ["in-place", "other-out"])
 def test_extend_without_a_transcript_removes_the_listed_srt_renamed_in_case(
-    tmp_path, monkeypatch, reads, where
+    tmp_path, monkeypatch, reads, where, case_insensitive
 ):
     """The listed 001_a.srt (in place) or 001_a.mp4 and .srt (in out) were renamed to 001_A
     during review. 001_a.mp4 is written again with no transcript: its old .srt must go, not
     stay unlisted with the old timing."""
     clips = _srt_clips(tmp_path)
-    if not (clips / "001_A.mp4").exists():
-        pytest.skip("case-sensitive file system")
+    case_insensitive(clips)
     if where == "in-place":
         out = clips
         (clips / "001_a.srt").rename(clips / "001_A.srt")
     else:
         out = tmp_path / "proj" / "ext"
+        case_insensitive(out)
         write(out / "001_A.mp4", "old")
         write(out / "001_A.srt", "old")
         write(out / "manifest.json", (clips / "manifest.json").read_text(encoding="utf-8"))
@@ -234,15 +234,14 @@ def test_extend_without_a_transcript_removes_the_listed_srt_renamed_in_case(
 
 
 def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
-    tmp_path, monkeypatch, reads, caplog
+    tmp_path, monkeypatch, reads, caplog, case_insensitive
 ):
     """The manifest lists 002_Joke; review renamed it 002_joke. It has no entry, so it is not
     re-exported, and the listed name must not remove it on a case-insensitive file system."""
     clips = _srt_clips(tmp_path)
+    case_insensitive(clips)
     write(clips / "002_joke.mp4", "renamed")
     write(clips / "002_joke.srt", "renamed subs")
-    if not (clips / "002_JOKE.mp4").exists():
-        pytest.skip("case-sensitive file system")
     data = json.loads((clips / "manifest.json").read_text(encoding="utf-8"))
     src = data["clips"][0]["source"]
     data["clips"].append(

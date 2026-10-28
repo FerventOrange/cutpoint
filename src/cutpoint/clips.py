@@ -634,6 +634,7 @@ def render_clips(
     audio_fade: float,
     pano: PanoExporter | None = None,
     protected_srts: set[str] | None = None,
+    clips_dir: Path | None = None,
     peaks: list[str] | None = None,
     language: str | None = None,
     lut: Lut | None = None,
@@ -646,7 +647,8 @@ def render_clips(
 
     ``protected_srts``: :func:`~cutpoint.config.path_key` of ``.srt`` names in the clips
     folder that an earlier run did not write; a clip with such a name gets no ``.srt``
-    (one WARNING names them).
+    (one WARNING names them). ``clips_dir``: that clips folder (default ``out_dir``; the
+    staging folder is not it).
 
     ``language``: transcript language of the subtitles (None: the detected one).
 
@@ -659,7 +661,7 @@ def render_clips(
         ValueError: If a 360 plan is given without ``pano``.
     """
     results: list[RenderResult] = []
-    subs = srt.ClipSubtitles(protected_srts, language)
+    subs = srt.ClipSubtitles(protected_srts, language, clips_dir or out_dir)
     peaks = peaks or [""] * len(plans)
     for plan, peak in zip(plans, peaks, strict=True):
         m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
@@ -911,7 +913,7 @@ def _replaced_files(
     # A listed name spelled otherwise on disk goes, under that spelling, only if this run
     # writes or replaces its clip: an .srt beside it would keep the old cues, unlisted.
     present = {p.name for p in out_dir.iterdir()}
-    on_disk = {path_key(n): n for n in present}
+    on_disk = {path_key(n, out_dir): n for n in present}
     names = list(dict.fromkeys([*(listed or []), *parts]))
     replace: list[str] = []
     kept_sources: list[str] = []
@@ -924,18 +926,18 @@ def _replaced_files(
     for n in names:
         if n in present:
             add(n)
-    gone = {path_key(n) for n in (*new, *replace)}
+    gone = {path_key(n, out_dir) for n in (*new, *replace)}
     for n in names:
         if (
             n not in present
-            and (d := on_disk.get(path_key(n))) is not None
-            and path_key(Path(n).with_suffix(".mp4").name) in gone
+            and (d := on_disk.get(path_key(n, out_dir))) is not None
+            and path_key(Path(n).with_suffix(".mp4").name, out_dir) in gone
         ):
             add(d)
-    done = {path_key(n) for n in (*new, *replace, *kept_sources)}
+    done = {path_key(n, out_dir) for n in (*new, *replace, *kept_sources)}
     kept: list[str] = []
     for p in sorted(clip_files(out_dir)):
-        if path_key(p.name) not in done:
+        if path_key(p.name, out_dir) not in done:
             (kept_sources if same_file(p, sources) else kept).append(p.name)
     entries = manifest_entries(out_dir, [out_dir / n for n in kept])
     renamed = {n: e["file"] for n, e in entries.items() if e["file"] != n}
@@ -1182,6 +1184,7 @@ def export_clips(
             audio_fade=audio_fade,
             pano=pano,
             protected_srts=protected_srts,
+            clips_dir=out_dir,
             peaks=peaks,
             language=language,
             lut=lut,

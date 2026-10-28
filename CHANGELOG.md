@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preset whose `feed` has `row_notices` (a discovered icon feed), and drops icon kills read on menu
   frames; an icon kill first read as a still screen opens is not taken as feed activity. Other rows of such a feed ("X has found the bombs")
   become notices, and a kill takes both names from its most complete read that repeats, or from the most complete read when none repeats (#433). A game that already has a preset keeps it: move the old preset away and run `analyze` or `events` again, or run `events --discover-regions` and copy the new `proposal.json`'s `feed` region and `"feed": {"row_notices": true}` into the preset by hand; the new region needs new OCR reads.
+- `clips --force` and `extend` on macOS (and on case-insensitive drives elsewhere, such as exFAT
+  or FAT drives on Linux, NTFS only when mounted case-insensitive) no longer fail when the old
+  manifest.json names a clip in another case than the folder (`001_A.mp4` listed, `001_a.mp4` on
+  disk): the swap moved the same file twice. Names now match case-insensitively where the folder
+  is case-insensitive, checked once per folder without writing to it; Windows is unchanged and
+  case-sensitive folders keep `001_A` and `001_a` apart. A listed `.srt` renamed in case only is
+  now replaced with its clip there too, as on Windows (#247).
 
 ## [0.3.0] - 2026-10-27
 

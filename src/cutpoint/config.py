@@ -74,9 +74,11 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import itertools
 import logging
 import os
 import re
+import stat
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -363,10 +365,147 @@ def resolve_project_path(arg: str | Path, *, bare_names: bool = True) -> Path:
 _WINDOWS_PATH_RE = re.compile(r"^[A-Za-z]:")
 
 
-def path_key(path: str) -> str:
-    """``path`` as a lookup key: lower-cased on Windows (case-insensitive file
-    systems), unchanged elsewhere."""
-    return path.lower() if sys.platform == "win32" else path
+_FOLDS_CASE_MAX = 256  # folders remembered by folds_case; emptied when full
+# (st_dev, st_ino) of a folder (st_dev and its path without inode numbers) -> folds case
+_FOLDS_CASE: dict[tuple[int, int | str], bool] = state.register_container(
+    __name__, "_FOLDS_CASE", {}
+)
+# folder as given (made absolute) -> folds case, so a repeat call does no I/O at all
+_FOLDS_CASE_DIRS: dict[str, bool] = state.register_container(__name__, "_FOLDS_CASE_DIRS", {})
+
+
+def _same_entry(a: os.stat_result, b: os.stat_result) -> bool | None:
+    """``a`` and ``b`` are one file (None: no inode numbers to tell)."""
+    if not a.st_ino or not b.st_ino:
+        return None
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def _swapped(name: str) -> str | None:
+    """``name`` with its ASCII letters in the other case, or None if it has none (non-ASCII
+    names are skipped: their case mapping and Unicode normalisation vary per file system)."""
+    return name.swapcase() if name.isascii() and name.swapcase() != name else None
+
+
+def _probe_case(folder: Path) -> bool | None:
+    """Whether the existing folder ``folder`` (resolved) is on a case-insensitive file system.
+
+    Read-only: a case-swapped spelling of an entry in it (the first 100 are tried) or of
+    the folder's own name (looked up in its parent, unless the folder is a mount point)
+    either is the same file (True) or is missing or another file (False). None if no name
+    there has ASCII letters, there are no inode numbers to compare or the folder cannot be
+    read.
+    """
+    try:
+        with os.scandir(folder) as entries:
+            for entry in itertools.islice(entries, 100):  # a huge folder: not all of it
+                if (swapped := _swapped(entry.name)) is None:
+                    continue
+                try:
+                    est = entry.stat(follow_symlinks=False)
+                    other = (folder / swapped).lstat()
+                except FileNotFoundError:
+                    if (folder / entry.name).is_symlink() or (folder / entry.name).exists():
+                        return False  # the swapped spelling is missing
+                    continue  # the entry itself went away
+                except OSError:
+                    continue
+                if (same := _same_entry(other, est)) is not None:
+                    return same
+    except OSError:
+        pass
+    if (swapped := _swapped(folder.name)) is None:
+        return None
+    try:
+        st = folder.stat()
+        if folder.parent.stat().st_dev != st.st_dev:  # a mount point: the name is on another FS
+            return None
+    except OSError:
+        return None
+    try:
+        other = (folder.parent / swapped).stat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return _same_entry(other, st)
+
+
+def folds_case(folder: str | PurePath) -> bool:
+    """Whether names in ``folder`` are case-insensitive (always True on Windows).
+
+    Elsewhere the nearest existing folder of ``folder`` and its parents is checked
+    (:func:`_probe_case`, without creating files), then its parents on the same file
+    system while no name there tells. Unknown counts as case-sensitive.
+
+    The answer is remembered per folder string for the life of the process (until
+    :func:`~cutpoint.state.reset_state`), so a repeat call does no I/O and a missing or
+    offline folder is walked up once, not per call. A folder that does not exist yet (an
+    output folder created later) is assumed to follow its nearest existing parent, before
+    and after it is created. The probe result is also remembered per existing folder
+    (device and inode), so other spellings of it are not probed again.
+    """
+    if sys.platform == "win32":
+        return True
+    name = os.fspath(folder)
+    if not os.path.isabs(name):  # noqa: PTH117 - no Path: a cache hit stays cheap
+        name = os.path.abspath(name)  # noqa: PTH100 - no I/O
+    if (hit := _FOLDS_CASE_DIRS.get(name)) is not None:
+        return hit
+    if len(_FOLDS_CASE_DIRS) >= _FOLDS_CASE_MAX:
+        _FOLDS_CASE_DIRS.clear()
+    _FOLDS_CASE_DIRS[name] = found = _folds_case_uncached(Path(name))
+    return found
+
+
+def _folds_case_uncached(start: Path) -> bool:
+    """:func:`folds_case` without the per-string cache."""
+    for d in (start, *start.parents):
+        try:
+            st = d.stat()
+        except OSError:
+            continue
+        if not stat.S_ISDIR(st.st_mode):
+            continue
+        break
+    else:
+        return False
+    key = (st.st_dev, st.st_ino or os.path.abspath(d))  # noqa: PTH100 - no I/O
+    if (hit := _FOLDS_CASE.get(key)) is not None:
+        return hit
+    found = None
+    with contextlib.suppress(OSError):
+        real = d.resolve()  # the folder a symlink points to
+        for p in (real, *real.parents):
+            if p.stat().st_dev != st.st_dev:
+                break
+            if (found := _probe_case(p)) is not None:
+                break
+    if len(_FOLDS_CASE) >= _FOLDS_CASE_MAX:
+        _FOLDS_CASE.clear()
+    _FOLDS_CASE[key] = bool(found)
+    return bool(found)
+
+
+def path_key(path: str, folder: str | PurePath | None = None) -> str:
+    """``path`` as a lookup key: lower-cased where names are case-insensitive, unchanged
+    elsewhere.
+
+    Windows: always lower-cased. Elsewhere (macOS APFS/HFS+, exFAT or FAT drives on Linux,
+    NTFS only when mounted case-insensitive) it is lower-cased if :func:`folds_case` says so
+    for ``folder`` (the folder a bare name such as ``001_A.mp4`` is in) or, without
+    ``folder``, for the folder of ``path``. The whole string is folded even if only its last
+    folder is case-insensitive, so compare only keys made for the same folder or for paths
+    in the same file. A Windows-form path on POSIX (``D:\\x.mp4``, a project written on
+    Windows) is not folded without ``folder``.
+    """
+    if sys.platform == "win32":
+        return path.lower()
+    if folder is None:
+        if not os.path.isabs(path) and is_foreign_windows(path):  # noqa: PTH117 - hot loop
+            return path
+        folder = os.path.dirname(path)  # noqa: PTH120 - no Path: this runs in loops
+    return path.lower() if folds_case(folder) else path
 
 
 def is_absolute_any(path: str | PurePath) -> bool:

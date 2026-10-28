@@ -466,9 +466,9 @@ def _extend_locked(
             for n, e in manifest_entries(out_dir, clip_files(out_dir)).items()
             if e["file"] != n
         }
-        subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed), language)
+        subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed), language, out_dir)
         present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
-        on_disk = {path_key(n): n for n in present}
+        on_disk = {path_key(n, out_dir): n for n in present}
         parts = [p.name for p in out_dir.glob(".*.part.mp4")] if out_dir.is_dir() else []
         listed_names = list(dict.fromkeys([*(listed or []), *parts]))
 
@@ -477,13 +477,13 @@ def _extend_locked(
             return (f.is_file() or f.is_symlink()) and not same_file(f, sources)
 
         old_files = [n for n in listed_names if n in present and replaceable(n)]
-        gone = {path_key(n) for n in (*names, *old_files)}
+        gone = {path_key(n, out_dir) for n in (*names, *old_files)}
         old_files += [
             d
             for n in listed_names
             if n not in present
-            and (d := on_disk.get(path_key(n))) is not None
-            and path_key(Path(n).with_suffix(".mp4").name) in gone
+            and (d := on_disk.get(path_key(n, out_dir))) is not None
+            and path_key(Path(n).with_suffix(".mp4").name, out_dir) in gone
             and replaceable(d)
         ]
         entries = []
@@ -599,8 +599,8 @@ def _extend_locked(
         if staged:  # all or nothing; only the clips and .srt files named above are replaced
             swap_in(work, out_dir, old_files)
     if staged:
-        written = {path_key(e["file"]) for e in entries}
-        kept = [p for p in clip_files(out_dir) if path_key(p.name) not in written]
+        written = {path_key(e["file"], out_dir) for e in entries}
+        kept = [p for p in clip_files(out_dir) if path_key(p.name, out_dir) not in written]
         hint = "assemble includes them, so move them out if they are not part of the edit"
         kept_sources = [p for p in kept if same_file(p, all_sources | sources)]
         if kept_sources:

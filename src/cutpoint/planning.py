@@ -388,11 +388,11 @@ def manifest_entries(folder: Path, files: list[Path]) -> dict[str, dict[str, Any
     entries = [e for e in listed if isinstance(e, dict) and isinstance(e.get("file"), str)]
     by_name = {e["file"]: e for e in entries}
     found = {f.name: by_name[f.name] for f in files if f.name in by_name}
-    present = {path_key(p.name) for p in folder.iterdir()}
+    present = {path_key(p.name, folder) for p in folder.iterdir()}
     gone: dict[int, list[dict[str, Any]]] = {}
     for e in entries:
         size = e.get("size")
-        if isinstance(size, int) and path_key(e["file"]) not in present:
+        if isinstance(size, int) and path_key(e["file"], folder) not in present:
             gone.setdefault(size, []).append(e)
     if not gone:
         return found
