@@ -38,7 +38,7 @@ documents every key.
     ``cutpoint events --player TAG`` overrides it per run. Default: none.
 
 ``ollama_url``
-    Ollama base URL for the frame rater and VLM layers. ``OLLAMA_HOST``
+    Ollama base URL for the frame rater, AI Chat and profiles. ``OLLAMA_HOST``
     overrides it. Default ``http://127.0.0.1:11434``
     (see :func:`cutpoint.backends.ollama_url`).
 
