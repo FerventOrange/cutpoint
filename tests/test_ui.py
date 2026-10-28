@@ -29,7 +29,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, cli, config, edit, encode, ui
+from cutpoint import cache, cli, config, edit, encode, ffmpeg_utils, ui
 from cutpoint.utils import find_videos
 
 PORT = 8765
@@ -1213,6 +1213,7 @@ def still_source(client: TestClient, tmp_path: Path) -> tuple[str, str, Path, Pa
         ("ok", "ok", "at=0.5&w=99999", True, 200, "-50-640.jpg"),
         ("ok", "ok", "at=0.5", True, 200, "-50-160.jpg"),
         ("ok", "ok", "at=99", True, 200, "-90-160.jpg"),  # clamped to duration - 0.1 s
+        ("ok", "ok", "at=1e308", True, 200, "-90-160.jpg"),
     ],
 )
 def test_frame_endpoint_validates_input_and_clamps(
@@ -1384,6 +1385,150 @@ def test_frame_cache_evicts_the_least_recently_used_beyond_the_cap(
     third = media.frame(project, str(source), 0.3, 160)
     assert sorted(frames.iterdir()) == sorted([first, third])  # the least recently used went
     assert not second.exists()
+
+
+def test_keyframe_grab_skips_to_the_keyframe_before_the_input() -> None:
+    """#261: the filmstrip's stills decode only the keyframe at or before the time; the exact
+    stills of the sequence thumbnails keep their accurate seek."""
+    exact = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, quality=5)
+    key = ffmpeg_utils.grab_images_args("v.mp4", 5.0, width=160, quality=5, keyframe=True)
+    assert "-skip_frame" not in exact and "-noaccurate_seek" not in exact
+    assert "-fps_mode" not in exact
+    flags = ["-skip_frame", "nokey", "-noaccurate_seek"]
+    i = key.index("-skip_frame")
+    assert key[i : i + 3] == flags and i < key.index("-ss") < key.index("-i")
+    # the keyframe lands before the seek point (a negative timestamp): passthrough keeps it
+    j = key.index("-fps_mode")
+    assert key[j : j + 2] == ["-fps_mode", "passthrough"] and key.index("-i") < j
+    assert key[:i] + key[i + 3 : j] + key[j + 2 :] == exact
+
+
+@needs_ffmpeg
+def test_frame_key_mode_asks_for_the_keyframe_and_is_cached_apart_from_exact_stills(
+    client: TestClient, still_source: tuple[str, str, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, _, frames = still_source
+    base = f"/api/projects/{pid}/sources/{sid}/frame?t={client.headers['X-Cutpoint-Token']}"
+    calls: list[tuple[object, object]] = []
+
+    def grab(*a: object, **k: object) -> list[bytes]:
+        calls.append((a[1], k["keyframe"]))
+        return [b"\xff\xd8\xff" + (b"key" if k["keyframe"] else b"exact")]
+
+    def get(query: str):
+        return client.get(f"{base}&{query}", headers={"X-Cutpoint-Token": ""})
+
+    monkeypatch.setattr(ui, "grab_images", grab)
+    key = get("at=0.5&key=1")
+    assert key.status_code == 200 and key.content.endswith(b"key")
+    exact = get("at=0.5")  # a keyframe still is never served for an exact one
+    assert exact.status_code == 200 and exact.content.endswith(b"exact")
+    assert get("at=0.5&key=1").content == key.content  # cached: ffmpeg is not run again
+    assert calls == [(0.5, True), (0.5, False)]
+    assert sorted(f.name.split("-", 1)[1] for f in frames.glob("*.jpg")) == [
+        "50-160-k.jpg",
+        "50-160.jpg",
+    ]
+    assert get("at=0.5&key=maybe").status_code == 422
+
+
+@needs_ffmpeg
+def test_a_real_keyframe_still_is_the_keyframe_at_or_before_the_time(
+    client: TestClient, still_source: tuple[str, str, Path, Path]
+) -> None:
+    """The 1 s mpeg4 clip has a keyframe every 12 frames (0, 0.48 and 0.96 s at 25 fps): a
+    keyframe still at 0.7 s is the frame at 0.48 s, not the one at 0.7 s nor the next keyframe
+    (the default fps mode drops the keyframe's negative timestamp and writes the next one)."""
+    pid, sid, source, _ = still_source
+    before = (source.read_bytes(), source.stat().st_mtime_ns)
+    base = f"/api/projects/{pid}/sources/{sid}/frame?t={client.headers['X-Cutpoint-Token']}"
+
+    def get(query: str):
+        return client.get(f"{base}&{query}", headers={"X-Cutpoint-Token": ""})
+
+    key = get("at=0.7&key=1")
+    assert key.status_code == 200 and key.content[:3] == b"\xff\xd8\xff"
+    assert key.content == get("at=0.48").content
+    assert key.content != get("at=0.7").content
+    assert key.content != get("at=0.96").content
+    assert (source.read_bytes(), source.stat().st_mtime_ns) == before
+
+
+def test_a_huge_still_time_of_a_source_of_unknown_length_is_cut_not_an_overflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``at=1e308`` is finite, so the endpoint accepts it; with no known length to clamp to,
+    its centiseconds overflowed (OverflowError, an HTTP 500). It is cut to FRAME_MAX_AT."""
+    source = write(tmp_path / "a.mp4", b"x" * 10)
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(ui, "probe", lambda _path: media_info(source, duration=0.0, **SD))
+    starts: list[object] = []
+    monkeypatch.setattr(
+        ui, "grab_images", lambda *a, **_k: (starts.append(a[1]), [b"\xff\xd8\xffjpeg"])[1]
+    )
+    media = ui.Media()
+    still = media.frame(project, str(source), 1e308, 160)
+    cs = round(ui.FRAME_MAX_AT * 100)
+    assert still is not None and still.name == f"{media.key(source)}-{cs}-160.jpg"
+    assert starts == [cs / 100]
+
+
+def test_rail_filmstrip_is_a_decorative_layer_under_the_markers() -> None:
+    """Contract pin (#261): the trim rail's filmstrip is an aria-hidden layer first in the rail's
+    markers, drawn by its own drawFilm (keyframe stills, key=1, on a 0.25 s x 2^k grid at most one
+    per 78 px, exact stills below a 1 s step, asked for 150 ms after the view stops), loaded ahead of the sequence thumbnails
+    under the same limit of 3, stale queued stills dropped by a generation counter, stopped after
+    3 failures for a source and skipped by data savers. Each theme sets its --film-opacity.
+
+    Check in a browser (no browser in the test suite): in Blue, Light and Dark, open a moment;
+    stills fade in from the playhead outward; the gold selection, its handles, the dashed analyzed
+    range, the playhead and the hatched gaps stay readable over them. Pan: the stills move with
+    the view and only new ones load; zoom in and out: no still flashes. Resize the window: the
+    strip refills. With a source that cannot be read, the ticks stay."""
+    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    marks = re.search(
+        r'<div class="rail" id="rail">\s*<div class="rail-marks">(.*?)</div>\s*<input', html, re.S
+    )
+    film_div = '<div class="rail-film" id="railFilm" aria-hidden="true"></div>'
+    assert marks and marks[1].lstrip().startswith(film_div)
+    assert html.count('id="railFilm"') == 1
+    themes = {
+        ":root": "0.55",
+        ':root[data-theme="light"]': "0.35",
+        ':root[data-theme="dark"]': "0.55",
+    }
+    for theme, opacity in themes.items():
+        block = re.search(re.escape(theme) + r" \{(.*?)\n\}", css, re.S)
+        assert block and f"--film-opacity: {opacity};" in block[1], theme
+    assert re.search(r"^\.rail-film \{[^}]*opacity: var\(--film-opacity\);", css, re.M)
+    assert "future filmstrip" not in css
+    draw = re.search(r"^function drawRail\(c = current\(\)\) \{(.*?)^\}", js, re.M | re.S)
+    assert draw and draw[1].count("drawFilm(c);") == 1 and "railFilm" not in draw[1]
+    film = re.search(r"^function drawFilm\(c = current\(\)\) \{(.*?)^\}", js, re.M | re.S)
+    assert film and "$('#railFilm')" in film[1] and "filmGen += 1;" in film[1]
+    assert "setTimeout(loadFilm, FILM_WAIT)" in film[1]
+    for const in (
+        "const FILM_TILE = 78;",
+        "const FILM_STEP = 0.25;",
+        "const FILM_WAIT = 150;",
+        "const FILM_FAILS = 3;",
+        "const THUMB_LOADS = 3;",
+    ):
+        assert const in js, const
+    assert "&w=${THUMB_W}${key ? '&key=1' : ''}`" in js
+    assert "const FILM_EXACT = 1;" in js and "const key = step >= FILM_EXACT;" in film[1]
+    gaps = re.search(
+        r"^\.rail-marks:has\(> \.rail-film > img\.ok\) > \.rail-gaps > span \{", css, re.M
+    )
+    assert gaps  # Light shades the rail's gaps darker while stills show
+    assert "prefers-reduced-data: reduce" in js and "navigator.connection?.saveData" in js
+    assert "new ResizeObserver(() => drawFilm()).observe($('#rail'))" in js
+    pump = re.search(r"^function pumpThumbs\(\) \{(.*?)^\}", js, re.M | re.S)
+    assert pump and pump[1].index("filmQueue.shift()") < pump[1].index("thumbQueue.shift()")
+    assert "next.gen !== filmGen" in pump[1]
 
 
 STILL_BT2020 = {"color_primaries": "bt2020", "color_space": "bt2020nc", "pix_fmt": "yuv420p10le"}

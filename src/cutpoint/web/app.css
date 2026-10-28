@@ -34,6 +34,7 @@
   --well: #0d1622; /* behind thumbnails and the final video */
   --log-bg: #101b2a;
   --tick: rgba(179, 194, 210, 0.2); /* rail ticks */
+  --film-opacity: 0.55; /* the rail's filmstrip, under the selection, handles and playhead */
   --hatch: rgba(179, 194, 210, 0.16); /* rail gaps and thumbnail shimmer */
   --gap-shade: rgba(10, 18, 28, 0.45);
   --glow-shadow: rgba(255, 174, 25, 0.35);
@@ -89,6 +90,8 @@
   --well: #cdd6e1;
   --log-bg: #f6f8fb;
   --tick: rgba(71, 86, 105, 0.25);
+  --film-opacity: 0.35; /* lower than Blue and Dark: the selection tint and gaps stay readable */
+  --film-gap-shade: rgba(23, 33, 46, 0.32); /* the rail's gaps while stills show */
   --hatch: rgba(71, 86, 105, 0.2);
   --gap-shade: rgba(23, 33, 46, 0.12);
   --glow-shadow: rgba(156, 79, 0, 0.3);
@@ -124,6 +127,7 @@
   --well: #090a0c;
   --log-bg: #0c0e10;
   --tick: rgba(171, 178, 187, 0.2);
+  --film-opacity: 0.55;
   --hatch: rgba(171, 178, 187, 0.16);
   --gap-shade: rgba(0, 0, 0, 0.45);
   --shadow: rgba(0, 0, 0, 0.6);
@@ -400,7 +404,7 @@ select { max-width: 100%; }
 .vol .icon-btn { min-width: 0; flex: none; }
 .vol input[type=range] { width: 7em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
 
-/* the cut rail: the moment in its surrounding footage; the ticks hold the place of a future filmstrip */
+/* the cut rail: the moment in its surrounding footage, on a filmstrip of keyframe stills over the ticks (#261) */
 .rail {
   position: relative; height: 46px; background: var(--deep); border: 1px solid var(--line);
   border-radius: 4px; width: 100%;
@@ -414,11 +418,17 @@ select { max-width: 100%; }
 .rail-marks { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
 .rail-sel.cut-l { border-left-width: 0; }
 .rail-sel.cut-r { border-right-width: 0; }
+/* the filmstrip: stills fade in over the ticks; a missing one leaves its ticks showing */
+.rail-film { position: absolute; inset: 0; opacity: var(--film-opacity); }
+.rail-film > img { position: absolute; top: 0; height: 100%; object-fit: cover; opacity: 0; transition: opacity var(--ease); }
+.rail-film > img.ok { opacity: 1; }
 /* the parts of the source no ready file plays yet, hatched and dimmed under the markers (static) */
 .rail-gaps > span {
   position: absolute; top: 0; bottom: 0; background-color: var(--gap-shade);
   background-image: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 7px);
 }
+/* over shown stills, a theme may shade the gaps darker (Light: the stills drown its light shade) */
+.rail-marks:has(> .rail-film > img.ok) > .rail-gaps > span { background-color: var(--film-gap-shade, var(--gap-shade)); }
 .rail-orig { position: absolute; top: 4px; bottom: 4px; border: 1px dashed var(--muted); border-radius: 2px; pointer-events: none; }
 .rail input[type=range] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
