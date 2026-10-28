@@ -34,6 +34,7 @@
   --well: #0d1622; /* behind thumbnails and the final video */
   --log-bg: #101b2a;
   --tick: rgba(179, 194, 210, 0.2); /* rail ticks */
+  --film-opacity: 0.55; /* the rail's filmstrip, under the selection, handles and playhead */
   --hatch: rgba(179, 194, 210, 0.16); /* rail gaps and thumbnail shimmer */
   --gap-shade: rgba(10, 18, 28, 0.45);
   --glow-shadow: rgba(255, 174, 25, 0.35);
@@ -89,6 +90,8 @@
   --well: #cdd6e1;
   --log-bg: #f6f8fb;
   --tick: rgba(71, 86, 105, 0.25);
+  --film-opacity: 0.35; /* lower than Blue and Dark: the selection tint and gaps stay readable */
+  --film-gap-shade: rgba(23, 33, 46, 0.32); /* the rail's gaps while stills show */
   --hatch: rgba(71, 86, 105, 0.2);
   --gap-shade: rgba(23, 33, 46, 0.12);
   --glow-shadow: rgba(156, 79, 0, 0.3);
@@ -124,6 +127,7 @@
   --well: #090a0c;
   --log-bg: #0c0e10;
   --tick: rgba(171, 178, 187, 0.2);
+  --film-opacity: 0.55;
   --hatch: rgba(171, 178, 187, 0.16);
   --gap-shade: rgba(0, 0, 0, 0.45);
   --shadow: rgba(0, 0, 0, 0.6);
@@ -400,7 +404,7 @@ select { max-width: 100%; }
 .vol .icon-btn { min-width: 0; flex: none; }
 .vol input[type=range] { width: 7em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
 
-/* the cut rail: the moment in its surrounding footage; the ticks hold the place of a future filmstrip */
+/* the cut rail: the moment in its surrounding footage, on a filmstrip of keyframe stills over the ticks (#261) */
 .rail {
   position: relative; height: 46px; background: var(--deep); border: 1px solid var(--line);
   border-radius: 4px; width: 100%;
@@ -414,11 +418,17 @@ select { max-width: 100%; }
 .rail-marks { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
 .rail-sel.cut-l { border-left-width: 0; }
 .rail-sel.cut-r { border-right-width: 0; }
+/* the filmstrip: stills fade in over the ticks; a missing one leaves its ticks showing */
+.rail-film { position: absolute; inset: 0; opacity: var(--film-opacity); }
+.rail-film > img { position: absolute; top: 0; height: 100%; object-fit: cover; opacity: 0; transition: opacity var(--ease); }
+.rail-film > img.ok { opacity: 1; }
 /* the parts of the source no ready file plays yet, hatched and dimmed under the markers (static) */
 .rail-gaps > span {
   position: absolute; top: 0; bottom: 0; background-color: var(--gap-shade);
   background-image: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 7px);
 }
+/* over shown stills, a theme may shade the gaps darker (Light: the stills drown its light shade) */
+.rail-marks:has(> .rail-film > img.ok) > .rail-gaps > span { background-color: var(--film-gap-shade, var(--gap-shade)); }
 .rail-orig { position: absolute; top: 4px; bottom: 4px; border: 1px dashed var(--muted); border-radius: 2px; pointer-events: none; }
 .rail input[type=range] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
@@ -447,6 +457,17 @@ select { max-width: 100%; }
 .rail-handle:focus-visible { outline: 2px solid var(--amber-text); outline-offset: 0; }
 .rail-handle:focus-visible::before { background: var(--amber-text); }
 .rail-handle.off-view::before { opacity: 0.45; } /* its point is off the view: parked at the edge */
+/* ghost handles (#346): the trim an AI Chat proposal would set, dashed, under the real handles */
+.rail-ghost { position: absolute; top: 2px; bottom: 2px; border: 2px dashed var(--amber-text); border-top: 0; border-bottom: 0; }
+.rail-ghost.cut-l { border-left-color: transparent; }
+.rail-ghost.cut-r { border-right-color: transparent; }
+.rail-ghost::before, .rail-ghost::after {
+  content: ""; position: absolute; top: 50%; width: 6px; height: 22px; margin-top: -11px;
+  border: 1px dashed var(--amber-text); border-radius: 2px; background: var(--deep);
+}
+.rail-ghost::before { left: -4px; }
+.rail-ghost::after { right: -4px; }
+.rail-ghost.cut-l::before, .rail-ghost.cut-r::after { display: none; }
 .rail-ends { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 /* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
 .rail-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 4px; }
@@ -639,6 +660,74 @@ select { max-width: 100%; }
 .out-list { display: grid; gap: 4px; }
 .out-list a { color: var(--amber-text); overflow-wrap: anywhere; }
 
+/* AI Chat (#346): the panel fills the column, the conversation above the input */
+#panelAssistant { flex: 1 0 auto; }
+.chat-head { display: flex; align-items: flex-start; gap: 8px; }
+.chat-who { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+#chatProvider { font-size: 13px; overflow-wrap: anywhere; }
+#panelAssistant .chat-log { flex: 1 0 auto; display: grid; gap: 8px; align-content: start; }
+.msg {
+  justify-self: start; max-width: 92%; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 6px 10px;
+  background: var(--deep); border: 1px solid var(--card-line); border-radius: 10px; overflow-wrap: anywhere;
+}
+.msg p { white-space: pre-wrap; }
+.msg.user { justify-self: end; background: var(--raise); border-color: var(--line); }
+.msg.step { background: none; border: 0; padding: 0 4px; color: var(--muted); font-size: 12.5px; }
+.msg.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+.msg.pending { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+.msg.previewing { border-color: var(--amber-text); }
+.msg-meta { color: var(--muted); font-size: 12.5px; }
+.msg-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.msg-acts .btn { white-space: normal; text-align: left; }
+.msg-acts .btn[aria-pressed="true"], .msg-acts .btn.on { border-color: var(--amber-text); }
+.chat-history summary { cursor: pointer; font-weight: 650; font-size: 13px; }
+.history-list { display: grid; gap: 6px; margin-top: 6px; }
+.history-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.history-text { display: grid; flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
+/* the input stays in view at the bottom of the column while the conversation scrolls; it covers the
+   column's 20 px bottom padding too, so no message shows through below it */
+.chat-form {
+  position: sticky; bottom: -20px; z-index: 2; display: flex; align-items: flex-end; gap: 8px;
+  padding: 8px 0 14px; margin-bottom: -12px; background: var(--panel);
+}
+.chat-form textarea {
+  flex: 1 1 auto; min-width: 0; min-height: 40px; resize: vertical; font: inherit; color: var(--text);
+  background: var(--deep); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px;
+}
+.chat-form textarea:disabled { opacity: 0.6; }
+.chat-form .btn { flex: none; min-height: 40px; }
+/* a proposal previewed in the Sequence tab, in place of the sequence: each change in words, with its mark */
+#panelSequence.previewing :is(#seqList, #seqBatch, #seqEmpty, #removedPanel) { display: none; }
+.proposal { display: grid; gap: 8px; padding: 10px; background: var(--deep); border: 1px solid var(--amber-text); border-radius: 8px; }
+.proposal h3 { font-size: 14px; }
+#propSummary { overflow-wrap: anywhere; }
+#propMsg:empty { display: none; }
+.prop-list { display: grid; gap: 4px; }
+.prop-main {
+  font: inherit; color: inherit; text-align: left; cursor: pointer; width: 100%;
+  display: flex; align-items: flex-start; gap: 6px; padding: 4px 6px;
+  background: var(--slate); border: 1px solid var(--card-line); border-left: 3px solid var(--card-line); border-radius: 6px;
+}
+.prop-main:hover { border-color: var(--line); }
+.prop-main .rank { flex: none; width: 3ch; font-weight: 750; text-align: center; }
+.prop-text { display: grid; gap: 2px; min-width: 0; }
+.prop-title { font-weight: 650; overflow-wrap: anywhere; }
+.prop-time { color: var(--muted); font-size: 12.5px; }
+.prop-marks { display: flex; flex-wrap: wrap; gap: 4px; }
+.prop-mark { font-size: 12px; padding: 0 6px; border: 1px solid var(--line); border-radius: 3px; }
+.prop.added .prop-main { border-left-color: var(--ok); }
+.prop.removed .prop-main { border-left-color: var(--bad); }
+.prop.removed .prop-title { text-decoration: line-through; }
+.prop.moved .prop-main, .prop.trimmed .prop-main { border-left-color: var(--gold); }
+.prop-mark.added { color: var(--ok); border-color: var(--ok); }
+.prop-mark.removed { color: var(--bad); border-color: var(--bad); }
+.prop-bar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; background: var(--deep); }
+/* moments the assistant showed or its proposal changes: classes only, on the list's own cards */
+.cand.ai-shown { outline: 2px solid var(--amber-text); outline-offset: -2px; }
+.cand.ai-added { border-left-color: var(--ok); }
+.cand.ai-removed { border-left-color: var(--bad); }
+.cand.ai-changed { border-left-color: var(--gold); }
+
 /* jobs */
 .jobs { background: var(--deep); border-top: 1px solid var(--line); padding: 8px 16px; }
 .jobs-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -678,6 +767,7 @@ dialog form { display: grid; gap: 14px; }
   .side { order: 3; border-left: 0; border-top: 1px solid var(--line); }
   .splitter { display: none; }
   .jobs { position: sticky; bottom: 0; }
+  .chat-form, .prop-bar { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
   .top { flex-wrap: wrap; }
   .proj-pick select { max-width: 60vw; }
   .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: none; }

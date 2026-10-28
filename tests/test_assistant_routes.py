@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from cutpoint import cache, ui
 from cutpoint.assistant import providers
+from cutpoint.assistant import store as ai_store
 from test_assistant import FakeProvider, Reply, call
 
 PORT = 8765
@@ -244,3 +245,59 @@ def test_a_prompt_injection_in_the_transcript_still_only_yields_a_proposal(
     after = files(p)
     assert set(after) - set(before) == {str(Path("ui", "assistant", "chat.json"))}
     assert all(after[f] == before[f] for f in before)
+
+
+def test_an_applied_change_is_reverted_through_a_previewed_proposal(
+    client: TestClient, monkeypatch, proj
+) -> None:
+    """History > Revert this change: a proposal back to the recorded "before", applied and
+    recorded like any other; it writes nothing until applied."""
+    p, seq, ids = proj
+    use(
+        monkeypatch,
+        FakeProvider(
+            [call("propose_edit", summary="Drop the jump", ops=[{"op": "remove", "id": "m2"}])]
+        ),
+    )
+    prop = ask(client, "drop the jump", seq)["events"][0]
+    base = "/api/projects/cli/assistant"
+    applied = client.post(f"{base}/proposals/{prop['id']}/applied", json={"segments": seq}).json()
+    now = applied["after"]
+    assert [s["id"] for s in now] == [ids[0]]
+
+    before = files(p)
+    res = client.post(f"{base}/history/{applied['id']}/revert", json={"segments": now})
+    assert res.status_code == 200, res.text
+    revert = res.json()
+    assert files(p) == before  # a preview only
+    assert revert["id"] == f"revert-{applied['id']}"
+    assert revert["summary"] == "Revert: Drop the jump" and revert["after"] == seq
+    assert [(r["id"], r["changes"]) for r in revert["diff"]] == [(ids[0], []), (ids[1], ["added"])]
+
+    # A sequence changed since the preview needs a new one; then the "before" comes back as it was.
+    trimmed = [{**now[0], "end": now[0]["end"] - 2}]
+    url = f"{base}/proposals/{revert['id']}/applied"
+    res = client.post(url, json={"segments": trimmed, "base_key": revert["base_key"]})
+    assert res.status_code == 409 and "preview it again" in res.json()["detail"]
+    assert client.post(url, json={"segments": now}).status_code == 409  # no base_key
+    assert files(p) == before
+    again = client.post(f"{base}/history/{applied['id']}/revert", json={"segments": trimmed}).json()
+    assert [r["changes"] for r in again["diff"]] == [["trimmed"], ["added"]]
+    done = client.post(url, json={"segments": trimmed, "base_key": again["base_key"]}).json()
+    assert done["after"] == seq and done["before"] == trimmed and done["rebased"] is False
+    assert done["summary"] == "Revert: Drop the jump"
+    assert [h["proposal"] for h in client.get(f"{base}/history").json()["applied"]] == [
+        prop["id"],
+        revert["id"],
+    ]
+    # nothing left to revert, unknown changes, and a "before" the project can no longer hold
+    res = client.post(f"{base}/history/{applied['id']}/revert", json={"segments": seq})
+    assert res.status_code == 409 and "already as it was" in res.json()["detail"]
+    assert client.post(f"{base}/history/nope/revert", json={"segments": seq}).status_code == 404
+    res = client.post(f"{base}/proposals/revert-nope/applied", json={"segments": seq})
+    assert res.status_code == 404
+    gone = {**seq[0], "source": str(p / "gone.mp4")}
+    ai_store.add_applied(p, {"id": "old1", "summary": "x", "before": [gone], "after": seq})
+    res = client.post(f"{base}/history/old1/revert", json={"segments": seq})
+    assert res.status_code == 409 and "can no longer be reverted" in res.json()["detail"]
+    assert not (p / "ui" / "review.json").exists()

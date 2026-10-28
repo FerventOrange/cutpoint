@@ -205,7 +205,9 @@ def test_concat_copy_rebuilds_the_audio_for_peaks_without_fades(monkeypatch, tmp
     files = [tmp_path / "1.mp4", tmp_path / "2.mp4"]
     infos = [media_info(f, 3.0) for f in files]
     assemble.concat_copy(files, tmp_path / "o.mp4", infos, [0.0, 0.0], ["", ""])
-    assert "-filter_complex" not in calls[-1]  # nothing to do: plain stream copy
+    # no fades or peaks: the audio is still rebuilt (priming frames, #473), the video copied
+    assert "-filter_complex" in calls[-1] and "acompressor" not in " ".join(calls[-1])
+    assert calls[-1][calls[-1].index("-c:v") + 1] == "copy"
     assemble.concat_copy(files, tmp_path / "o.mp4", infos, [0.0, 0.0], [",acompressor=x", ""])
     graph = calls[-1][calls[-1].index("-filter_complex") + 1]
     assert "[1:a:0]" in graph and graph.count("acompressor=x") == 1
@@ -216,9 +218,11 @@ def test_limit_without_loudnorm_runs_the_limiter_alone(monkeypatch, tmp_path):
     calls: list[list[str]] = []
     monkeypatch.setattr(assemble, "run", lambda args, **_: calls.append(args) or "")
     monkeypatch.setattr(assemble, "has_soxr", lambda: True)
+    monkeypatch.setattr(assemble, "probe", lambda p: media_info(p, 4.0))
     assemble.post_process(tmp_path / "s.mp4", tmp_path / "o.mp4", False, False, None, limit=True)
     args = calls[-1]
-    assert args[args.index("-af") + 1] == assemble.limiter_filter(assemble.LIMIT_START_DB)
+    limiter = assemble.limiter_filter(assemble.LIMIT_START_DB)
+    assert args[args.index("-af") + 1] == f"{limiter},atrim=end=4.000000"
     assert "loudnorm=" not in " ".join(args) and "320k" in args
     assemble.post_process(tmp_path / "s.mp4", tmp_path / "o.mp4", False, False, None)
     assert "-af" not in calls[-1] and "copy" in calls[-1]

@@ -222,7 +222,8 @@ the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` retur
 job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
 
-The sequence column has two tabs, Sequence and Export. The Export tab holds one "Export &
+The sequence column has three tabs: Sequence, AI Chat (see [AI Chat](#ai-chat) below) and Export.
+The Export tab holds one "Export &
 Assembly Options" panel; each option has a hover description, and the choices are remembered per
 browser:
 
@@ -286,10 +287,15 @@ earlier clips a second Make would replace).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
-JPEGs in `<project>/ui/frames/` (at most 500 per project, least recently used evicted). Drag the
+JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
 remembered per browser. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
 pass another `--port`.
+
+Undo and Redo in the Sequence header (Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z) step back and forward
+through sequence edits: add, remove, reorder, rename, trim (a run of nudges to one edge within a
+second is one step), reset, and applied AI Chat changes. They keep the last 50 steps and are
+cleared when another project opens. In a text field the keys edit the text instead.
 
 Jobs run one at a time with logs and cancellation. Results remain the usual Cutpoint files;
 review choices live under `<project>/ui/`. Exports use fresh `clips_ui_*` folders and finals use
@@ -328,11 +334,17 @@ preview (moments, clips and final) and is remembered per browser; the default is
 Playback and scrubbing cover the whole source: playback runs on past the clip end, and Play at
 the end of the source starts the clip again. The trim rail under the video is a zoomable view of
 the source with the clip (gold) and the analyzed range (dashed) as markers; it opens on the clip
-plus half its length (at least 10 s) either side. "Zoom out", "Zoom in" and "Fit clip" change
-the view, the overview strip next to them shows the view in the whole source and pans it (drag
-or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The rail follows the
-playhead during playback. On the rail, the arrow keys move the playhead by 0.5% of the view (at
-least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
+plus half its length (at least 10 s) either side. Behind the markers, a filmstrip shows at most
+one still per 78 px (one every 78 to 156 px): the keyframe at or before each point, so a still
+can be a little early; zoomed in to under 1 s per still, exact stills instead. The stills load a
+few at a time once the view stops moving, nearest the playhead first, and are cached with the
+thumbnails; a still that fails leaves the rail's ticks showing, and after 3 failures a source
+gets no filmstrip until the page reloads. With the browser's data saver on
+(`prefers-reduced-data` or Save-Data), the rail keeps its ticks only. "Zoom out", "Zoom in" and
+"Fit clip" change the view, the overview strip next to them shows the view in the whole source
+and pans it (drag or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The
+rail follows the playhead during playback. On the rail, the arrow keys move the playhead by 0.5%
+of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
 rail widens to show it. The gold start and end edges on the rail are handles: drag them (a drag held at
 the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
 Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
@@ -346,6 +358,36 @@ and resumes, and Escape or "Stop" ends it; removing the playing clip also stops 
 proxy is still being built is waited for, and one whose preview cannot be built is skipped.
 Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
 remote access is not supported.
+
+### AI Chat
+
+The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
+`config.json` (local Ollama only for now). Its header shows the model and provider, with a note
+that a small local model can miss moments or misread a request. Type a request and press Enter
+or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
+for …") and can be stopped with Cancel. The chat needs an analyzed project.
+
+- Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
+  the list filtered by the model's search words.
+- A proposed change opens in the Sequence tab as a preview of the new sequence: each row is
+  marked Added, Moved (old to new position), Trimmed (old to new times) or Renamed, removed clips are
+  listed as Removed, the moments are marked in the Moments list, and the trim rail shows the new
+  start and end as dashed edges. Apply replaces the working sequence (Save keeps it, Undo takes
+  it back); Discard drops the preview. Up to three alternative suggestions are previewed the same
+  way. If the sequence changed since the proposal was made (a note says so; an applied
+  proposal's button reads "Review again"), Apply makes the change on the current sequence and
+  says so, or tells you to discard it and ask again when it no longer fits. While Apply waits,
+  Discard is off and a new proposal from the chat is previewed after it.
+- "Applied changes" lists the changes applied in this project; "Revert this change" previews a
+  change that puts the sequence back as it was before, applied like any other. If the sequence
+  changes after that preview, Apply previews the revert again on it instead.
+- "Clear chat" deletes the conversation only; the sequence and the applied changes stay.
+
+Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST .../turns` and
+`GET .../turns/<turn>?after=<n>`, `POST .../turns/<turn>/cancel`,
+`POST .../proposals/<proposal>/applied`, `DELETE .../chat`, `GET .../history` and
+`POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
+and writes nothing; applying it with another sequence or without that key is refused with 409).
 
 ## capabilities
 
@@ -816,8 +858,10 @@ Joins the `.mp4` files currently in the folder, in natural filename order (`2_x`
 holds the folder's [lock](#clips) while it runs. The audio fade and peak compression baked
 into a clip renamed during review are read from its manifest entry, matched by size.
 
-- `cut` (default) uses stream copy when all clips share parameters, else normalises and
-  re-encodes. `fade` crossfades video and audio over `--fade-dur` seconds (default 0.25,
+- `cut` (default) stream-copies the video when all clips share parameters, else normalises and
+  re-encodes it. The audio is always re-encoded once (192k AAC), so `final.mp4`'s audio and
+  container end with the video to within one audio frame, and the `.fcpxml` and `.otio` end
+  where `final.mp4` ends. `fade` crossfades video and audio over `--fade-dur` seconds (default 0.25,
   greater than 0), rounded to whole frames of the first clip's frame rate (0.25 s at 29.97 fps
   is 7 frames, 0.2336 s) so video, audio and `final.srt` use the same length: at least one
   frame and at most 45% of the shortest clip. When one frame is more than that, the clips are
@@ -843,7 +887,8 @@ into a clip renamed during review are read from its manifest entry, matched by s
   `.otio` matches `final.mp4` exactly.
 - `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
   then measures the result and redoes the pass with a lower ceiling if the true peak is above
-  -1.5 dBTP. Very peaky material can land up to about 1 LU below target.
+  -1.5 dBTP. Very peaky material can land up to about 1 LU below target. The audio ends
+  with the video, without padding.
 - `--compress-peaks light|strong` applies [peak compression](#peak-compression) to the clips
   that were not exported with it (their `manifest.json` entry has no `compress_peaks`), in the
   join, before the edge fade. The final audio then always ends with the true-peak limiter

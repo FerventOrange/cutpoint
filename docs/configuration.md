@@ -179,9 +179,9 @@ How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at 
 
 ### assistant
 
-Settings for the `cutpoint ui` assistant. Only the backend exists so far: the UI's API serves it
-(`/api/projects/{id}/assistant`, token header only), but the page has no chat panel yet. It
-writes `ui/assistant/chat.json` and `history.json` in the project. There is no API key setting.
+Settings for the `cutpoint ui` [AI Chat tab](commands.md#ai-chat), served by the UI's API
+(`/api/projects/{id}/assistant`, token header only). It writes `ui/assistant/chat.json` and
+`history.json` in the project. There is no API key setting.
 
 - `provider`: `ollama` (default, the only one).
 - `model`: Ollama model name. Empty (default) is auto: `qwen3.5:9b` if Ollama has it pulled, else
