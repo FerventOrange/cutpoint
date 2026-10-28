@@ -750,14 +750,15 @@ into a clip renamed during review are read from its manifest entry, matched by s
   joined with cuts (WARNING).
   A fade re-encodes only the video around each join and stream-copies the rest of every clip,
   from keyframe to keyframe. The audio goes through the same filters as a full re-encode, so
-  `final.mp4` has the same frames and audio, and `final.srt` and the timelines are unchanged.
-  `clips` and `extend` force one keyframe 0.5 s from each end of every clip (about 5% larger
-  clips), so a fade of up to 0.5 s (the default is 0.25 s) re-encodes little more than the
-  fade itself; longer fades use the clips' own keyframes. AMF exports get no forced keyframes. Clips exported
-  before that, AMF exports or clips added by hand use the keyframes they have, so more of
-  them is re-encoded. The whole video is re-encoded as before, with one INFO line giving the
-  reason, when the clips differ in codec, size, frame rate, colour tags or encoder settings,
-  are not constant frame rate, or would need more than 60% re-encoded anyway.
+  `final.mp4` has the same number of frames at the same times, and the same audio, and
+  `final.srt` and the timelines are unchanged. `clips` and `extend` force one keyframe 0.5 s
+  from each end of every clip (about 5% larger clips), so a fade of up to 0.5 s (the default
+  is 0.25 s) re-encodes little more than the fade itself; longer fades use the clips' own
+  keyframes. Clips exported before that, AMF exports or clips added by hand use the keyframes
+  they have, so more of them is re-encoded. The whole video is re-encoded as before, with one
+  INFO line giving the reason, when the clips differ in codec, size, frame rate, colour tags
+  or encoder settings, are not constant frame rate, or would need more than 60% re-encoded
+  anyway.
   `CUTPOINT_FADE_COPY=0` always re-encodes the whole video.
 - `--audio-transition cut|crossfade` sets the audio join separately. Default: it follows
   `--transition` (`cut` gives `cut`, `fade` gives `crossfade`). `--transition cut

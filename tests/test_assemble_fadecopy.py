@@ -24,7 +24,8 @@ def _packets(frames: int, keys: tuple[int, ...]) -> VideoPackets:
 
 
 def test_the_plan_copies_between_the_keyframes_next_to_each_fade():
-    edges = (0, 15, 30, 45, 255, 270, 285)  # forced keyframes: 0.5-1.5 s from both ends at 30 fps
+    # keyframes 0.5, 1.0 and 1.5 s from both ends at 30 fps (a clip with extra keyframes)
+    edges = (0, 15, 30, 45, 255, 270, 285)
     clips = [_packets(300, edges) for _ in range(3)]
     plan = assemble.fade_copy_plan(clips, 30)
     assert plan == [
