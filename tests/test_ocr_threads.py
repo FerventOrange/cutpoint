@@ -75,8 +75,23 @@ def test_discovery_reads_on_one_lane_with_every_thread(
             "det_limit_type": "max",
             "det_limit_side_len": params.width,
             "intra_op_num_threads": 4,
+            "rec_batch_num": 1,  # each box recognised alone (#443)
         }
     ]
+
+
+def test_the_ocr_layer_keeps_rapidocrs_rec_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only discovery recognises one box at a time (#443): the OCR layer's engines (as
+    pipeline and ocr_prefetch make them) keep RapidOCR's batching, so its raw reads and
+    their cache key are unchanged."""
+    made = _fake_rapidocr(monkeypatch)
+    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
+
+    engine = killfeed.OcrEngine()
+
+    assert engine.rec_batch is None
+    assert len(made) == killfeed.OCR_LANES
+    assert all("rec_batch_num" not in kwargs for kwargs in made)
 
 
 class _Lanes:
@@ -173,3 +188,36 @@ def test_reader_gates_regions_at_once_with_the_records_of_one_lane(
     assert [r["b"]["g"] for r in two] == ["det", "det", "read"]
     assert two[2]["b"]["items"]
     assert lanes.peak == 2
+
+
+def test_det_side_stays_in_the_raw_cache_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OCR_DET_SIDE has no effect on RapidOCR 1.4.4 (#443) but is part of the raw OCR cache
+    key: the key of a read stays byte-identical, so existing raw caches still hit."""
+    from cutpoint import cache  # noqa: PLC0415
+    from cutpoint.events import ocr_raw  # noqa: PLC0415
+
+    _fake_rapidocr(monkeypatch)
+
+    side = killfeed.OcrEngine(lanes=1).det_side
+    key = ocr_raw.raw_key(3.0, [], "bottom", 0.5, [], side) | {"engine": "1.4.4"}
+
+    assert side == killfeed.OCR_DET_SIDE == 960
+    assert cache.params_hash(key) == "2e53590a5c"  # the key before #443
+
+
+@pytest.mark.slow
+def test_rapidocr_ignores_the_det_side() -> None:
+    """With det_limit_type="max", RapidOCR 1.4.4 picks the detection size from the image
+    (#443), so det_side does not change what is read. Fails when a RapidOCR version honours
+    it: then OCR_DET_SIDE changes the output and its comment is wrong."""
+    pytest.importorskip("rapidocr_onnxruntime")
+    import cv2  # noqa: PLC0415
+
+    img = np.zeros((200, 1400, 3), np.uint8)  # wider than 960: scaled if det_side were used
+    for i, word in enumerate(("Alpha downed Bravo", "Charlie 1234 eliminated")):
+        cv2.putText(img, word, (20 + 500 * i, 60 + 80 * i), 0, 1.4, (255, 255, 255), 3)
+
+    out = [killfeed.OcrEngine(det_side=side, lanes=1)(img, 0.5) for side in (320, 960)]
+
+    assert [text for _, text, _ in out[1]] == ["Alpha downed Bravo", "Charlie 1234 eliminated"]
+    assert repr(out[0]) == repr(out[1])

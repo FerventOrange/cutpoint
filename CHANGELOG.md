@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster runs: a source is probed with ffprobe once per run instead of 3 to 5 times (about 0.1 s
   each). The result is reused until the file, or its staged copy, changes; results are unchanged
   (#372).
+- HUD region discovery is about 22 % faster on a first run (1424 s to 1115 s over 5 test clips,
+  CPU OCR): it recognises the text boxes of a frame one at a time instead of in padded batches.
+  Extra notice regions at the screen edges may come out slightly different, and so may their
+  notice text; on the 5 test clips, kills, kill names, menu frames and highlight candidates were
+  unchanged. Frames already in a discovery cache keep their earlier reading; discover from
+  scratch to get the new regions. The OCR layer reads as before, so raw OCR caches stay valid
+  (#443).
 
 ### Fixed
 
