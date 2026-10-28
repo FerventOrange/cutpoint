@@ -350,6 +350,26 @@ def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
     assert "nerdStats: false," in js  # off unless the browser stored "1"
 
 
+def test_moment_cards_show_a_read_only_strip_of_their_place_in_the_source() -> None:
+    """Contract pin: the score bar on the moment cards became a strip like the preview's overview
+    (the whole source, the moment in --gold on --deep), with no control of its own, hidden from
+    screen readers (the time line states the times) and the score in its hover title.
+
+    Check in a browser (no browser in the test suite): in Blue, Light and Dark, each card's strip
+    marks its moment in gold where the overview does; clicking it opens the moment as before."""
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    strip = re.search(r"^function sourceStrip\(c\) \{(.*?)^\}", js, re.M | re.S)
+    assert strip and "sourceStrip(c)," in js
+    assert "'aria-hidden': 'true'" in strip[1]
+    assert "title: `Score ${c.score.toFixed(3)}`" in strip[1]
+    assert "input" not in strip[1] and "tabindex" not in strip[1]
+    assert "const dur = sourceDur(c.source);" in strip[1]  # no request per card
+    assert re.search(r"^\.cand-strip \{[^}]*background: var\(--deep\);", css, re.M)
+    assert re.search(r"^\.cand-strip-clip \{[^}]*background: var\(--gold\);", css, re.M)
+    assert "class: 'score'" not in js and not re.search(r"^\.score\b", css, re.M)
+
+
 def _theme_colours(css: str, selector: str) -> dict[str, str]:
     block = re.search(re.escape(selector) + r" \{(.*?)\n\}", css, re.S)
     assert block, selector
@@ -481,7 +501,7 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
         ]
         if name != "blue":  # Blue keeps today's borders (below 3:1)
             ui_parts += [("line", "panel"), ("line", "slate"), ("line", "deep")]
-            # the --amber fill of progress and score bars on their track
+            # the --amber fill of progress bars on their track
             ui_parts += [("amber", "track")]
         for fg, bg in ui_parts:
             assert _contrast(t[fg], t[bg]) >= 3, (name, fg, bg)
