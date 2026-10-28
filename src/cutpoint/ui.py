@@ -585,7 +585,7 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
         return value.strip() if isinstance(value, str) else ""
 
     try:
-        ollama = ollama_url()
+        ollama = ai_providers.public(ollama_url())  # OLLAMA_HOST may carry user:password@
     except (ValueError, TypeError):  # a bad port or config.json: Settings still opens
         ollama = ""
     offers = {
@@ -608,7 +608,7 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "provider": name if name in ASSISTANT_PROVIDERS else "ollama",
         "model": text("model"),
-        "url": text("url"),
+        "url": ai_providers.public(text("url")),  # a hand-edited one too; Settings refuses it
         "providers": [
             {
                 "name": p,

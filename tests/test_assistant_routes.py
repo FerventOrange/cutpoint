@@ -528,6 +528,19 @@ def test_settings_refuse_a_url_with_a_user_name_or_password(
     assert not (home / "config.json").exists()
 
 
+def test_settings_never_show_the_password_of_a_url(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "http://user:s3cretpw@box:11434")
+    set_config(home, assistant={"provider": "ollama", "url": "http://me:0therpw@nas:11434"})
+    res = client.get("/api/settings")
+    assert res.status_code == 200
+    assert "s3cretpw" not in res.text and "0therpw" not in res.text and "user:" not in res.text
+    got = res.json()["assistant"]
+    ollama = next(p for p in got["providers"] if p["name"] == "ollama")
+    assert ollama["default_url"] == "http://box:11434" and got["url"] == "http://nas:11434"
+
+
 def test_a_saved_key_for_another_host_is_not_called_checked(
     client: TestClient, monkeypatch, home: Path
 ) -> None:
