@@ -111,6 +111,8 @@ def run_edit(
     skip: Collection[str] = (),
     compress_peaks: str = "off",
     lut: Lut | None = None,
+    color: str | None = None,
+    color_strength: float = 1.0,
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
@@ -121,7 +123,8 @@ def run_edit(
     ``ollama_model`` and ``skip`` are analyze's options of those names. ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
-    as ``clips --lut`` does; the final keeps the grade.
+    as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
+    ``--color-strength`` (None: config.json's ``color``); the final keeps the grade.
 
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
@@ -151,6 +154,8 @@ def run_edit(
             skip=skip,
             compress_peaks=compress_peaks,
             lut=lut,
+            color=color,
+            color_strength=color_strength,
         )
 
 
@@ -170,6 +175,8 @@ def _run_edit(
     skip: Collection[str],
     compress_peaks: str,
     lut: Lut | None,
+    color: str | None,
+    color_strength: float,
 ) -> Path:
     """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
@@ -224,6 +231,8 @@ def _run_edit(
             force=force,
             compress_peaks=compress_peaks,
             lut=lut,
+            color=color,
+            color_strength=color_strength,
         )
     steps.start("assemble")
     srt = (project / final_name).with_suffix(".srt")

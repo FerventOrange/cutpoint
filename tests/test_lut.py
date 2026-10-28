@@ -9,10 +9,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import numpy as np
 import pytest
 
-from conftest import media_info, needs_ffmpeg, run_json, write
+from conftest import media_info, needs_ffmpeg, run_json, set_config, write
 from cutpoint import cli, encode, extend, ffmpeg_utils, jsonout, planning
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import ClipPlan, RenderResult, _entry
+from cutpoint.color import AutoGrade
 from cutpoint.encode import Lut
 from cutpoint.ffmpeg_utils import VideoEncoder
 from cutpoint.planning import Padding
@@ -225,6 +226,82 @@ def test_cli_passes_the_checked_lut_to_clips_and_edit(tmp_path, monkeypatch, loa
     assert got["clips"] is None
 
 
+@pytest.fixture
+def calls(monkeypatch) -> list[str]:
+    """Stub export_clips and run_edit (recording which ran, with their color arguments)."""
+    got: list = []
+    monkeypatch.setattr(cli, "export_clips", lambda project, **kw: got.append(("clips", kw)))
+    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: got.append(("edit", kw)))
+    return got
+
+
+@pytest.mark.parametrize("command", [["clips", "p"], ["edit", "v.mp4"]])
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--color", "auto"], "--color auto cannot be combined with --lut"),
+        (["--color", "underwater"], "--color underwater cannot be combined with --lut"),
+        (["--color-strength", "0.5"], "--color-strength does not apply to --lut"),
+    ],
+)
+def test_cli_color_with_lut_is_bad_args_before_any_work(
+    tmp_path, capsys, loads, calls, command, extra, message
+):
+    lut = write(tmp_path / "look.cube")
+    code, doc = run_json(capsys, [*command, "--lut", str(lut), *extra])
+    assert code == 1 and doc["error"]["code"] == "bad_args"
+    assert message in doc["error"]["message"]
+    assert calls == []
+
+
+@pytest.mark.parametrize("command", [["clips", "p"], ["edit", "v.mp4"]])
+@pytest.mark.parametrize(
+    ("cfg", "extra"),
+    [("off", []), ("auto", ["--color", "off"]), (None, [])],  # None: no config.json
+)
+def test_cli_color_strength_without_a_correction_is_bad_args(
+    home, capsys, calls, command, cfg, extra
+):
+    if cfg is not None:
+        set_config(home, color=cfg)
+    code, doc = run_json(capsys, [*command, *extra, "--color-strength", "0.5"])
+    assert code == 1 and doc["error"]["code"] == "bad_args"
+    assert "--color-strength needs --color auto or underwater" in doc["error"]["message"]
+    assert calls == []
+
+
+def test_cli_color_strength_with_config_color_passes(home, calls):
+    set_config(home, color="auto")
+    assert cli.main(["clips", "p", "--color-strength", "0.5"]) == 0
+    assert (calls[0][1]["color"], calls[0][1]["color_strength"]) == (None, 0.5)
+
+
+@pytest.mark.parametrize("command", ["clips", "edit"])
+@pytest.mark.parametrize("extra", [["--color-strength", "1.5"], ["--color", "sepia"]])
+def test_cli_color_options_out_of_range_exit_2(capsys, command, extra):
+    with pytest.raises(SystemExit) as exc:
+        cli.main([command, "p", *extra, "--json"])
+    assert exc.value.code == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "bad_args"
+
+
+def test_cli_passes_color_and_strength_to_clips_and_edit(tmp_path, loads, calls):
+    def got(argv):
+        calls.clear()
+        assert cli.main(argv) == 0
+        kw = calls[0][1]
+        return kw["color"], kw["color_strength"]
+
+    assert got(["clips", "p"]) == (None, 1.0)  # None: config.json's color
+    assert got(["clips", "p", "--color", "underwater", "--color-strength", "0.4"]) == (
+        "underwater",
+        0.4,
+    )
+    assert got(["edit", "v.mp4", "--color", "auto"]) == ("auto", 1.0)
+    lut = write(tmp_path / "look.cube")
+    assert got(["clips", "p", "--color", "off", "--lut", str(lut)])[0] == "off"  # not a conflict
+
+
 # -- manifest and extend -------------------------------------------------------------------------
 
 
@@ -430,9 +507,50 @@ def test_real_clips_record_the_grade_and_extend_redoes_it(
     assert (out / "001_a.mp4").stat().st_size > 0
 
 
-def test_extend_of_a_clip_with_only_a_color_record_checks_no_lut_and_passes_no_grade(
+def test_extend_of_a_clip_with_only_a_color_record_checks_no_lut_and_passes_its_grade(
     tmp_path, exports, loads
 ):
-    clips = _graded_clips(tmp_path, None, color={"name": "warm"})
+    grade = AutoGrade("auto", black=0.05, white=0.95)
+    clips = _graded_clips(tmp_path, None, **grade.to_json())
     extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
-    assert exports[0][-1] is None and loads == []
+    assert exports[0][-1] == grade and loads == []
+
+
+def _auto_entry(**over) -> dict:
+    return AutoGrade("auto", black=0.05, white=0.9, **over).to_json()
+
+
+def test_extend_reuse_needs_the_same_automatic_grade():
+    old = {"source": "a.mp4", "start": 1.0, "end": 2.0} | _auto_entry()
+    assert extend._reusable(old, dict(old), True, 0.25)
+    assert not extend._reusable(old, old | _auto_entry(strength=0.5), True, 0.25)
+    assert not extend._reusable(old, {k: v for k, v in old.items() if k != "color"}, True, 0.25)
+
+
+def _newer(entry: dict) -> dict:
+    return {"color": entry["color"] | {"version": 99}}
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        ({"color": {"method": "auto", "params": {"black": "zz"}}}, "unreadable grade"),
+        ({"color": {"method": "sepia"}}, "color record this Cutpoint cannot read"),
+        (_newer(_auto_entry()), "version 99, newer than this Cutpoint's"),
+    ],
+    ids=["unreadable", "unknown-method", "newer-version"],
+)
+def test_extend_stops_before_any_export_on_a_color_record_it_cannot_redo(
+    tmp_path, exports, loads, record, message
+):
+    clips = _graded_clips(tmp_path, None, **record)
+    with pytest.raises(ValueError, match=message):
+        extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+    assert exports == []
+
+
+def test_extend_redoes_a_skipped_color_record_ungraded(tmp_path, exports, loads):
+    skipped = AutoGrade.skipped("auto", "good")
+    clips = _graded_clips(tmp_path, None, **skipped.to_json())
+    extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+    assert exports[0][-1] == skipped and exports[0][-1].filter() == ""

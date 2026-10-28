@@ -9,6 +9,7 @@
     "ollama_url": "Ollama base URL for `analyze --vision` and the VLM layers of `cutpoint events`. Env OLLAMA_HOST overrides it. Default: http://127.0.0.1:11434.",
     "vision": "true or false (default). true: `cutpoint analyze` and `cutpoint edit` rate the top candidates with the local Ollama vision model unless --no-vision is given (slower; uses several GB of GPU memory). false: only --vision turns it on for one run. The UI's Settings dialog writes it, and the UI's vision checkboxes start from it.",
     "compress_peaks": "off (default), light or strong: peak compression and clip leveling of `cutpoint clips`, `assemble` and `edit` when --compress-peaks is not given (see docs/commands.md#peak-compression).",
+    "color": "off (default), auto or underwater: automatic color correction of `cutpoint clips` and `edit` when --color is not given (see docs/commands.md#clips). Never applied to gaming footage (only --color grades it) nor together with --lut.",
     "analysis": "{\"skip\": [...]}: analysis steps `cutpoint analyze` and `cutpoint edit` leave out by default; any of reactions, keyframes and crashes. --skip overrides it per run. Default: none.",
     "video_encoder": "auto, nvenc, amf, vaapi or cpu (libx264). Env CUTPOINT_VIDEO_ENCODER overrides it. auto really encodes a short test clip with each GPU encoder and uses the first that works, else libx264; a named GPU encoder that does not work is an error. `cutpoint capabilities` shows what works. Default: auto.",
     "export_workers": "auto or 1-3: how many clips `cutpoint clips` and `edit` export at once. Env CUTPOINT_EXPORT_WORKERS overrides it. auto uses 2 with a GPU encoder (nvenc, amf, vaapi) and 1 with libx264, which already uses every core; runs with a 360 clip always export one at a time. Default: auto.",
@@ -31,6 +32,7 @@
   "export_workers": "auto",
   "vision": false,
   "compress_peaks": "off",
+  "color": "off",
   "analysis": {
     "skip": []
   },

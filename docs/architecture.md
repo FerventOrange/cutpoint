@@ -33,6 +33,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `assistant/` | Backend of the `cutpoint ui` assistant: `providers.py` (Ollama), `session.py` (turns), `context.py`, `ops.py`, `store.py` (`ui/assistant/chat.json`, `history.json`); no page UI yet |
 | `styles.py` | Built-in styles and learned styles |
 | `planning.py`, `clips.py`, `encode.py` | Moment selection and padding; ordering, export and manifest; format choice and frame-accurate encode |
+| `color.py` | `--color auto` / `underwater`: per-clip measurement, grade estimate, numpy simulation and veto, per-source cache; `scripts/color_eval.py` is its development harness |
 | `tail.py`, `boundaries.py`, `crop.py` | Smart tails, speech-aware in/out points, cropping |
 | `extend.py` | Re-export a clips folder with padding |
 | `assemble.py`, `timeline.py` | Concat or crossfade, loudness, captions; FCPXML 1.10 and OTIO writers |

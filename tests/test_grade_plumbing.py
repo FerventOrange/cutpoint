@@ -5,16 +5,18 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from conftest import media_info, write
-from cutpoint import clips, encode, sources
+from conftest import media_info, set_config, write
+from cutpoint import clips, color, encode, jsonout, sources
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import ClipPlan, RenderResult, _entry
+from cutpoint.color import AutoGrade
+from cutpoint.crop import Crop
 from cutpoint.encode import Lut, OutputFormat
 from cutpoint.events.tails import EventTailSettings
 from cutpoint.ffmpeg_utils import VideoEncoder
@@ -62,6 +64,16 @@ def plan(i: int, tmp_path: Path, pano: bool = False) -> ClipPlan:
 )
 def test_grade_from_entry_reads_a_recorded_lut(entry, expected):
     assert encode.grade_from_entry(entry) == expected
+
+
+def test_grade_from_entry_reads_an_automatic_grade_and_a_lut_wins():
+    auto = AutoGrade("underwater", 0.5, black=0.05, white=0.9, mix=0.2)
+    skipped = AutoGrade.skipped("auto", color.SKIP_LOG)
+    assert encode.grade_from_entry(auto.to_json()) == auto
+    assert encode.grade_from_entry(skipped.to_json()) == skipped  # recorded, no filter
+    lut = Lut(Path("/l/a.cube"), 0.4)
+    both = {"lut": "/l/a.cube", "lut_strength": 0.4} | auto.to_json()
+    assert encode.grade_from_entry(both) == lut
 
 
 # -- a non-Lut grade flows through the encode and the manifest -----------------------------------
@@ -232,3 +244,130 @@ def test_a_foreign_manifest_still_stops_the_run_before_the_warning(home, monkeyp
     with pytest.raises(FileExistsError, match="may not be one cutpoint wrote"):
         _run(home, monkeypatch, old=GRADED, generator="other-tool")
     assert "were graded" not in caplog.text
+
+
+@pytest.fixture
+def dropped(monkeypatch) -> list[tuple[str, str]]:
+    """The ``jsonout.warn`` calls (code, message) of ``_warn_dropped_grade``."""
+    got: list[tuple[str, str]] = []
+    monkeypatch.setattr(jsonout, "warn", lambda code, msg, files=(): got.append((code, msg)))
+    return got
+
+
+@pytest.mark.parametrize(
+    ("entries", "again"),
+    [
+        ([{"lut": "/l/a.cube"}], "--lut"),
+        ([AutoGrade("auto", black=0.05).to_json()], "--color"),
+        ([{"lut": "/l/a.cube"}, AutoGrade("auto", black=0.05).to_json()], "--color or --lut"),
+    ],
+    ids=["lut", "color", "both"],
+)
+def test_dropped_grade_is_a_json_warning_naming_the_flags_to_give_again(
+    tmp_path, dropped, entries, again
+):
+    write(tmp_path / "manifest.json", json.dumps({"clips": entries}))
+    clips._warn_dropped_grade(tmp_path)
+    ((code, message),) = dropped
+    assert code == "grade_dropped" and f"give {again} again" in message
+
+
+@pytest.mark.parametrize("skip", [color.SKIP_GOOD, color.SKIP_360, color.SKIP_LOG, color.VETO_CAST])
+def test_skipped_color_records_are_not_counted_as_graded(tmp_path, caplog, dropped, skip):
+    skipped = AutoGrade.skipped("auto", skip).to_json()
+    write(tmp_path / "manifest.json", json.dumps({"clips": [skipped]}))
+    clips._warn_dropped_grade(tmp_path)
+    assert dropped == [] and "were graded" not in caplog.text
+
+    graded = AutoGrade("auto", black=0.05).to_json()  # one graded clip among skipped ones
+    write(tmp_path / "manifest.json", json.dumps({"clips": [skipped, graded, skipped]}))
+    clips._warn_dropped_grade(tmp_path)
+    assert "1 clip(s)" in dropped[0][1]
+
+
+# -- _color_mode ---------------------------------------------------------------------------------
+
+FUNNY, GAMING = get_style("funny"), get_style("gaming")
+LUT = Lut(Path("/l/a.cube"), 1.0)
+
+
+@pytest.mark.parametrize(
+    ("cfg", "given", "lut", "style", "want", "level"),
+    [
+        ("auto", None, None, FUNNY, "auto", None),
+        ("underwater", None, None, FUNNY, "underwater", None),
+        ("off", None, None, FUNNY, "off", None),
+        ("auto", None, LUT, FUNNY, "off", None),  # config never applies with a LUT
+        ("auto", None, None, GAMING, "off", "INFO"),  # ... nor to gaming footage
+        ("auto", "off", None, FUNNY, "off", None),  # a given mode wins over config
+        ("off", "underwater", None, FUNNY, "underwater", None),
+        ("off", "auto", None, GAMING, "auto", "WARNING"),  # explicit on gaming: allowed, warned
+        ("auto", "off", None, GAMING, "off", None),
+    ],
+)
+def test_color_mode_resolves_flag_config_lut_and_gaming(
+    home, caplog, cfg, given, lut, style, want, level
+):
+    set_config(home, color=cfg)
+    caplog.set_level(logging.INFO)
+    assert clips._color_mode(given, lut, style) == want
+    seen = {r.levelname for r in caplog.records if r.name == "cutpoint.clips"}
+    assert seen == ({level} if level else set())
+    if level:
+        assert "gaming" in caplog.text
+
+
+@pytest.mark.parametrize(("cfg", "given"), [("auto", None), ("off", "auto")])
+def test_color_mode_with_an_unknown_style_never_counts_as_gaming(home, caplog, cfg, given):
+    # segments without highlights.json: the gaming fallback is not the footage's style
+    set_config(home, color=cfg)
+    caplog.set_level(logging.INFO)
+    assert clips._color_mode(given, None, GAMING, known_style=False) == "auto"
+    assert not [r for r in caplog.records if r.name == "cutpoint.clips"]
+
+
+@pytest.mark.parametrize("given", ["auto", "underwater"])
+def test_color_mode_refuses_a_given_mode_with_a_lut(home, given):
+    with pytest.raises(jsonout.ArgumentError, match="cannot be combined with --lut"):
+        clips._color_mode(given, LUT, FUNNY)
+
+
+# -- _color_grades -------------------------------------------------------------------------------
+
+
+def test_color_grades_skip_360_hint_log_and_sum_up(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    crop = Crop(1280, 720, 0, 0)
+    plans = [plan(i, tmp_path, pano=i == 1) for i in range(5)]
+    plans[0] = replace(plans[0], crop=crop)
+    results = {
+        0.0: AutoGrade("auto", black=0.05),
+        2.0: AutoGrade.skipped("auto", color.SKIP_LOG),
+        3.0: AutoGrade("auto", black=0.05, underwater_hint=True),
+        4.0: AutoGrade.skipped("auto", color.SKIP_GOOD),
+    }
+    seen: list[tuple] = []
+
+    def fake(src, info, start, end, mode, fmt, **kw):
+        seen.append((start, mode, kw))
+        return results[start]
+
+    monkeypatch.setattr(clips, "auto_grade", fake)
+    grades = clips._color_grades(plans, "auto", 0.6, FMT, True)
+
+    assert [s[0] for s in seen] == [0.0, 2.0, 3.0, 4.0]  # the 360 clip is not measured
+    assert all(m == "auto" and kw["strength"] == 0.6 and kw["vertical"] for _, m, kw in seen)
+    assert [kw["crop"] for _, _, kw in seen] == [crop, None, None, None]
+    assert grades[1].skip == color.SKIP_360 and grades[1].strength == 0.6
+    text = caplog.text
+    assert "1 360 clip(s) are not graded: 001_c.mp4" in text
+    assert "002_c.mp4 look like log/flat footage and are not graded; use --lut" in text
+    assert "003_c.mp4 look underwater; --color underwater" in text
+    assert "Color auto: 2 of 5 clips graded; not graded: 360 1, log 1, good 1" in text
+
+
+def test_color_grades_name_no_underwater_clip_when_none_looks_it(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(clips, "auto_grade", lambda *a, **kw: AutoGrade("underwater", black=0.05))
+    clips._color_grades([plan(0, tmp_path)], "underwater", 1.0, FMT, False)
+    assert "look underwater" not in caplog.text and "Color underwater: 1 of 1" in caplog.text
