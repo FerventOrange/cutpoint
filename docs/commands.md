@@ -665,7 +665,7 @@ Notes:
   extension, a LUT ffmpeg cannot load or a strength outside 0-1 is `bad_args`. Each clip
   records the LUT's absolute path and strength (`lut`, `lut_strength`), and `extend` grades the
   clips it re-exports the same way (it stops before exporting if the LUT has moved); a
-  `clips --force` re-run needs `--lut` again. `assemble` leaves graded clips as they are. On a
+  `clips --force` re-run needs `--lut` again. Without it, `clips --force` logs a WARNING when it replaces clips whose manifest recorded a grade. `assemble` leaves graded clips as they are. On a
   1080p30 export from 4K GoPro footage the grade added about 0.2 s per second of clip.
 - `manifest.json` records each clip's source, start, end, score, label, tail, crop, LUT grade, padding,
   speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and

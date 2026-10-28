@@ -26,6 +26,8 @@ from cutpoint.config import export_workers as configured_workers
 from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import (
+    GRADE_KEYS,
+    Grade,
     Lut,
     OutputFormat,
     bt709_filter,
@@ -758,7 +760,7 @@ def render_clips(
     clips_dir: Path | None = None,
     peaks: list[str] | None = None,
     language: str | None = None,
-    lut: Lut | None = None,
+    grades: list[Grade | None] | None = None,
     workers: int = 1,
 ) -> list[RenderResult]:
     """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
@@ -774,7 +776,8 @@ def render_clips(
 
     ``language``: transcript language of the subtitles (None: the detected one).
 
-    ``lut``: ``--lut`` grade of every clip, 360 ones included (:func:`~cutpoint.encode.lut_filter`).
+    ``grades``: per-plan grade (:class:`~cutpoint.encode.Grade`, None for none), 360 clips
+    included.
 
     ``workers``: clips encoded at once (:func:`export_workers`; 360 plans are always encoded
     one at a time); the results, logs and subtitles stay in plan order.
@@ -788,8 +791,9 @@ def render_clips(
     results: list[RenderResult] = []
     subs = srt.ClipSubtitles(protected_srts, language, clips_dir or out_dir)
     peaks = peaks or [""] * len(plans)
+    grades = grades or [None] * len(plans)
 
-    def encode(plan: ClipPlan, peak: str) -> dict[str, Any] | None:
+    def encode(plan: ClipPlan, peak: str, grade: Grade | None) -> dict[str, Any] | None:
         return export_clip_checked(
             plan.src,
             plan.info,
@@ -801,16 +805,19 @@ def render_clips(
             plan.crop,
             audio_fade,
             peak,
-            lut,
+            grade,
         )
 
     pool = None
     if workers > 1 and not any(p.pano for p in plans):
         _warm_source_checks(plans)
-        jobs = [lambda p=p, k=k: encode(p, k) for p, k in zip(plans, peaks, strict=True)]
+        jobs = [
+            lambda p=p, k=k, g=g: encode(p, k, g)
+            for p, k, g in zip(plans, peaks, grades, strict=True)
+        ]
         pool = _ExportPool(jobs, workers)
     with pool or nullcontext():
-        for i, (plan, peak) in enumerate(zip(plans, peaks, strict=True)):
+        for i, (plan, peak, grade) in enumerate(zip(plans, peaks, grades, strict=True)):
             m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
             out = out_dir / plan.name
             pano_rec = None
@@ -818,10 +825,16 @@ def render_clips(
                 if pano is None:
                     raise ValueError(f"{plan.name}: 360 plan needs a PanoExporter")
                 read_err, pano_rec = pano.export(
-                    m["source"], start, end, out, audio_fade=audio_fade, kind=m.get("kind"), lut=lut
+                    m["source"],
+                    start,
+                    end,
+                    out,
+                    audio_fade=audio_fade,
+                    kind=m.get("kind"),
+                    grade=grade,
                 )
             else:
-                read_err = pool.result(i) if pool is not None else encode(plan, peak)
+                read_err = pool.result(i) if pool is not None else encode(plan, peak, grade)
             if read_err and read_err["end"] < end:
                 end = read_err["end"]
             logger.info(
@@ -890,12 +903,13 @@ def _entry(
     peaks: str = "",
     makeup: float | None = None,
     size: int | None = None,
-    lut: Lut | None = None,
+    grade: Grade | None = None,
 ) -> dict[str, Any]:
     """manifest.json record of one rendered clip (``peaks``: its :func:`peak_filters` preset,
     recorded as ``compress_peaks`` when the clip got compression, with its ``makeup`` gain as
     ``compress_peaks_makeup_db``; ``size``: the clip's size in bytes, see
-    :func:`manifest_entries`; ``lut``: its grade, recorded as ``lut`` and ``lut_strength``)."""
+    :func:`manifest_entries`; ``grade``: its grade, recorded with its ``to_json()`` keys, such as
+    ``lut`` and ``lut_strength``)."""
     m, src, start, end = plan.entry, plan.src, plan.start, res.end
     return {
         "file": plan.name,
@@ -911,7 +925,7 @@ def _entry(
         "tail": plan.tail.to_json() | ({"payoff_events": plan.payoffs} if plan.payoffs else {}),
         "crop": str(plan.crop) if plan.crop else None,
         "crop_source": plan.crop_source,
-        **(lut.to_json() if lut else {}),
+        **(grade.to_json() if grade else {}),
         "score": m["score"],
         "label": m.get("label", ""),
         **({"extend": plan.pad_rec} if plan.pad_rec else {}),
@@ -948,12 +962,12 @@ def write_manifest(
     compress_peaks: str = "off",
     peaks: list[str] | None = None,
     makeup: list[float | None] | None = None,
-    lut: Lut | None = None,
+    grades: list[Grade | None] | None = None,
 ) -> None:
     """Write ``<out_dir>/manifest.json`` for the rendered clips (and log the tail total).
 
     ``compress_peaks`` is recorded when not ``off``, and on each clip ``peaks`` gave a filter,
-    with its ``makeup`` (:func:`peak_filters`). ``lut`` is recorded on every clip.
+    with its ``makeup`` (:func:`peak_filters`). ``grades``: each clip's grade, recorded on it.
     """
     total_ext = 0.0
     for plan in plans:
@@ -963,9 +977,10 @@ def write_manifest(
             total_ext -= plan.end - max(res.end, min(plan.end, plan.entry["end"]))
     peaks = peaks or [""] * len(plans)
     makeup = makeup or [None] * len(plans)
+    grades = grades or [None] * len(plans)
     entries = [
-        _entry(p, r, audio_fade, compress_peaks if f else "", m, file_size(out_dir / p.name), lut)
-        for p, r, f, m in zip(plans, results, peaks, makeup, strict=True)
+        _entry(p, r, audio_fade, compress_peaks if f else "", m, file_size(out_dir / p.name), g)
+        for p, r, f, m, g in zip(plans, results, peaks, makeup, grades, strict=True)
     ]
     logger.info(
         "Smart tail added %.1fs over %d of %d clips",
@@ -1084,6 +1099,24 @@ def _replaced_files(
         srt.unlisted_srts(out_dir, listed),
         renamed,
     )
+
+
+def _warn_dropped_grade(out_dir: Path) -> None:
+    """WARNING when the manifest.json ``--force`` replaces graded clips (a ``lut`` or ``color``
+    key, :data:`~cutpoint.encode.GRADE_KEYS`) and this run grades none: the grade is not
+    carried over, the flags of this run decide."""
+    manifest = cache.load_json(out_dir / "manifest.json")
+    listed = manifest.get("clips") if isinstance(manifest, dict) else None
+    graded = [e for e in listed or [] if isinstance(e, dict) and any(e.get(k) for k in GRADE_KEYS)]
+    if graded:
+        keys = sorted({k for e in graded for k in GRADE_KEYS if e.get(k)})
+        logger.warning(
+            "%s: %d clip(s) of the replaced manifest.json were graded (%s); this run grades "
+            "none, so the new clips are ungraded (give --lut again to keep the grade)",
+            out_dir,
+            len(graded),
+            ", ".join(keys),
+        )
 
 
 @contextmanager
@@ -1311,6 +1344,9 @@ def export_clips(
             source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
         )
         peaks, makeup = peak_filters(plans, compress_peaks)
+        grades: list[Grade | None] = [lut] * len(plans)
+        if force and not any(grades):
+            _warn_dropped_grade(out_dir)
         workers = export_workers(plans)
         if workers > 1:
             logger.info("Exporting %d clips at a time (export_workers)", workers)
@@ -1325,7 +1361,7 @@ def export_clips(
             clips_dir=out_dir,
             peaks=peaks,
             language=language,
-            lut=lut,
+            grades=grades,
             workers=workers,
         )
         write_manifest(
@@ -1346,7 +1382,7 @@ def export_clips(
             compress_peaks=compress_peaks,
             peaks=peaks,
             makeup=makeup,
-            lut=lut,
+            grades=grades,
         )
         if work != out_dir:  # staged, not exported into directly
             swap_in(work, out_dir, [*replace, "manifest.json"])

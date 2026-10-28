@@ -61,7 +61,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.encode import A_FMT, BT709_TAGS, Lut, audio_fade_filter, bt709_filter
+from cutpoint.encode import A_FMT, BT709_TAGS, Grade, audio_fade_filter, bt709_filter
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
     FFmpegError,
@@ -263,9 +263,9 @@ def render_segment(
     audio_fade: float = 0.25,
     cmd_every: int | None = None,
     work_dir: Path | None = None,
-    lut: Lut | None = None,
+    grade: Grade | None = None,
 ) -> dict[str, Any]:
-    """Render ``[start, end]`` of ``clip`` along ``path`` into ``out``; ``lut`` grades it
+    """Render ``[start, end]`` of ``clip`` along ``path`` into ``out``; ``grade`` grades it
     after the BT.709 conversion, as in a flat export.
 
     Returns:
@@ -324,14 +324,14 @@ def render_segment(
     # tagged BT.709 (full range), so for them nothing changes.
     same = Path(src.inputs[0]) == Path(clip.source)
     color = bt709_filter(info if same else probe(remap_source(src.inputs[0])))
-    grade = ",".join(f for f in (color, lut.filter() if lut else "") if f)
+    chain = ",".join(f for f in (color, grade.filter() if grade else "") if f)
     v360 = (
         f"v360@cam={v360_in}:output=flat:{rot}:h_fov={init['h_fov']:.3f}:"
         f"v_fov={init['v_fov']:.3f}:w={fmt.width}:h={fmt.height}:interp=line"
     )
     body = (
         f"{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
-        f"setsar=1,fps={fmt.fps}:round=down,{grade + ',' if grade else ''}format=yuv420p"
+        f"setsar=1,fps={fmt.fps}:round=down,{chain + ',' if chain else ''}format=yuv420p"
     )
     af = f"[{audio_idx}:a:0]{a_fmt}[a]"
 
@@ -669,13 +669,13 @@ class PanoExporter:
         kind: str | None = None,
         reuse_path: Path | None = None,
         source_mode: str | None = None,
-        lut: Lut | None = None,
+        grade: Grade | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         """Render one clip. Returns ``(read_error record or None, manifest pano record)``.
 
         ``source_mode`` (the mode recorded for this clip by an earlier run)
         replaces the exporter's ``source_mode``; if it is no longer available
-        the best available source (``auto``) is used. ``lut``: the clip's ``--lut`` grade.
+        the best available source (``auto``) is used. ``grade``: the clip's grade (``--lut``).
         """
         clip = clip_for(self.clips, source)
         if clip is None:
@@ -700,7 +700,7 @@ class PanoExporter:
             audio_fade=audio_fade,
             cmd_every=self.cmd_every,
             work_dir=self.paths_dir,
-            lut=lut,
+            grade=grade,
         )
         logger.info(
             "  %s: 360 %s, %s; rendered %.1fs at %.2fx realtime",

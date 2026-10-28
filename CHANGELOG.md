@@ -56,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged. Frames already in a discovery cache keep their earlier reading; to get the new
   regions, delete `projects/<name>/discovery/<game>/ocr.jsonl` (or use a fresh project) and run
   discovery again. The OCR layer reads as before, so raw OCR caches stay valid (#443).
+- `clips --force` and `edit --force` log a WARNING when they replace a clips folder whose
+  manifest recorded a grade (`lut`/`color`) and the new run has none. The output is unchanged.
 
 ### Fixed
 
