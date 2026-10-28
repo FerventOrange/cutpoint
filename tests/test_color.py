@@ -1,15 +1,20 @@
 """Color handling of exports (#289, #290): probed tags, HDR/BT.2020 to SDR Rec.709, BT.601 to
-BT.709, log warning."""
+BT.709, log warning, the automatic grade (``color.py``, #290 stage 2)."""
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, encode, ffmpeg_utils
+from cutpoint import assemble, cache, color, encode, ffmpeg_utils
+from cutpoint.color import AutoGrade, ColorStats, Metrics
 from cutpoint.crop import Crop
 from cutpoint.ffmpeg_utils import FFmpegError, VideoEncoder
 
@@ -673,3 +678,521 @@ def test_real_crossfade_of_bt709_untagged_and_bt601_clips_keeps_their_colours(
     # should be (still bars: any frame will do).
     for f, at, matrix in zip(files, (1.0, 2.8, 4.6), ("bt709", "bt709", "bt601"), strict=True):
         assert np.abs(_rgb(out, "bt709", at) - _rgb(f, matrix)).mean() < 1.5, f.name
+
+
+# -- automatic grade (#290 stage 2) --------------------------------------------------------------
+
+
+def _scene(n: int = 4, seed: int = 0) -> np.ndarray:
+    """``n`` 72x128 float RGB frames: 40 % a gray ramp (neutral mid-tones), the rest coloured
+    patches of every hue and saturation, a little near-black and near-white."""
+    rng = np.random.default_rng(seed)
+    frames = np.empty((n, 72, 128, 3), np.float32)
+    for f in frames:
+        ramp = np.linspace(0.02, 0.98, 128, dtype=np.float32)
+        f[:29] = ramp[None, :, None]
+        hue = rng.uniform(0, 1, (43, 128, 1)).astype(np.float32)
+        sat = rng.uniform(0.2, 0.8, (43, 128, 1)).astype(np.float32)
+        val = rng.uniform(0.25, 0.95, (43, 128, 1)).astype(np.float32)
+        k = (np.array([5, 3, 1], np.float32) + hue * 6) % 6
+        f[29:] = val - val * sat * np.clip(np.minimum(k, 4 - k), 0, 1)
+    return frames
+
+
+def _stats(frames: np.ndarray) -> ColorStats:
+    return ColorStats(np.round(np.clip(frames, 0, 1) * 255).astype(np.uint8))
+
+
+def _flat(frames: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    return lo + frames * (hi - lo)
+
+
+def _cast(frames: np.ndarray, r: float, g: float, b: float) -> np.ndarray:
+    return np.clip(frames * np.array([r, g, b], np.float32), 0, 1)
+
+
+@pytest.fixture
+def lenient(monkeypatch):
+    """A clipping veto of 5 points instead of 0.5, for tests of what the grade does: on these
+    synthetic frames (linear tails) the levels alone clip about 0.5 % at each end."""
+    monkeypatch.setattr(color, "VETO_CLIPPED", 0.05)
+
+
+def test_a_clip_that_already_looks_good_is_skipped():
+    grade = color.estimate(_stats(_scene()), "auto")
+    assert grade.skip == color.SKIP_GOOD
+    assert grade.filter() == ""
+    assert grade.before is not None and grade.before.m3 >= color.M3_FULL
+
+
+def test_levels_stretch_to_the_luma_percentiles(lenient):
+    grade = color.estimate(_stats(_flat(_scene(), 0.04, 0.9)), "auto")
+    assert grade.skip is None
+    assert 0.03 < grade.black <= color.MAX_BLACK
+    assert color.MIN_WHITE <= grade.white < 0.92
+    assert grade.predicted.black < grade.before.black
+    assert grade.predicted.white > grade.before.white
+
+
+def test_levels_are_clamped():
+    black, white = color._levels_points(_flat(_scene(), 0.15, 0.6))
+    assert (black, white) == (color.MAX_BLACK, color.MIN_WHITE)
+
+
+def test_a_stretch_above_the_cap_moves_both_points_back(monkeypatch):
+    # with the plan's clamps the stretch is at most 1 / 0.82; looser ones reach the cap
+    monkeypatch.setattr(color, "MAX_BLACK", 0.2)
+    monkeypatch.setattr(color, "MIN_WHITE", 0.7)
+    black, white = color._levels_points(_flat(_scene(), 0.15, 0.6))
+    assert 1 / (white - black) == pytest.approx(color.MAX_STRETCH)
+    assert black < 0.15 and white > color.MIN_WHITE
+
+
+def test_white_balance_corrects_part_of_a_cast_from_the_neutral_mid_tones():
+    rgb = _cast(_scene()[:, :29], 1.08, 1.0, 0.9)  # the gray ramp
+    r, g, b = color._gains(rgb, 0.0, underwater=False)
+    avg = (1.08 + 1.0 + 0.9) / 3  # 60 % of the cast, against the channels' average
+    assert (r, g, b) == pytest.approx(
+        [1 + color.WB_AMOUNT * (avg / c - 1) for c in (1.08, 1.0, 0.9)], abs=1e-3
+    )
+    # the black point comes off before the channels are compared
+    assert color._gains(rgb + 0.05, 0.05, underwater=False) == pytest.approx((r, g, b), abs=1e-3)
+
+
+def test_white_balance_gains_are_clamped(monkeypatch):
+    monkeypatch.setattr(color, "MAX_GAIN", 0.05)
+    gains = color._gains(_cast(_scene()[:, :29], 1.08, 1.0, 0.9), 0.0, underwater=False)
+    assert gains[2] == pytest.approx(1.05)  # 1.067 unclamped
+    assert gains[0] == pytest.approx(0.952, abs=1e-3)  # within the clamp
+
+
+def test_underwater_white_balance_is_gray_world_and_lifts_red_up_to_60_percent():
+    gains = color._gains(_cast(_scene(), 0.3, 1.0, 1.0), 0.0, underwater=True)
+    assert gains == pytest.approx((1 + color.MAX_RED_GAIN, 1 - color.MAX_GAIN, 1 - color.MAX_GAIN))
+
+
+def test_white_balance_needs_two_percent_neutral_pixels():
+    rgb = _scene()[:, 29:]  # the coloured patches only
+    rgb = rgb[..., [0, 0, 2]] * np.array([1.0, 0.3, 1.0], np.float32)  # no gray left
+    assert color._gains(rgb, 0.0, underwater=False) == (1.0, 1.0, 1.0)
+
+
+def test_a_cast_clip_gets_a_grade_that_reduces_the_cast(lenient):
+    grade = color.estimate(_stats(_cast(_flat(_scene(), 0.03, 0.93), 1.1, 1.0, 0.88)), "auto")
+    assert grade.skip is None, grade
+    assert grade.gains[0] < 1 < grade.gains[2]
+    assert grade.predicted.residual < grade.before.residual
+    assert "colorlevels=" in grade.filter() and "colorchannelmixer" not in grade.filter()
+
+
+def test_vibrance_lifts_dull_colour_within_the_m3_veto(lenient):
+    dull = _scene() * 0.3 + (_scene() @ color.LUMA)[..., None] * 0.7
+    grade = color.estimate(_stats(_flat(dull, 0.03, 0.93)), "auto")
+    assert 0 < grade.vibrance <= color.MAX_VIBRANCE
+    assert grade.predicted.m3 > grade.before.m3
+    assert grade.predicted.m3 <= grade.before.m3 * (1 + color.VETO_M3_RISE)
+    assert "vibrance=intensity=" in grade.filter()
+
+
+def test_log_footage_is_never_graded():
+    flat = _flat(_scene() * 0.3 + 0.35, 0.08, 0.8)  # low saturation, lifted blacks
+    stats = _stats(flat)
+    assert color.is_log(stats)
+    grade = color.estimate(stats, "auto")
+    assert (grade.skip, grade.filter()) == (color.SKIP_LOG, "")
+
+
+def _underwater() -> np.ndarray:
+    return _cast(_flat(_scene(), 0.05, 0.8), 0.35, 1.0, 0.95)
+
+
+def test_underwater_borrows_red_from_green_and_lifts_red(lenient):
+    stats = _stats(_underwater())
+    assert color.looks_underwater(stats)
+    grade = color.estimate(stats, "underwater")
+    assert 0 < grade.mix <= color.MAX_MIX
+    assert 1 + color.MAX_GAIN < grade.gains[0] <= 1 + color.MAX_RED_GAIN
+    assert "colorchannelmixer=rr=" in grade.filter()
+    graded = color.simulate(stats.frames, grade).reshape(-1, 3).mean(axis=0)
+    before = color._float(stats.frames).reshape(-1, 3).mean(axis=0)
+    assert graded[0] / graded[1] > before[0] / before[1] + 0.3
+
+
+def test_plain_auto_never_mixes_channels_even_underwater():
+    grade = color.estimate(_stats(_underwater()), "auto")
+    assert grade.mix == 0
+    assert all(abs(g - 1) <= color.MAX_GAIN + 1e-6 for g in grade.gains)
+
+
+def test_land_footage_does_not_look_underwater():
+    assert not color.looks_underwater(_stats(_scene()))
+
+
+def test_mix_is_capped_and_none_once_red_is_there():
+    assert color._mix(_cast(_scene(), 0.05, 1.0, 1.0)) == color.MAX_MIX
+    assert color._mix(_scene()) == 0.0
+
+
+def test_a_two_sided_stretch_clipping_both_tails_is_vetoed():
+    """p0.5 / p99.5 levels clip about 0.5 % of the pixels at each end; together that is more
+    than the 0.5-point veto (the plan's numbers, for the harness to check on real footage)."""
+    grade = color.estimate(_stats(_flat(_scene(), 0.04, 0.9)), "auto")
+    assert (grade.black, grade.white) == (color.MAX_BLACK, color.MIN_WHITE)
+    assert grade.skip == color.VETO_CLIPPING
+
+
+def test_a_grade_that_clips_too_much_is_vetoed(lenient):
+    frames = _flat(_scene(), 0.04, 0.95)
+    frames[:, :, :40] = 0.05  # a third of every frame sits at the black point and would clip
+    grade = color.estimate(_stats(frames), "auto")
+    assert grade.skip == color.VETO_CLIPPING
+    assert grade.filter() == ""
+    assert grade.predicted.clipped - grade.before.clipped > 0.05
+
+
+@pytest.mark.parametrize(
+    ("after", "veto"),
+    [
+        ({"clipped": 0.016}, color.VETO_CLIPPING),
+        ({"clipped": 0.015}, None),
+        ({"residual": 0.106}, color.VETO_CAST),
+        ({"residual": 0.1045}, None),
+        ({"m3": 25.1}, color.VETO_COLOURFUL),
+        ({"m3": 25.0}, None),
+    ],
+)
+def test_veto_thresholds(after, veto):
+    before = Metrics(m3=20.0, residual=0.1, clipped=0.01, black=0.05, white=0.9)
+    assert color._veto(before, Metrics(**(before.to_json() | after))) == veto
+
+
+def test_unknown_mode_is_refused():
+    with pytest.raises(ValueError, match="unknown color mode"):
+        color.estimate(_stats(_scene()), "vivid")
+
+
+# -- the grade: strength, filter, manifest ------------------------------------------------------
+
+GRADE = AutoGrade("auto", black=0.05, white=0.9, gains=(1.1, 1.0, 0.9), vibrance=0.2)
+
+
+def test_filter_grades_in_bt709_16_bit_rgb_and_tags_like_a_lut():
+    vf = GRADE.filter()
+    assert vf.startswith("scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=gbrp16le,")
+    assert vf.endswith(
+        "scale=out_color_matrix=bt709:out_range=tv,"
+        "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
+    )
+    assert vf.index("colorlevels=") < vf.index("vibrance=")
+    mixed = AutoGrade("underwater", mix=0.3, gains=(1.4, 1.0, 0.95)).filter()
+    assert mixed.index("colorchannelmixer=rr=0.70000:rg=0.30000") < mixed.index("colorlevels=")
+
+
+def test_levels_put_white_balance_and_stretch_in_one_line_per_channel():
+    vf = color._levels(0.05, 0.95, (1.1, 1.0, 0.88))
+    # red reaches 1 at 0.05 + 0.9 / 1.1; blue would only at 0.05 + 0.9 / 0.88 = 1.073, so
+    # its output white is lowered to (1 - 0.05) * 0.88 / 0.9 instead
+    assert vf == (
+        "colorlevels=rimin=0.05000:rimax=0.86818:romax=1.00000:"
+        "gimin=0.05000:gimax=0.95000:gomax=1.00000:"
+        "bimin=0.05000:bimax=1.00000:bomax=0.92889"
+    )
+
+
+def test_strength_is_folded_into_the_parameters():
+    half = replace(GRADE, strength=0.5).applied()
+    assert (half.black, half.white, half.vibrance) == pytest.approx((0.025, 0.95, 0.1))
+    assert half.gains == pytest.approx((1.05, 1.0, 0.95))
+    assert "blend" not in replace(GRADE, strength=0.5).filter()
+    assert replace(GRADE, strength=0.0).filter() == ""
+
+
+def test_identity_and_skipped_grades_have_no_filter():
+    assert AutoGrade("auto").filter() == ""
+    assert AutoGrade.skipped("auto", color.SKIP_360).filter() == ""
+    assert AutoGrade("auto", black=0.05, skip=color.VETO_CAST).filter() == ""
+
+
+def test_manifest_entry_records_the_grade_and_reads_it_back(lenient):
+    grade = color.estimate(_stats(_cast(_flat(_scene(), 0.03, 0.93), 1.1, 1.0, 0.88)), "auto", 0.7)
+    entry = grade.to_json()
+    assert set(entry["color"]) == {
+        "method", "version", "strength", "params", "skip", "before", "predicted",
+    }  # fmt: skip
+    assert entry["color"]["method"] == "auto" and entry["color"]["strength"] == 0.7
+    back = AutoGrade.from_entry(json.loads(json.dumps({"file": "001_a.mp4", **entry})))
+    assert back == grade
+    assert back.filter() == grade.filter()
+    assert (back.before, back.predicted) == (grade.before, grade.predicted)
+
+
+def test_grades_compare_by_parameters_only():
+    a = AutoGrade("auto", black=0.05, before=Metrics(1, 2, 3, 4, 5))
+    assert a == AutoGrade("auto", black=0.05)
+    assert a != AutoGrade("auto", black=0.05, strength=0.5)
+    assert a != AutoGrade("underwater", black=0.05)
+
+
+@pytest.mark.parametrize("entry", [{}, {"lut": "/l/a.cube"}, {"color": {"method": "off"}}])
+def test_entries_without_an_automatic_grade_read_as_none(entry):
+    assert AutoGrade.from_entry(entry) is None
+
+
+def test_estimated_parameters_are_rounded():
+    grade = color.estimate(_stats(_cast(_flat(_scene(), 0.03, 0.93), 1.1, 1.0, 0.88)), "auto")
+    for v in (grade.black, grade.white, *grade.gains, grade.mix, grade.vibrance):
+        assert v == round(v, 4)
+
+
+# -- metrics and simulation ---------------------------------------------------------------------
+
+
+def test_metrics_of_gray_frames_have_no_colour_and_no_cast():
+    gray = np.repeat(np.linspace(0.1, 0.9, 64, dtype=np.float32)[None, None, :, None], 3, -1)
+    m = color.metrics(np.repeat(gray, 8, axis=1))
+    assert (m.m3, m.residual, m.clipped) == (0, 0, 0)
+    assert (m.black, m.white) == pytest.approx((0.1, 0.9), abs=1e-3)
+
+
+def test_metrics_see_a_cast_clipping_and_colourfulness():
+    m = color.metrics(_scene())
+    cast = color.metrics(_cast(_scene(), 1.2, 1.0, 0.8))
+    assert cast.residual > m.residual + 0.05
+    assert cast.clipped > m.clipped
+    assert color.metrics(_scene() * 0.5 + 0.25).m3 < m.m3
+
+
+def test_gray_world_residual_ignores_a_common_levels_stretch():
+    rgb = _cast(_flat(_scene(), 0.1, 0.8), 1.1, 1.0, 0.9)
+    stretched = color.simulate(rgb, AutoGrade("auto", black=0.05, white=0.9))
+    assert color.metrics(stretched).residual == pytest.approx(color.metrics(rgb).residual, rel=0.05)
+
+
+def test_simulation_of_an_identity_grade_changes_nothing():
+    frames = _stats(_scene()).frames
+    assert np.array_equal(color.simulate(frames, AutoGrade("auto")), color._float(frames))
+
+
+def test_simulated_vibrance_leaves_gray_and_full_saturation_alone():
+    px = np.array([[[[0.5, 0.5, 0.5], [1.0, 0.0, 0.0], [0.6, 0.4, 0.3]]]], np.float32)
+    out = color.simulate(px, AutoGrade("auto", vibrance=0.2))[0, 0]
+    assert out[0] == pytest.approx([0.5] * 3) and out[1] == pytest.approx([1, 0, 0])
+    luma = px[0, 0, 2] @ color.LUMA
+    assert out[2] == pytest.approx(luma + (px[0, 0, 2] - luma) * (1 + 0.2 * 0.7))
+
+
+# -- sampling and cache -------------------------------------------------------------------------
+
+FMT = encode.OutputFormat(1920, 1080, 30)
+
+
+def test_sample_filter_mirrors_the_export_crop_and_bt709_chain():
+    info = media_info(**BT709)
+    vf, size = color.sample_filter(info, FMT, False, Crop(1364, 750, 10, 20))
+    box = Crop(1364, 750, 10, 20).fit_aspect(16 / 9)
+    assert vf == (
+        f"crop={box.w}:{box.h}:{box.x}:{box.y},scale=256:144:flags=area:out_range=tv,"
+        "scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24"
+    )
+    assert size == (256, 144)
+
+
+def test_sample_filter_converts_bt601_and_takes_the_vertical_crop():
+    info = media_info(width=720, height=480, **BT601)
+    vf, size = color.sample_filter(info, FMT, True)
+    assert vf.startswith("crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale=256:456:")
+    assert "colorspace=all=bt709:iall=smpte170m" in vf
+    assert vf.index("colorspace=") < vf.index("in_color_matrix=bt709")
+    assert size == (256, 456)
+
+
+@pytest.fixture
+def decodes(monkeypatch):
+    """``decodes(n)``: ``decode_raw`` yields ``n`` keyframes (each frame filled with its index)
+    and then, for the fallback, one frame of 200; the calls are recorded."""
+    calls: list[dict] = []
+    count = [0]
+
+    def fake(path, *, size, keyframes_only=False, **kw):
+        calls.append({"keyframes_only": keyframes_only, **kw})
+        n = count[0] if keyframes_only else 1
+        for i in range(n):
+            yield float(i), np.full((size[1], size[0], 3), i if keyframes_only else 200, np.uint8)
+
+    monkeypatch.setattr(color, "decode_raw", fake)
+
+    def run(n: int) -> tuple[ColorStats, list[dict]]:
+        count[0] = n
+        calls.clear()
+        info = media_info(**BT709)
+        return color.sample_stats(Path("v.mp4"), info, 10.0, 20.0, FMT), calls
+
+    return run
+
+
+def test_sampling_reads_keyframes_of_the_inner_80_percent_on_the_cpu(decodes):
+    stats, calls = decodes(5)
+    assert stats.frames.shape == (5, 144, 256, 3)
+    (call,) = calls
+    assert call["keyframes_only"] and call["hwaccel"] is None
+    assert (call["start"], call["duration"]) == pytest.approx((11.0, 8.0))
+
+
+def test_sampling_keeps_at_most_8_frames_spread_over_the_clip(decodes):
+    stats, _ = decodes(100)
+    picked = stats.frames[:, 0, 0, 0].tolist()
+    assert len(picked) == color.SAMPLE_FRAMES
+    assert picked[0] == 0 and picked[-1] >= 90
+    assert min(np.diff(picked)) >= 8
+
+
+def test_a_clip_without_keyframes_is_sampled_at_its_middle(decodes):
+    stats, calls = decodes(0)
+    assert stats.frames.shape[0] == 1 and stats.frames[0, 0, 0, 0] == 200
+    assert not calls[1]["keyframes_only"] and calls[1]["start"] == pytest.approx(15.0)
+
+
+@pytest.fixture
+def measured(monkeypatch, tmp_path):
+    """A source file and the list of ``sample_stats`` calls (which return a cast scene)."""
+    src = tmp_path / "v.mp4"
+    src.write_bytes(b"x")
+    calls: list[tuple] = []
+    frames = _stats(_cast(_flat(_scene(), 0.03, 0.93), 1.1, 1.0, 0.88))
+
+    def fake(*args, **_kw):
+        calls.append(args)
+        return frames
+
+    monkeypatch.setattr(color, "sample_stats", fake)
+    return src, calls
+
+
+def test_auto_grade_is_cached_per_source_and_measurement(measured):
+    src, calls = measured
+    info = media_info(src, **BT709)
+    first = color.auto_grade(src, info, 1.0, 5.0, "auto", FMT)
+    again = color.auto_grade(src, info, 1.0, 5.0, "auto", FMT)
+    assert len(calls) == 1 and again == first and again.predicted == first.predicted
+    (path,) = (cache.source_dir(src) / "color").glob("*.json")
+    assert AutoGrade.from_entry(cache.load_json(path)) == first
+
+    color.auto_grade(src, info, 1.0, 5.0, "auto", FMT, strength=0.5)
+    color.auto_grade(src, info, 1.0, 6.0, "auto", FMT)
+    color.auto_grade(src, info, 1.0, 5.0, "underwater", FMT)
+    color.auto_grade(src, info, 1.0, 5.0, "auto", FMT, crop=Crop(1280, 720, 0, 0))
+    assert len(calls) == 5
+
+
+def test_a_clip_that_cannot_be_decoded_is_skipped_and_not_cached(monkeypatch, tmp_path):
+    src = tmp_path / "v.mp4"
+    src.write_bytes(b"x")
+
+    def broken(*_a, **_kw):
+        raise FFmpegError("no frames")
+
+    monkeypatch.setattr(color, "sample_stats", broken)
+    grade = color.auto_grade(src, media_info(src), 1.0, 5.0, "auto", FMT)
+    assert grade == AutoGrade.skipped("auto", color.SKIP_NO_FRAMES)
+    assert not list((cache.source_dir(src) / "color").glob("*.json"))
+
+
+# -- real ffmpeg: the simulation against the filters --------------------------------------------
+
+# Largest and mean difference (8-bit codes) of the simulation from ffmpeg's filters on 8-bit
+# RGB in and out: ffmpeg truncates its 16-bit results, the simulation does not round.
+SIM_MAX = 1.0
+SIM_MEAN = 0.3
+# Through the whole export chain (BT.709 tv-range YUV 4:4:4 in and out, as 8-bit): the two
+# YUV/RGB conversions add their rounding.
+CHAIN_MAX = 5.0
+CHAIN_MEAN = 1.0
+
+SIM_GRADES = [
+    AutoGrade("auto", black=0.05, white=0.9, gains=(1.1, 1.0, 0.9)),
+    AutoGrade("auto", black=0.0, white=0.95, gains=(0.88, 1.0, 1.12)),
+    AutoGrade("auto", vibrance=0.2),
+    AutoGrade("underwater", mix=0.35),
+    AutoGrade("underwater", mix=0.3, black=0.04, white=0.92, gains=(1.6, 1.0, 0.88), vibrance=0.15),
+    AutoGrade("auto", black=0.05, white=0.9, gains=(1.1, 1.0, 0.9), vibrance=0.2, strength=0.5),
+]
+
+
+def _pipe(data: np.ndarray, vf: str, in_fmt: str, out_fmt: str = "rgb24") -> np.ndarray:
+    """``data`` (raw ``in_fmt`` frame bytes, ``(h, w, 3)``) through ``vf``, as ``out_fmt``."""
+    h, w = data.shape[:2]
+    out = subprocess.run(
+        [
+            *(shutil.which("ffmpeg"), "-v", "error", "-f", "rawvideo", "-pix_fmt", in_fmt),
+            *("-s", f"{w}x{h}", "-i", "-", "-vf", vf, "-f", "rawvideo", "-pix_fmt", out_fmt, "-"),
+        ],
+        input=data.tobytes(),
+        capture_output=True,
+        check=True,
+    ).stdout
+    return np.frombuffer(out, np.uint8).reshape(h, w, 3)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("grade", SIM_GRADES, ids=lambda g: g.filter().split(",")[2][:16])
+def test_real_filters_match_the_simulation(grade):
+    rgb = np.random.default_rng(3).integers(0, 256, (64, 96, 3), dtype=np.uint8)
+    steps = grade.filter().split(",format=gbrp16le,")[1].split(",scale=out_color_matrix")[0]
+
+    got = _pipe(rgb, f"format=gbrp16le,{steps},format=rgb24", "rgb24").astype(np.float32)
+
+    diff = np.abs(got - color.simulate(rgb[None], grade)[0] * 255)
+    assert diff.max() <= SIM_MAX and diff.mean() <= SIM_MEAN, (diff.max(), diff.mean())
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("grade", SIM_GRADES, ids=lambda g: g.filter().split(",")[2][:16])
+def test_real_export_chain_matches_the_simulation(grade):
+    """The whole :meth:`AutoGrade.filter` on tv-range BT.709 YUV, against the simulation of the
+    same frame read through the sampling's RGB conversion."""
+    rgb = np.round(_scene(1)[0] * 255).astype(np.uint8)
+    to_rgb = "scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24"
+    # 4:4:4, so chroma subsampling does not blur the patches; the array holds its planar bytes
+    yuv = _pipe(rgb, "scale=out_color_matrix=bt709:out_range=tv", "rgb24", "yuv444p")
+    src = _pipe(yuv, to_rgb, "yuv444p")  # the frame as the sampling sees it
+
+    got = _pipe(yuv, f"{grade.filter()},format=yuv444p,{to_rgb}", "yuv444p").astype(np.float32)
+
+    diff = np.abs(got - color.simulate(src[None], grade)[0] * 255)
+    assert diff.max() <= CHAIN_MAX and diff.mean() <= CHAIN_MEAN, (diff.max(), diff.mean())
+
+
+def _cast_source(path: Path) -> Path:
+    """3 s of :func:`_scene` frames, 128x72 at 10 fps, low contrast with a warm cast, BT.709
+    tv range, FFV1 (every frame a keyframe)."""
+    frames = _cast(_flat(_scene(30), 0.03, 0.93), 1.1, 1.0, 0.88)
+    tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+    subprocess.run(
+        [
+            *(shutil.which("ffmpeg"), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24"),
+            *("-s", "128x72", "-r", "10", "-i", "-"),
+            *("-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv444p"),
+            *("-c:v", "ffv1", "-color_range", "tv", *tags, str(path)),
+        ],
+        input=np.round(frames * 255).astype(np.uint8).tobytes(),
+        check=True,
+    )  # fmt: skip
+    return path
+
+
+@needs_ffmpeg
+def test_real_sampling_and_grade_of_a_cast_clip(tmp_path, monkeypatch):
+    monkeypatch.setattr(color, "VETO_CLIPPED", 0.05)  # see ``lenient``
+    src = _cast_source(tmp_path / "warm.mkv")
+    info = ffmpeg_utils.probe(src)
+    fmt = encode.choose_format([info], False)
+
+    stats = color.sample_stats(src, info, 0.0, 3.0, fmt)
+
+    assert stats.frames.shape == (color.SAMPLE_FRAMES, 144, 256, 3)  # 128x72 scaled up
+    grade = color.estimate(stats, "auto")
+    assert grade.skip is None, grade
+    assert grade.gains[0] < 1 < grade.gains[2] and grade.black > 0.02 and grade.white < 0.95
+    # the grade runs where the export puts it
+    vf = fmt.video_filter(False, None, color=grade.filter())
+    ffmpeg_utils.run(["ffmpeg", "-v", "error", "-i", str(src), "-vf", vf, "-f", "null", "-"])
