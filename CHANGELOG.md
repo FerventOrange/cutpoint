@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fills as the other themes (#466).
 - `assemble --audio-transition cut|crossfade` sets the audio join apart from `--transition`; by
   default it follows it. `--transition cut --audio-transition crossfade` is refused (exit 2) (#466).
+- `cutpoint ui`: the Moments list has a "Filter by" order: Score (the default) or Position in
+  video, which sorts by source name (natural order, so `clip2` comes before `clip10`) and then
+  start time. The rank badge on each card keeps its score rank in either order. The choice is
+  remembered per browser (#469).
 
 ### Changed
 

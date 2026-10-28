@@ -328,8 +328,10 @@ select { max-width: 100%; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* moments */
-.filter { display: block; margin-bottom: 8px; }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 8px; }
+.filter { flex: 1 1 12em; }
 .filter input { width: 100%; }
+.order { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
 .cand-list { display: grid; gap: 6px; }
 .cand {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start;

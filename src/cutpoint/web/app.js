@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, baseName, fmt, fmtLen, h, parseTime, round2, svg } from './util.js';
+import { $, baseName, fmt, fmtLen, h, parseTime, positionCompare, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -21,6 +21,8 @@ const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerd
 const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "dark"; absent for Blue, the default. index.html reads it too
 const THEMES = ['blue', 'light', 'dark'];
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
+const ORDER_KEY = 'cutpoint.momentOrder'; // localStorage: "position" for video order; absent for Score, the default
+const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the moments list's orders (#469)
 // localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults
 const OPTS_KEY = 'cutpoint.exportOptions';
 // Export & Assembly Options for a viewer who changed none; Compress peaks starts from config.json's
@@ -48,6 +50,7 @@ const S = {
   drafts: {}, // trims of moments not (yet) in the sequence; whole segments for removed non-moments; ``at``: index a removed clip had
   focus: null,
   filter: '',
+  order: 'score', // the moments list's order: 'score' (rank #1 first) or 'position' (initMomentOrder)
   jobs: [],
   active: null, // the running job, if any
   tracked: new Map(), // job id -> last seen status
@@ -345,6 +348,7 @@ function renderMoments() {
   const items = list
     .map((c, i) => ({ c, rank: i + 1 }))
     .filter(({ c }) => !q || `${c.label} ${c.transcript ?? ''} ${baseName(c.source)}`.toLowerCase().includes(q));
+  if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
   preserveFocus(() => {
     $('#candList').replaceChildren(
       ...items.map(({ c, rank }) => {
@@ -2921,6 +2925,32 @@ function initSideTabs() {
 }
 
 /**
+ * The moments list's order (#469): Score (rank #1 first, the default) or Position in video. The
+ * choice is remembered per browser; without storage it lasts the session.
+ */
+function initMomentOrder() {
+  const sel = $('#momentOrder');
+  try {
+    const v = localStorage.getItem(ORDER_KEY);
+    if (Object.hasOwn(ORDER_NAMES, v)) S.order = v;
+  } catch {
+    // storage blocked: Score
+  }
+  sel.value = S.order;
+  sel.addEventListener('change', () => {
+    S.order = Object.hasOwn(ORDER_NAMES, sel.value) ? sel.value : 'score';
+    try {
+      if (S.order === 'score') localStorage.removeItem(ORDER_KEY);
+      else localStorage.setItem(ORDER_KEY, S.order);
+    } catch {
+      // storage blocked or full: the order still applies until reload
+    }
+    $('#orderLive').textContent = `Moments sorted by ${ORDER_NAMES[S.order]}`;
+    renderMoments();
+  });
+}
+
+/**
  * Export & Assembly Options: each change is remembered per browser (only the options the user
  * changed, so the others follow OPT_DEFAULTS); without storage they last the session. Link
  * Transitions makes the audio transition follow the video one; a crossfade needs a video fade
@@ -2995,6 +3025,7 @@ function bind() {
   bindSettings();
   initNerdStats();
   initSideTabs();
+  initMomentOrder();
   S.savedOpts = initExportOptions();
   showPlaying(false);
   trimInputs.start = trimField('start', 'Clip Start');

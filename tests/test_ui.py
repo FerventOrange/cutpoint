@@ -5304,3 +5304,85 @@ def test_focus_rings_use_the_amber_text_colour_so_light_theme_keeps_contrast() -
     assert re.search(r":focus-visible \{ outline: 2px solid var\(--amber-text\)", css)
     light = re.search(r':root\[data-theme="light"\][^{]*\{(.*?)\}', css, re.S)
     assert light and "--amber-text:" in light[1]
+
+
+# --- Moments list order (#469) ---
+
+
+def _sort_positions(moments: list[dict]) -> list[str]:
+    """Run util.js's positionCompare under node on ``moments``; return their ids in sorted order."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    url = (ui.WEB_DIR / "util.js").resolve().as_uri()
+    script = (
+        f"import {{ positionCompare }} from {json.dumps(url)};"
+        "const m = JSON.parse(process.argv[1]);"
+        "console.log(JSON.stringify(m.sort(positionCompare).map((c) => c.id)));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, json.dumps(moments)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )  # fmt: skip
+    return json.loads(out.stdout)
+
+
+def _m(id_: str, source: str, start: float) -> dict:
+    return {"id": id_, "source": source, "start": start}
+
+
+def test_position_order_is_natural_by_file_then_start_time() -> None:
+    """#469: video order groups moments by source (clip2 before clip10, A-Z), then start time."""
+    moments = [
+        _m("c10b", "/v/clip10.mp4", 5),
+        _m("c2late", "/v/clip2.mp4", 90),
+        _m("a", "/v/Alpha.mp4", 1),
+        _m("c10a", "/v/clip10.mp4", 2),
+        _m("c2early", "/v/clip2.mp4", 3),
+    ]
+    assert _sort_positions(moments) == ["a", "c2early", "c2late", "c10a", "c10b"]
+
+
+def test_position_order_is_stable_and_keeps_same_named_files_apart() -> None:
+    """#469: equal starts keep score order (stable), case variants and same-named files in two
+    folders sort the same whatever the input order, and each folder's file stays together."""
+    ties = [_m("first", "/v/a.mp4", 4), _m("second", "/v/a.mp4", 4), _m("third", "/v/a.mp4", 4)]
+    assert _sort_positions(ties) == ["first", "second", "third"]
+    mixed = [
+        _m("x1", "/two/clip.mp4", 1), _m("y1", "/one/clip.mp4", 50),
+        _m("x2", "/two/clip.mp4", 9), _m("y0", "/one/clip.mp4", 2),
+    ]  # fmt: skip
+    got = _sort_positions(mixed)
+    assert _sort_positions(mixed[::-1]) == got
+    assert got == ["y0", "y1", "x1", "x2"]
+    cased = [_m("up", "/v/Clip.mp4", 1), _m("low", "/v/clip.mp4", 1), _m("z", "/v/zed.mp4", 0)]
+    got = _sort_positions(cased)
+    assert _sort_positions(cased[::-1]) == got and got[-1] == "z"
+
+
+def test_moment_order_control_is_labelled_with_score_default() -> None:
+    """#469: a labelled select beside the filter offers Score (default) and Position in video;
+    a status region announces the change."""
+    html = _web("index.html")
+    label = re.search(r'<label class="order">(.*?)</label>', html, re.S)[1]
+    assert "Filter by" in label
+    sel = re.search(r'<select id="momentOrder">(.*?)</select>', label, re.S)[1]
+    assert re.findall(r'<option value="(\w+)">([^<]+)</option>', sel) == [
+        ("score", "Score"),
+        ("position", "Position in video"),
+    ]
+    assert re.search(r'<p id="orderLive"[^>]*role="status"', html)
+    assert html.index('id="filter"') < html.index('id="momentOrder"')
+
+
+def test_moment_order_is_remembered_safely_and_sorts_after_filtering() -> None:
+    """#469: storage access is guarded, the sort runs after the filter, and the rank badge
+    still comes from the score rank."""
+    js = _web("app.js")
+    init = re.search(r"function initMomentOrder\(\) \{(.*?)\n\}\n", js, re.S)[1]
+    assert re.search(r"try \{[^}]*localStorage\.getItem\(ORDER_KEY\)[^}]*\} catch", init, re.S)
+    assert re.search(r"try \{[^}]*localStorage\.(set|remove)Item\(ORDER_KEY", init, re.S)
+    assert "'cutpoint.momentOrder'" in js
+    render = re.search(r"function renderMoments\(\) \{(.*?)\n\}\n", js, re.S)[1]
+    assert render.index(".filter(") < render.index("positionCompare")
+    assert re.search(r"\.map\(\(c, i\) => \(\{ c, rank: i \+ 1 \}\)\)", render)
