@@ -1,4 +1,5 @@
-"""#464: parallel clip export (export_workers, _ExportPool, ChildScope).
+"""#464: parallel clip export (export_workers, _ExportPool, ChildScope); #470: NVENC session
+limit in the pool, and the ffprobe/decode children of worker threads in the scope.
 
 The pool is tested with fake exports (threads and events), and with small real subprocesses
 (``python -c``) standing in for ffmpeg where the point is that children are started, stopped
@@ -17,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import media_info, set_config, write
-from cutpoint import clips, config, ffmpeg_utils, paths, sources, srt
+from cutpoint import audio_tracks, clips, config, ffmpeg_utils, paths, sources, srt
 from cutpoint.clips import ClipPlan
 from cutpoint.encode import OutputFormat, atomic_output
 from cutpoint.ffmpeg_utils import ChildScope, FFmpegError, VideoEncoder, child_scope
@@ -758,3 +759,399 @@ def test_failed_parallel_export_leaves_no_clips_folder_or_partials(home, monkeyp
         clips.export_clips(project, segments=seg)
     assert not (project / "clips").exists()
     assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == []
+
+
+# -- #470: NVENC session limit -----------------------------------------------------------------
+
+# What ffmpeg 6.1 prints when the GeForce session limit is reached (libavcodec/nvenc.c).
+SESSION_ERR = (
+    "ffmpeg failed (exit 187):\n"
+    "[h264_nvenc @ 0x5581] OpenEncodeSessionEx failed: out of memory (10)\n"
+    "[h264_nvenc @ 0x5581] No capable devices found\n"
+    "[vost#0:0/h264_nvenc @ 0x5582] Error while opening encoder - maybe incorrect parameters\n"
+    "Conversion failed!"
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        SESSION_ERR,
+        "[h264_nvenc @ 0x1] OpenEncodeSessionEx failed: incompatible client key (21)",
+        "[h264_nvenc @ 0x1] OpenEncodeSessionEx failed: out of memory (10): driver text",  # 7.x
+    ],
+)
+def test_session_limit_texts_are_recognised(text):
+    assert ffmpeg_utils.nvenc_session_limit(FFmpegError(text))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[h264_nvenc @ 0x1] No capable devices found",  # alone: no NVENC GPU at all
+        "[h264_nvenc @ 0x1] OpenEncodeSessionEx failed: no encode device (1)",
+        "[h264_nvenc @ 0x1] OpenEncodeSessionEx failed: unsupported device (2)",
+        "[h264_nvenc @ 0x1] InitializeEncoder failed: invalid param (8)",
+        "[h264_nvenc @ 0x1] Cannot load libnvidia-encode.so.1",
+        "[aac @ 0x1] out of memory (10)",
+        "ffmpeg failed (exit 1):\nError during demuxing: Input/output error",
+    ],
+)
+def test_other_failures_are_not_a_session_limit(text):
+    assert not ffmpeg_utils.nvenc_session_limit(FFmpegError(text))
+
+
+@pytest.fixture
+def nvenc(monkeypatch):
+    """video_encoder auto chose NVENC; no codec is failed or suspect."""
+    enc = VideoEncoder("nvenc")
+    monkeypatch.setattr(ffmpeg_utils, "video_encoder", lambda: enc)
+    monkeypatch.setattr(ffmpeg_utils, "_GPU_ENCODE_FAILED", set())
+    monkeypatch.setattr(ffmpeg_utils, "_GPU_ENCODE_SUSPECT", {})
+    return enc
+
+
+class FakeEncodes:
+    """Fake encodes for :func:`encode_with_fallback` in an :class:`_ExportPool`: ``fail[name]``
+    GPU attempts of clip ``name`` fail with :data:`SESSION_ERR` (the first one once ``hold`` is
+    running); ``hold`` runs until :attr:`release` is set. Records attempts and how many fake
+    encodes ran when each started."""
+
+    def __init__(self, fail: dict[str, int], hold: str | None = None) -> None:
+        self.fail = dict(fail)
+        self.hold = hold
+        self.attempts: list[tuple[str, str, int]] = []  # (name, kind, encodes already running)
+        self.running = 0
+        self.lock = threading.Lock()
+        self.held, self.release = threading.Event(), threading.Event()
+
+    def job(self, name: str):
+        def encode(enc):
+            with self.lock:
+                self.attempts.append((name, enc.kind, self.running))
+                self.running += 1
+            try:
+                if name == self.hold:
+                    self.held.set()
+                    assert self.release.wait(WAIT_S)
+                elif enc.kind != "cpu" and self.fail.get(name):
+                    self.fail[name] -= 1
+                    assert self.hold is None or self.held.wait(WAIT_S)
+                    raise FFmpegError(SESSION_ERR)
+                return enc.kind
+            finally:
+                with self.lock:
+                    self.running -= 1
+
+        return lambda: ffmpeg_utils.encode_with_fallback(encode, name)
+
+    def tries(self, name: str) -> list[str]:
+        return [kind for n, kind, _ in self.attempts if n == name]
+
+
+def test_session_limit_in_the_pool_drops_to_one_gpu_encode_and_retries_on_the_gpu(nvenc, caplog):
+    caplog.set_level("INFO")
+    fake = FakeEncodes({"a": 1}, hold="b")
+    with clips._ExportPool([fake.job(n) for n in ("a", "b", "c", "d")], 2) as pool:
+        until(lambda: pool.scope._gpu_limit == 1, "the GPU limit")
+        time.sleep(0.2)  # the retry of a must wait for b
+        assert fake.tries("a") == ["nvenc"]
+        fake.release.set()
+        assert [pool.result(i) for i in range(4)] == ["nvenc"] * 4
+    assert fake.tries("a") == ["nvenc", "nvenc"]  # retried on the GPU, not libx264
+    retry = [i for i, (n, *_) in enumerate(fake.attempts) if n == "a"][1]
+    after = fake.attempts[retry:]
+    assert [running for *_, running in after] == [0, 0, 0]  # then one encode at a time
+    assert not ffmpeg_utils._GPU_ENCODE_FAILED
+    assert not ffmpeg_utils._GPU_ENCODE_SUSPECT
+    infos = [r.getMessage() for r in caplog.records if "no free encode session" in r.getMessage()]
+    assert infos == ["NVENC has no free encode session; exporting one clip at a time"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_session_limit_at_one_gpu_encode_falls_back_to_libx264(nvenc, caplog):
+    """The retry runs alone; when it fails too, the clip is redone on libx264 and the run
+    goes on there, as after any GPU failure. A clip starting alone under the limit is not
+    retried on the GPU either."""
+    fake = FakeEncodes({"a": 2, "c": 1}, hold="b")
+    with clips._ExportPool([fake.job(n) for n in ("a", "b")], 2) as pool:
+        until(lambda: pool.scope._gpu_limit == 1, "the GPU limit")
+        fake.release.set()
+        assert [pool.result(i) for i in range(2)] == ["cpu", "nvenc"]
+        ffmpeg_utils._GPU_ENCODE_FAILED.clear()  # as if the GPU worked again
+        fake.hold = None
+        with child_scope(pool.scope):
+            assert fake.job("c")() == "cpu"
+    assert fake.tries("a") == ["nvenc", "nvenc", "cpu"]
+    assert fake.tries("c") == ["nvenc", "cpu"]
+    assert {nvenc.codec} == ffmpeg_utils._GPU_ENCODE_FAILED
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 2
+    assert all("OpenEncodeSessionEx failed: out of memory (10)" in w for w in warnings)
+
+
+def mark_gpu_off(codec: str, mark: str) -> None:
+    if mark == "failed":
+        ffmpeg_utils._GPU_ENCODE_FAILED.add(codec)
+    else:  # another clip's CPU redo still runs
+        ffmpeg_utils._GPU_ENCODE_SUSPECT[codec] = 1
+
+
+@pytest.mark.parametrize("mark", ["failed", "suspect"])
+def test_a_clip_waiting_for_a_gpu_slot_goes_to_the_cpu_once_the_gpu_failed(nvenc, caplog, mark):
+    """The codec failed for the run while the clip waited under the limit: no NVENC attempt and
+    no WARNING, as for the clips after the failure in a sequential run."""
+    scope = ChildScope()
+    scope.limit_gpu()
+    assert scope.acquire_gpu()  # the clip running alone
+    attempts: list[str] = []
+
+    def encode(enc):
+        attempts.append(enc.kind)
+        return enc.kind
+
+    t, outcome = in_worker(scope, lambda: ffmpeg_utils.encode_with_fallback(encode, "c"))
+    time.sleep(0.1)
+    assert attempts == []  # waiting for the slot
+    mark_gpu_off(nvenc.codec, mark)
+    scope.release_gpu()
+    t.join(WAIT_S)
+    assert outcome == ["cpu"]
+    assert attempts == ["cpu"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    if mark == "suspect":
+        assert {nvenc.codec: 1} == ffmpeg_utils._GPU_ENCODE_SUSPECT  # not the redo's mark
+
+
+def test_a_session_retry_goes_to_the_cpu_once_the_gpu_failed_meanwhile(nvenc, caplog):
+    fake = FakeEncodes({"a": 1}, hold="b")
+    with clips._ExportPool([fake.job(n) for n in ("a", "b")], 2) as pool:
+        until(lambda: pool.scope._gpu_limit == 1, "the GPU limit")
+        mark_gpu_off(nvenc.codec, "failed")
+        fake.release.set()
+        assert [pool.result(i) for i in range(2)] == ["cpu", "nvenc"]
+    assert fake.tries("a") == ["nvenc", "cpu"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+@pytest.mark.parametrize("err", [SESSION_ERR, "ffmpeg failed (exit 1):\nnvenc broke"])
+def test_outside_a_pool_a_gpu_failure_still_goes_to_libx264_at_once(nvenc, err):
+    attempts: list[str] = []
+
+    def encode(enc):
+        attempts.append(enc.kind)
+        if enc.kind == "nvenc":
+            raise FFmpegError(err)
+        return enc.kind
+
+    assert ffmpeg_utils.encode_with_fallback(encode, "000_c.mp4") == "cpu"
+    assert attempts == ["nvenc", "cpu"]
+    assert {nvenc.codec} == ffmpeg_utils._GPU_ENCODE_FAILED
+
+
+def test_other_gpu_failures_in_the_pool_are_not_retried_on_the_gpu(nvenc):
+    attempts: list[str] = []
+
+    def encode(enc):
+        attempts.append(enc.kind)
+        if enc.kind == "nvenc":
+            raise FFmpegError(
+                "ffmpeg failed (exit 1):\nInitializeEncoder failed: invalid param (8)"
+            )
+        return enc.kind
+
+    scope = ChildScope()
+    with child_scope(scope):
+        assert ffmpeg_utils.encode_with_fallback(encode, "000_c.mp4") == "cpu"
+    assert attempts == ["nvenc", "cpu"]
+    assert scope._gpu_limit is None
+
+
+def test_a_clip_waiting_for_the_slot_of_a_failed_gpu_encode_goes_to_the_cpu(
+    nvenc, caplog, monkeypatch
+):
+    """The clip holding the only slot fails (not a session error): its suspect mark is made
+    before the slot is freed, so the waiting clip makes no GPU attempt and logs no WARNING."""
+    scope = ChildScope()
+    scope.limit_gpu()
+    attempts: dict[str, list[str]] = {"a": [], "b": []}
+    fail = threading.Event()
+
+    def job(name):
+        def encode(enc):
+            attempts[name].append(enc.kind)
+            if name == "a" and enc.kind == "nvenc":
+                assert fail.wait(WAIT_S)
+                raise FFmpegError("ffmpeg failed (exit 1):\nnvenc broke")
+            return enc.kind
+
+        return lambda: ffmpeg_utils.encode_with_fallback(encode, name)
+
+    first_line = ffmpeg_utils._first_error_line
+
+    def slow_warning(err):  # the old order marked after the WARNING: let b take the slot first
+        deadline = time.monotonic() + 1.0
+        while not attempts["b"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return first_line(err)
+
+    monkeypatch.setattr(ffmpeg_utils, "_first_error_line", slow_warning)
+    ta, out_a = in_worker(scope, job("a"))
+    until(lambda: attempts["a"], "a to hold the slot")
+    tb, out_b = in_worker(scope, job("b"))
+    time.sleep(0.1)
+    assert attempts["b"] == []  # waiting for the slot
+    fail.set()
+    ta.join(WAIT_S)
+    tb.join(WAIT_S)
+    assert (out_a, out_b) == (["cpu"], ["cpu"])
+    assert attempts == {"a": ["nvenc", "cpu"], "b": ["cpu"]}
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+    assert not ffmpeg_utils._GPU_ENCODE_SUSPECT  # counted once, ended by the redo
+    assert {nvenc.codec} == ffmpeg_utils._GPU_ENCODE_FAILED
+
+
+def test_a_thread_waiting_for_a_gpu_slot_stops_on_cancel():
+    scope = ChildScope()
+    scope.limit_gpu()
+    assert scope.acquire_gpu() is True
+    outcome: list[BaseException] = []
+
+    def waiter():
+        try:
+            scope.acquire_gpu()
+        except BaseException as err:  # noqa: BLE001
+            outcome.append(err)
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    time.sleep(0.1)
+    assert t.is_alive()
+    scope.cancel()
+    t.join(WAIT_S)
+    assert [type(e) for e in outcome] == [KeyboardInterrupt]
+
+
+# -- #470: ffprobe and decode children of worker threads -------------------------------------
+
+
+def in_worker(scope: ChildScope, fn) -> tuple[threading.Thread, list[object]]:
+    """Start ``fn()`` on a thread inside ``scope``; the list gets its result or exception."""
+    outcome: list[object] = []
+
+    def worker():
+        with child_scope(scope):
+            try:
+                outcome.append(fn())
+            except BaseException as err:  # noqa: BLE001
+                outcome.append(err)
+
+    t = threading.Thread(target=worker)
+    t.start()
+    return t, outcome
+
+
+def probe_json():
+    return ffmpeg_utils.ffprobe_json("x.mp4", show_streams=True)
+
+
+def span_check():
+    return audio_tracks._confirm_on_span(Path("src.mp4"), 2, (0,), 0.0, 5.0)
+
+
+def decode():
+    return list(ffmpeg_utils.decode_raw("x.mp4", size=(2, 2), hwaccel=None))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("fn", [probe_json, span_check, decode])
+def test_scope_kill_kills_ffprobe_span_check_and_decode_children(kids, fn):
+    """A sibling failure or a second Ctrl+C kills them at once, and the stop is no failure: the
+    span check does not swallow it as a failed compare (#470)."""
+    scope = ChildScope()
+    t, outcome = in_worker(scope, fn)
+    until(lambda: kids.procs, "the child to start")
+    scope.kill()
+    t.join(WAIT_S)
+    assert not t.is_alive()
+    assert [type(e) for e in outcome] == [KeyboardInterrupt]
+    assert kids.procs[0].poll() not in (None, 7)  # killed, not run to its exit
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("fn", [probe_json, span_check, decode])
+def test_child_that_ends_after_cancel_raises_keyboard_interrupt(kids, fn):
+    scope = ChildScope()
+    t, outcome = in_worker(scope, fn)
+    until(lambda: kids.procs, "the child to start")
+    scope.cancel()
+    kids.release()  # it exits non-zero after the cancel
+    t.join(WAIT_S)
+    assert [type(e) for e in outcome] == [KeyboardInterrupt]
+    if fn is not decode:  # decode_raw kills a child that has not exited by its output's end
+        assert kids.killed == []
+
+
+@pytest.mark.parametrize("fn", [probe_json, span_check, decode])
+def test_no_ffprobe_or_decode_child_starts_after_cancel(kids, fn):
+    scope = ChildScope()
+    scope.cancel()
+    with child_scope(scope), pytest.raises(KeyboardInterrupt):
+        fn()
+    assert kids.procs == []
+
+
+@pytest.mark.parametrize("stop", ["cancel", "kill"])
+def test_a_child_added_after_the_scope_stopped_is_killed(stop):
+    """A stop between ``scope.check()`` and ``scope.add(proc)`` does not miss the new child."""
+    scope = ChildScope()
+    getattr(scope, stop)()
+
+    class Proc:
+        killed = 0
+
+        def kill(self):
+            self.killed += 1
+
+    proc = Proc()
+    scope.add(proc)
+    assert proc.killed == 1
+    assert proc in scope._procs  # still registered, so run() discards it as usual
+
+
+@pytest.mark.slow
+def test_ffprobe_failure_in_a_scope_is_the_same_error_as_outside(kids):
+    kids.release()
+    with pytest.raises(FFmpegError, match=r"ffprobe failed on x.mp4 \(exit 7\)"):
+        probe_json()
+    t, outcome = in_worker(ChildScope(), probe_json)
+    t.join(WAIT_S)
+    assert [type(e) for e in outcome] == [FFmpegError]
+    assert str(outcome[0]).startswith("ffprobe failed on x.mp4 (exit 7)")
+
+
+def test_ffprobe_json_has_a_default_timeout():
+    import inspect  # noqa: PLC0415
+
+    default = inspect.signature(ffmpeg_utils.ffprobe_json).parameters["timeout"].default
+    assert default == ffmpeg_utils.FFPROBE_TIMEOUT_S
+    assert 60 <= default < float("inf")
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("scoped", [False, True])
+def test_ffprobe_json_timeout_kills_it_and_is_an_ffmpeg_error(kids, scoped):
+    def probe():
+        return ffmpeg_utils.ffprobe_json("x.mp4", show_streams=True, timeout=0.3)
+
+    if scoped:
+        t, outcome = in_worker(ChildScope(), probe)
+        t.join(WAIT_S)
+        err = outcome[0]
+    else:
+        with pytest.raises(FFmpegError) as info:
+            probe()
+        err = info.value
+    assert isinstance(err, FFmpegError)
+    assert str(err) == "ffprobe timed out after 0.3s on x.mp4"
+    assert kids.procs[0].poll() not in (None, 7)

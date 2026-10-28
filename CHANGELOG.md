@@ -95,6 +95,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the frames that shared an id are OCR'd again, once. On such a source the first run can change
   too, because frames at the same time now count as separate frames. Sources where no frames
   share a time are unchanged (#444).
+- Parallel exports with NVENC (`video_encoder` `auto` or `nvenc`) no longer switch to libx264,
+  or fail, when the driver has no free encode session (older GeForce drivers while ShadowPlay or
+  OBS holds one): the rest of the run encodes one clip at a time on the GPU (one INFO line) and
+  the clip is encoded on the GPU again; only a clip that still finds no session alone is redone
+  on the CPU, as before. A Ctrl+C or a failed export now also stops the clips' ffprobe runs and
+  audio track checks at once instead of waiting for them, and ffprobe calls time out after 300 s
+  instead of never, except the one that lists every frame of a clip for `assemble` (#470).
 
 ## [0.3.0] - 2026-10-27
 

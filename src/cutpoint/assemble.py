@@ -487,6 +487,7 @@ def _video_packets(path: Path, fps: Fraction) -> VideoPackets | None:
         streams="v:0",
         entries="packet=pts,flags:stream=time_base,extradata_hash:format=start_time,duration",
         options=("-show_data_hash", "MD5"),
+        timeout=None,  # lists every packet: a long clip on slow storage takes its time
     )
     streams, packets = data.get("streams") or [], data.get("packets") or []
     if not streams or not packets or any("pts" not in p for p in packets):

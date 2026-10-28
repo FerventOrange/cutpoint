@@ -163,12 +163,19 @@ class ChildScope:
     (:func:`encode_with_fallback` retries FFmpegError only). ffmpeg can get the Ctrl+C and
     exit before the controlling thread cancels, so a child that fails waits up to
     :data:`STOP_GRACE_S` for a cancel before its exit counts as a failure.
+
+    GPU encodes of the scope's threads also hold a slot (:meth:`acquire_gpu`): once NVENC has
+    no free encode session (#470), :meth:`limit_gpu` lets one GPU encode run at a time.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._procs: set[subprocess.Popen] = set()
         self._stopped = threading.Event()
+        self._gpu = threading.Condition()
+        self._gpu_running = 0
+        self._gpu_limit: int | None = None  # None: as many as there are threads
+        self._gpu_retries = 0  # retries waiting for a slot: they go before new clips
 
     @property
     def cancelled(self) -> bool:
@@ -186,15 +193,56 @@ class ChildScope:
     def cancel(self) -> None:
         """Start no new child; running ones go on until they exit or :meth:`kill`."""
         self._stopped.set()
+        with self._gpu:  # a thread waiting for a GPU slot stops too
+            self._gpu.notify_all()
 
     def kill(self) -> None:
         """Cancel and kill every running child."""
         with self._lock:
             self._stopped.set()
             procs = list(self._procs)
+        with self._gpu:
+            self._gpu.notify_all()
         for proc in procs:
             with suppress(OSError):
                 proc.kill()
+
+    def acquire_gpu(self, retry: bool = False) -> bool:
+        """Wait for a GPU encode slot (a ``retry`` goes before new clips); release it with
+        :meth:`release_gpu`. Returns whether the encode now runs alone under :meth:`limit_gpu`.
+
+        Raises:
+            KeyboardInterrupt: If the scope is or gets cancelled first.
+        """
+        with self._gpu:
+            if retry:
+                self._gpu_retries += 1
+            try:
+                while True:
+                    self.check()
+                    limit = self._gpu_limit
+                    if limit is None or (
+                        self._gpu_running < limit and (retry or not self._gpu_retries)
+                    ):
+                        break
+                    self._gpu.wait()
+            finally:
+                if retry:
+                    self._gpu_retries -= 1
+            self._gpu_running += 1
+            return limit is not None
+
+    def release_gpu(self) -> None:
+        with self._gpu:
+            self._gpu_running -= 1
+            self._gpu.notify_all()
+
+    def limit_gpu(self) -> bool:
+        """One GPU encode at a time from now on; True for the call that set the limit."""
+        with self._gpu:
+            first = self._gpu_limit is None
+            self._gpu_limit = 1
+            return first
 
     def add(self, proc: subprocess.Popen) -> None:
         with self._lock:
@@ -1089,6 +1137,79 @@ def _unmark_suspect(codec: str) -> None:
         _GPU_ENCODE_SUSPECT.pop(codec, None)
 
 
+# NVENC could not open an encode session (#470): libavcodec/nvenc.c (6.x, 7.x) logs
+# nvenc_print_error's "OpenEncodeSessionEx failed: <desc> (<code>)" (7.x may add ": <driver
+# text>"), then "No capable devices found". GeForce drivers report their session limit (other
+# encodes in this run, ShadowPlay, OBS) as out of memory (10) or, older ones, incompatible
+# client key (21). Other codes (no encode device, unsupported device), "No capable devices
+# found" alone (no NVENC GPU) and InitializeEncoder failures (bad parameters) do not mean the
+# sessions are taken and are not matched.
+NVENC_SESSION_RE = re.compile(
+    r"OpenEncodeSessionEx failed: (?:out of memory \(10\)|incompatible client key \(21\))"
+)
+
+
+def nvenc_session_limit(err: FFmpegError) -> bool:
+    """Whether ``err`` is NVENC finding no free encode session (:data:`NVENC_SESSION_RE`)."""
+    return NVENC_SESSION_RE.search(str(err)) is not None
+
+
+class _GpuOff(Exception):
+    """A clip of :func:`_scoped_encode` got its GPU slot after the auto-chosen GPU encoder
+    failed (or became suspect) for the run: it is encoded on the CPU."""
+
+
+def _gpu_off() -> bool:
+    """Whether a GPU encoder failed or is suspect for this run (:data:`_GPU_ENCODE_FAILED`)."""
+    with _GPU_FAILED_LOCK:
+        return bool(_GPU_ENCODE_FAILED or _GPU_ENCODE_SUSPECT)
+
+
+def _scoped_encode[T](
+    encode: Callable[[VideoEncoder], T],
+    enc: VideoEncoder,
+    auto: bool,
+    on_fail: Callable[[], None],
+) -> T:
+    """``encode(enc)``; in a :class:`ChildScope` (parallel export, #470) a GPU encode holds a
+    GPU slot of the scope. When NVENC has no free session while other encodes may hold one,
+    the rest of the scope runs one GPU encode at a time and this one is retried on the GPU once
+    it runs alone; a failure then is the caller's, as in a sequential run. ``on_fail()`` runs
+    before a failed encode frees its slot, so a clip waiting for it sees the caller's mark.
+
+    Raises:
+        _GpuOff: With ``auto`` (``video_encoder`` "auto"), when the GPU encoder failed for the
+            run while this clip waited for its slot: as sequentially, it goes to the CPU with
+            no GPU attempt or WARNING.
+    """
+    scope: ChildScope | None = getattr(_SCOPE, "current", None)
+    if scope is None or enc.kind == "cpu":
+        return encode(enc)
+    alone = scope.acquire_gpu()
+    try:
+        if auto and _gpu_off():
+            raise _GpuOff
+        return encode(enc)
+    except FFmpegError as err:
+        if alone or enc.kind != "nvenc" or not nvenc_session_limit(err):
+            on_fail()
+            raise
+    finally:
+        scope.release_gpu()
+    if scope.limit_gpu():
+        logger.info("NVENC has no free encode session; exporting one clip at a time")
+    scope.acquire_gpu(retry=True)
+    try:
+        if auto and _gpu_off():
+            raise _GpuOff
+        return encode(enc)
+    except FFmpegError:
+        on_fail()
+        raise
+    finally:
+        scope.release_gpu()
+
+
 def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T:
     """Run ``encode`` with :func:`video_encoder`; retry once on the CPU if a GPU encode fails.
 
@@ -1098,17 +1219,28 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
     process while ``video_encoder`` stays "auto". ffmpeg's error does not reliably say whether the encoder or something else
     (a bad read, a filter) failed, so any failure is retried; a failure that is not the
     encoder's fails again on the CPU and that error is raised. A CPU encode is not retried.
+    In a parallel export, NVENC finding no free session is first retried on the GPU with one
+    encode at a time (:func:`_scoped_encode`).
 
     Raises:
         FFmpegError: If the CPU encode fails, or a GPU encoder named in ``video_encoder``
             fails (the message names the setting that switches to the CPU).
     """
     choice = get_config().video_encoder
-    with _GPU_FAILED_LOCK:
-        failed = bool(_GPU_ENCODE_FAILED or _GPU_ENCODE_SUSPECT)
-    enc = VideoEncoder("cpu") if failed and choice == "auto" else video_encoder()
+    enc = VideoEncoder("cpu") if choice == "auto" and _gpu_off() else video_encoder()
+    off = marked = False
+
+    def mark() -> None:  # parallel export (#464): no new GPU encode during the redo
+        nonlocal marked
+        if choice == "auto" and not marked:
+            with _GPU_FAILED_LOCK:
+                _GPU_ENCODE_SUSPECT[enc.codec] = _GPU_ENCODE_SUSPECT.get(enc.codec, 0) + 1
+            marked = True
+
     try:
-        return encode(enc)
+        return _scoped_encode(encode, enc, choice == "auto", mark)
+    except _GpuOff:
+        off = True
     except FFmpegError as err:
         if enc.kind == "cpu":
             raise
@@ -1124,8 +1256,9 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
             enc.codec,
             _first_error_line(err),
         )
-        with _GPU_FAILED_LOCK:  # parallel export (#464): no new GPU encode during the redo
-            _GPU_ENCODE_SUSPECT[enc.codec] = _GPU_ENCODE_SUSPECT.get(enc.codec, 0) + 1
+        mark()  # made already when a GPU slot was freed (#470)
+    if off:  # failed while this clip waited (#470): a CPU encode, its failure raised as is
+        return encode(VideoEncoder("cpu"))
     try:
         result = encode(VideoEncoder("cpu"))
     except BaseException:
@@ -1853,6 +1986,10 @@ PixFmt = Literal["rgb24", "bgr24", "gray"]
 PIX_CHANNELS = {"rgb24": 3, "bgr24": 3, "gray": 1}
 
 _STDERR_TAIL = 15
+# ffprobe_json's default timeout (#470): a hung read (a stalled network share, a driver) fails
+# instead of blocking an export or a probe forever. Callers that read little pass less (60 s);
+# this leaves room for a packet listing of a long file.
+FFPROBE_TIMEOUT_S = 300.0
 _PTS_RE = re.compile(rb"pts_time:\s*([-\d.]+)")
 _PTS_WAIT_S = 30.0  # showinfo logs a frame before it is written; a lag this long is a bug
 
@@ -1873,16 +2010,47 @@ def _exec(
 ) -> subprocess.CompletedProcess:
     """Run ``tool`` with staged inputs, capturing stdout/stderr as bytes.
 
+    A thread in a :func:`child_scope` registers the child there, as :func:`run` does (#470).
+
     Raises:
         FFmpegError: If the process runs longer than ``timeout`` seconds. The exit
             code is not checked; callers decide what counts as failure.
+        KeyboardInterrupt: In a :class:`ChildScope` that is cancelled before the child
+            starts or by the time it ends.
     """
     cmd = _command(tool, args)
     logger.debug("exec: %s", subprocess.list2cmdline(cmd))
+    scope: ChildScope | None = getattr(_SCOPE, "current", None)
+    if scope is not None:
+        return _exec_scoped(scope, cmd, timeout, tool, path)
     try:
         return subprocess.run(cmd, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as err:
         raise FFmpegError(f"{tool} timed out after {timeout:g}s on {path}") from err
+
+
+def _exec_scoped(
+    scope: ChildScope, cmd: list[str], timeout: float | None, tool: str, path: Path | str
+) -> subprocess.CompletedProcess:
+    """:func:`_exec` of a thread in ``scope``: the child is registered there."""
+    scope.check()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        scope.add(proc)
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as err:
+        proc.kill()
+        proc.communicate()
+        raise FFmpegError(f"{tool} timed out after {timeout:g}s on {path}") from err
+    except BaseException as err:
+        _stop_child(proc, err)
+        raise
+    finally:
+        scope.discard(proc)
+    scope.check()  # stopped from outside
+    if proc.returncode != 0 and scope.wait_cancelled(STOP_GRACE_S):
+        raise KeyboardInterrupt  # it got the Ctrl+C before the scope was cancelled
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _hw_passes(
@@ -1935,7 +2103,7 @@ def ffprobe_json(
     show_format: bool = False,
     show_streams: bool = False,
     options: Sequence[str] = (),
-    timeout: float | None = None,
+    timeout: float | None = FFPROBE_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Run ffprobe on ``path`` (its staged copy if any) and return the parsed JSON.
 
@@ -1947,7 +2115,7 @@ def ffprobe_json(
         show_format: Add ``-show_format``.
         show_streams: Add ``-show_streams``.
         options: Extra ffprobe options, e.g. ``("-read_intervals", "%+12")``.
-        timeout: Seconds before ffprobe is killed.
+        timeout: Seconds before ffprobe is killed (:data:`FFPROBE_TIMEOUT_S`; None: never).
 
     Raises:
         FFmpegError: If ffprobe fails, times out or prints invalid JSON.
@@ -2198,9 +2366,13 @@ def decode_raw(
         ``(t, frame)``: ``frame`` is a read-only ``uint8`` array of shape
         ``(height, width, 3)`` (``(height, width)`` for ``gray``).
 
+    In a :func:`child_scope` each pass's ffmpeg is registered there, as in :func:`run` (#470).
+
     Raises:
         FFmpegError: If the last pass yields no frames, or a pass times out.
         ValueError: For an unknown ``pix_fmt`` or ``hwaccel``.
+        KeyboardInterrupt: In a :class:`ChildScope` that is cancelled before a pass starts or
+            by the time it ends.
     """
     if pix_fmt not in PIX_CHANNELS:
         raise ValueError(f"unsupported pix_fmt {pix_fmt!r} (expected one of {list(PIX_CHANNELS)})")
@@ -2210,6 +2382,7 @@ def decode_raw(
     shape = (height, width, channels) if channels > 1 else (height, width)
     frame_bytes = width * height * channels
     t_base = start or 0.0
+    scope: ChildScope | None = getattr(_SCOPE, "current", None)  # as in run() (#470)
     for i, hw in enumerate(passes):
         args = decode_raw_args(
             path,
@@ -2225,6 +2398,8 @@ def decode_raw(
         cmd = _command("ffmpeg", args)
         logger.debug("exec: %s", subprocess.list2cmdline(cmd))
         log = _StderrLog(pts, stderr_lines)
+        if scope is not None:
+            scope.check()
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -2234,6 +2409,8 @@ def decode_raw(
         )
         if isolate:
             kill_with_parent(proc)
+        if scope is not None:
+            scope.add(proc)
         reader = threading.Thread(target=log.read, args=(proc.stderr,), daemon=True)
         reader.start()
         deadline = _Deadline(proc, timeout) if timeout is not None else None
@@ -2264,6 +2441,10 @@ def decode_raw(
                 proc.kill()  # the consumer stopped early
             proc.wait()
             reader.join(timeout=5)
+            if scope is not None:
+                scope.discard(proc)
+        if scope is not None:
+            scope.check()  # stopped from outside: not a short pass
         ours = stopped or (watch is not None and watch.fired) or bool(deadline and deadline.expired)
         if exit_codes is not None and proc.returncode != 0 and not ours:
             exit_codes.append(proc.returncode)
@@ -2276,6 +2457,8 @@ def decode_raw(
         if i + 1 < len(passes):
             logger.debug("decode of %s (hw=%s) produced no frames: %s", path, hw, log.text())
             continue
+        if scope is not None and scope.wait_cancelled(STOP_GRACE_S):
+            raise KeyboardInterrupt  # ffmpeg got the Ctrl+C before the scope was cancelled
         raise FFmpegError(f"ffmpeg decoded no frames from {path} (hw={hw}):\n{log.text()}")
 
 
