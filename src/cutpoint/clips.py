@@ -10,28 +10,40 @@ import logging
 import ntpath
 import os
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
+import threading
+import time
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, jsonout, sources, srt
+from cutpoint.audio_tracks import export_tracks
+from cutpoint.config import export_workers as configured_workers
 from cutpoint.config import is_absolute_any, path_key, remap_source, source_path, unc_path
 from cutpoint.crop import Crop, detect, parse_spec, project_crop
 from cutpoint.encode import (
     Lut,
     OutputFormat,
+    bt709_filter,
     choose_format,
     export_clip_checked,
     plan_makeup,
     plan_peaks,
+    warn_if_log,
 )
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
+    SOFT_STOP_S,
+    STOP_GRACE_S,
+    ChildScope,
+    FFmpegError,
     MediaInfo,
     check_not_sources,
+    child_scope,
     clip_momentary,
     output_dir,
     probe,
@@ -41,6 +53,7 @@ from cutpoint.ffmpeg_utils import (
     staged_dir,
     swap_in,
     swap_lock,
+    video_encoder,
 )
 from cutpoint.planning import (
     MANIFEST_GENERATOR,
@@ -65,6 +78,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_AUDIO_FADE_S = 0.25  # audio fade in/out baked into every exported clip
 MIN_EXPORT_S = 0.1  # shortest clip export_clips accepts
+POLL_S = 0.1  # parallel export: the main thread waits in steps this long (Ctrl+C on Windows)
 
 
 ARC_GROUPS = ("lift", "scenery", "run", "jump", "crash", "social")  # within a stretch of the day
@@ -625,6 +639,113 @@ def plan_clips(
     return plans
 
 
+def export_workers(plans: list[ClipPlan]) -> int:
+    """Clips :func:`render_clips` exports at once (#464): ``export_workers`` in config.json, or
+    for auto 2 with a GPU encoder and 1 with libx264, which already uses every core
+    (:func:`~cutpoint.ffmpeg_utils.video_encoder`, chosen here once instead of by every worker;
+    an encoder that cannot be chosen leaves its error to the first export, exported alone).
+    1 for fewer than two clips or a run with a 360 clip.
+    """
+    n = configured_workers()
+    if len(plans) < 2 or any(p.pano for p in plans) or n == 1:
+        return 1
+    try:
+        cpu = video_encoder().kind == "cpu"
+    except FFmpegError:
+        return 1
+    return n or (1 if cpu else 2)
+
+
+class _ExportPool:
+    """Runs the encodes of :func:`render_clips` on ``workers`` threads (#464).
+
+    Encodes start in plan order and their results are taken in plan order, so names, logs,
+    subtitles and manifest.json are those of a sequential export; each clip gets the same
+    ffmpeg command. ffmpeg runs in a :class:`~cutpoint.ffmpeg_utils.ChildScope`: the first
+    failure kills the encodes in flight, starts no more and is raised. On Ctrl+C or Ctrl+Break
+    (KeyboardInterrupt in this thread; ffmpeg got the same event) the running encodes get
+    ``SOFT_STOP_S`` to exit and are then killed (a second Ctrl+C kills them at once), and every
+    worker has removed its partial file before the exception leaves, as sequentially.
+    """
+
+    def __init__(self, jobs: list[Callable[[], dict[str, Any] | None]], workers: int) -> None:
+        self.scope = ChildScope()
+        self.failure: BaseException | None = None
+        self._lock = threading.Lock()
+        self._pool = ThreadPoolExecutor(workers, "cutpoint-export")
+        self.futures = [self._pool.submit(self._run, job) for job in jobs]
+
+    def _run(self, job: Callable[[], dict[str, Any] | None]) -> dict[str, Any] | None:
+        with child_scope(self.scope):
+            self.scope.check()  # not started after a failure or Ctrl+C
+            try:
+                return job()
+            except BaseException as err:
+                if not isinstance(err, KeyboardInterrupt):
+                    self.scope.wait_cancelled(STOP_GRACE_S)  # the error of a Ctrl+C is no failure
+                with self._lock:  # what a stop causes in the other encodes is no failure
+                    first = self.failure is None and not self.scope.cancelled
+                    if first:
+                        self.failure = err
+                if first:
+                    self.scope.kill()
+                raise
+
+    def result(self, i: int) -> dict[str, Any] | None:
+        """The read-error record of encode ``i`` (see :func:`export_clip_checked`).
+
+        Raises:
+            BaseException: The first failure of any encode; a KeyboardInterrupt of this
+                thread (Ctrl+C) as it is, never replaced by a failure it caused in an encode.
+        """
+        f = self.futures[i]
+        while self.failure is None and not f.done():
+            wait([f], POLL_S)
+        if self.failure is not None:
+            raise self.failure
+        return f.result()
+
+    def __enter__(self) -> _ExportPool:
+        return self
+
+    def __exit__(self, kind: object, err: BaseException | None, tb: object) -> None:
+        """Stop what still runs after a failure or Ctrl+C, then wait for every worker."""
+        deadline = None
+        if isinstance(err, KeyboardInterrupt):
+            self.scope.cancel()  # ffmpeg got the same Ctrl+C: let it exit first
+            deadline = time.monotonic() + SOFT_STOP_S
+        elif err is not None:
+            self.scope.kill()
+        for f in self.futures:
+            f.cancel()  # not started yet
+        while not all(f.done() for f in self.futures):
+            try:
+                wait(self.futures, POLL_S)
+                if deadline is not None and time.monotonic() > deadline:
+                    self.scope.kill()
+            except KeyboardInterrupt:
+                self.scope.kill()
+        self._pool.shutdown()
+
+
+def _warm_source_checks(plans: list[ClipPlan]) -> None:
+    """Run the once-per-source checks of an export (the audio track comparison and the
+    log/flat footage check) on this thread, before the encodes run in parallel (#464), so
+    each runs and logs once and a Ctrl+C stops them as in a sequential export. The color
+    conversion notes of :func:`~cutpoint.encode.bt709_filter` are logged here too, once."""
+    seen: set[Path] = set()
+    for plan in plans:
+        if plan.src in seen:
+            continue
+        seen.add(plan.src)
+        warn_if_log(plan.src, plan.info, plan.start)
+        bt709_filter(plan.info)
+        if plan.info.audio_streams > 1:
+            export_tracks(
+                plan.src, plan.info.audio_streams, plan.info.audio_duration or plan.info.duration
+            )
+
+
 def render_clips(
     plans: list[ClipPlan],
     out_dir: Path,
@@ -638,6 +759,7 @@ def render_clips(
     peaks: list[str] | None = None,
     language: str | None = None,
     lut: Lut | None = None,
+    workers: int = 1,
 ) -> list[RenderResult]:
     """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
     its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
@@ -654,6 +776,9 @@ def render_clips(
 
     ``lut``: ``--lut`` grade of every clip, 360 ones included (:func:`~cutpoint.encode.lut_filter`).
 
+    ``workers``: clips encoded at once (:func:`export_workers`; 360 plans are always encoded
+    one at a time); the results, logs and subtitles stay in plan order.
+
     Returns:
         One :class:`RenderResult` per plan, in order.
 
@@ -663,48 +788,58 @@ def render_clips(
     results: list[RenderResult] = []
     subs = srt.ClipSubtitles(protected_srts, language, clips_dir or out_dir)
     peaks = peaks or [""] * len(plans)
-    for plan, peak in zip(plans, peaks, strict=True):
-        m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
-        out = out_dir / plan.name
-        pano_rec = None
-        if plan.pano:
-            if pano is None:
-                raise ValueError(f"{plan.name}: 360 plan needs a PanoExporter")
-            read_err, pano_rec = pano.export(
-                m["source"], start, end, out, audio_fade=audio_fade, kind=m.get("kind"), lut=lut
-            )
-        else:
-            read_err = export_clip_checked(
-                plan.src,
-                plan.info,
+
+    def encode(plan: ClipPlan, peak: str) -> dict[str, Any] | None:
+        return export_clip_checked(
+            plan.src,
+            plan.info,
+            plan.start,
+            plan.end,
+            out_dir / plan.name,
+            fmt,
+            vertical,
+            plan.crop,
+            audio_fade,
+            peak,
+            lut,
+        )
+
+    pool = None
+    if workers > 1 and not any(p.pano for p in plans):
+        _warm_source_checks(plans)
+        jobs = [lambda p=p, k=k: encode(p, k) for p, k in zip(plans, peaks, strict=True)]
+        pool = _ExportPool(jobs, workers)
+    with pool or nullcontext():
+        for i, (plan, peak) in enumerate(zip(plans, peaks, strict=True)):
+            m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
+            out = out_dir / plan.name
+            pano_rec = None
+            if plan.pano:
+                if pano is None:
+                    raise ValueError(f"{plan.name}: 360 plan needs a PanoExporter")
+                read_err, pano_rec = pano.export(
+                    m["source"], start, end, out, audio_fade=audio_fade, kind=m.get("kind"), lut=lut
+                )
+            else:
+                read_err = pool.result(i) if pool is not None else encode(plan, peak)
+            if read_err and read_err["end"] < end:
+                end = read_err["end"]
+            logger.info(
+                "  %s  <- %s [%.2f-%.2f] tail +%.2fs (%s)%s%s",
+                plan.name,
+                plan.src.name,
                 start,
                 end,
-                out,
-                fmt,
-                vertical,
-                plan.crop,
-                audio_fade,
-                peak,
-                lut,
+                max(0.0, tail.extension),
+                tail.reason
+                + (", trimmed by read error" if read_err and read_err["end"] < tail.end else ""),
+                f" pad -{plan.pad_rec['applied']['start']:.2f}/+{plan.pad_rec['applied']['end']:.2f}"
+                if plan.pad_rec
+                else "",
+                f" crop {plan.crop}" if plan.crop else "",
             )
-        if read_err and read_err["end"] < end:
-            end = read_err["end"]
-        logger.info(
-            "  %s  <- %s [%.2f-%.2f] tail +%.2fs (%s)%s%s",
-            plan.name,
-            plan.src.name,
-            start,
-            end,
-            max(0.0, tail.extension),
-            tail.reason
-            + (", trimmed by read error" if read_err and read_err["end"] < tail.end else ""),
-            f" pad -{plan.pad_rec['applied']['start']:.2f}/+{plan.pad_rec['applied']['end']:.2f}"
-            if plan.pad_rec
-            else "",
-            f" crop {plan.crop}" if plan.crop else "",
-        )
-        sub = subs.write(out, m["source"], start, end)
-        results.append(RenderResult(out, end, read_err, pano_rec, sub))
+            sub = subs.write(out, m["source"], start, end)
+            results.append(RenderResult(out, end, read_err, pano_rec, sub))
     subs.report(len(plans))
     return results
 
@@ -1176,6 +1311,9 @@ def export_clips(
             source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
         )
         peaks, makeup = peak_filters(plans, compress_peaks)
+        workers = export_workers(plans)
+        if workers > 1:
+            logger.info("Exporting %d clips at a time (export_workers)", workers)
         results = render_clips(
             plans,
             work,
@@ -1188,6 +1326,7 @@ def export_clips(
             peaks=peaks,
             language=language,
             lut=lut,
+            workers=workers,
         )
         write_manifest(
             work,

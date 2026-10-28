@@ -43,6 +43,7 @@ All optional.
 | `CUTPOINT_LLAMA_SERVER` | Full path to `llama-server` |
 | `CUTPOINT_LLAMA_BACKEND` | Backend `cutpoint setup` downloads for llama.cpp: `auto` (default), `cuda`, `vulkan` or `cpu`. Auto takes CUDA only when a usable NVIDIA driver is found, else Vulkan, else CPU; a named backend is never replaced by another one |
 | `CUTPOINT_VIDEO_ENCODER` | Video encoder for exported clips, assembled videos and rendered 360 clips: `auto` (default), `nvenc`, `amf`, `vaapi` or `cpu`. Overrides `video_encoder` |
+| `CUTPOINT_EXPORT_WORKERS` | Clips `clips` and `edit` export at once: `auto` (default) or a number from 1 to 3. Overrides `export_workers` |
 | `CUTPOINT_VIDEO_DECODER` | `cpu` decodes every video on the CPU instead of NVDEC or VAAPI (analysis, HUD OCR, 360, UI proxies); unset or any other value detects the GPU decoder as usual (see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#which-video-encoder-is-used-and-why-not-the-gpu)) |
 | `CUTPOINT_ANALYZE_OVERLAP` | `0` turns off the background HUD OCR of `analyze` (on by default where it applies; see [analysis steps](commands.md#analysis-steps)). An escape hatch: the output is the same either way |
 | `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in. `split` also makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR; `0`, unset (default) or any other value leaves it off. It spools the OCR frames to the source's cache folder: the spool grows by as much as the OCR read lags behind the decode, up to about 2 GB (the decode then waits for the OCR read), and the mode needs free disk for that (or every OCR frame of a shorter source) plus 1 GB. The output is the same either way (see [analysis steps](commands.md#analysis-steps)) |
@@ -72,6 +73,7 @@ with `_` are ignored.
   "player_tags": ["YourGameName"],
   "ollama_url": "http://127.0.0.1:11434",
   "video_encoder": "auto",
+  "export_workers": "auto",
   "vision": false,
   "compress_peaks": "off",
   "analysis": {"skip": []}
@@ -161,6 +163,10 @@ Default: none. Other step names are rejected.
 ### video_encoder
 
 `auto` (default), `nvenc`, `amf`, `vaapi` or `cpu` (libx264). `CUTPOINT_VIDEO_ENCODER` overrides it. `auto` really encodes a short test clip with each candidate (NVENC, then AMF on Windows or VAAPI and AMF on Linux; on Linux every `/dev/dri/renderD*` node is tried) and uses the first one that works, else libx264. A named GPU encoder that does not work is an error, not a silent fallback (the error suggests `cpu`). With `auto`, a GPU encode that fails on real footage is redone once on the CPU with a WARNING, and the rest of the run uses the CPU. `cutpoint capabilities` shows what works on this machine.
+
+### export_workers
+
+How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at a time with a GPU encoder (`video_encoder`), which otherwise sits mostly idle on short clips, and 1 with libx264, which already uses every core. A number sets it; values are clamped to 1-3, as consumer NVIDIA cards allow only a few NVENC sessions at once. `CUTPOINT_EXPORT_WORKERS` overrides it. A run with a 360 clip exports one clip at a time. The clips, their names and manifest.json are the same as with 1, and the per-clip log lines come in clip order; warnings from an export are logged when they happen. The first failure or Ctrl+C stops every export in progress and removes its partial file. One difference: with `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs.
 
 ### pano
 
