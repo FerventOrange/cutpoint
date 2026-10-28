@@ -93,7 +93,14 @@ least 3 s. A line on screen for over 60 s, or from within 6 s of the start of th
 the HUD and does not count. These tests run only when the preset's regions span at least a quarter of the frame
 (`static_area`), since a few small corner regions see too little of the screen.
 `stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out,
-`static_frames` how many of them held still and `text_frames` how many were text screens.
+`static_frames` how many of them held still and `text_frames` how many were text screens;
+`menu_spans` lists those frames as `[start, end]` spans in seconds.
+Highlight candidates in menu time are left out too, by `analyze` and when `events` re-ranks
+`highlights.json`: a candidate with half or more of its time in menu spans is dropped, and one
+that starts or ends in a menu span is trimmed to its gameplay part when what is left is at least
+the style's minimum clip length (menu time only in the middle is kept). An `INFO` line per
+source counts the candidates dropped, trimmed and kept with menu time inside. `--ids` picks from
+the candidates that are left; a `--segments` file is exported as given.
 With `cutpoint -v`, the OCR layer logs one line per frame that is a menu or has an OCR event:
 the time, the box count of the regions other than feeds, the centre cover, the recording's
 median box count, the thresholds (cover, list, jump), how long the screen held still, whether new

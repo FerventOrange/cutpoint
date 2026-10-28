@@ -435,7 +435,7 @@ OCR in the background removes them.
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
 | `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `ski` and `sport`, the CLIP visual layer, only with a CUDA GPU |
 | `crashes` | Action-cam footage only (telemetry found, or style `ski`, `action` or `sport`) |
-| `ranking` | Re-ranks the candidates with the events; `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
+| `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
 | `vision` | Ollama frame rating, only when vision is on |
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
@@ -495,7 +495,8 @@ cutpoint events <project> [--layers audio voice visual crash ocr vlm] [--no-vlm]
 
 Optional; needs the `events` extra and `cutpoint setup`. [`analyze`](#analysis-steps) already runs the `audio`, `ocr`, `voice`, `visual` and `crash` layers it can; use `events` for the `vlm` layer, to force layers (`--force`) or to rerun them with other options. It works in
 layers, one GPU model at a time, and writes `events.json` and `events.txt`, then re-ranks
-`highlights.json` (the original is kept as `highlights.pre-events.json`).
+`highlights.json` (the original is kept as `highlights.pre-events.json`). The re-rank drops or
+trims candidates in HUD menu time, as `analyze` does ([game streams](workflows/game-streams.md)).
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the ski re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
 
