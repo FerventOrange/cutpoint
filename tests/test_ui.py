@@ -5409,7 +5409,9 @@ def test_the_default_page_options_export_exactly_what_smart_edges_did(
         res, captured, _, p = options_job(client, monkeypatch, tmp_path, body)
         assert res.status_code == 200, res.text
         args = _cli_args(captured[0])
-        runs.append(([a.replace(str(p), "P") for a in args], _segments_written(p)))
+        # the output and segments names carry a per-second stamp: the runs may land in different seconds
+        norm = [re.sub(r"\d{8}-\d{6}", "STAMP", a.replace(str(p), "P")) for a in args]
+        runs.append((norm, _segments_written(p)))
         shutil.rmtree(p)
     assert runs[0] == runs[1]
     args, segments = runs[0]
