@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dark. The choice is saved in the browser and applied before the page first paints; Light and
   Dark keep text, controls and focus outlines at WCAG AA contrast, and Blue keeps today's colours
   (#445). The Dark theme's panels are lighter, and Light uses the same yellow for buttons and
-  fills as the other themes.
+  fills as the other themes (#466).
 - `assemble --audio-transition cut|crossfade` sets the audio join apart from `--transition`; by
   default it follows it. `--transition cut --audio-transition crossfade` is refused (exit 2) (#466).
 
