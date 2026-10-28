@@ -48,14 +48,25 @@ def _notes(*notes: str) -> str:
     return f" ({'; '.join(kept)})" if kept else ""
 
 
-def _git_note(extras: str) -> str:
-    """Note for a PyPI target whose ``extras`` (comma-separated) need a git or clone install,
-    or ``""``."""
+def _git_note(extras: str, uv: bool = True, target: str | None = None) -> str:
+    """Note for a hint whose ``extras`` (comma-separated) cannot install as given, or ``""``.
+
+    With uv (``uv``) that is a PyPI or wheel target: the note points at the git URL. pip
+    ignores [tool.uv.sources] whatever the source, so the note points at ``uv pip install``
+    of ``target`` (default: the git URL).
+    """
     if not set(extras.split(",")) & set(NO_PYPI_EXTRAS):
         return ""
+    git = f'"cutpoint[{extras}] @ {GIT_SOURCE}"'
+    if uv:
+        return (
+            "ski and all install only from a clone or git URL until telemetry-parser publishes "
+            f"cp314 wheels on PyPI: use {git} instead"
+        )
     return (
-        "ski and all install only from a clone or git URL until telemetry-parser publishes "
-        f'cp314 wheels on PyPI: use "cutpoint[{extras}] @ {GIT_SOURCE}" instead'
+        "ski and all need uv until telemetry-parser publishes cp314 wheels on PyPI (pip "
+        "ignores the git pin in pyproject.toml): use "
+        f'uv pip install --python "{sys.executable}" {target or git}'
     )
 
 
@@ -219,7 +230,8 @@ def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
     if strategy:
         cmd += f" --index-strategy {strategy}"
     notes = []
-    if not any(source.get(k) for k in ("editable", "directory", "path", "git", "url")):
+    # PyPI and wheel (path or url) sources carry the plain telemetry-parser requirement.
+    if not any(source.get(k) for k in ("editable", "directory", "git")):
         notes.append(_git_note(joined))
     if explicit:
         notes.append(
@@ -301,18 +313,21 @@ def install_hint(extra: str) -> str:
         gpu = ""
         # uv installs of a directory or git source apply cutpoint's own [tool.uv.sources],
         # which pin torch to the cu126 index (as in _tool_hint); an archive or pip does not.
-        project_sources = (
-            uv
-            and isinstance(info, dict)
-            and ("dir_info" in info or isinstance(info.get("vcs_info"), dict))
+        own_sources = isinstance(info, dict) and (
+            "dir_info" in info or isinstance(info.get("vcs_info"), dict)
         )
+        project_sources = uv and own_sources
         if extra in TORCH_EXTRAS and sys.platform == "win32" and project_sources:
             if _cpu_torch():
                 gpu = _REINSTALL_TORCH_NOTE
         elif extra in TORCH_EXTRAS and sys.platform == "win32":
             gpu = _torch_index_note(uv)
-        # A PyPI target cannot install ski (see NO_PYPI_EXTRAS).
-        git = "" if (info or {}).get("url") else _git_note(extra)
+        # A PyPI or wheel target cannot install ski (see NO_PYPI_EXTRAS), nor can pip from any
+        # source; uv pip of a directory or git source keeps that source.
+        if project_sources:
+            git = ""
+        else:
+            git = _git_note(extra, uv, source if own_sources else None)
         if uv:
             return f'uv pip install --python "{sys.executable}" {source}{_notes(git, gpu)}'
         exe, note = _python()
@@ -340,8 +355,9 @@ def install_hint(extra: str) -> str:
         )
     # pip ignores [tool.uv.sources], so it installs PyPI torch (CPU-only on Windows).
     gpu = _torch_index_note(False) if extra in TORCH_EXTRAS and sys.platform == "win32" else ""
+    git = _git_note(extra, False, f'-e ".[{extra}]"')
     exe, note = _python()
-    return f'{exe} -m pip install -e ".[{extra}]"{_notes("from the repository", gpu, note)}'
+    return f'{exe} -m pip install -e ".[{extra}]"{_notes("from the repository", git, gpu, note)}'
 
 
 def missing_module_message(module: str) -> str | None:
