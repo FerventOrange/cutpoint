@@ -6,9 +6,13 @@
 `--vision` (or turn it on in Settings in `cutpoint ui`, which sets `"vision": true` in
 `config.json`; see [configuration](../configuration.md#vision)). If the server or model is not available
 then, it logs a WARNING (a `vision_unavailable` warning with `--json`) and continues without the
-rating; if some of the top candidates have cached ratings, it uses those instead.
+rating; if some of the top candidates have cached ratings, it uses those instead. The local AI
+Chat, `360 director --vl-check` and building a new activity profile use it too. To install it, see
+[getting started](../getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
 
-1. Start Ollama and pull the model: `ollama pull qwen3-vl:8b`.
+1. Start Ollama and pull the model: `ollama pull qwen3-vl:8b` (a model-not-found message means
+   it is not pulled; `ollama list` shows what is). For the AI Chat, `ollama pull qwen3.5:9b`
+   works too; without it the chat uses the vision model.
 2. Check the server: open `http://127.0.0.1:11434` in a browser; it answers "Ollama is running".
 3. The default URL is already `http://127.0.0.1:11434`. If you set `localhost` yourself, note that
    on Windows it can resolve to the IPv6 address `::1` while Ollama listens on IPv4 only. Use the
@@ -25,6 +29,9 @@ rating; if some of the top candidates have cached ratings, it uses those instead
 4. A bare `host:port` in `OLLAMA_HOST` gets `http://` added. A wildcard bind address such as
    `0.0.0.0:11434` is turned into `127.0.0.1`.
 5. For another model, use `CUTPOINT_VISION_MODEL` or `analyze --ollama-model NAME`.
+
+Replies in the AI Chat or `--vision` ratings that take very long usually mean the model runs on
+the CPU (it did not fit in GPU memory); a smaller model or a GPU helps.
 
 The `events` model layer does not use Ollama for its main model. It starts its own
 `llama-server` (llama.cpp) from `<CUTPOINT_HOME>\tools\llama.cpp`; its log is

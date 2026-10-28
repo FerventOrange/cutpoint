@@ -8,7 +8,7 @@
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
 | ffmpeg and ffprobe 5.1 or newer | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
-| Ollama (optional) | Only for `analyze --vision` and `events` VLM features that use it. |
+| Ollama (optional) | Only for `analyze --vision`, `360 director --vl-check`, new activity profiles and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are large (see [Download models](#download-models-only-for-cutpoint-events)). Clips and finals are re-encoded, so budget for them in the project folder. |
 
 Windows and Linux are tested (CI runs the tests on both). The base
@@ -265,31 +265,61 @@ Set `CUTPOINT_LLAMA_BACKEND=auto`, `cuda`, `vulkan` or `cpu` to override selecti
 backend does not silently fall back. `llama-server` is found through `CUTPOINT_LLAMA_SERVER`,
 then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` works.
 
-### Optional: Ollama vision
+### Optional: Ollama for frame rating and AI Chat
 
-`analyze --vision` (and `edit --vision`) rates the top candidates with a vision model through
-Ollama. It is off unless you ask for it per run or turn it on by default with "Rate frames with
-a local vision model (Ollama)" in the UI's Settings, which saves
-[`"vision": true`](configuration.md#vision) in `config.json` (`--no-vision` then skips it for one
-run). In `cutpoint ui`, that setting is the only switch: every analysis there follows it. Apart
-from building a new activity profile (see
-[action-cam](workflows/action-cam.md#activity-profiles)) and `360 director --vl-check`, nothing
-else uses Ollama. The model is unloaded from GPU memory as soon as the rating is done.
+Ollama runs local models. Cutpoint works without it. Only these features use it:
+
+- `analyze --vision` and `edit --vision`: a vision model rates the top candidates. It is off
+  unless you ask for it per run or turn it on by default with "Rate frames with a local vision
+  model (Ollama)" in the UI's Settings, which saves [`"vision": true`](configuration.md#vision)
+  in `config.json` (`--no-vision` then skips it for one run). In `cutpoint ui`, that setting is
+  the only switch: every analysis there follows it. The model is unloaded from GPU memory as soon
+  as the rating is done.
+- `360 director --vl-check` and building a new activity profile (see
+  [action-cam](workflows/action-cam.md#activity-profiles)).
+- The [AI Chat](commands.md#ai-chat) tab in `cutpoint ui`, when its provider is `ollama` (the
+  default). The hosted providers (OpenAI-compatible, Anthropic) do not need Ollama.
+
+The `events` model layer does not use Ollama. It runs llama.cpp, which `cutpoint setup` installs
+(see [Download models](#download-models-only-for-cutpoint-events)).
+
+**Install Ollama.**
+
+| System | Install |
+|---|---|
+| Windows | The installer from <https://ollama.com/download>, or `winget install Ollama.Ollama` |
+| macOS | The app from <https://ollama.com/download>, or `brew install ollama` |
+| Linux | `curl -fsSL https://ollama.com/install.sh \| sh` (read the script first, or follow the [manual install](https://docs.ollama.com/linux)) |
+| Docker | `docker run -d --gpus=all -v ollama:/root/.ollama -p 127.0.0.1:11434:11434 --name ollama ollama/ollama` (drop `--gpus=all` without the NVIDIA Container Toolkit) |
+
+**Check that it runs.** `ollama --version` prints the version and `ollama list` lists the pulled
+models. Opening `http://127.0.0.1:11434` (the default port) answers "Ollama is running". On Linux
+the installer sets up a service; on Windows and macOS the app runs it in the background; `ollama
+serve` starts it by hand.
+
+**Pull the models.**
 
 ```powershell
-winget install --id Ollama.Ollama -e
-ollama pull qwen3-vl:8b        # about 6 GB
+ollama pull qwen3-vl:8b        # vision model for --vision, about 6 GB
+ollama pull qwen3.5:9b         # AI Chat model, about 6.6 GB
 ```
 
-On Linux:
+`qwen3-vl:8b` is the default vision model. The AI Chat uses `qwen3.5:9b` when it is pulled and
+otherwise the vision model, so the first download is enough to start. Models of this size want
+about 8 GB of GPU memory to run fast; on the CPU they work but reply slowly. For another model,
+set `CUTPOINT_VISION_MODEL` or pass `analyze --ollama-model`, and choose the chat model under
+Settings > AI assistant ([`assistant.model`](configuration.md#assistant)).
 
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen3-vl:8b        # about 6 GB
-```
+**Point Cutpoint at it.** The server is found through `OLLAMA_HOST`, else
+[`ollama_url`](configuration.md#ollama_url) in `config.json`, else `http://127.0.0.1:11434`;
+`analyze --ollama-url` overrides it for one run and `assistant.url` (Settings > AI assistant) sets
+it for the chat. For an Ollama on another machine use that machine's address. The AI Chat treats
+it as hosted and asks for [consent](commands.md#ai-chat) before the first message, and Settings
+refuses a URL with a user name or password.
 
-Override the model with `CUTPOINT_VISION_MODEL` or `analyze --ollama-model`, and the server
-with `OLLAMA_HOST`, `ollama_url` or `analyze --ollama-url`.
+**Turn it on.** Run `analyze --vision` or `edit --vision`, or set `"vision": true`. For the chat,
+open the AI Chat tab in `cutpoint ui` on an analyzed project. If it does not connect, see
+[Ollama is not reachable](troubleshooting/models.md#ollama-is-not-reachable).
 
 ### ffmpeg lookup
 

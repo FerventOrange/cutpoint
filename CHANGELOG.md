@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docs: how to install Ollama and the models for `--vision` and AI Chat.
 - `cutpoint ui` AI Chat: bring your own AI. `assistant.provider` can be `openai` (OpenAI, or
   LM Studio, vLLM and llama-server at `assistant.url`) or `anthropic` (default model
   `claude-sonnet-5-5`, `claude-opus-5-5` selectable), chosen in Settings with the model and base

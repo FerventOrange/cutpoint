@@ -49,7 +49,7 @@ All optional.
 | `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in. `split` also makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR; `0`, unset (default) or any other value leaves it off. It spools the OCR frames to the source's cache folder: the spool grows by as much as the OCR read lags behind the decode, up to about 2 GB (the decode then waits for the OCR read), and the mode needs free disk for that (or every OCR frame of a shorter source) plus 1 GB. The output is the same either way (see [analysis steps](commands.md#analysis-steps)) |
 | `CUTPOINT_FADE_COPY` | `0` re-encodes the whole video of `assemble --transition fade` instead of stream-copying between the fades (see [assemble](commands.md#assemble)). An escape hatch: the same number of frames at the same times, the same audio and the same timelines either way |
 | `CUTPOINT_PANNS_URL` | URL for the PANNs checkpoint, tried before the built-in mirrors (see [models troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete)) |
-| `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision` and for building activity profiles (default `qwen3-vl:8b`) |
+| `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision`, `360 director --vl-check` and building activity profiles (default `qwen3-vl:8b`); the AI Chat falls back to it when `qwen3.5:9b` is not pulled |
 | `CUTPOINT_INSTA360_SDK` | Full path to the SDK's `MediaSDKTest` executable (overrides `pano.sdk_exe`) |
 | `OLLAMA_HOST` | Ollama URL; overrides `ollama_url` (a bare `host:port` gets `http://`) |
 
@@ -136,14 +136,16 @@ overrides it per run. Default: none.
 
 ### ollama_url
 
-Ollama base URL for `analyze --vision` and the model layers of `events`. `OLLAMA_HOST` overrides
-it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines; see
-[troubleshooting](troubleshooting/models.md)).
+Ollama base URL for `analyze --vision`, `360 director --vl-check`, the AI Chat and new activity
+profiles. `events` uses it only to unload Ollama models and to build crash profiles. `OLLAMA_HOST`
+overrides it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines;
+see [troubleshooting](troubleshooting/models.md)).
 
 ### vision
 
 `true` or `false` (default). With `true`, `analyze` and `edit` rate the top candidates with the
-local Ollama vision model ([getting started](getting-started.md#optional-ollama-vision)) unless
+local Ollama vision model
+([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
 Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that

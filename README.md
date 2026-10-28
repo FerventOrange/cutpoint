@@ -68,7 +68,8 @@ See the [command reference](docs/commands.md#ui) for details.
 - ffmpeg 5.1 or newer
 - An NVIDIA GPU is recommended (add the `gpu` extra for GPU Whisper). Without one, everything
   still runs but slower.
-- Optional: Ollama for AI frame rating, extra downloads (about 8 GB) for sound, on-screen text
+- Optional: [Ollama](docs/getting-started.md#optional-ollama-for-frame-rating-and-ai-chat) for
+  AI frame rating and the local AI Chat, extra downloads (about 8 GB) for sound, on-screen text
   and scene-description features
 
 ## Install
