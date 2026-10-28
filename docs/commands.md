@@ -269,8 +269,9 @@ folder. The result becomes the current export.
 
 **One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs
 `cutpoint edit --kind <preset>` in the project's own style, with the Vertical and Compress Audio
-Peaks choices and the vision choice from Settings. Clips go to `clips` (`clips_vertical` when
-vertical); `final.mp4` and `<name>-final.mp4` become the current export. If earlier clips exist,
+Peaks choices and the vision choice from Settings. Clips go to `clips` and the video to
+`final.mp4` (`clips_vertical` and `final_vertical.mp4` when vertical), with the `<name>-final`
+copy next to it; that export becomes the current one. If earlier clips exist,
 a second run asks before replacing them and passes `--force` only when you confirm. The presets
 are off, with the reason shown, for 360 projects and for projects analyzed with `--exclude` or
 `--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`
@@ -278,7 +279,7 @@ or `--recover`.
 
 "Analyze again" keeps a recorded `--recover`.
 
-API: the clips job accepts the new fields, `/api/jobs` takes the new `extend` and `edit` actions,
+API: the clips job accepts the new fields, `POST /api/projects/<id>/jobs` takes the new `extend` and `edit` actions,
 and the project view reports `preset_problem` (why the presets are off) and `preset_taken` (the
 earlier clips a second Make would replace).
 
