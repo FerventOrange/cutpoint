@@ -10,7 +10,7 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePath
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -297,6 +297,19 @@ def lut_filter(path: PurePath, strength: float = 1.0) -> str | None:
 
 
 LUT_SUFFIXES = (".cube", ".3dl")  # lut3d's Iridas/Resolve .cube and Autodesk .3dl
+GRADE_KEYS = ("lut", "color")  # manifest.json keys of a graded clip (``color``: #290 stage 2)
+
+
+class Grade(Protocol):
+    """A clip's colour grade (#290), applied after the BT.709 conversion; :class:`Lut` is one.
+
+    ``filter()`` is its video filter chain ("" for none); ``to_json()`` the manifest.json keys
+    that record it, which :func:`grade_from_entry` reads back.
+    """
+
+    def filter(self) -> str: ...
+
+    def to_json(self) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -320,6 +333,14 @@ class Lut:
         if not entry.get("lut"):
             return None
         return cls(Path(entry["lut"]), float(entry.get("lut_strength", 1.0)))
+
+
+def grade_from_entry(entry: dict[str, Any]) -> Grade | None:
+    """The grade a manifest entry records (:meth:`Grade.to_json`), None for an ungraded clip.
+
+    Today only a ``--lut`` grade (:meth:`Lut.from_entry`).
+    """
+    return Lut.from_entry(entry)
 
 
 def check_lut(path: Path | str, strength: float = 1.0, what: str = "--lut") -> Lut:
@@ -690,7 +711,7 @@ def export_clip(
     crop: Crop | None = None,
     audio_fade: float = 0.0,
     peaks: str = "",
-    lut: Lut | None = None,
+    grade: Grade | None = None,
 ) -> str:
     """Frame-accurate re-encode of [start, end] (absolute source time) into ``out``.
 
@@ -698,7 +719,8 @@ def export_clip(
     video stays a hard cut), so a cut never slaps from sound to silence.
     ``peaks`` (:meth:`PeakPlan.filter`) compresses and levels the audio before the fade;
     a true-peak limiter (:data:`CLIP_LIMIT_DB`) then ends the chain.
-    ``lut`` grades the video after the BT.709 conversion (:func:`lut_filter`).
+    ``grade`` (:class:`Grade`, e.g. a :class:`Lut`) grades the video after the BT.709
+    conversion.
     ``out`` only appears once the clip is complete (:func:`atomic_output`); a failed
     auto-chosen GPU encode is redone on the CPU (:func:`encode_with_fallback`).
 
@@ -707,7 +729,7 @@ def export_clip(
     """
     with atomic_output(out) as part:
         return _export(
-            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, lut
+            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, grade
         )
 
 
@@ -723,13 +745,13 @@ def _export(
     audio_fade: float,
     name: str,
     peaks: str = "",
-    lut: Lut | None = None,
+    grade: Grade | None = None,
 ) -> str:
     """:func:`export_clip` straight into ``out`` (no temporary name); ``name`` is for logs."""
     warn_if_log(src, info, start)
     return encode_with_fallback(
         lambda enc: _encode(
-            enc, src, info, start, end, out, fmt, vertical, crop, audio_fade, peaks, lut
+            enc, src, info, start, end, out, fmt, vertical, crop, audio_fade, peaks, grade
         ),
         name,
     )
@@ -766,7 +788,7 @@ def _encode(
     crop: Crop | None,
     audio_fade: float,
     peaks: str = "",
-    lut: Lut | None = None,
+    grade: Grade | None = None,
 ) -> str:
     """One ffmpeg run of :func:`export_clip` with ``enc``."""
     dur = end - start
@@ -783,8 +805,8 @@ def _encode(
         str(src),
     ]
     color = bt709_filter(info)
-    grade = ",".join(f for f in (color, lut.filter() if lut else "") if f)
-    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop, grade))}[v]"
+    chain = ",".join(f for f in (color, grade.filter() if grade else "") if f)
+    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop, chain))}[v]"
     audio = None if info.audio_duration is None else min(end, info.audio_duration) - start
     a_fmt = A_FMT + peaks + audio_fade_filter(dur, audio_fade, audio)
     if peaks:
@@ -834,9 +856,9 @@ def export_clip_checked(
     crop: Crop | None = None,
     audio_fade: float = 0.0,
     peaks: str = "",
-    lut: Lut | None = None,
+    grade: Grade | None = None,
 ) -> dict[str, Any] | None:
-    """:func:`export_clip` (``peaks`` and ``lut`` as there), guarded against silent
+    """:func:`export_clip` (``peaks`` and ``grade`` as there), guarded against silent
     truncation by read errors.
 
     If ffmpeg reports a read error or the clip comes out short, the read is
@@ -851,7 +873,7 @@ def export_clip_checked(
     """
     with atomic_output(out) as part:
         return _export_checked(
-            src, info, start, end, part, fmt, vertical, crop, audio_fade, out, peaks, lut
+            src, info, start, end, part, fmt, vertical, crop, audio_fade, out, peaks, grade
         )
 
 
@@ -867,14 +889,14 @@ def _export_checked(
     audio_fade: float,
     out: Path,
     peaks: str = "",
-    lut: Lut | None = None,
+    grade: Grade | None = None,
 ) -> dict[str, Any] | None:
     """:func:`export_clip_checked` writing to ``part``; ``out`` names the clip in logs."""
     expected = end - start
     messages: list[str] = []
     for attempt in (1, 2):
         text = _export(
-            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, lut
+            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, grade
         )
         got = probe(part).duration
         found = [m.strip() for m in READ_ERROR_RE.findall(text)]
@@ -898,7 +920,9 @@ def _export_checked(
         logger.warning("  ffmpeg: %s", "; ".join(messages) or "output shorter than requested")
         logger.warning("!" * 78)
     safe_end = max(start + 0.1, fail_t - SAFE_END_MARGIN_S)
-    _export(src, info, start, safe_end, part, fmt, vertical, crop, audio_fade, out.name, peaks, lut)
+    _export(
+        src, info, start, safe_end, part, fmt, vertical, crop, audio_fade, out.name, peaks, grade
+    )
     logger.warning("  %s trimmed to end at %.2f (before the unreadable spot)", out.name, safe_end)
     return {
         "failure_time": round(fail_t, 3),

@@ -80,7 +80,7 @@ def _export_args(monkeypatch, info, lut: Lut | None = None, **kw) -> list[str]:
     calls: list[list[str]] = []
     monkeypatch.setattr(encode, "run", lambda args, **_kw: calls.append(args) or "")
     fmt = encode.OutputFormat(1920, 1080, 30)
-    extra = {"lut": lut} if lut is not None or kw.get("pass_none") else {}
+    extra = {"grade": lut} if lut is not None or kw.get("pass_none") else {}
     encode._encode(VideoEncoder("cpu", None), info.path, info, 1.0, 5.0, Path("o.mp4"), fmt,
                    False, None, 0.0, **extra)  # fmt: skip
     return calls[0]
@@ -126,7 +126,7 @@ def test_a_partial_grade_with_a_gpu_upload_stays_one_chain_to_v(monkeypatch):
     lut = Lut(Path("/l/a.cube"), 0.5)
     info = media_info(color_space="bt709")
     encode._encode(VideoEncoder("vaapi", "/dev/dri/renderD128"), info.path, info, 1.0, 5.0,
-                   Path("o.mp4"), fmt, False, None, 0.0, lut=lut)  # fmt: skip
+                   Path("o.mp4"), fmt, False, None, 0.0, grade=lut)  # fmt: skip
     graph = _graph(calls[0])
     assert (
         graph.startswith("[0:v:0]scale=")
@@ -234,7 +234,7 @@ def test_manifest_entry_records_the_grade_and_reads_it_back(tmp_path):
     plan = ClipPlan("001_a.mp4", m, tmp_path / "a.mp4", media_info(), 1.0, 5.0, (1.0, 5.0), tail)
     lut = Lut(tmp_path / "look.cube", 0.5)
     entry = json.loads(
-        json.dumps(_entry(plan, RenderResult(tmp_path / "001_a.mp4", 5.0), 0.25, lut=lut))
+        json.dumps(_entry(plan, RenderResult(tmp_path / "001_a.mp4", 5.0), 0.25, grade=lut))
     )
     assert (entry["lut"], entry["lut_strength"]) == (str(tmp_path / "look.cube"), 0.5)
     assert Lut.from_entry(entry) == lut
@@ -326,7 +326,7 @@ def _export(src: Path, out: Path, lut: Lut | None) -> np.ndarray:
     """Export 0.5-1.5 s of ``src`` (graded with ``lut``) and return its mean RGB frame."""
     info = ffmpeg_utils.probe(src)
     encode.export_clip(
-        src, info, 0.5, 1.5, out, encode.choose_format([info], False), False, lut=lut
+        src, info, 0.5, 1.5, out, encode.choose_format([info], False), False, grade=lut
     )
     vf = (
         "scale=flags=accurate_rnd+full_chroma_int:in_color_matrix=bt709:in_range=tv:"
@@ -428,3 +428,11 @@ def test_real_clips_record_the_grade_and_extend_redoes_it(
     entry = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
     assert (entry["lut"], entry["lut_strength"]) == (str(lut), 0.5)
     assert (out / "001_a.mp4").stat().st_size > 0
+
+
+def test_extend_of_a_clip_with_only_a_color_record_checks_no_lut_and_passes_no_grade(
+    tmp_path, exports, loads
+):
+    clips = _graded_clips(tmp_path, None, color={"name": "warm"})
+    extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+    assert exports[0][-1] is None and loads == []
