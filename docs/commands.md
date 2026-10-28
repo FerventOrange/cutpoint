@@ -259,7 +259,7 @@ export from the ranked moments instead:
 |---|---|
 | Top moments (advanced) | `--top` |
 | Max video length: the cap on all clips together | `--max-total` |
-| Candidate ids (advanced; replaces Top moments) | `--ids` |
+| Candidate ids (advanced; replaces Top moments): the ids on the moment cards, such as `h001` | `--ids` |
 | Order: Style, Story, Best first or Chronological | `--order` |
 
 **Cut Timing.**

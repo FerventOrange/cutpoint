@@ -397,7 +397,7 @@ function renderMoments() {
   const multi = new Set(list.map((c) => c.source)).size > 1;
   const items = list
     .map((c, i) => ({ c, rank: i + 1 }))
-    .filter(({ c }) => !q || `${c.label} ${c.transcript ?? ''} ${baseName(c.source)}`.toLowerCase().includes(q));
+    .filter(({ c }) => !q || `${c.label} ${c.cli_id ?? ''} ${c.transcript ?? ''} ${baseName(c.source)}`.toLowerCase().includes(q));
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
   preserveFocus(() => {
     $('#candList').replaceChildren(
@@ -408,17 +408,19 @@ function renderMoments() {
           h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
-              h('span', { class: 'cand-title', text: c.label || c.id }),
+              h('span', { class: 'cand-title', text: c.label || c.cli_id || c.id }),
               c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
               prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] })),
             h('span', { class: 'cand-time tc' },
+              // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
+              c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
               `${fmt(c.start)} to ${fmt(c.end)}, ${(c.end - c.start).toFixed(1)} s`,
               multi ? ` in ${baseName(c.source)}` : ''),
             sourceStrip(c),
             c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null),
           h('button', {
             type: 'button', class: 'btn small', 'data-act': 'toggle',
-            'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.id} ${picked ? 'from' : 'to'} sequence`,
+            'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.cli_id || c.id} ${picked ? 'from' : 'to'} sequence`,
             onclick: () => (picked ? removeSeg(c.id) : addSeg(c.id)),
           }, picked ? 'Remove' : 'Add'),
         );

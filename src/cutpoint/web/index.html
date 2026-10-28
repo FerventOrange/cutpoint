@@ -42,7 +42,7 @@
       <p id="analyzeStepsStatus" class="vh" role="status"></p>
       <div class="filter-row" id="filterWrap" hidden>
         <label class="filter">
-          <span class="vh">Filter moments by label or transcript</span>
+          <span class="vh">Filter moments by label, transcript or candidate id</span>
           <input id="filter" type="search" placeholder="Filter by label or words spoken" autocomplete="off">
         </label>
         <!-- Moment order (#469); the rank badge keeps the score rank in either order -->
@@ -226,9 +226,9 @@
               <label for="optMaxTotal" title="Caps the video's length: the clips' total in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.">Max video length (s)</label>
               <input type="number" id="optMaxTotal" min="0.1" max="36000" step="any" inputmode="decimal" placeholder="None" aria-describedby="dMaxTotal">
               <span id="dMaxTotal" class="vh">Caps the video's length: the clips' total in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.</span>
-              <label for="optIds" class="adv" title="Exports exactly these candidates of highlights.json, such as h001 h004, instead of the top moments (--ids).">Candidate ids</label>
+              <label for="optIds" class="adv" title="Exports exactly these candidates of highlights.json, by the ids on the moment cards such as h001 h004, instead of the top moments (--ids).">Candidate ids</label>
               <input type="text" id="optIds" class="adv" placeholder="h001 h004" autocomplete="off" spellcheck="false" aria-describedby="dIds">
-              <span id="dIds" class="vh">Exports exactly these candidates of highlights.json, such as h001 h004, instead of the top moments (--ids).</span>
+              <span id="dIds" class="vh">Exports exactly these candidates of highlights.json, by the ids on the moment cards such as h001 h004, instead of the top moments (--ids).</span>
               <label for="optOrder" title="The clips' playback order (--order): Style uses the style's order; Story puts the second-best first and the best last.">Order</label>
               <select id="optOrder" aria-describedby="dOrder"><option value="">Style</option><option value="story">Story</option><option value="score">Best first</option><option value="chronological">Chronological</option></select>
               <span id="dOrder" class="vh">The clips' playback order (--order): Style uses the style's order; Story puts the second-best first and the best last.</span>
