@@ -3,9 +3,9 @@
 Clips are laid out in the given order with absolute file references. Import in
 Resolve via File > Import > Timeline.
 
-With no fade they are hard cuts, back to back. With a crossfade (``assemble
---transition fade``) each join is a cross-dissolve of ``fade`` s that starts on the
-edit, as in final.mp4: the incoming clip starts at :func:`cutpoint.assemble.clip_offsets`
+With no fade they are hard cuts, back to back, the last clip lasting its video
+(``vduration``), where final.mp4 ends. With a crossfade (``assemble --transition fade``)
+each join is a cross-dissolve of ``fade`` s that starts on the edit, as in final.mp4: the incoming clip starts at :func:`cutpoint.assemble.clip_offsets`
 from its first frame, and the outgoing clip is trimmed by the fade, its last frames
 becoming the handle the dissolve plays over. The clips then last their video
 (``vduration``), which the crossfade follows, so the timeline is as long as final.mp4.
@@ -34,10 +34,12 @@ def _uri(path: Path) -> str:
     return Path(os.path.abspath(path)).as_uri()  # noqa: PTH100 - normalises '..', keeps drive letters
 
 
-def _frames(info: MediaInfo, fps: Fraction, fade: int = 0) -> int:
+def _frames(info: MediaInfo, fps: Fraction, fade: int = 0, last: bool = False) -> int:
     """A clip's length in frames: its container ``duration`` on cuts, its video
-    (``vduration``) when crossfaded (``fade`` frames > 0), as :func:`cutpoint.assemble.clip_offsets`."""
-    seconds = info.vduration if fade > 0 else info.duration
+    (``vduration``) when crossfaded (``fade`` frames > 0), as :func:`cutpoint.assemble.clip_offsets`.
+    The ``last`` clip lasts its video on cuts too: final.mp4 ends there
+    (:func:`cutpoint.assemble.cut_audio_ends`)."""
+    seconds = info.vduration if fade > 0 or last else info.duration
     return max(1, int(seconds * fps + Fraction(1, 2)))
 
 
@@ -86,7 +88,8 @@ def write_fcpxml(
     library = ET.SubElement(root, "library")
     event = ET.SubElement(library, "event", name=name)
     project = ET.SubElement(event, "project", name=name)
-    total = sum(_frames(c, fps, xf) for c in clips) - xf * (len(clips) - 1)
+    last = len(clips) - 1
+    total = sum(_frames(c, fps, xf, i == last) for i, c in enumerate(clips)) - xf * last
     sequence = ET.SubElement(
         project,
         "sequence",
@@ -101,7 +104,7 @@ def write_fcpxml(
     dissolve_id, crossfade_id = f"r{len(clips) + 2}", f"r{len(clips) + 3}"
     offset = 0
     for i, clip in enumerate(clips, 2):
-        frames = _frames(clip, fps, xf)
+        frames = _frames(clip, fps, xf, i - 2 == last)
         joined = xf > 0 and i - 2 < len(clips) - 1  # a dissolve follows this clip
         if xf > 0 and i > 2:
             prev = clips[i - 3]
@@ -196,7 +199,7 @@ def write_otio(
     audio = otio.schema.Track(name="A1", kind=otio.schema.TrackKind.Audio)
     zero = otio.opentime.RationalTime(0, rate)
     for i, clip in enumerate(clips):
-        frames = _frames(clip, fps, xf)
+        frames = _frames(clip, fps, xf, i == len(clips) - 1)
         joined = xf > 0 and i < len(clips) - 1  # a dissolve follows this clip
         rng = otio.opentime.TimeRange(zero, otio.opentime.RationalTime(frames, rate))
         used = otio.opentime.TimeRange(

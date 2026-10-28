@@ -154,10 +154,15 @@ def peak_filters(
 
 
 def _audio_chain(
-    i: int, info: MediaInfo, fade: float, label: int | None = None, peaks: str = ""
+    i: int,
+    info: MediaInfo,
+    fade: float,
+    label: int | None = None,
+    peaks: str = "",
+    end: float | None = None,
 ) -> str:
     """``[a<label>]`` (default ``label = i``) from input ``i``: common format, ``peaks``
-    (:func:`peak_filters`), edge fade.
+    (:func:`peak_filters`), edge fade, then padded/trimmed to ``end`` s if given.
 
     Only track 0 is used; a multi-track input whose track 0 is shorter than its longest
     track (``audio_duration``) keeps the old fade-out, after track 0 ends.
@@ -166,15 +171,20 @@ def _audio_chain(
     if info.audio_streams:
         return (
             f"[{i}:a:0]{A_FMT},asetpts=PTS-STARTPTS{peaks}"
-            f"{audio_fade_filter(info.duration, fade, info.audio_duration)}[a{label}]"
+            f"{audio_fade_filter(info.duration, fade, info.audio_duration)}"
+            f"{'' if end is None else f',apad,atrim=end={end:.6f}'}[a{label}]"
         )
     return f"{SILENCE},atrim=duration={info.vduration:.3f}[a{label}]"
 
 
 def _normalize_inputs(
-    infos: list[MediaInfo], fades: list[float] | None = None, peaks: list[str] | None = None
+    infos: list[MediaInfo],
+    fades: list[float] | None = None,
+    peaks: list[str] | None = None,
+    ends: list[float] | None = None,
 ) -> tuple[list[str], Fraction]:
-    """Per-input filter chains producing [v<i>]/[a<i>] with identical params.
+    """Per-input filter chains producing [v<i>]/[a<i>] with identical params, the audio
+    padded/trimmed to ``ends`` if given.
 
     Each input also gets its :func:`~cutpoint.encode.bt709_filter` (#290), as at export, so
     xfade and concat only see BT.709 tv-range frames tagged so: a clip exported before #290
@@ -189,7 +199,8 @@ def _normalize_inputs(
     chains = []
     for i, info in enumerate(infos):
         chains.append(_video_chain(i, info, infos[0]))
-        chains.append(_audio_chain(i, info, fades[i], peaks=peaks[i]))
+        end = ends[i] if ends else None
+        chains.append(_audio_chain(i, info, fades[i], peaks=peaks[i], end=end))
     return chains, fps
 
 
@@ -244,34 +255,33 @@ def concat_copy(
     fades: list[float] | None = None,
     peaks: list[str] | None = None,
 ) -> None:
-    """Lossless join with the concat demuxer (inputs must share parameters).
+    """Join with the concat demuxer (inputs must share parameters): the video is
+    stream-copied, the audio (with ``infos``) rebuilt from the clips and encoded once.
 
-    With ``fades`` (and ``infos``), the video is still stream-copied but the
-    audio is re-encoded with an edge fade on each clip whose fade is > 0, and
-    with the ``peaks`` filters (:func:`peak_filters`) when any is set.
+    Stream-copied AAC does not join cleanly: each later clip's priming frame (1024 samples)
+    plays at its cut, and the first clip's priming delays the copied video by as much. So
+    each clip's audio is decoded (its edit list applied), given an edge fade where its
+    ``fades`` is > 0 and the ``peaks`` filters (:func:`peak_filters`), and padded/trimmed to
+    where its video ends on the join (:func:`cut_audio_ends`). ``-copyts`` keeps the first
+    clip's video at 0, as it is in the clip. Without ``infos`` both streams are copied.
     """
     listing = out.with_name(f".{out.stem}.concat.txt")
     lines = ["file '" + f.resolve().as_posix().replace("'", "'\\''") + "'" for f in files]
     listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    args = ["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing)]
-    if infos and ((fades and any(f > 0 for f in fades)) or (peaks and any(peaks))):
+    args = ["ffmpeg", "-y", "-v", "error"]
+    if infos:
+        args += ["-copyts"]
+    args += ["-f", "concat", "-safe", "0", "-i", str(listing)]
+    if infos:
         fades = fades or [0.0] * len(files)
         peaks = peaks or [""] * len(files)
         for f in files:
             args += ["-i", str(f)]
-        chains = []
-        for i, (info, fade) in enumerate(zip(infos, fades, strict=True)):
-            # Each clip's audio is padded/trimmed to where the demuxer starts the
-            # next clip (cut_duration) so the stream-copied video and the
-            # re-built audio cannot drift apart.
-            chains.append(
-                _audio_chain(i + 1, info, fade, label=i, peaks=peaks[i]).replace(
-                    f"[a{i}]",
-                    f",apad,atrim=end={cut_duration(info):.6f}[a{i}]"
-                    if info.audio_streams
-                    else f"[a{i}]",
-                )
-            )
+        ends = cut_audio_ends(infos)
+        chains = [
+            _audio_chain(i + 1, info, fades[i], label=i, peaks=peaks[i], end=ends[i])
+            for i, info in enumerate(infos)
+        ]
         graph = ";".join(chains) + ";" + "".join(f"[a{i}]" for i in range(len(files)))
         args += [
             "-filter_complex",
@@ -299,8 +309,12 @@ def concat_reencode(
     fades: list[float] | None = None,
     peaks: list[str] | None = None,
 ) -> None:
-    """Join clips with differing parameters by normalising and re-encoding."""
-    chains, _ = _normalize_inputs(infos, fades, peaks)
+    """Join clips with differing parameters by normalising and re-encoding.
+
+    Each clip's audio is padded/trimmed to :func:`cut_audio_ends`, as in :func:`concat_copy`:
+    concat starts the next clip after the longer of its streams, and the last clip's audio
+    ends with its video."""
+    chains, _ = _normalize_inputs(infos, fades, peaks, cut_audio_ends(infos))
     pairs = "".join(f"[v{i}][a{i}]" for i in range(len(files)))
     _encode(files, ";".join(chains) + f";{pairs}concat=n={len(files)}:v=1:a=1[v][a]", out)
 
@@ -312,6 +326,13 @@ def cut_duration(info: MediaInfo) -> float:
     audio runs on. The cut offsets (:func:`clip_offsets`, so final.srt) and the
     audio rebuilt by :func:`concat_copy` use it, so they stay on the video."""
     return info.duration
+
+
+def cut_audio_ends(infos: list[MediaInfo]) -> list[float]:
+    """Where each clip's audio ends on a cut join: where the next clip starts
+    (:func:`cut_duration`), and the last clip's at the end of its video, so the joined
+    audio is as long as the video."""
+    return [cut_duration(i) for i in infos[:-1]] + [infos[-1].vduration]
 
 
 def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
@@ -1020,8 +1041,8 @@ def post_process(
     """
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(stage.resolve())]
     cwd, vf, tags = None, None, []
+    info = probe(stage)
     if captions:
-        info = probe(stage)
         if ass is None:
             wav = out.with_name(f".{out.stem}.captions.wav")
             extract_audio(stage, wav, info)
@@ -1043,10 +1064,14 @@ def post_process(
         # HDR, BT.601 or full-range clips is not BT.709, so it keeps the tags ffmpeg carries.
         if not color_kind(info) and not bt601_matrix(info) and info.color_range != "pc":
             tags = ["-color_range", "tv", *BT709_TAGS]
-    if loudnorm:
-        a_args = ["-af", f"{loudnorm_filter(stage)},{limiter_filter(limit_db)}", *FINAL_AUDIO_OUT]
-    elif limit:
-        a_args = ["-af", limiter_filter(limit_db), *FINAL_AUDIO_OUT]
+    if loudnorm or limit:
+        # loudnorm and the limiter's resampling can run the audio on past its input (about
+        # 0.1 s seen, #473): it is trimmed back to where the video it was joined to ends.
+        af = limiter_filter(limit_db)
+        if loudnorm:
+            af = f"{loudnorm_filter(stage)},{af}"
+        end = info.vstart + info.vduration
+        a_args = ["-af", f"{af},atrim=end={end:.6f}", *FINAL_AUDIO_OUT]
     else:
         a_args = ["-c:a", "copy"]
     tail = [*a_args, "-movflags", "+faststart", str((dst or out).resolve())]

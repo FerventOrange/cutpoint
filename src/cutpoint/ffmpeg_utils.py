@@ -426,6 +426,8 @@ class MediaInfo:
     color_primaries: str | None = None
     color_space: str | None = None
     color_range: str | None = None
+    # Where the video stream starts (s, from the container start); 0 unless it starts late.
+    vstart: float = 0.0
 
     def concat_key(self) -> tuple:
         """Parameters that must match for lossless concat-demuxer joining."""
@@ -545,6 +547,7 @@ def _probe(path: Path) -> MediaInfo:
         color_primaries=_color_tag(video, "color_primaries"),
         color_space=_color_tag(video, "color_space"),
         color_range=_color_tag(video, "color_range"),
+        vstart=float(video.get("start_time") or f_start) - f_start,
     )
 
 
