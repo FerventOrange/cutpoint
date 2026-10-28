@@ -9,7 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `cutpoint ui`: the backend of the AI Chat tab below (local Ollama only). It is set by a new
+- `cutpoint ui` AI Chat: bring your own AI. `assistant.provider` can be `openai` (OpenAI, or
+  LM Studio, vLLM and llama-server at `assistant.url`) or `anthropic` (default model
+  `claude-sonnet-5-5`, `claude-opus-5-5` selectable), chosen in Settings with the model and base
+  URL and checked when saved. The API key comes from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+  `CUTPOINT_ASSISTANT_API_KEY`, or the system keyring with the new optional `keyring` extra
+  (Settings shows only "set (env)", "set (keyring)" or "not set"; `all` includes it). A key
+  belongs to the base URL's host: `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` go only to
+  `api.openai.com` and `api.anthropic.com`, and a key is sent only over `https://` unless the
+  server is on this machine. A key is never written to
+  `config.json`, project files, logs or the page, and jobs never get it. Before its first
+  message a hosted provider (any not on this machine, a remote Ollama too) needs a one-time
+  consent, kept in `config.json`; it gets moment labels, transcript snippets, file names (never
+  paths) and times. The header names the provider, model and host (for example `OpenAI-compatible · server's
+  default model · openrouter.ai`); a remote Ollama counts as hosted, not local (#346).
+- `cutpoint ui`: the backend of the AI Chat tab below (Ollama). It is set by a new
   `assistant` section in `config.json` (`provider`, `model`, `url`, `context_tokens`, `consent`;
   no API key), and the UI's API (token header only) keeps its chat and history in
   `ui/assistant/chat.json` and `history.json` in the project (#346).
@@ -34,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--color` off (the default) the clips are unchanged (#290).
 - `--json`: a `grade_dropped` warning when `clips --force` replaces graded clips with ungraded
   ones (#290).
+- `cutpoint ui`: the Moments list has a sort order next to the filter: Score (the default) or
+  Position in video, which sorts by source name (natural order, so `clip2` comes before `clip10`)
+  and then start time. The rank badge on each card keeps its score rank in either order. The
+  choice is remembered per browser (#469).
 
 - `cutpoint ui` Export tab: "Clips to Export" exports the sequence (default) or automatic picks
   (Top moments, Max total, Candidate ids, Order), and "Cut Timing" sets the speech, tail, event

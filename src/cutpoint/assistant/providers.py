@@ -3,29 +3,66 @@
 Messages and tool definitions use Ollama's ``/api/chat`` shapes (``role``/``content`` messages,
 ``{"type": "function", "function": {...}}`` tools), which are OpenAI's too. A provider needs tool
 calls or JSON-schema output (:class:`Capabilities`); :mod:`cutpoint.assistant.session` uses
-tool calls when the model has them and JSON mode otherwise.
+tool calls when the model has them and JSON mode otherwise. The assistant message of a reply
+and the answer to a tool call are in the provider's own shape (:attr:`Reply.message`,
+:meth:`Provider.tool_result`); each provider converts the rest of the conversation itself.
+
+Providers, all over ``requests``:
+
+* :class:`OllamaProvider`: Ollama's ``/api/chat`` (the default).
+* :class:`OpenAIProvider`: ``/v1/chat/completions`` of OpenAI or any server that speaks it
+  (LM Studio, vLLM, llama-server), at the configured base URL.
+* :class:`AnthropicProvider`: Anthropic's Messages API.
+
+A provider is ``local`` when its URL's host is this machine (``localhost``, a loopback address);
+any other host is hosted, and the page asks the user once per :func:`consent_key` before project
+text is sent there. Keys come from :mod:`cutpoint.assistant.keys` and never leave the provider
+object except in its request headers.
 
 :func:`make` builds the configured provider through :data:`PROVIDERS`, which tests replace.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import quote, urlsplit
 
 import requests
+from urllib3.exceptions import LocationParseError
+from urllib3.util import parse_url
 
+from cutpoint.assistant import keys
 from cutpoint.backends import ollama_url
 from cutpoint.config import AssistantSettings, assistant_settings
 from cutpoint.vision import default_model as vision_model
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:9b"  # tools, vision and thinking; about 6.6 GB
-AUTO_MODEL = f"{DEFAULT_OLLAMA_MODEL} (else the vision model)"  # shown until resolved
+AUTO_MODEL = f"{DEFAULT_OLLAMA_MODEL} or the vision model"  # shown until resolved
 CHAT_TIMEOUT_S = 300.0  # one read of a local model's reply on a slow GPU
+HOSTED_TIMEOUT_S = 180.0  # a hosted model's whole reply (not streamed)
+CONNECT_TIMEOUT_S = 10.0
 SHOW_TIMEOUT_S = 5.0
+CHECK_TIMEOUT_S = 15.0  # a hosted provider's model list or model
 TEMPERATURE = 0.2
+LOCAL_CONTEXT_TOKENS = 8192  # assistant.context_tokens unset: a model on this machine
+HOSTED_CONTEXT_TOKENS = 32768  # assistant.context_tokens unset: a hosted model
+OPENAI_URL = "https://api.openai.com/v1"
+ANTHROPIC_URL = "https://api.anthropic.com"
+ANTHROPIC_VERSION = "2023-06-01"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
+ANTHROPIC_MODELS = (DEFAULT_ANTHROPIC_MODEL, "claude-opus-5-5")
+AUTO_SERVER_MODEL = "server's default model"  # an OpenAI-compatible model not resolved yet
+MAX_TOKENS = 4096  # an Anthropic reply's cap (required); a proposal is far shorter
+MAX_ERROR = 300  # characters of a server's error text in a message
+TITLES = {"ollama": "Ollama", "openai": "OpenAI-compatible", "anthropic": "Anthropic"}
+OFFICIAL_TITLES = {"openai": "OpenAI", "anthropic": "Anthropic"}  # at keys.OFFICIAL_HOST
+# Words of a server's refusal of tools (Ollama, vLLM, llama-server without --jinja).
+_NO_TOOLS = ("support", "requires", "jinja", "enable")
 
 
 class ProviderError(RuntimeError):
@@ -40,6 +77,11 @@ class CancelledError(ProviderError):
     """The turn was cancelled while the reply came in; the request was closed."""
 
 
+class AmbiguousURLError(ProviderError, ValueError):
+    """A base URL whose host depends on the parser (:func:`unambiguous`): nothing is sent.
+    A ValueError too, so it is reported as an invalid setting."""
+
+
 @dataclass(frozen=True)
 class Capabilities:
     tool_calls: bool  # native tool calls
@@ -51,6 +93,7 @@ class ToolCall:
     name: str
     arguments: dict[str, Any]
     error: str | None = None  # the arguments were not a JSON object
+    id: str = ""  # the provider's id of the call (OpenAI, Anthropic), which its result names
 
 
 @dataclass
@@ -62,9 +105,10 @@ class Reply:
 
 
 class Provider(Protocol):
-    name: str  # "ollama"
+    name: str  # "ollama", "openai", "anthropic"
     model: str
     local: bool  # runs on this machine: nothing leaves it
+    host: str  # the host of its URL ("" when it has none)
     context_tokens: int
 
     def capabilities(self) -> Capabilities:
@@ -89,14 +133,148 @@ class Provider(Protocol):
 
 
 def describe(provider: Provider) -> dict[str, Any]:
-    """What the page shows about ``provider``: ``{name, model, local, label}``."""
-    where = "Local" if provider.local else provider.name.capitalize()
+    """What the page shows about ``provider``: ``{name, model, local, host, label}``."""
+    title = TITLES.get(provider.name, provider.name.capitalize())
+    if keys.official(provider.name, provider.host):
+        title = OFFICIAL_TITLES[provider.name]
+    where = "this machine" if provider.local else provider.host
     return {
         "name": provider.name,
         "model": provider.model,
         "local": provider.local,
-        "label": f"{where}: {provider.model}",
+        "host": provider.host,
+        # "OpenAI-compatible · server's default model · openrouter.ai"
+        "label": " · ".join(part for part in (title, provider.model, where) if part),
     }
+
+
+def _with_scheme(url: str) -> str:
+    return url if "://" in url else f"http://{url}"
+
+
+def host_of(url: str) -> str:
+    """The lower-case host of ``url`` (``http://`` assumed without a scheme); "" for none.
+
+    Parsed as ``requests`` (urllib3) parses it, so the host is the one a request goes to."""
+    try:
+        host = parse_url(_with_scheme(url)).host or ""
+    except (LocationParseError, ValueError):
+        return ""
+    return host.strip("[]").lower()  # an IPv6 address without its brackets
+
+
+def has_userinfo(url: str) -> bool:
+    """Whether ``url`` has a user name or password (``https://name@host``), by either parser."""
+    try:
+        if parse_url(_with_scheme(url)).auth is not None:
+            return True
+    except (LocationParseError, ValueError):
+        pass
+    try:
+        return "@" in urlsplit(_with_scheme(url)).netloc
+    except ValueError:
+        return False
+
+
+def unambiguous(url: str) -> bool:
+    """Whether ``url`` has no backslash, no user name or password, and the standard library and
+    urllib3 (what requests sends with) read the same host from it:
+    ``https://evil.example\\@api.openai.com`` is read as ``api.openai.com`` by one and goes to
+    ``evil.example`` by the other, and ``https://api.openai.com@evil.example`` reads as one
+    host to a person and goes to another."""
+    if "\\" in url or has_userinfo(url):
+        return False
+    try:
+        split = (urlsplit(_with_scheme(url)).hostname or "").lower()
+    except ValueError:
+        return False
+    return split == host_of(url)
+
+
+def is_local(url: str) -> bool:
+    """Whether ``url`` is on this machine: ``localhost`` (or ``*.localhost``) or a loopback
+    address (``127.0.0.0/8``, ``::1``). Anything else, a LAN address too, counts as hosted."""
+    host = host_of(url)
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def consent_key(provider: Provider) -> str | None:
+    """What the user agrees to once before project text goes to ``provider``:
+    ``<name>@<host>``; None for a local one (nothing leaves the machine)."""
+    return None if provider.local else f"{provider.name}@{provider.host}"
+
+
+def check(provider: Provider) -> str | None:
+    """Why ``provider`` cannot run the assistant (unreachable, no key, no model, or neither tool
+    calls nor JSON-schema output), or None when it can."""
+    try:
+        caps = provider.capabilities()
+    except ProviderError as err:
+        return str(err)
+    if not (caps.tool_calls or caps.json_schema):
+        return f"{provider.model} supports neither tool calls nor JSON output; choose another model"
+    return None
+
+
+def missing_key(provider: Provider) -> str | None:
+    """Why ``provider`` cannot be asked for want of an API key (how to add one), or None."""
+    need = getattr(provider, "_need_key", None)
+    if need is None:
+        return None
+    try:
+        need()
+    except ProviderError as err:
+        return str(err)
+    return None
+
+
+KEY_CHECKED_LATER = "The key is checked when you send the first message."
+
+
+def check_note(provider: Provider) -> str | None:
+    """What a passed :func:`check` did not prove: a key for a host other than the provider's
+    own API host (OpenRouter, a LAN server) may have been unused, as such a host can list its
+    models without one. None when there is nothing to add."""
+    if getattr(provider, "has_key", False) and not keys.official(provider.name, provider.host):
+        return KEY_CHECKED_LATER
+    return None
+
+
+def _redirect(title: str, resp: requests.Response, setting: str) -> ProviderError | None:
+    """The error for a redirect answer (never followed: requests would resend the key, and on
+    307/308 the body, to the new address), or None for any other answer."""
+    if not 300 <= resp.status_code < 400:
+        return None
+    to = host_of((getattr(resp, "headers", None) or {}).get("Location") or "")
+    return ProviderError(
+        f"{title} answered {resp.status_code}, redirecting to {to or 'another address'}; "
+        f"set that as the {setting} in Settings"
+    )
+
+
+def _http_url(url: str) -> str:
+    url = url.strip().rstrip("/")
+    return url if "://" in url else f"http://{url}"
+
+
+_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
+
+
+def public(text: str) -> str:
+    """``text`` with the ``user:password@`` part of every URL in it left out: what a message
+    (a turn's error, which ``chat.json`` keeps) may show."""
+    return _USERINFO.sub("", text)
+
+
+def _key_hint(name: str, host: str) -> str:
+    """Where ``name``'s key for ``host`` may be set (its own variable only for its own host)."""
+    env = keys.PROVIDER_ENV.get(name)
+    return f"{env} (or {keys.ENV_KEY})" if env and keys.official(name, host) else keys.ENV_KEY
 
 
 def _arguments(raw: Any) -> tuple[dict[str, Any], str | None]:
@@ -117,12 +295,13 @@ class OllamaProvider:
     """Ollama's native ``/api/chat``, with ``tools``, ``format`` and ``options.num_ctx``."""
 
     name = "ollama"
-    local = True
 
     def __init__(self, url: str, model: str, context_tokens: int) -> None:
         """``model`` "": auto, resolved by :meth:`resolve_model` on first use."""
         url = url.rstrip("/")
         self.url = url if url.startswith("http") else f"http://{url}"
+        self.host = host_of(self.url)
+        self.local = is_local(self.url)  # an Ollama on another machine is hosted (consent)
         self._model = model
         self.context_tokens = context_tokens
         self._caps: Capabilities | None = None
@@ -137,10 +316,15 @@ class OllamaProvider:
         else the vision model (:func:`cutpoint.vision.default_model`); asked once."""
         if not self._model:
             try:
-                resp = requests.get(f"{self.url}/api/tags", timeout=SHOW_TIMEOUT_S)
+                resp = requests.get(
+                    f"{self.url}/api/tags", timeout=SHOW_TIMEOUT_S, allow_redirects=False
+                )
+                if moved := _redirect("Ollama", resp, "URL"):
+                    raise moved
                 data = resp.json() if resp.status_code < 400 else None
             except requests.RequestException as err:
-                raise ProviderError(f"Ollama is not reachable at {self.url} ({err})") from err
+                why = public(f"Ollama is not reachable at {self.url} ({err})")
+                raise ProviderError(why) from err
             except ValueError:  # not JSON
                 data = None
             models = data.get("models") if isinstance(data, dict) else None
@@ -152,9 +336,20 @@ class OllamaProvider:
         self, endpoint: str, payload: dict[str, Any], timeout: float, **kw: Any
     ) -> requests.Response:
         try:
-            return requests.post(f"{self.url}/api/{endpoint}", json=payload, timeout=timeout, **kw)
+            resp = requests.post(
+                f"{self.url}/api/{endpoint}",
+                json=payload,
+                timeout=timeout,
+                allow_redirects=False,
+                **kw,
+            )
         except requests.RequestException as err:
-            raise ProviderError(f"Ollama is not reachable at {self.url} ({err})") from err
+            why = public(f"Ollama is not reachable at {self.url} ({err})")
+            raise ProviderError(why) from err
+        if moved := _redirect("Ollama", resp, "URL"):
+            resp.close()
+            raise moved
+        return resp
 
     @staticmethod
     def _error(resp: requests.Response) -> str:
@@ -269,20 +464,432 @@ class OllamaProvider:
         return {"role": "tool", "tool_name": call.name, "content": content}
 
 
+class _HttpProvider:
+    """What the OpenAI-compatible and Anthropic adapters share: URL, key, timeouts, errors."""
+
+    name = ""
+
+    def __init__(self, url: str, model: str, context_tokens: int, key: str | None) -> None:
+        if not unambiguous(url):  # a hand-edited config.json: Settings refuses these
+            raise AmbiguousURLError(
+                f"{TITLES[self.name]}: the base URL {public(url)!r} has a backslash, a user "
+                "name or password, or an unclear host; fix assistant.url in Settings"
+            )
+        self.url = url
+        self.host = host_of(url)
+        self.local = is_local(url)
+        self._model = model
+        self.context_tokens = context_tokens or (
+            LOCAL_CONTEXT_TOKENS if self.local else HOSTED_CONTEXT_TOKENS
+        )
+        self._key = key or None  # only ever sent in the request headers
+        self.timeout = CHAT_TIMEOUT_S if self.local else HOSTED_TIMEOUT_S
+        self._caps: Capabilities | None = None
+
+    def __repr__(self) -> str:  # never the key
+        return f"{type(self).__name__}({public(self.url)!r}, {self._model!r})"
+
+    @property
+    def title(self) -> str:
+        return TITLES[self.name]
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def has_key(self) -> bool:
+        """Whether a key is sent (never the key)."""
+        return self._key is not None
+
+    def _headers(self) -> dict[str, str]:
+        raise NotImplementedError
+
+    def _need_key(self) -> None:
+        """A hosted server needs a key; a local one (LM Studio, llama-server) may not."""
+        if self._key is None and not self.local:
+            raise ProviderError(
+                f"No API key for {self.title}: set {_key_hint(self.name, self.host)} before "
+                "starting cutpoint ui, or save one in Settings (needs the keyring extra)"
+            )
+
+    def _send(
+        self, method: str, url: str, payload: dict[str, Any] | None, timeout: float
+    ) -> requests.Response:
+        """One request. A key is never sent in clear text to another machine."""
+        if self._key and not self.local and urlsplit(url).scheme.lower() != "https":
+            raise ProviderError(
+                f"{self.title}: use an https:// base URL to send an API key "
+                f"(it is not sent over http:// to {self.host})"
+            )
+        send = requests.post if method == "POST" else requests.get
+        try:
+            # never followed: requests would resend the key (and, on 307/308, the body) there
+            resp = send(
+                url,
+                json=payload,
+                headers=self._headers(),
+                timeout=(CONNECT_TIMEOUT_S, timeout),
+                allow_redirects=False,
+            )
+        except requests.Timeout as err:
+            raise ProviderError(f"{self.title} did not answer within {timeout:g} s") from err
+        except requests.RequestException as err:
+            why = keys.redact(public(f"{self.title} is not reachable at {self.url} ({err})"))
+            raise ProviderError(why) from err
+        if moved := _redirect(self.title, resp, "base URL"):
+            raise moved
+        return resp
+
+    @staticmethod
+    def _why(resp: requests.Response) -> str:
+        """The error text of an answer: ``{"error": {"message"}}`` (OpenAI, Anthropic),
+        ``{"error": "..."}``, else the body; keys redacted."""
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        text: Any = None
+        if isinstance(body, dict):
+            err = body.get("error")
+            text = err.get("message") if isinstance(err, dict) else err
+            text = text or body.get("message") or body.get("detail")
+        return keys.redact(str(text or resp.text or resp.reason or ""))[:MAX_ERROR]
+
+    def _fail(self, resp: requests.Response, why: str | None = None) -> ProviderError:
+        code = resp.status_code
+        why = self._why(resp) if why is None else why
+        if code in (401, 403):
+            return ProviderError(
+                f"{self.title} rejected the API key ({code}: {why}); check "
+                f"{_key_hint(self.name, self.host)} or the key saved in Settings"
+            )
+        if code == 404:
+            return ProviderError(
+                f"{self.title} has no model {self.model} at {public(self.url)} (404: {why}); "
+                "check the model and base URL in Settings"
+            )
+        if code == 429:
+            return ProviderError(
+                f"{self.title} is rate limiting or out of credit (429: {why}); try again later"
+            )
+        if code >= 500:
+            return ProviderError(f"{self.title} answered {code}: {why}; try again later")
+        return ProviderError(f"{self.title} answered {code}: {why}")
+
+    def _read(self, resp: requests.Response) -> dict[str, Any]:
+        try:
+            data = resp.json()
+        except ValueError as err:
+            raise ProviderError(f"{self.title} sent an unreadable answer ({err})") from err
+        if not isinstance(data, dict):
+            raise ProviderError(f"{self.title} sent an unreadable answer")
+        return data
+
+    @staticmethod
+    def _stop(cancelled: Callable[[], bool] | None) -> None:
+        """A hosted reply is not streamed: a cancelled turn stops before and after it."""
+        if cancelled is not None and cancelled():
+            raise CancelledError("cancelled")
+
+
+class OpenAIProvider(_HttpProvider):
+    """``/v1/chat/completions`` with ``tools`` or a ``json_schema`` response format, for OpenAI
+    and the servers that speak it (LM Studio, vLLM, llama-server).
+
+    A base URL with a path (``https://host/api/v1``) is used as given; a bare host gets ``/v1``.
+    ``model`` "": the server's only model (``/v1/models``), else an error listing them.
+    """
+
+    name = "openai"
+
+    def __init__(self, url: str, model: str, context_tokens: int, key: str | None) -> None:
+        base = _http_url(url or OPENAI_URL)
+        if urlsplit(base).path in ("", "/"):
+            base += "/v1"
+        super().__init__(base, model, context_tokens, key)
+        self._temperature = True  # some models (OpenAI's reasoning ones) take only the default
+
+    @property
+    def title(self) -> str:
+        return "OpenAI" if self.host == "api.openai.com" else f"OpenAI-compatible {self.host}"
+
+    @property
+    def model(self) -> str:
+        return self._model or AUTO_SERVER_MODEL
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._key}"} if self._key else {}
+
+    def _models(self) -> list[str]:
+        resp = self._send("GET", f"{self.url}/models", None, CHECK_TIMEOUT_S)
+        if resp.status_code >= 400:
+            raise self._fail(resp)
+        rows = self._read(resp).get("data")
+        return [r["id"] for r in rows or [] if isinstance(r, dict) and isinstance(r.get("id"), str)]
+
+    def resolve_model(self) -> str:
+        if not self._model:
+            self._need_key()
+            ids = self._models()
+            if len(ids) != 1:
+                listed = f"; it lists {', '.join(ids[:8])}" if ids else ""
+                raise ProviderError(f"Choose a model for {self.title} in Settings{listed}")
+            self._model = ids[0]
+        return self._model
+
+    def capabilities(self) -> Capabilities:
+        """Reached with the key (``/v1/models``) and a model chosen. Tool calls are assumed: a
+        server that refuses them is asked again in JSON mode (:class:`ToolsUnsupportedError`)."""
+        if self._caps is None:
+            self._need_key()
+            if self._model:
+                self._models()  # reachable, and the key accepted
+            else:
+                self.resolve_model()
+            self._caps = Capabilities(True, True)
+        return self._caps
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        schema: dict[str, Any] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> Reply:
+        self._need_key()
+        payload: dict[str, Any] = {"model": self.resolve_model(), "messages": messages}
+        if tools:
+            payload["tools"] = tools
+        if schema:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "cutpoint_reply", "schema": schema},
+            }
+        while True:
+            self._stop(cancelled)
+            if self._temperature:
+                payload["temperature"] = TEMPERATURE
+            else:
+                payload.pop("temperature", None)
+            resp = self._send("POST", f"{self.url}/chat/completions", payload, self.timeout)
+            self._stop(cancelled)
+            if resp.status_code < 400:
+                return self._reply(self._read(resp))
+            why = self._why(resp)
+            low = why.lower()
+            if resp.status_code == 400 and self._temperature and "temperature" in low:
+                self._temperature = False  # asked again without it, and from now on
+                continue
+            if tools and "tool" in low and any(w in low for w in _NO_TOOLS):
+                raise ToolsUnsupportedError(why)
+            raise self._fail(resp, why)
+
+    def _reply(self, data: dict[str, Any]) -> Reply:
+        choices = data.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices else None
+        msg = first.get("message") if isinstance(first, dict) else None
+        if not isinstance(msg, dict):
+            raise ProviderError(f"{self.title}'s answer has no message")
+        content = msg.get("content")
+        if isinstance(content, list):  # content parts
+            content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
+        text = content if isinstance(content, str) else ""
+        calls: list[ToolCall] = []
+        raw_calls: list[dict[str, Any]] = []
+        raw_list = msg.get("tool_calls")
+        for n, raw in enumerate(raw_list if isinstance(raw_list, list) else [], 1):
+            fn = raw.get("function") if isinstance(raw, dict) else None
+            if not (isinstance(fn, dict) and isinstance(fn.get("name"), str)):
+                continue
+            cid = raw.get("id") if isinstance(raw.get("id"), str) and raw["id"] else f"call_{n}"
+            args, error = _arguments(fn.get("arguments"))
+            calls.append(ToolCall(fn["name"], args, error, cid))
+            arguments = fn.get("arguments")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments if arguments is not None else {})
+            raw_calls.append(
+                {
+                    "id": cid,
+                    "type": "function",
+                    "function": {"name": fn["name"], "arguments": arguments},
+                }
+            )
+        message: dict[str, Any] = {"role": "assistant", "content": text}
+        if raw_calls:
+            message["tool_calls"] = raw_calls
+        return Reply(text, calls, message)
+
+    def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
+        return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+
+class AnthropicProvider(_HttpProvider):
+    """Anthropic's Messages API (``/v1/messages``) with tool use.
+
+    System messages become ``system``; consecutive messages of one role are merged, so the
+    results of one reply's tool calls go back in one user message.
+    """
+
+    name = "anthropic"
+
+    def __init__(self, url: str, model: str, context_tokens: int, key: str | None) -> None:
+        super().__init__(_http_url(url or ANTHROPIC_URL), model, context_tokens, key)
+
+    @property
+    def model(self) -> str:
+        return self._model or DEFAULT_ANTHROPIC_MODEL
+
+    def _headers(self) -> dict[str, str]:
+        out = {"anthropic-version": ANTHROPIC_VERSION}
+        if self._key:
+            out["x-api-key"] = self._key
+        return out
+
+    def capabilities(self) -> Capabilities:
+        """The model exists and the key is accepted (``/v1/models/<model>``); every Claude
+        model has tool use."""
+        if self._caps is None:
+            self._need_key()
+            url = f"{self.url}/v1/models/{quote(self.model, safe='')}"
+            resp = self._send("GET", url, None, CHECK_TIMEOUT_S)
+            if resp.status_code >= 400:
+                raise self._fail(resp)
+            self._caps = Capabilities(True, False)
+        return self._caps
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        schema: dict[str, Any] | None = None,  # unused: in JSON mode the rules ask for JSON
+        cancelled: Callable[[], bool] | None = None,
+    ) -> Reply:
+        self._need_key()
+        system, wire = _anthropic_messages(messages)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": MAX_TOKENS,
+            "temperature": TEMPERATURE,
+            "messages": wire,
+        }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = [
+                {
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters") or {"type": "object"},
+                }
+                for t in tools
+                if isinstance(fn := t.get("function"), dict)
+            ]
+        self._stop(cancelled)
+        resp = self._send("POST", f"{self.url}/v1/messages", payload, self.timeout)
+        self._stop(cancelled)
+        if resp.status_code >= 400:
+            raise self._fail(resp)
+        data = self._read(resp)
+        stop = data.get("stop_reason")
+        if stop == "max_tokens":  # a tool call cut off midway is not one to run
+            raise ProviderError(
+                f"{self.title}'s reply was cut off at {MAX_TOKENS} tokens; try a simpler request"
+            )
+        if stop == "refusal":
+            raise ProviderError(f"{self.title} declined this request")
+        content = data.get("content")
+        if not isinstance(content, list):
+            raise ProviderError(f"{self.title}'s answer has no content")
+        parts: list[str] = []
+        calls: list[ToolCall] = []
+        blocks: list[dict[str, Any]] = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "text" and isinstance(b.get("text"), str):
+                parts.append(b["text"])
+                blocks.append({"type": "text", "text": b["text"]})
+            elif b.get("type") == "tool_use" and isinstance(b.get("name"), str):
+                cid = str(b.get("id") or "")
+                args, error = _arguments(b.get("input"))
+                calls.append(ToolCall(b["name"], args, error, cid))
+                blocks.append({"type": "tool_use", "id": cid, "name": b["name"], "input": args})
+        return Reply("".join(parts), calls, {"role": "assistant", "content": blocks})
+
+    def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
+        block = {"type": "tool_result", "tool_use_id": call.id, "content": content}
+        return {"role": "user", "content": [block]}
+
+
+def _anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """``(system, messages)`` for the Messages API: system text joined, each message as content
+    blocks without empty text, consecutive messages of one role merged."""
+    system: list[str] = []
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        role, content = m.get("role"), m.get("content")
+        if role == "system":
+            if isinstance(content, str) and content.strip():
+                system.append(content)
+            continue
+        if role not in ("user", "assistant"):
+            continue
+        raw = [{"type": "text", "text": content}] if isinstance(content, str) else content
+        blocks = [
+            b
+            for b in (raw if isinstance(raw, list) else [])
+            if isinstance(b, dict)
+            and not (b.get("type") == "text" and not str(b.get("text") or "").strip())
+        ]
+        if not blocks:
+            continue
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] = [*out[-1]["content"], *blocks]
+        else:
+            out.append({"role": role, "content": blocks})
+    return "\n\n".join(system), out
+
+
 def _ollama(settings: AssistantSettings) -> Provider:
     return OllamaProvider(
         settings.url or ollama_url(),
         settings.model,  # "": auto (OllamaProvider.resolve_model)
-        settings.context_tokens,
+        settings.context_tokens or LOCAL_CONTEXT_TOKENS,
     )
 
 
+DEFAULT_URLS = {"openai": OPENAI_URL, "anthropic": ANTHROPIC_URL}
+
+
+def key_host(name: str, url: str) -> str:
+    """The host a ``name`` provider with base URL ``url`` ("": its default) sends its key to:
+    what its key is looked up and saved for (:func:`cutpoint.assistant.keys.lookup`)."""
+    return host_of(_http_url(url or DEFAULT_URLS.get(name, "")))
+
+
+def _openai(settings: AssistantSettings) -> Provider:
+    key = keys.lookup("openai", key_host("openai", settings.url))[0]
+    return OpenAIProvider(settings.url, settings.model, settings.context_tokens, key)
+
+
+def _anthropic(settings: AssistantSettings) -> Provider:
+    key = keys.lookup("anthropic", key_host("anthropic", settings.url))[0]
+    return AnthropicProvider(settings.url, settings.model, settings.context_tokens, key)
+
+
 # provider name in config.json -> builder; config.ASSISTANT_PROVIDERS lists the names it accepts
-PROVIDERS: dict[str, Callable[[AssistantSettings], Provider]] = {"ollama": _ollama}
+PROVIDERS: dict[str, Callable[[AssistantSettings], Provider]] = {
+    "ollama": _ollama,
+    "openai": _openai,
+    "anthropic": _anthropic,
+}
 
 
 def make(settings: AssistantSettings | None = None) -> Provider:
-    """The configured provider (``assistant`` in ``config.json``).
+    """The configured provider (``assistant`` in ``config.json``), with its key.
 
     Raises:
         ValueError: If ``config.json`` is invalid, or the Ollama URL has a bad port.

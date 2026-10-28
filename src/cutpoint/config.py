@@ -77,11 +77,15 @@ documents every key.
     Insta360 settings, read by :func:`cutpoint.pano.project.pano_config`.
 
 ``assistant``
-    The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default), ``model`` (default:
-    ``qwen3.5:9b`` when Ollama has it pulled, else the vision model ``CUTPOINT_VISION_MODEL``
-    or ``qwen3-vl:8b``), ``url`` (default: the Ollama URL above), ``context_tokens`` (the
-    model's context size, default 8192) and ``consent`` (providers the user agreed to send
-    project text to). API keys are never read from or written to this file.
+    The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default; ``openai`` for OpenAI
+    or a server that speaks its API; ``anthropic``), ``model`` (default: Ollama ``qwen3.5:9b``
+    when it is pulled, else the vision model ``CUTPOINT_VISION_MODEL`` or ``qwen3-vl:8b``;
+    Anthropic ``claude-sonnet-5-5``; OpenAI-compatible: the server's only model), ``url`` (the
+    base URL; default: the Ollama URL above, ``https://api.openai.com/v1`` or
+    ``https://api.anthropic.com``), ``context_tokens`` (the model's context size; default
+    8192 on this machine, 32768 hosted) and ``consent`` (``<provider>@<host>`` of the hosted
+    providers the user agreed to send project text to). API keys are never read from or
+    written to this file (see :mod:`cutpoint.assistant.keys`).
 
 The analysis cache key is canonicalised through the same table (a remapped
 path is keyed as its original), so a remapped source with the same size and
@@ -111,7 +115,7 @@ VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
 COLOR_MODES = ("off", "auto", "underwater")  # --color; the grades are cutpoint.color.MODES
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
-ASSISTANT_PROVIDERS = ("ollama",)
+ASSISTANT_PROVIDERS = ("ollama", "openai", "anthropic")
 MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
 
 
@@ -119,11 +123,11 @@ MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
 class AssistantSettings:
     """The ``assistant`` section of ``config.json`` (see :mod:`cutpoint.assistant`)."""
 
-    provider: str = "ollama"
-    model: str = ""  # "": auto (Ollama: qwen3.5:9b if pulled, else the vision model)
-    url: str = ""  # "": the provider's default (Ollama: cutpoint.backends.ollama_url)
-    context_tokens: int = 8192
-    consent: tuple[str, ...] = ()  # providers the user agreed to send project text to
+    provider: str = "ollama"  # one of ASSISTANT_PROVIDERS
+    model: str = ""  # "": the provider's default (Ollama: qwen3.5:9b if pulled, else vision)
+    url: str = ""  # base URL; "": the provider's (Ollama: cutpoint.backends.ollama_url)
+    context_tokens: int = 0  # 0: the provider's default (8192 on this machine, 32768 hosted)
+    consent: tuple[str, ...] = ()  # "<provider>@<host>" the user agreed to send project text to
 
 
 @dataclass(frozen=True)
@@ -318,7 +322,7 @@ def _assistant(path: Path, data: dict) -> AssistantSettings:
         ("provider", _is_str, "a string"),
         ("model", _is_str, "a string"),
         ("url", _is_str, "a string"),
-        ("consent", _is_str_list, "a list of provider names"),
+        ("consent", _is_str_list, "a list of <provider>@<host> entries"),
     )
     for key, ok, what in checks:
         _check_type(path, {f"assistant.{key}": section.get(key)}, f"assistant.{key}", ok, what)
@@ -328,8 +332,10 @@ def _assistant(path: Path, data: dict) -> AssistantSettings:
             f"{path}: assistant.provider is {provider!r}; "
             f"expected one of {', '.join(ASSISTANT_PROVIDERS)}"
         )
-    tokens = section.get("context_tokens", 8192)
-    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < MIN_CONTEXT_TOKENS:
+    tokens = section.get("context_tokens")
+    if tokens is None:
+        tokens = 0  # the provider's default
+    elif isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < MIN_CONTEXT_TOKENS:
         raise ValueError(
             f"{path}: assistant.context_tokens is {tokens!r}; "
             f"expected a whole number of at least {MIN_CONTEXT_TOKENS}"

@@ -25,8 +25,8 @@ Trust boundaries:
   dialog (Windows: Tk's system dialog; macOS: ``osascript``; Linux: zenity, else kdialog) in a
   child process without a shell, one at a time; the server never lists folders itself. With no
   dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
-* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir`` and ``vision`` in
-  ``config.json``. The projects folder never changes while a job runs or when
+* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir``, ``vision`` and the
+  assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
   starts; the page has no per-run vision box.
@@ -37,6 +37,12 @@ Trust boundaries:
   writes only ``ui/assistant/chat.json`` and ``ui/assistant/history.json``, never
   ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
+* A hosted assistant provider (any whose host is not this machine) gets no project text until
+  the user agrees once for it (``POST /api/assistant/consent``, kept in ``config.json``).
+  API keys come from the environment or the system keyring (``POST /api/assistant/key``,
+  ``.../key/clear``); no route returns one, only where it comes from. ``cutpoint ui`` takes the
+  key variables out of its environment at startup, jobs get an environment without them, and
+  log records have keys redacted (:mod:`cutpoint.assistant.keys`).
 """
 
 from __future__ import annotations
@@ -77,13 +83,17 @@ from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, default_audio_transition
+from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
 from cutpoint.assistant import session as ai_session
 from cutpoint.assistant import store as ai_store
+from cutpoint.backends import ollama_url
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
+    ASSISTANT_PROVIDERS,
     COMPRESS_PEAKS,
+    assistant_settings,
     get_config,
     load_config_data,
     projects_dir,
@@ -191,8 +201,9 @@ def spawn(args: list[str], *, low_priority: bool = True) -> subprocess.Popen[str
         errors="replace",
         # CUTPOINT_PROGRESS: analyze and edit write PROGRESS step lines (``parse_progress``); the
         # other commands and ffmpeg ignore it.
+        # Never the assistant's API key variables (ai_keys.child_env): no job uses them.
         env={
-            **os.environ,
+            **ai_keys.child_env(),
             "PYTHONUNBUFFERED": "1",
             "PYTHONIOENCODING": "utf-8",
             "CUTPOINT_PROGRESS": "1",
@@ -291,6 +302,7 @@ def folder_opener() -> Callable[[Path], None] | None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=ai_keys.child_env(),
         )
         threading.Thread(target=proc.wait, daemon=True).start()  # reap it; never block the request
 
@@ -460,6 +472,7 @@ class Picker:
                     encoding="utf-8",
                     errors="replace",
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    env=ai_keys.child_env(),
                 )
                 out, err = self.proc.communicate()
             except OSError as e:
@@ -551,6 +564,132 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
         # whether config.json sets it: the page's Compress peaks then starts from it, else Light
         "compress_peaks_set": peaks in COMPRESS_PEAKS,
+        "assistant": assistant_view(data),
+    }
+
+
+MAX_ASSISTANT_TEXT = 500  # characters of the assistant's model or base URL
+
+
+def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
+    """The assistant settings of config ``data`` for Settings, never a key: the provider, model
+    and base URL as saved (an invalid value shown as the default), what each provider offers, and
+    where each provider's key comes from (``"env"``, ``"keyring"`` or None)."""
+    section = data.get("assistant")
+    section = section if isinstance(section, dict) else {}
+    name = section.get("provider")
+    name = name.strip().lower() if isinstance(name, str) else ""
+
+    def text(key: str) -> str:
+        value = section.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    try:
+        ollama = ai_providers.public(ollama_url())  # OLLAMA_HOST may carry user:password@
+    except (ValueError, TypeError):  # a bad port or config.json: Settings still opens
+        ollama = ""
+    offers = {
+        "ollama": (ollama, ai_providers.AUTO_MODEL, [ai_providers.DEFAULT_OLLAMA_MODEL]),
+        "openai": (ai_providers.OPENAI_URL, ai_providers.AUTO_SERVER_MODEL, []),
+        "anthropic": (
+            ai_providers.ANTHROPIC_URL,
+            ai_providers.DEFAULT_ANTHROPIC_MODEL,
+            list(ai_providers.ANTHROPIC_MODELS),
+        ),
+    }
+    hosts = key_hosts(data)
+
+    def key_env(p: str) -> list[str]:
+        if p not in ai_keys.KEYED:
+            return []
+        own = [ai_keys.PROVIDER_ENV[p]] if ai_keys.official(p, hosts[p]) else []
+        return [ai_keys.ENV_KEY, *own]
+
+    return {
+        "provider": name if name in ASSISTANT_PROVIDERS else "ollama",
+        "model": text("model"),
+        "url": ai_providers.public(text("url")),  # a hand-edited one too; Settings refuses it
+        "providers": [
+            {
+                "name": p,
+                "title": ai_providers.TITLES[p],
+                "default_url": offers[p][0],
+                "default_model": offers[p][1],
+                "models": offers[p][2],
+                "key_env": key_env(p),
+            }
+            for p in ASSISTANT_PROVIDERS
+        ],
+        **key_status(data),
+        "keyring": ai_keys.keyring_available(),
+    }
+
+
+def key_hosts(data: dict[str, Any]) -> dict[str, str]:
+    """The host each keyed provider's key is for, by config ``data``: the configured base URL's
+    for the configured provider, the official API host for the others."""
+    section = data.get("assistant")
+    section = section if isinstance(section, dict) else {}
+    name, url = section.get("provider"), section.get("url")
+    name = name.strip().lower() if isinstance(name, str) else ""
+    url = url.strip() if isinstance(url, str) else ""
+    return {p: ai_providers.key_host(p, url if p == name else "") for p in ai_keys.KEYED}
+
+
+def key_status(data: dict[str, Any]) -> dict[str, Any]:
+    """``{keys, key_hosts}``: where each keyed provider's key for its host comes from
+    (``"env"``, ``"keyring"`` or None), and that host. Never a key."""
+    hosts = key_hosts(data)
+    return {
+        "keys": {p: ai_keys.status(p, hosts[p]) for p in ai_keys.KEYED},
+        "key_hosts": hosts,
+    }
+
+
+def check_assistant(value: Any) -> dict[str, str]:
+    """The ``assistant`` object of a Settings change: ``provider`` (one of
+    ``ASSISTANT_PROVIDERS``), ``model`` and ``url`` (an http(s) base URL; "" for the default).
+
+    Raises:
+        HTTPException: 400 for anything else.
+    """
+    if not isinstance(value, dict) or not value or set(value) - {"provider", "model", "url"}:
+        raise bad("assistant must be an object with provider, model and/or url")
+    out: dict[str, str] = {}
+    for key, raw in value.items():
+        if not isinstance(raw, str) or len(raw) > MAX_ASSISTANT_TEXT:
+            raise bad(f"assistant.{key} must be text of at most {MAX_ASSISTANT_TEXT} characters")
+        if any(not c.isprintable() for c in raw):
+            raise bad(f"assistant.{key} must be printable text")
+        out[key] = raw.strip()
+    if "provider" in out:
+        out["provider"] = out["provider"].lower()
+        if out["provider"] not in ASSISTANT_PROVIDERS:
+            raise bad(f"assistant.provider must be one of {', '.join(ASSISTANT_PROVIDERS)}")
+    url = out.get("url")
+    if url:
+        scheme = url.split("://", 1)[0].lower() if "://" in url else "http"
+        if scheme not in ("http", "https") or " " in url or not ai_providers.host_of(url):
+            raise bad("assistant.url must be an http:// or https:// base URL")
+        if "\\" in url:  # requests and urlsplit read different hosts from some of these
+            raise bad("assistant.url must not have a backslash")
+        if ai_providers.has_userinfo(url):  # https://api.openai.com@evil.example goes to evil
+            raise bad("assistant.url must not contain a user name or password")
+        if not ai_providers.unambiguous(url):  # the host a request goes to must be the one shown
+            raise bad("assistant.url must not have an unclear host")
+    return out
+
+
+def consent_view(provider: ai_providers.Provider) -> dict[str, Any]:
+    """Whether the user still has to agree before project text goes to ``provider``:
+    ``{needed, key, host, missing_key}``; ``key`` (``<name>@<host>``) is None for a local
+    provider; ``missing_key``: how to add the API key it needs, which comes before agreeing."""
+    key = ai_providers.consent_key(provider)
+    return {
+        "needed": key is not None and key not in assistant_settings().consent,
+        "key": key,
+        "host": provider.host,
+        "missing_key": ai_providers.missing_key(provider),
     }
 
 
@@ -2359,6 +2498,7 @@ def _auto_picks(body: dict[str, Any], hl: dict[str, Any] | None) -> list[str]:
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
+    ai_keys.redact_logs()  # an assistant API key never reaches a log line
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -2445,13 +2585,16 @@ def create_app(port: int) -> FastAPI:
 
     @secure.put("/settings")
     def put_settings(body: dict[str, Any]):
-        """Change the projects folder and/or the vision default in ``config.json``. Existing
-        projects stay where they are."""
-        if "projects_dir" not in body and "vision" not in body:
-            raise bad("send projects_dir and/or vision")
+        """Change the projects folder, the vision default and/or the assistant's provider, model
+        and base URL in ``config.json``. Existing projects stay where they are. A changed
+        assistant is checked at once (reachable, key accepted, tool calls or JSON output):
+        ``assistant_check`` is why it cannot answer, or None."""
+        if not {"projects_dir", "vision", "assistant"} & set(body):
+            raise bad("send projects_dir, vision and/or assistant")
         updates: dict[str, Any] = {}
         if "vision" in body:
             updates["vision"] = _flag(body, "vision")
+        assistant = check_assistant(body["assistant"]) if "assistant" in body else None
         moving = "projects_dir" in body
         if moving and paths.env("PROJECTS_DIR") is not None:
             raise bad(
@@ -2462,6 +2605,9 @@ def create_app(port: int) -> FastAPI:
             raise bad(busy, 409)
         data = config_data()  # an unreadable config.json: refuse before creating the folder
         folder, created = None, False
+        if assistant is not None:
+            section = data.get("assistant")
+            updates["assistant"] = {**(section if isinstance(section, dict) else {}), **assistant}
         if moving:
             folder, created = check_projects_dir(body.get("projects_dir"))
             updates["projects_dir"] = str(folder)
@@ -2481,7 +2627,73 @@ def create_app(port: int) -> FastAPI:
             if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
                 raise bad(str(err), 409) from err
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
-        return settings_view({**data, **updates})
+        out = settings_view({**data, **updates})
+        if assistant is not None:
+            out["assistant_note"] = None
+            try:
+                provider = ai_providers.make()
+                out["assistant_check"] = ai_providers.check(provider)
+                if out["assistant_check"] is None:  # reached; maybe without using the key
+                    out["assistant_note"] = ai_providers.check_note(provider)
+            except (ValueError, TypeError) as err:  # another invalid value in config.json
+                out["assistant_check"] = str(err)
+        return out
+
+    # -- assistant provider: key and consent (#346); config.json and the keyring only -------
+    def keyed_provider(body: dict[str, Any]) -> str:
+        name = body.get("provider")
+        if name not in ai_keys.KEYED:
+            raise bad(f"provider must be one of {', '.join(ai_keys.KEYED)}")
+        return name
+
+    @secure.post("/assistant/key")
+    def save_key(body: dict[str, Any]):
+        """Save ``key`` for ``provider`` in the system keyring (the keyring extra), for the host
+        its configured base URL names (``key_hosts``): a key saved for OpenRouter is never sent
+        to OpenAI. The answer says only where each key now comes from, never a key."""
+        name = keyed_provider(body)
+        data = config_data()
+        try:
+            ai_keys.save(name, body.get("key"), key_hosts(data)[name])
+        except ValueError as err:
+            raise bad(str(err)) from None
+        except ai_keys.KeyringError as err:
+            raise bad(str(err), 501 if not ai_keys.keyring_available() else 500) from None
+        return key_status(data)
+
+    @secure.post("/assistant/key/clear")
+    def clear_key(body: dict[str, Any]):
+        """Remove ``provider``'s keyring key for its configured host; a key from the
+        environment stays."""
+        name = keyed_provider(body)
+        data = config_data()
+        try:
+            ai_keys.clear(name, key_hosts(data)[name])
+        except ai_keys.KeyringError as err:
+            raise bad(str(err), 501 if not ai_keys.keyring_available() else 500) from None
+        return key_status(data)
+
+    @secure.post("/assistant/consent")
+    def give_consent(body: dict[str, Any]):
+        """Record that the user agreed to send project text to the provider in use, named by
+        its ``key`` (``consent.key`` of ``GET .../assistant``); 409 when the provider in use is
+        another one by now, or is local."""
+        want = ai_providers.consent_key(assistant_provider())
+        if want is None or body.get("key") != want:
+            raise bad("the assistant's provider changed: check it and agree again", 409)
+        data = config_data()
+        section = data.get("assistant")
+        section = dict(section) if isinstance(section, dict) else {}
+        given = section.get("consent")
+        given = [c for c in given if isinstance(c, str)] if isinstance(given, list) else []
+        if want not in given:
+            try:
+                set_config_values({"assistant": {**section, "consent": [*given, want]}})
+            except ValueError as err:
+                raise bad(str(err), 409) from err
+            except OSError as err:
+                raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
+        return {"consent": consent_view(assistant_provider())}
 
     @owned.get("/projects")
     def list_projects():
@@ -3042,7 +3254,7 @@ def create_app(port: int) -> FastAPI:
     def assistant_provider() -> ai_providers.Provider:
         try:
             return ai_providers.make()
-        except ValueError as err:  # a bad Ollama port
+        except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
 
     def assistant_state(
@@ -3080,11 +3292,14 @@ def create_app(port: int) -> FastAPI:
 
     @owned.get("/projects/{pid}/assistant")
     def get_assistant(pid: str):
-        """The provider in use, the saved chat and the turn still running, if any."""
+        """The provider in use, whether the user must agree before it gets project text
+        (``consent``), the saved chat and the turn still running, if any."""
         p = project_dir(pid)
         running = [t.view() for t in turns.of(str(p)) if t.status == "running"]
+        provider = assistant_provider()
         return {
-            "provider": ai_providers.describe(assistant_provider()),
+            "provider": ai_providers.describe(provider),
+            "consent": consent_view(provider),
             "turns": ai_store.turns(p),
             "running": running,
         }
@@ -3092,8 +3307,16 @@ def create_app(port: int) -> FastAPI:
     @owned.post("/projects/{pid}/assistant/turns")
     def start_turn(pid: str, body: dict[str, Any]):
         """Ask the assistant ``text`` about the working sequence ``segments`` (default: the
-        saved review). Poll the turn for its events."""
+        saved review). Poll the turn for its events. A hosted provider the user has not agreed
+        to send project text to (``POST /api/assistant/consent``) gets nothing: 409."""
         p = project_dir(pid)
+        provider = assistant_provider()
+        if consent_view(provider)["needed"]:
+            raise bad(
+                f"agree first to send this project's moment labels, transcript snippets, file "
+                f"names and times to {provider.host}",
+                409,
+            )
         text = body.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > ai_session.MAX_TEXT:
             raise bad(f"text must be 1-{ai_session.MAX_TEXT} characters")
@@ -3108,7 +3331,6 @@ def create_app(port: int) -> FastAPI:
             with contextlib.suppress(OSError, UnicodeDecodeError):
                 transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
         project = ai_session.Project(moments, segments, durations, transcript, key)
-        provider = assistant_provider()
         assistant_save(p, ai_store.CHAT)
         turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p))
         try:
@@ -3270,6 +3492,7 @@ def run(port: int = 8765) -> None:
     """Serve the workspace on 127.0.0.1:``port`` until interrupted."""
     import uvicorn  # noqa: PLC0415
 
+    ai_keys.capture()  # no child process of this one inherits an API key variable
     app = create_app(port)
     sock = listen(port)
     # Printed only once the port is ours, so the URL always works.
@@ -3278,11 +3501,11 @@ def run(port: int = 8765) -> None:
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _hangup)
     try:
-        server = uvicorn.Server(
-            uvicorn.Config(
-                app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5
-            )
+        conf = uvicorn.Config(
+            app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5
         )
+        ai_keys.redact_logs()  # again: the Config set up uvicorn's own log handlers
+        server = uvicorn.Server(conf)
         server.run(sockets=[sock])
     finally:  # jobs and ffmpeg run in their own sessions: nothing else would stop them
         sock.close()

@@ -57,3 +57,14 @@ export function parseTime(text) {
 
 export const baseName = (p) => String(p).split(/[\\/]/).pop();
 export const round2 = (t) => Math.round(t * 100) / 100;
+
+const NATURAL = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+/** Natural order of names: "clip2" before "clip10", case ignored; names equal but for case keep a fixed order. */
+export const naturalCompare = (a, b) => NATURAL.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Moments in video order (#469): by source file name in natural order, then start time in each
+ * source. Two folders' files of the same name sort by full path, so each source stays together.
+ */
+export const positionCompare = (a, b) =>
+  naturalCompare(baseName(a.source), baseName(b.source)) || naturalCompare(String(a.source), String(b.source)) || a.start - b.start;

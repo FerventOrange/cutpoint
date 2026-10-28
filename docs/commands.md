@@ -362,7 +362,26 @@ remote access is not supported.
 ### AI Chat
 
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
-`config.json` (local Ollama only for now). Its header shows the model and provider, with a note
+`config.json`: Ollama (the default), an OpenAI-compatible server (OpenAI, LM Studio, vLLM,
+llama-server) or Anthropic, chosen under Settings > AI assistant with the model and base URL.
+Saving there checks that the provider answers (reachable, a model chosen and, at
+`api.openai.com` and `api.anthropic.com`, the key accepted) and says why when it cannot. Another
+host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
+send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+`CUTPOINT_ASSISTANT_API_KEY` when `cutpoint ui` starts, else from the system keyring: with the
+`keyring` extra, Settings has Save key and Clear key. `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+go only to `api.anthropic.com` and `api.openai.com`; a key for another host (OpenRouter, a LAN
+server) comes from `CUTPOINT_ASSISTANT_API_KEY` or is saved for that base URL, and goes only over
+`https://` ([keys](configuration.md#assistant)). Settings only says "set (env)", "set
+(keyring)" or "not set"; the page never receives a key.
+
+A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
+another machine counts too) is hosted: before the first message the tab asks once, per provider
+and host, to send the project's moment labels, transcript snippets, file names (not full paths),
+times and your messages there. The answer is kept in `config.json` (`assistant.consent`); until
+then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
+
+Its header shows the model and provider (local, or the hosted host), with a note
 that a small local model can miss moments or misread a request. Type a request and press Enter
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
 for …") and can be stopped with Cancel. The chat needs an analyzed project.
@@ -388,6 +407,11 @@ Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST
 `POST .../proposals/<proposal>/applied`, `DELETE .../chat`, `GET .../history` and
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
+`GET .../assistant` also returns `consent` (`needed`, `key`, `host`, and `missing_key`: how to add a missing API key, or null); `POST .../turns` answers
+409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
+`POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
+save or remove a keyring key for the host of the saved base URL and return only where each key
+comes from (`keys`) and the host it is for (`key_hosts`).
 
 ## capabilities
 

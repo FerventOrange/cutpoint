@@ -332,8 +332,10 @@ select { max-width: 100%; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* moments */
-.filter { display: block; margin-bottom: 8px; }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 8px; }
+.filter { flex: 1 1 6em; }
 .filter input { width: 100%; }
+.order { flex: none; display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
 .cand-list { display: grid; gap: 6px; }
 .cand {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start;
@@ -665,6 +667,12 @@ select { max-width: 100%; }
 .chat-head { display: flex; align-items: flex-start; gap: 8px; }
 .chat-who { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
 #chatProvider { font-size: 13px; overflow-wrap: anywhere; }
+.chat-consent {
+  display: grid; gap: 6px; justify-items: start; padding: 8px 10px;
+  border: 1px solid var(--amber-text); border-radius: 10px; background: var(--deep);
+}
+.chat-consent h3 { font-size: 14px; }
+.chat-consent p { font-size: 13px; overflow-wrap: anywhere; }
 #panelAssistant .chat-log { flex: 1 0 auto; display: grid; gap: 8px; align-content: start; }
 .msg {
   justify-self: start; max-width: 92%; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 6px 10px;

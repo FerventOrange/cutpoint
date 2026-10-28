@@ -77,8 +77,9 @@ current browser tab's session storage. After restarting the server, open its new
 | `ski` | Action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU). Also used by the 360 module. |
 | `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
+| `keyring` | Save an AI Chat API key in the system keyring from Settings in `cutpoint ui` (Windows Credential Manager, macOS Keychain, Secret Service on Linux). About 170 KB; on Linux it adds SecretStorage, about 5 MB. Without it, set the key in an environment variable ([keys](configuration.md#assistant)). |
 | `dev` | pytest, ruff, pre-commit. |
-| `all` | `ski`, `events`, `gpu` and `ui`. |
+| `all` | `ski`, `events`, `gpu`, `ui` and `keyring`. |
 
 `uv sync` makes the environment match exactly the extras you name, so it removes the
 packages of any extra you leave out. List every extra you use each time:
@@ -87,7 +88,7 @@ packages of any extra you leave out. List every extra you use each time:
 uv sync --extra ski --extra events --extra gpu
 ```
 
-The easy way to keep everything is `uv sync --extra all` (`ski`, `events`, `gpu` and `ui`; the
+The easy way to keep everything is `uv sync --extra all` (`ski`, `events`, `gpu`, `ui` and `keyring`; the
 `dev` tools come by default). It includes the large torch download of `events`.
 
 With an NVIDIA GPU, `uv sync --extra gpu` is the minimum for GPU Whisper.
