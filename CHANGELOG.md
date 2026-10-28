@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the style's minimum clip length is left. The menu frames are recorded as
   `stats.ocr.<source>.menu_spans` in `events.json`; HUD OCR results are re-interpreted once from
   the raw OCR cache. Footage without menu frames gets the same candidates as before (#440).
+- HUD discovery on a short source proposes the same regions when it runs again from its OCR
+  cache. Its bursts overlap on a source under about 3 min, and two frames at the same time
+  (to 0.1 s) shared one id, so the cached run read them back as frames of one burst. Such a
+  frame now has its burst and frame number in its id; an existing `ocr.jsonl` is kept, and only
+  the frames that shared an id are OCR'd again, once. On such a source the first run can change
+  too, because frames at the same time now count as separate frames. Sources where no frames
+  share a time are unchanged (#444).
 
 ## [0.3.0] - 2026-10-27
 

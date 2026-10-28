@@ -116,10 +116,11 @@ def test_ocr_frames_report_cached_short_and_new_bursts(tmp_path, monkeypatch):
     src = SimpleNamespace(name="rec.mp4", io_path=tmp_path / "rec.mp4")
     params = discover.DiscoverParams()
     bursts = [(src, 0.0), (src, 60.0), (src, 120.0)]
-    cached = [f"rec.mp4@{k * params.burst_step_s:.1f}" for k in range(4)] + ["rec.mp4@60.0"]
+    cached = [k * params.burst_step_s for k in range(4)] + [60.0]
     cache_path = tmp_path / "ocr.jsonl"
     cache_path.write_text(
-        "".join(json.dumps({"id": i, "boxes": []}) + "\n" for i in cached), encoding="utf-8"
+        "".join(json.dumps({"id": f"rec.mp4@{t:.1f}", "t": t, "boxes": []}) + "\n" for t in cached),
+        encoding="utf-8",
     )
 
     class Engine:
