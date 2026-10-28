@@ -295,15 +295,35 @@ def _ocr_frames(
     engine = None
     out: list[dict[str, Any]] = []
     fh = None
+    # a frame's id is its source and time; bursts overlap on a short source, so a time
+    # taken by an earlier frame gets the burst and frame number too (unique and stable)
+    seen: set[str] = set()
+    plan_ids = []
+    for bi, (src, t) in enumerate(bursts):
+        ids = []
+        for k in range(params.burst_frames):
+            fid = f"{src.name}@{t + k * params.burst_step_s:.1f}"
+            fid = f"{fid}#{bi}.{k}" if fid in seen else fid
+            seen.add(fid)
+            ids.append(fid)
+        plan_ids.append(ids)
+
+    def cached(fid: str, t: float, bi: int, k: int) -> dict[str, Any] | None:
+        """The cached record of this frame: same id and time (an older cache can hold
+        another burst's frame under a shared id), in this run's burst."""
+        rec = done.get(fid)
+        if rec is None or rec.get("t") != round(t + k * params.burst_step_s, 2):
+            return None
+        return rec | {"burst": bi, "k": k}
+
     # failed before the first frame is saved: no empty frames/ (or empty ocr.jsonl) left
     # behind; the cache is opened on the first record and closed before output_dir cleans up
     with output_dir(frame_dir), ExitStack() as stack:
         for bi, (src, t) in enumerate(bursts):
-            ids = [
-                f"{src.name}@{t + k * params.burst_step_s:.1f}" for k in range(params.burst_frames)
-            ]
-            if all(i in done for i in ids):
-                out += [done[i] for i in ids]
+            ids = plan_ids[bi]
+            hits = [cached(fid, t, bi, k) for k, fid in enumerate(ids)]
+            if all(h is not None for h in hits):
+                out += [h for h in hits if h is not None]
                 report((bi + 1) * params.burst_frames, total)
                 continue
             frames = _burst_frames(
@@ -313,9 +333,9 @@ def _ocr_frames(
                 # full frames, one at a time: all the threads on one engine
                 engine = OcrEngine(det_side=params.width, lanes=1)
             for k, img in enumerate(frames):
-                fid = ids[k]
-                if fid in done:
-                    out.append(done[fid])
+                fid, hit = ids[k], hits[k]
+                if hit is not None:
+                    out.append(hit)
                     continue
                 sx = REF_W / img.shape[1]
                 items = engine(img, params.min_score)

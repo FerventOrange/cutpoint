@@ -294,7 +294,10 @@ def mine_phrases(
     run_ids = preset.get("discovery", {}).get("frames")
     if run_ids is not None:  # the frames of the discovery run (ocr.jsonl only grows)
         ids = set(map(str, run_ids))
-        ocr_samples = [f for f in ocr_samples if str(f.get("id")) in ids]
+        # the last record per id, as discovery reads its cache (an upgraded cache keeps old ones)
+        ocr_samples = list(
+            {str(f.get("id")): f for f in ocr_samples if str(f.get("id")) in ids}.values()
+        )
     frames = gameplay_frames(ocr_samples, params)
     # per source: the times and bursts of its gameplay frames (the static hint test)
     src_times: dict[str, list[float]] = {}
