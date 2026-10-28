@@ -918,7 +918,10 @@ def test_moment_cards_show_the_cli_id_as_text_and_filter_by_it() -> None:
     render = _js_function(_web("app.js"), "renderMoments")
     assert "h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id)" in render
     assert "'data-id': c.id" in render
-    assert re.search(r"\.filter\(\(\{ c \}\) => [^\n]*c\.cli_id", render)
+    # the filter runs through util.js momentMatches (Sort and filter), which matches the id
+    assert "momentMatches({ ...c," in render
+    util = _web("util.js")
+    assert "${m.cli_id ?? ''}" in util[util.index("export function momentMatches(") :]
     assert (
         ".cand-id {" in _web("app.css")
         and "white-space: nowrap" in _web("app.css").split(".cand-id {")[1].split("}")[0]
@@ -6566,18 +6569,184 @@ def test_position_order_is_stable_and_keeps_same_named_files_apart(tmp_path: Pat
 
 
 def test_moment_order_control_is_labelled_with_score_default() -> None:
-    """#469: a labelled select beside the filter offers Score (default) and Position in video;
-    a status region announces the change."""
+    """#469: Sort and filter's "Sort by" group offers Score (default) and Position in video as
+    native radios; a status region announces the change."""
     html = _web("index.html")
-    label = re.search(r'<label class="order">(.*?)</label>', html, re.S)[1]
-    assert '<span class="vh">Sort moments by</span>' in label
-    sel = re.search(r'<select id="momentOrder">(.*?)</select>', label, re.S)[1]
-    assert re.findall(r'<option value="(\w+)">([^<]+)</option>', sel) == [
-        ("score", "Score"),
-        ("position", "Position in video"),
-    ]
+    pop = re.search(r'<div id="filterPop"[^>]*>(.*?)\n          </div>', html, re.S)[1]
+    sort = re.search(r"<fieldset[^>]*>\s*<legend>Sort by</legend>(.*?)</fieldset>", pop, re.S)[1]
+    assert re.findall(r'<input type="radio" name="momentOrder" value="(\w+)"( checked)?> ([^<]+)</label>', sort) == [
+        ("score", " checked", "Score"),
+        ("position", "", "Position in video"),
+    ]  # fmt: skip
     assert re.search(r'<p id="orderLive"[^>]*role="status"', html)
-    assert html.index('id="filter"') < html.index('id="momentOrder"')
+    assert '<select id="momentOrder"' not in html
+
+
+def test_filter_row_is_one_search_and_a_funnel_disclosure() -> None:
+    """Sort and filter (mock1): one full-width labelled search, then a square funnel button that
+    discloses the sort order and quick filters in native radios and checkboxes, each set in a
+    fieldset with a legend; Escape closes it and returns focus to the button."""
+    html = _web("index.html")
+    js = _web("app.js")
+    css = _web("app.css")
+    row = re.search(
+        r'<div class="filter-row" id="filterWrap" hidden>(.*?)<p id="orderLive"', html, re.S
+    )[1]
+    assert '<span class="vh">Search moments by label, words, file or candidate id</span>' in row
+    assert re.search(
+        r'<input id="filter" type="search" placeholder="[^"]+" autocomplete="off">', row
+    )
+    btn = re.search(r'<button type="button" id="filterBtn"([^>]*)>', row)[1]
+    assert 'class="btn icon-btn"' in btn and 'aria-expanded="false"' in btn
+    assert 'aria-controls="filterPop"' in btn and 'aria-label="Sort and filter moments"' in btn
+    assert row.index('id="filter"') < row.index('id="filterBtn"') < row.index('id="filterPop"')
+    assert re.search(
+        r'<div id="filterPop" class="filter-pop" role="group" aria-label="[^"]+" tabindex="-1" hidden>',
+        row,
+    )
+    legends = re.findall(r"<fieldset[^>]*>\s*<legend>([^<]+)</legend>", row)
+    assert legends == ["Sort by", "Sequence", "Show only"]
+    seq = re.findall(r'name="filterSeq" value="(\w+)"(?: checked)?> ([^<]+)</label>', row)
+    assert seq == [("all", "All"), ("in", "In sequence"), ("out", "Not in sequence")]
+    assert '<input type="checkbox" id="filterReady"> Ready only</label>' in row
+    assert '<input type="checkbox" id="filterMust"> Must include</label>' in row
+    assert re.search(
+        r'<label class="field" id="filterSourceWrap" hidden>Source file\s*<select id="filterSource">',
+        row,
+    )
+    # the disclosure: aria-expanded follows it; Escape closes and refocuses; outside closes
+    init = _js_function(js, "initMomentFilters")
+    assert "btn.setAttribute('aria-expanded', String(on));" in init and "pop.hidden = !on;" in init
+    assert "e.key !== 'Escape'" in init and "open(false, true)" in init and "btn.focus()" in init
+    assert "e.preventDefault();" in init  # the page's Escape (stop Play sequence) does not also run
+    assert "'pointerdown'" in init and "'focusout'" in init
+    assert "btn.prepend(icon('funnel'));" in init and "funnel: [['path'" in js
+    # the active dot, and its name says it too
+    sync = _js_function(js, "syncFilterMenu")
+    assert "btn.classList.toggle('on', !!on.length);" in sync and "S.order !== 'score'" in sync
+    assert "btn.setAttribute('aria-label', ['Sort and filter moments', ...on].join(', '));" in sync
+    assert "$('#filterSourceWrap').hidden = sources.length < 2;" in sync
+    assert re.search(r"^#filterBtn\.on \.filter-dot \{ display: block; \}", css, re.M)
+    assert re.search(r"^\.filter-pop \{[^}]*position: absolute;[^}]*right: 0;", css, re.M)
+    assert not re.search(r"^\.order\b", css, re.M)
+
+
+def test_moment_filters_are_remembered_safely_and_the_source_per_project() -> None:
+    """Sort and filter: Sequence, Ready only and Must include are stored per browser (guarded,
+    removed when none is on); the source file is a path of one project, so it is never stored and
+    is dropped when the workspace resets."""
+    js = _web("app.js")
+    init = _js_function(js, "initMomentFilters")
+    assert "const FILTERS_KEY = 'cutpoint.momentFilters';" in js
+    assert re.search(r"try \{[^}]*JSON\.parse\(localStorage\.getItem\(FILTERS_KEY\)\)", init, re.S)
+    assert "localStorage.removeItem(FILTERS_KEY)" in init
+    assert "localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready, must }))" in init
+    assert "source" not in init[init.index("const changed") : init.index("renderMoments();")]
+    assert "S.filters.source = '';" in _js_function(js, "resetWorkspace")
+    assert "filters: { ...NO_FILTERS }," in js
+    assert "$('#orderLive').textContent = `${n} of ${cands().length} moments shown`;" in init
+
+
+def test_render_moments_filters_with_util_and_says_which_filter_matched_nothing() -> None:
+    """Sort and filter: renderMoments keeps the score rank, filters through util.js
+    momentMatches with the search text and the quick filters (picked and ready per card), then
+    sorts; the empty state names the filters when any is on."""
+    js = _web("app.js")
+    render = _js_function(js, "renderMoments")
+    assert "momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
+    assert "source: multi && sources.includes(S.filters.source) ? S.filters.source : ''" in render
+    assert render.index("momentMatches(") < render.index("positionCompare")
+    assert "No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}." in render
+    assert "$('#filterBtn').focus()" in render  # the focused card filtered away with no card left
+    # AI Chat's "Filter list by" says how many show, and that the quick filters still apply
+    assert "${n} shown${filtersOn(S.filters) ? '; Sort and filter is also on' : ''}" in js
+
+
+def test_moment_card_order_matches_the_mockup() -> None:
+    """mock1: the top row holds rank, title and must include (Add/Remove sits over it, top
+    right); then the times "a to b · n s", the file only with several sources, the strip, and
+    the transcript with the preview readiness at the bottom right."""
+    js = _web("app.js")
+    css = _web("app.css")
+    render = _js_function(js, "renderMoments")
+    card = render[render.index("class: 'cand-main'") :]
+    order = [
+        "class: 'cand-top'",
+        "class: 'rank tc'",
+        "class: 'cand-title'",
+        "class: 'tag', text: 'must include'",
+        "class: 'cand-time tc'",
+        "class: 'cand-id'",
+        "multi ? h('span', { class: 'cand-src' }",
+        "sourceStrip(c),",
+        "class: 'cand-foot'",
+        "class: 'cand-text'",
+        "badge)",
+        "'data-act': 'toggle'",
+    ]
+    at = [card.index(s) for s in order]
+    assert at == sorted(at), order
+    top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-time tc'")]
+    assert "prepBadge" not in top and "'data-act': 'toggle'" not in top
+    assert (
+        "h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' })"
+        in card
+    )
+    assert (
+        "'data-act': 'focus'" in render
+        and "'aria-current': c.id === S.focus ? 'true' : null" in render
+    )
+    assert re.search(r"^\.cand > \* \{ grid-area: 1 / 1; \}", css, re.M)
+    assert re.search(r"^\.cand > \.btn \{ justify-self: end;", css, re.M)
+    assert re.search(r"^\.cand-top \{[^}]*padding-right: 5em;", css, re.M)
+
+
+def _filter_moments(tmp: Path, moments: list[dict], q: str, f: dict) -> list[str]:
+    """Run util.js's momentMatches under node (as _sort_positions); ``f`` over NO_FILTERS."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    mod = tmp / "util.mjs"
+    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
+    url = mod.resolve().as_uri()
+    script = (
+        f"import {{ momentMatches, NO_FILTERS, filtersOn }} from {json.dumps(url)};"
+        "const [m, q, f] = JSON.parse(process.argv[1]);"
+        "const all = { ...NO_FILTERS, ...f };"
+        "console.log(JSON.stringify([m.filter((c) => momentMatches(c, q, all)).map((c) => c.id), filtersOn(all)]));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, json.dumps([moments, q, f])],
+        capture_output=True, text=True, check=True, timeout=30,
+    )  # fmt: skip
+    ids, on = json.loads(out.stdout)
+    assert on == any(
+        f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "must", "source")
+    )
+    return ids
+
+
+def test_moment_filters_combine_with_the_search_text(tmp_path: Path) -> None:
+    """Sort and filter: every quick filter and the search text must all hold; the search matches
+    label, transcript or file name, case ignored; no filter shows every moment."""
+    ms = [
+        {"id": "a", "cli_id": "h001", "label": "Jump", "transcript": "nice one", "source": "/v/a.mp4", "picked": True, "ready": True, "must_include": True},
+        {"id": "b", "label": "Crash", "transcript": None, "source": "/v/b.mp4", "picked": False, "ready": True},
+        {"id": "c", "label": "jump two", "source": "/v/b.mp4", "picked": False, "ready": False, "must_include": True},
+    ]  # fmt: skip
+
+    def run(q: str, f: dict) -> list[str]:
+        return _filter_moments(tmp_path, ms, q, f)
+
+    assert run("", {}) == ["a", "b", "c"]
+    assert run("  JUMP ", {}) == ["a", "c"]
+    assert run("NICE", {}) == ["a"] and run("b.mp4", {}) == ["b", "c"]
+    assert run("H001", {}) == ["a"]  # the CLI id on the card (#487)
+    assert run("", {"seq": "in"}) == ["a"] and run("", {"seq": "out"}) == ["b", "c"]
+    assert run("", {"ready": True}) == ["a", "b"] and run("", {"must": True}) == ["a", "c"]
+    assert run("", {"source": "/v/b.mp4"}) == ["b", "c"]
+    assert run("jump", {"seq": "out", "must": True}) == ["c"]
+    assert run("jump", {"ready": True, "source": "/v/b.mp4"}) == []
 
 
 def test_moment_order_is_remembered_safely_and_sorts_after_filtering() -> None:
