@@ -41,6 +41,7 @@ class FakeProvider:
     name = "fake"
     model = "fake-model"
     local = True
+    host = "localhost"
     context_tokens = 8192
 
     def __init__(self, script: list[Any], caps: Capabilities = TOOLS_AND_JSON) -> None:
@@ -243,7 +244,8 @@ def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
     pulled, so every turn failed."""
     asked: list[str] = []
 
-    def get(url, timeout):
+    def get(url, timeout, allow_redirects=True):
+        assert allow_redirects is False  # a redirect is reported, never followed
         asked.append(url)
         return _Resp({"models": [{"name": n} for n in tags or []]})
 
@@ -264,7 +266,7 @@ def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
             {"model": "llama3.1:8b", "url": "box:11434", "context_tokens": 16384},
             ("http://box:11434", "llama3.1:8b", 16384),
         ),
-        ({"provider": "anthropic"}, "assistant.provider is 'anthropic'"),
+        ({"provider": "gemini"}, "assistant.provider is 'gemini'"),
         ({"context_tokens": 512}, "assistant.context_tokens is 512"),
         ({"consent": "ollama"}, "assistant.consent must be a list"),
     ],

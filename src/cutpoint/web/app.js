@@ -85,7 +85,8 @@ const S = {
   // AI Chat (#346): the change previewed in the Sequence tab, the moments list and the rail until Apply
   // or Discard: {id, summary, after, diff, base_key, seqKey}; seqKey: the sequence it was made on (baseOf its diff)
   proposal: null,
-  chat: null, // {pid, provider, turns: [{id, user, status, error, events}], error}: the open project's chat
+  chat: null, // {pid, provider, consent, turns: [{id, user, status, error, events}], error}: the open project's chat
+  ai: null, // the assistant settings Settings shows (GET /api/settings' assistant); never a key
   turn: null, // {id, next}: the turn being polled
   sending: false,
   applying: false,
@@ -2796,7 +2797,9 @@ function assembleOptions() {
 const CHAT_POLL_MS = 1000;
 const MAX_SUGGESTIONS = 3; // suggestion buttons under a proposal
 const MAX_HISTORY_SHOWN = 20; // newest applied changes listed for Revert
-const PROVIDER_NAMES = { ollama: 'Ollama' };
+const PROVIDER_NAMES = { ollama: 'Ollama', openai: 'OpenAI-compatible', anthropic: 'Anthropic' };
+// What a hosted provider gets (context.py sends only these; file names, never paths)
+const CONSENT_SENDS = "this project's moment labels, transcript snippets, file names (not full paths) and times, and your messages";
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
@@ -2824,7 +2827,7 @@ async function loadAssistant() {
   const pid = S.id;
   clearTimeout(S.chatTimer);
   S.turn = null;
-  const chat = S.chat = pid ? { pid, provider: null, turns: [], error: '', loaded: false } : null;
+  const chat = S.chat = pid ? { pid, provider: null, consent: null, turns: [], error: '', loaded: false } : null;
   S.history = [];
   chatError('');
   renderChat();
@@ -2833,6 +2836,7 @@ async function loadAssistant() {
     const [a, hist] = await Promise.all([api(aiUrl()), api(aiUrl('/history'))]);
     if (S.chat !== chat) return; // another project opened meanwhile
     chat.provider = a.provider;
+    chat.consent = a.consent ?? null;
     chat.turns = (a.turns ?? []).map(chatTurn);
     S.history = hist.applied ?? [];
     const run = a.running?.[0];
@@ -3210,7 +3214,7 @@ function historyRow(entry) {
 }
 
 function renderChatForm() {
-  const ready = !!S.chat?.loaded && !!S.project?.highlights;
+  const ready = !!S.chat?.loaded && !!S.project?.highlights && !S.chat.consent?.needed && !S.chat.consent?.missing_key;
   const send = $('#chatSend');
   const had = document.activeElement;
   $('#chatInput').disabled = !ready;
@@ -3222,11 +3226,21 @@ function renderChat() {
   const c = S.chat;
   const prov = c?.provider;
   $('#chatProvider').textContent = !c ? ''
-    : prov ? `${prov.label} (${PROVIDER_NAMES[prov.name] ?? prov.name})`
+    : prov ? prov.label // "Anthropic · claude-sonnet-5-5 · api.anthropic.com"
       : c.error ? `Unavailable: ${c.error}` : 'Connecting…';
   const note = $('#chatNote');
   note.hidden = !prov?.local;
   note.textContent = prov?.local ? SMALL_MODEL_NOTE : '';
+  // A missing key comes first: no agreeing to send to a provider that cannot be asked yet.
+  const noKey = c?.consent?.missing_key || '';
+  const consent = !noKey && c?.consent?.needed ? c.consent : null;
+  $('#chatConsent').hidden = !consent && !noKey;
+  $('#chatConsentTitle').textContent = noKey ? 'API key needed' : 'Send project data to a hosted model?';
+  $('#chatConsentOk').hidden = !consent;
+  $('#chatConsentText').textContent = noKey ? `${noKey}.`
+    : consent
+    ? `Each message sends ${CONSENT_SENDS} to ${PROVIDER_NAMES[prov?.name] ?? prov?.name ?? 'the provider'} at ${consent.host}. Nothing is sent until you agree. You agree once for this provider and host; Cutpoint saves it in config.json. Change the provider in Settings.`
+    : '';
   $('#chatClear').disabled = !c?.turns.length;
   const log = $('#chatLog');
   const items = c ? c.turns.flatMap(turnItems) : [];
@@ -3245,6 +3259,25 @@ function renderChat() {
   renderChatForm();
 }
 
+/** Agree once to send project data to the hosted provider in use; the server checks it is still the one shown. */
+async function giveConsent() {
+  const chat = S.chat;
+  const key = chat?.consent?.key;
+  if (!key) return;
+  chatError('');
+  try {
+    const r = await api('/api/assistant/consent', { method: 'POST', body: { key } });
+    if (S.chat !== chat) return;
+    chat.consent = r.consent;
+  } catch (e) {
+    if (S.chat !== chat) return;
+    if (e.status === 409) await loadAssistant(); // the provider changed: show the one in use
+    return chatError(e.message);
+  }
+  renderChat();
+  if (!chat.consent?.needed) $('#chatInput').focus(); // the button is gone
+}
+
 function bindAssistant() {
   $('#chatForm').addEventListener('submit', sendChat);
   $('#chatInput').addEventListener('keydown', (e) => {
@@ -3254,6 +3287,7 @@ function bindAssistant() {
     }
   });
   $('#chatClear').addEventListener('click', clearChat);
+  $('#chatConsentOk').addEventListener('click', giveConsent);
   $('#propApply').addEventListener('click', applyProposal);
   $('#propDiscard').addEventListener('click', discardProposal);
 }
@@ -3327,7 +3361,7 @@ async function openSettings() {
   const d = $('#settingsDialog');
   const input = $('#setProjects');
   const box = $('#setVision');
-  $('#settingsError').textContent = '';
+  $('#settingsError').textContent = $('#settingsNote').textContent = '';
   let st;
   try {
     st = await api('/api/settings');
@@ -3344,6 +3378,7 @@ async function openSettings() {
   box.checked = st.vision === true;
   box.dataset.saved = String(box.checked);
   $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
+  fillAiSettings(st.assistant);
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
   S.themeWas = $('#setTheme').value = theme();
@@ -3356,17 +3391,21 @@ async function saveSettings() {
   const input = $('#setProjects');
   const box = $('#setVision');
   const err = $('#settingsError');
+  const note = $('#settingsNote'); // progress and remarks; err is for what went wrong
   const value = input.value.trim();
-  err.textContent = '';
+  err.textContent = note.textContent = '';
   const body = {};
   if (!input.readOnly) {
     if (!value) return (err.textContent = 'Enter the full path of a folder.');
     if (value !== input.dataset.saved) body.projects_dir = value;
   }
   if (String(box.checked) !== box.dataset.saved) body.vision = box.checked;
+  const ai = aiChanges();
+  if (ai) body.assistant = ai;
   if (!Object.keys(body).length) return $('#settingsDialog').close();
   if (body.projects_dir && dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
   $('#settingsSave').disabled = true;
+  if (ai) note.textContent = 'Saving, and checking that the assistant can answer…';
   let st;
   try {
     st = await api('/api/settings', { method: 'PUT', body });
@@ -3375,9 +3414,25 @@ async function saveSettings() {
     return;
   } finally {
     $('#settingsSave').disabled = false;
+    note.textContent = '';
   }
+  err.textContent = '';
   input.value = input.dataset.saved = st.projects_dir;
   box.dataset.saved = String(st.vision === true);
+  if (ai) {
+    fillAiSettings(st.assistant);
+    if (S.id && !body.projects_dir) loadAssistant(); // the chat names the provider in use
+    if (st.assistant_check && !body.projects_dir) {
+      // saved, but it cannot answer yet: say why here, where it can be fixed
+      err.textContent = `Saved. The assistant can't answer yet: ${st.assistant_check}`;
+      return;
+    }
+    if (st.assistant_note && !body.projects_dir) {
+      // reached, but the key was not proven (a host that lists its models without one)
+      note.textContent = `Saved. ${st.assistant_note}`; // a success: neutral, not the error line
+      return;
+    }
+  }
   $('#settingsDialog').close();
   if (!body.projects_dir) return;
   // A project of the same id in the new folder is another project: start afresh either way.
@@ -3391,6 +3446,102 @@ async function saveSettings() {
   } catch (e) {
     fail(e);
   }
+}
+
+// The AI assistant's provider (#346). The page never gets an API key: only where each comes from.
+const KEY_WHERE = { env: 'set (env)', keyring: 'set (keyring)' };
+const AI_HINTS = {
+  ollama: 'Runs with Ollama (the default). On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
+  openai: 'OpenAI, or a server that speaks its API (LM Studio, vLLM, llama-server). A server on this machine needs no key; a hosted one asks once before it gets project data.',
+  anthropic: "Claude through Anthropic's API, with your API key. It asks once before it gets project data.",
+};
+const AI_MODEL_HINTS = {
+  ollama: 'Empty: qwen3.5:9b when Ollama has it, else the vision model.',
+  openai: "Empty: the server's model, when it serves only one. OpenAI needs a model name.",
+  anthropic: 'Empty: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
+};
+
+/** Fill the AI assistant fields from the settings' assistant view. */
+function fillAiSettings(a) {
+  if (!a) return;
+  S.ai = a;
+  const sel = $('#setAiProvider');
+  sel.replaceChildren(...a.providers.map((p) => h('option', { value: p.name, text: p.title })));
+  sel.value = sel.dataset.saved = a.provider;
+  $('#setAiModel').value = $('#setAiModel').dataset.saved = a.model;
+  $('#setAiUrl').value = $('#setAiUrl').dataset.saved = a.url;
+  $('#setAiKeyInput').value = '';
+  renderAiFields();
+}
+
+const aiOffer = () => S.ai?.providers.find((p) => p.name === $('#setAiProvider').value);
+
+/** The hints, defaults and key status of the provider chosen in the select. */
+function renderAiFields() {
+  const p = aiOffer();
+  if (!p) return;
+  $('#setAiProviderHint').textContent = AI_HINTS[p.name] ?? '';
+  $('#setAiModel').placeholder = p.default_model;
+  $('#setAiModels').replaceChildren(...p.models.map((m) => h('option', { value: m })));
+  $('#setAiModelHint').textContent = AI_MODEL_HINTS[p.name] ?? '';
+  $('#setAiUrl').placeholder = p.default_url;
+  $('#setAiUrlHint').textContent = `Empty: ${p.default_url || 'the default'}.${p.name === 'openai' ? ' A bare host gets /v1.' : ''}`;
+  const keyed = p.key_env.length > 0;
+  $('#setAiKey').hidden = !keyed;
+  if (!keyed) return;
+  const where = S.ai.keys[p.name];
+  const host = S.ai.key_hosts?.[p.name] ?? '';
+  // The key and its status are for the saved provider and base URL: save those first.
+  const ai = aiChanges();
+  const unsaved = !!ai && (ai.provider !== $('#setAiProvider').dataset.saved || ai.url !== $('#setAiUrl').dataset.saved);
+  $('#setAiKeyStatus').textContent = unsaved
+    ? 'API key: save the settings first to see or set the key for this base URL.'
+    : `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
+  $('#setAiKeyRow').hidden = !S.ai.keyring;
+  $('#setAiKeySave').disabled = $('#setAiKeyClear').disabled = unsaved;
+  $('#setAiKeyHint').textContent = unsaved
+    ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
+    : `Read from ${p.key_env.join(' or ')} when cutpoint ui starts, else from the system keyring${S.ai.keyring ? '' : ' (install the keyring extra to save a key here)'}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.${where === 'env' && !unsaved ? ' The environment variable is used before a saved key.' : ''}`;
+}
+
+/** The provider, model and base URL when any differs from what config.json has, else null. */
+function aiChanges() {
+  if (!S.ai) return null;
+  const sel = $('#setAiProvider');
+  const model = $('#setAiModel');
+  const url = $('#setAiUrl');
+  const now = { provider: sel.value, model: model.value.trim(), url: url.value.trim() };
+  const was = { provider: sel.dataset.saved, model: model.dataset.saved, url: url.dataset.saved };
+  return Object.keys(now).some((k) => now[k] !== was[k]) ? now : null;
+}
+
+/** Save the typed key in the system keyring, or remove the saved one; the field is emptied either way. */
+async function saveAiKey(clear) {
+  const p = aiOffer();
+  const input = $('#setAiKeyInput');
+  const err = $('#settingsError');
+  err.textContent = '';
+  const key = input.value.trim();
+  if (!p) return;
+  if (!clear && !key) {
+    err.textContent = 'Paste the API key first.';
+    return input.focus();
+  }
+  input.value = '';
+  try {
+    const r = await api(clear ? '/api/assistant/key/clear' : '/api/assistant/key',
+      { method: 'POST', body: clear ? { provider: p.name } : { provider: p.name, key } });
+    S.ai.keys = r.keys;
+    S.ai.key_hosts = r.key_hosts;
+  } catch (e) {
+    err.textContent = e.message;
+    return;
+  }
+  renderAiFields();
+  $('#setAiKeyStatus').textContent += clear
+    ? '. Removed from the keyring.'
+    : '. Saved in the system keyring; it is checked when you send the first message.';
+  if (S.id) loadAssistant();
 }
 
 /** Turn Stats for Nerds on or off: store it in this browser, show or hide the overlay and tick the box to match. */
@@ -3458,6 +3609,23 @@ function bindSettings() {
   $('#settingsForm').addEventListener('submit', (e) => {
     e.preventDefault();
     if (!$('#settingsSave').hidden) saveSettings();
+  });
+  d.addEventListener('close', () => { $('#setAiKeyInput').value = ''; });
+  $('#setAiProvider').addEventListener('change', (e) => {
+    // model names and base URLs belong to one provider: back to the saved ones, else the defaults
+    const back = e.target.value === e.target.dataset.saved;
+    $('#setAiModel').value = back ? $('#setAiModel').dataset.saved : '';
+    $('#setAiUrl').value = back ? $('#setAiUrl').dataset.saved : '';
+    renderAiFields();
+  });
+  $('#setAiUrl').addEventListener('input', renderAiFields); // the key is for the saved base URL's host
+  $('#setAiKeySave').addEventListener('click', () => saveAiKey(false));
+  $('#setAiKeyClear').addEventListener('click', () => saveAiKey(true));
+  $('#setAiKeyInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault(); // saves the key, not the dialog
+      saveAiKey(false);
+    }
   });
   $('#setProjectsPick').addEventListener('click', async () => {
     const input = $('#setProjects');

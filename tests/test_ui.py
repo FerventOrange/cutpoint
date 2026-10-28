@@ -6051,7 +6051,12 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
     assert [b for b in buttons if 'type="submit"' in b] == [
         '<button type="submit" id="chatSend" class="btn primary" disabled>Send</button>'
     ]
-    assert len(buttons) == 2  # Clear chat and Send; no mic, no attach
+    # Clear chat, the hosted-provider consent (#346) and Send; no mic, no attach
+    assert [re.search(r'id="(\w+)"', b)[1] for b in buttons] == [
+        "chatClear",
+        "chatConsentOk",
+        "chatSend",
+    ]
     assert not re.search(r"\b(mic|microphone|attach|voice)\b", panel, re.I)
     fields = re.findall(r"<(?:input|textarea)\b[^>]*>", panel)
     assert len(fields) == 1 and 'id="chatInput"' in fields[0]
@@ -6062,7 +6067,8 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
     assert live in side and side.index(live) < side.index('<div id="panelSequence"')
     chat = _chat_js()
     assert "$('#chatLive').textContent = turnNews(t)" in chat
-    assert "PROVIDER_NAMES[prov.name]" in chat and "prov?.local" in chat  # the small-model note
+    # the header is the provider's label (name, model, host); the small-model note
+    assert "prov ? prov.label" in chat and "prov?.local" in chat
 
 
 def test_model_text_is_never_set_as_markup() -> None:

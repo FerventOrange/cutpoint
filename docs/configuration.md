@@ -174,16 +174,46 @@ How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at 
 
 Settings for the `cutpoint ui` [AI Chat tab](commands.md#ai-chat), served by the UI's API
 (`/api/projects/{id}/assistant`, token header only). It writes `ui/assistant/chat.json` and
-`history.json` in the project. There is no API key setting.
+`history.json` in the project. Settings > AI assistant changes `provider`, `model` and `url`.
+There is no API key setting (see below).
 
-- `provider`: `ollama` (default, the only one).
-- `model`: Ollama model name. Empty (default) is auto: `qwen3.5:9b` if Ollama has it pulled, else
-  the vision model (`CUTPOINT_VISION_MODEL`, default `qwen3-vl:8b`).
-- `url`: Ollama base URL. Empty (default) uses `ollama_url`.
-- `context_tokens`: the model's context size, a whole number of at least 2048 (default 8192).
-- `consent`: list of provider names the user agreed to send project text to (default none).
+- `provider`: `ollama` (default), `openai` (OpenAI or a server that speaks its API: LM Studio,
+  vLLM, llama-server) or `anthropic`.
+- `model`: the model name. Empty (default): for Ollama `qwen3.5:9b` if it is pulled, else the
+  vision model (`CUTPOINT_VISION_MODEL`, default `qwen3-vl:8b`); for Anthropic
+  `claude-sonnet-5-5` (`claude-opus-5-5` is stronger, slower and costs more); for an
+  OpenAI-compatible server its only model (`/v1/models`); OpenAI itself needs a name.
+- `url`: the base URL. Empty (default): `ollama_url`, `https://api.openai.com/v1` or
+  `https://api.anthropic.com`. An OpenAI-compatible URL with no path gets `/v1`
+  (`http://localhost:1234` is `http://localhost:1234/v1`). A URL with a backslash, a user name or
+  password (`https://name@host`), or a host that reads differently to different URL parsers is
+  refused, and redirects are not followed (by Ollama either) (set the
+  address the server redirects to instead).
+- `context_tokens`: the model's context size, a whole number of at least 2048. Default 8192 for a
+  model on this machine (and any Ollama), 32768 for a hosted one; more lets the model see more
+  moments and turns.
+- `consent`: the hosted providers the user agreed to send project text to, as
+  `<provider>@<host>` (for example `anthropic@api.anthropic.com`); the AI Chat tab adds them.
+  Remove an entry to be asked again. A provider is local when its host is `localhost` or a
+  loopback address; any other host, a LAN address too, is hosted.
 
 Other values are rejected.
+
+API keys are never read from or written to `config.json`. A key belongs to a provider and the
+host of its base URL. It is taken, in order, from:
+
+| Source | Used for |
+|---|---|
+| `CUTPOINT_ASSISTANT_API_KEY` | any provider and any host (for example a key that only Cutpoint uses, or an OpenRouter key) |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine |
+| The system keyring (service `cutpoint`) | saved from Settings for the provider and base URL saved there, with the optional `keyring` extra (`uv sync --extra keyring`, or `uv tool install "cutpoint[ui,keyring]"`). The user is `anthropic` or `openai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
+
+Change the provider or base URL, save the settings, then save the key for it. The key is sent
+only to the host it belongs to, in a request header, and only over `https://` unless the server
+is on this machine (a key with an `http://` base URL on another machine is refused). `cutpoint
+ui` takes these variables out of its own environment when it starts, so jobs, ffmpeg and file
+dialogs never see them; they are also redacted from log lines and error messages. An
+OpenAI-compatible server on this machine needs no key. Ollama takes none.
 
 ### pano
 

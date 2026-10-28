@@ -176,6 +176,12 @@
           <button type="button" id="chatClear" class="btn small" aria-haspopup="dialog" disabled>Clear chat</button>
         </div>
         <p id="chatNote" class="hint" hidden></p>
+        <!-- A hosted provider (#346): nothing is sent until the user agrees once for it -->
+        <div id="chatConsent" class="chat-consent" role="group" aria-labelledby="chatConsentTitle" hidden>
+          <h3 id="chatConsentTitle">Send project data to a hosted model?</h3>
+          <p id="chatConsentText"></p>
+          <button type="button" id="chatConsentOk" class="btn primary small">Agree and continue</button>
+        </div>
         <ol id="chatLog" class="chat-log" aria-labelledby="chatTitle"></ol>
         <p id="chatError" class="error" role="alert"></p>
         <details id="chatHistory" class="chat-history" hidden>
@@ -366,6 +372,33 @@
         <label class="check"><input type="checkbox" id="setVision" aria-describedby="setVisionHint"> Rate frames with a local vision model (Ollama)</label>
         <p id="setVisionHint" class="hint"></p>
       </fieldset>
+      <!-- AI Chat provider (#346): saved in config.json; an API key never is, and the page never sees one -->
+      <fieldset class="panel" id="setAssistant">
+        <legend>AI assistant</legend>
+        <label class="field">Provider
+          <select id="setAiProvider" aria-describedby="setAiProviderHint"></select>
+        </label>
+        <p id="setAiProviderHint" class="hint"></p>
+        <label class="field">Model
+          <input id="setAiModel" list="setAiModels" autocomplete="off" spellcheck="false" aria-describedby="setAiModelHint">
+        </label>
+        <datalist id="setAiModels"></datalist>
+        <p id="setAiModelHint" class="hint"></p>
+        <label class="field">Base URL
+          <input id="setAiUrl" inputmode="url" autocomplete="off" spellcheck="false" aria-describedby="setAiUrlHint">
+        </label>
+        <p id="setAiUrlHint" class="hint"></p>
+        <div id="setAiKey" class="field" hidden>
+          <p id="setAiKeyStatus" role="status"></p>
+          <span id="setAiKeyRow" class="row wrap" hidden>
+            <label for="setAiKeyInput" class="vh">API key to save in the system keyring</label>
+            <input id="setAiKeyInput" type="password" autocomplete="off" spellcheck="false" aria-describedby="setAiKeyHint">
+            <button type="button" class="btn" id="setAiKeySave">Save key</button>
+            <button type="button" class="btn" id="setAiKeyClear">Clear key</button>
+          </span>
+          <p id="setAiKeyHint" class="hint"></p>
+        </div>
+      </fieldset>
       <fieldset class="panel">
         <legend>Preview</legend>
         <label class="check"><input type="checkbox" id="setNerdStats" aria-describedby="setNerdStatsHint"> Stats for Nerds</label>
@@ -382,6 +415,7 @@
         </label>
         <p id="setThemeHint" class="hint">Blue by default. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
+      <p id="settingsNote" class="hint" role="status"></p>
       <p id="settingsError" class="error" role="alert"></p>
       <div class="dialog-actions">
         <button type="button" class="btn" id="settingsCancel">Cancel</button>

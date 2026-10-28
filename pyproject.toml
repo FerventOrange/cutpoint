@@ -20,6 +20,7 @@ dependencies = [
     "numpy>=2.5.4,<3",
     "OpenTimelineIO>=0.18.1",
     "requests>=2.34.2",
+    "urllib3>=1.26",  # already requests'; the assistant parses URLs as requests does
 ]
 
 [project.optional-dependencies]
@@ -54,7 +55,10 @@ events = [
 ]
 # `cutpoint ui`: local browser workspace for the standard-video highlight workflow.
 ui = ["fastapi>=0.116", "uvicorn>=0.30"]
-all = ["cutpoint[ski,events,gpu,ui]"]
+# `cutpoint ui`: save an AI Chat API key in the system keyring from Settings (about 170 KB on
+# Windows and macOS; Linux adds SecretStorage, jeepney and cryptography, about 5 MB).
+keyring = ["keyring>=25"]
+all = ["cutpoint[ski,events,gpu,ui,keyring]"]
 
 [dependency-groups]
 # Installed by default by `uv sync` / `uv run`; not part of the published wheel.
