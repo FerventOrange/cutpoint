@@ -644,7 +644,8 @@ def evaluate(
     def overlap(src: str, a: float, b: float) -> float:
         return sum(max(0.0, min(b, pb) - max(a, pa)) for s, pa, pb in pos if s == src)
 
-    ov = sum(overlap(path_key(s), a, b) for _, s, a, b, _ in chosen)
+    chosen_k = [(path_key(cs), ca, cb) for _, cs, ca, cb, _ in chosen]
+    ov = sum(overlap(ck, a, b) for ck, a, b in chosen_k)
     shots = [
         s
         for s in result["shots"]
@@ -653,10 +654,8 @@ def evaluate(
     hit_ids: set[int] = set()
     for s in shots:  # a shot counts once, whichever of its pieces is hit
         a, b = sorted((s["src_start"], s["src_end"]))
-        if any(
-            path_key(cs) == path_key(s["source"]) and min(b, cb) > max(a, ca)
-            for _, cs, ca, cb, _ in chosen
-        ):
+        sk = path_key(s["source"])
+        if any(ck == sk and min(b, cb) > max(a, ca) for ck, ca, cb in chosen_k):
             hit_ids.add(s["shot"])
     hit = len(hit_ids)
     shots = list({s["shot"]: s for s in shots}.values())
