@@ -63,13 +63,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projects (the project view's new `gaming`); a grade picked there is still sent. The jobs API
   refuses an unknown `color`, a `color_strength` outside 0-1 or without a grade, and `color`
   with `lut` (#461).
-- `cutpoint ui`: the Moments list has a sort order next to the filter: Score (the default) or
+- `cutpoint ui`: the Moments list has a sort order, in the Sort and filter menu below: Score (the default) or
   Position in video, which sorts by source name (natural order, so `clip2` comes before `clip10`)
   and then start time. The rank badge on each card keeps its score rank in either order. The
   choice is remembered per browser (#469).
 - `cutpoint ui`: each moment card shows its candidate id from `highlights.json` (`h001`), the id
   that Candidate ids in the Export tab and `clips --ids` take, and the moments filter matches it
   (#487).
+- `cutpoint ui`: the Moments list's search field has a funnel button beside it that opens Sort and
+  filter: the sort order and quick filters (In sequence, Not in sequence or All; Ready only; Must
+  include; a source file when the project has several). They combine with the search text, a dot
+  on the button shows while a filter or a sort other than Score is on, and with nothing left the
+  list reads "No moments match these filters." The sort and filters are remembered per browser,
+  the source file only while the project is open.
 
 - `cutpoint ui` Export tab: "Clips to Export" exports the sequence (default) or automatic picks
   (Top moments, Max total, Candidate ids, Order), and "Cut Timing" sets the speech, tail, event
@@ -84,6 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint ui`: tighter moment cards: Add/Remove sits top right beside the rank and title, then
+  the candidate id and the times ("h001 0:00.00 to 0:07.70 · 7.7 s"), the file name on its own line only when the project
+  has several sources, the strip and the transcript, with the preview readiness at the bottom
+  right.
 - `cutpoint ui`: Smart edges is split into Speech-aware cuts and Smart tails (both on by
   default; a saved Smart edges choice carries over to both). "Analyze again" keeps a recorded
   `--recover`.

@@ -42,17 +42,36 @@
       <p id="analyzeStepsStatus" class="vh" role="status"></p>
       <div class="filter-row" id="filterWrap" hidden>
         <label class="filter">
-          <span class="vh">Filter moments by label, transcript or candidate id</span>
-          <input id="filter" type="search" placeholder="Filter by label or words spoken" autocomplete="off">
+          <span class="vh">Search moments by label, words, file or candidate id</span>
+          <input id="filter" type="search" placeholder="Search label, words, file or id" autocomplete="off">
         </label>
-        <!-- Moment order (#469); the rank badge keeps the score rank in either order -->
-        <label class="order">
-          <span class="vh">Sort moments by</span>
-          <select id="momentOrder">
-            <option value="score">Score</option>
-            <option value="position">Position in video</option>
-          </select>
-        </label>
+        <!-- Sort and filter: the moment order (#469; the rank badge keeps the score rank in either order)
+             and quick filters, in a disclosure under the funnel; the dot shows while any of them is not the default -->
+        <div class="filter-menu">
+          <button type="button" id="filterBtn" class="btn icon-btn" aria-expanded="false" aria-controls="filterPop" aria-label="Sort and filter moments" title="Sort and filter"><span class="filter-dot" aria-hidden="true"></span></button>
+          <div id="filterPop" class="filter-pop" role="group" aria-label="Sort and filter moments" tabindex="-1" hidden>
+            <fieldset class="filter-set">
+              <legend>Sort by</legend>
+              <label class="check"><input type="radio" name="momentOrder" value="score" checked> Score</label>
+              <label class="check"><input type="radio" name="momentOrder" value="position"> Position in video</label>
+            </fieldset>
+            <fieldset class="filter-set">
+              <legend>Sequence</legend>
+              <label class="check"><input type="radio" name="filterSeq" value="all" checked> All</label>
+              <label class="check"><input type="radio" name="filterSeq" value="in"> In sequence</label>
+              <label class="check"><input type="radio" name="filterSeq" value="out"> Not in sequence</label>
+            </fieldset>
+            <fieldset class="filter-set">
+              <legend>Show only</legend>
+              <label class="check"><input type="checkbox" id="filterReady"> Ready only</label>
+              <label class="check"><input type="checkbox" id="filterMust"> Must include</label>
+              <label class="field" id="filterSourceWrap" hidden>Source file
+                <select id="filterSource"><option value="">All files</option></select>
+              </label>
+            </fieldset>
+            <button type="button" id="filterClear" class="btn small">Clear filters</button>
+          </div>
+        </div>
         <p id="orderLive" class="vh" role="status"></p>
       </div>
       <div id="momentsEmpty" class="empty"></div>
