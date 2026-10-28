@@ -5363,6 +5363,53 @@ def _web(name: str) -> str:
     return (ui.WEB_DIR / name).read_text(encoding="utf-8")
 
 
+def test_stage_and_final_video_never_sound_together() -> None:
+    """Contract pin: the Export tab's final video plays on while its tab is hidden, so "Play
+    sequence" (or a moment) starting on the stage pauses it, and playing it stops the sequence
+    (or pauses the stage). Before, its audio ran on under every sequence clip."""
+    js = _web("app.js")
+    stage_play = re.search(r"onStage\('play', \(\) => \{(.*?)\n\}\);", js, re.S)[1]
+    assert "finalVideo.pause();" in stage_play
+    final_play = re.search(
+        r"finalVideo\.addEventListener\('play', \(\) => \{(.*?)\n\}\);", js, re.S
+    )
+    assert final_play and "if (S.seqPlay) seqStop();" in final_play[1]
+    # off the sequence it pauses the stage and cancels a resume at a window's end, which would
+    # start the stage again (and so pause the final video) once the next window loads
+    assert re.search(r"else \{\s*cancelResume\(\);[^\n]*\n\s*v\.pause\(\);", final_play[1])
+
+
+def test_a_hidden_side_tab_pauses_its_videos() -> None:
+    """Contract pin: leaving the Export tab pauses its final video, which would otherwise play
+    on unseen (a hidden element keeps playing)."""
+    js = _web("app.js")
+    body = js[js.index("function initSideTabs(") : js.index("function initMomentOrder(")]
+    assert "panel.hidden = !on;" in body
+    assert "if (!on) for (const vid of panel.querySelectorAll('video')) vid.pause();" in body
+    html = _web("index.html")
+    export = html[html.index('id="panelExport"') :]
+    assert '<video id="finalVideo"' in export  # the video this pauses lives in a tab panel
+
+
+def test_play_sequence_keeps_a_window_proxy_only_when_it_covers_the_whole_clip() -> None:
+    """Contract pin: during "Play sequence" the stage keeps its loaded window proxy for the next
+    clip of the same source only when the window plays all of it, as ``fileFor`` decides. A
+    window covering the clip's start alone was kept and sought, so the clip was cut short at
+    the window's end or the sequence stalled waiting for a file that never loaded."""
+    js = _web("app.js")
+    # a file of the clip's own source: a window of another source whose times hold the clip
+    # played that source's picture and sound as the clip
+    holds = re.search(r"const holdsClip = \(c\) => \{(.*?)\n\};", js, re.S)[1]
+    assert "ofSource(src)" in holds and "coversSeg(r, c, sourceDur(c.source))" in holds
+    body = js[js.index("function stageVideo(") : js.index("/** Stop a video element")]
+    keep = "const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(c));"
+    assert keep in body
+    assert "if (fits && (keep || p))" in body and "if (!keep) loadFile(src, p, at);" in body
+    playing_on = re.search(r"const playingOn = ([^;]*);", body)[1]
+    assert "ofSource(src)" in playing_on
+    assert playing_on.endswith("&& (!S.seqPlay || holdsClip(c))")
+
+
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     """Contract pin (#462, #346): the column has a Sequence, an AI Chat and an Export tab, each
     controlling a labelled tabpanel; only the selected tab is in the tab order (roving
