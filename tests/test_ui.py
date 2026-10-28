@@ -5684,6 +5684,32 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
 
 
+def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
+    """Contract pin: the tab band spans the whole column (bleeding over its padding) and its tabs
+    are equal grid columns with no gap or side padding, so at any width the splitter sets they
+    fill it evenly; a label too long for its tab ends in an ellipsis (its text, the tab's name for
+    screen readers, stays whole). Before, the tabs were as wide as their labels, at the left.
+
+    Check in a browser (no browser in the test suite): at the narrowest, default and widest
+    column, the three tabs are equally wide within 1 px and together as wide as the band."""
+    css = _web("app.css")
+    band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
+    assert "display: grid;" in band and "grid-auto-flow: column;" in band
+    assert "grid-auto-columns: minmax(0, 1fr);" in band  # equal, for any number of tabs
+    assert "margin: -12px -14px 0;" in band  # the .col padding: edge to edge
+    assert "gap" not in band and "padding" not in band
+    tab = re.search(r"^\.side-tab \{([^}]*)\}", css, re.M)[1]
+    for decl in ("min-width: 0;", "overflow: hidden;", "white-space: nowrap;",
+                 "text-overflow: ellipsis;"):  # fmt: skip
+        assert decl in tab
+    assert "flex" not in tab
+    html = _web("index.html")
+    (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
+    names = re.findall(r'<button\b[^>]*role="tab"[^>]*>([^<]+)</button>', tablist)
+    assert names == ["Sequence", "AI Chat", "Export"]  # the visible text is the accessible name
+    assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
+
+
 def test_export_panel_has_the_options_and_actions_and_no_single_padding_field() -> None:
     """Contract pin (#462): the Export tab holds every export and assembly option and the
     actions; the old single padding field (``#optExtend``) stays gone: padding is a start and an
@@ -5734,6 +5760,143 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
         text = re.search(rf'<span id="{described[1]}"[^>]*>(.+?)</span>', panel, re.S)
         assert text and len(text[1].strip()) > 20, f"{cid}: description missing or empty"
     assert seen == option_ids
+
+
+def test_export_tab_says_sequence_and_max_video_length() -> None:
+    """Contract pin (mock2): the first Clips to Export choice is "Sequence" (was "The sequence
+    (hand-picked)") and --max-total is "Max video length (s)" (was "Max total (s)"), the cap on
+    all clips together; its title and description say so."""
+    html = _web("index.html")
+    assert re.search(r'id="optPicksSeq"[^>]*> Sequence</label>', html)
+    assert "hand-picked" not in html and "Max total" not in html
+    label = re.search(r'<label for="optMaxTotal" title="([^"]*)">([^<]*)</label>', html)
+    assert label and label[2] == "Max video length (s)"
+    described = re.search(r'<span id="dMaxTotal" class="vh">([^<]*)</span>', html)[1]
+    for text in (label[1], described):
+        assert text.startswith("Caps the video's length: the clips' total in seconds")
+        assert "(--max-total)" in text
+
+
+ADVANCED_EXPORT = ("optTop", "optIds", "optSpeechExtend", "optSpeechLead", "optTailMin",
+                   "optTailMax", "optEventWindow", "optExtendStart", "optExtendEnd")  # fmt: skip
+
+
+def test_advanced_export_options_are_hidden_until_a_browser_setting_shows_them() -> None:
+    """Contract pin (mock2): Top moments, Candidate ids, the Cut Timing fields but Event tails,
+    the "Latest export" facts and Extend export carry ``adv`` and are hidden (display: none, so the
+    grids keep no gaps) unless Settings > "Show advanced export options" is ticked. Like Stats for
+    Nerds it is off by default and kept in this browser (``cutpoint.advancedExport`` = "1"); it
+    previews on change, and Cancel or Escape restores it.
+
+    Check in a browser (no browser in the test suite): advanced off, Cut Timing shows Event tails
+    alone and Clips to Export Max video length and Order; ticking the box shows the rest at once."""
+    html = _web("index.html")
+    js = _web("app.js")
+    css = _web("app.css")
+    for cid in ADVANCED_EXPORT:
+        assert re.search(rf'<label for="{cid}" class="adv"', html), cid
+        assert re.search(rf'<input type="\w+" id="{cid}" class="adv"', html), cid
+    for cid in ("optMaxTotal", "optOrder", "optEventTails"):  # stay visible
+        assert not re.search(rf'<label for="{cid}" class="adv"', html), cid
+    # only the "Latest export ..." facts are advanced: the 360 preview note and guidance such as
+    # "Add moments to the sequence" always show, and an empty line takes no room
+    assert '<p id="exportState" class="muted"></p>' in html
+    render = re.search(r"function renderExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "h('span', { class: 'adv', text: `Latest export (" in render
+    assert render.count("latest(") == 3 and "st.textContent" not in render
+    for shown in ("say(`${note} Automatic picks", "say(note)", "say('Add moments to the sequence",
+                  "say(` It differs from this sequence.${note} Export again"):  # fmt: skip
+        assert shown in render, shown
+    # no 360 note makes say() null: every branch drops it, so "null" is never rendered
+    assert "const show = (...parts) => st.replaceChildren(...parts.filter(Boolean));" in render
+    assert render.count("st.replaceChildren(") == 1
+    assert re.search(
+        r"^#panelExport:not\(\.show-adv\) #exportState:not\(:has\(span:not\(\.adv\)\)\), "
+        r"#exportState:empty \{ display: none; \}",
+        css,
+        re.M,
+    )
+    assert re.search(r'<button type="button" id="extendBtn" class="btn outline adv"', html)
+    assert 'id="revealExportBtn" class="btn outline"' in html  # Show Exports Folder stays
+    assert re.search(r"^#panelExport:not\(\.show-adv\) \.adv \{ display: none; \}", css, re.M)
+    settings = re.search(r'<dialog id="settingsDialog".*?</dialog>', html, re.S)[0]
+    assert re.search(
+        r'<label class="check"><input type="checkbox" id="setAdvExport"[^>]*> Show advanced export options</label>',
+        settings,
+    )
+    assert " checked" not in re.search(r'<input type="checkbox" id="setAdvExport"[^>]*>', html)[0]
+    assert "const ADV_KEY = 'cutpoint.advancedExport';" in js
+    assert "advExport: false," in js  # off unless the browser stored "1"
+    init = re.search(r"function initAdvExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "S.advExport = localStorage.getItem(ADV_KEY) === '1';" in init
+    assert "showAdvExport(S.advExport);" in init
+    show = re.search(r"function showAdvExport\(on\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "$('#panelExport').classList.toggle('show-adv', on);" in show
+    assert "S.advExportWas = S.advExport;" in js
+    # Cancel/Escape restore only a changed box: a field revealed for an out-of-range value stays
+    assert "if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);" in js
+    assert "initAdvExport();" in js
+
+
+def test_hidden_advanced_export_fields_still_send_their_values() -> None:
+    """Contract pin (mock2): hiding never changes an export. A job's fields are skipped only when
+    blank or disabled, never because they are hidden; a hidden field that a job sends is named
+    under the options ("Advanced options in use: ..."), and a hidden field out of its range shows
+    the advanced options so the browser can point at it."""
+    js = _web("app.js")
+    html = _web("index.html")
+    fields = re.search(r"function fields\(\.\.\.keys\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "if (el.disabled || !v) continue;" in fields
+    assert "adv" not in fields and "hidden" not in fields and "checkVisibility" not in fields
+    in_use = re.search(r"function renderAdvInUse\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "el.classList.contains('adv') && !el.disabled && el.value.trim()" in in_use
+    assert "Advanced options in use: ${used.join(', ')}" in in_use
+    assert '<p id="advInUse" class="hint" hidden></p>' in html
+    sync = re.search(r"function syncTiming\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert sync.rstrip().endswith("renderAdvInUse();")  # after every field and box change
+    valid = re.search(r"function validOptions\(body\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "if (bad?.classList.contains('adv')) showAdvExport(true);" in valid
+    assert valid.index("showAdvExport(true)") < valid.index("bad?.reportValidity();")
+
+
+def test_slider_tick_labels_sit_centred_under_their_stops() -> None:
+    """Contract pin (mock2): Compress Audio Peaks and Color are centred with equal margins
+    (--inset); their tick labels sit in a box inset by half the native thumb (--thumb) more, so
+    its ends and middle are the thumb's stops, and each label is centred on its stop. Color's
+    Strength slider spans the same width under its name and percentage.
+
+    Check in a browser (no browser in the test suite): Light and Auto are centred under the
+    middle stop within 1 px, None/Off and Max/Underwater under the end stops, in every theme."""
+    css = _web("app.css")
+    assert re.search(
+        r"^\.opts \.peaks, \.opts \.color \{ --inset: 24px; --thumb: 16px; \}", css, re.M
+    )
+    rng = re.search(
+        r"^\.peaks input\[type=range\], \.color input\[type=range\] \{([^}]*)\}", css, re.M
+    )[1]
+    assert "width: calc(100% - 2 * var(--inset));" in rng and "justify-self: center;" in rng
+    assert "margin: 0;" in rng
+    ticks = re.search(r"^\.peaks \.ticks, \.color \.ticks \{([^}]*)\}", css, re.M)[1]
+    assert "position: relative;" in ticks
+    assert "margin-inline: calc(var(--inset) + var(--thumb) / 2);" in ticks
+    assert "space-between" not in ticks
+    span = re.search(r"^\.ticks span \{([^}]*)\}", css, re.M)[1]
+    assert "position: absolute;" in span and "transform: translateX(-50%);" in span
+    for n, left in ((1, "0"), (2, "50%"), (3, "100%")):
+        assert f".ticks span:nth-child({n}) {{ left: {left}; }}" in css
+    strength = re.search(r"^\.color-strength \{([^}]*)\}", css, re.M)[1]
+    assert "margin: 6px var(--inset) 0;" in strength
+    assert re.search(
+        r"^\.color \.color-strength input\[type=range\] \{ grid-row: 2; grid-column: 1 / -1; width: 100%; \}",
+        css,
+        re.M,
+    )
+    html = _web("index.html")
+    for names in (["None", "Light", "Max"], ["Off", "Auto", "Underwater"]):
+        assert (
+            f'<div class="ticks" aria-hidden="true">{"".join(f"<span>{n}</span>" for n in names)}</div>'
+            in html
+        )
 
 
 def test_export_option_defaults_are_smart_edges_loudnorm_link_on_and_light_peaks() -> None:

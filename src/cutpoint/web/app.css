@@ -240,15 +240,18 @@ select { max-width: 100%; }
 .side { border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
 .side > * { flex: none; }
 .side .col-head { margin-bottom: 0; }
-/* the column's tabs (Sequence | Export): a band across the top like the moments header; the selected
-   tab is underlined in amber, the others muted */
+/* the column's tabs (Sequence | AI Chat | Export): a band across the top like the moments header; the
+   selected tab is underlined in amber, the others muted. The tabs share the column's full width
+   evenly at any width the splitter sets (equal grid columns, however many tabs); a label that does
+   not fit ends in an ellipsis, and its full text stays the tab's name for screen readers. */
 .side-tabs {
-  display: flex; gap: 4px; margin: -12px -14px 0; padding: 0 10px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); margin: -12px -14px 0;
   background: var(--slate); border-bottom: 1px solid var(--line);
 }
 .side-tab {
   font: inherit; font-weight: 650; color: var(--muted); background: none; cursor: pointer;
-  border: 0; border-bottom: 3px solid transparent; padding: 9px 12px 7px; min-height: 40px;
+  border: 0; border-bottom: 3px solid transparent; padding: 9px 6px 7px; min-height: 40px;
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .side-tab:hover { color: var(--text); }
 .side-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--amber-text); }
@@ -649,16 +652,31 @@ select { max-width: 100%; }
 .opts .picks legend, .opts .timing legend { font-weight: 550; font-size: 14.5px; }
 .opts .peaks, .opts .color { gap: 2px; margin-top: 6px; }
 .opts .peaks legend, .opts .color legend { font-weight: 550; font-size: 14.5px; }
-.peaks input[type=range], .color input[type=range] { width: 100%; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
-.peaks .ticks, .color .ticks { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
-/* Color's Strength: shown only with a grade, its percentage on the right */
-.color-strength { display: grid; grid-template-columns: auto minmax(0, 1fr) 3.2em; align-items: center; gap: 8px; margin-top: 6px; }
+/* The sliders sit centred with equal margins (--inset); a stop is at the track's ends and middle,
+   half a thumb (--thumb, the native thumb's width) in from each end of the input, and each tick
+   label is centred under its stop. The inset leaves room for half of "Underwater". */
+.opts .peaks, .opts .color { --inset: 24px; --thumb: 16px; }
+.peaks input[type=range], .color input[type=range] { width: calc(100% - 2 * var(--inset)); justify-self: center; margin: 0; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
+.peaks .ticks, .color .ticks { position: relative; height: 1.5em; margin-inline: calc(var(--inset) + var(--thumb) / 2); font-size: 12px; color: var(--muted); }
+.ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.ticks span:nth-child(1) { left: 0; }
+.ticks span:nth-child(2) { left: 50%; }
+.ticks span:nth-child(3) { left: 100%; }
+/* Color's Strength: shown only with a grade; its name and percentage over a slider as wide as Color's */
+.color-strength { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; margin: 6px var(--inset) 0; }
 .color-strength[hidden] { display: none; }
+.color .color-strength input[type=range] { grid-row: 2; grid-column: 1 / -1; width: 100%; }
 #colorStrengthOut { text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* Export clips and Assemble side by side, Show Exports Folder across under them */
 .export-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .export-acts .btn { min-height: 40px; }
 #extendBtn { grid-column: 1 / -1; }
+/* Settings > Show advanced export options off (the default): the .adv controls are hidden but keep
+   their values, which jobs still send; #advInUse names those in use */
+#panelExport:not(.show-adv) .adv { display: none; }
+/* #exportState: its "Latest export" span is .adv; its warnings and guidance always show, and with
+   none of them the line takes no room */
+#panelExport:not(.show-adv) #exportState:not(:has(span:not(.adv))), #exportState:empty { display: none; }
 .presets { margin-top: 12px; }
 .presets .opt-grid { margin: 0; }
 #revealExportBtn { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 6px; }

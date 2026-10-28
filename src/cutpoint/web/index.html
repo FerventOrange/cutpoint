@@ -208,25 +208,26 @@
       </div>
 
       <div id="panelExport" class="side-panel" role="tabpanel" aria-labelledby="tabExport" hidden>
-        <!-- Each option's description: a title on hover, and the same words for screen readers (aria-describedby) -->
+        <!-- Each option's description: a title on hover, and the same words for screen readers (aria-describedby).
+             .adv: shown only with Settings > Show advanced export options; hidden, they keep their values and still send them -->
         <fieldset class="panel opts" id="exportPanel">
           <legend>Export &amp; Assembly Options</legend>
           <!-- Clip export choices map 1:1 to clips flags (#462); a blank number keeps the CLI's default -->
           <fieldset class="panel picks">
             <legend>Clips to Export</legend>
-            <label class="check" title="Exports the moments in the sequence, in its order and with your trims."><input type="radio" name="optPicks" id="optPicksSeq" value="sequence" checked aria-describedby="dPicksSeq"> The sequence (hand-picked)</label>
+            <label class="check" title="Exports the moments in the sequence, in its order and with your trims."><input type="radio" name="optPicks" id="optPicksSeq" value="sequence" checked aria-describedby="dPicksSeq"> Sequence</label>
             <span id="dPicksSeq" class="vh">Exports the moments in the sequence, in its order and with your trims.</span>
             <label class="check" title="Lets Cutpoint pick the best-scoring moments of the analysis (clips --top, --ids, --max-total, --order); the sequence is not used."><input type="radio" name="optPicks" id="optPicksAuto" value="auto" aria-describedby="dPicksAuto"> Automatic picks</label>
             <span id="dPicksAuto" class="vh">Lets Cutpoint pick the best-scoring moments of the analysis (clips --top, --ids, --max-total, --order); the sequence is not used.</span>
             <div class="opt-grid" id="autoOpts" hidden>
-              <label for="optTop" title="Exports the N best-scoring moments (--top). Blank: the style's count.">Top moments</label>
-              <input type="number" id="optTop" min="1" max="500" step="1" inputmode="numeric" placeholder="Style" aria-describedby="dTop">
+              <label for="optTop" class="adv" title="Exports the N best-scoring moments (--top). Blank: the style's count.">Top moments</label>
+              <input type="number" id="optTop" class="adv" min="1" max="500" step="1" inputmode="numeric" placeholder="Style" aria-describedby="dTop">
               <span id="dTop" class="vh">Exports the N best-scoring moments (--top). Blank: the style's count.</span>
-              <label for="optMaxTotal" title="Caps the clips' total length in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.">Max total (s)</label>
+              <label for="optMaxTotal" title="Caps the video's length: the clips' total in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.">Max video length (s)</label>
               <input type="number" id="optMaxTotal" min="0.1" max="36000" step="any" inputmode="decimal" placeholder="None" aria-describedby="dMaxTotal">
-              <span id="dMaxTotal" class="vh">Caps the clips' total length in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.</span>
-              <label for="optIds" title="Exports exactly these candidates of highlights.json, such as h001 h004, instead of the top moments (--ids).">Candidate ids</label>
-              <input type="text" id="optIds" placeholder="h001 h004" autocomplete="off" spellcheck="false" aria-describedby="dIds">
+              <span id="dMaxTotal" class="vh">Caps the video's length: the clips' total in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.</span>
+              <label for="optIds" class="adv" title="Exports exactly these candidates of highlights.json, such as h001 h004, instead of the top moments (--ids).">Candidate ids</label>
+              <input type="text" id="optIds" class="adv" placeholder="h001 h004" autocomplete="off" spellcheck="false" aria-describedby="dIds">
               <span id="dIds" class="vh">Exports exactly these candidates of highlights.json, such as h001 h004, instead of the top moments (--ids).</span>
               <label for="optOrder" title="The clips' playback order (--order): Style uses the style's order; Story puts the second-best first and the best last.">Order</label>
               <select id="optOrder" aria-describedby="dOrder"><option value="">Style</option><option value="story">Story</option><option value="score">Best first</option><option value="chronological">Chronological</option></select>
@@ -256,29 +257,29 @@
           <fieldset class="panel timing">
             <legend>Cut Timing</legend>
             <div class="opt-grid">
-              <label for="optSpeechExtend" title="The most seconds Speech-aware cuts may move an end later to finish a sentence (--speech-max-extend). Blank: 8.">Max end move (s)</label>
-              <input type="number" id="optSpeechExtend" min="0" max="60" step="any" inputmode="decimal" placeholder="8" aria-describedby="dSpeechExtend">
+              <label for="optSpeechExtend" class="adv" title="The most seconds Speech-aware cuts may move an end later to finish a sentence (--speech-max-extend). Blank: 8.">Max end move (s)</label>
+              <input type="number" id="optSpeechExtend" class="adv" min="0" max="60" step="any" inputmode="decimal" placeholder="8" aria-describedby="dSpeechExtend">
               <span id="dSpeechExtend" class="vh">The most seconds Speech-aware cuts may move an end later to finish a sentence (--speech-max-extend). Blank: 8.</span>
-              <label for="optSpeechLead" title="The most seconds Speech-aware cuts may move a start earlier to catch a sentence's start (--speech-max-lead). Blank: 5.">Max start move (s)</label>
-              <input type="number" id="optSpeechLead" min="0" max="60" step="any" inputmode="decimal" placeholder="5" aria-describedby="dSpeechLead">
+              <label for="optSpeechLead" class="adv" title="The most seconds Speech-aware cuts may move a start earlier to catch a sentence's start (--speech-max-lead). Blank: 5.">Max start move (s)</label>
+              <input type="number" id="optSpeechLead" class="adv" min="0" max="60" step="any" inputmode="decimal" placeholder="5" aria-describedby="dSpeechLead">
               <span id="dSpeechLead" class="vh">The most seconds Speech-aware cuts may move a start earlier to catch a sentence's start (--speech-max-lead). Blank: 5.</span>
-              <label for="optTailMin" title="Seconds a smart tail always keeps after the last word (--tail-min). Blank: the style's, 1.5 for most.">Tail min (s)</label>
-              <input type="number" id="optTailMin" min="0" max="60" step="any" inputmode="decimal" placeholder="Style" aria-describedby="dTailMin">
+              <label for="optTailMin" class="adv" title="Seconds a smart tail always keeps after the last word (--tail-min). Blank: the style's, 1.5 for most.">Tail min (s)</label>
+              <input type="number" id="optTailMin" class="adv" min="0" max="60" step="any" inputmode="decimal" placeholder="Style" aria-describedby="dTailMin">
               <span id="dTailMin" class="vh">Seconds a smart tail always keeps after the last word (--tail-min). Blank: the style's, 1.5 for most.</span>
-              <label for="optTailMax" title="The most seconds a smart tail adds after the last word (--tail-max). Blank: the style's, 5 for most.">Tail max (s)</label>
-              <input type="number" id="optTailMax" min="0" max="60" step="any" inputmode="decimal" placeholder="Style" aria-describedby="dTailMax">
+              <label for="optTailMax" class="adv" title="The most seconds a smart tail adds after the last word (--tail-max). Blank: the style's, 5 for most.">Tail max (s)</label>
+              <input type="number" id="optTailMax" class="adv" min="0" max="60" step="any" inputmode="decimal" placeholder="Style" aria-describedby="dTailMax">
               <span id="dTailMax" class="vh">The most seconds a smart tail adds after the last word (--tail-max). Blank: the style's, 5 for most.</span>
               <label for="optEventTails" title="Extends a clip to cover a payoff such as a kill, banner or laughter that starts soon after the speech (--event-tails). Auto: on when the project has events.json. Needs Smart tails for the sequence's moments.">Event tails</label>
               <select id="optEventTails" aria-describedby="dEventTails"><option value="auto">Auto</option><option value="on">On</option><option value="off">Off</option></select>
               <span id="dEventTails" class="vh">Extends a clip to cover a payoff such as a kill, banner or laughter that starts soon after the speech (--event-tails). Auto: on when the project has events.json. Needs Smart tails for the sequence's moments.</span>
-              <label for="optEventWindow" title="A payoff must start within this many seconds after the speech (--event-window). Blank: 10.">Event window (s)</label>
-              <input type="number" id="optEventWindow" min="0.1" max="60" step="any" inputmode="decimal" placeholder="10" aria-describedby="dEventWindow">
+              <label for="optEventWindow" class="adv" title="A payoff must start within this many seconds after the speech (--event-window). Blank: 10.">Event window (s)</label>
+              <input type="number" id="optEventWindow" class="adv" min="0.1" max="60" step="any" inputmode="decimal" placeholder="10" aria-describedby="dEventWindow">
               <span id="dEventWindow" class="vh">A payoff must start within this many seconds after the speech (--event-window). Blank: 10.</span>
-              <label for="optExtendStart" title="Seconds of padding added before every clip, in Export clips (--extend-start) and Extend export (--start). Blank: none.">Extend start (s)</label>
-              <input type="number" id="optExtendStart" min="0" max="30" step="any" inputmode="decimal" placeholder="0" aria-describedby="dExtendStart">
+              <label for="optExtendStart" class="adv" title="Seconds of padding added before every clip, in Export clips (--extend-start) and Extend export (--start). Blank: none.">Extend start (s)</label>
+              <input type="number" id="optExtendStart" class="adv" min="0" max="30" step="any" inputmode="decimal" placeholder="0" aria-describedby="dExtendStart">
               <span id="dExtendStart" class="vh">Seconds of padding added before every clip, in Export clips (--extend-start) and Extend export (--start). Blank: none.</span>
-              <label for="optExtendEnd" title="Seconds of padding added after every clip, in Export clips (--extend-end) and Extend export (--end). Blank: none.">Extend end (s)</label>
-              <input type="number" id="optExtendEnd" min="0" max="30" step="any" inputmode="decimal" placeholder="0" aria-describedby="dExtendEnd">
+              <label for="optExtendEnd" class="adv" title="Seconds of padding added after every clip, in Export clips (--extend-end) and Extend export (--end). Blank: none.">Extend end (s)</label>
+              <input type="number" id="optExtendEnd" class="adv" min="0" max="30" step="any" inputmode="decimal" placeholder="0" aria-describedby="dExtendEnd">
               <span id="dExtendEnd" class="vh">Seconds of padding added after every clip, in Export clips (--extend-end) and Extend export (--end). Blank: none.</span>
             </div>
           </fieldset>
@@ -302,10 +303,11 @@
           </fieldset>
         </fieldset>
         <p id="exportState" class="muted"></p>
+        <p id="advInUse" class="hint" hidden></p>
         <div class="export-acts">
           <button type="button" id="clipsBtn" class="btn primary">Export clips</button>
           <button type="button" id="assembleBtn" class="btn primary">Assemble</button>
-          <button type="button" id="extendBtn" class="btn outline" aria-describedby="dExtendBtn">Extend export</button>
+          <button type="button" id="extendBtn" class="btn outline adv" aria-describedby="dExtendBtn">Extend export</button>
           <span id="dExtendBtn" class="vh">Re-exports the latest export's clips into a new folder with the Extend start and end padding and the speech settings (cutpoint extend).</span>
           <button type="button" id="revealExportBtn" class="btn outline" hidden>Show Exports Folder</button>
         </div>
@@ -426,6 +428,11 @@
         <legend>Preview</legend>
         <label class="check"><input type="checkbox" id="setNerdStats" aria-describedby="setNerdStatsHint"> Stats for Nerds</label>
         <p id="setNerdStatsHint" class="hint">Shows each moment's score, rank and signals over the top-left corner of the preview. Off by default. Shows at once; Save keeps it, in this browser.</p>
+      </fieldset>
+      <fieldset class="panel">
+        <legend>Export</legend>
+        <label class="check"><input type="checkbox" id="setAdvExport" aria-describedby="setAdvExportHint"> Show advanced export options</label>
+        <p id="setAdvExportHint" class="hint">Shows Top moments, Candidate ids, the Cut Timing fields other than Event tails, the latest export's status and Extend export in the Export tab. Off by default; hidden options keep their values and are still used. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
       <fieldset class="panel">
         <legend>Appearance</legend>

@@ -23,6 +23,7 @@ const STAGE_MIN = 360; // pixels the preview keeps when the sequence column wide
 const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
 const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for every preview video
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
+const ADV_KEY = 'cutpoint.advancedExport'; // localStorage: "1" while Show advanced export options is on (off by default)
 const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "dark"; absent for Blue, the default. index.html reads it too
 const THEMES = ['blue', 'light', 'dark'];
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
@@ -75,6 +76,8 @@ const S = {
   selected: new Set(), // sequence ids ticked for batch actions
   nerdStats: false, // Settings > Stats for Nerds: the scoring overlay on the preview
   nerdStatsWas: false, // nerdStats when Settings opened, restored by Cancel or Escape
+  advExport: false, // Settings > Show advanced export options: the Export tab's .adv controls
+  advExportWas: false, // advExport when Settings opened, restored by Cancel or Escape
   themeWas: 'blue', // Settings > Theme when Settings opened, restored by Cancel or Escape
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
@@ -2485,15 +2488,19 @@ function renderExport() {
   const st = $('#exportState');
   // A 360 clip rendered from the dual-fisheye preview: no SDK, pano.auto_stitch off or the stitch skipped.
   const note = clips?.clips?.some((c) => c.pano?.preview) ? ' Exported from the 360 preview (not stitched).' : '';
-  if (!p) st.textContent = '';
+  // The "Latest export ..." facts are advanced (.adv); warnings and guidance always show
+  const latest = (rest) => h('span', { class: 'adv', text: `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips${rest}` });
+  const say = (text) => (text ? h('span', { text }) : null);
+  const show = (...parts) => st.replaceChildren(...parts.filter(Boolean)); // no 360 note: say() gives null
+  if (!p) show();
   else if (picks() === 'auto') {
-    st.textContent = !p.highlights?.candidates?.length ? 'Analyze the footage to export automatic picks.'
-      : clips ? `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips.${note} Automatic picks export the best moments of the analysis.`
-        : 'Nothing exported yet. Automatic picks export the best moments of the analysis.';
-  } else if (!S.segments.length) st.textContent = 'Add moments to the sequence to export them.';
-  else if (!clips) st.textContent = 'Nothing exported yet. Exporting saves the sequence first.';
-  else if (exportMatches()) st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and matches this sequence.${note}`;
-  else st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and differs from this sequence.${note} Export again to update it.`;
+    if (!p.highlights?.candidates?.length) show(say('Analyze the footage to export automatic picks.'));
+    else if (clips) show(latest('.'), say(`${note} Automatic picks export the best moments of the analysis.`));
+    else show(say('Nothing exported yet. Automatic picks export the best moments of the analysis.'));
+  } else if (!S.segments.length) show(say('Add moments to the sequence to export them.'));
+  else if (!clips) show(say('Nothing exported yet. Exporting saves the sequence first.'));
+  else if (exportMatches()) show(latest(' and matches this sequence.'), say(note));
+  else show(latest('.'), say(` It differs from this sequence.${note} Export again to update it.`));
   renderBusy();
 }
 
@@ -2783,9 +2790,14 @@ function fields(...keys) {
   return out;
 }
 
-/** False (and the browser shows why) when one of the fields a job sends (``body``) is out of its range. */
+/**
+ * False (and the browser shows why) when one of the fields a job sends (``body``) is out of its
+ * range. A hidden advanced field is shown first (until reload; the setting stays), so the browser
+ * can point at it.
+ */
 function validOptions(body) {
   const bad = Object.keys(body).filter((key) => key in OPT_FIELDS).map((key) => $(OPT_FIELDS[key])).find((el) => !el.checkValidity());
+  if (bad?.classList.contains('adv')) showAdvExport(true);
   bad?.reportValidity();
   return !bad;
 }
@@ -3425,6 +3437,8 @@ async function openSettings() {
   fillAiSettings(st.assistant);
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
+  $('#setAdvExport').checked = S.advExport;
+  S.advExportWas = S.advExport;
   S.themeWas = $('#setTheme').value = theme();
   d.showModal();
   // a locked folder cannot be edited: start on the first control that can
@@ -3615,6 +3629,53 @@ function initNerdStats() {
   $('#setNerdStats').addEventListener('change', (e) => setNerdStats(e.target.checked));
 }
 
+/** Show or hide the Export tab's advanced controls (.adv) and say which hidden ones are in use. */
+function showAdvExport(on) {
+  $('#panelExport').classList.toggle('show-adv', on);
+  renderAdvInUse();
+}
+
+/**
+ * Hidden advanced fields keep their values and are still sent, so a filled one that a job sends
+ * (enabled: the pick mode and boxes use it) is named under the options instead of acting unseen.
+ */
+function renderAdvInUse() {
+  const out = $('#advInUse');
+  const shown = $('#panelExport').classList.contains('show-adv');
+  const used = shown ? [] : Object.values(OPT_FIELDS).map((id) => $(id))
+    .filter((el) => el.classList.contains('adv') && !el.disabled && el.value.trim())
+    .map((el) => document.querySelector(`label[for=${el.id}]`).textContent.replace(/ \(s\)$/, ''));
+  out.hidden = !used.length;
+  out.textContent = used.length ? `Advanced options in use: ${used.join(', ')}. Settings > Show advanced export options shows them.` : '';
+}
+
+/** Turn Show advanced export options on or off: store it in this browser, show or hide them and tick the box to match. */
+function setAdvExport(on) {
+  S.advExport = on;
+  try {
+    if (on) localStorage.setItem(ADV_KEY, '1');
+    else localStorage.removeItem(ADV_KEY);
+  } catch {
+    // storage blocked or full: the setting still applies until reload
+  }
+  $('#setAdvExport').checked = on;
+  showAdvExport(on);
+}
+
+/**
+ * Show advanced export options (off by default) is a view choice, so like Stats for Nerds it lives
+ * in this browser's storage, previews on change, and Cancel or Escape puts it back.
+ */
+function initAdvExport() {
+  try {
+    S.advExport = localStorage.getItem(ADV_KEY) === '1';
+  } catch {
+    // storage blocked: start from the default (off)
+  }
+  showAdvExport(S.advExport);
+  $('#setAdvExport').addEventListener('change', (e) => setAdvExport(e.target.checked));
+}
+
 /** The theme in use: index.html set data-theme on <html> before first paint; none is Blue. */
 function theme() {
   return document.documentElement.dataset.theme ?? 'blue';
@@ -3643,6 +3704,8 @@ function bindSettings() {
   $('#setTheme').addEventListener('change', (e) => setTheme(e.target.value));
   const undo = () => {
     setNerdStats(S.nerdStatsWas);
+    // a field revealed for an out-of-range value (showAdvExport(true)) stays unless the box changed
+    if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);
     setTheme(S.themeWas);
   };
   $('#settingsCancel').addEventListener('click', () => {
@@ -4042,6 +4105,7 @@ function syncTiming() {
   able('#optTailMax', tail);
   able('#optEventTails', auto || tail);
   able('#optEventWindow', (auto || tail) && $('#optEventTails').value !== 'off');
+  renderAdvInUse();
 }
 
 /** Put the audio transition in line with Link Transitions and the video transition. */
@@ -4101,6 +4165,7 @@ function bind() {
   initMomentOrder();
   bindAssistant();
   S.savedOpts = initExportOptions();
+  initAdvExport();
   showPlaying(false);
   trimInputs.start = trimField('start', 'Clip Start');
   trimInputs.end = trimField('end', 'Clip End');
