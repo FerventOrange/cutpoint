@@ -115,6 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
+  instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
+  there are none.
 - `assemble`: the audio and container of `final.mp4` now end with the video, to within one audio
   frame. Cut joins ended about 24 ms late and started the video about 21 ms late, and
   `--loudnorm` or the limiter padded the audio by about 0.1 s. The `.fcpxml` and `.otio` of cut

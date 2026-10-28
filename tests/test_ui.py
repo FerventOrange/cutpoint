@@ -5363,6 +5363,16 @@ def _web(name: str) -> str:
     return (ui.WEB_DIR / name).read_text(encoding="utf-8")
 
 
+def test_the_360_empty_state_counts_recordings_apart_from_the_360() -> None:
+    """Contract pin: a 360 project with no moments reads "360 footage: N recording(s) found"
+    (or "No 360 recordings found"), never "N 360 clips found", which read as 5,360."""
+    js = _web("app.js")
+    body = re.search(r"function renderUnanalyzed\(.*?\n\}\n", js, re.S)[0]
+    assert "`360 footage: ${n} recording${n === 1 ? '' : 's'} found`" in body
+    assert "'No 360 recordings found'" in body
+    assert not re.search(r"\$\{n\} 360", js)  # no count directly before "360"
+
+
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     """Contract pin (#462, #346): the column has a Sequence, an AI Chat and an Export tab, each
     controlling a labelled tabpanel; only the selected tab is in the tab order (roving
