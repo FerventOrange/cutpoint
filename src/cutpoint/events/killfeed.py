@@ -696,7 +696,12 @@ class EventTracker:
 # --------------------------------------------------------------------------- OCR logic
 
 
-OCR_DET_SIDE = 960  # the OCR layer's detection size limit (long side, px)
+# The OCR layer's detection size limit (long side, px). RapidOCR 1.4.4 ignores it: with
+# det_limit_type="max" its TextDetector picks the limit from the image's long side (960 below
+# 960 px, 1500 below 1500 px, else 2000), so crops up to 2000 px are never scaled (#443). It
+# stays because it is part of the raw OCR cache key (ocr_raw.raw_key): changing or dropping it
+# would make every existing raw read miss.
+OCR_DET_SIDE = 960
 
 # onnxruntime intra-op threads for the OCR models (det, cls, rec). CPU OCR stops scaling at
 # about 4 threads: 8 / 4 / 2 / 1 threads took 4.0 / 3.3 / 6.9 / 8.7 s per 1280 px frame on an
@@ -717,21 +722,32 @@ class OcrEngine:
     :data:`OCR_THREADS` budget, and :meth:`map` and :meth:`read_rows` run OCR calls on
     them at once. Each call runs on one engine, which gives the same result on any of
     them, so the output does not depend on the lanes.
+
+    ``rec_batch`` sets how many text boxes a full call (:meth:`__call__`) recognises in one
+    batch; None keeps RapidOCR's default (6). A batch pads every box to the widest one, so
+    the text of a box can depend on the others: 1 recognises each box alone.
     """
 
-    def __init__(self, det_side: int = OCR_DET_SIDE, lanes: int | None = None) -> None:
+    def __init__(
+        self, det_side: int = OCR_DET_SIDE, lanes: int | None = None, rec_batch: int | None = None
+    ) -> None:
         from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
         self.det_side = det_side  # part of the raw OCR cache key
         self.lanes = OCR_LANES if lanes is None else lanes
+        self.rec_batch = rec_batch
+        extra = {} if rec_batch is None else {"rec_batch_num": rec_batch}
 
         # Default det config upscales the short side to 736 px ("limit_type: min"),
-        # which makes wide HUD strips ~10x slower; cap the long side instead.
+        # which makes wide HUD strips ~10x slower; cap the long side instead. RapidOCR
+        # 1.4.4 then ignores det_limit_side_len (see OCR_DET_SIDE): det_side does not
+        # change the output and is kept only as self.det_side, a part of the raw cache key.
         engines = [
             RapidOCR(
                 det_limit_type="max",
                 det_limit_side_len=det_side,
                 intra_op_num_threads=max(1, OCR_THREADS // self.lanes),
+                **extra,
             )
             for _ in range(self.lanes)
         ]

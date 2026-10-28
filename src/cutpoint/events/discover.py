@@ -330,8 +330,11 @@ def _ocr_frames(
                 src.io_path, t, params.burst_frames, params.burst_step_s, params.width
             )
             if engine is None:
-                # full frames, one at a time: all the threads on one engine
-                engine = OcrEngine(det_side=params.width, lanes=1)
+                # full frames, one at a time: all the threads on one engine. A frame has
+                # many boxes of very different widths: recognised one at a time, none is
+                # padded to the widest of a batch, which made first-run discovery about 22%
+                # faster on 5 test clips (#443)
+                engine = OcrEngine(det_side=params.width, lanes=1, rec_batch=1)
             for k, img in enumerate(frames):
                 fid, hit = ids[k], hits[k]
                 if hit is not None:
