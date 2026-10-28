@@ -14,7 +14,8 @@ exports are assumed to be levelled already.
 
 `pano.level_strength` (default 0.7) sets how much of the camera's own tilt the view follows:
 1 keeps the horizon level, 0 lets it lean with the camera in a turn. Shake is removed either
-way.
+way. The lean followed is capped at `pano.max_follow_deg` (default 30 deg from the clip's
+average attitude), so a fall or the camera being handled does not tip the view over.
 
 ## View layer
 

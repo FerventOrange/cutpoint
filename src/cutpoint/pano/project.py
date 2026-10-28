@@ -12,6 +12,7 @@
       "cmd_every": 1,
       "level_strength": 0.7,
       "tilt_follow_s": 0.5,
+      "max_follow_deg": 30,
       "imu_offset_s": 0.0,
       "equirect_yaw_offset": 0.0,
       "default_style": "ski"

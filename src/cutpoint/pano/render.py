@@ -23,7 +23,10 @@ Stabilisation (unlevelled sources): the camera's full rotation
 (:attr:`~cutpoint.pano.geometry.Orientation.q`) is undone per frame and
 replaced by a display frame whose yaw 0 is the smoothed heading and whose up
 is the true vertical (``level_strength`` 1) or follows the camera's own
-smoothed tilt (0; ``tilt_follow_s``), blended in between.
+smoothed tilt (0; ``tilt_follow_s``), blended in between. The tilt followed is
+relative to the clip's mean attitude (a fixed mount cancels out) and capped at
+``max_follow_deg`` before the blend, so a fall or the camera being handled
+(a turn of 100 deg or more) shows at most ``(1 - level_strength) * max_follow_deg``.
 
 Sources (:func:`cutpoint.pano.project.resolve_source`): the raw dual fisheye
 (``_00_`` + ``_10_`` stacked, or the 4K side-by-side file) or an SDK equirect
@@ -86,6 +89,7 @@ CMD_LEAD_S = 0.005  # commands go out this long before the frame they are meant 
 # First line of a ``.cmd`` file, a sendcmd comment: ``input=``, the initial ``rorder``,
 # ``yaw``, ``pitch`` and ``roll``, the seek ``start`` and the source ``fps`` (for ``360 qa``)
 CMD_HEADER = "# cutpoint-v360"
+MAX_FOLLOW_DEG = 30.0  # default ``pano.max_follow_deg``
 
 
 @dataclass(frozen=True)
@@ -126,14 +130,16 @@ def stabilised_r_vw(
     idx: np.ndarray,
     level_strength: float,
     tilt_follow_s: float,
+    max_follow_deg: float = MAX_FOLLOW_DEG,
 ) -> np.ndarray:
     """``R_VW`` (display -> camera) ``(K, 3, 3)`` for the increasing frame indices ``idx``.
 
     The display frame (display -> world) has its yaw 0 at the camera heading
     low-passed over ``heading_smooth_s`` (as the director's frame) and its up
     ``level_strength`` of the way from the camera's own up axis (its mean over
-    ``idx``, as the world sees it, low-passed over ``tilt_follow_s``) to the
-    true vertical. ``R_VW`` is the camera rotation transposed times that frame.
+    ``idx``, as the world sees it, low-passed over ``tilt_follow_s``, and pulled
+    back along its great circle to at most ``max_follow_deg`` from vertical) to
+    the true vertical. ``R_VW`` is the camera rotation transposed times that frame.
     """
     fps = float(orient.meta["fps"])
     sigma = float(orient.meta.get("heading_smooth_s", 1.5)) * fps
@@ -149,8 +155,15 @@ def stabilised_r_vw(
     nominal /= np.linalg.norm(nominal)
     own = _gauss(rw @ nominal, tilt_follow_s * fps)[rel]
     own /= np.linalg.norm(own, axis=1, keepdims=True)
-    u = _slerp(own, np.tile(up_w, (len(rel), 1)), level_strength)
     f = np.stack([np.sin(hs), np.zeros_like(hs), np.cos(hs)], 1)
+    c = own @ up_w
+    cap = math.radians(max(float(max_follow_deg), 0.0))
+    side = own - c[:, None] * up_w  # direction of the lean, on the great circle to vertical
+    n = np.linalg.norm(side, axis=1, keepdims=True)
+    side = np.where(n > 1e-6, side / np.maximum(n, 1e-12), f)  # upside down: lean forward
+    capped = math.cos(cap) * up_w + math.sin(cap) * side
+    own = np.where((np.arccos(np.clip(c, -1.0, 1.0)) > cap)[:, None], capped, own)
+    u = _slerp(own, np.tile(up_w, (len(rel), 1)), level_strength)
     y = -u
     f -= (f * y).sum(1, keepdims=True) * y
     f /= np.linalg.norm(f, axis=1, keepdims=True)
@@ -193,6 +206,7 @@ def command_lines(
             idx,
             float(cfg.get("level_strength", 0.7)),
             float(cfg.get("tilt_follow_s", 0.5)),
+            float(cfg.get("max_follow_deg", MAX_FOLLOW_DEG)),
         )
     lines: list[str] = []
     init: dict[str, float] = {}
