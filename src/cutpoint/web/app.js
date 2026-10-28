@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, baseName, fmt, fmtLen, h, parseTime, positionCompare, round2, svg } from './util.js';
+import { $, baseName, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -29,6 +29,8 @@ const THEMES = ['blue', 'light', 'dark'];
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
 const ORDER_KEY = 'cutpoint.momentOrder'; // localStorage: "position" for video order; absent for Score, the default
 const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the moments list's orders (#469)
+// localStorage: the moments list's quick filters the user set ({seq, ready, must}); absent for none. The source file is per project
+const FILTERS_KEY = 'cutpoint.momentFilters';
 // localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults
 const OPTS_KEY = 'cutpoint.exportOptions';
 // Export & Assembly Options for a viewer who changed none; Compress peaks starts from config.json's
@@ -68,6 +70,7 @@ const S = {
   focus: null,
   filter: '',
   order: 'score', // the moments list's order: 'score' (rank #1 first) or 'position' (initMomentOrder)
+  filters: { ...NO_FILTERS }, // the moments list's quick filters (initMomentFilters); util.js momentMatches applies them
   jobs: [],
   active: null, // the running job, if any
   tracked: new Map(), // job id -> last seen status
@@ -333,6 +336,7 @@ function resetWorkspace(segments) {
   S.proposal = null;
   S.pendingProposal = null;
   S.shown = null;
+  S.filters.source = ''; // a path of the project left
 }
 
 /** Leave the open project (its folder is no longer listed): back to the empty workspace. */
@@ -393,31 +397,46 @@ function renderMoments() {
     delete empty.dataset.refocus;
   }
 
-  const q = S.filter.trim().toLowerCase();
-  const multi = new Set(list.map((c) => c.source)).size > 1;
+  const sources = [...new Set(list.map((c) => c.source))];
+  const multi = sources.length > 1;
+  // Sort and filter: the source file choice only with several sources, and only one of this project's
+  const f = { ...S.filters, source: multi && sources.includes(S.filters.source) ? S.filters.source : '' };
+  syncFilterMenu(sources, f, !!list.length);
+  const segOf = (c) => S.segments.find((s) => s.id === c.id);
   const items = list
     .map((c, i) => ({ c, rank: i + 1 }))
-    .filter(({ c }) => !q || `${c.label} ${c.cli_id ?? ''} ${c.transcript ?? ''} ${baseName(c.source)}`.toLowerCase().includes(q));
+    .filter(({ c }) => {
+      const seg = segOf(c);
+      return momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
+    });
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
+  const listHadFocus = $('#candList').contains(document.activeElement);
+  // A card: rank, title and Add/Remove on top (the button sits over the main button's top row: no
+  // nested buttons), the times, the file with several sources, the strip, then the transcript with
+  // the preview readiness at the bottom right.
   preserveFocus(() => {
     $('#candList').replaceChildren(
       ...items.map(({ c, rank }) => {
-        const seg = S.segments.find((s) => s.id === c.id);
+        const seg = segOf(c);
         const picked = !!seg;
+        const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
           h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
               h('span', { class: 'cand-title', text: c.label || c.cli_id || c.id }),
-              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
-              prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] })),
+              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null),
             h('span', { class: 'cand-time tc' },
               // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
               c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
-              `${fmt(c.start)} to ${fmt(c.end)}, ${(c.end - c.start).toFixed(1)} s`,
-              multi ? ` in ${baseName(c.source)}` : ''),
+              `${fmt(c.start)} to ${fmt(c.end)}`,
+              h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }),
+              `${(c.end - c.start).toFixed(1)} s`),
+            multi ? h('span', { class: 'cand-src' }, h('span', { class: 'vh', text: 'in ' }), baseName(c.source)) : null,
             sourceStrip(c),
-            c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null),
+            c.transcript || badge
+              ? h('span', { class: 'cand-foot' }, c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null, badge)
+              : null),
           h('button', {
             type: 'button', class: 'btn small', 'data-act': 'toggle',
             'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.cli_id || c.id} ${picked ? 'from' : 'to'} sequence`,
@@ -428,7 +447,9 @@ function renderMoments() {
     );
   });
   if (list.length && !items.length)
-    $('#candList').replaceChildren(h('li', { class: 'empty', text: 'No moments match this filter.' }));
+    $('#candList').replaceChildren(h('li', { class: 'empty', text: `No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}.` }));
+  // the focused card left the list (Add with Not in sequence, say) and no card is left to take focus
+  if (listHadFocus && !$('#candList').contains(document.activeElement) && !$('#filterWrap').hidden) $('#filterBtn').focus();
   markMoments();
   if (hadFocus && !empty.contains(document.activeElement))
     ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
@@ -1795,6 +1816,7 @@ const ICONS = {
   grip: [[9, 5], [15, 5], [9, 12], [15, 12], [9, 19], [15, 19]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.9 }]),
   check: [['path', { d: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z' }]],
   hourglass: [['path', { d: 'M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5-4-4V4h8v3.5l-4 4z' }]],
+  funnel: [['path', { d: 'M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A1 1 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z' }]],
   clock: [['path', { d: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z' }]],
 };
 const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);
@@ -3238,7 +3260,8 @@ function showItem(ev, id, query) {
           S.filter = query;
           $('#filter').value = query;
           renderMoments();
-          $('#chatLive').textContent = `Moments filtered by ${query}`;
+          const n = $('#candList').querySelectorAll('.cand').length;
+          $('#chatLive').textContent = `Moments filtered by ${query}: ${n} shown${filtersOn(S.filters) ? '; Sort and filter is also on' : ''}`;
         },
       }, `Filter list by “${query}”`) : null));
 }
@@ -3962,29 +3985,135 @@ function initSideTabs() {
 }
 
 /**
- * The moments list's order (#469): Score (rank #1 first, the default) or Position in video. The
- * choice is remembered per browser; without storage it lasts the session.
+ * The moments list's order (#469): Score (rank #1 first, the default) or Position in video, the
+ * Sort by radios of Sort and filter. The choice is remembered per browser; without storage it lasts
+ * the session.
  */
 function initMomentOrder() {
-  const sel = $('#momentOrder');
+  const radios = [...document.querySelectorAll('#filterPop input[name=momentOrder]')];
   try {
     const v = localStorage.getItem(ORDER_KEY);
     if (Object.hasOwn(ORDER_NAMES, v)) S.order = v;
   } catch {
     // storage blocked: Score
   }
-  sel.value = S.order;
-  sel.addEventListener('change', () => {
-    S.order = Object.hasOwn(ORDER_NAMES, sel.value) ? sel.value : 'score';
-    try {
-      if (S.order === 'score') localStorage.removeItem(ORDER_KEY);
-      else localStorage.setItem(ORDER_KEY, S.order);
-    } catch {
-      // storage blocked or full: the order still applies until reload
-    }
-    $('#orderLive').textContent = `Moments sorted by ${ORDER_NAMES[S.order]}`;
-    renderMoments();
+  for (const r of radios) {
+    r.checked = r.value === S.order;
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      S.order = Object.hasOwn(ORDER_NAMES, r.value) ? r.value : 'score';
+      try {
+        if (S.order === 'score') localStorage.removeItem(ORDER_KEY);
+        else localStorage.setItem(ORDER_KEY, S.order);
+      } catch {
+        // storage blocked or full: the order still applies until reload
+      }
+      $('#orderLive').textContent = `Moments sorted by ${ORDER_NAMES[S.order]}`;
+      renderMoments();
+    });
+  }
+}
+
+/**
+ * Sort and filter: the funnel button beside the search opens the sort order and the quick filters
+ * (a disclosure: Escape closes it and returns focus to the button; a click or focus outside closes
+ * it). The filters combine with the search text (util.js momentMatches). Sequence, Ready only and
+ * Must include are remembered per browser like the order; the source file only while its project
+ * stays open (resetWorkspace), as paths differ per project. Without storage they last the session.
+ */
+function initMomentFilters() {
+  const btn = $('#filterBtn');
+  const pop = $('#filterPop');
+  const menu = btn.parentElement;
+  btn.prepend(icon('funnel'));
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTERS_KEY));
+    if (['all', 'in', 'out'].includes(saved?.seq)) S.filters.seq = saved.seq;
+    S.filters.ready = saved?.ready === true;
+    S.filters.must = saved?.must === true;
+  } catch {
+    // storage blocked or not JSON: no filters
+  }
+  const seqRadios = [...pop.querySelectorAll('input[name=filterSeq]')];
+  const showFilters = () => {
+    for (const r of seqRadios) r.checked = r.value === S.filters.seq;
+    $('#filterReady').checked = S.filters.ready;
+    $('#filterMust').checked = S.filters.must;
+  };
+  showFilters();
+  const open = (on, refocus = false) => {
+    pop.hidden = !on;
+    btn.setAttribute('aria-expanded', String(on));
+    if (refocus) btn.focus();
+  };
+  btn.addEventListener('click', () => open(pop.hidden));
+  menu.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || pop.hidden) return;
+    e.preventDefault(); // the page's own Escape (stop Play sequence) waits
+    open(false, true);
   });
+  document.addEventListener('pointerdown', (e) => !pop.hidden && !menu.contains(e.target) && open(false));
+  menu.addEventListener('focusout', (e) => !pop.hidden && e.relatedTarget && !menu.contains(e.relatedTarget) && open(false));
+  const changed = () => {
+    try {
+      const { seq, ready, must } = S.filters;
+      if (!filtersOn({ seq, ready, must })) localStorage.removeItem(FILTERS_KEY);
+      else localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready, must }));
+    } catch {
+      // storage blocked or full: the filters still apply until reload
+    }
+    renderMoments();
+    const n = $('#candList').querySelectorAll('.cand').length;
+    $('#orderLive').textContent = `${n} of ${cands().length} moments shown`;
+  };
+  for (const r of seqRadios)
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      S.filters.seq = r.value;
+      changed();
+    });
+  $('#filterReady').addEventListener('change', (e) => {
+    S.filters.ready = e.target.checked;
+    changed();
+  });
+  $('#filterMust').addEventListener('change', (e) => {
+    S.filters.must = e.target.checked;
+    changed();
+  });
+  $('#filterSource').addEventListener('change', (e) => {
+    S.filters.source = e.target.value;
+    changed();
+  });
+  $('#filterClear').addEventListener('click', () => {
+    S.filters = { ...NO_FILTERS };
+    showFilters();
+    changed();
+  });
+}
+
+/**
+ * Bring Sort and filter up to date for the list: the source file choice (only with several
+ * ``sources``; ``f`` holds the one in use), and the funnel's dot and name while any filter or a
+ * sort other than Score is on. Closed while the list has no moments (``shown`` false).
+ */
+function syncFilterMenu(sources, f, shown) {
+  const sel = $('#filterSource');
+  const names = sources.slice().sort((a, b) => naturalCompare(baseName(a), baseName(b)) || naturalCompare(a, b));
+  const tag = JSON.stringify(names);
+  if (sel.dataset.sources !== tag) {
+    sel.dataset.sources = tag;
+    sel.replaceChildren(h('option', { value: '', text: 'All files' }), ...names.map((s) => h('option', { value: s, title: s, text: baseName(s) })));
+  }
+  sel.value = f.source;
+  $('#filterSourceWrap').hidden = sources.length < 2;
+  const on = [filtersOn(f) && 'filters on', S.order !== 'score' && `sorted by ${ORDER_NAMES[S.order]}`].filter(Boolean);
+  const btn = $('#filterBtn');
+  btn.classList.toggle('on', !!on.length);
+  btn.setAttribute('aria-label', ['Sort and filter moments', ...on].join(', '));
+  if (!shown && !$('#filterPop').hidden) {
+    $('#filterPop').hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  }
 }
 
 /**
@@ -4165,6 +4294,7 @@ function bind() {
   initNerdStats();
   showTab = initSideTabs();
   initMomentOrder();
+  initMomentFilters();
   bindAssistant();
   S.savedOpts = initExportOptions();
   initAdvExport();

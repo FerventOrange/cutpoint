@@ -215,6 +215,19 @@ in the column header. "Analyze again" asks for confirmation first. The Export ta
 Folder" button: it opens the latest export's `clips_ui_*` folder, or the project folder (final
 videos, `.srt`, `.fcpxml`, `.otio`) once that export is assembled.
 
+After analysis, the Moments list has a search field (label, words spoken, file name or candidate id such as `h001`) and a
+funnel button beside it that opens Sort and filter. Sort by is Score (the default; rank #1
+first) or Position in video (by source name in natural order, then start time); each card's
+rank badge keeps its score rank either way. The quick filters are Sequence (All, In sequence,
+Not in sequence), Ready only (the moment's preview plays now), Must include, and Source file when
+the project has several sources. They combine with the search text. A dot on the button shows
+while a filter or a sort other than Score is on, and when nothing passes the list reads "No
+moments match these filters." Escape closes the menu. The sort and filters are remembered per
+browser (local storage); the source file only while the project stays open.
+Each card shows the rank and title with Add or Remove on the right, the candidate id, the times
+and length, the file name when the project has several sources, a strip of the moment's place in its source, the
+transcript, and the preview readiness (Ready, Encoding, Queued) at the bottom right.
+
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
 Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
 again": each with its state (waiting, running with a progress bar and a percentage when the step
