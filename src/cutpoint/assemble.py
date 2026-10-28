@@ -10,6 +10,11 @@ timeline and final.mp4 all sound the same. ``assemble`` only adds the fade
 folders and files added by hand. Clips are never faded twice. The video stays
 a hard cut unless ``transition="fade"``.
 
+Audio transitions (``audio_transition``) follow the video by default: ``cut`` with cuts,
+``crossfade`` with fades. A fade can also take hard audio cuts (:func:`crossfade`), which get
+the edge fades as on cuts. A cut cannot take an audio crossfade: the clips have no audio past
+their ends to overlap without moving the later clips' audio off their video.
+
 Peak compression (``compress_peaks``, see :data:`cutpoint.encode.PEAK_PRESETS`) works the
 same way: clips exported with it (manifest ``compress_peaks``) are left alone, the others
 are measured and get the compressor and leveling gain in the join, before the edge fade.
@@ -335,16 +340,36 @@ def crossfade_duration(infos: list[MediaInfo], fade: float) -> float:
     return used
 
 
+def audio_cut_point(fade: float, fps: Fraction) -> float:
+    """Where in a ``fade`` s crossfade (whole frames, :func:`crossfade_duration`) the audio
+    cuts with ``audio_transition="cut"``: the middle, rounded down to a whole frame, so
+    final.mp4 and the timelines (:func:`~cutpoint.timeline.write_otio`) cut on the same frame."""
+    if fps <= 0:
+        return fade / 2
+    return float(Fraction(int(fade * fps + Fraction(1, 2)) // 2) / fps)
+
+
+CUT_FADE = 0.02  # s: the fade on each side of a hard audio cut inside a video crossfade
+
+
 def crossfade(
     files: list[Path],
     infos: list[MediaInfo],
     out: Path,
     fade: float,
     peaks: list[str] | None = None,
+    audio: str = "crossfade",
+    fades: list[float] | None = None,
 ) -> float:
-    """Join clips with xfade/acrossfade over ``fade`` s, as returned by
-    :func:`crossfade_duration` (> 0), with the ``peaks`` filters (:func:`peak_filters`).
-    Returns ``fade``.
+    """Join clips with xfade over ``fade`` s, as returned by :func:`crossfade_duration` (> 0),
+    with the ``peaks`` filters (:func:`peak_filters`). Returns ``fade``.
+
+    ``audio="crossfade"`` joins the audio with acrossfade over the same ``fade``.
+    ``audio="cut"`` joins it with hard cuts at :func:`audio_cut_point` into each fade instead:
+    the outgoing clip's audio runs that far into the fade and the incoming clip's starts that
+    far in, so each clip's audio stays on its video and the audio is as long as the video. Each
+    cut gets a :data:`CUT_FADE` fade on both sides against clicks, and ``fades`` are the clips'
+    edge fades, as on cuts (:func:`_edge_fades`).
 
     Times are written to the microsecond, not the millisecond (8 frames at 24 fps are
     0.333333 s), so acrossfade matches the frame-rounded fade. xfade starts at the first
@@ -354,19 +379,36 @@ def crossfade(
 
     Each clip's audio is padded/trimmed to its video (``vduration``), which xfade and
     :func:`clip_offsets` follow, so audio that runs on cannot push the later clips late."""
-    chains, fps = _normalize_inputs(infos, peaks=peaks)
-    for i, info in enumerate(infos):
-        chains.append(f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS[at{i}]")
+    chains, fps = _normalize_inputs(infos, fades if audio == "cut" else None, peaks)
+    last = len(files) - 1
+    if audio == "cut":
+        cut = audio_cut_point(fade, fps)
+        for i, info in enumerate(infos):
+            start = cut if i > 0 else 0.0
+            end = info.vduration - fade + cut if i < last else info.vduration
+            edge = min(CUT_FADE, (end - start) / 2)
+            chains.append(
+                f"[a{i}]apad,atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS"
+                + (f",afade=t=in:d={edge:.6f}" if i > 0 else "")
+                + (f",afade=t=out:st={end - start - edge:.6f}:d={edge:.6f}" if i < last else "")
+                + f"[at{i}]"
+            )
+        pairs = "".join(f"[at{i}]" for i in range(len(files)))
+        chains.append(f"{pairs}concat=n={len(files)}:v=0:a=1[a]")
+    else:
+        for i, info in enumerate(infos):
+            chains.append(f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS[at{i}]")
     half_frame = 0.5 / float(fps) if fps > 0 else 0.0
     vprev, aprev = "v0", "at0"
     offsets = clip_offsets(infos, fade)
     for i in range(1, len(files)):
         offset = max(offsets[i] - half_frame, 0.0)
-        vout, aout = ("v", "a") if i == len(files) - 1 else (f"vx{i}", f"ax{i}")
+        vout, aout = ("v", "a") if i == last else (f"vx{i}", f"ax{i}")
         chains.append(
             f"[{vprev}][v{i}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}[{vout}]"
         )
-        chains.append(f"[{aprev}][at{i}]acrossfade=d={fade:.6f}[{aout}]")
+        if audio != "cut":
+            chains.append(f"[{aprev}][at{i}]acrossfade=d={fade:.6f}[{aout}]")
         vprev, aprev = vout, aout
     _encode(files, ";".join(chains), out)
     return fade
@@ -638,6 +680,19 @@ def normalize_with_ceiling(
     return lufs, tp
 
 
+def _edge_fades(clips_dir: Path, files: list[Path], audio_fade: float) -> list[float]:
+    """The audio edge fade to add to each clip: ``audio_fade`` where none is baked in, else 0."""
+    baked = baked_fades(clips_dir, files)
+    fades = [0.0 if b > 0 else max(0.0, audio_fade) for b in baked]
+    n_add = sum(f > 0 for f in fades)
+    logger.info(
+        "Audio edge fades: %d clip(s) already faded (baked), %s",
+        sum(b > 0 for b in baked),
+        f"adding {audio_fade:g}s to {n_add}" if n_add else "adding none",
+    )
+    return fades
+
+
 def _join(
     files: list[Path],
     infos: list[MediaInfo],
@@ -647,6 +702,7 @@ def _join(
     fade_dur: float,
     audio_fade: float,
     peaks: list[str] | None = None,
+    audio_transition: str | None = None,
 ) -> float:
     """Join ``files`` into ``out`` with cuts or crossfades (see :func:`assemble`); ``peaks``
     are the per-clip :func:`peak_filters`.
@@ -654,6 +710,7 @@ def _join(
     Returns:
         The crossfade duration used (0 for cuts), for :func:`clip_offsets`.
     """
+    audio = audio_transition or default_audio_transition(transition)
     if transition == "fade" and len(files) > 1:
         fade_dur = crossfade_duration(infos, fade_dur)
         if fade_dur == 0:
@@ -663,14 +720,7 @@ def _join(
             )
             transition = "cut"
     if len(files) == 1 or transition == "cut":
-        baked = baked_fades(clips_dir, files)
-        fades = [0.0 if b > 0 else max(0.0, audio_fade) for b in baked]
-        n_add = sum(f > 0 for f in fades)
-        logger.info(
-            "Audio edge fades: %d clip(s) already faded (baked), %s",
-            sum(b > 0 for b in baked),
-            f"adding {audio_fade:g}s to {n_add}" if n_add else "adding none",
-        )
+        fades = _edge_fades(clips_dir, files, audio_fade)
         uniform = len({i.concat_key() for i in infos}) == 1 and infos[0].audio_streams == 1
         if uniform:
             concat_copy(files, out, infos, fades, peaks)
@@ -679,10 +729,32 @@ def _join(
             concat_reencode(files, infos, out, fades, peaks)
         return 0.0
     if transition == "fade":
-        used = crossfade(files, infos, out, fade_dur, peaks)
-        logger.info("Crossfade duration %.3fs", used)
+        fades = _edge_fades(clips_dir, files, audio_fade) if audio == "cut" else None
+        used = crossfade(files, infos, out, fade_dur, peaks, audio, fades)
+        logger.info("Crossfade duration %.3fs%s", used, ", audio cut" if audio == "cut" else "")
         return used
     raise ValueError(f"Unknown transition {transition!r}")
+
+
+AUDIO_TRANSITIONS = ("cut", "crossfade")
+
+
+def default_audio_transition(transition: str) -> str:
+    """The audio transition that goes with the video ``transition``: ``cut`` with cuts,
+    ``crossfade`` with fades."""
+    return "crossfade" if transition == "fade" else "cut"
+
+
+def check_transitions(transition: str, audio_transition: str | None) -> str | None:
+    """Why ``audio_transition`` cannot go with ``transition``, or None if it can."""
+    if audio_transition is not None and audio_transition not in AUDIO_TRANSITIONS:
+        return f"unknown audio transition {audio_transition!r}"
+    if transition == "cut" and audio_transition == "crossfade":
+        return (
+            "an audio crossfade needs a video fade (--transition fade): at a cut the clips "
+            "have no audio past their ends to overlap"
+        )
+    return None
 
 
 def assemble(
@@ -696,6 +768,7 @@ def assemble(
     caption_model: str | None = None,
     audio_fade: float = 0.25,
     compress_peaks: str = "off",
+    audio_transition: str | None = None,
 ) -> Path:
     """Assemble ``clips_dir`` into ``out`` and write .otio/.fcpxml timelines next to it.
 
@@ -703,9 +776,12 @@ def assemble(
     (see :func:`cutpoint.srt.write_final_srt`), timed to the joined video.
 
     ``audio_fade``: audio fade in/out (s) added to each clip that has no fade
-    baked in by ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored for
-    ``transition="fade"``, which crossfades the audio anyway, unless the join falls back to
-    cuts (no room for a one-frame crossfade).
+    baked in by ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored when the
+    audio crossfades (``transition="fade"`` by default), unless the join falls back to cuts
+    (no room for a one-frame crossfade).
+
+    ``audio_transition``: ``cut`` or ``crossfade`` (:data:`AUDIO_TRANSITIONS`); None follows
+    ``transition`` (:func:`default_audio_transition`). ``crossfade`` needs ``transition="fade"``.
 
     ``compress_peaks``: ``off``, ``light`` or ``strong`` (:data:`~cutpoint.encode.PEAK_PRESETS`)
     compresses loud peaks and levels the clips that do not have it baked in; the final audio
@@ -717,7 +793,10 @@ def assemble(
     Raises:
         FileNotFoundError: If the folder has no .mp4 clips.
         FolderBusyError: If another run is using ``clips_dir``.
+        ValueError: If ``audio_transition`` does not go with ``transition``.
     """
+    if (why := check_transitions(transition, audio_transition)) is not None:
+        raise ValueError(why)
     with swap_lock(clips_dir):  # one run at a time: another would remove a run's staging folder
         recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
         return _assemble(
@@ -730,6 +809,7 @@ def assemble(
             caption_model,
             audio_fade,
             compress_peaks,
+            audio_transition or default_audio_transition(transition),
         )
 
 
@@ -743,6 +823,7 @@ def _assemble(
     caption_model: str | None,
     audio_fade: float,
     compress_peaks: str,
+    audio_transition: str,
 ) -> Path:
     """:func:`assemble`, with ``clips_dir`` locked."""
     if out is None:  # clips -> final.mp4, clips_vertical -> final_vertical.mp4
@@ -756,8 +837,11 @@ def _assemble(
     # A run that fails before writing anything leaves no empty output folder behind.
     with output_dir(out.parent):
         infos = [probe(f) for f in files]
+        mode = transition
+        if audio_transition != default_audio_transition(transition):
+            mode += f", audio {audio_transition}"
         logger.info(
-            "Assembling %d clips (%s): %s", len(files), transition, ", ".join(f.name for f in files)
+            "Assembling %d clips (%s): %s", len(files), mode, ", ".join(f.name for f in files)
         )
 
         peaks = peak_filters(clips_dir, files, infos, compress_peaks)
@@ -770,7 +854,15 @@ def _assemble(
             stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or captions) else part
             try:
                 used_fade = _join(
-                    files, infos, clips_dir, stage, transition, fade_dur, audio_fade, peaks
+                    files,
+                    infos,
+                    clips_dir,
+                    stage,
+                    transition,
+                    fade_dur,
+                    audio_fade,
+                    peaks,
+                    audio_transition,
                 )
                 if limit:
                     lufs, tp = normalize_with_ceiling(
@@ -785,7 +877,7 @@ def _assemble(
                 if stage != part:
                     stage.unlink(missing_ok=True)
 
-    fcp, oti = write_timelines(infos, out, used_fade)
+    fcp, oti = write_timelines(infos, out, used_fade, audio_cut=audio_transition == "cut")
     duration = probe(out).duration
     logger.info("Wrote %s (%.2fs), %s, %s", out, duration, fcp.name, oti.name)
     from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module

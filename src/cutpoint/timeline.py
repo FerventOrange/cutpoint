@@ -9,6 +9,11 @@ edit, as in final.mp4: the incoming clip starts at :func:`cutpoint.assemble.clip
 from its first frame, and the outgoing clip is trimmed by the fade, its last frames
 becoming the handle the dissolve plays over. The clips then last their video
 (``vduration``), which the crossfade follows, so the timeline is as long as final.mp4.
+
+With hard audio cuts in the crossfades (``assemble --transition fade --audio-transition
+cut``) the dissolves carry no audio crossfade. The OTIO timeline cuts the audio at
+:func:`cutpoint.assemble.audio_cut_point`, as in final.mp4; the FCPXML one does not mark
+where, so the editor places the cut (likely at the start of the dissolve).
 """
 
 from __future__ import annotations
@@ -49,14 +54,20 @@ def _t(frames: int, fps: Fraction) -> str:
     return f"{frames * fps.denominator}/{fps.numerator}s"
 
 
-def write_fcpxml(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0) -> Path:
+def write_fcpxml(
+    clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0, audio_cut: bool = False
+) -> Path:
     """Write an FCPXML 1.10 project referencing ``clips`` in order.
 
     ``fade`` > 0 puts a Cross Dissolve ``<transition>`` on the spine at each join, starting
     on the edit (the incoming clip's offset) for ``fade`` s. The outgoing ``asset-clip`` is
     trimmed by the fade and the dissolve plays over its tail handle; the asset keeps the
     whole file. When both clips have audio the transition also carries an Audio Crossfade,
-    as acrossfade does in final.mp4.
+    as acrossfade does in final.mp4, unless ``audio_cut`` (hard audio cuts). With
+    ``audio_cut`` only the Audio Crossfade is left out: nothing puts the audio cut at
+    :func:`cutpoint.assemble.audio_cut_point` as final.mp4 does, so where the audio cuts is
+    left to the editor (likely the start of the dissolve). The .otio timeline
+    (:func:`write_otio`) matches final.mp4.
     """
     fps = clips[0].fps
     xf = _fade_frames(fade, fps)
@@ -102,7 +113,7 @@ def write_fcpxml(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0
                 duration=_t(xf, fps),
             )
             ET.SubElement(transition, "filter-video", ref=dissolve_id, name="Cross Dissolve")
-            if prev.audio_streams and clip.audio_streams:
+            if prev.audio_streams and clip.audio_streams and not audio_cut:
                 ET.SubElement(transition, "filter-audio", ref=crossfade_id, name="Audio Crossfade")
         asset_id = f"r{i}"
         asset = ET.SubElement(
@@ -141,9 +152,14 @@ def write_fcpxml(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0
             name="Cross Dissolve",
             uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265",
         )
-        ET.SubElement(
-            resources, "effect", id=crossfade_id, name="Audio Crossfade", uid="FFAudioTransition"
-        )
+        if not audio_cut:
+            ET.SubElement(
+                resources,
+                "effect",
+                id=crossfade_id,
+                name="Audio Crossfade",
+                uid="FFAudioTransition",
+            )
     ET.indent(root)
     body = ET.tostring(root, encoding="unicode")
     out.write_text(
@@ -152,7 +168,9 @@ def write_fcpxml(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0
     return out
 
 
-def write_otio(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0) -> Path:
+def write_otio(
+    clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0, audio_cut: bool = False
+) -> Path:
     """Write an OpenTimelineIO timeline with matching video and audio tracks.
 
     ``fade`` > 0 puts an SMPTE_Dissolve ``Transition`` at each join on both tracks (audio
@@ -161,12 +179,17 @@ def write_otio(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0) 
     the dissolve plays over its tail handle (the media's ``available_range`` keeps the whole
     file). A clip without audio is a ``Gap`` on the audio track, as long as the clip is on
     the video track, so the later audio stays in line with the video.
+
+    ``audio_cut`` (hard audio cuts in the crossfades): the audio track has no transitions;
+    each join cuts half the fade (whole frames, rounded down, as
+    :func:`cutpoint.assemble.audio_cut_point`) into the dissolve, where final.mp4 cuts.
     """
     import opentimelineio as otio  # noqa: PLC0415
 
     fps = clips[0].fps
     rate = float(fps)
     xf = _fade_frames(fade, fps)
+    cut = xf // 2 if audio_cut else 0
     timeline = otio.schema.Timeline(name=name)
     timeline.global_start_time = otio.opentime.RationalTime(0, rate)
     video = otio.schema.Track(name="V1", kind=otio.schema.TrackKind.Video)
@@ -179,10 +202,19 @@ def write_otio(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0) 
         used = otio.opentime.TimeRange(
             zero, otio.opentime.RationalTime(frames - xf if joined else frames, rate)
         )
+        heard = used  # the audio's part: with audio cuts, from the cut into each dissolve
+        if audio_cut and xf > 0:
+            first = cut if i > 0 else 0
+            last = frames - xf + cut if joined else frames
+            heard = otio.opentime.TimeRange(
+                otio.opentime.RationalTime(first, rate),
+                otio.opentime.RationalTime(last - first, rate),
+            )
         if not clip.audio_streams:
-            audio.append(otio.schema.Gap(source_range=used))
+            audio.append(otio.schema.Gap(source_range=heard))
         for track in (video, audio) if clip.audio_streams else (video,):
-            if xf > 0 and i > 0 and (track is video or clips[i - 1].audio_streams):
+            dissolve = track is video or (clips[i - 1].audio_streams and not audio_cut)
+            if xf > 0 and i > 0 and dissolve:
                 track.append(
                     otio.schema.Transition(
                         name="Cross Dissolve",
@@ -193,7 +225,11 @@ def write_otio(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0) 
                 )
             ref = otio.schema.ExternalReference(target_url=_uri(clip.path), available_range=rng)
             track.append(
-                otio.schema.Clip(name=clip.path.stem, media_reference=ref, source_range=used)
+                otio.schema.Clip(
+                    name=clip.path.stem,
+                    media_reference=ref,
+                    source_range=used if track is video else heard,
+                )
             )
     timeline.tracks.append(video)
     timeline.tracks.append(audio)
@@ -202,16 +238,17 @@ def write_otio(clips: list[MediaInfo], out: Path, name: str, fade: float = 0.0) 
 
 
 def write_timelines(
-    clips: list[MediaInfo], output_video: Path, fade: float = 0.0
+    clips: list[MediaInfo], output_video: Path, fade: float = 0.0, audio_cut: bool = False
 ) -> tuple[Path, Path]:
     """Write ``<name>.fcpxml`` and ``<name>.otio`` next to ``output_video``.
 
     ``fade``: the crossfade final.mp4 was joined with (:func:`cutpoint.assemble.crossfade_duration`,
-    whole frames), 0 for hard cuts.
+    whole frames), 0 for hard cuts. ``audio_cut``: its audio was joined with hard cuts in the
+    crossfades (``--audio-transition cut``).
     """
     name = output_video.stem
-    fcp = write_fcpxml(clips, output_video.with_suffix(".fcpxml"), name, fade)
-    oti = write_otio(clips, output_video.with_suffix(".otio"), name, fade)
+    fcp = write_fcpxml(clips, output_video.with_suffix(".fcpxml"), name, fade, audio_cut)
+    oti = write_otio(clips, output_video.with_suffix(".otio"), name, fade, audio_cut)
     if len({c.fps for c in clips}) > 1:
         logger.warning("Clips have mixed frame rates; timelines use %s fps", clips[0].fps)
     return fcp, oti

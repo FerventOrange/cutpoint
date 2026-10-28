@@ -26,7 +26,7 @@ from typing import NoReturn
 from cutpoint import __version__, cache, jsonout, paths, stage
 from cutpoint.activity import ACTIVITY_FILE
 from cutpoint.activity import resolve as resolve_activity
-from cutpoint.assemble import assemble
+from cutpoint.assemble import AUDIO_TRANSITIONS, assemble, check_transitions
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import export_clips
 from cutpoint.config import (
@@ -530,7 +530,14 @@ def _cmd_assemble(a: argparse.Namespace) -> None:
         caption_model=a.model,
         audio_fade=a.audio_fade,
         compress_peaks=_compress_peaks(a),
+        audio_transition=a.audio_transition,
     )
+
+
+def _check_assemble(parser: argparse.ArgumentParser, a: argparse.Namespace) -> None:
+    """Refuse an ``--audio-transition`` that does not go with ``--transition`` (exit 2)."""
+    if (why := check_transitions(a.transition, a.audio_transition)) is not None:
+        parser.error(f"--audio-transition {a.audio_transition}: {why}")
 
 
 def _cmd_setup(a: argparse.Namespace) -> int:
@@ -1315,6 +1322,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="output file (default: <project>/final.mp4, or final_vertical.mp4 for clips_vertical)",
     )
     asm.add_argument("--transition", choices=["cut", "fade"], default="cut")
+    asm.add_argument(
+        "--audio-transition",
+        choices=AUDIO_TRANSITIONS,
+        help="how the audio joins: cut or crossfade (default: cut with --transition cut, "
+        "crossfade with fade); crossfade needs --transition fade",
+    )
     asm.add_argument("--fade-dur", type=positive_float, default=0.25)
     asm.add_argument(
         "--loudnorm", action="store_true", help="normalise to -14 LUFS, true peak below -1.5 dBTP"
@@ -1334,7 +1347,7 @@ def build_parser() -> argparse.ArgumentParser:
         asm, "for clips not exported with it; the true-peak limiter runs even without --loudnorm"
     )
     _add_json_argument(asm)
-    asm.set_defaults(func=_cmd_assemble)
+    asm.set_defaults(func=_cmd_assemble, usage_check=lambda a: _check_assemble(asm, a))
 
     from cutpoint.pano.cli import add_parser as add_pano_parser  # noqa: PLC0415
 
@@ -1454,6 +1467,14 @@ def _parse(parser: argparse.ArgumentParser, argv: Sequence[str] | None) -> argpa
     if extra:
         try:
             parser.error(f"unrecognized arguments: {' '.join(extra)}")
+        except UsageError as err:
+            if getattr(args, "json_result", False):
+                jsonout.emit_error(args.json_command, jsonout.BAD_ARGS, err.message)
+            raise
+    # A command's check of option combinations argparse cannot express (exit 2, as argparse)
+    if (check := getattr(args, "usage_check", None)) is not None:
+        try:
+            check(args)
         except UsageError as err:
             if getattr(args, "json_result", False):
                 jsonout.emit_error(args.json_command, jsonout.BAD_ARGS, err.message)

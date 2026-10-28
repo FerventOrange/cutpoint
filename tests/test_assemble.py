@@ -396,3 +396,129 @@ def test_burned_in_captions_transcribe_in_the_analysis_language(
     with pytest.raises(_Transcribed):
         assemble.assemble(clips_dir, captions=True, loudnorm=loudnorm)
     assert seen == [{"model": None, "language": language}]
+
+
+# --- assemble --audio-transition {cut,crossfade} ---
+
+
+@pytest.mark.parametrize(
+    ("transition", "audio", "refused"),
+    [
+        ("cut", "crossfade", True),
+        ("cut", "cut", False),
+        ("cut", None, False),
+        ("fade", "crossfade", False),
+        ("fade", "cut", False),
+        ("fade", None, False),
+        ("fade", "echo", True),
+    ],
+)
+def test_check_transitions_refuses_only_an_audio_crossfade_at_cuts(transition, audio, refused):
+    why = assemble.check_transitions(transition, audio)
+    assert (why is not None) is refused
+    if refused and audio == "crossfade":
+        assert "--transition fade" in why
+
+
+def test_the_audio_transition_follows_the_video_transition_by_default():
+    assert assemble.default_audio_transition("cut") == "cut"
+    assert assemble.default_audio_transition("fade") == "crossfade"
+
+
+@pytest.mark.parametrize(
+    ("fade", "fps", "cut"),
+    [
+        (0.5, Fraction(30), 7 / 30),  # 15 frames: the middle rounded down to 7
+        (8 / 24, Fraction(24), 4 / 24),  # 8 frames: 4
+        (1 / 25, Fraction(25), 0.0),  # one frame: cuts at its start
+        (0.4, Fraction(0), 0.2),  # no frame rate: half the fade
+    ],
+)
+def test_audio_cut_point_is_a_whole_frame_in_the_middle_of_the_fade(fade, fps, cut):
+    assert assemble.audio_cut_point(fade, fps) == pytest.approx(cut, abs=1e-9)
+
+
+def test_assemble_refuses_an_audio_crossfade_at_cuts_before_touching_anything(tmp_path):
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    with pytest.raises(ValueError, match="--transition fade"):
+        assemble.assemble(clips_dir, transition="cut", audio_transition="crossfade")
+    assert not (tmp_path / "final.mp4").exists()
+
+
+def test_fade_with_audio_cut_joins_the_audio_at_the_cut_point(tmp_path, monkeypatch):
+    graphs = []
+    monkeypatch.setattr(assemble, "_encode", lambda _files, graph, _out: graphs.append(graph))
+    fps = Fraction(24)
+    infos = [replace(_info(2.1, 2.0), fps=fps) for _ in range(3)]
+    files = [tmp_path / f"00{i}_x.mp4" for i in range(3)]
+    fade = assemble.crossfade_duration(infos, 1 / 3)  # 8 frames
+    cut = assemble.audio_cut_point(fade, fps)
+    assert cut == pytest.approx(4 / 24)
+    assemble.crossfade(files, infos, tmp_path / "final.mp4", fade, audio="cut")
+    graph = graphs[0]
+    edge = f"{assemble.CUT_FADE:.6f}"
+    middle = 2.0 - fade + cut
+    # first: from 0 to vduration - fade + cut, faded out at the cut only
+    assert (
+        f"[a0]apad,atrim=start=0.000000:end={middle:.6f},asetpts=PTS-STARTPTS,"
+        f"afade=t=out:st={middle - assemble.CUT_FADE:.6f}:d={edge}[at0]" in graph
+    )
+    # middle: starts at the cut, ends at the next one, faded at both
+    span = middle - cut
+    assert (
+        f"[a1]apad,atrim=start={cut:.6f}:end={middle:.6f},asetpts=PTS-STARTPTS,"
+        f"afade=t=in:d={edge},afade=t=out:st={span - assemble.CUT_FADE:.6f}:d={edge}[at1]" in graph
+    )
+    # last: from the cut to its video's end, faded in only
+    assert (
+        f"[a2]apad,atrim=start={cut:.6f}:end=2.000000,asetpts=PTS-STARTPTS,"
+        f"afade=t=in:d={edge}[at2]" in graph
+    )
+    assert "[at0][at1][at2]concat=n=3:v=0:a=1[a]" in graph
+    assert "acrossfade" not in graph
+    assert graph.count("xfade=transition=fade") == 2  # the video still crossfades
+
+
+def test_fade_with_audio_cut_adds_the_edge_fades_of_clips_without_baked_ones(tmp_path, monkeypatch):
+    graphs = []
+    monkeypatch.setattr(assemble, "_encode", lambda _files, graph, _out: graphs.append(graph))
+    monkeypatch.setattr(assemble, "baked_fades", lambda _d, files: [0.25, 0.0])
+    infos = [_info(2.0, 2.0), _info(2.0, 2.0)]
+    files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
+    used = assemble._join(
+        files, infos, tmp_path, tmp_path / "final.mp4", "fade", 0.25, 0.3, None, "cut"
+    )
+    assert used > 0
+    assert "acrossfade" not in graphs[0]
+    chains = {c.split("[a")[-1][0]: c for c in graphs[0].split(";") if c.endswith(("[a0]", "[a1]"))}
+    assert "curve=qsin" not in chains["0"]  # baked: no edge fade added
+    assert "afade=t=in:st=0:d=0.300:curve=qsin" in chains["1"]  # the 0.3 s edge fade
+    assert "afade=t=out:st=1.700:d=0.300:curve=qsin" in chains["1"]
+
+
+def test_audio_crossfade_is_still_the_fade_default(tmp_path, monkeypatch):
+    graphs = []
+    monkeypatch.setattr(assemble, "_encode", lambda _files, graph, _out: graphs.append(graph))
+    infos = [_info(2.0, 2.0), _info(2.0, 2.0)]
+    files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
+    assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", "fade", 0.25, 0.25)
+    assert "acrossfade" in graphs[0]
+
+
+@needs_ffmpeg
+def test_assemble_fade_with_audio_cut_keeps_audio_as_long_as_the_video(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    for name, audio in zip(("001_a.mp4", "002_b.mp4", "003_c.mp4"), (2.3, 2.0, 2.0), strict=True):
+        _clip(clips_dir / name, 2.0, audio)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
+    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25, audio_transition="cut")
+    infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
+    fade = assemble.crossfade_duration(infos, 0.25)
+    predicted = assemble.clip_offsets(infos, fade)[-1] + infos[-1].vduration
+    durations = _stream_durations(final)
+    assert durations["video"] == pytest.approx(predicted, abs=0.02)
+    assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
+    assert "Audio Crossfade" not in final.with_suffix(".fcpxml").read_text(encoding="utf-8")
