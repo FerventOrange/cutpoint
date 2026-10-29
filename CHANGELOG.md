@@ -82,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clips`: the `Exporting ...` INFO line says `smart tail off` when no clip gets a smart tail
   (every segment has `"smart_tail": false` or a fixed `"tail"`), as the manifest header does;
   it used to say `on` with the run's setting.
+- HLG exports, UI previews and stills are no longer about 18 % more saturated than a bt.2390
+  reference: zscale now applies the HLG OOTF to luminance (`agamma=0`), as BT.2100 specifies,
+  not to R, G and B one by one. HLG exports take longer (about 25 instead of 45 fps at 1080p);
+  PQ is unchanged (#454).
 
 ## [0.4.0] - 2026-10-29
 
