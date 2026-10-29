@@ -17,7 +17,7 @@ are never changed.
 
 - Trimmed, numbered clips of the best moments
 - A transcript of the video with timestamps
-- A finished video, `final.mp4`, plus timelines you can open in DaVinci Resolve
+- A finished video, `final.mp4`, or a timeline you can open in DaVinci Resolve
 - Vertical (9:16) versions for shorts and reels
 - Works on gameplay, action-cam, sport, funny moments, commentary and 360 video
 

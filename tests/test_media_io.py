@@ -812,4 +812,5 @@ def test_assemble_joins_two_clips(clip, tmp_path):
     info = fu.probe(out)
     assert info.duration == pytest.approx(4.0, abs=0.3)  # two 2 s clips
     assert info.audio_streams == 1
-    assert out.with_suffix(".otio").is_file() and out.with_suffix(".fcpxml").is_file()
+    # mp4 (the default) writes no timelines: --format fcpxml|otio writes one instead (#519)
+    assert not out.with_suffix(".otio").exists() and not out.with_suffix(".fcpxml").exists()

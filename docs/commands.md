@@ -72,6 +72,8 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 |---|---|---|
 | `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
 | `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
+| `temporary_clips` | `assemble <project>`, `edit --no-keep-clips` | The clips were exported into a temporary folder and removed after the join; `outputs` lists no clips. Export them with `clips` to keep them |
+| `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
@@ -103,8 +105,8 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `analyze` | `highlights`, `transcript`, `candidates` (count), `suggested_top` (when set), `style` |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
 | `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
-| `assemble` | `final`, `fcpxml`, `otio`, `srt`, `duration`, `clip_count` |
-| `edit` | `kind`, the outputs of `analyze`, `clips` and `assemble`, and `copy` and `copy_srt` (the `<name>-final` files; `copy_srt` is `null` if none was written). One envelope holds the warnings of all steps |
+| `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`. From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
+| `edit` | `kind`, the outputs of `analyze`, `clips` (none with `--no-keep-clips`) and `assemble`, and `copy` and `copy_srt` (the `<name>-final` files: the video, or the timeline with `--format fcpxml\|otio`; `copy_srt` is `null` if none was written). One envelope holds the warnings of all steps |
 | `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `edition`, `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
@@ -221,7 +223,8 @@ opens the folder with the project's videos in the system file manager (hidden wh
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
 in the column header. "Analyze again" asks for confirmation first. The Export tab has one "Show Exports
 Folder" button: it opens the latest export's `clips_ui_*` folder, or the project folder (final
-videos, `.srt`, `.fcpxml`, `.otio`) once that export is assembled.
+videos and `.srt`, and a `.fcpxml` or `.otio` timeline only when assembled with `--format
+fcpxml|otio`) once that export is assembled.
 
 After analysis, the Moments list has a search field (label, words spoken, file name or candidate id such as `h001`) and a
 funnel button beside it that opens Sort and filter. Sort by is Score (the default; rank #1
@@ -566,7 +569,8 @@ See [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md) for drivers and device 
 
 ```text
 cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [--out DIR]
-              [--top N] [--max-total S] [--vertical] [--force] [--events]
+              [--top N] [--max-total S] [--vertical] [--force] [--no-keep-clips]
+              [--format mp4|fcpxml|otio] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
               [--ollama-model MODEL] [--skip STEP [STEP ...]]
               [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
@@ -575,7 +579,8 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
 
 Runs [`analyze`](#analyze), [`clips`](#clips) and [`assemble`](#assemble) in one go with the
 settings of a kind, then copies the final video and its subtitles to `<name>-final.mp4` and
-`.srt` in the project folder (a hard link where the file system allows it). `<name>` is the
+`.srt` in the project folder (a hard link where the file system allows it). The clips stay in
+the clips folder unless `--no-keep-clips` is given. `<name>` is the
 first input's name: a file's name without extension, or the folder's name. Nothing is written next to the source videos: a project folder that holds
 one of them is refused.
 
@@ -592,6 +597,8 @@ one of them is refused.
 | `--out DIR` | Project folder. Default: `<projects>\<name>` (the first input's name, as above) |
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
+| `--keep-clips` / `--no-keep-clips` | Keep the clips in `clips` (default). `--no-keep-clips` exports them into a temporary folder in the project, as [`assemble <project>`](#assemble-from-a-project) does, and removes it after the join (after a failure or Ctrl+C too): the project gets `final.mp4`, `final.srt` and the `<name>-final` copies, and an existing clips folder is not touched. Refused (exit 2) with `--kind clips`, a timeline `--format` or `--force` |
+| `--format mp4\|fcpxml\|otio` | As on [`assemble`](#assemble): `mp4` (default) makes the final video; `fcpxml` or `otio` writes only that timeline, referencing the kept clips, and copies it to `<name>-final.fcpxml` or `.otio` |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
@@ -604,7 +611,8 @@ one of them is refused.
 With `CUTPOINT_PROGRESS=1`, `edit` reports 8 [steps](#progress-output): the 6 of `analyze`, then `clips` and `assemble`. `--kind clips` still assembles. With `--events`, `keyframes` is reported again after `vision`, for the VLM layer.
 
 Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
-files removed) and logs the final video, its subtitles and the clips folder last. To change the
+files removed) and logs the final video (or timeline), its subtitles and the clips folder (or
+`none (temporary, removed)`) last. To change the
 cut afterwards, delete or rename clips (rename a clip's `.srt` with it) and run `assemble`;
 that updates `final.mp4` and `final.srt`, not the `<name>-final` copies.
 
@@ -1012,13 +1020,16 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
 ## assemble
 
 ```text
-cutpoint assemble <clips_dir> [--out final.mp4] [--transition cut|fade] [--fade-dur 0.25]
-                  [--audio-transition cut|crossfade] [--audio-fade S] [--loudnorm] [--compress-peaks off|light|strong]
-                  [--captions] [--model MODEL] [--json]
+cutpoint assemble <clips_dir> [--out final.mp4] [--format mp4|fcpxml|otio] [--transition cut|fade]
+                  [--fade-dur 0.25] [--audio-transition cut|crossfade] [--audio-fade S] [--loudnorm]
+                  [--compress-peaks off|light|strong] [--captions] [--model MODEL] [--json]
+cutpoint assemble <project> [--top N | --ids h001 h004 ... | --segments FILE] [--max-total S]
+                  [the options above] [the export options of clips]
 ```
 
 Joins the `.mp4` files currently in the folder, in natural filename order (`2_x` before
-`10_x`). Like `clips`, it first puts back or removes what an interrupted `clips --force` or
+`10_x`). Given a project instead, it exports the moments first (see
+[Assemble from a project](#assemble-from-a-project)). Like `clips`, it first puts back or removes what an interrupted `clips --force` or
 `extend` left next to the folder (`.<folder>.cutpoint-tmp`, `.<folder>.cutpoint-bak`), and it
 holds the folder's [lock](#clips) while it runs. The audio fade and peak compression baked
 into a clip renamed during review are read from its manifest entry, matched by size.
@@ -1066,17 +1077,66 @@ into a clip renamed during review are read from its manifest entry, matched by s
   chunks. The ASS file is kept next to the output. `--model` picks the Whisper model.
 - `--json` writes the result as one [JSON envelope](#json-output) on stdout.
 - Default output: `<project>\final.mp4`; `final_vertical.mp4` for `clips_vertical`;
-  `final_<name>.mp4` for other folders. A `.fcpxml` and a `.otio` timeline are always written
-  next to it. With `--transition fade` (and the `edit` kinds that crossfade) they hold a
-  cross-dissolve at each join, starting on the edit, with the clips and total length of
-  `final.mp4`; with cuts they are hard cuts. On the OTIO audio track a clip without audio
-  leaves a gap, so later audio stays in sync.
+  `final_<name>.mp4` for other folders.
+- `--format mp4|fcpxml|otio` (default `mp4`) picks what is written. `mp4` writes the video and
+  no timelines (0.4.0 and earlier always wrote a `.fcpxml` and a `.otio` next to it; scripts
+  that read them must now ask for one). `fcpxml` (Final Cut Pro, DaVinci Resolve) or `otio`
+  (DaVinci Resolve 18.5+, OpenTimelineIO tools) writes only that timeline, named after
+  `--out` with the format's extension (`final.fcpxml`), plus `final.srt`. It references the
+  clips in the folder by absolute path, so keep them; nothing is joined or encoded, so it
+  takes about a second. `--loudnorm`, `--captions` and `--model` are refused with it (exit 2);
+  `--audio-fade` and `--compress-peaks` do not apply. With `--transition fade` (and the
+  `edit` kinds that crossfade) the timeline holds a cross-dissolve at each join, starting on
+  the edit, with the clips and total length `final.mp4` would have; with cuts it has hard
+  cuts. On the OTIO audio track a clip without audio leaves a gap, so later audio stays in
+  sync. Other formats of the same name left by an earlier run are not removed; a WARNING
+  names them.
 - Subtitles `final.srt` (named after the output) are written next to it from the clips'
   cached source transcripts, placed on the joined timeline (crossfades included) by each
   clip's `manifest.json` start and end. A clip renamed during review has no manifest entry;
   its own `.srt` (renamed with it) is used instead. Clips with neither, or whose source has no
   cached transcript, get none; one INFO line names them, and with none at all no `.srt` is
   written.
+
+### Assemble from a project
+
+`cutpoint assemble <project>` makes the final video without keeping clips. The positional is
+read as a project when it holds `highlights.json` (a bare name is also looked up in the
+projects folder, as for `clips`) or when `--segments` is given (then it is the project to
+write to, as for `clips --segments`). Everything else is a clips folder, as before; the
+options below are then refused (`bad_args`, exit 1).
+
+- The moments are chosen as `clips` chooses them: `--top N`, `--ids`, `--segments FILE`,
+  `--max-total S` and `--order` (default: `suggested_top` of `highlights.json`). `--mix` is
+  not offered; pass `--segments <project>/mix_segments.json --order arc`.
+- They are exported with the export options of [`clips`](#clips): `--vertical`, `--size`,
+  `--crop`, `--smart-tail`, `--tail-min`, `--tail-max`, `--event-tails`, `--event-window`,
+  `--extend`, `--extend-start`, `--extend-end`, `--speech-aware`, `--speech-max-extend`,
+  `--speech-max-lead`, `--pano-source`, `--pano-cmd-every`, `--lut`, `--lut-strength`,
+  `--color` and `--color-strength`. `--audio-fade` and `--compress-peaks` are baked into the
+  clips (and so not applied twice in the join), as in `edit`.
+- With `--format mp4` (default) the clips go into a temporary folder in the project,
+  `.assemble-tmp-<id>`, under the same per-folder [lock](#clips) `clips` takes. The join and
+  `final.srt` (from the clips' subtitles) follow, then the folder is removed: after success,
+  after a failure and on Ctrl+C or Cancel (exit 130) alike, with its staging folder and, for
+  360 clips, its camera paths in `pano_paths\.assemble-tmp-<id>`. Only `final.mp4`
+  (`final_vertical.mp4` with `--vertical`, or `--out`) and `final.srt` are left; an existing
+  `clips` folder is never touched. Camera paths edited for a `clips` export are not reused by
+  a temporary export. The run holds its own lock (`..assemble-tmp-<id>.run.cutpoint-lock`)
+  while it lasts, so a later run removes the folders left by one that was killed hard (a UI
+  Cancel included) and keeps those of a run still going. `--force` is refused (nothing is
+  replaced). Before the export, the free space of the project's drive is checked, as
+  `360 stitch` does: it must hold the clips, the final video and its working copy (estimated
+  at 20 Mb/s, the typical rate at 1080p30, scaled by the frame size and by the frame rate
+  above 30 fps) plus 1 GB, or the run stops before exporting. With `--json`, `outputs` has no
+  clip paths and a `temporary_clips` warning says so; a folder that could not be removed (open
+  in another program) is named by a `temporary_clips_left` warning instead.
+- With `--format fcpxml` or `otio` the timeline references the clips, so they are kept: they
+  are exported into the clips folder `clips` uses (`clips`, or `clips_vertical`), with the
+  same rules (a non-empty folder needs `--force`), and the timeline is written as from that
+  folder. This is the same as `clips` followed by `assemble <clips_dir> --format`.
+- To review, rename or delete clips before the join, use `clips` and `assemble <clips_dir>`
+  instead.
 
 ### Peak compression
 

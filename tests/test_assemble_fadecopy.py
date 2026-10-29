@@ -523,8 +523,7 @@ def test_the_copied_join_equals_the_old_one_in_everything_but_its_encoder_bytes(
     new = _assemble_to(clips, tmp_path / "new", **kw)
     assert ("stream-copied the rest" in caplog.text) == (transition == "fade")
     assert _frames_and_audio(new) == _frames_and_audio(old)
-    for ext in (".srt", ".otio", ".fcpxml"):
-        assert new.with_suffix(ext).read_bytes() == old.with_suffix(ext).read_bytes()
+    assert new.with_suffix(".srt").read_bytes() == old.with_suffix(".srt").read_bytes()
     assert new.with_suffix(".srt").stat().st_size > 0
     assert not list(new.parent.glob(".*fadecopy*"))
     if transition == "cut":

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `assemble <project>` makes the final video without keeping clips (#519): given a project
+  (with `highlights.json`, or `--segments`) instead of a clips folder, it picks the moments as
+  `clips` does (`--top`, `--ids`, `--segments`, `--max-total`, `--order`) and exports them with
+  the `clips` export options (tails, padding, speech, `--vertical`, `--size`, `--crop`, 360,
+  `--lut`, `--color`) into a temporary `.assemble-tmp-<id>` folder in the project, under the
+  same per-folder lock `clips` takes. It then writes `final.mp4` and `final.srt` and removes
+  the folder (with its staging and 360 paths folders), after success, a failure or Ctrl+C
+  alike; an existing `clips` folder is never touched. A run holds a lock of its own until then,
+  so the next run removes the folders a hard-killed one left. The free space for the clips and
+  the final video is checked before the export. With `--format fcpxml|otio` the clips are kept
+  in the clips folder (`--force` as for `clips`). `--json` lists no clip paths and adds a
+  `temporary_clips` warning, or `temporary_clips_left` for a folder that could not be removed.
+- `edit --no-keep-clips`: the same for `edit`, which still keeps its clips by default. Refused
+  with `--kind clips`, a timeline `--format` or `--force`.
+
 - 360 preview API (#517): `candidates.preview_path(project, source, start, end, vertical=)`
   gives the path to preview a moment with: the one `360 analyze` cached (`cached`), one planned
   now as `clips` would (`planned`, with the reason), or, when the director cannot plan, a constant
@@ -92,6 +107,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diagnostics for previews (#517).
 
 ### Changed
+
+- `assemble` and `edit` have an output format, `--format mp4|fcpxml|otio` (#519). `mp4`, the
+  default, writes the final video and `final.srt` and no longer writes `final.fcpxml` and
+  `final.otio`. `fcpxml` or `otio` writes only that timeline, referencing the clips, and
+  `final.srt`, without joining or encoding anything (no `final.mp4`; `--loudnorm`,
+  `--captions` and `--model` are refused). Scripts that read the timelines must now pass
+  `--format fcpxml` or `--format otio`. `--json` `outputs` of `assemble` has a new `format` key
+  and only the file written (`final`, `fcpxml` or `otio`); `edit` copies a timeline to
+  `<name>-final.fcpxml` or `.otio`.
 
 - `cutpoint ui` Settings > AI assistant: Model is a dropdown of the provider's models (#521)
   instead of a text box with suggestions. "Other model…" shows a Model id field for an id the
