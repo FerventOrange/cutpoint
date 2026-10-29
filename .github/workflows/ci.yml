@@ -306,6 +306,7 @@ jobs:
             $env:CUTPOINT_DRY_RUN = $saved.D; $env:CUTPOINT_LITE = $saved.L; $env:CUTPOINT_NO_FFMPEG = $saved.F; $env:CUTPOINT_SOURCE = $null
             if ($rc -eq 0) { throw "a failed iex run must exit nonzero" }
           }
+          $global:LASTEXITCODE = 0  # the last case fails on purpose; the step's exit code must not inherit it
       # Real lite install of this checkout into the runner (no torch, no models), no prompts.
       - name: Install (lite, from this checkout) (Windows)
         if: runner.os == 'Windows'
