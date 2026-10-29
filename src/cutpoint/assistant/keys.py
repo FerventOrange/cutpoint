@@ -1,12 +1,12 @@
 """API keys of the hosted assistant providers: looked up, saved in the keyring, never shown.
 
-A key belongs to a provider *and the host it is sent to*. It is read, in order, from
-``CUTPOINT_ASSISTANT_API_KEY``, the provider's own variable (``ANTHROPIC_API_KEY``,
-``OPENAI_API_KEY``, ``XAI_API_KEY``; only for the provider's official host,
-:data:`OFFICIAL_HOST`, so an OpenAI key never goes to OpenRouter or a LAN server, nor an xAI key
-anywhere but ``api.x.ai``) and the system keyring (service ``cutpoint``, user ``openai`` /
-``anthropic`` / ``xai`` for the official host, else ``<provider>@<host>``). ``cutpoint ui``
-saves a key there from Settings.
+A key belongs to a provider *and the host it is sent to*. It is read, in order, from the
+provider's own variable (``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``, ``XAI_API_KEY``; only for the
+provider's official host, :data:`OFFICIAL_HOST`, so an OpenAI key never goes to OpenRouter or a
+LAN server, nor an xAI key anywhere but ``api.x.ai``), the system keyring (service ``cutpoint``,
+user ``openai`` / ``anthropic`` / ``xai`` for the official host, else ``<provider>@<host>``;
+``cutpoint ui`` saves a key there from Settings) and ``CUTPOINT_ASSISTANT_API_KEY``, which is
+only for custom and self-hosted base URLs: it never goes to an official host (#504).
 
 A key is never written to ``config.json`` or project files, never sent to the page (only where
 it comes from: :func:`status`) and never put in a job's arguments. ``cutpoint ui`` moves the
@@ -27,7 +27,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-ENV_KEY = "CUTPOINT_ASSISTANT_API_KEY"  # any provider's key; checked first
+ENV_KEY = "CUTPOINT_ASSISTANT_API_KEY"  # a custom host's key; never for OFFICIAL_HOST (#504)
 PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "xai": "XAI_API_KEY"}
 ENV_VARS = (ENV_KEY, *PROVIDER_ENV.values())  # removed from every child process's environment
 KEYED = tuple(PROVIDER_ENV)  # providers that take a key
@@ -91,28 +91,48 @@ def ring_user(provider: str, host: str) -> str:
     return provider if official(provider, host) else f"{provider}@{host.lower()}"
 
 
+def shared_for(host: str) -> bool:
+    """Whether :data:`ENV_KEY` may be sent to ``host``: any host but the official ones
+    (:data:`OFFICIAL_HOST`, whichever provider is pointed at it; #504)."""
+    h = host.lower().rstrip(".")  # api.openai.com. is api.openai.com
+    return bool(h) and h not in OFFICIAL_HOST.values()
+
+
+def env_names(provider: str, host: str) -> list[str]:
+    """The variables that may hold ``provider``'s key for ``host``: its own for its official
+    host, :data:`ENV_KEY` for a host that is not official, else none."""
+    if official(provider, host) and provider in PROVIDER_ENV:
+        return [PROVIDER_ENV[provider]]
+    return [ENV_KEY] if shared_for(host) else []
+
+
+def has_shared() -> bool:
+    """Whether :data:`ENV_KEY` is set (never its value)."""
+    return bool(_env(ENV_KEY))
+
+
 def lookup(provider: str, host: str, *, shared: bool = True) -> tuple[str | None, str | None]:
     """``(key, where)`` of ``provider``'s key for ``host``: ``where`` is ``"env"`` or
-    ``"keyring"``; ``(None, None)`` when there is none. The provider's own variable counts only
-    for its official host; :data:`ENV_KEY` for any, unless ``shared`` is False (a provider
-    that is not the saved one: the shared key may be meant for another host)."""
-    names = (
-        ENV_KEY if shared else None,
-        PROVIDER_ENV.get(provider) if official(provider, host) else None,
-    )
-    for name in names:
-        if name and (value := _env(name)):
-            _remember(value)
-            return value, "env"
+    ``"keyring"``; ``(None, None)`` when there is none. In order: the provider's own variable
+    (only for its official host), its keyring entry for ``host``, then :data:`ENV_KEY`, only for
+    a host that is not official (:func:`shared_for`, #504) and unless ``shared`` is False (a
+    provider that is not the saved one: the shared key may be meant for another host)."""
+    own = PROVIDER_ENV.get(provider) if official(provider, host) else None
+    if own and (value := _env(own)):
+        _remember(value)
+        return value, "env"
     try:
         value = (_keyring().get_password(SERVICE, ring_user(provider, host)) or "").strip()
     except Exception as err:  # noqa: BLE001 - no backend, a locked store: as if no key
         logger.debug("keyring: could not read the %s key (%s)", provider, type(err).__name__)
-        return None, None
-    if not value:
-        return None, None
-    _remember(value)
-    return value, "keyring"
+        value = ""
+    if value:
+        _remember(value)
+        return value, "keyring"
+    if shared and shared_for(host) and (value := _env(ENV_KEY)):
+        _remember(value)
+        return value, "env"
+    return None, None
 
 
 def status(provider: str, host: str) -> str | None:
@@ -142,9 +162,10 @@ def save(provider: str, key: str, host: str) -> None:
     try:
         ring.set_password(SERVICE, ring_user(provider, host), key)
     except Exception as err:  # noqa: BLE001 - any backend error, named without the key
+        names = env_names(provider, host)
+        hint = f"; or set {names[0]} before starting cutpoint ui" if names else ""
         raise KeyringError(
-            f"the keyring did not save the key ({type(err).__name__}); or set "
-            f"{PROVIDER_ENV[provider]} (or {ENV_KEY}) before starting cutpoint ui"
+            f"the keyring did not save the key ({type(err).__name__}){hint}"
         ) from None
 
 

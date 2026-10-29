@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` AI assistant: `CUTPOINT_ASSISTANT_API_KEY` no longer wins over a provider's own
+  key and is never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai` (it is for custom
+  base URLs only); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` or the keyring key is
+  used. Saving a provider in Settings contacts no host that is not this machine (with or without
+  a key) before you agree to it in AI Chat (#504).
 - `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
   slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
   the keyboard and screen readers (#518).

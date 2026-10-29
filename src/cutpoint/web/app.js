@@ -3530,8 +3530,8 @@ async function saveSettings() {
       return;
     }
     if (st.assistant_note && !body.projects_dir) {
-      // reached, but the key was not proven (a host that lists its models without one)
-      note.textContent = `Saved. ${st.assistant_note}`; // a success: neutral, not the error line
+      // saved without a full check (consent pending, or a key not proven): neutral, not the error line
+      note.textContent = `Saved. ${st.assistant_note}`;
       return;
     }
   }
@@ -3615,7 +3615,7 @@ function renderAiFields(model) {
   $('#setAiModelHint').textContent = AI_MODEL_HINTS[custom ? AI_CUSTOM : p.name] ?? '';
   $('#setAiUrlField').hidden = $('#setAiUrlHint').hidden = !custom;
   $('#setAiUrlHint').textContent = custom ? 'Set in config.json (assistant.url); edit that file to change it.' : '';
-  const keyed = p.key_env.length > 0;
+  const keyed = p.name in (S.ai.keys ?? {}); // key_env may be empty: a keyring key only (#504)
   $('#setAiKey').hidden = !keyed;
   if (!keyed) return;
   const where = S.ai.keys[p.name];
@@ -3629,7 +3629,17 @@ function renderAiFields(model) {
   $('#setAiKeySave').disabled = $('#setAiKeyClear').disabled = unsaved;
   $('#setAiKeyHint').textContent = unsaved
     ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
-    : `Read from ${p.key_env.join(' or ')} when cutpoint ui starts, else from the system keyring. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.${where === 'env' ? ' The environment variable is used before a saved key.' : ''}`;
+    : `${aiKeyOrder(p.key_env)} Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.`;
+}
+
+/** Where a key is read from, in order (#504): the provider's own variable before a saved key;
+ *  a saved key before CUTPOINT_ASSISTANT_API_KEY, which is only for custom base URLs. */
+function aiKeyOrder(env) {
+  if (!env.length) return 'Read from the system keyring.';
+  if (env[0] === 'CUTPOINT_ASSISTANT_API_KEY') {
+    return `Read from the system keyring, else from ${env[0]} when cutpoint ui starts.`;
+  }
+  return `Read from ${env.join(' or ')} when cutpoint ui starts, else from the system keyring.`;
 }
 
 /** The Model select (#521): the default, the models the provider listed, "Other model…" last.

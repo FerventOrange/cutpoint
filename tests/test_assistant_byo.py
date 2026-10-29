@@ -398,7 +398,7 @@ def test_a_hosted_provider_without_a_key_says_how_to_add_one(monkeypatch, cls, e
     for ask in (p.capabilities, lambda: p.chat([{"role": "user", "content": "hi"}])):
         with pytest.raises(ProviderError, match="No API key") as err:
             ask()
-        assert env in str(err.value) and "CUTPOINT_ASSISTANT_API_KEY" in str(err.value)
+        assert env in str(err.value) and "CUTPOINT_ASSISTANT_API_KEY" not in str(err.value)
         assert "keyring" in str(err.value)
     assert wire.sent == []
     assert "No API key" in (providers.check(p) or "")
@@ -508,7 +508,7 @@ def test_a_turn_runs_over_each_hosted_adapter_and_sends_file_names_never_paths(
 # -- keys ----------------------------------------------------------------------------------
 
 
-def test_a_key_comes_from_the_cutpoint_variable_then_the_provider_one_then_the_keyring(
+def test_a_key_comes_from_the_provider_variable_then_the_keyring_then_the_cutpoint_one(
     monkeypatch, ring: FakeRing
 ) -> None:
     an, oa = "api.anthropic.com", "api.openai.com"
@@ -522,8 +522,46 @@ def test_a_key_comes_from_the_cutpoint_variable_then_the_provider_one_then_the_k
     assert keys.lookup("anthropic", "proxy.example.com") == (None, None)  # official host only
     assert keys.lookup("openai", oa) == (None, None)  # another provider's variable is not used
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", "cp-key-12345678")
-    for provider, host in (("anthropic", an), ("openai", oa), ("openai", "openrouter.ai")):
-        assert keys.lookup(provider, host) == ("cp-key-12345678", "env")
+    assert keys.lookup("anthropic", an) == ("env-key-1234567", "env")  # the own one wins (#504)
+    assert keys.lookup("openai", oa) == (None, None)  # never for an official host (#504)
+    assert keys.lookup("openai", "openrouter.ai") == ("cp-key-12345678", "env")
+    ring.saved[("cutpoint", "openai@openrouter.ai")] = "ring-key-654321"
+    assert keys.lookup("openai", "openrouter.ai") == ("ring-key-654321", "keyring")
+
+
+def test_the_own_key_beats_the_shared_key_on_the_wire(home, monkeypatch) -> None:
+    """#504: with both CUTPOINT_ASSISTANT_API_KEY (an OpenRouter key) and ANTHROPIC_API_KEY set,
+    api.anthropic.com gets only the Anthropic key."""
+    monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", OTHER)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    set_config(home, assistant={"provider": "anthropic", "model": "m"})
+    wire = Wire(monkeypatch, an_reply({"type": "text", "text": "ok"}))
+    providers.make().chat(HI)
+    sent = wire.sent[0]
+    assert sent["url"].startswith("https://api.anthropic.com/")
+    assert sent["headers"]["x-api-key"] == KEY and OTHER not in json.dumps(sent["headers"])
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("anthropic", ""),
+        ("xai", ""),
+        ("openai", "https://api.x.ai/v1"),  # another provider's official host: never either
+        ("openai", "https://api.openai.com./v1"),  # the same host with a trailing dot
+    ],
+)
+def test_the_shared_key_never_reaches_an_official_host(home, monkeypatch, name, url) -> None:
+    """#504: CUTPOINT_ASSISTANT_API_KEY is for custom and self-hosted URLs only."""
+    monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
+    set_config(home, assistant={"provider": name, "model": "m", "url": url})
+    wire = Wire(monkeypatch)  # any request fails the test
+    p = providers.make()
+    assert not p.has_key
+    with pytest.raises(ProviderError, match="No API key"):
+        p.chat(HI)
+    assert "No API key" in (providers.check(p) or "")
+    assert wire.sent == []
 
 
 def test_keys_are_saved_and_cleared_in_the_keyring_only(ring: FakeRing) -> None:
