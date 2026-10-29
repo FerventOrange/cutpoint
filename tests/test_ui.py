@@ -7106,3 +7106,103 @@ def test_color_starts_from_config_json_but_never_on_for_gaming() -> None:
     assert "if (COLOR_STOPS.includes(st.color)) S.colorDefault = st.color;" in js
     adopt = re.search(r"function adopt\(p, switched\) \{\n(.*?)\n\}", js, re.S)[1]
     assert "if (switched) startColor();" in adopt
+
+
+def _color_note(tmp: Path, clips: list[dict]) -> str:
+    """Run util.js's colorNote under node on manifest ``clips`` (see ``_sort_positions``)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    mod = tmp / "util.mjs"
+    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
+    script = (
+        f"import {{ colorNote }} from {json.dumps(mod.resolve().as_uri())};"
+        "console.log(JSON.stringify(colorNote(JSON.parse(process.argv[1]))));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, json.dumps(clips)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )  # fmt: skip
+    return json.loads(out.stdout)
+
+
+def _graded(method: str, skip: str | None) -> dict:
+    return {"file": "001_a.mp4", "color": {"method": method, "strength": 1.0, "skip": skip}}
+
+
+def test_color_note_counts_the_clips_graded_and_why_the_others_were_not(tmp_path: Path) -> None:
+    """A dive exported with Color on had every clip vetoed and the page said nothing (#461
+    follow-up): Export now says how many clips the grade changed and why it left the others
+    as is, grouping the reasons, in a sentence that starts with a space."""
+    vetoed = [_graded("underwater", "veto_clipped") for _ in range(4)]
+    assert _color_note(tmp_path, vetoed) == " Color: no clips graded (too much highlight clipping)."
+    good = [_graded("auto", s) for s in (None, "good", None, None)]
+    assert _color_note(tmp_path, good) == (
+        " Color: 3 of 4 clips graded; 1 left as is (already looked good)."
+    )
+    skips = ("veto_m3_drop", "veto_clipped", "veto_m3_drop", None)
+    assert _color_note(tmp_path, [_graded("underwater", s) for s in skips]) == (
+        " Color: 1 of 4 clips graded; 3 left as is"
+        " (would wash out the color: 2, too much highlight clipping: 1)."
+    )
+    other = ("360", "log", "no_frames", "veto_cast", "veto_m3", "veto_new", "not_underwater")
+    assert _color_note(tmp_path, [_graded("auto", s) for s in (*other, "veto_faded", "good")]) == (
+        " Color: no clips graded (360 footage: 1, log footage: 1, frames could not be read: 1,"
+        " would add a color cast: 1, would oversaturate: 1, veto_new: 1,"
+        " did not look underwater: 1, would wash out the color: 1, already looked good: 1)."
+    )
+    # PR #495's veto_faded reads as veto_m3_drop does, so the two group together
+    faded = [_graded("auto", s) for s in ("veto_faded", "veto_m3_drop", None)]
+    assert _color_note(tmp_path, faded) == (
+        " Color: 1 of 3 clips graded; 2 left as is (would wash out the color)."
+    )
+    assert _color_note(tmp_path, [_graded("auto", None)] * 2) == " Color: all 2 clips graded."
+    assert _color_note(tmp_path, [_graded("auto", None)]) == " Color: 1 clip graded."
+    # Color Off, an export from before --color, or a LUT grade (no ``method``): no sentence
+    assert _color_note(tmp_path, [{"file": "a.mp4", "color": None}, {"file": "b.mp4"}]) == ""
+    assert _color_note(tmp_path, [{"file": "a.mp4", "lut": {"file": "x.cube"}}]) == ""
+    assert _color_note(tmp_path, []) == ""
+
+
+def test_color_note_counts_a_clip_at_strength_0_as_not_graded(tmp_path: Path) -> None:
+    """Strength 0% applies no grade with no skip reason: such a clip is not counted as graded,
+    and an export whose every clip had Strength 0% gets no sentence."""
+
+    def at(strength: float, skip: str | None = None) -> dict:
+        return {"file": "a.mp4", "color": {"method": "auto", "strength": strength, "skip": skip}}
+
+    assert _color_note(tmp_path, [at(0.0), at(0.0)]) == ""
+    assert _color_note(tmp_path, [at(0.5), at(0.0)]) == (
+        " Color: 1 of 2 clips graded; 1 left as is (strength 0%)."
+    )
+    assert _color_note(tmp_path, [at(0.5, "good"), at(0.0), at(0.0)]) == (
+        " Color: no clips graded (already looked good: 1, strength 0%: 2)."
+    )
+    # an entry without ``strength`` is at full strength
+    assert _color_note(tmp_path, [{"file": "a.mp4", "color": {"method": "auto"}}]) == (
+        " Color: 1 clip graded."
+    )
+
+
+def test_export_state_shows_the_color_note_from_the_manifest(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Contract pin: the project view passes each clip's manifest ``color`` entry to the page,
+    and every "Latest export" sentence of the Export state carries colorNote's sentence."""
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    (p / "clips_ui_1").mkdir()
+    entry = {"method": "auto", "strength": 1.0, "skip": "veto_clipped"}
+    clip = {"file": "001_a.mp4", "color": entry}
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": [clip]})
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    view = client.get(f"/api/projects/{pid}").json()
+    assert view["clips"]["clips"][0]["color"] == entry
+    js = _web("app.js")
+    assert re.search(r"import \{[^}]*\bcolorNote\b[^}]*\} from './util.js';", js)
+    body = re.search(r"function renderExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "+ colorNote(clips?.clips);" in body
+    # always shown (say, not the advanced latest()), in each of the three exported branches
+    for shown in ("say(`${note} Automatic picks", "say(note)",
+                  "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
+        assert body.count(shown) == 1, shown
