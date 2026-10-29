@@ -195,8 +195,8 @@ and `model`, with `url` empty (the preset's own):
 |---|---|---|---|
 | None (local Ollama) | `ollama` | `ollama_url` (`OLLAMA_HOST`) | any pulled model; empty: `qwen3.5:9b`, else the vision model |
 | Claude (Anthropic) | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered |
-| Codex (OpenAI) | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name |
-| Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name |
+| Codex (OpenAI) | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered |
+| Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name; `grok-4.7`, `grok-4.6`, `grok-4.5`, `grok-4.3` and `grok-build-0.1` offered |
 
 A `url` set in `config.json` that is not the preset's (OpenRouter, LM Studio, a LAN Ollama) keeps
 working and shows as "Custom (from config.json)": its base URL is read-only (edit the file to
@@ -230,9 +230,9 @@ host of its base URL. It is taken, in order, from:
 
 | Source | Used for |
 |---|---|
-| `CUTPOINT_ASSISTANT_API_KEY` | any provider and any host (for example a key that only Cutpoint uses, or an OpenRouter key) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com` / `api.x.ai`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine, and an xAI key never anywhere but `api.x.ai` (not to the `openai` provider with an `api.x.ai` URL either) |
 | The system keyring (service `cutpoint`) | saved from Settings (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
+| `CUTPOINT_ASSISTANT_API_KEY` | custom and self-hosted base URLs only (for example an OpenRouter key, or a key for your own server). Never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai`, not even when no other key is set: those need their own variable or a keyring key |
 
 A preset's key is for its own host, so it can be saved before the settings. For a custom base
 URL, save the settings first, then save the key for it. The key is sent

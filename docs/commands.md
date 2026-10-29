@@ -421,25 +421,29 @@ lists its pulled models (`/api/tags`); Anthropic, OpenAI and xAI list theirs (`/
 the key) only once the key is set and you agreed to that provider and host in the AI Chat tab
 (see below); until then nothing is asked and the field says why. A preset other than the saved
 provider uses only its own key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` or its
-keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which may be meant for the saved host.
+keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which is only for custom base URLs.
 Models that do not chat here are left out by name: ids starting with `text-embedding-`, `tts-`,
 `whisper-`, `dall-e-`, `omni-moderation-`, `text-moderation-`, `gpt-image-`, `sora-`,
 `davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
 `imagine` or `codex` (OpenAI and xAI). A list is
 kept for 10 minutes; Refresh list asks again. The Model dropdown offers the listed models; when
-the list cannot be loaded it offers the preset's own models (Claude's two, Ollama's `qwen3.5:9b`) and the saved model,
+the list cannot be loaded it offers the preset's own models (Claude's two, OpenAI's four and xAI's five current ones, Ollama's `qwen3.5:9b`) and the saved model,
 and "Other model…" shows a Model id field to type any other id.
 
 Saving there checks that the provider answers (reachable, a model chosen and, at
 `api.openai.com`, `api.x.ai` and `api.anthropic.com`, the key accepted) and says why when it
-cannot. Another
+cannot. A provider whose host is not this machine is not contacted before you agree to it in
+the AI Chat tab, with or without a key: until then Save sends nothing, says only whether a key
+is missing, and notes that the check waits; the check
+runs when you save again after agreeing, and the first message checks it too. Another
 host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
-send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-`XAI_API_KEY` or `CUTPOINT_ASSISTANT_API_KEY` when `cutpoint ui` starts, else from the system
-keyring: Settings has Save key and Clear key. `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`, `api.openai.com` and
-`api.x.ai`; a key for another host (OpenRouter, a LAN
-server) comes from `CUTPOINT_ASSISTANT_API_KEY` or is saved for that base URL, and goes only over
+send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+`XAI_API_KEY` when `cutpoint ui` starts, then from the system keyring (Settings has Save key and
+Clear key), then, only for a custom base URL, from `CUTPOINT_ASSISTANT_API_KEY`.
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`,
+`api.openai.com` and `api.x.ai`, and `CUTPOINT_ASSISTANT_API_KEY` never goes to any of those
+three; a key for another host (OpenRouter, a LAN
+server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, and goes only over
 `https://` ([keys](configuration.md#assistant)). Settings only says "set (env)", "set
 (keyring)" or "not set"; the page never receives a key. To install Ollama and its models, see
 [getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
@@ -876,8 +880,10 @@ Notes:
   a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
   (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
   as flat sand turned grey (`veto_faded`), or when its frames could not be decoded
-  (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater (by the same
-  rule); it does not change them. `gaming` footage is graded
+  (`no_frames`). An INFO line names each clip not graded with its reason, as recorded
+  (`not_underwater` adds that `--color auto` may suit it; `log` that `--lut` fits it). Plain
+  `auto` logs an INFO line naming clips that look underwater (by the same rule); it does not
+  change them. `gaming` footage is graded
   only with an explicit `--color` (with a WARNING, a stronger one for `underwater`, and a
   `color_on_gaming` `--json` warning): `color` in `config.json` never applies to
   it. `--color` cannot be combined with `--lut`. Each clip records a `color` entry (method,
@@ -885,7 +891,10 @@ Notes:
   grades its re-exports with those parameters without measuring again. Measurements are cached
   per source (`color/` in its cache folder).
 - `manifest.json` records each clip's source, start, end, score, label, tail, crop, grade (`lut` or `color`), padding,
-  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and
+  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. Its header's
+  `smart_tail.enabled` and `speech_aware.enabled` are `true` only when at least one clip got
+  them (a sequence whose every segment sets `"smart_tail": false` or a `tail`, or
+  `"speech_aware": false`, records `false`). `extend` and
   `assemble` read it. Manifests without `size` or `generator` (written by earlier versions)
   still work; their clips are matched by name only.
 - **Subtitles.** Each clip gets `001_<label>.srt` next to it, from the source's cached

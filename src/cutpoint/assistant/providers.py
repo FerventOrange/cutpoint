@@ -64,6 +64,10 @@ ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
 ANTHROPIC_MODELS = (DEFAULT_ANTHROPIC_MODEL, "claude-opus-5-5")
+# Settings' OpenAI and xAI models when no list came. OpenAI's Astra first: the only one with tool
+# calls over Chat Completions today; the others need the Responses API (#536)
+OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
+XAI_MODELS = ("grok-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1")
 AUTO_SERVER_MODEL = "server's default model"  # an OpenAI-compatible model not resolved yet
 MAX_TOKENS = 4096  # an Anthropic reply's cap (required); a proposal is far shorter
 MAX_ERROR = 300  # characters of a server's error text in a message
@@ -276,6 +280,20 @@ def missing_key(provider: Provider) -> str | None:
 KEY_CHECKED_LATER = "The key is checked when you send the first message."
 
 
+def consent_note(provider: Provider) -> str:
+    """Why Settings' Save did not check ``provider``: it would contact (with its key, if any) a
+    host the user has not agreed to yet (#504)."""
+    what = (
+        "the connection and the key are"
+        if getattr(provider, "has_key", False)
+        else ("the connection is")
+    )
+    return (
+        f"Nothing was sent to {provider.host} yet: agree in the AI Chat tab to use it; {what} "
+        "checked with your first message there."
+    )
+
+
 def check_note(provider: Provider) -> str | None:
     """What a passed :func:`check` did not prove: a key for a host other than the provider's
     own API host (OpenRouter, a LAN server) may have been unused, as such a host can list its
@@ -325,9 +343,16 @@ def public(text: str) -> str:
 
 
 def _key_hint(name: str, host: str) -> str:
-    """Where ``name``'s key for ``host`` may be set (its own variable only for its own host)."""
-    env = keys.PROVIDER_ENV.get(name)
-    return f"{env} (or {keys.ENV_KEY})" if env and keys.official(name, host) else keys.ENV_KEY
+    """How to add ``name``'s key for ``host``: its own variable only for its own host,
+    :data:`keys.ENV_KEY` only for a host that is not official (#504), or the keyring."""
+    ring = "save one in Settings (kept in the system keyring)"
+    names = keys.env_names(name, host)
+    if not names:
+        return ring
+    note = ""
+    if names[0] != keys.ENV_KEY and keys.has_shared():  # set, but never sent to this host
+        note = f" ({keys.ENV_KEY} is only for custom base URLs)"
+    return f"set {names[0]} before starting cutpoint ui{note}, or {ring}"
 
 
 def _arguments(raw: Any) -> tuple[dict[str, Any], str | None]:
@@ -573,10 +598,7 @@ class _HttpProvider:
     def _need_key(self) -> None:
         """A hosted server needs a key; a local one (LM Studio, llama-server) may not."""
         if self._key is None and not self.local:
-            raise ProviderError(
-                f"No API key for {self.title}: set {_key_hint(self.name, self.host)} before "
-                "starting cutpoint ui, or save one in Settings (kept in the system keyring)"
-            )
+            raise ProviderError(f"No API key for {self.title}: {_key_hint(self.name, self.host)}")
 
     def _send(
         self, method: str, url: str, payload: dict[str, Any] | None, timeout: float
@@ -627,7 +649,8 @@ class _HttpProvider:
         if code in (401, 403):
             return ProviderError(
                 f"{self.title} rejected the API key ({code}: {why}); check "
-                f"{_key_hint(self.name, self.host)} or the key saved in Settings"
+                + "".join(f"{n} or " for n in keys.env_names(self.name, self.host))
+                + "the key saved in Settings"
             )
         if code == 404:
             return ProviderError(

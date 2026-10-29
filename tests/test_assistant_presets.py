@@ -119,7 +119,7 @@ def test_the_xai_variable_is_only_for_api_x_ai(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", OTHER)
     assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")  # never the OpenAI key
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
-    assert keys.lookup("xai", "api.x.ai") == (KEY, "env")  # the Cutpoint one, for any host
+    assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")  # its own one wins (#504)
 
 
 def test_an_xai_key_is_saved_in_the_keyring_under_xai(monkeypatch) -> None:
@@ -190,7 +190,8 @@ def test_grok_sends_the_xai_key_to_api_x_ai_only(home, monkeypatch) -> None:
 def test_a_missing_grok_key_names_the_xai_variable(home) -> None:
     p = providers.make(AssistantSettings("xai", "grok-x"))
     why = providers.missing_key(p) or ""
-    assert "No API key for xAI" in why and "XAI_API_KEY (or CUTPOINT_ASSISTANT_API_KEY)" in why
+    assert "No API key for xAI" in why and "set XAI_API_KEY before" in why
+    assert "CUTPOINT_ASSISTANT_API_KEY" not in why
 
 
 # -- Settings routes: presets round-trip, custom kept, model lists -----------------------------
@@ -240,12 +241,17 @@ def saved(home: Path) -> dict:
 def test_each_preset_round_trips_through_settings(
     client: TestClient, home: Path, checked, name, model, cls, url
 ) -> None:
-    set_config(home, assistant={"provider": "openai", "url": "https://openrouter.ai/api/v1"})
+    agreed = [f"{n}@{h}" for n, h in keys.OFFICIAL_HOST.items()]  # Save checks only then (#504)
+    set_config(
+        home,
+        assistant={"provider": "openai", "url": "https://openrouter.ai/api/v1", "consent": agreed},
+    )
     assert client.get("/api/settings").json()["assistant"]["custom"] is True
     body = {"assistant": {"provider": name, "model": model, "url": ""}}
     res = client.put("/api/settings", json=body)
     assert res.status_code == 200, res.text
-    assert saved(home) == {"provider": name, "model": model, "url": ""}  # the URL is the preset's
+    want = {"provider": name, "model": model, "url": "", "consent": agreed}
+    assert saved(home) == want  # the URL is the preset's
     got = client.get("/api/settings").json()["assistant"]
     assert (got["provider"], got["model"], got["url"], got["custom"]) == (name, model, "", False)
     p = checked[-1]
@@ -264,9 +270,12 @@ def test_settings_offer_the_presets_with_their_model_fields(client: TestClient) 
     assert offers["ollama"]["placeholder"] == "qwen3.5:9b" and not offers["ollama"]["key_env"]
     assert offers["anthropic"]["placeholder"] == "claude-sonnet-5-5"
     assert offers["anthropic"]["models"] == ["claude-sonnet-5-5", "claude-opus-5-5"]
-    for name, env in (("openai", "OPENAI_API_KEY"), ("xai", "XAI_API_KEY")):
-        assert offers[name]["model_required"] is True and offers[name]["models"] == []
-        assert offers[name]["key_env"] == ["CUTPOINT_ASSISTANT_API_KEY", env]
+    for name, env, own in (
+        ("openai", "OPENAI_API_KEY", providers.OPENAI_MODELS),
+        ("xai", "XAI_API_KEY", providers.XAI_MODELS),
+    ):  # offered when no list came; still no default, so "Choose a model" comes first
+        assert offers[name]["model_required"] is True and offers[name]["models"] == list(own)
+        assert offers[name]["key_env"] == [env]  # the shared key is not for it (#504)
     assert not offers["ollama"]["model_required"] and not offers["anthropic"]["model_required"]
     assert got["key_hosts"]["xai"] == "api.x.ai"
 
@@ -298,7 +307,8 @@ def test_a_legacy_custom_url_is_shown_as_custom_and_kept(
 
 def test_the_shared_key_can_be_left_out_of_a_lookup(monkeypatch) -> None:
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
-    assert keys.lookup("xai", "api.x.ai") == (KEY, "env")
+    assert keys.lookup("xai", "proxy.example") == (KEY, "env")
+    assert keys.lookup("xai", "proxy.example", shared=False) == (None, None)
     assert keys.lookup("xai", "api.x.ai", shared=False) == (None, None)
     monkeypatch.setenv("XAI_API_KEY", XKEY)
     assert keys.lookup("xai", "api.x.ai", shared=False) == (XKEY, "env")
@@ -353,16 +363,13 @@ def test_a_preset_not_saved_never_gets_the_shared_key(
         },
     )
     wire = Wire(monkeypatch)  # any request fails the test
-    # Settings shows the shared key as "set (env)": the list says why it is not used yet
-    shared_only = (
-        "The model list loads once this provider is saved: "
-        "CUTPOINT_ASSISTANT_API_KEY is used only for the saved provider."
-    )
+    shared_only = "CUTPOINT_ASSISTANT_API_KEY is only for custom base URLs"
     for name in ("anthropic", "openai", "xai"):  # openai too: the saved URL is custom
         got = models(client, name)
-        assert got == {"state": "key_needed", "models": [], "message": shared_only}, name
+        assert got["state"] == "key_needed" and got["models"] == [], name
+        assert keys.PROVIDER_ENV[name] in got["message"] and shared_only in got["message"]
     set_config(home, assistant={"provider": "ollama", "consent": ["anthropic@api.anthropic.com"]})
-    assert models(client, "anthropic")["message"] == shared_only  # Ollama saved, Claude picked
+    assert shared_only in models(client, "anthropic")["message"]  # Ollama saved, Claude picked
     monkeypatch.delenv("CUTPOINT_ASSISTANT_API_KEY")
     got = models(client, "anthropic")  # no key at all: how to add one
     assert got["state"] == "key_needed" and "ANTHROPIC_API_KEY" in got["message"]
@@ -371,16 +378,21 @@ def test_a_preset_not_saved_never_gets_the_shared_key(
     assert not providers.preset("anthropic").has_key
 
 
-def test_the_saved_preset_still_uses_the_shared_key(
+def test_the_saved_preset_never_gets_the_shared_key_but_its_own(
     client: TestClient, home: Path, monkeypatch
 ) -> None:
+    """#504: the saved, agreed-to official host never gets CUTPOINT_ASSISTANT_API_KEY, even
+    as a fallback; its own key wins."""
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
     set_config(
         home, assistant={"provider": "anthropic", "consent": ["anthropic@api.anthropic.com"]}
     )
     wire = Wire(monkeypatch, _Resp({"data": [{"id": "claude-z"}], "has_more": False}))
+    assert models(client, "anthropic")["state"] == "key_needed" and wire.sent == []
+    monkeypatch.setenv("ANTHROPIC_API_KEY", OTHER)
     assert models(client, "anthropic")["models"] == [{"id": "claude-z", "name": "claude-z"}]
-    assert wire.sent[0]["headers"]["x-api-key"] == KEY
+    assert wire.sent[0]["headers"]["x-api-key"] == OTHER
+    assert KEY not in json.dumps(wire.sent)
 
 
 def test_the_anthropic_list_reads_every_page(client: TestClient, home: Path, monkeypatch) -> None:
