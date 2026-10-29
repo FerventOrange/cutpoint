@@ -1265,6 +1265,8 @@ def compute_path(
         "seconds_by_target": summary,
         "keys": keys,
     }
+    if orient.forward_axis != G.axis_name(G.FORWARD_V):  # upright clip: its yaw 0 axis
+        path["forward_axis"] = orient.forward_axis
     if suspects and subject_mode and pv is not None:
         path["vl_suspect"] = [round(float(times[i]), 2) for i in sorted(sus)]
     if pv is not None and len(pv.t):

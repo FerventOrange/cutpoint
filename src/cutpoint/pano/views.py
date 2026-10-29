@@ -129,13 +129,28 @@ def cache_path(src: Path, params: ViewParams | None = None) -> Path:
     return cache.source_dir(src) / f"pano-views-{params_key((params or ViewParams()).key())}.npz"
 
 
+_STALE_AXIS: set[str] = set()  # sources whose stale-axis view layer was logged
+
+
 def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
-    """Cached view-layer outputs of a clip, or None."""
+    """Cached view-layer outputs of a clip, or None (also when they were computed with
+    another forward axis than the clip's cached orientation track has now)."""
     try:
         path = cache_path(Path(src), params)
     except OSError:
         return None
     if not path.exists():
+        return None
+    meta = cache.load_json(path.with_suffix(".json")) or {}
+    fwd = G.cached_forward_axis(Path(src))
+    if fwd is not None and meta.get("forward_axis", G.axis_name(G.FORWARD_V)) != fwd:
+        if str(src) not in _STALE_AXIS:
+            _STALE_AXIS.add(str(src))
+            logger.info(
+                "%s: view layer computed with another forward axis (upright clip); not used "
+                "until `cutpoint 360 analyze` recomputes it",
+                Path(src).name,
+            )
         return None
     with np.load(path) as z:
         return PanoViews(
@@ -144,7 +159,7 @@ def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
             det=z["det"],
             box_emb=z["box_emb"],
             box_idx=z["box_idx"],
-            meta=cache.load_json(path.with_suffix(".json")) or {},
+            meta=meta,
         )
 
 
@@ -363,6 +378,8 @@ def compute_views(
         "wearer_v": [round(float(v), 4) for v in wear],
         "params": p.key(),
     }
+    if orient.forward_axis != G.axis_name(G.FORWARD_V):  # load_views checks it
+        data.meta["forward_axis"] = orient.forward_axis
     return data
 
 

@@ -472,7 +472,7 @@ def test_path_for_warns_on_a_stale_reused_path(
         "params": params,
     }
     old.write_text(json.dumps(path), encoding="utf-8")
-    clip = SimpleNamespace(clip_id="001")
+    clip = SimpleNamespace(clip_id="001", source="x.lrv")
     with caplog.at_level("WARNING"):
         got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, "laughter", reuse=old)
     assert got["keys"] == [] and not caplog.records  # same settings: silent
@@ -488,6 +488,48 @@ def test_path_for_warns_on_a_stale_reused_path(
     assert got["keys"] == ["new"] and "version 3 director path" in caplog.text
 
 
+def test_compute_path_records_an_upright_forward_axis(stub_scores: dict) -> None:
+    pv = make_views({}, "axis.lrv")
+    clip = SimpleNamespace(source="axis.lrv", duration=N * 1.2, clip_id="001")
+    assert "forward_axis" not in path_of(pv)  # helmet mount: as before
+    n = 600
+    upright = G.Orientation(
+        t=np.arange(n) / 30.0,
+        up=np.tile([0.0, -1.0, 0.0], (n, 1)),
+        heading=np.zeros(n),
+        heading_smooth=np.zeros(n),
+        meta={"fps": 30.0},
+    )
+    path = D.compute_path(clip, 1.0, 12.0, orient=upright, pv=pv, margin=0.0)
+    assert path["forward_axis"] == "-z"
+
+
+def test_path_for_replans_a_reused_path_of_another_forward_axis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An upright clip's path planned before the fix (no ``forward_axis``) is re-planned and
+    backed up; one with the clip's axis is reused."""
+    from cutpoint.pano import render as R  # noqa: PLC0415
+
+    monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(G, "cached_forward_axis", lambda src: "-z")
+    monkeypatch.setattr(D, "compute_path", lambda *a, **kw: {"keys": ["new"]})
+    ex = R.PanoExporter(tmp_path, tmp_path / "clips")
+    old = ex.paths_dir / "001_a.json"
+    old.parent.mkdir(parents=True)
+    path = {"version": D.PATH_VERSION, "planned": {"start": 0.0, "end": 9.0}, "keys": ["old"]}
+    path["params"] = asdict(D.params_for(None))
+    old.write_text(json.dumps(path), encoding="utf-8")
+    clip = SimpleNamespace(clip_id="001", source="x.lrv")
+    with caplog.at_level("WARNING"):
+        got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
+    assert got["keys"] == ["new"] and "another forward axis" in caplog.text
+    assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["old"]
+    old.write_text(json.dumps(path | {"forward_axis": "-z"}), encoding="utf-8")
+    got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
+    assert got["keys"] == ["old"]
+
+
 def test_path_for_keeps_bak_of_replanned_reused_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -499,10 +541,14 @@ def test_path_for_keeps_bak_of_replanned_reused_path(
     old = ex.paths_dir / "001_a.json"
     old.parent.mkdir(parents=True)
     old.write_text(json.dumps({"version": 1, "keys": ["hand-edited"]}), encoding="utf-8")
-    got, out = ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)
+    got, out = ex.path_for(
+        SimpleNamespace(clip_id="001", source="x.lrv"), "001_a.mp4", 1.0, 5.0, None, reuse=old
+    )
     assert got["keys"] == ["new"] and out == old
     assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["hand-edited"]
-    ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)  # again
+    ex.path_for(
+        SimpleNamespace(clip_id="001", source="x.lrv"), "001_a.mp4", 1.0, 5.0, None, reuse=old
+    )  # again
     assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["hand-edited"]
     assert old.with_name("001_a.json.1.bak").is_file()
 
@@ -530,7 +576,7 @@ def test_path_for_records_the_selected_moment_apart_from_the_segment(
 
     monkeypatch.setattr(D, "compute_path", plan)
     ex = R.PanoExporter(tmp_path, tmp_path / "clips")
-    clip = SimpleNamespace(clip_id="001")
+    clip = SimpleNamespace(clip_id="001", source="x.lrv")
     path, out = ex.path_for(clip, "001_a.mp4", 1.0, 9.0, None, selected=(2.0, 6.5))
     saved = json.loads(out.read_text(encoding="utf-8"))
     assert saved["selected"] == path["selected"] == {"start": 2.0, "end": 6.5}
@@ -567,7 +613,9 @@ def test_path_for_backup_failing_midway_leaves_no_partial_file(
     old.write_text(json.dumps({"version": 1, "keys": ["hand-edited"]}), encoding="utf-8")
     before = old.read_bytes()
     with pytest.raises(OSError, match="No space"):
-        ex.path_for(SimpleNamespace(clip_id="001"), "001_a.mp4", 1.0, 5.0, None, reuse=old)
+        ex.path_for(
+            SimpleNamespace(clip_id="001", source="x.lrv"), "001_a.mp4", 1.0, 5.0, None, reuse=old
+        )
     assert old.read_bytes() == before
     assert [p.name for p in old.parent.iterdir()] == ["001_a.json"]  # no .bak, no .tmp
 
