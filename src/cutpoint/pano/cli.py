@@ -274,6 +274,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     _timing(project, "analyze_s", round(time.perf_counter() - t1, 1))
     if a.no_events:
         steps.skip("events", "--no-events")
+        _plan_paths(project)
         return
     from cutpoint.events.pipeline import run_events  # noqa: PLC0415
 
@@ -282,8 +283,9 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
         run_events(project, layers=EVENT_LAYERS, encoder=kept[0] if kept else None)
         rescored = reanalyze_if_reachable(project)
     _timing(project, "events_s", round(time.perf_counter() - t2, 1))
-    _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
     jsonout.output("events", project / "events.json")
+    _plan_paths(project)
+    _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
     if rescored is None:  # footage went offline: highlights.json lacks the events
         jsonout.warn(
             "events_not_in_highlights",
@@ -302,6 +304,21 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     logger.info(
         "360 analysis done in %.0fs; next: cutpoint clips %s", time.perf_counter() - t0, a.project
     )
+
+
+def _plan_paths(project: Path) -> None:
+    """Director paths of the candidates, for previews and diagnostics
+    (:func:`cutpoint.pano.candidates.cache_candidate_paths`); never fails the analysis.
+    ``--json``: ``candidate_paths`` (``dir``, counts and ``flags``: code -> candidates)."""
+    from cutpoint.pano.candidates import cache_candidate_paths  # noqa: PLC0415
+
+    try:
+        st = cache_candidate_paths(project)
+    except Exception as err:  # noqa: BLE001 - a path never fails the analysis
+        logger.warning("Director paths not planned: %s: %s", type(err).__name__, err)
+        return
+    _timing(project, "paths_s", st["seconds"])
+    jsonout.output("candidate_paths", st)
 
 
 def _log_sdk_status() -> dict[str, Any]:

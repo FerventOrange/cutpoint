@@ -1085,6 +1085,7 @@ def compute_path(
     pv: Any = None,
     margin: float = 10.0,
     suspects: bool = False,
+    grid: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Director path for ``[start, end]`` of a clip (keys cover ``margin`` s more each side).
 
@@ -1102,6 +1103,8 @@ def compute_path(
         suspects: Add ``vl_suspect``: segment times worth a vision-model look
             (near non-subject people reaching the view's outer edge, plus cuts and
             cut-away destinations; subject framing only, see :mod:`cutpoint.pano.vlcheck`).
+        grid: If given, filled with the :func:`score_grid` of the planned range and the
+            Viterbi ``states`` (before shot merging), for diagnostics; the path is the same.
     """
     from cutpoint.pano.views import load_views  # noqa: PLC0415
     from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
@@ -1122,6 +1125,8 @@ def compute_path(
     sg = score_grid(clip, t0, t1, p, pv, orient=orient, vertical=vertical)
     nb = p.n_bins
     states = _viterbi(sg, p)
+    if grid is not None:
+        grid.update(sg, states=states.copy())
     times = sg["times"]
     subject_mode = p.framing == "subject"
     if subject_mode:  # shots measured within the segment; gated selfie steps stay out
