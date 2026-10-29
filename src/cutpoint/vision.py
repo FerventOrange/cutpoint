@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import requests
 
@@ -404,6 +403,8 @@ def _prompts(style: str, profile: RatingProfile | None) -> tuple[str, str]:
 def contact_sheet(frames: list[bytes], cols: int) -> bytes:
     """The JPEG ``frames`` on one JPEG, ``cols`` per row in reading order, each at the first
     frame's size (black where the last row is short). ValueError if one cannot be decoded."""
+    import cv2  # noqa: PLC0415
+
     tiles = []
     for data in frames:
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
@@ -426,9 +427,9 @@ def _expected_score(logprobs: object) -> float | None:
 
     Qwen writes a number digit by digit, so an alternative "1" may start "10": it counts as
     10 when the alternatives put more probability on 6-9 than on 0 and 2-5, else as 1 (from
-    the probabilities, not the sampled digit, so a rerun scores the same). When "1" is the
-    chosen token, it counts as 1 plus 9 times the chance that the next token is "0" (that
-    token's "0" alternative, else 1 if the next token is "0")."""
+    the probabilities, not the sampled digit). When "1" is the chosen token, it counts as 1
+    plus 9 times the chance that the next token is "0" (that token's "0" alternative, else 1
+    if the next token is "0"), so the sampled digit can still move a score."""
     if not isinstance(logprobs, list):
         return None
     text = ""
