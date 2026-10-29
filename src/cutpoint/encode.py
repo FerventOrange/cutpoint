@@ -41,8 +41,17 @@ SAFE_END_MARGIN_S = 0.3  # trimmed re-encode stops this far before the failure
 # (#463). One per end costs about 5% in clip size; longer fades use the clips' own keyframes.
 EDGE_KEYFRAMES_S = (0.5,)
 
-# Common audio of clips and assembled videos: 48 kHz stereo, AAC 192k.
-A_FMT = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+# Common audio of clips and assembled videos: 48 kHz stereo, AAC 192k. ``async=1`` makes the
+# samples follow the timestamps from ``first_pts=0`` on: game captures (ShadowPlay) have gaps in
+# their audio timestamps (Battlefield 6: 22.77 s of timestamps, 21.70 s of samples), which
+# are filled with silence once they add up to ``min_hard_comp`` (one AAC frame), so clips and
+# finals no longer come out short with the audio running ahead of the video (#476). Audio that
+# starts after the video is no longer moved forward at the start of a clip; sources without gaps
+# or delay (GoPro) give the same samples as before.
+A_FMT = (
+    "aresample=48000:async=1:min_hard_comp=0.02:first_pts=0,"
+    "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+)
 AUDIO_OUT = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 SILENCE = "anullsrc=r=48000:cl=stereo"
 # Audio this much shorter than its clip still covers it: below one AAC frame (21 ms at 48 kHz),
@@ -499,7 +508,8 @@ def limiter_chain(limit_db: float, soxr: bool) -> str:
 # mean (at most ``max_boost`` up and ``max_cut`` down: a boost also lifts background noise).
 # The gain goes before the compressor, so the bursts of a boosted clip are still caught.
 # Measured on 12 clips of an R6 montage (gunfire, shouting), a voice-chat recording and
-# GoPro wind, exported and assembled with --loudnorm (table in the #326 PR): the loudest
+# GoPro wind, exported and assembled with --loudnorm (before #523, dynamic loudnorm; table
+# in the #326 PR): the loudest
 # moment above the speech level 12.2 dB -> 7.5 (light) / 5.2 (strong), 99th-percentile
 # momentary loudness above speech 10.0 -> 5.9 / 2.8 dB, clip loudness spread 9.9 -> 4.3 /
 # 4.7 LU, true peak unchanged (-2.2 / -2.0 dBTP). The cost: the quiet parts of boosted

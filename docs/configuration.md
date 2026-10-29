@@ -204,7 +204,9 @@ change it), its model can be changed there, and choosing a preset and saving rep
 asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any other id.
 
 - `provider`: `ollama` (default), `openai` (OpenAI or a server that speaks its API: LM Studio,
-  vLLM, llama-server), `anthropic` or `xai` (Grok, OpenAI-compatible).
+  vLLM, llama-server), `anthropic` or `xai` (Grok, OpenAI-compatible). `openai` at
+  `api.openai.com` uses the Responses API (`/v1/responses`) and asks OpenAI not to store the
+  chat (`store: false`); any other `url` uses `/v1/chat/completions`.
 - `model`: the model name. Empty (default): for Ollama `qwen3.5:9b` if it is pulled, else the
   vision model (`CUTPOINT_VISION_MODEL`, default `qwen3-vl:8b`); for Anthropic
   `claude-sonnet-5-5` (`claude-opus-5-5` is stronger, slower and costs more); for an

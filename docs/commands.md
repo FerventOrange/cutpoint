@@ -78,6 +78,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
+| `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
@@ -176,11 +177,19 @@ preview and trim candidates, save and reorder a sequence, export clips, and asse
 video with optional fades (video and audio set separately), loudness normalization, [peak compression](#peak-compression) and
 captions. Nothing is uploaded. A camera
 folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 analyze --scan`
-(see [360 video](workflows/360.md#in-the-ui)). It does not expose the action-cam commands or the
-other `360` commands.
+(see [360 video](workflows/360.md#in-the-ui)); its moments preview through the camera path the
+analysis cached when it is current (else the raw preview), with badges for poor paths
+([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
+the action-cam commands or the other `360` commands.
 
-New Project's Source field takes a full path that you type or paste; it always accepts one.
-"Choose video…" and "Choose folder…" open the operating system's own file or folder dialog on the
+New Project's Source field takes the full paths of one or more videos and folders, one per line,
+that you type or paste; it always accepts them. They are the project's `analyze` inputs, as on the
+command line. "Include sub-folders" adds `--recursive` and "Skip files matching" takes `--exclude`
+patterns, one per line (matched against each file's name or full path, such as `*DVR*` or
+`*/Captures/*`); "Analyze again" keeps them. The project is refused when no video is left to
+analyze. Insta360 X3 footage still makes a 360 project of its own: its one folder or file, without
+the two options, and a folder that mixes 360 and regular videos is refused. A project made with
+either option has no one-click presets (`edit` has no `--recursive` or `--exclude`). "Choose video…" and "Choose folder…" add a line; they open the operating system's own file or folder dialog on the
 computer running `cutpoint ui` (Windows: the system dialog through tkinter; Linux, with a display
 (DISPLAY or WAYLAND_DISPLAY): zenity, falling back to kdialog; macOS: osascript). Where no dialog is
 available (headless, Docker, no display, or an SSH session on Windows and macOS), those buttons are
@@ -302,14 +311,36 @@ Peaks choices and the vision choice from Settings. Clips go to `clips` and the v
 copy next to it; that export becomes the current one. If earlier clips exist,
 a second run asks before replacing them and passes `--force` only when you confirm. The presets
 are off, with the reason shown, for 360 projects and for projects analyzed with `--exclude` or
-`--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`
-or `--recover`.
+`--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`,
+`--must-include-crash` or `--recover`. A Skip steps choice is passed on as `edit --skip`.
 
-"Analyze again" keeps a recorded `--recover`.
+**Analysis options** are in the "Analyze again" dialog, and in the dialog that "Analysis
+options…" opens before the first analysis ("Analyze footage" alone uses none of them). Each one
+is one [`analyze`](#analyze) flag; a blank field or unticked box passes none, so the CLI default
+applies:
+
+| Control | CLI flag |
+|---|---|
+| Transcription model | `--model` |
+| Language | `--language` |
+| Max candidates | `--max-candidates` |
+| Must-include crash (ski styles only) | `--must-include-crash` |
+| Skip scene detection | `--no-scenes` |
+| Recover after read errors | `--recover` |
+| Skip steps: Reactions, Keyframes, Crashes | `--skip reactions keyframes crashes` |
+
+The dialog starts with what the project's analysis used, as `highlights.json` records it (the
+model only when it is not the default), so "Analyze again" repeats it unless you change it. It
+keeps a recorded `--recover` the same way. `highlights.json` does not record `--skip`, so the UI
+keeps it in `ui/analysis.json` for that analysis only; after a command-line re-run it starts
+unticked. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
 
 API: the clips job accepts the new fields, `POST /api/projects/<id>/jobs` takes the new `extend` and `edit` actions,
 and the project view reports `preset_problem` (why the presets are off) and `preset_taken` (the
-earlier clips a second Make would replace).
+earlier clips a second Make would replace). The analyze job takes `model`, `language`,
+`max_candidates`, `must_include_crash`, `no_scenes`, `recover` and `skip` (a list); a field it
+does not send keeps what the analysis used, which the project view reports as `analyze_options`
+(with `must_include_crash_default`, the style's value, `null` for styles other than ski).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
@@ -408,8 +439,11 @@ URL is typed:
   Choose a pulled model, or Other model… for any id; Default uses `qwen3.5:9b`, else the vision model.
 - **Claude (Anthropic)**: `https://api.anthropic.com`; `claude-sonnet-5-5` (default) or
   `claude-opus-5-5`.
-- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI chat model
-  (`*-codex` models need OpenAI's Responses API and are not supported).
+- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI model. Cutpoint asks
+  `api.openai.com` through OpenAI's Responses API (`/v1/responses`), so every current model
+  (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`, `*-codex`) makes tool calls. Any
+  other base URL (OpenRouter, LM Studio, vLLM, llama-server, Ollama's `/v1`) is asked through
+  `/v1/chat/completions`.
 - **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); choose an xAI model.
 
 A base URL set in `config.json` that no preset has (LM Studio, vLLM, llama-server, OpenRouter, an
@@ -426,7 +460,7 @@ keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which is only for custom bas
 Models that do not chat here are left out by name: ids starting with `text-embedding-`, `tts-`,
 `whisper-`, `dall-e-`, `omni-moderation-`, `text-moderation-`, `gpt-image-`, `sora-`,
 `davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
-`imagine` or `codex` (OpenAI and xAI). A list is
+`imagine` or `codex` (OpenAI and xAI; `codex` ones stay at `api.openai.com`). A list is
 kept for 10 minutes; Refresh list asks again. The Model dropdown offers the listed models; when
 the list cannot be loaded it offers the preset's own models (Claude's two, OpenAI's four and xAI's five current ones, Ollama's `qwen3.5:9b`) and the saved model,
 and "Other model…" shows a Model id field to type any other id.
@@ -1013,10 +1047,13 @@ into a clip renamed during review are read from its manifest entry, matched by s
   audio in the middle of the video dissolve; the `.fcpxml` then has no audio crossfade and
   leaves the audio cut point to the editor (probably the start of the dissolve), while the
   `.otio` matches `final.mp4` exactly.
-- `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
-  then measures the result and redoes the pass with a lower ceiling if the true peak is above
-  -1.5 dBTP. Very peaky material can land up to about 1 LU below target. The audio ends
-  with the video, without padding.
+- `--loudnorm` measures the joined audio (EBU R128) and applies one linear gain toward
+  -14 LUFS, so the levels between and inside clips stay as they are, followed by a true-peak
+  limiter; it then measures the result and redoes the pass with a lower ceiling if the true
+  peak is above -1.5 dBTP. The limiter takes the peaks the gain pushes over the ceiling, so
+  peaky material lands below target: a WARNING names the level when it is more than 1 LU
+  below (GoPro wind: -16.6 LUFS without `--compress-peaks`, -14.0 with `strong`). The audio
+  ends with the video, without padding.
 - `--compress-peaks light|strong` applies [peak compression](#peak-compression) to the clips
   that were not exported with it (their `manifest.json` entry has no `compress_peaks`), in the
   join, before the edge fade. The final audio then always ends with the true-peak limiter
@@ -1115,7 +1152,7 @@ the speech level, and evens out loudness between clips. It is off by default, an
 | `strong` | 4 dB above it | 6:1 | all the way | 10 / 20 dB |
 
 Measured on 12 clips (an R6 montage with gunfire and shouting, voice-chat commentary and
-GoPro wind), exported and assembled with `--loudnorm`:
+GoPro wind), exported and assembled with `--loudnorm` before #523 (dynamic loudnorm):
 
 | | off | light | strong |
 |---|---|---|---|
@@ -1138,8 +1175,8 @@ Without `--loudnorm` the makeup keeps the level. Measured on six 10 s clips of a
 | Other gameplay | -16.1 / -2.1 / 23.0 | -23.7 / -9.3 / 18.7 | -18.0 / -3.2 / 19.0 | -27.3 / -12.4 / 21.2 | -18.9 / -3.1 / 16.6 |
 
 On the other gameplay set alone the makeup reaches its cap (6 dB light, 10 dB strong), so it ends
-1.9 and 2.8 LU below `off`. With `--loudnorm`, `assemble` sets the final level anyway: the
-result is the same within 0.1 LU (-14.0 LUFS, -2.2 dBTP).
+1.9 and 2.8 LU below `off`. With `--loudnorm`, `assemble` applies one gain to the whole edit
+toward -14 LUFS.
 
 `clips` bakes it into each clip, followed by a true-peak limiter (clips stay below about
 -1.8 dBTP), records `compress_peaks` and the clip's makeup (`compress_peaks_makeup_db`, dB) in

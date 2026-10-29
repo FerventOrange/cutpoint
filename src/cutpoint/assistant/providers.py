@@ -10,8 +10,9 @@ and the answer to a tool call are in the provider's own shape (:attr:`Reply.mess
 Providers, all over ``requests``:
 
 * :class:`OllamaProvider`: Ollama's ``/api/chat`` (the default).
-* :class:`OpenAIProvider`: ``/v1/chat/completions`` of OpenAI or any server that speaks it
-  (LM Studio, vLLM, llama-server), at the configured base URL.
+* :class:`OpenAIProvider`: OpenAI's ``/v1/responses`` at ``api.openai.com``, else
+  ``/v1/chat/completions`` of any server that speaks it (LM Studio, vLLM, llama-server,
+  OpenRouter), at the configured base URL.
 * :class:`XAIProvider`: the same API at xAI (Grok), whose own key variable is ``XAI_API_KEY``.
 * :class:`AnthropicProvider`: Anthropic's Messages API.
 
@@ -64,8 +65,8 @@ ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
 ANTHROPIC_MODELS = (DEFAULT_ANTHROPIC_MODEL, "claude-opus-5-5")
-# Settings' OpenAI and xAI models when no list came. OpenAI's Astra first: the only one with tool
-# calls over Chat Completions today; the others need the Responses API (#536)
+# Settings' OpenAI and xAI models when no list came, OpenAI's Astra first. Sol, Terra and Luna make
+# tool calls only over the Responses API, which api.openai.com is asked through (#536)
 OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
 XAI_MODELS = ("grok-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1")
 AUTO_SERVER_MODEL = "server's default model"  # an OpenAI-compatible model not resolved yet
@@ -91,7 +92,7 @@ MAX_MODEL_PAGES = 10  # Anthropic's /v1/models pages read at most
 # Ids of OpenAI-compatible models this provider cannot chat with, left out of the Model list:
 # those starting with a NON_CHAT_PREFIXES entry or containing a NON_CHAT_PARTS one (speech,
 # images, video, embeddings, moderation, legacy completions; *-codex needs the Responses API,
-# which this provider does not use). Every other id stays.
+# so it stays only at api.openai.com, which is asked through it). Every other id stays.
 NON_CHAT_PREFIXES = (
     "text-embedding-",
     "tts-",
@@ -320,11 +321,12 @@ def _http_url(url: str) -> str:
     return url if "://" in url else f"http://{url}"
 
 
-def _chats(model_id: str) -> bool:
+def _chats(model_id: str, responses: bool = False) -> bool:
     """Whether an OpenAI-compatible model id may chat (not a :data:`NON_CHAT_PREFIXES` or
-    :data:`NON_CHAT_PARTS` one)."""
+    :data:`NON_CHAT_PARTS` one; ``codex`` is one only without the Responses API)."""
     low = model_id.lower()
-    return not low.startswith(NON_CHAT_PREFIXES) and not any(p in low for p in NON_CHAT_PARTS)
+    parts = [p for p in NON_CHAT_PARTS if not (responses and p == "codex")]
+    return not low.startswith(NON_CHAT_PREFIXES) and not any(p in low for p in parts)
 
 
 def _openai_base(url: str) -> str:
@@ -682,8 +684,9 @@ class _HttpProvider:
 
 
 class OpenAIProvider(_HttpProvider):
-    """``/v1/chat/completions`` with ``tools`` or a ``json_schema`` response format, for OpenAI
-    and the servers that speak it (LM Studio, vLLM, llama-server).
+    """OpenAI's ``/v1/responses`` at ``api.openai.com`` (its current models make tool calls only
+    there, #536), else ``/v1/chat/completions`` for the servers that speak it (LM Studio, vLLM,
+    llama-server, OpenRouter), with ``tools`` or a ``json_schema`` reply format.
 
     A base URL with a path (``https://host/api/v1``) is used as given; a bare host gets ``/v1``.
     ``model`` "": the server's only model (``/v1/models``), else an error listing them.
@@ -706,6 +709,12 @@ class OpenAIProvider(_HttpProvider):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._key}"} if self._key else {}
 
+    @property
+    def responses(self) -> bool:
+        """Whether the Responses API is used: OpenAI's own host only (xAI and compatible
+        servers speak Chat Completions)."""
+        return self.name == "openai" and keys.official("openai", self.host)
+
     def _models(self) -> list[str]:
         resp = self._send("GET", f"{self.url}/models", None, CHECK_TIMEOUT_S)
         if resp.status_code >= 400:
@@ -718,7 +727,7 @@ class OpenAIProvider(_HttpProvider):
         starting with one of :data:`NON_CHAT_PREFIXES` or containing one of
         :data:`NON_CHAT_PARTS`."""
         self._need_key()
-        ids = [i for i in self._models() if _chats(i)]
+        ids = [i for i in self._models() if _chats(i, self.responses)]
         return [{"id": i, "name": i} for i in sorted(ids)]
 
     def resolve_model(self) -> str:
@@ -752,19 +761,24 @@ class OpenAIProvider(_HttpProvider):
         cancelled: Callable[[], bool] | None = None,
     ) -> Reply:
         self._need_key()
-        payload: dict[str, Any] = {"model": self.resolve_model(), "messages": messages}
-        if tools:
-            payload["tools"] = tools
-        if schema:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": "cutpoint_reply", "schema": schema},
-            }
+        if self.responses:
+            endpoint, payload = "responses", self._responses_payload(messages, tools, schema)
+        else:
+            endpoint = "chat/completions"
+            payload = {"model": self.resolve_model(), "messages": messages}
+            if tools:
+                payload["tools"] = tools
+            if schema:
+                payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "cutpoint_reply", "schema": schema},
+                }
         self._stop(cancelled)
-        resp = self._send("POST", f"{self.url}/chat/completions", payload, self.timeout)
+        resp = self._send("POST", f"{self.url}/{endpoint}", payload, self.timeout)
         self._stop(cancelled)
         if resp.status_code < 400:
-            return self._reply(self._read(resp))
+            data = self._read(resp)
+            return self._responses_reply(data) if self.responses else self._reply(data)
         why = self._why(resp)
         low = why.lower()
         if tools and "tool" in low and any(w in low for w in _NO_TOOLS):
@@ -806,7 +820,93 @@ class OpenAIProvider(_HttpProvider):
             message["tool_calls"] = raw_calls
         return Reply(text, calls, message)
 
+    def _responses_payload(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        schema: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """A ``/v1/responses`` request, not stored: system messages as ``instructions``, the rest
+        as input items; function tools flattened and non-strict, as Chat Completions takes them."""
+        instructions: list[str] = []
+        items: list[dict[str, Any]] = []
+        for m in messages:
+            role, content = m.get("role"), m.get("content")
+            if "type" in m:  # a function_call_output (tool_result)
+                items.append(m)
+            elif role == "system":
+                if isinstance(content, str) and content.strip():
+                    instructions.append(content)
+            elif role == "assistant" and isinstance(m.get("output"), list):
+                items += m["output"]  # a reply's items as sent, reasoning and calls included
+            elif role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                item = {"role": role, "content": content}
+                if role == "assistant":  # an earlier reply: OpenAI asks for its phase
+                    item["phase"] = "final_answer"
+                items.append(item)
+        # store false: OpenAI keeps no copy of the chat; its reasoning items then carry
+        # encrypted_content by default, so they replay without include
+        payload: dict[str, Any] = {"model": self.resolve_model(), "input": items, "store": False}
+        if instructions:
+            payload["instructions"] = "\n\n".join(instructions)
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "parameters": fn.get("parameters") or {"type": "object"},
+                    "strict": False,
+                }
+                for t in tools
+                if isinstance(fn := t.get("function"), dict)
+            ]
+        if schema:
+            payload["text"] = {
+                "format": {"type": "json_schema", "name": "cutpoint_reply", "schema": schema}
+            }
+        return payload
+
+    def _responses_reply(self, data: dict[str, Any]) -> Reply:
+        """A ``/v1/responses`` answer: the text of its ``message`` items and its
+        ``function_call`` items. :attr:`Reply.message` keeps every output item for the next
+        request, which sends them back as they came (reasoning items go back with the calls)."""
+        output = data.get("output")
+        if not isinstance(output, list):
+            raise ProviderError(f"{self.title}'s answer has no output")
+        if data.get("status") == "incomplete":  # a tool call cut off midway is not one to run
+            details = data.get("incomplete_details")
+            why = details.get("reason") if isinstance(details, dict) else None
+            raise ProviderError(
+                f"{self.title}'s reply was cut off ({why or 'incomplete'}); try a simpler request"
+            )
+        texts: list[tuple[Any, str]] = []  # (phase, text) of each message item
+        refused = False
+        calls: list[ToolCall] = []
+        items = [i for i in output if isinstance(i, dict) and isinstance(i.get("type"), str)]
+        for item in items:
+            if item["type"] == "message" and isinstance(item.get("content"), list):
+                parts: list[str] = []
+                for c in item["content"]:
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("type") == "output_text" and isinstance(c.get("text"), str):
+                        parts.append(c["text"])
+                    refused = refused or c.get("type") == "refusal"
+                if parts:
+                    texts.append((item.get("phase"), "".join(parts)))
+            elif item["type"] == "function_call" and isinstance(item.get("name"), str):
+                args, error = _arguments(item.get("arguments"))
+                calls.append(ToolCall(item["name"], args, error, str(item.get("call_id") or "")))
+        final = [t for phase, t in texts if phase == "final_answer"]  # not the commentary
+        text = "\n\n".join(final or [t for _, t in texts])
+        if refused and not text and not calls:
+            raise ProviderError(f"{self.title} declined this request")
+        return Reply(text, calls, {"role": "assistant", "content": text, "output": items})
+
     def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
+        if self.responses:
+            return {"type": "function_call_output", "call_id": call.id, "output": content}
         return {"role": "tool", "tool_call_id": call.id, "content": content}
 
 

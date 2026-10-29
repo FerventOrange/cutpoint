@@ -24,6 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `edit --no-keep-clips`: the same for `edit`, which still keeps its clips by default. Refused
   with `--kind clips`, a timeline `--format` or `--force`.
 
+- `cutpoint ui`: 360 moments preview through the camera path `360 analyze` cached for them
+  (part of #517): a 640x360 view of the `.lrv` along the path, rendered in the background on first view
+  (with Cancel) and kept in `ui/pano/`, in place of the raw dual fisheye. The raw preview stays,
+  with a note saying why, when a moment has no current cached path. Flagged paths get word
+  badges on the moment cards (Sky, Whip pans, Many cuts, Wearer, Off target, QA fail) whose
+  reasons show on hover and keyboard focus and in the note above the preview. Not built yet: an
+  IMU-levelled flat fallback for a moment without a current path, and re-planning the path for
+  a trimmed span; both play the raw preview.
+- `cutpoint ui`: the Moments header shows "Analyzed X of video in Y" under Analyze again and
+  Show folder (#459), from the sources and `timings.total_s` that `highlights.json` already
+  records (360 projects: the scan and analyze times in `pano_timings.json`); hidden when they
+  are not recorded. Known limit: on ski projects, an `events` or `crashes --reanalyze` re-rank
+  replaces the time shown with the re-rank's.
 - Feature registry (#514 phase 1a): every scoring signal is a named feature with a
   description, the layer it comes from and the extra it needs. Each built-in style's weights
   name registered features; a learned style with a name that is not one logs a WARNING that
@@ -34,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `highlights.json` records the features it could compute in
   `settings.features_available`. The `events.json` rescore is now the scorer's bonus stage,
   with the same points.
+- `cutpoint ui`: New project takes several videos and folders, one path per line, with "Include
+  sub-folders" (`analyze --recursive`) and "Skip files matching" (`--exclude` patterns) (#484).
+  "Analyze again" keeps them; 360 footage still makes a project of its own.
+- `cutpoint ui` Analysis options (#483), in the "Analyze again" dialog and, before the first
+  analysis, behind "Analysis options…": Transcription model, Language, Max candidates,
+  Must-include crash (ski styles), Skip scene detection, Recover after read errors and Skip steps
+  pass `analyze --model`, `--language`, `--max-candidates`, `--must-include-crash`,
+  `--no-scenes`, `--recover` and `--skip`. They start with what the project's analysis used, so
+  Analyze again repeats it; One-Click Edit passes Skip steps on as `edit --skip` and stays off
+  for the others, now including `--must-include-crash`.
 - `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
   splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and
@@ -92,6 +115,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` AI assistant: OpenAI (`api.openai.com`) is asked through the Responses API, so
+  `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` and `*-codex` models make tool calls instead of
+  failing or falling back to JSON mode; OpenAI-compatible base URLs still use Chat Completions
+  (#536).
+- `cutpoint ui` One-Click Edit: a ski-style analysis no longer turns the presets off as if it
+  had used `--no-scenes` (ski never detects scenes, so it records none without the flag).
 - `cutpoint ui` AI assistant: `CUTPOINT_ASSISTANT_API_KEY` no longer wins over a provider's own
   key and is never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai` (it is for custom
   base URLs only); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` or the keyring key is
@@ -106,6 +135,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clips`: the `Exporting ...` INFO line says `smart tail off` when no clip gets a smart tail
   (every segment has `"smart_tail": false` or a fixed `"tail"`), as the manifest header does;
   it used to say `on` with the run's setting.
+- `assemble --loudnorm` (and every `edit` kind that normalises) applies one linear gain to
+  -14 LUFS before the true-peak limiter. ffmpeg's loudnorm used to switch silently to its
+  dynamic mode whenever the peaks did not fit, which re-levelled the clips, shrank the loudness
+  range and undid `--compress-peaks` (#523). Peaky finals can now end below -14 LUFS; a WARNING
+  (`loudness_below_target` with `--json`) names the level when it is more than 1 LU below.
+- `clips` and `assemble`: gaps in a source's audio timestamps (game captures such as
+  Battlefield 6) are filled with silence, so clips and the final video no longer come out with
+  audio up to a second short that runs ahead of the video. Audio that starts after the video is
+  no longer moved forward at the start of a clip; sources without gaps or delay are unchanged
+  (#476).
 
 ## [0.4.0] - 2026-10-29
 

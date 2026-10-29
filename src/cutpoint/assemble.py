@@ -187,7 +187,7 @@ def _audio_chain(
     label = i if label is None else label
     if info.audio_streams:
         return (
-            f"[{i}:a:0]{A_FMT},asetpts=PTS-STARTPTS{peaks}"
+            f"[{i}:a:0]asetpts=PTS-STARTPTS,{A_FMT}{peaks}"
             f"{audio_fade_filter(info.duration, fade, info.audio_duration)}"
             f"{'' if end is None else f',apad,atrim=end={end:.6f}'}[a{label}]"
         )
@@ -979,17 +979,20 @@ def write_ass(chunks: list[tuple[float, float, str]], width: int, height: int, p
     path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
 
 
-# loudnorm alone did not guarantee the ceiling: its linear mode only holds if
-# the measured peak allows it, and the AAC encode afterwards adds true peak
-# (one gunshot took a montage to +1.6 dBTP). So loudnorm gets a relaxed TP
-# target (keeps the gain linear and close to -14 LUFS more often), followed by
-# a limiter running at 192 kHz (4x oversampled, so inter-sample peaks are
-# caught). Measured on the R6 montage: the limiter output is exact (-2.2 dBTP
-# after resampling to 48 kHz), AAC at 192k then adds +1.2 dB but at 320k only
-# +0.2 dB, so the normalised final is encoded at 320k. The result is measured
-# after encoding; if the true peak is still above TP_CEILING, the limiter
-# ceiling is lowered and the pass rerun.
-LOUDNORM = "loudnorm=I=-14:TP=-1.0:LRA=11"
+# loudnorm alone did not guarantee the ceiling, and its linear mode only holds if
+# measured true peak + gain stays below its TP target (at most 0 dBTP). A final with peaks
+# near 0 dBFS that needs +8 dB never fits, and ffmpeg then silently switches to dynamic (AGC)
+# mode, which re-levels the clips and undoes --compress-peaks (#523). So loudnorm only
+# measures, and the gain to -14 LUFS is applied as a plain `volume`, followed by a limiter
+# running at 192 kHz (4x oversampled, so inter-sample peaks are caught) that takes the
+# peaks the gain pushes over the ceiling. Measured on the R6 montage: the limiter output is
+# exact (-2.2 dBTP after resampling to 48 kHz), AAC at 192k then adds +1.2 dB but at 320k
+# only +0.2 dB, so the normalised final is encoded at 320k. The result is measured after
+# encoding; if the true peak is still above TP_CEILING, the limiter ceiling is lowered and
+# the pass rerun.
+LOUDNORM_I = -14.0  # LUFS target of --loudnorm
+LOUDNORM_SHORT_LU = 1.0  # a final further below LOUDNORM_I than this logs a WARNING
+LOUDNORM = "loudnorm=I=-14:TP=-1.0:LRA=11"  # measurement pass (and the fallback)
 TP_CEILING = -1.5  # dBTP the final file must not exceed
 LIMIT_START_DB = -2.3  # first limiter ceiling (dBFS at 192 kHz, before AAC)
 FINAL_AUDIO_OUT = ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"]
@@ -998,7 +1001,11 @@ LIMIT_PASSES = 3
 
 
 def loudnorm_filter(src: Path) -> str:
-    """Two-pass loudnorm: measure ``src``, return a linear filter hitting -14 LUFS."""
+    """Measure ``src`` (loudnorm's first pass) and return a linear gain to LOUDNORM_I LUFS.
+
+    The gain is a ``volume`` filter, never loudnorm's second pass, which falls back to
+    dynamic mode when the peaks do not fit (#523); the limiter after it takes the peaks.
+    """
     out = run(
         [
             "ffmpeg",
@@ -1016,14 +1023,22 @@ def loudnorm_filter(src: Path) -> str:
     )
     try:
         m = json.loads(out[out.rindex("{") : out.rindex("}") + 1])
-        return (
-            f"{LOUDNORM}:measured_I={m['input_i']}:measured_TP={m['input_tp']}:"
-            f"measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}:"
-            f"offset={m['target_offset']}:linear=true"
-        )
+        if m["input_i"] == "-inf":
+            logger.info("Audio is silent; no loudness gain")
+            return "anull"
+        gain = LOUDNORM_I - float(m["input_i"])
+        if not math.isfinite(gain):
+            raise ValueError(m["input_i"])
     except (ValueError, KeyError):
-        logger.warning("loudnorm measurement unparseable; using single-pass")
+        logger.warning("loudnorm measurement unparseable; using single-pass (dynamic) loudnorm")
         return LOUDNORM
+    logger.info(
+        "Loudness gain %+.1f dB (measured %.1f LUFS, true peak %s dBTP)",
+        gain,
+        float(m["input_i"]),
+        m["input_tp"],
+    )
+    return f"volume={gain:.2f}dB"
 
 
 def limiter_filter(limit_db: float) -> str:
@@ -1142,6 +1157,15 @@ def normalize_with_ceiling(
             limit_db,
         )
         if tp <= TP_CEILING:
+            if loudnorm and -70 < lufs < LOUDNORM_I - LOUDNORM_SHORT_LU:
+                msg = (
+                    f"Final is {lufs:.1f} LUFS, {LOUDNORM_I - lufs:.1f} LU below "
+                    f"{LOUDNORM_I:.0f}: the limiter takes the peaks the linear gain pushes over "
+                    "the ceiling; --compress-peaks light|strong (if not used yet) leaves it "
+                    "more room"
+                )
+                logger.warning(msg)
+                jsonout.warn("loudness_below_target", msg)
             return lufs, tp
         limit_db -= tp - TP_CEILING + LIMIT_MARGIN_DB
     logger.warning(
