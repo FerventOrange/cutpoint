@@ -2136,6 +2136,40 @@ def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _secs(v: Any) -> float | None:
+    """``v`` as a positive, finite number of seconds, else None."""
+    ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    return float(v) if ok and v > 0 else None
+
+
+def analysis_took(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> float | None:
+    """Wall-clock seconds of the last analysis. ``360 analyze`` re-ranks after its events, which
+    rewrites ``timings.total_s`` with the re-rank's few seconds, so a 360 project's time is the
+    scan and analyze totals in ``pano_timings.json``; None when one is missing."""
+    if meta.get("kind") == "360":
+        pano = _load(p, "pano_timings.json")
+        pano = pano if isinstance(pano, dict) else {}
+        scan, total = _secs(pano.get("scan_s")), _secs(pano.get("analyze_total_s"))
+        return None if scan is None or total is None else round(scan + total, 2)
+    timings = (hl or {}).get("timings")
+    return _secs(timings.get("total_s")) if isinstance(timings, dict) else None
+
+
+def analysis_stats(hl: dict[str, Any] | None, took: float | None) -> dict[str, float] | None:
+    """Seconds of video the last analysis read, from highlights.json, and the seconds it
+    ``took`` (#459, see ``analysis_took``); None when either is unknown."""
+    # analyzed_s: the part a recovered or cut-short read covered, else the whole source
+    parts = [
+        _secs(s.get("analyzed_s", s.get("duration")))
+        for s in (hl or {}).get("sources") or []
+        if isinstance(s, dict)
+    ]
+    video = [v for v in parts if v is not None]
+    if took is None or not video or len(video) < len(parts):
+        return None
+    return {"video_s": round(sum(video), 3), "took_s": took}
+
+
 def _num(item: dict[str, Any], key: str, i: int) -> float:
     v = item.get(key)
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
@@ -3041,6 +3075,8 @@ def create_app(port: int) -> FastAPI:
             "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
             "highlights": moments_view(hl),
+            # the Moments header's "Analyzed X of video in Y"
+            "analysis": analysis_stats(hl, analysis_took(p, meta, hl)),
             "review": review if isinstance(review, dict) else None,
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp

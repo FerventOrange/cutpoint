@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: the Moments header shows "Analyzed X of video in Y" under Analyze again and
+  Show folder (#459), from the sources and `timings.total_s` that `highlights.json` already
+  records (360 projects: the scan and analyze times in `pano_timings.json`); hidden when they
+  are not recorded. Known limit: on ski projects, an `events` or `crashes --reanalyze` re-rank
+  replaces the time shown with the re-rank's.
 - Feature registry (#514 phase 1a): every scoring signal is a named feature with a
   description, the layer it comes from and the extra it needs. Each built-in style's weights
   name registered features; a learned style with a name that is not one logs a WARNING that
@@ -68,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` AI assistant: OpenAI (`api.openai.com`) is asked through the Responses API, so
+  `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` and `*-codex` models make tool calls instead of
+  failing or falling back to JSON mode; OpenAI-compatible base URLs still use Chat Completions
+  (#536).
 - `cutpoint ui` AI assistant: `CUTPOINT_ASSISTANT_API_KEY` no longer wins over a provider's own
   key and is never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai` (it is for custom
   base URLs only); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` or the keyring key is
@@ -82,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clips`: the `Exporting ...` INFO line says `smart tail off` when no clip gets a smart tail
   (every segment has `"smart_tail": false` or a fixed `"tail"`), as the manifest header does;
   it used to say `on` with the run's setting.
+- `assemble --loudnorm` (and every `edit` kind that normalises) applies one linear gain to
+  -14 LUFS before the true-peak limiter. ffmpeg's loudnorm used to switch silently to its
+  dynamic mode whenever the peaks did not fit, which re-levelled the clips, shrank the loudness
+  range and undid `--compress-peaks` (#523). Peaky finals can now end below -14 LUFS; a WARNING
+  (`loudness_below_target` with `--json`) names the level when it is more than 1 LU below.
 - HLG exports, UI previews and stills are no longer about 18 % more saturated than a bt.2390
   reference: zscale now applies the HLG OOTF to luminance (`agamma=0`), as BT.2100 specifies,
   not to R, G and B one by one. HLG exports take longer (about 25 instead of 45 fps at 1080p);

@@ -507,7 +507,8 @@ def limiter_chain(limit_db: float, soxr: bool) -> str:
 # mean (at most ``max_boost`` up and ``max_cut`` down: a boost also lifts background noise).
 # The gain goes before the compressor, so the bursts of a boosted clip are still caught.
 # Measured on 12 clips of an R6 montage (gunfire, shouting), a voice-chat recording and
-# GoPro wind, exported and assembled with --loudnorm (table in the #326 PR): the loudest
+# GoPro wind, exported and assembled with --loudnorm (before #523, dynamic loudnorm; table
+# in the #326 PR): the loudest
 # moment above the speech level 12.2 dB -> 7.5 (light) / 5.2 (strong), 99th-percentile
 # momentary loudness above speech 10.0 -> 5.9 / 2.8 dB, clip loudness spread 9.9 -> 4.3 /
 # 4.7 LU, true peak unchanged (-2.2 / -2.0 dBTP). The cost: the quiet parts of boosted
