@@ -742,7 +742,7 @@ def check_projects_dir(value: Any) -> tuple[Path, bool]:
     """
     if not isinstance(value, str) or not value.strip():
         raise bad("projects_dir must be a folder path")
-    folder = Path(value.strip())
+    folder = Path(_typed_path(value))  # pasted with Copy as path's quotes too
     if not folder.is_absolute():
         raise bad("the projects folder must be an absolute path")
     folder = Path(os.path.abspath(folder))  # noqa: PTH100 - drops '..', keeps mapped drive letters
@@ -3024,17 +3024,33 @@ def inputs_problem(srcs: list[Path], exclude: list[str], recursive: bool) -> str
     return f"no videos found{left} in the chosen sources{deeper}"
 
 
+def _typed_path(x: object) -> object:
+    """A source as typed or pasted: without surrounding blanks (a CRLF line's ``\\r`` too) and
+    one pair of surrounding double quotes (Windows' Copy as path)."""
+    if isinstance(x, str):
+        x = x.strip()
+        if len(x) > 1 and x[0] == x[-1] == '"':
+            x = x[1:-1]
+    return x
+
+
 def _body_inputs(body: dict[str, Any]) -> list[str]:
-    """``source`` (one path) or ``sources`` (1 to ``MAX_INPUTS``): absolute paths, each once."""
+    """``source`` (one path) or ``sources`` (1 to ``MAX_INPUTS``, blank lines left out): absolute
+    paths, each once."""
     source, sources = body.get("source"), body.get("sources")
     if sources is None:
         sources = [source]
     elif source is not None:
         raise bad("send source or sources, not both")
-    elif not isinstance(sources, list) or not 1 <= len(sources) <= MAX_INPUTS:
+    elif isinstance(sources, list):
+        sources = [x for x in sources if not isinstance(x, str) or x.strip()]
+    if not isinstance(sources, list) or not 1 <= len(sources) <= MAX_INPUTS:
         raise bad(f"sources must list 1-{MAX_INPUTS} paths")
-    if not all(isinstance(x, str) and "\0" not in x and Path(x).is_absolute() for x in sources):
-        raise bad("source must be an absolute path")
+    sources = [_typed_path(x) for x in sources]
+    for x in sources:
+        if not (isinstance(x, str) and "\0" not in x and Path(x).is_absolute()):
+            name = f"{x}: " if len(sources) > 1 and isinstance(x, str) else ""
+            raise bad(f"{name}source must be an absolute path")
     if len({os.path.normcase(os.path.abspath(x)) for x in sources}) < len(sources):  # noqa: PTH100
         raise bad("each source can be chosen once")
     return sources

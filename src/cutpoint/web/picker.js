@@ -43,6 +43,8 @@ export function initNewProject(onCreated, canPick) {
   const setError = (msg) => (error.textContent = msg || '');
   const stem = (p) => baseName(p.replace(/[\\/]+$/, '')).replace(/\.[^.]+$/, '');
   const lines = (v) => v.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  // as the server reads them: Windows' Copy as path puts each path in double quotes
+  const sourceLines = (v) => lines(v).map((x) => x.replace(/^"(.+)"$/, '$1'));
   // As analyze names a project: its one input's name, else that of the folder its inputs share
   const defaultName = (paths) => {
     if (paths.length < 2) return stem(paths[0] ?? '');
@@ -58,7 +60,7 @@ export function initNewProject(onCreated, canPick) {
     b.addEventListener('click', async () => {
       setError('');
       try {
-        const have = lines(source.value);
+        const have = sourceLines(source.value);
         const path = await pickPath(b.dataset.pick, have.at(-1) ?? '');
         if (!path) return;
         if (!have.includes(path)) source.value = [...have, path].join('\n'); // a line more
@@ -73,7 +75,7 @@ export function initNewProject(onCreated, canPick) {
   $('#newSourceHint').textContent = hint;
   name.addEventListener('input', () => (nameTouched = true));
   source.addEventListener('input', () => {
-    const paths = lines(source.value);
+    const paths = sourceLines(source.value);
     if (!nameTouched) name.value = defaultName(paths);
     $('#newSourceHint').textContent = paths.some((p) => /\.(insv|lrv)$/i.test(p)) ? `${hint} ${PANO_HINT}` : hint;
   });
@@ -84,7 +86,7 @@ export function initNewProject(onCreated, canPick) {
     // each field is an analyze option: its inputs, --recursive and --exclude
     const body = {
       name: name.value.trim(),
-      sources: lines(source.value),
+      sources: sourceLines(source.value),
       style: style.value,
       recursive: recursive.checked,
       exclude: lines(exclude.value),
