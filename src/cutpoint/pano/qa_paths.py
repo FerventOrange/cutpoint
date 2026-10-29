@@ -80,6 +80,63 @@ def view_frame_index(pv_t: np.ndarray, times: np.ndarray, hold: float = HOLD_S) 
     return np.where(np.abs(pv_t[pick] - times) <= hold, pick, -1)
 
 
+def project_frame(
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    is_self: np.ndarray,
+    frame: int,
+    yaw: float,
+    pitch: float,
+    fov: float,
+    size: tuple[int, int] = OUT_SIZE,
+    projected: list[Any] | None = None,
+) -> tuple[list[list[float]], list[bool], list[list[float]], list[int], list[int]]:
+    """Person boxes ``(k, 4)`` (yaw, pitch, w, h) of one view frame projected into one view
+    (the per-frame step of :func:`project_frames`, before its NMS); ``projected``: the
+    boxes' :func:`geometry.project_box_visible` results in this view, if already known.
+
+    Returns:
+        ``(det, is_self, slivers, det_src, sliver_src)``: rows in :func:`qa.frame_flags`
+        layout with frame ``frame`` (as :func:`project_frames`) and, per row, its index
+        into ``boxes``.
+    """
+    out: list[list[float]] = []
+    sel: list[bool] = []
+    slivers: list[list[float]] = []
+    src: list[int] = []
+    sliver_src: list[int] = []
+    for k in range(len(boxes)):
+        res = (
+            projected[k]
+            if projected is not None
+            else G.project_box_visible(
+                float(yaw),
+                float(pitch),
+                float(fov),
+                size[0],
+                size[1],
+                float(boxes[k, 0]),
+                float(boxes[k, 1]),
+                float(boxes[k, 2]),
+                float(boxes[k, 3]),
+            )
+        )
+        if res is None:
+            continue
+        x1, y1, x2, y2 = (min(1.0, max(0.0, v)) for v in res[0])
+        if x2 <= x1 or y2 <= y1:
+            continue
+        row = [frame, 1, float(scores[k]), x1, y1, x2, y2]
+        if res[1] < MIN_VISIBLE:
+            slivers.append([*row, float(is_self[k])])
+            sliver_src.append(k)
+            continue
+        out.append(row)
+        sel.append(bool(is_self[k]))
+        src.append(k)
+    return out, sel, slivers, src, sliver_src
+
+
 def project_frames(
     pv: Any,
     frame_idx: np.ndarray,
@@ -108,29 +165,13 @@ def project_frames(
         for i, j in enumerate(frame_idx):
             if j < 0:
                 continue
-            for k in np.flatnonzero(person & (fi == j)):
-                res = G.project_box_visible(
-                    float(yaw[i]),
-                    float(pitch[i]),
-                    float(fov[i]),
-                    size[0],
-                    size[1],
-                    float(d[k, 3]),
-                    float(d[k, 4]),
-                    float(d[k, 5]),
-                    float(d[k, 6]),
-                )
-                if res is None:
-                    continue
-                x1, y1, x2, y2 = (min(1.0, max(0.0, v)) for v in res[0])
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                row = [i, 1, float(d[k, 2]), x1, y1, x2, y2]
-                if res[1] < MIN_VISIBLE:
-                    slivers.append([*row, float(is_self[k])])
-                    continue
-                out.append(row)
-                sel.append(bool(is_self[k]))
+            ks = np.flatnonzero(person & (fi == j))
+            o, s, sl, _, _ = project_frame(
+                d[ks, 3:7], d[ks, 2], is_self[ks], i, yaw[i], pitch[i], fov[i], size
+            )
+            out += o
+            sel += s
+            slivers += sl
     det, is_self_out = np.asarray(out, float).reshape(-1, 7), np.asarray(sel, bool)
     keep = _nms(det)
     return det[keep], is_self_out[keep], np.asarray(slivers, float).reshape(-1, 8)

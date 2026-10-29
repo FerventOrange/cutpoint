@@ -160,6 +160,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The 360 director frames other people whole or keeps them out instead of cutting them at the
+  frame edge (#11): where one would be cut, it widens the view or shifts its yaw, whichever
+  costs less, keeps that choice over a stretch, and cuts away only where neither helps. It
+  checks the people `360 qa --paths` counts (the subject and the largest person too) at every
+  key and between keys, over the whole planned span, so padding and tails stay clean. Keys fall
+  on the moment's 0.5 s grid. New `pano.director` keys `edge_rule` (`legacy` keeps the earlier
+  rule), `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`,
+  `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score` and
+  `near_box_scale`. Paths are version 5 and record the span they fixed as `fixed`; `extend`
+  reuses a version 4 path only within its moment and plans a longer range anew with a WARNING.
+  `360 director` and planned camera paths change, so cached candidate paths are planned again.
+- `360 qa --compare` adds `size_ratio` per clip and for the edit (#11): the median width and
+  height of rendered boxes over the projected boxes they match (`edge_gap.json` version 4).
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or

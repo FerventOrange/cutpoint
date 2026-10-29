@@ -74,7 +74,10 @@ and the edge it touches, the projected box it matches and that box's distance to
 edge (:func:`explain`).
 Writes ``edge_gap.json`` next to the rendered ``qa.json``; its edit summary also counts
 the frames by the rendered clips' render ``mode`` and ``self_method`` (``by_mode``,
-``by_self_method``; ``unknown`` for older reports).
+``by_self_method``; ``unknown`` for older reports). Per clip and for the edit,
+``size_ratio`` is the median rendered over projected box width and height of the matched
+non-self pairs (:func:`size_ratios`): how much larger the detector sees people than the
+director's projection.
 """
 
 from __future__ import annotations
@@ -91,7 +94,8 @@ from cutpoint.pano import qa as Q
 
 logger = logging.getLogger(__name__)
 
-GAP_VERSION = 3  # 2: other_detail and evidence; 3: position_mismatch, by_mode, by_self_method
+GAP_VERSION = 4  # 2: other_detail and evidence; 3: position_mismatch, by_mode, by_self_method;
+# 4: size_ratio
 GAP_FILE = "edge_gap.json"
 CAUSES = (
     "unpaired",
@@ -222,6 +226,40 @@ def median_dx(
             if iou[i, j] >= MATCH_IOU:
                 dx.append(float((a[i, 0] + a[i, 2]) / 2 - (b[j, 0] + b[j, 2]) / 2))
     return round(float(np.median(dx)), 4) if len(dx) >= MIN_PAIRS else None
+
+
+def size_ratios(
+    pairs: list[tuple[dict[str, Any] | None, dict[str, Any] | None]],
+    th: Q.QAThresholds,
+    dx: float | None,
+) -> list[tuple[float, float]]:
+    """``(width, height)`` ratios, rendered over projected, of the non-self boxes matched
+    by IoU >= :data:`MATCH_IOU` once the projected ones are shifted by ``dx``
+    (:func:`median_dx`; none when None)."""
+    out: list[tuple[float, float]] = []
+    shift = np.array([dx or 0.0, 0.0, dx or 0.0, 0.0])
+    for r, p in pairs:
+        if r is None or p is None:
+            continue
+        a, b = _boxes(r, th, own=False), _boxes(p, th, own=False) + shift
+        if not len(a) or not len(b):
+            continue
+        iou = _iou(a, b)
+        for i in range(len(a)):
+            j = int(iou[i].argmax())
+            wb, hb = b[j, 2] - b[j, 0], b[j, 3] - b[j, 1]
+            if iou[i, j] >= MATCH_IOU and wb > 0 and hb > 0:
+                out.append((float((a[i, 2] - a[i, 0]) / wb), float((a[i, 3] - a[i, 1]) / hb)))
+    return out
+
+
+def size_ratio(ratios: list[tuple[float, float]]) -> dict[str, Any]:
+    """``{"width", "height", "pairs"}``: the median ratios (None below :data:`MIN_PAIRS`
+    pairs) and the number of pairs."""
+    if len(ratios) < MIN_PAIRS:
+        return {"width": None, "height": None, "pairs": len(ratios)}
+    w, h = np.median(np.asarray(ratios, float), 0)
+    return {"width": round(float(w), 3), "height": round(float(h), 3), "pairs": len(ratios)}
 
 
 def _area(b: Any) -> float:
@@ -409,11 +447,19 @@ def cause_of(
 
 
 def compare_clip(
-    rc: dict[str, Any], pc: dict[str, Any], fps: float, th: Q.QAThresholds
+    rc: dict[str, Any],
+    pc: dict[str, Any],
+    fps: float,
+    th: Q.QAThresholds,
+    ratios: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
-    """Edge-cut agreement of one clip's rendered (``rc``) and geometric (``pc``) records."""
+    """Edge-cut agreement of one clip's rendered (``rc``) and geometric (``pc``) records;
+    the clip's :func:`size_ratios` are added to ``ratios`` if given (the edit's median)."""
     pairs = join_frames(rc["frames"], pc["frames"], fps)
     dx = median_dx(pairs, th)
+    sizes = size_ratios(pairs, th, dx)
+    if ratios is not None:
+        ratios += sizes
     offset = rc.get("offset", pc.get("offset"))
     # the selected moment (clips), else the planned segment (previews, older reports)
     segment = rc.get("selected") or pc.get("selected") or rc.get("segment") or pc.get("segment")
@@ -444,6 +490,7 @@ def compare_clip(
         "self_method": rc.get("self_method"),
         **counts,
         "median_dx": dx,
+        "size_ratio": size_ratio(sizes),
         "causes": causes,
         "other_detail": detail,
         "rendered_only_frames": only,
@@ -497,10 +544,11 @@ def run_compare(qa_dir: Path, a: Path, b: Path) -> dict[str, Any]:
         )
     by_stem = {Path(c["file"]).stem: c for c in paths["clips"]}
     clips = []
+    ratios: list[tuple[float, float]] = []
     for rc in rendered["clips"]:
         pc = by_stem.pop(Path(rc["file"]).stem, None)
         if pc is not None:
-            clips.append(compare_clip(rc, pc, fps, th))
+            clips.append(compare_clip(rc, pc, fps, th, ratios))
     joined = {Path(c["file"]).stem for c in clips}
     unmatched = {
         "rendered": [c["file"] for c in rendered["clips"] if Path(c["file"]).stem not in joined],
@@ -514,6 +562,7 @@ def run_compare(qa_dir: Path, a: Path, b: Path) -> dict[str, Any]:
     edit["other_detail_share"] = {
         k: round(v / n, 3) if n else 0.0 for k, v in edit["other_detail"].items()
     }
+    edit["size_ratio"] = size_ratio(ratios)
     edit["by_mode"] = counts_by(clips, "mode")
     edit["by_self_method"] = counts_by(clips, "self_method")
     mismatch = [

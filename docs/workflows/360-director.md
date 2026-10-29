@@ -36,14 +36,33 @@ in the spirit of Pano2Vid and AutoCam.
   separate selfie state looks down at the wearer and is scored from the wearer talking or
   laughing.
 - Dynamic programming chooses the path. Staying put is free, moving costs per degree, and
-  anything faster than a 45 degrees-per-second pan, or any change to or from the selfie, is a
-  hard cut with a fixed cost. Shots shorter than 2.5 s are merged away.
+  anything faster than a 35 degrees-per-second pan (`max_speed`), or any change to or from the
+  selfie, is a hard cut with a fixed cost. Shots shorter than 3 s (`min_hold_s`) are merged
+  away.
 - Within a shot, yaw is smoothed and limited in speed and acceleration. Pitch follows the framed
   person, clamped to -25..+5 degrees. Field of view is wide by default and fitted to a tracked
   friend's size.
 - The wearer may be in frame when arms, poles or skis enter from the bottom edge or cover at
   most a fifth of the frame. A larger box elsewhere is treated as a person too close and framed
   out.
+- Other people at least 15 degrees tall (`near_min_h_deg`, detected with a score of at least
+  `near_min_score`) are framed whole or kept out, never cut by the frame edge
+  (`edge_rule` `include_exclude`, the default). Where one would be cut, the director widens the
+  view or shifts its yaw, whichever costs less: a shift costs `w_shift` per half view width, at
+  most `include_max_shift` of it; widening costs `w_widen` for the whole way to the widest view,
+  and keeps the subject at least `include_min_subject_h` of the frame tall (or as tall as it
+  was). The view is never narrowed. A person framed whole keeps `include_margin` of the frame
+  off the sides; one kept out stays `exclude_clear_deg` outside it. A stretch keeps one choice
+  (in, or out to the same side), and stretches closer than `include_bridge_s` are fixed as one.
+  The check is the one `360 qa --paths` makes (the subject and the largest person count at the
+  edge too) at every 0.5 s key and between keys, and a fix is kept only when it lowers the
+  edge cuts that check counts (then the other bad steps). Where no shift or widening frames
+  everyone well, it settles for one without an edge cut the check counts, and else cuts away. `edge_rule` `legacy` keeps the earlier rule: widen, then reframe, then
+  cut away, inside the moment only.
+- The fix covers the whole planned span, not only the moment, so padding and tails added later
+  are clean too. Keys fall on the 0.5 s grid of the moment's start. The path records that span
+  as `fixed`; `extend` reuses a recorded path when that span covers the new range, and an older
+  (version 4) path only when its moment does, else it plans the path anew with a WARNING.
 - The moment's kind shifts the weights: laughter and speech favour the selfie, people and
   groups favour friends, beauty favours the view, speed and airtime favour forward.
 - Paths are planned 10 s beyond each side of the segment so padding stays on a planned path.

@@ -411,3 +411,29 @@ def test_edge_gap_counts_frames_by_mode_and_self_method(tmp_path: Path) -> None:
     assert [c["mode"] for c in saved["clips"]] == ["sdk", "dfisheye", None]
     assert {"causes", "cause_share", "other_detail", "other_detail_share"} <= set(e)
     (tmp_path / "edge_gap.json").unlink()
+
+
+def test_size_ratio_of_matched_boxes(tmp_path: Path) -> None:
+    """#11 phase 2a: rendered boxes 1.2x the projected ones (after the median offset)."""
+    d = tmp_path / "clips"
+    proj = [0.40, 0.30, 0.50, 0.60]  # 0.1 x 0.3, centre (0.45, 0.45)
+    big = [0.39, 0.27, 0.51, 0.63]  # 1.2x about the same centre ...
+    shifted = [b + (0.03 if k % 2 == 0 else 0.0) for k, b in enumerate(big)]  # ... 0.03 right
+    rend = [fr(k / 2, [], [shifted]) for k in range(6)]
+    paths = [fr(k / 2, [], [proj]) for k in range(6)]
+    few = [fr(0.0, [], [shifted])]
+    a, b = _write(
+        tmp_path,
+        d,
+        report("rendered", d, [clip("001_a.mp4", rend), clip("002_b.mp4", few)]),
+        report("paths", d, [clip("001_a.json", paths), clip("002_b.json", paths[:1])]),
+    )
+    QC.run_compare(d, a, b)
+    saved = json.loads((tmp_path / "edge_gap.json").read_text(encoding="utf-8"))
+    one, two = saved["clips"]
+    assert one["median_dx"] == pytest.approx(0.03)
+    assert one["size_ratio"] == {"width": 1.2, "height": 1.2, "pairs": 6}
+    assert two["size_ratio"] == {"width": None, "height": None, "pairs": 1}  # too few
+    assert saved["edit"]["size_ratio"] == {"width": 1.2, "height": 1.2, "pairs": 7}
+    assert saved["version"] == QC.GAP_VERSION == 4
+    (tmp_path / "edge_gap.json").unlink()
