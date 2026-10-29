@@ -105,6 +105,9 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.events.paths._TORCH_HOME_SET": _fill_torch_home,
     "cutpoint.features.installed_extras": lambda t, m: features.installed_extras(),
     "cutpoint.styles._warn_unknown": lambda t, m: styles._warn_unknown("x.json", ("x",)),
+    "cutpoint.pano.candidates.code_id": lambda t, m: importlib.import_module(
+        "cutpoint.pano.candidates"
+    ).code_id(),
 }
 
 

@@ -109,7 +109,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
 | `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`), and `version` for `llama`; for `pip`, `installed` and `missing` |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
-| `360 analyze` | `timings`, `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events` |
+| `360 analyze` | `timings`, `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
 | `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
@@ -880,8 +880,10 @@ Notes:
   a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
   (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
   as flat sand turned grey (`veto_faded`), or when its frames could not be decoded
-  (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater (by the same
-  rule); it does not change them. `gaming` footage is graded
+  (`no_frames`). An INFO line names each clip not graded with its reason, as recorded
+  (`not_underwater` adds that `--color auto` may suit it; `log` that `--lut` fits it). Plain
+  `auto` logs an INFO line naming clips that look underwater (by the same rule); it does not
+  change them. `gaming` footage is graded
   only with an explicit `--color` (with a WARNING, a stronger one for `underwater`, and a
   `color_on_gaming` `--json` warning): `color` in `config.json` never applies to
   it. `--color` cannot be combined with `--lut`. Each clip records a `color` entry (method,
@@ -889,7 +891,10 @@ Notes:
   grades its re-exports with those parameters without measuring again. Measurements are cached
   per source (`color/` in its cache folder).
 - `manifest.json` records each clip's source, start, end, score, label, tail, crop, grade (`lut` or `color`), padding,
-  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and
+  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. Its header's
+  `smart_tail.enabled` and `speech_aware.enabled` are `true` only when at least one clip got
+  them (a sequence whose every segment sets `"smart_tail": false` or a `tail`, or
+  `"speech_aware": false`, records `false`). `extend` and
   `assemble` read it. Manifests without `size` or `generator` (written by earlier versions)
   still work; their clips are matched by name only.
 - **Subtitles.** Each clip gets `001_<label>.srt` next to it, from the source's cached

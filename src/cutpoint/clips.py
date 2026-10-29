@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, jsonout, sources, srt
 from cutpoint.audio_tracks import export_tracks
-from cutpoint.color import SKIP_360, SKIP_LOG, AutoGrade, auto_grade
+from cutpoint.color import SKIP_360, SKIP_LOG, SKIP_NOT_UNDERWATER, AutoGrade, auto_grade
 from cutpoint.config import (
     COLOR_MODES,
     color_default,
@@ -952,6 +952,14 @@ def _entry(
     }
 
 
+def _smart_tail_used(tail: TailSettings, moments: list[dict[str, Any]]) -> bool:
+    """Whether any of ``moments`` gets a smart tail: the run's setting is on and at least one
+    moment did not turn it off (``"smart_tail": false`` or a fixed ``"tail"``)."""
+    return tail.enabled and any(
+        m.get("smart_tail") is not False and "tail" not in m for m in moments
+    )
+
+
 def write_manifest(
     out_dir: Path,
     project: Path,
@@ -998,6 +1006,10 @@ def write_manifest(
         len(entries),
     )
     padding = padding or Padding()
+    # The header says what was applied: off when every clip turned it off ("smart_tail": false
+    # or a fixed "tail"; "speech_aware": false), as a sequence's segments can.
+    tails_on = _smart_tail_used(tail, [p.entry for p in plans])
+    speech_on = speech.enabled and any(p.entry.get("speech_aware") is not False for p in plans)
     cache.save_json(
         out_dir / "manifest.json",
         {
@@ -1013,14 +1025,14 @@ def write_manifest(
             },
             "smart_tail": {
                 "style": style.name,
-                "enabled": tail.enabled,
+                "enabled": tails_on,
                 "tail_min": tail.tail_min,
                 "tail_max": tail.tail_max,
                 "settle": tail.settle,
             },
             "event_tails": event_settings.to_json(),
             "extend": {"start": padding.start, "end": padding.end},
-            "speech_aware": speech.to_json(),
+            "speech_aware": speech.to_json() | {"enabled": speech_on},
             "audio_fade": audio_fade,
             **({"compress_peaks": compress_peaks} if compress_peaks != "off" else {}),
             "crop": crop,
@@ -1197,13 +1209,24 @@ def _color_mode(
     return color
 
 
+# Plain words after the skip code of a clip :func:`_color_grades` does not grade.
+_SKIP_HINTS = {
+    SKIP_LOG: "looks like log/flat footage; use --lut with the camera's LUT",
+    SKIP_NOT_UNDERWATER: (
+        "it does not look like murky or color-cast underwater footage; --color auto may suit it"
+    ),
+}
+
+
 def _color_grades(
     plans: list[ClipPlan], mode: str, strength: float, fmt: OutputFormat, vertical: bool
 ) -> list[Grade | None]:
     """Each plan's automatic grade (:func:`~cutpoint.color.auto_grade`, measured through the
     plan's crop and ``vertical`` as its export), 360 clips skipped
-    (:data:`~cutpoint.color.SKIP_360`); INFO lines sum them up, name the log/flat clips (for
-    ``--lut``) and, for ``auto``, the clips that look underwater."""
+    (:data:`~cutpoint.color.SKIP_360`). An INFO line names each clip not graded with its skip
+    code (and a hint, :data:`_SKIP_HINTS`: ``--lut`` for log/flat clips, ``--color auto`` for
+    ``not_underwater``); for ``auto`` another names the clips that look underwater, and a last
+    one sums them up."""
     logger.info(
         "Measuring the color of %d clip(s) (--color %s, strength %g)", len(plans), mode, strength
     )
@@ -1226,18 +1249,10 @@ def _color_grades(
         logger.debug("  %s: color %s", plan.name, grade.to_json()["color"])
         grades.append(grade)
     names = [p.name for p in plans]
-
-    def named(skip: str) -> list[str]:
-        return [n for n, g in zip(names, grades, strict=True) if g.skip == skip]
-
-    if pano := named(SKIP_360):
-        logger.info("Color: %d 360 clip(s) are not graded: %s", len(pano), ", ".join(pano))
-    if log := named(SKIP_LOG):
-        logger.info(
-            "Color: %s look like log/flat footage and are not graded; use --lut with the "
-            "camera's LUT for them",
-            ", ".join(log),
-        )
+    for name, g in zip(names, grades, strict=True):
+        if g.skip:
+            why = _SKIP_HINTS.get(g.skip)
+            logger.info("Color: %s not graded (%s)%s", name, g.skip, f": {why}" if why else "")
     if hint := [n for n, g in zip(names, grades, strict=True) if g.underwater_hint]:
         logger.info(
             "Color: %s look underwater; --color underwater corrects underwater colors "
@@ -1461,15 +1476,15 @@ def export_clips(
             fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
             pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
         logger.info(
-            "Exporting %d clips at %dx%d@%d (%s order); smart tail %s (min %.1fs, max %.1fs)",
+            "Exporting %d clips at %dx%d@%d (%s order); smart tail %s",
             len(ordered),
             fmt.width,
             fmt.height,
             fmt.fps,
             order,
-            "on" if base_tail.enabled else "off",
-            base_tail.tail_min,
-            base_tail.tail_max,
+            f"on (min {base_tail.tail_min:.1f}s, max {base_tail.tail_max:.1f}s)"
+            if _smart_tail_used(base_tail, ordered)
+            else "off",
         )
         if lut is not None:
             logger.info("Grading every clip with %s (strength %g)", lut.path, lut.strength)
