@@ -6256,6 +6256,53 @@ def test_assemble_job_passes_the_audio_transition(
 
 
 @pytest.mark.parametrize(
+    ("extra", "expect"),
+    [
+        ({}, {}),  # not sent: the CLI's defaults
+        ({"transition": "fade", "audio_transition": "cut", "fade_dur": 0.5, "audio_fade": 0,
+          "captions": True, "caption_model": "large-v3"},
+         {"--fade-dur": "0.5", "--audio-fade": "0", "--model": "large-v3"}),
+    ],
+)  # fmt: skip
+def test_assemble_job_passes_fade_length_audio_fade_and_captions_model_unchanged(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra: dict,
+    expect: dict,
+) -> None:
+    """#485: Fade length, Assembly audio fade and Captions model reach assemble as given."""
+    res, captured = peaks_job(client, monkeypatch, tmp_path, {"action": "assemble", **extra})
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    flags = ("--fade-dur", "--audio-fade", "--model")
+    assert {f: _after(args, f) for f in flags if f in args} == expect
+    parsed = cli.build_parser().parse_args(args)
+    assert (parsed.fade_dur, parsed.audio_fade, parsed.model) == (
+        extra.get("fade_dur", 0.25),
+        extra.get("audio_fade", 0.25),
+        extra.get("caption_model"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"transition": "cut", "fade_dur": 0.5}, "fade_dur needs the fade video transition"),
+        ({"captions": False, "caption_model": "small"}, "caption_model needs captions"),
+        ({"captions": True, "caption_model": "--force"}, "caption_model must be one of"),
+    ],
+)
+def test_assemble_job_refuses_fade_and_model_values_the_cli_would_not_get(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict, message: str
+) -> None:
+    res, captured = peaks_job(client, monkeypatch, tmp_path, {"action": "assemble", **body})
+    assert res.status_code == 400, res.text
+    assert message in res.json()["detail"]
+    assert not captured
+
+
+@pytest.mark.parametrize(
     ("body", "message"),
     [
         ({"transition": "cut", "audio_transition": "crossfade"}, "needs the fade"),
@@ -6514,7 +6561,9 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
                   "optPicksAuto", "optTop", "optMaxTotal", "optIds", "optOrder",
                   "optSpeechExtend", "optSpeechLead", "optTailMin", "optTailMax",
                   "optEventTails", "optEventWindow", "optExtendStart",
-                  "optExtendEnd", "optColor", "optColorStrength"}  # fmt: skip
+                  "optExtendEnd", "optColor", "optColorStrength", "optFadeDur",
+                  "optFinalAudioFade", "optCaptionModel", "optCrop", "optCropBox", "optSize",
+                  "optAudioFade"}  # fmt: skip
     seen = set()
     for control in controls:
         cid = re.search(r'id="(\w+)"', control)[1]
@@ -6856,6 +6905,34 @@ def test_clips_job_passes_the_timing_and_padding_fields_it_was_sent(
 
 
 @pytest.mark.parametrize(
+    ("extra", "expect"),
+    [
+        ({}, []),  # Default: the CLI's own crop, size and fade
+        ({"crop": "auto", "audio_fade": 0}, ["--crop", "auto", "--audio-fade", "0"]),
+        ({"crop": "1920:800:0:140", "size": "1280x720", "audio_fade": 0.5},
+         ["--crop", "1920:800:0:140", "--size", "1280x720", "--audio-fade", "0.5"]),
+    ],
+)  # fmt: skip
+def test_clips_job_passes_crop_size_and_audio_fade_unchanged(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra: dict,
+    expect: list[str],
+) -> None:
+    """#485: the page's Crop, Output size and Clip audio fade reach clips as given."""
+    body = {"action": "clips", "picks": "auto", **extra}
+    res, captured, _, _ = options_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    opts = ("--crop", "--size", "--audio-fade")
+    got = [a for i, a in enumerate(args) if a in opts or (i and args[i - 1] in opts)]
+    assert got == expect
+    parsed = cli.build_parser().parse_args(args)
+    assert (parsed.crop, parsed.audio_fade) == (extra.get("crop"), extra.get("audio_fade", 0.25))
+
+
+@pytest.mark.parametrize(
     ("value", "flag"), [("auto", None), ("on", "--event-tails"), ("off", "--no-event-tails")]
 )
 def test_clips_job_passes_event_tails_on_or_off_and_nothing_for_auto(
@@ -6886,6 +6963,9 @@ def test_clips_job_passes_event_tails_on_or_off_and_nothing_for_auto(
         ({"event_window": 0}, "event_window must be above 0-60 seconds"),
         ({"extend_start": 31}, "extend_start must be 0-30 seconds"),
         ({"extend_end": [1]}, "extend_end must be 0-30 seconds"),
+        ({"crop": "--force"}, "crop must be 'auto', 'none' or W:H:X:Y"),
+        ({"size": "1920*1080"}, "size must be WxH"),
+        ({"size": "1281x720"}, "size must be WxH in even pixels"),
     ],
 )
 def test_clips_job_refuses_option_values_the_cli_would_not_get(
@@ -7028,7 +7108,8 @@ def test_the_export_tab_offers_the_direct_controls_with_labels() -> None:
     js = _web("app.js")
     for cid in ("optTop", "optMaxTotal", "optIds", "optOrder", "optSpeechExtend", "optSpeechLead",
                 "optTailMin", "optTailMax", "optEventTails", "optEventWindow", "optExtendStart",
-                "optExtendEnd"):  # fmt: skip
+                "optExtendEnd", "optCrop", "optCropBox", "optSize", "optAudioFade", "optFadeDur",
+                "optFinalAudioFade", "optCaptionModel"):  # fmt: skip
         assert re.search(rf'<label for="{cid}"[^>]*>[^<]+</label>', html), cid
     radios = re.findall(r'<input type="radio" name="optPicks"[^>]*value="(\w+)"', html)
     assert radios == ["sequence", "auto"]
@@ -7044,15 +7125,21 @@ def test_the_export_tab_offers_the_direct_controls_with_labels() -> None:
     for cid in ("optSpeechExtend", "optSpeechLead", "optTailMin", "optTailMax"):
         assert limits(cid) == ("0", f"{ui.MAX_TIMING_S:g}")
     assert limits("optEventWindow")[1] == f"{ui.MAX_TIMING_S:g}"
+    for cid in ("optAudioFade", "optFadeDur", "optFinalAudioFade"):
+        assert limits(cid)[1] == f"{ui.MAX_FADE_S:g}"
 
     def values(sid: str) -> list[str]:
         return re.findall(r'value="(\w*)"', re.search(rf'<select id="{sid}".*?</select>', html)[0])
 
     assert sorted(values("optOrder")) == sorted(["", *ui.CLIP_ORDERS])
     assert values("optEventTails") == list(ui.EVENT_TAILS)
+    assert values("optCrop") == ["", "auto", "none", "custom"]
+    model = re.search(r'<select id="optCaptionModel".*?</select>', html)[0]
+    assert re.findall(r'value="([\w.-]*)"', model) == ["", *ui.TRANSCRIPT_MODELS]
     fields = re.search(r"const OPT_FIELDS = \{(.*?)\};", js, re.S)[1]
     for key in ("top", "max_total", "ids", "speech_max_extend", "speech_max_lead", "tail_min",
-                "tail_max", "event_window", "extend_start", "extend_end"):  # fmt: skip
+                "tail_max", "event_window", "extend_start", "extend_end", "crop", "size",
+                "audio_fade", "fade_dur", "final_audio_fade"):  # fmt: skip
         assert re.search(rf"\b{key}: '#opt\w+'", fields), key
     assert "startJob('extend', body)" in js and "extendOptions()" in js
     assert "extend: 'Export extension'" in js  # the Jobs bar names the job

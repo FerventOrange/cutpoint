@@ -10,6 +10,9 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +27,7 @@ from cutpoint.pano import candidates as C
 from cutpoint.pano import cli
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
+from cutpoint.pano import project as P
 from cutpoint.pano import render as R
 from cutpoint.pano import views as VW
 
@@ -370,6 +374,52 @@ def test_whip_pan_and_cut_heavy_paths_are_flagged() -> None:
     assert d["cuts_per_min"] > C.CUTS_MAX_PER_MIN and d["flags"] == ["cuts"]
 
 
+def test_steady_rotation_is_spin_not_whip() -> None:
+    t = np.arange(81) * 0.5  # 40 s
+    path = keys_path(20.0 * t)  # 20 deg/s, the whole time
+    d = C.diagnostics(path, 2.0, 32.0)  # 30 s of it: 600 deg
+    assert d["peak_yaw_rate"] < C.WHIP_DEG_S
+    assert d["net_turns"] == pytest.approx(600 / 360, abs=0.02)
+    assert d["yaw_travel_per_min"] == pytest.approx(1200.0, rel=0.01)
+    assert d["flags"] == ["spin"] and C.FLAGS["spin"] == "keeps turning"
+    # one full turn in a window is enough, whichever way
+    d = C.diagnostics(keys_path(-20.0 * t), 2.0, 22.0)  # 20 s, -400 deg
+    assert d["net_turns"] == pytest.approx(400 / 360, abs=0.02) and d["flags"] == ["spin"]
+
+
+def test_back_and_forth_pans_are_no_spin() -> None:
+    t = np.arange(81) * 0.5
+    d = C.diagnostics(keys_path(40.0 * np.sin(2 * np.pi * t / 20.0)), 0.0, 40.0)  # +-40 deg
+    assert d["net_turns"] == pytest.approx(80 / 360, abs=0.02)
+    assert d["yaw_travel_per_min"] < C.SPIN_TRAVEL_DEG_MIN and d["flags"] == []
+
+
+def test_spin_travel_needs_a_full_turn_and_ignores_cuts() -> None:
+    # one quick deliberate pan: over the rate, but under a full turn of travel
+    yaw = np.r_[np.zeros(4), np.arange(1, 13) * 7.5, np.full(25, 90.0)]  # 90 deg in 6 s
+    d = C.diagnostics(keys_path(yaw), 1.0, 9.0)
+    assert d["yaw_travel_per_min"] > C.SPIN_TRAVEL_DEG_MIN and d["flags"] == []
+    # cuts add no rotation: a path cutting 90 deg every 2 s does not spin
+    cuts = tuple(float(c) for c in range(2, 20, 2))
+    yaw = np.array([90.0 * sum(t >= c for c in cuts) for t in np.arange(41) * 0.5])
+    d = C.diagnostics(keys_path(yaw, cuts=cuts), 0.0, 20.0)
+    assert d["net_turns"] == 0.0 and d["yaw_travel"] == 0.0 and "spin" not in d["flags"]
+    # an older record without the spin measures is not flagged
+    assert C.path_flags({"peak_yaw_rate": 10.0}) == []
+
+
+def test_gentle_sweeps_travel_far_but_do_not_spin() -> None:
+    t = np.arange(121) * 0.5  # 60 s
+    d = C.diagnostics(keys_path(60.0 * np.sin(2 * np.pi * t / 20.0)), 0.0, 60.0)  # +-60 deg
+    assert d["yaw_travel_per_min"] > C.SPIN_TRAVEL_DEG_MIN
+    assert d["yaw_travel"] >= C.SPIN_MIN_TRAVEL_DEG
+    assert d["net_turns"] < C.SPIN_TRAVEL_MIN_TURNS and d["flags"] == []
+    # a steady 10 deg/s: under a full turn per 30 s, but it keeps going one way
+    d = C.diagnostics(keys_path(10.0 * t), 0.0, 60.0)
+    assert C.SPIN_TRAVEL_MIN_TURNS <= d["net_turns"] < C.SPIN_TURNS
+    assert d["yaw_travel_per_min"] > C.SPIN_TRAVEL_DEG_MIN and d["flags"] == ["spin"]
+
+
 def test_wearer_in_view_is_measured_from_the_orientation() -> None:
     orient = helpers.orientation()
     wy, wp = G.ray_yaw_pitch(orient.r_vw(0.0).T @ G.WEARER_V)
@@ -407,7 +457,7 @@ def test_failed_quality_is_flagged_and_flags_follow_the_thresholds(monkeypatch) 
     assert d["flags"] == ["qa_fail"]
     monkeypatch.setattr(C, "SKY_MAX_SHARE", -1.0)
     assert C.path_flags(d) == ["sky", "qa_fail"]
-    assert set(C.FLAGS) == {"sky", "whip", "cuts", "wearer", "off_target", "qa_fail"}
+    assert set(C.FLAGS) == {"sky", "whip", "spin", "cuts", "wearer", "off_target", "qa_fail"}
 
 
 # --------------------------------------------------------------------------- read API
@@ -432,3 +482,159 @@ def test_read_api_returns_the_cached_path_and_diagnostics(project, home) -> None
     # other settings: still readable for a preview, but clips would plan it anew
     set_config(home, pano={"director": {"max_speed": 30}})
     assert C.candidate_path(proj, "h002")["current"] is False
+
+
+def test_version_1_entries_are_planned_again(project) -> None:
+    proj, clip = project
+    C.cache_candidate_paths(proj)
+    file = proj / C.CACHE_DIR / C.slot_name(clip, 4.0, 12.5)
+    old = cache.load_json(file)
+    old["version"] = 1
+    for k in ("yaw_travel", "yaw_travel_per_min", "net_turns"):
+        old["diagnostics"].pop(k)
+    cache.save_json(file, old, indent=1)
+    assert C.cached_path(proj, clip, 4.0, 12.5, "people", None) == (None, "older cache")
+    assert set(C.candidate_flags(proj)) == {"h002"}
+    st = C.cache_candidate_paths(proj)
+    assert (st["computed"], st["cached"]) == (1, 1)
+    new = cache.load_json(file)
+    assert new["version"] == C.CACHE_VERSION == 2 and "net_turns" in new["diagnostics"]
+    assert set(C.candidate_flags(proj)) == {"h001", "h002"}
+
+
+def test_candidate_flags_has_reasons_diagnostics_and_a_path_key(project) -> None:
+    proj, _ = project
+    C.cache_candidate_paths(proj)
+    got = C.candidate_flags(proj)["h001"]
+    assert set(got) == {"file", "flags", "reasons", "diagnostics", "key"}
+    entry = cache.load_json(got["file"])
+    assert got["reasons"] == {f: C.FLAGS[f] for f in got["flags"]}
+    assert got["diagnostics"] == entry["diagnostics"] | {"flags": got["flags"]}
+    assert len(got["key"]) == 12 and got["key"] == C.path_id(entry["path"])
+    assert got["key"] != C.candidate_flags(proj)["h002"]["key"]
+    assert C.candidate_flags(proj)["h001"]["key"] == got["key"]  # stable
+    # the cached path changes (re-planned with other settings): so does the key
+    entry["path"]["keys"][0]["yaw"] += 1.0
+    cache.save_json(got["file"], entry, indent=1)
+    assert C.candidate_flags(proj)["h001"]["key"] != got["key"]
+
+
+# --------------------------------------------------------------------------- preview API
+def test_preview_is_the_cached_path_for_an_analyzed_span(project, monkeypatch) -> None:
+    proj, clip = project
+    C.cache_candidate_paths(proj)
+    monkeypatch.setattr(D, "compute_path", lambda *a, **k: pytest.fail("re-planned"))
+    got = C.preview_path(proj, clip.source, 4.0, 12.5)
+    assert got["kind"] == "cached" and got["reason"] is None
+    entry = cache.load_json(C.candidate_flags(proj)["h001"]["file"])
+    assert _dump(got["path"]) == _dump(entry["path"])
+
+
+def test_preview_plans_a_trimmed_or_vertical_span_as_clips_would(project) -> None:
+    proj, clip = project
+    C.cache_candidate_paths(proj)
+    before = sorted((proj / C.CACHE_DIR).iterdir())
+    got = C.preview_path(proj, clip.source, 5.0, 11.0)  # h001 trimmed: its kind applies
+    assert got["kind"] == "planned" and got["reason"] == "span differs from 360 analyze"
+    assert _dump(got["path"]) == _dump(D.compute_path(clip, 5.0, 11.0, kind="people"))
+    got = C.preview_path(proj, clip.source, 4.0, 12.5, vertical=True)
+    assert got["kind"] == "planned" and got["reason"] == "9:16 not planned by 360 analyze"
+    assert got["path"]["vertical"] is True
+    assert sorted((proj / C.CACHE_DIR).iterdir()) == before  # nothing written
+    shutil.rmtree(proj / C.CACHE_DIR)  # no analysis cache at all
+    got = C.preview_path(proj, clip.source, 4.0, 12.5)
+    assert got["kind"] == "planned" and got["reason"] == "not planned by 360 analyze"
+    assert not (proj / C.CACHE_DIR).exists()
+
+
+def _world_pitch(clip, path, orient) -> float:
+    """World pitch (deg, + up) of the output centre of a render's first frame."""
+    src = P.RenderSource("dfisheye", ("a.mp4",), "dfisheye", False, True, "test")
+    _, init = R.command_lines(clip, path, src, 4.0, 1.0, R.DEFAULT_FORMAT, 1, orient)
+    r = G.rot_r(init["roll"]) @ G.rot_y(init["yaw"]) @ G.rot_p(init["pitch"])
+    cam = r @ np.array([0.0, 0.0, 1.0])  # output centre ray in camera axes
+    world = orient.cam_to_world(np.array([orient.index(4.0)]))[0] @ cam
+    return float(np.degrees(np.arcsin(-world[1])))  # world -y is up
+
+
+def test_preview_falls_back_to_a_levelled_forward_view(project, monkeypatch) -> None:
+    proj, clip = project
+    cam = Path(clip.source).parent
+    (cam / helpers.INSV[0]).write_bytes(b"x")  # the clip's IMU file
+
+    def offline(*a, **k):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    # footage offline: levelled by the IMU once it is back, never the upright guess
+    cam.rename(cam.with_name("cam-offline"))
+    with monkeypatch.context() as m:
+        m.setattr(G, "orientation", offline)
+        got = C.preview_path(proj, clip.source, 4.0, 12.5)
+    assert got["kind"] == "level_forward" and got["path"]["level"] == "imu"
+    assert got["reason"] == "footage offline (No such file or directory)"
+    assert got["path"]["forward_yaw"] == 0.0  # no view layer reachable
+    cam.with_name("cam-offline").rename(cam)
+
+    # back online, but the director fails: forward view at the travel direction
+    monkeypatch.setattr(D, "compute_path", lambda *a, **k: (_ for _ in ()).throw(KeyError("x")))
+    monkeypatch.setattr(VW, "forward_yaw", lambda pv: 30.0)
+    got = C.preview_path(proj, clip.source, 4.0, 12.5)
+    assert got["kind"] == "level_forward"
+    assert got["reason"] == "director could not plan (KeyError: 'x')"
+    path = got["path"]
+    p = D.params_for("people")
+    assert path["level"] == "imu" and path["forward_yaw"] == 30.0 and path["cuts"] == []
+    assert [k["t"] for k in path["keys"]] == [4.0, 12.5]
+    assert {(k["yaw"], k["pitch"], k["fov"]) for k in path["keys"]} == {
+        (30.0, p.pitch_default, p.fov_wide)
+    }
+    yaw, pitch, _ = D.evaluate(path, np.array([4.0, 8.0, 12.5]))
+    assert np.allclose(yaw, 30.0) and np.allclose(pitch, p.pitch_default)
+    assert C.diagnostics(path, 4.0, 12.5)["flags"] == []
+    got = C.preview_path(proj, clip.source, 4.0, 12.5, vertical=True)
+    assert {k["fov"] for k in got["path"]["keys"]} == {p.vertical_fov_wide}
+    (cam / helpers.INSV[0]).unlink()
+
+    # no IMU at all: levelled for the upright mount, never the raw fisheye
+    def no_imu(*a, **k):
+        raise ValueError("no IMU samples")
+
+    monkeypatch.setattr(G, "orientation", no_imu)
+    monkeypatch.setattr(D, "compute_path", lambda *a, **k: no_imu())
+    got = C.preview_path(proj, clip.source, 4.0, 12.5)
+    assert got["kind"] == "level_forward" and got["path"]["level"] == R.UPRIGHT
+    assert got["reason"].startswith("no IMU (no _00_.insv next to the clip)")
+    assert "levelled for the upright mount" in got["reason"]
+    up = R.upright_orientation(clip.fps, 900)  # what render_segment levels it with
+    pitch = _world_pitch(clip, got["path"], up)
+    assert pitch == pytest.approx(D.params_for("people").pitch_default, abs=0.01)
+
+
+def test_bad_director_settings_fall_back_and_bad_arguments_raise(project, home) -> None:
+    proj, clip = project
+    set_config(home, pano={"director": {"no_such_param": 1}})
+    got = C.preview_path(proj, clip.source, 4.0, 12.5)
+    assert got["kind"] == "level_forward" and got["reason"].startswith("settings: ")
+    with pytest.raises(ValueError, match="not a 360 clip"):
+        C.preview_path(proj, proj / "other.mp4", 1.0, 2.0)
+    with pytest.raises(ValueError, match="empty"):
+        C.preview_path(proj, clip.source, 5.0, 5.0)
+
+
+def test_preview_path_is_consistent_across_threads(project) -> None:
+    proj, clip = project
+    C.cache_candidate_paths(proj)
+    spans = [(4.0, 12.5), (5.0, 11.0), (14.0, 20.0), (4.0, 12.5)]
+    want = [_dump(C.preview_path(proj, clip.source, a, b)) for a, b in spans]
+    kinds = [json.loads(w)["kind"] for w in want]
+    assert kinds == ["cached", "planned", "cached", "cached"]
+    for _ in range(3):
+        start = threading.Barrier(len(spans), timeout=10)
+
+        def call(span, start=start):
+            start.wait()  # all four at once
+            return _dump(C.preview_path(proj, clip.source, *span))
+
+        with ThreadPoolExecutor(len(spans)) as pool:
+            got = list(pool.map(call, spans))
+        assert got == want

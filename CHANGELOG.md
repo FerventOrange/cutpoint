@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 360 preview API (#517): `candidates.preview_path(project, source, start, end, vertical=)`
+  gives the path to preview a moment with: the one `360 analyze` cached (`cached`), one planned
+  now as `clips` would (`planned`, with the reason), or, when the director cannot plan, a constant
+  forward view levelled by the IMU or for the upright mount without one (`level_forward`), never
+  the raw fisheye. It is safe from worker threads; its source access is documented for offline
+  footage. `candidate_flags` also returns `reasons`, `diagnostics` and `key` (a hash of the cached
+  path), and `render.render_segment(progress=)` reports the rendered fraction (0 to 1, at most
+  about 10 times a second, one final 1.0; a failing callback never stops the render).
+- 360 path diagnostics: `yaw_travel`, `yaw_travel_per_min` and `net_turns`, and a `spin` flag
+  ("keeps turning"): a full turn one way within 30 s, or more than 540 deg of pan per minute
+  (with at least one full turn of travel and half a turn net one way, so gentle sweeps back and
+  forth are not flagged), catches a camera that keeps rotating without whip pans.
 - `cutpoint ui`: 360 moments preview through the camera path `360 analyze` cached for them
   (part of #517): a 640x360 view of the `.lrv` along the path, rendered in the background on first view
   (with Cancel) and kept in `ui/pano/`, in place of the raw dual fisheye. The raw preview stays,
@@ -42,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--no-scenes`, `--recover` and `--skip`. They start with what the project's analysis used, so
   Analyze again repeats it; One-Click Edit passes Skip steps on as `edit --skip` and stays off
   for the others, now including `--must-include-crash`.
+- `cutpoint ui`: the Export tab has a Clip Picture & Audio section with Crop (Default, Auto,
+  None or a Custom `W:H:X:Y` box; `clips --crop`), Output size (`clips --size`) and Clip audio
+  fade (`clips --audio-fade`), and Fade length (`assemble --fade-dur`), Assembly audio fade
+  (`assemble --audio-fade`) and Captions model (`assemble --model`) next to the transitions
+  (#485). All but Crop are advanced options; a blank field or Default sends no flag.
 - `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
   splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and
@@ -115,6 +132,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- OCR menu detection (#409): loading, matchmaking and "processing" screens of up to 15 s
+  between two menu screens, with no kill feed in between, are menu time too, so less lobby
+  footage reaches the gaming candidates. On hand-labelled War Thunder and R6 recordings the
+  menu time found rose from 75% to 89% and from 54% to 64%, with no more gameplay flagged.
+  Cached OCR results are replayed once.
+- 360: the cached IMU orientation track (`x3-orient-v2.npz`) is written atomically, so a
+  render or preview reading it while another job writes it never sees half a file, and a
+  damaged one is computed anew instead of failing every 360 render of that clip.
 - `cutpoint ui` AI assistant: OpenAI (`api.openai.com`) is asked through the Responses API, so
   `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` and `*-codex` models make tool calls instead of
   failing or falling back to JSON mode; OpenAI-compatible base URLs still use Chat Completions
