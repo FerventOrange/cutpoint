@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
+  splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
+  double-click to reset. The width is remembered per browser. Both splitters share one helper, and
+  the preview keeps at least 360 px, so at the narrowest three-column window (961 px) neither it
+  nor a column collapses.
+- `install.ps1`: offers to install Ollama when it is missing (full mode only; default No), with
+  `winget install --id Ollama.Ollama -e` or the download link when winget is missing or fails; it
+  waits for the server (starting `ollama serve` hidden only if the Ollama app has not), then offers
+  the `qwen3-vl:8b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
+  `-Yes` answers the prompt. The summary reports the Ollama result. Lite mode has no Ollama: it
+  skips the step, and `-Lite -Ollama` prints a warning and installs nothing.
+- `install.sh`: offers to install Ollama when it is missing (full mode only; default No; Linux
+  uses Ollama's official script and needs sudo, macOS uses `brew install ollama` and
+  `brew services start ollama`), waits for the server (it starts `ollama serve` itself, logging to
+  `~/.local/state/cutpoint/`, only on macOS if brew fails or on Linux without `ollama.service`),
+  then offers the `qwen3-vl:8b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
+  `CUTPOINT_OLLAMA=0`; `--yes` answers the prompt. The summary reports the Ollama result. Lite
+  mode has no Ollama: it skips the step with no prompt, and `--lite --ollama` prints a warning and
+  installs nothing (the UI assistant can use a third-party provider instead).
 - `360 analyze` plans the director path of every 360 candidate at its end (16:9, the settings
   `clips` uses) from the cached layers, without decoding video, and keeps it in
   `<project>/pano_candidates/` with a `diagnostics` block: time at the sky or above the
@@ -21,6 +40,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag).
   `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
   diagnostics for previews (#517).
+
+### Fixed
+
+- `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
+  slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
+  the keyboard and screen readers (#518).
+
+### Changed
+
+- `cutpoint ui` Settings > AI assistant: Model is a dropdown of the provider's models (#521)
+  instead of a text box with suggestions. "Other model…" shows a Model id field for an id the
+  list lacks; a saved model the list lacks stays chosen, marked "(not in the provider's list)",
+  and without a list (no key, offline, Ollama not running) the dropdown offers the preset's own
+  models and the saved model.
 
 ## [0.4.0] - 2026-10-29
 
