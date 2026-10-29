@@ -522,3 +522,34 @@ def test_assemble_fade_with_audio_cut_keeps_audio_as_long_as_the_video(tmp_path,
     assert durations["video"] == pytest.approx(predicted, abs=0.02)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
     assert "Audio Crossfade" not in final.with_suffix(".fcpxml").read_text(encoding="utf-8")
+
+
+def _mean_db(path: Path, start: float, dur: float) -> float:
+    out = subprocess.run(
+        [shutil.which("ffmpeg"), "-hide_banner", "-nostats", "-ss", str(start), "-t", str(dur),
+         "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, check=True,
+    ).stderr  # fmt: skip
+    return float(out.split("mean_volume:")[1].split("dB")[0])
+
+
+@needs_ffmpeg
+def test_loudnorm_gain_is_linear_when_the_peaks_do_not_fit(tmp_path):
+    """A quiet part, a burst near 0 dBFS, a part 6 dB louder: the gain to -14 LUFS pushes the
+    burst far over the ceiling, where ffmpeg's loudnorm left linear mode for dynamic (AGC)
+    and re-levelled the two parts (#523). The gain stays linear; the limiter takes the burst."""
+    src, out = tmp_path / "src.wav", tmp_path / "out.wav"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+         "aevalsrc=if(lt(t\\,4)\\,0.03\\,if(lt(t\\,4.3)\\,0.8\\,0.06))*sin(2*PI*440*t)"
+         ":s=48000:d=8", str(src)],
+        check=True,
+    )  # fmt: skip
+    af = f"{assemble.loudnorm_filter(src)},{assemble.limiter_filter(assemble.LIMIT_START_DB)}"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-i", str(src), "-af", af, str(out)], check=True
+    )
+    gap_in = _mean_db(src, 5, 3) - _mean_db(src, 0.5, 3)
+    gap_out = _mean_db(out, 5, 3) - _mean_db(out, 0.5, 3)
+    assert gap_in == pytest.approx(6.0, abs=0.15)
+    assert gap_out == pytest.approx(gap_in, abs=0.2)

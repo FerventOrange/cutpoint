@@ -121,6 +121,27 @@ def oa_call(cid: str | None, name: str, args: Any) -> dict[str, Any]:
     return raw
 
 
+def rs_reply(*items: dict[str, Any], status: str = "completed") -> _Resp:
+    """A ``/v1/responses`` answer with these output items."""
+    return _Resp({"object": "response", "status": status, "output": list(items)})
+
+
+def rs_text(text: str, phase: str | None = None) -> dict[str, Any]:
+    content = [{"type": "output_text", "text": text, "annotations": []}]
+    item = {"type": "message", "role": "assistant", "status": "completed", "content": content}
+    return item if phase is None else {**item, "phase": phase}
+
+
+def rs_call(cid: str, name: str, args: str) -> dict[str, Any]:
+    return {
+        "type": "function_call",
+        "id": f"fc_{cid}",
+        "call_id": cid,
+        "name": name,
+        "arguments": args,
+    }
+
+
 def an_reply(*blocks: dict[str, Any]) -> _Resp:
     return _Resp({"content": list(blocks), "stop_reason": "end_turn"})
 
@@ -169,21 +190,23 @@ def test_a_remote_ollama_is_hosted_and_needs_consent() -> None:
 # -- OpenAI-compatible -----------------------------------------------------------------------
 
 
-def test_openai_sends_tools_with_the_key_and_reads_tool_calls(monkeypatch) -> None:
+def test_a_compatible_server_keeps_chat_completions_with_tools(monkeypatch) -> None:
+    """#536: only api.openai.com moved to /v1/responses; OpenAI-compatible servers (OpenRouter
+    here, LM Studio, vLLM, Ollama's /v1) still get /v1/chat/completions."""
     calls = [
         oa_call("c1", "find_moments", '{"query": "laugh"}'),
         oa_call(None, "get_moment", {"id": "m1"}),  # no id, arguments as an object
         oa_call("c3", "get_moment", "{bad"),
     ]
     wire = Wire(monkeypatch, _Resp({"data": [{"id": "gpt-x"}]}), oa_reply(None, calls))
-    p = OpenAIProvider("https://api.openai.com/v1", "gpt-x", 0, KEY)
-    assert (p.local, p.host, p.context_tokens) == (False, "api.openai.com", 32768)
+    p = OpenAIProvider("https://openrouter.ai/api/v1", "gpt-x", 0, KEY)
+    assert (p.local, p.host, p.context_tokens) == (False, "openrouter.ai", 32768)
     assert p.capabilities() == providers.Capabilities(True, True)
     reply = p.chat([{"role": "user", "content": "hi"}], tools=session.TOOLS)
 
     check, ask = wire.sent
-    assert check["method"] == "GET" and check["url"] == "https://api.openai.com/v1/models"
-    assert ask["url"] == "https://api.openai.com/v1/chat/completions"
+    assert check["method"] == "GET" and check["url"] == "https://openrouter.ai/api/v1/models"
+    assert ask["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert ask["headers"] == {"Authorization": f"Bearer {KEY}"}
     assert ask["json"]["tools"] == session.TOOLS and ask["json"]["model"] == "gpt-x"
     assert "temperature" not in ask["json"]  # the server's default
@@ -204,6 +227,101 @@ def test_openai_sends_tools_with_the_key_and_reads_tool_calls(monkeypatch) -> No
         "content": "r",
     }
     assert KEY not in repr(p) and KEY not in json.dumps(providers.describe(p))
+
+
+def test_openai_makes_tool_calls_over_the_responses_api(monkeypatch) -> None:
+    """#536: Sol, Terra and Luna make tool calls only over /v1/responses, so api.openai.com is
+    asked there: system text as instructions, flat function tools, and the reply's items
+    (reasoning included) sent back before the function_call_output that answers each call."""
+    reasoning = {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc"}
+    wire = Wire(
+        monkeypatch,
+        _Resp({"data": [{"id": "gpt-6.1-sol"}]}),
+        rs_reply(reasoning, rs_text("Looking."), rs_call("call_a", "find_moments", '{"q": 1}')),
+        rs_reply(
+            rs_text("Checking.", "commentary"),
+            rs_text("Done.", "final_answer"),
+            rs_text("Bye.", "final_answer"),
+        ),
+    )
+    p = OpenAIProvider("", "gpt-6.1-sol", 0, KEY)
+    assert p.capabilities() == providers.Capabilities(True, True)
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "system", "content": "context"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "assistant", "content": ""},  # an earlier turn without a reply: left out
+        {"role": "user", "content": "find x"},
+    ]
+    reply = p.chat(messages, tools=session.TOOLS)
+    ask = wire.sent[1]
+    assert ask["url"] == "https://api.openai.com/v1/responses"
+    assert ask["headers"] == {"Authorization": f"Bearer {KEY}"} and not ask["allow_redirects"]
+    body = ask["json"]
+    assert body["instructions"] == "rules\n\ncontext"
+    assert body["store"] is False  # OpenAI keeps no copy; reasoning replays as encrypted items
+    assert body["input"] == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello", "phase": "final_answer"},  # an earlier reply
+        {"role": "user", "content": "find x"},
+    ]
+    fn = session.TOOLS[0]["function"]
+    assert body["tools"][0] == {
+        "type": "function",
+        "name": fn["name"],
+        "description": fn["description"],
+        "parameters": fn["parameters"],
+        "strict": False,  # as Chat Completions: Responses would otherwise make it strict
+    }
+    assert "messages" not in body and "temperature" not in body
+    assert reply.text == "Looking."
+    assert [(c.name, c.arguments, c.id) for c in reply.tool_calls] == [
+        ("find_moments", {"q": 1}, "call_a")
+    ]
+
+    convo = [*messages, reply.message, p.tool_result(reply.tool_calls[0], "found")]
+    # the final answer's message items, one paragraph each, without the commentary
+    assert p.chat(convo, tools=session.TOOLS).text == "Done.\n\nBye."
+    assert wire.sent[2]["json"]["input"][3:] == [
+        reasoning,
+        rs_text("Looking."),
+        rs_call("call_a", "find_moments", '{"q": 1}'),
+        {"type": "function_call_output", "call_id": "call_a", "output": "found"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answer", "want"),
+    [
+        (
+            _Resp(
+                {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [rs_call("call_a", "propose_edit", '{"summary": "Op')],
+                }
+            ),
+            r"cut off \(max_output_tokens\)",
+        ),
+        (
+            rs_reply(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "refusal", "refusal": "I can't help with that."}],
+                }
+            ),
+            "declined",
+        ),
+    ],
+)
+def test_a_responses_reply_cut_off_or_refused_runs_no_call(monkeypatch, answer, want) -> None:
+    """#536: a /v1/responses answer cut off midway (its call's arguments are partial) or a
+    refusal alone is an error, never a tool call to run or an empty reply."""
+    Wire(monkeypatch, answer)
+    with pytest.raises(ProviderError, match=want):
+        OpenAIProvider("", "m", 0, KEY).chat(HI, tools=session.TOOLS)
 
 
 @pytest.mark.parametrize(
@@ -240,29 +358,46 @@ def test_an_openai_server_with_several_models_asks_for_one(monkeypatch) -> None:
 
 
 def test_openai_json_mode_constrains_the_reply_to_the_schema(monkeypatch) -> None:
-    wire = Wire(monkeypatch, oa_reply('{"tool": "reply", "text": "ok"}'))
-    p = OpenAIProvider("", "gpt-x", 0, KEY)
-    reply = p.chat([{"role": "user", "content": "hi"}], schema=session.JSON_SCHEMA)
-    fmt = wire.sent[0]["json"]["response_format"]
-    assert fmt == {
+    wire = Wire(
+        monkeypatch,
+        oa_reply('{"tool": "reply", "text": "ok"}'),
+        rs_reply(rs_text('{"tool": "reply", "text": "ok"}')),
+    )
+    hi = [{"role": "user", "content": "hi"}]
+    reply = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None).chat(
+        hi, schema=session.JSON_SCHEMA
+    )
+    assert wire.sent[0]["json"]["response_format"] == {
         "type": "json_schema",
         "json_schema": {"name": "cutpoint_reply", "schema": session.JSON_SCHEMA},
     }
     assert "tools" not in wire.sent[0]["json"] and reply.text.startswith("{")
+    # over the Responses API (api.openai.com) the schema is text.format
+    reply = OpenAIProvider("", "gpt-x", 0, KEY).chat(hi, schema=session.JSON_SCHEMA)
+    assert wire.sent[1]["json"]["text"] == {
+        "format": {"type": "json_schema", "name": "cutpoint_reply", "schema": session.JSON_SCHEMA}
+    }
+    assert "tools" not in wire.sent[1]["json"] and reply.text.startswith("{")
 
 
 @pytest.mark.parametrize(
-    "why",
+    ("url", "why"),
     [
-        '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set',
-        "tools param requires --jinja flag",
-        "registry.ollama.ai/library/gemma:2b does not support tools",
+        (
+            "http://localhost:8000",
+            '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set',
+        ),
+        ("http://localhost:8080", "tools param requires --jinja flag"),
+        ("http://localhost:11434", "registry.ollama.ai/library/gemma:2b does not support tools"),
+        ("", "Function tools are not supported with this model."),  # /v1/responses (#536)
     ],
 )
-def test_a_server_refusing_tools_is_asked_again_in_json_mode(monkeypatch, why: str) -> None:
-    Wire(monkeypatch, _Resp({"error": {"message": why}}, 400))
+def test_a_server_refusing_tools_is_asked_again_in_json_mode(monkeypatch, url, why) -> None:
+    wire = Wire(monkeypatch, _Resp({"error": {"message": why}}, 400))
     with pytest.raises(ToolsUnsupportedError):
-        OpenAIProvider("", "m", 0, KEY).chat([], tools=session.TOOLS)
+        OpenAIProvider(url, "m", 0, KEY).chat([], tools=session.TOOLS)
+    endpoint = "/v1/chat/completions" if url else "/v1/responses"
+    assert wire.sent[0]["url"].endswith(endpoint)
 
 
 # -- Anthropic ---------------------------------------------------------------------------------
@@ -464,7 +599,7 @@ def scripted(kind: str) -> list[_Resp]:
     if kind == "openai":
         check = _Resp({"data": [{"id": "gpt-x"}]})
         steps = [
-            oa_reply("", [oa_call(f"c{n}", name, json.dumps(a))])
+            rs_reply(rs_call(f"c{n}", name, json.dumps(a)))
             for n, (name, a) in enumerate(TOOL_STEPS)
         ]
     else:
@@ -494,10 +629,12 @@ def test_a_turn_runs_over_each_hosted_adapter_and_sends_file_names_never_paths(
     for shown in ("a.mp4", "b.mp4", "big laugh", "that was a big laugh", "ow"):
         assert shown in sent, shown
     # each tool result answers its call by id
-    last = wire.sent[-1]["json"]["messages"]
-    if kind == "openai":
-        assert [m["tool_call_id"] for m in last if m["role"] == "tool"] == ["c0", "c1", "c2", "c3"]
+    if kind == "openai":  # over /v1/responses (#536)
+        last = wire.sent[-1]["json"]["input"]
+        outputs = [m["call_id"] for m in last if m.get("type") == "function_call_output"]
+        assert outputs == ["c0", "c1", "c2", "c3"]
     else:
+        last = wire.sent[-1]["json"]["messages"]
         results = [
             b["tool_use_id"] for m in last for b in m["content"] if b["type"] == "tool_result"
         ]
@@ -687,7 +824,7 @@ def test_the_openai_variable_goes_only_to_api_openai_com(home, monkeypatch, url)
 def test_the_openai_variable_goes_to_the_official_host(home, monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
     set_config(home, assistant={"provider": "openai", "model": "m"})
-    wire = Wire(monkeypatch, oa_reply("ok"))
+    wire = Wire(monkeypatch, rs_reply(rs_text("ok")))
     providers.make().chat(HI)
     assert wire.sent[0]["url"].startswith("https://api.openai.com/") and sent_key(wire)
 

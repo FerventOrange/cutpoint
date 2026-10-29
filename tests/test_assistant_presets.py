@@ -448,8 +448,13 @@ def test_the_openai_list_leaves_out_models_that_do_not_chat(
         "model-a",
     ]
     wire = Wire(monkeypatch, _Resp({"data": [{"id": i} for i in ids]}))
-    got = models(client, "openai")
-    assert [m["id"] for m in got["models"]] == ["model-a", "model-b"]
+    got = models(client, "openai")  # *-codex chats over the Responses API (#536)
+    assert [m["id"] for m in got["models"]] == [
+        "chat-x-codex",
+        "codex-mini-latest",
+        "model-a",
+        "model-b",
+    ]
     assert wire.sent[0]["url"] == "https://api.openai.com/v1/models"
     assert wire.sent[0]["headers"] == {"Authorization": f"Bearer {KEY}"}
 
@@ -459,8 +464,8 @@ def test_the_xai_list_is_asked_at_api_x_ai_with_the_xai_key(
 ) -> None:
     monkeypatch.setenv("XAI_API_KEY", XKEY)
     set_config(home, assistant={"consent": ["xai@api.x.ai"]})
-    rows = [{"id": i} for i in ("grok-one", "grok-x-image", "grok-imagine-video")]
-    wire = Wire(monkeypatch, _Resp({"data": rows}))  # xAI's image models are left out too
+    rows = [{"id": i} for i in ("grok-one", "grok-x-image", "grok-imagine-video", "grok-codex")]
+    wire = Wire(monkeypatch, _Resp({"data": rows}))  # xAI's image and codex models are left out too
     res = client.get("/api/assistant/models", params={"provider": "xai"})
     assert res.json()["models"] == [{"id": "grok-one", "name": "grok-one"}]
     assert wire.sent[0]["url"] == "https://api.x.ai/v1/models"
@@ -595,7 +600,6 @@ def test_the_settings_script_shows_fields_by_the_provider_chosen() -> None:
     assert ".replace(/\\.?$/, '.')} ${AI_TYPE_ID}" in load
     save = js[js.index("async function saveSettings(") : js.index("// The AI assistant's provider")]
     assert "if (ai && !ai.model && !aiCustom() && aiOffer()?.model_required) {" in save
-    assert "*-codex models are not supported (chat models only)." in js
     assert "$('#setAiModelsRefresh').addEventListener('click', () => loadAiModels(true));" in js
     # switching provider shows its saved model or the default, with that provider's options
     assert (

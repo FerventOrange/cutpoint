@@ -76,6 +76,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
+| `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
@@ -405,8 +406,11 @@ URL is typed:
   Choose a pulled model, or Other model… for any id; Default uses `qwen3.5:9b`, else the vision model.
 - **Claude (Anthropic)**: `https://api.anthropic.com`; `claude-sonnet-5-5` (default) or
   `claude-opus-5-5`.
-- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI chat model
-  (`*-codex` models need OpenAI's Responses API and are not supported).
+- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI model. Cutpoint asks
+  `api.openai.com` through OpenAI's Responses API (`/v1/responses`), so every current model
+  (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`, `*-codex`) makes tool calls. Any
+  other base URL (OpenRouter, LM Studio, vLLM, llama-server, Ollama's `/v1`) is asked through
+  `/v1/chat/completions`.
 - **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); choose an xAI model.
 
 A base URL set in `config.json` that no preset has (LM Studio, vLLM, llama-server, OpenRouter, an
@@ -423,7 +427,7 @@ keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which is only for custom bas
 Models that do not chat here are left out by name: ids starting with `text-embedding-`, `tts-`,
 `whisper-`, `dall-e-`, `omni-moderation-`, `text-moderation-`, `gpt-image-`, `sora-`,
 `davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
-`imagine` or `codex` (OpenAI and xAI). A list is
+`imagine` or `codex` (OpenAI and xAI; `codex` ones stay at `api.openai.com`). A list is
 kept for 10 minutes; Refresh list asks again. The Model dropdown offers the listed models; when
 the list cannot be loaded it offers the preset's own models (Claude's two, OpenAI's four and xAI's five current ones, Ollama's `qwen3.5:9b`) and the saved model,
 and "Other model…" shows a Model id field to type any other id.
@@ -1002,10 +1006,13 @@ into a clip renamed during review are read from its manifest entry, matched by s
   audio in the middle of the video dissolve; the `.fcpxml` then has no audio crossfade and
   leaves the audio cut point to the editor (probably the start of the dissolve), while the
   `.otio` matches `final.mp4` exactly.
-- `--loudnorm` runs two-pass EBU R128 normalisation toward -14 LUFS with a true-peak limiter,
-  then measures the result and redoes the pass with a lower ceiling if the true peak is above
-  -1.5 dBTP. Very peaky material can land up to about 1 LU below target. The audio ends
-  with the video, without padding.
+- `--loudnorm` measures the joined audio (EBU R128) and applies one linear gain toward
+  -14 LUFS, so the levels between and inside clips stay as they are, followed by a true-peak
+  limiter; it then measures the result and redoes the pass with a lower ceiling if the true
+  peak is above -1.5 dBTP. The limiter takes the peaks the gain pushes over the ceiling, so
+  peaky material lands below target: a WARNING names the level when it is more than 1 LU
+  below (GoPro wind: -16.6 LUFS without `--compress-peaks`, -14.0 with `strong`). The audio
+  ends with the video, without padding.
 - `--compress-peaks light|strong` applies [peak compression](#peak-compression) to the clips
   that were not exported with it (their `manifest.json` entry has no `compress_peaks`), in the
   join, before the edge fade. The final audio then always ends with the true-peak limiter
@@ -1055,7 +1062,7 @@ the speech level, and evens out loudness between clips. It is off by default, an
 | `strong` | 4 dB above it | 6:1 | all the way | 10 / 20 dB |
 
 Measured on 12 clips (an R6 montage with gunfire and shouting, voice-chat commentary and
-GoPro wind), exported and assembled with `--loudnorm`:
+GoPro wind), exported and assembled with `--loudnorm` before #523 (dynamic loudnorm):
 
 | | off | light | strong |
 |---|---|---|---|
@@ -1078,8 +1085,8 @@ Without `--loudnorm` the makeup keeps the level. Measured on six 10 s clips of a
 | Other gameplay | -16.1 / -2.1 / 23.0 | -23.7 / -9.3 / 18.7 | -18.0 / -3.2 / 19.0 | -27.3 / -12.4 / 21.2 | -18.9 / -3.1 / 16.6 |
 
 On the other gameplay set alone the makeup reaches its cap (6 dB light, 10 dB strong), so it ends
-1.9 and 2.8 LU below `off`. With `--loudnorm`, `assemble` sets the final level anyway: the
-result is the same within 0.1 LU (-14.0 LUFS, -2.2 dBTP).
+1.9 and 2.8 LU below `off`. With `--loudnorm`, `assemble` applies one gain to the whole edit
+toward -14 LUFS.
 
 `clips` bakes it into each clip, followed by a true-peak limiter (clips stay below about
 -1.8 dBTP), records `compress_peaks` and the clip's makeup (`compress_peaks_makeup_db`, dB) in
