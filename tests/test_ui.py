@@ -329,6 +329,34 @@ def test_create_project_reads_sources_as_pasted(client: TestClient, tmp_path: Pa
     assert res.json()["projects_dir"] == str(tmp_path / "elsewhere")
 
 
+def test_create_project_expands_home_in_sources(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source or projects folder typed from ``~`` (quoted too) is the path in the home folder,
+    stored expanded; a relative path is still refused."""
+    home = tmp_path / "home"
+    (home / "Videos").mkdir(parents=True)
+    a, b = home / "Videos" / "a.mp4", home / "Videos" / "b.mp4"
+    a.write_bytes(b"x")
+    b.write_bytes(b"x")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    quoted = f'"~{os.sep}Videos{os.sep}b.mp4"'  # a backslash is a separator on Windows alone
+    res = client.post("/api/projects", json={"name": "T", "sources": ["~/Videos/a.mp4", quoted]})
+    assert res.status_code == 200, res.text
+    assert ui.read_meta(ui.project_dir(res.json()["id"]))["inputs"] == [str(a), str(b)]
+    res = client.post("/api/projects", json={"name": "T", "source": '"~/Videos"'})
+    assert res.status_code == 200, res.text
+    assert Path(ui.read_meta(ui.project_dir(res.json()["id"]))["source"]) == home / "Videos"
+    res = client.post("/api/projects", json={"name": "T", "sources": ["Videos/a.mp4"]})
+    assert res.status_code == 400
+    assert "source must be an absolute path" in res.json()["detail"]
+    res = client.put("/api/settings", json={"projects_dir": "~/projects"})
+    assert res.status_code == 200, res.text
+    assert res.json()["projects_dir"] == str(home / "projects")
+    assert (home / "projects").is_dir()
+
+
 def test_360_project_lists_one_lrv_per_usable_clip_before_analysis(
     client: TestClient, tmp_path: Path
 ) -> None:

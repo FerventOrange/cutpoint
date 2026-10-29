@@ -197,6 +197,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the scan left out) is still written but deprecated in favour of `total_s`, which `cutpoint ui`
   now reads (it falls back to `scan_s` plus `analyze_total_s` for older files). `360 scan` on
   its own still adds `scan_s` to the file.
+- `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
+  (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
 
 ### Fixed
 

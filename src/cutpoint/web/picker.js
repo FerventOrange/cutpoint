@@ -3,8 +3,8 @@
 import { api } from './api.js';
 import { $, baseName, h } from './util.js';
 
-const SOURCE_HINT = 'Add videos or folders of videos, or type or paste their full paths, one per line.';
-const SOURCE_HINT_TYPED = 'Type or paste the full paths of videos, or of folders of videos, on the computer running cutpoint, one per line.';
+const SOURCE_HINT = 'Add videos or folders of videos, or type or paste their full paths, one per line; ~ is your home folder.';
+const SOURCE_HINT_TYPED = 'Type or paste the full paths of videos, or of folders of videos, on the computer running cutpoint, one per line; ~ is the home folder there.';
 // Added for an Insta360 file (a 360 folder cannot be told apart here); the server sets the style.
 const PANO_HINT = 'Insta360 360 footage uses the 360 style (ski unless pano.default_style in config.json says otherwise), not the one chosen below.';
 
