@@ -341,9 +341,8 @@ def test_create_project_expands_home_in_sources(
     b.write_bytes(b"x")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    res = client.post(
-        "/api/projects", json={"name": "T", "sources": ["~/Videos/a.mp4", '"~\\Videos\\b.mp4"']}
-    )
+    quoted = f'"~{os.sep}Videos{os.sep}b.mp4"'  # a backslash is a separator on Windows alone
+    res = client.post("/api/projects", json={"name": "T", "sources": ["~/Videos/a.mp4", quoted]})
     assert res.status_code == 200, res.text
     assert ui.read_meta(ui.project_dir(res.json()["id"]))["inputs"] == [str(a), str(b)]
     res = client.post("/api/projects", json={"name": "T", "source": '"~/Videos"'})
