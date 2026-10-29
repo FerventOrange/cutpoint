@@ -79,12 +79,14 @@ documents every key.
     with the Insta360 SDK first, when it runs (:func:`cutpoint.pano.project.auto_stitch`).
 
 ``assistant``
-    The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default; ``openai`` for OpenAI
-    or a server that speaks its API; ``anthropic``), ``model`` (default: Ollama ``qwen3.5:9b``
-    when it is pulled, else the vision model ``CUTPOINT_VISION_MODEL`` or ``qwen3-vl:8b``;
-    Anthropic ``claude-sonnet-5-5``; OpenAI-compatible: the server's only model), ``url`` (the
-    base URL; default: the Ollama URL above, ``https://api.openai.com/v1`` or
-    ``https://api.anthropic.com``), ``context_tokens`` (the model's context size; default
+    The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default; ``anthropic`` for
+    Claude; ``openai`` for OpenAI or a server that speaks its API; ``xai`` for Grok), ``model``
+    (default: Ollama ``qwen3.5:9b`` when it is pulled, else the vision model
+    ``CUTPOINT_VISION_MODEL`` or ``qwen3-vl:8b``; Anthropic ``claude-sonnet-5-5``;
+    OpenAI-compatible and xAI: the server's only model), ``url`` (the base URL; default, which
+    Settings' presets use: the Ollama URL above, ``https://api.anthropic.com``,
+    ``https://api.openai.com/v1`` or ``https://api.x.ai/v1``; another one is shown as custom),
+    ``context_tokens`` (the model's context size; default
     8192 on this machine, 32768 hosted) and ``consent`` (``<provider>@<host>`` of the hosted
     providers the user agreed to send project text to). API keys are never read from or
     written to this file (see :mod:`cutpoint.assistant.keys`).
@@ -117,7 +119,7 @@ VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
 COLOR_MODES = ("off", "auto", "underwater")  # --color; the grades are cutpoint.color.MODES
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
-ASSISTANT_PROVIDERS = ("ollama", "openai", "anthropic")
+ASSISTANT_PROVIDERS = ("ollama", "openai", "anthropic", "xai")
 MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
 
 

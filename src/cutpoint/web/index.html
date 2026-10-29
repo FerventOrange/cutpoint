@@ -426,15 +426,21 @@
           <select id="setAiProvider" aria-describedby="setAiProviderHint"></select>
         </label>
         <p id="setAiProviderHint" class="hint"></p>
-        <label class="field">Model
-          <input id="setAiModel" list="setAiModels" autocomplete="off" spellcheck="false" aria-describedby="setAiModelHint">
-        </label>
+        <div class="field">
+          <label for="setAiModel">Model</label>
+          <span class="row wrap">
+            <input id="setAiModel" list="setAiModels" autocomplete="off" spellcheck="false" aria-describedby="setAiModelHint setAiModelsStatus">
+            <button type="button" class="btn" id="setAiModelsRefresh">Refresh list</button>
+          </span>
+        </div>
         <datalist id="setAiModels"></datalist>
         <p id="setAiModelHint" class="hint"></p>
-        <label class="field">Base URL
-          <input id="setAiUrl" inputmode="url" autocomplete="off" spellcheck="false" aria-describedby="setAiUrlHint">
+        <p id="setAiModelsStatus" class="hint" role="status"></p>
+        <!-- Shown only for a custom base URL from config.json (no preset has it): read-only -->
+        <label class="field" id="setAiUrlField" hidden>Base URL
+          <input id="setAiUrl" inputmode="url" autocomplete="off" spellcheck="false" readonly aria-describedby="setAiUrlHint">
         </label>
-        <p id="setAiUrlHint" class="hint"></p>
+        <p id="setAiUrlHint" class="hint" hidden></p>
         <div id="setAiKey" class="field" hidden>
           <p id="setAiKeyStatus" role="status"></p>
           <span id="setAiKeyRow" class="row wrap" hidden>

@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a WARNING, and Export says "Exported from the 360 preview (not stitched)". The new
   `pano.auto_stitch` key (default `true`) turns it off; the command-line `clips` is unchanged.
 - Docs: how to install Ollama and the models for `--vision` and AI Chat.
+- `cutpoint ui` Settings > AI assistant: choose a Provider preset instead of typing a base URL:
+  None (local Ollama, with a model name), Claude (Anthropic), Codex (OpenAI) or Grok (xAI, the new
+  `assistant.provider` `xai` at `https://api.x.ai/v1`). Grok's key comes from the new
+  `XAI_API_KEY`, used only for `api.x.ai`, kept from jobs and redacted from logs like the others.
+  The Model field lists the provider's models (Ollama's pulled ones; Anthropic, OpenAI and xAI
+  only with a key and after consent; non-chat and `*-codex` models left out), cached 10 minutes, with
+  Refresh list; any name can still be typed. A `url` in `config.json` that no preset has shows as
+  "Custom (from config.json)" and keeps working; its model can still be changed.
 - `cutpoint ui` AI Chat: bring your own AI. `assistant.provider` can be `openai` (OpenAI, or
   LM Studio, vLLM and llama-server at `assistant.url`) or `anthropic` (default model
   `claude-sonnet-5-5`, `claude-opus-5-5` selectable), chosen in Settings with the model and base
