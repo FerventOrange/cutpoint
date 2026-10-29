@@ -38,7 +38,8 @@ Trust boundaries:
   ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
-  the user agrees once for it (``POST /api/assistant/consent``, kept in ``config.json``).
+  the user agrees once for it (``POST /api/assistant/consent``, kept in ``config.json``); nor
+  is its model list asked for (``GET /api/assistant/models``) before that and without a key.
   API keys come from the environment or the system keyring (``POST /api/assistant/key``,
   ``.../key/clear``); no route returns one, only where it comes from. ``cutpoint ui`` takes the
   key variables out of its environment at startup, jobs get an environment without them, and
@@ -579,8 +580,10 @@ MAX_ASSISTANT_TEXT = 500  # characters of the assistant's model or base URL
 
 def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
     """The assistant settings of config ``data`` for Settings, never a key: the provider, model
-    and base URL as saved (an invalid value shown as the default), what each provider offers, and
-    where each provider's key comes from (``"env"``, ``"keyring"`` or None)."""
+    and base URL as saved (an invalid value shown as the default), whether that URL is custom
+    (not the preset's, :func:`cutpoint.assistant.providers.is_preset`), what each preset offers
+    (in :data:`~cutpoint.assistant.providers.PRESETS` order), and where each provider's key comes
+    from (``"env"``, ``"keyring"`` or None)."""
     section = data.get("assistant")
     section = section if isinstance(section, dict) else {}
     name = section.get("provider")
@@ -594,14 +597,19 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
         ollama = ai_providers.public(ollama_url())  # OLLAMA_HOST may carry user:password@
     except (ValueError, TypeError):  # a bad port or config.json: Settings still opens
         ollama = ""
+    # provider -> (default URL, default model, models offered, Model placeholder, model needed)
+    dm = ai_providers.DEFAULT_OLLAMA_MODEL
     offers = {
-        "ollama": (ollama, ai_providers.AUTO_MODEL, [ai_providers.DEFAULT_OLLAMA_MODEL]),
-        "openai": (ai_providers.OPENAI_URL, ai_providers.AUTO_SERVER_MODEL, []),
+        "ollama": (ollama, ai_providers.AUTO_MODEL, [dm], dm, False),
+        "openai": (ai_providers.OPENAI_URL, "", [], "OpenAI model name", True),
         "anthropic": (
             ai_providers.ANTHROPIC_URL,
             ai_providers.DEFAULT_ANTHROPIC_MODEL,
             list(ai_providers.ANTHROPIC_MODELS),
+            ai_providers.DEFAULT_ANTHROPIC_MODEL,
+            False,
         ),
+        "xai": (ai_providers.XAI_URL, "", [], "xAI model name", True),
     }
     hosts = key_hosts(data)
 
@@ -611,20 +619,25 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
         own = [ai_keys.PROVIDER_ENV[p]] if ai_keys.official(p, hosts[p]) else []
         return [ai_keys.ENV_KEY, *own]
 
+    name = name if name in ASSISTANT_PROVIDERS else "ollama"
     return {
-        "provider": name if name in ASSISTANT_PROVIDERS else "ollama",
+        "provider": name,
         "model": text("model"),
         "url": ai_providers.public(text("url")),  # a hand-edited one too; Settings refuses it
+        # a base URL no preset has: shown as "Custom (from config.json)", kept as it is
+        "custom": not ai_providers.is_preset(name, text("url")),
         "providers": [
             {
                 "name": p,
-                "title": ai_providers.TITLES[p],
+                "title": title,
                 "default_url": offers[p][0],
                 "default_model": offers[p][1],
                 "models": offers[p][2],
+                "placeholder": offers[p][3],
+                "model_required": offers[p][4],
                 "key_env": key_env(p),
             }
-            for p in ASSISTANT_PROVIDERS
+            for p, title in ai_providers.PRESETS.items()
         ],
         **key_status(data),
         "keyring": ai_keys.keyring_available(),
@@ -2884,6 +2897,40 @@ def create_app(port: int) -> FastAPI:
             except OSError as err:
                 raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
         return {"consent": consent_view(assistant_provider())}
+
+    @secure.get("/assistant/models")
+    def assistant_models(provider: str = "ollama", refresh: bool = False):
+        """The models a preset ``provider`` (or ``custom``: the configured provider and base URL)
+        offers, for Settings' Model field: ``{state, models, message}``
+        (:func:`cutpoint.assistant.providers.model_list`). A hosted one is asked only with its
+        key and once the user agreed to it; never a key in the answer. A preset that is not the
+        saved provider and base URL gets only its own key, never ``CUTPOINT_ASSISTANT_API_KEY``
+        (which may be meant for the saved host)."""
+        try:
+            settings = assistant_settings()
+            saved = settings.provider == provider and ai_providers.is_preset(
+                settings.provider, settings.url
+            )
+            if provider == "custom" or saved:
+                p = ai_providers.make(settings)
+            elif provider in ai_providers.PRESETS:
+                p = ai_providers.preset(provider, settings.context_tokens)
+                host = ai_providers.key_host(provider, "")
+                if ai_providers.missing_key(p) and ai_keys.lookup(provider, host)[1] == "env":
+                    # only the shared variable is set, which Settings shows as "set (env)"
+                    return {
+                        "state": "key_needed",
+                        "models": [],
+                        "message": (
+                            "The model list loads once this provider is saved: "
+                            f"{ai_keys.ENV_KEY} is used only for the saved provider."
+                        ),
+                    }
+            else:
+                raise bad(f"provider must be custom or one of {', '.join(ai_providers.PRESETS)}")
+        except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
+            raise bad(str(err), 409) from err
+        return ai_providers.model_list(p, settings.consent, refresh=refresh)
 
     @owned.get("/projects")
     def list_projects():

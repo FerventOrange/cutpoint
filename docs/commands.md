@@ -219,7 +219,7 @@ After analysis, the Moments list has a search field (label, words spoken, file n
 funnel button beside it that opens Sort and filter. Sort by is Score (the default; rank #1
 first) or Position in video (by source name in natural order, then start time); each card's
 rank badge keeps its score rank either way. The quick filters are Sequence (All, In sequence,
-Not in sequence), Ready only (the moment's preview plays now), Must include, and Source file when
+Not in sequence), Ready only (the moment's preview plays now) and Source file when
 the project has several sources. They combine with the search text. A dot on the button shows
 while a filter or a sort other than Score is on, and when nothing passes the list reads "No
 moments match these filters." Escape closes the menu. The sort and filters are remembered per
@@ -290,7 +290,8 @@ The "Latest export ..." facts under the options are advanced too; warnings and g
 (such as "Exported from the 360 preview (not stitched)") always show.
 
 **Extend export** (advanced) runs [`extend`](#extend) on the latest export into a new `clips_ui_<stamp>`
-folder. The result becomes the current export.
+folder. The result becomes the current export. It is disabled while Extend start and Extend end
+are blank or 0 and Speech-aware cuts is off (extend would have nothing to do); the tooltip says so.
 
 **One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs
 `cutpoint edit --kind <preset>` in the project's own style, with the Vertical and Compress Audio
@@ -396,15 +397,44 @@ remote access is not supported.
 ### AI Chat
 
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
-`config.json`: Ollama (the default), an OpenAI-compatible server (OpenAI, LM Studio, vLLM,
-llama-server) or Anthropic, chosen under Settings > AI assistant with the model and base URL.
+`config.json`, chosen under Settings > AI assistant as a Provider preset with a model; no base
+URL is typed:
+
+- **None (local Ollama)**, the default: the configured Ollama (`OLLAMA_HOST` or `ollama_url`).
+  Type the name of a pulled model; empty uses `qwen3.5:9b`, else the vision model.
+- **Claude (Anthropic)**: `https://api.anthropic.com`; `claude-sonnet-5-5` (default) or
+  `claude-opus-5-5`.
+- **Codex (OpenAI)**: `https://api.openai.com/v1`; type an OpenAI chat model name
+  (`*-codex` models need OpenAI's Responses API and are not supported).
+- **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); type an xAI model name.
+
+A base URL set in `config.json` that no preset has (LM Studio, vLLM, llama-server, OpenRouter, an
+Ollama on another machine) shows as "Custom (from config.json)" and keeps working: its base URL
+is read-only there, and its model can still be changed
+([`assistant`](configuration.md#assistant)).
+
+The Model field offers the models the provider lists, and any other name can be typed. Ollama
+lists its pulled models (`/api/tags`); Anthropic, OpenAI and xAI list theirs (`/v1/models`, with
+the key) only once the key is set and you agreed to that provider and host in the AI Chat tab
+(see below); until then nothing is asked and the field says why. A preset other than the saved
+provider uses only its own key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` or its
+keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which may be meant for the saved host.
+Models that do not chat here are left out by name: ids starting with `text-embedding-`, `tts-`,
+`whisper-`, `dall-e-`, `omni-moderation-`, `text-moderation-`, `gpt-image-`, `sora-`,
+`davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
+`imagine` or `codex` (OpenAI and xAI). A list is
+kept for 10 minutes; Refresh list asks again. When it cannot be loaded, Claude still offers its
+two models and you can type a name.
+
 Saving there checks that the provider answers (reachable, a model chosen and, at
-`api.openai.com` and `api.anthropic.com`, the key accepted) and says why when it cannot. Another
+`api.openai.com`, `api.x.ai` and `api.anthropic.com`, the key accepted) and says why when it
+cannot. Another
 host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
-send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-`CUTPOINT_ASSISTANT_API_KEY` when `cutpoint ui` starts, else from the system keyring: with the
-`keyring` extra, Settings has Save key and Clear key. `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
-go only to `api.anthropic.com` and `api.openai.com`; a key for another host (OpenRouter, a LAN
+send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`XAI_API_KEY` or `CUTPOINT_ASSISTANT_API_KEY` when `cutpoint ui` starts, else from the system
+keyring: with the `keyring` extra, Settings has Save key and Clear key. `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`, `api.openai.com` and
+`api.x.ai`; a key for another host (OpenRouter, a LAN
 server) comes from `CUTPOINT_ASSISTANT_API_KEY` or is saved for that base URL, and goes only over
 `https://` ([keys](configuration.md#assistant)). Settings only says "set (env)", "set
 (keyring)" or "not set"; the page never receives a key. To install Ollama and its models, see
@@ -446,7 +476,10 @@ and writes nothing; applying it with another sequence or without that key is ref
 409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
-comes from (`keys`) and the host it is for (`key_hosts`).
+comes from (`keys`) and the host it is for (`key_hosts`). `GET /api/assistant/models?provider=`
+(`ollama`, `anthropic`, `openai`, `xai` or `custom`; `&refresh=1` skips the cache) returns
+`state` (`ok`, `key_needed`, `consent_needed`, `unsupported` or `error`), `models` (`id`,
+`name`) and `message`; never a key.
 
 ## capabilities
 

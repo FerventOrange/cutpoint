@@ -2,9 +2,10 @@
 
 A key belongs to a provider *and the host it is sent to*. It is read, in order, from
 ``CUTPOINT_ASSISTANT_API_KEY``, the provider's own variable (``ANTHROPIC_API_KEY``,
-``OPENAI_API_KEY``; only for the provider's official host, :data:`OFFICIAL_HOST`, so an OpenAI
-key never goes to OpenRouter or a LAN server) and the system keyring (the optional ``keyring``
-extra; service ``cutpoint``, user ``openai`` / ``anthropic`` for the official host, else
+``OPENAI_API_KEY``, ``XAI_API_KEY``; only for the provider's official host,
+:data:`OFFICIAL_HOST`, so an OpenAI key never goes to OpenRouter or a LAN server, nor an xAI key
+anywhere but ``api.x.ai``) and the system keyring (the optional ``keyring`` extra; service
+``cutpoint``, user ``openai`` / ``anthropic`` / ``xai`` for the official host, else
 ``<provider>@<host>``). ``cutpoint ui`` saves a key there from Settings only when the extra is
 installed.
 
@@ -28,17 +29,18 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 ENV_KEY = "CUTPOINT_ASSISTANT_API_KEY"  # any provider's key; checked first
-PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "xai": "XAI_API_KEY"}
 ENV_VARS = (ENV_KEY, *PROVIDER_ENV.values())  # removed from every child process's environment
 KEYED = tuple(PROVIDER_ENV)  # providers that take a key
 # The only host a provider's own variable (and its plain keyring entry) is sent to.
-OFFICIAL_HOST = {"openai": "api.openai.com", "anthropic": "api.anthropic.com"}
+OFFICIAL_HOST = {"openai": "api.openai.com", "anthropic": "api.anthropic.com", "xai": "api.x.ai"}
 SERVICE = "cutpoint"  # keyring service name
 MAX_KEY = 512
 REDACTED = "[redacted]"
 MIN_SECRET = 8  # shorter values are not searched for (they would match ordinary text)
-# Key-like tokens (OpenAI "sk-...", Anthropic "sk-ant-..."), redacted even when not read here.
-_KEY_LIKE = re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}")
+# Key-like tokens (OpenAI "sk-...", Anthropic "sk-ant-...", xAI "xai-..."), redacted even when
+# not read here.
+_KEY_LIKE = re.compile(r"\b(?:sk|xai)-[A-Za-z0-9_\-]{16,}")
 
 _SEEN: set[str] = set()  # every key read or saved in this process
 _LOCK = threading.Lock()
@@ -91,16 +93,20 @@ def official(provider: str, host: str) -> bool:
 
 
 def ring_user(provider: str, host: str) -> str:
-    """The keyring user name of ``provider``'s key for ``host``: ``openai`` / ``anthropic`` for
-    the official host, else ``<provider>@<host>``."""
+    """The keyring user name of ``provider``'s key for ``host``: ``openai`` / ``anthropic`` /
+    ``xai`` for the official host, else ``<provider>@<host>``."""
     return provider if official(provider, host) else f"{provider}@{host.lower()}"
 
 
-def lookup(provider: str, host: str) -> tuple[str | None, str | None]:
+def lookup(provider: str, host: str, *, shared: bool = True) -> tuple[str | None, str | None]:
     """``(key, where)`` of ``provider``'s key for ``host``: ``where`` is ``"env"`` or
     ``"keyring"``; ``(None, None)`` when there is none. The provider's own variable counts only
-    for its official host; :data:`ENV_KEY` for any."""
-    names = (ENV_KEY, PROVIDER_ENV.get(provider) if official(provider, host) else None)
+    for its official host; :data:`ENV_KEY` for any, unless ``shared`` is False (a provider
+    that is not the saved one: the shared key may be meant for another host)."""
+    names = (
+        ENV_KEY if shared else None,
+        PROVIDER_ENV.get(provider) if official(provider, host) else None,
+    )
     for name in names:
         if name and (value := _env(name)):
             _remember(value)
