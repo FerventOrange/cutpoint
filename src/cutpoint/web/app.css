@@ -305,6 +305,8 @@ select { max-width: 100%; }
 .moments-acts { grid-column: 3; grid-row: 1; justify-self: end; display: flex; flex-wrap: wrap; justify-content: end; gap: var(--space-2); }
 .moments-acts .btn { white-space: nowrap; }
 #revealHeadBtn { display: flex; align-items: center; gap: 6px; }
+/* "Analyzed X of video in Y" (#459): its own row under the buttons, aligned with them */
+#analyzeStats { flex-basis: 100%; margin: 0; font-size: 12px; text-align: end; }
 /* with no project or before analysis the band would be empty: drop it */
 .moments.bare > .col-head { margin: 0; padding: 0; min-height: 0; background: none; border: 0; }
 .moments.bare .moments-acts { display: none; }
@@ -312,11 +314,13 @@ select { max-width: 100%; }
   .moments .col-head { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   #momentsCount { grid-area: auto; }
   .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; margin-top: 6px; }
+  #analyzeStats { text-align: center; }
 }
-@container moments (width < 760px) { /* the same with both buttons */
-  .moments .col-head:has(#revealHeadBtn:not([hidden])) { grid-template-columns: minmax(0, 1fr); justify-items: center; }
-  .moments .col-head:has(#revealHeadBtn:not([hidden])) #momentsCount { grid-area: auto; }
-  .moments .col-head:has(#revealHeadBtn:not([hidden])) .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; margin-top: 6px; }
+@container moments (width < 760px) { /* the same with both buttons or the "Analyzed" line */
+  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) #momentsCount { grid-area: auto; }
+  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; margin-top: 6px; }
+  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) #analyzeStats { text-align: center; }
 }
 .stage:focus { outline: none; }
 .empty { color: var(--muted); display: grid; gap: 10px; justify-items: start; max-width: 52ch; padding: var(--space-1) 0 var(--space-2); }

@@ -5572,6 +5572,59 @@ def test_writing_highlights_rebuilds_the_list_from_the_analysis(
     assert source_names(client, pid) == ["a.mp4"]
 
 
+def test_project_reports_the_video_length_and_time_of_the_last_analysis(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """#459: from highlights.json's sources and timings; a recovered part counts what it read,
+    and highlights.json without timings has none."""
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x", "b.mp4": b"y"})
+    hl = {
+        "sources": [
+            {"path": str(folder / "a.mp4"), "duration": 600.0},
+            {"path": str(folder / "b.mp4"), "duration": 900.0, "offset": 0, "analyzed_s": 300.5},
+        ],
+        "timings": {"transcribe_s": 40.0, "total_s": 75.25},
+        "candidates": [],
+    }
+    cache.save_json(ui.project_dir(pid) / "highlights.json", hl)
+    analysis = client.get(f"/api/projects/{pid}").json()["analysis"]
+    assert analysis == {"video_s": 900.5, "took_s": 75.25}
+    cache.save_json(ui.project_dir(pid) / "highlights.json", {**hl, "timings": {}})
+    assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
+    # 360: the events re-rank rewrote total_s, so the time is pano_timings.json's scan + analyze
+    p = ui.project_dir(pid)
+    cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), "kind": "360"})
+    cache.save_json(p / "highlights.json", hl)
+    assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
+    cache.save_json(
+        p / "pano_timings.json", {"scan_s": 12.5, "analyze_s": 90.0, "analyze_total_s": 300.0}
+    )
+    analysis = client.get(f"/api/projects/{pid}").json()["analysis"]
+    assert analysis == {"video_s": 900.5, "took_s": 312.5}
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [(45, "45 s"), (59.5, "1 min"), (3570, "1 h"), (8040, "2 h 14 min")],
+)
+def test_span_text_formats_analysis_lengths(tmp_path: Path, seconds: float, text: str) -> None:
+    """#459: seconds under a minute, minutes under an hour, then hours and minutes."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    mod = tmp_path / "util.mjs"  # .mjs: an ES module for every node >= 18 (see _sort_positions)
+    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
+    script = (
+        f"import {{ spanText }} from {json.dumps(mod.resolve().as_uri())};"
+        "console.log(spanText(Number(process.argv[1])));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, str(seconds)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )  # fmt: skip
+    assert out.stdout.strip() == text
+
+
 def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

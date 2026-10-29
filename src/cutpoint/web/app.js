@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, spanText, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -412,6 +412,9 @@ function renderMoments() {
   $('#analyzeBtn').textContent = 'Analyze again';
   $('#filterWrap').hidden = !list.length;
   $('#momentsCount').textContent = hl ? `${list.length} found, ${hl.style ?? p.style} style` : '';
+  const stats = hl ? p.analysis : null; // null when the length or the time is unknown
+  $('#analyzeStats').hidden = !stats;
+  $('#analyzeStats').textContent = stats ? `Analyzed ${spanText(stats.video_s)} of video in ${spanText(stats.took_s)}` : '';
   const empty = $('#momentsEmpty');
   // the big button had focus (disabling it while analysis runs moves focus to body): keep it in this column
   const hadFocus = empty.contains(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
@@ -3752,7 +3755,7 @@ const AI_HINTS = {
 const AI_MODEL_HINTS = {
   ollama: 'The name of a model Ollama has pulled. Default: qwen3.5:9b when Ollama has it, else the vision model.',
   anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
-  openai: 'Needed: the name of an OpenAI chat model your key can use. *-codex models are not supported (chat models only).',
+  openai: "Needed: the name of an OpenAI model your key can use. It is asked through OpenAI's Responses API, so gpt-6-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna and *-codex models all make tool calls.",
   xai: 'Needed: the name of an xAI model your key can use.',
   custom: "The model of the custom provider, saved in config.json. Default: the server's model, when it serves only one.",
 };
