@@ -285,6 +285,7 @@ def parse_param_args(items: list[str]) -> dict[str, str]:
 # they apply with selfie_mode="auto" (--param selfie_mode=auto, or legacy()).
 KIND_TWEAKS: dict[str, dict[str, Any]] = {
     "laughter": {"w_selfie_talk": 0.8},
+    "voice_laughter": {"w_selfie_talk": 0.8},
     "voice": {"w_selfie_talk": 0.75},
     "social": {"w_selfie_talk": 0.75},
     "speech": {"w_selfie_talk": 0.7},

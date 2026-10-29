@@ -260,6 +260,35 @@ def test_analyze_stores_the_vision_options_and_reanalyze_passes_them_back(
     assert (seen["vision_top"], seen["ollama_url"], seen["ollama_model"]) == (top, url, model)
 
 
+def test_reanalyze_keeps_the_analysis_time_and_records_the_rerank_time(home, tmp_path, monkeypatch):
+    """A re-rank (``events``, ``crashes --reanalyze``) does not pass for the analysis' time."""
+    write(tmp_path / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    proj = tmp_path / "proj"
+    analyze.analyze(tmp_path / "a.mp4", get_style("funny"), proj, vision=False, use_scenes=False)
+    path = proj / "highlights.json"
+    first = json.loads(path.read_text(encoding="utf-8"))["timings"]
+    assert "rerank_s" not in first
+    hl = json.loads(path.read_text(encoding="utf-8"))
+    hl["timings"]["total_s"] = 1234.5  # the first analysis, transcription and all
+    path.write_text(json.dumps(hl), encoding="utf-8")
+    for _ in range(2):  # a second re-rank keeps the first analysis' time too
+        analyze.reanalyze(proj)
+        timings = json.loads(path.read_text(encoding="utf-8"))["timings"]
+        assert timings["total_s"] == 1234.5
+        assert 0 <= timings["rerank_s"] < 1234.5
+
+
+def test_reanalyze_of_an_analysis_without_a_total_records_its_own(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    write(proj / "highlights.json", json.dumps({"style": "funny", "sources": [], "settings": {
+        "inputs": [str(tmp_path / "a.mp4")]}, "timings": {}}))  # fmt: skip
+    seen: dict = {}
+    monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
+    analyze.reanalyze(proj)
+    assert seen["earlier_total_s"] is None
+
+
 @pytest.mark.parametrize(
     ("settings", "vision"),
     [

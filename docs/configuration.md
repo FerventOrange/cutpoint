@@ -283,6 +283,8 @@ A style tells `analyze` how to score and how long clips and the final cut should
 Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by `cutpoint
 refmatch` and `cutpoint fit`. They appear as extra `--style` choices, hold the feature weights
 and the fit report, and can be edited by hand. Style definitions live in `src/cutpoint/styles.py`.
+In a ski style, the weight of laughter heard over the wind noise is `voice_laughter`; older
+learned styles call it `laughter`, which still works.
 
 ## Activity profiles
 

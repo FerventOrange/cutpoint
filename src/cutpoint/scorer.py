@@ -1,18 +1,20 @@
 """How highlight candidates are scored: weighted feature grids, then the events' bonus points.
 
 Grid stage: the style's weights times the feature grids (:mod:`cutpoint.features`), summed in
-the analysis signals' order. Candidates are picked on this raw sum (``analyze._pick_windows``),
-so its cut-offs and the candidate set do not depend on which features are available. A
-candidate's 0-100 score is its peak divided by the weights of the available features
-(:func:`cutpoint.features.to_score`): on Cutpoint lite the ``events`` features are left out of
-the divisor; with every feature available it is the sum of all weights.
+the analysis signals' order (:func:`combined`; ski: :func:`ski_combined`, in its weights' order
+and masked on lifts and stops). Candidates are picked on this raw sum (``analyze._pick_windows``,
+``ski.pick``), so its cut-offs and the candidate set do not depend on which features are
+available. A candidate's 0-100 score is its peak divided by the weights of the available
+features (:func:`cutpoint.features.to_score`): on Cutpoint lite the ``events`` features are left
+out of the divisor and the score is capped at 100; with every feature available it is the sum
+of all weights.
 
 Bonus stage: :func:`rescore_events` adds the ``events.json`` points (sound events, HUD event
 types, reactions) to each candidate's analysis score and blends in the best overlapping VLM
 window, boost-only (see :mod:`cutpoint.events.scoring` for the evidence).
 
-The ski scorer (:mod:`cutpoint.ski`) keeps its own grids and picking; its score still divides
-by all its weights (it moves onto the registry in #514 phase 1b).
+The ski grids (:mod:`cutpoint.ski`) are registered features too (:data:`cutpoint.features.
+SKI_FEATURES`); ski keeps its own clip geometry and picking.
 """
 
 from __future__ import annotations
@@ -32,14 +34,28 @@ VLM_WEIGHT = 0.35  # share of the gap to the VLM window score that a candidate g
 
 
 def available_for(style: Style) -> frozenset[str] | None:
-    """The features ``style``'s score is renormalised over (:func:`cutpoint.features.available`);
-    None (every weight counts) for the ski scorer."""
-    return None if style.kind == "ski" else features.available()
+    """The features ``style``'s score is renormalised over (:func:`cutpoint.features.available`;
+    the same for every style)."""
+    return features.available()
 
 
 def combined(sig: Mapping[str, np.ndarray], style: Style) -> np.ndarray:
     """The style's weighted sum of the analysis signals ``sig``, in ``sig``'s order."""
     return features.combine(sig, style.weights, tuple(sig))
+
+
+def ski_combined(
+    grids: Mapping[str, np.ndarray], weights: Mapping[str, float], keep: np.ndarray
+) -> np.ndarray:
+    """A ski weighted sum: ``weights`` times ``grids`` in ``weights`` order, over the non-zero
+    weights of grids that exist, each grid cut to ``len(keep)``; times ``keep`` (0 where the
+    mask forbids clips). As before the registry, zero weights and names without a grid add
+    nothing, and the sum starts from float64 zeros (cached telemetry grids are float32), so
+    the bytes are the same."""
+    n = len(keep)
+    order = [k for k, w in weights.items() if k in grids and w]
+    grids = {k: grids[k][:n] for k in order}
+    return features.combine(grids, weights, order, start=np.zeros(n)) * keep
 
 
 def score(

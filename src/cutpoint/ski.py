@@ -34,8 +34,10 @@ Features from the ``cutpoint events`` voice and visual layers (0 until they ran)
     group    the zero-shot "friends / group of people" prompt alone
     (360 clips: the same three from :mod:`cutpoint.pano.views`, taking the
     best of 8 levelled horizon views per second, wearer excluded)
-    laughter PANNs laughter on 200 Hz high-passed audio above a wind-raised
-             threshold (wind from the low-band energy and telemetry speed)
+    voice_laughter PANNs laughter on 200 Hz high-passed audio above a
+             wind-raised threshold (wind from the low-band energy and telemetry
+             speed); called ``laughter`` before #514 phase 1b, which older
+             learned presets and ski_features files still say (read as this)
     voice    Silero VAD and PANNs speech both above wind-raised thresholds
     taste    personal taste head (``cutpoint refmatch --taste``): logistic regression
              on the frame embeddings, fitted on a reference edit
@@ -48,6 +50,8 @@ From ``cutpoint crashes`` (``<project>/crashes.json``, 0 until it ran):
              ``must_include_crash`` also become must-include candidates
              (:func:`must_include_picks`), whatever the weights say.
 
+Every feature is registered in :mod:`cutpoint.features` (:data:`FEATURES` is its
+:data:`~cutpoint.features.SKI_FEATURES`); :func:`cutpoint.scorer.ski_combined` weighs them.
 The weighted sum is hard-masked on lifts and stops (``lift_mask | still_mask``);
 friends in view do not lift the mask. Peaks are
 turned into clips whose length depends on the dominant feature: jumps 3-6 s
@@ -69,34 +73,15 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, features, scorer
 from cutpoint.config import path_key, source_path
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
 logger = logging.getLogger(__name__)
 
-FEATURES = (
-    "airtime",
-    "crash",
-    "vlm",
-    "speed",
-    "social",
-    "carve",
-    "scenic",
-    "speech",
-    "faces",
-    "stopped",
-    "short_clip",
-    "beauty",
-    "people",
-    "group",
-    "laughter",
-    "voice",
-    "taste",
-    "wipeout",
-)
+FEATURES = features.SKI_FEATURES
 # Features computed from the voice / visual layers and the taste head.
-NEW_FEATURES = ("beauty", "people", "group", "laughter", "voice", "taste")
+NEW_FEATURES = tuple(f for f in FEATURES if features.get(f).layer in ("audio", "visual"))
 SHORT_CLIP_S = 30.0  # a clip this short was recorded on purpose for one moment
 VLM_ACTION_TAGS = ("jump_air", "landing", "powder_spray")
 VLM_IDLE_TAGS = ("chairlift", "standing_talking", "lodge")  # friends do not count there
@@ -119,7 +104,7 @@ GEOMETRY: dict[str, tuple[float, float, float, float]] = {
     "beauty": (2.0, 4.0, 1.5, 1.5),
     "people": (3.0, 6.0, 2.0, 2.0),
     "group": (3.0, 6.0, 2.0, 2.0),
-    "laughter": (4.0, 8.0, 3.5, 2.5),
+    "voice_laughter": (4.0, 8.0, 3.5, 2.5),
     "voice": (4.0, 8.0, 3.0, 2.5),
     "taste": (3.0, 6.0, 2.0, 2.0),
     "wipeout": (6.0, 40.0, 5.0, 8.0),  # crashes.json plans its own clip
@@ -139,7 +124,7 @@ KIND_LABEL = {
     "beauty": "view",
     "people": "friends",
     "group": "crew",
-    "laughter": "laugh",
+    "voice_laughter": "laugh",
     "voice": "talk",
     "taste": "pick",
     "wipeout": "crash",
@@ -367,7 +352,7 @@ def layer_features(
         moving = None if speed_kmh is None else np.clip(speed_kmh / 40.0, 0, 1)
         grids = {k: _resize(v[o:], n) for k, v in vg.items()}
         vf = VO.voice_features(grids, moving)
-        out["laughter"], out["voice"] = vf["laughter"], vf["voice"]
+        out["voice_laughter"], out["voice"] = vf["laughter"], vf["voice"]
     from cutpoint.pano.views import layer_grids  # noqa: PLC0415
 
     pano = layer_grids(src, n, offset, DT)  # 360 clip: best direction per second
@@ -445,13 +430,8 @@ def combine(
     friends: np.ndarray,
     friends_strong: float = FRIENDS_STRONG,
 ) -> np.ndarray:
-    """Weighted feature sum with the hard mask applied."""
-    n = len(mask)
-    total = np.zeros(n)
-    for k, w in weights.items():
-        if k in features and w:
-            total += w * features[k][:n]
-    return total * (1 - effective_mask(mask, friends, friends_strong))
+    """Weighted feature sum with the hard mask applied (:func:`cutpoint.scorer.ski_combined`)."""
+    return scorer.ski_combined(features, weights, 1 - effective_mask(mask, friends, friends_strong))
 
 
 # --------------------------------------------------------------------------- picking
@@ -702,14 +682,16 @@ def save_features(
 
 
 def load_features(path: Path) -> dict[str, Any]:
-    """Inverse of :func:`save_features`."""
+    """Inverse of :func:`save_features`. A grid saved under its old name
+    (:data:`cutpoint.features.SKI_ALIASES`) is read under the new one, in its place."""
     with np.load(path) as z:
         meta = json.loads(str(z["meta"]))
+        grids = {k[2:]: z[k].astype(float) for k in z.files if k.startswith("f_")}
         return {
             **meta,
             "mask": z["mask"].astype(float),
             "friends": z["friends"].astype(float),
-            "features": {k[2:]: z[k].astype(float) for k in z.files if k.startswith("f_")},
+            "features": features.ski_names(grids, str(path)),
         }
 
 

@@ -15,7 +15,7 @@ one signal that happens to be strong (laughs, group shots):
              above 0.5 for >= 20 s; the best beauty / people moment of each ride;
              5-7 s; kind ``beauty`` or ``social``
     scenery  beauty >= 0.55, off lifts; 3-5 s; kind ``beauty``
-    social   laughter .5, people .3, voice .2 with someone audible; 5-9 s; kind ``laughter``
+    social   voice_laughter .5, people .3, voice .2 with someone audible; 5-9 s; kind ``laughter``
 
 Without GPS (Insta360 X3) speed is 0, so ``run`` uses the IMU turn rhythm
 (``carve``) only; with GPS ``carve`` already includes speed. Scores are
@@ -77,7 +77,7 @@ DEFAULT_QUOTAS = {
 }
 FALLBACK = ("run", "scenery")  # categories that take over an unused quota
 RUN_W = {"carve": 0.55, "airtime": 0.25, "people": 0.2}
-SOCIAL_W = {"laughter": 0.5, "people": 0.3, "voice": 0.2}
+SOCIAL_W = {"voice_laughter": 0.5, "people": 0.3, "voice": 0.2}
 LIFT_W = {"beauty": 0.6, "people": 0.4}
 LENGTHS = {
     "run": (6.0, 9.0),
@@ -390,7 +390,7 @@ def part_candidates(d: dict[str, Any], max_picks: int = 30) -> list[Cand]:
         if p.peak >= 0.55:
             out.append(cand("scenery", p, "beauty", "view"))
     for p in picks(SOCIAL_W, zero):
-        if p.signals.get("laughter", 0) >= 0.3 or _mean(f["voice"], p.start, p.end) >= 0.5:
+        if p.signals.get("voice_laughter", 0) >= 0.3 or _mean(f["voice"], p.start, p.end) >= 0.5:
             out.append(cand("social", p, "laughter", "laugh"))
     for a, b in _spans(lift, LIFT_MIN_S):
         outside = np.ones(n)

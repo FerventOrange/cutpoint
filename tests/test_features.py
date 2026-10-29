@@ -4,6 +4,7 @@ renormalised over the features an install can compute (lite: no ``events`` extra
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -195,6 +196,79 @@ def test_lite_renormalises_a_learned_style_with_an_events_feature(home, monkeypa
     assert top("lite") == 45.0  # beauty cannot run: 0.45 / 1.0
 
 
-def test_ski_score_keeps_every_weight_in_phase_1a():
-    assert scorer.available_for(STYLES["ski"]) is None
+def test_ski_score_is_renormalised_like_the_other_styles():
+    assert scorer.available_for(STYLES["ski"]) == features.available()
     assert scorer.available_for(STYLES["gaming"]) == features.available()
+
+
+def test_ski_features_come_from_the_registry_in_the_grid_order():
+    assert ski.FEATURES == features.SKI_FEATURES
+    assert features.unknown(features.SKI_FEATURES) == []
+    assert all(features.get(f).kind == "grid" for f in ski.FEATURES)
+    # the voice and visual layers and the taste head, in the order they had before 1b
+    assert ski.NEW_FEATURES == ("beauty", "people", "group", "voice_laughter", "voice", "taste")
+    assert "laughter" not in ski.FEATURES and "laughter" not in STYLES["ski"].weights
+
+
+def test_ski_names_renames_in_place_and_prefers_the_new_name(caplog):
+    with caplog.at_level(logging.DEBUG, logger="cutpoint.features"):
+        got = features.ski_names({"airtime": 0.1, "laughter": 0.2, "voice": 0.3}, "mine.json")
+    assert list(got.items()) == [("airtime", 0.1), ("voice_laughter", 0.2), ("voice", 0.3)]
+    assert "mine.json: ski feature 'laughter' is now called 'voice_laughter'" in caplog.text
+    both = features.ski_names({"laughter": 0.2, "voice_laughter": 0.4})
+    assert both == {"voice_laughter": 0.4}
+
+
+def test_learned_ski_preset_with_the_old_laughter_name_scores_as_before(tmp_path, caplog):
+    """An older preset says "laughter": it is voice_laughter, in its place, without a warning."""
+    path = write_style(tmp_path, {"name": "mine", "base": "ski", "weights": {"laughter": 0.6}})
+    with caplog.at_level(logging.DEBUG):
+        st = load_learned(path)
+    assert list(st.weights) == list(STYLES["ski"].weights)
+    assert st.weights["voice_laughter"] == 0.6
+    assert sum(st.weights.values()) == sum(
+        {**STYLES["ski"].weights, "voice_laughter": 0.6}.values()
+    )
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_learned_generic_preset_keeps_transcript_laughter(tmp_path):
+    path = write_style(tmp_path, {"name": "mine", "base": "funny", "weights": {"laughter": 0.6}})
+    assert load_learned(path).weights["laughter"] == 0.6
+    assert "voice_laughter" not in load_learned(path).weights
+
+
+def test_old_ski_features_file_reads_laughter_as_voice_laughter(tmp_path):
+    """ski_features saved before the rename load under the new name (refmatch, mix)."""
+    grids = {k: np.full(4, i / 4) for i, k in enumerate(("airtime", "laughter", "voice"))}
+    src = tmp_path / "a.mp4"
+    ski.save_features(tmp_path, src, 0.0, 0.4, grids, np.zeros(4), np.zeros(4), [])
+    (d,) = ski.load_project_features(tmp_path)
+    assert list(d["features"]) == ["airtime", "voice_laughter", "voice"]
+    assert d["features"]["voice_laughter"].tolist() == [0.25] * 4
+
+
+def test_combine_sums_like_the_code_before_the_registry():
+    """Generic styles: from int 0, as their pre-registry ``sum()`` (float32 stays float32); ski:
+    from float64 zeros, as its pre-registry loop (cached telemetry grids are float32)."""
+    rng = np.random.default_rng(3)
+    grids = {k: rng.random(50).astype(np.float32) for k in ("a", "b", "c")}
+    w = {"a": 0.3, "b": 0.0, "c": 0.7}
+    old_generic = sum(w.get(k, 0.0) * v for k, v in grids.items())
+    assert features.combine(grids, w, grids).tobytes() == old_generic.tobytes()
+    old_ski = np.zeros(50)
+    for k, v in w.items():
+        if v:
+            old_ski += v * grids[k]
+    new_ski = scorer.ski_combined(grids, w, np.ones(50))
+    assert new_ski.dtype == np.float64 and new_ski.tobytes() == old_ski.tobytes()
+
+
+def test_lite_ski_score_is_capped_at_100():
+    """social still has transcript laughter on lite, so a peak can pass the core divisor."""
+    w = STYLES["ski"].weights
+    lite = features.available(())
+    peak = sum(v for k, v in w.items() if k in lite) + w["social"]
+    assert features.divisor(w, lite) == pytest.approx(0.67)
+    assert features.to_score(peak, w, lite) == 100.0
+    assert features.dropped(w, features.available(("events",))) == []
