@@ -3677,7 +3677,8 @@ async function loadAiModels(refresh) {
   } else if (r.state === 'error') {
     status.textContent = `Could not load the model list: ${String(r.message ?? '').replace(/\.?$/, '.')} ${AI_TYPE_ID}`;
   } else {
-    status.textContent = [r.message, AI_LIST_STATES[r.state]].filter(Boolean).join(' ');
+    const msg = r.message && String(r.message).replace(/\.?$/, '.');
+    status.textContent = [msg, AI_LIST_STATES[r.state]].filter(Boolean).join(' ');
   }
 }
 
