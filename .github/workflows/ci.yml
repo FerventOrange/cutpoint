@@ -195,6 +195,51 @@ jobs:
           rc=0; sh install.sh --dry-run --lite --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--lite --cuda must exit 2, got $rc"; exit 1; }
           rc=0; sh install.sh --source --dry-run > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--source --dry-run must exit 2, got $rc"; exit 1; }
           rc=0; sh install.sh --dry-run --no-ffmpeg --source /does/not/exist > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] || { echo "::error::missing --source path must exit 1, got $rc"; exit 1; }
+          # Ollama: asked in full mode when missing (PATH without it); the remote script only runs
+          # on a yes. Lite has no Ollama. Nothing is installed in a dry run.
+          mkdir -p "$RUNNER_TEMP/no-ollama-bin"
+          for t in sh cat uname sed awk grep id curl env dirname basename mktemp rm sleep uv; do p=$(command -v "$t") && ln -sf "$p" "$RUNNER_TEMP/no-ollama-bin/$t"; done
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
+          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          expect "$out" 'nohup ollama serve'
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" 'Install Ollama (local AI models'
+          if printf '%s\n' "$out" | grep -q 'ollama.com/install.sh | sh'; then echo "::error::Ollama script planned without a yes"; exit 1; fi
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --no-ollama --yes < /dev/null)
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::--no-ollama must not ask or install"; exit 1; fi
+          out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          out=$(CUTPOINT_OLLAMA=0 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
+          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --no-ollama < /dev/null)
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::--no-ollama must beat CUTPOINT_OLLAMA=1"; exit 1; fi
+          out=$(CUTPOINT_OLLAMA=0 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --yes < /dev/null)
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::CUTPOINT_OLLAMA=0 --yes must not install Ollama"; exit 1; fi
+          # Lite: no prompt, no install, no pull; --ollama / CUTPOINT_OLLAMA=1 warns once and exits 0.
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --lite --no-ffmpeg --yes < /dev/null 2>&1)
+          if printf '%s\n' "$out" | grep -qi 'ollama'; then echo "::error::lite must not mention or run Ollama without --ollama"; exit 1; fi
+          for mode in flag env; do
+            rc=0
+            if [ "$mode" = flag ]; then
+              out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --lite --no-ffmpeg --ollama --yes < /dev/null 2>&1) || rc=$?
+            else
+              out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --lite --no-ffmpeg --yes < /dev/null 2>&1) || rc=$?
+            fi
+            [ "$rc" = 0 ] || { echo "::error::lite with Ollama ($mode) must exit 0, got $rc"; exit 1; }
+            expect "$out" 'Ollama is not part of lite'
+            [ "$(printf '%s\n' "$out" | grep -c 'Ollama is not part of lite')" = 1 ] || { echo "::error::lite Ollama warning must print once"; exit 1; }
+            if printf '%s\n' "$out" | grep -q 'ollama.com/install.sh\|ollama pull\|ollama serve'; then echo "::error::lite must not install, start or pull Ollama"; exit 1; fi
+          done
+          # macOS path: fake uname (Darwin) and a no-op brew.
+          mkdir -p "$RUNNER_TEMP/mac-bin"
+          for t in sh cat sed awk grep id curl env dirname basename mktemp rm sleep uv; do p=$(command -v "$t") && ln -sf "$p" "$RUNNER_TEMP/mac-bin/$t"; done
+          printf '#!/bin/sh\necho Darwin\n' > "$RUNNER_TEMP/mac-bin/uname"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/mac-bin/brew"
+          chmod +x "$RUNNER_TEMP/mac-bin/uname" "$RUNNER_TEMP/mac-bin/brew"
+          out=$(PATH="$RUNNER_TEMP/mac-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
+          expect "$out" '+ brew install ollama'
+          expect "$out" '+ brew services start ollama'
+          rc=0; sh install.sh --dry-run --ollama --no-ollama > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--ollama --no-ollama must exit 2, got $rc"; exit 1; }
           # curl | sh: the script is read from stdin.
           cat install.sh | sh -s -- --dry-run --lite --no-ffmpeg | grep -F 'uv tool install'
       # Package-manager ffmpeg commands on other distributions (dry run only, nothing installed).

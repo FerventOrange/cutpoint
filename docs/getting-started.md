@@ -45,6 +45,7 @@ In a clone, `uv sync` installs everything, including the `events` and `gpu` extr
 dependency group, about 7 GB or more with torch). For a lite environment without them, use
 `uv sync --no-group full` (and `uv run --no-group full ...`, or set `UV_NO_GROUP=full`). The lite
 install is enough for `analyze`, `clips`, `extend`, `assemble`, `stage` and `cutpoint ui`.
+The lite installer does not offer Ollama; the UI assistant can use a third-party provider instead.
 
 ### Browser workspace
 
@@ -286,10 +287,13 @@ The `events` model layer does not use Ollama. It runs llama.cpp, which `cutpoint
 
 **Install Ollama.**
 
-On Windows the one-step installer (`install.ps1`) asks whether to install Ollama (default No;
-`-Ollama` installs without asking, `-NoOllama` never asks; also `CUTPOINT_OLLAMA=1|0`) with
-`winget install --id Ollama.Ollama -e`, makes sure the server is running and then offers the
-`qwen3-vl:8b` pull. Lite mode (`-Lite`) has no Ollama: it skips this step, and `-Lite -Ollama`
+The one-step installers (`install.sh` on Linux and macOS, `install.ps1` on Windows) ask whether to
+install Ollama in full mode (default No): `--ollama` / `-Ollama` installs without asking,
+`--no-ollama` / `-NoOllama` never asks, `CUTPOINT_OLLAMA=1|0` does the same, and `--yes` / `-Yes`
+answers yes. They install it with the official script (with sudo) on Linux, `brew` on macOS and
+`winget install --id Ollama.Ollama -e` on Windows (with the download link when winget is missing
+or fails), make sure the server is running and then offer the `qwen3-vl:8b` pull. Lite mode
+(`--lite` / `-Lite`) has no Ollama: it skips this step, and `--lite --ollama` / `-Lite -Ollama`
 prints a warning and installs nothing. To do it by hand:
 
 | System | Install |

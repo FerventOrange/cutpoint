@@ -16,10 +16,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `-Yes` answers the prompt. The summary reports the Ollama result. Lite mode has no Ollama: it
   skips the step, and `-Lite -Ollama` prints a warning and installs nothing.
 
+### Fixed
+
+- `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
+  slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
+  the keyboard and screen readers (#518).
+
 ## [0.4.0] - 2026-10-29
 
 ### Added
 
+- `install.sh`: offers to install Ollama when it is missing (full mode only; default No; Linux
+  uses Ollama's official script and needs sudo, macOS uses `brew install ollama` and
+  `brew services start ollama`), waits for the server (it starts `ollama serve` itself, logging to
+  `~/.local/state/cutpoint/`, only on macOS if brew fails or on Linux without `ollama.service`),
+  then offers the `qwen3-vl:8b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
+  `CUTPOINT_OLLAMA=0`; `--yes` answers the prompt. The summary reports the Ollama result. Lite
+  mode has no Ollama: it skips the step with no prompt, and `--lite --ollama` prints a warning and
+  installs nothing (the UI assistant can use a third-party provider instead).
 - `install.sh`: one-step Linux installer (`curl -LsSf .../install.sh | sh`). It installs uv and
   ffmpeg when missing, picks CUDA torch (`cutpoint[all]`, `--torch-backend cu126`) with an NVIDIA
   GPU or CPU torch (`cutpoint[events,ui,keyring,ski]`) without, and `--lite` installs
