@@ -618,6 +618,8 @@ def _extend_locked(
         subs.report(len(plans))
         if not entries:
             raise ValueError(f"No clips with manifest entries in {clips_dir}")
+        # Off when every clip has "speech_aware": false (the pass left them all alone).
+        speech_on = speech.enabled and any(p.entry.get("speech_aware") is not False for p in plans)
         cache.save_json(
             work / "manifest.json",
             {k: v for k, v in manifest.items() if k != "compress_peaks"}
@@ -626,7 +628,7 @@ def _extend_locked(
                 "created": datetime.now().isoformat(timespec="seconds"),
                 "extended_from": str(clips_dir.resolve()),
                 "extend": {"start": padding.start, "end": padding.end},
-                "speech_aware": speech.to_json(),
+                "speech_aware": speech.to_json() | {"enabled": speech_on},
                 "audio_fade": audio_fade,
                 "skipped_no_manifest": list(skipped),
                 **(

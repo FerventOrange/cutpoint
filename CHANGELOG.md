@@ -41,12 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
   diagnostics for previews (#517).
 
-### Fixed
-
-- `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
-  slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
-  the keyboard and screen readers (#518).
-
 ### Changed
 
 - `cutpoint ui` Settings > AI assistant: Model is a dropdown of the provider's models (#521)
@@ -54,6 +48,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list lacks; a saved model the list lacks stays chosen, marked "(not in the provider's list)",
   and without a list (no key, offline, Ollama not running) the dropdown offers the preset's own
   models and the saved model.
+- `clips` and `edit --color auto|underwater` log one INFO line per clip not graded, naming the
+  clip and its skip code (`not_underwater` adds that `--color auto` may suit it, `log` that
+  `--lut` fits it). They replace the lines that listed the 360 and log/flat clips; the summary
+  count is unchanged.
+
+### Fixed
+
+- `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
+  slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
+  the keyboard and screen readers (#518).
+- `clips/manifest.json`: the header's `smart_tail.enabled` and `speech_aware.enabled` are now
+  `false` when no clip got them, as for a `--segments` export whose every segment turned them
+  off; they used to show the run's setting. `extend` does the same for `speech_aware`.
+- `clips`: the `Exporting ...` INFO line says `smart tail off` when no clip gets a smart tail
+  (every segment has `"smart_tail": false` or a fixed `"tail"`), as the manifest header does;
+  it used to say `on` with the run's setting.
 
 ## [0.4.0] - 2026-10-29
 

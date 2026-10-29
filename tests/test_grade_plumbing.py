@@ -372,11 +372,36 @@ def test_color_grades_skip_360_hint_log_and_sum_up(tmp_path, monkeypatch, caplog
     assert all(m == "auto" and kw["strength"] == 0.6 and kw["vertical"] for _, m, kw in seen)
     assert [kw["crop"] for _, _, kw in seen] == [crop, None, None, None]
     assert grades[1].skip == color.SKIP_360 and grades[1].strength == 0.6
-    text = caplog.text
-    assert "1 360 clip(s) are not graded: 001_c.mp4" in text
-    assert "002_c.mp4 look like log/flat footage and are not graded; use --lut" in text
-    assert "003_c.mp4 look underwater; --color underwater" in text
-    assert "Color auto: 2 of 5 clips graded; not graded: 360 1, log 1, good 1" in text
+    lines = [r.getMessage() for r in caplog.records if r.name == "cutpoint.clips"]
+    assert lines[1:] == [
+        "Color: 001_c.mp4 not graded (360)",
+        "Color: 002_c.mp4 not graded (log): looks like log/flat footage; use --lut with the "
+        "camera's LUT",
+        "Color: 004_c.mp4 not graded (good)",
+        "Color: 003_c.mp4 look underwater; --color underwater corrects underwater colors "
+        "(--color auto does not)",
+        "Color auto: 2 of 5 clips graded; not graded: 360 1, log 1, good 1",
+    ]
+
+
+def test_color_grades_name_each_skipped_clip_with_its_code(tmp_path, monkeypatch, caplog):
+    """One INFO line per clip not graded, its skip code as recorded; ``not_underwater`` points
+    to ``--color auto``; a graded clip gets none."""
+    caplog.set_level(logging.INFO)
+    results = {
+        0.0: AutoGrade.skipped("underwater", color.SKIP_NOT_UNDERWATER),
+        1.0: AutoGrade("underwater", black=0.05, skip=color.VETO_CLIPPING),
+        2.0: AutoGrade("underwater", black=0.05),
+    }
+    monkeypatch.setattr(clips, "auto_grade", lambda src, info, start, *a, **kw: results[start])
+    clips._color_grades([plan(i, tmp_path) for i in range(3)], "underwater", 1.0, FMT, False)
+    lines = [r.getMessage() for r in caplog.records if r.name == "cutpoint.clips"]
+    assert lines[1:] == [
+        "Color: 000_c.mp4 not graded (not_underwater): it does not look like murky or "
+        "color-cast underwater footage; --color auto may suit it",
+        "Color: 001_c.mp4 not graded (veto_clipped)",
+        "Color underwater: 1 of 3 clips graded; not graded: not_underwater 1, veto_clipped 1",
+    ]
 
 
 def test_color_grades_name_no_underwater_clip_when_none_looks_it(tmp_path, monkeypatch, caplog):
