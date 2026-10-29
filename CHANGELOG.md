@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
+  splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
+  double-click to reset. The width is remembered per browser. Both splitters share one helper, and
+  the preview keeps at least 360 px, so at the narrowest three-column window (961 px) neither it
+  nor a column collapses.
+
 ## [0.4.0] - 2026-10-29
 
 ### Added

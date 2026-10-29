@@ -28,7 +28,7 @@
   <div id="banner" class="banner" role="alert" hidden></div>
 
   <main id="workspace">
-    <section class="col moments" aria-labelledby="momentsTitle">
+    <section class="col moments" id="moments" aria-labelledby="momentsTitle">
       <div class="col-head">
         <h2 id="momentsTitle" tabindex="-1">Moments</h2>
         <span id="momentsCount" class="muted"></span>
@@ -76,6 +76,9 @@
       <div id="momentsEmpty" class="empty"></div>
       <ol id="candList" class="cand-list"></ol>
     </section>
+
+    <div id="momSplit" class="splitter" role="separator" tabindex="0" aria-orientation="vertical"
+         aria-controls="moments" aria-label="Resize moments column" title="Drag to resize, double-click to reset"></div>
 
     <section class="col stage" id="stage" tabindex="-1" aria-labelledby="stageTitle">
       <h2 id="stageTitle" class="vh">Preview</h2>
