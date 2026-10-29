@@ -90,6 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint ui` Export tab: "The sequence (hand-picked)" reads "Sequence" and "Max total (s)"
+  reads "Max video length (s)" (still `--max-total`, the cap on all clips together). Top
+  moments, Candidate ids, the Cut Timing fields other than Event tails, the "Latest export ..." facts
+  (not its warnings) and Extend export are hidden unless the new Settings > "Show advanced export options" (off by
+  default, kept in the browser) is ticked; hidden fields keep their values and are still sent,
+  and "Advanced options in use: ..." names any that are. The Compress Audio Peaks, Color and
+  Strength sliders are centred with equal margins, and each tick label (Light, Auto) sits
+  centred under its stop.
 - `cutpoint ui`: tighter moment cards: Add/Remove sits top right beside the rank and title, then
   the candidate id and the times ("h001 0:00.00 to 0:07.70 · 7.7 s"), the file name on its own line only when the project
   has several sources, the strip and the transcript, with the preview readiness at the bottom
@@ -136,6 +144,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cutpoint ui`: the Play sequence button sits under Undo and Redo, as wide as the pair, and
   keeps its size and place when it turns into Stop. It used to shrink and jump up beside Redo.
+- `cutpoint ui`: the Sequence, AI Chat and Export tabs share the sequence column's full width
+  evenly at any width the column is dragged to; a label too long for a narrow tab ends in an
+  ellipsis. Before, they kept their labels' widths at the left of the column.
 - `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
   instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
   there are none.
