@@ -5795,13 +5795,13 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
 
 def test_export_tab_says_sequence_and_max_video_length() -> None:
     """Contract pin (mock2): the first Clips to Export choice is "Sequence" (was "The sequence
-    (hand-picked)") and --max-total is "Max video length (s)" (was "Max total (s)"), the cap on
-    all clips together; its title and description say so."""
+    (hand-picked)") and --max-total is "Max video length" (was "Max total (s)"; no "(s)", the
+    title says seconds), the cap on all clips together; its title and description say so."""
     html = _web("index.html")
     assert re.search(r'id="optPicksSeq"[^>]*> Sequence</label>', html)
     assert "hand-picked" not in html and "Max total" not in html
     label = re.search(r'<label for="optMaxTotal" title="([^"]*)">([^<]*)</label>', html)
-    assert label and label[2] == "Max video length (s)"
+    assert label and label[2] == "Max video length"
     described = re.search(r'<span id="dMaxTotal" class="vh">([^<]*)</span>', html)[1]
     for text in (label[1], described):
         assert text.startswith("Caps the video's length: the clips' total in seconds")
