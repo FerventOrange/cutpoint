@@ -546,7 +546,7 @@ function renderUnanalyzed(el, n, error, pano) {
       : h('p', { class: `fresh-count${n ? '' : ' none'}` },
         pano
           ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
-          : (n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory')),
+          : (n ? `${n} video${n === 1 ? '' : 's'} found in the sources` : 'No videos found in the sources')),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', {
       text: pano

@@ -53,8 +53,9 @@ The lite installer does not offer Ollama; the UI assistant can use a third-party
 uv run cutpoint ui
 ```
 
-Open the complete URL printed in the terminal, including `#t=…`. Create a project from a local
-video or folder (use "Choose video…" or "Choose folder…", or type or paste the full path; the
+Open the complete URL printed in the terminal, including `#t=…`. Create a project from one or
+more local videos or folders (one full path per line; "Choose video…" and "Choose folder…" add a
+line, or type or paste the paths; the
 buttons are hidden where the computer has no file dialog, such as Docker) and choose a highlight style. Run analysis, preview candidates, adjust their
 start/end times, and add them
 to the sequence. Reorder and save the sequence, export clips, then assemble a final video.

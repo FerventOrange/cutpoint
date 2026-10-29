@@ -126,6 +126,7 @@ from cutpoint.utils import (
     clip_files,
     file_stamp,
     find_videos,
+    matches_glob,
     safe_is_file,
     slugify,
 )
@@ -171,6 +172,9 @@ FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
+MAX_INPUTS = 50  # files and folders one New project takes (analyze's positional inputs)
+MAX_EXCLUDES = 20  # analyze --exclude patterns one New project takes
+MAX_GLOB = 200  # characters of one --exclude pattern
 
 
 def bad(detail: str, status: int = 400) -> HTTPException:
@@ -1979,16 +1983,57 @@ def _pano_folder(source: str | Path) -> Path:
     return src.parent if src.suffix.lower() in PANO_EXTS else src
 
 
+def picked_inputs(meta: dict[str, Any]) -> list[str]:
+    """The files and folders a UI project was made from (``analyze``'s inputs), else []. One
+    input is ``source``; several are ``inputs`` too, ``source`` being the first."""
+    inputs = meta.get("inputs")
+    if isinstance(inputs, list) and inputs and all(isinstance(x, str) and x for x in inputs):
+        return list(inputs)
+    return [str(meta["source"])] if meta.get("source") else []
+
+
+def picked_filters(meta: dict[str, Any]) -> tuple[list[str], bool]:
+    """``(analyze --exclude patterns, --recursive)`` a UI project was made with."""
+    ex = meta.get("exclude")
+    globs = [g for g in ex if isinstance(g, str)] if isinstance(ex, list) else []
+    return globs, meta.get("recursive") is True
+
+
+def find_picked(inputs: list[str], exclude: list[str], recursive: bool) -> list[Path]:
+    """The videos ``analyze`` finds in ``inputs``, de-duplicated in input order. As ``analyze``
+    does, a missing input is listed at its ``source_remap`` target: the videos keep the original
+    spelling, and ``exclude`` is matched against it.
+
+    Raises:
+        OSError: If an input cannot be listed (missing, unreadable, stale mount).
+    """
+    found: list[Path] = []
+    for x in inputs:
+        target = Path(x)
+        io = _listed_folder(target)
+        if io == target:
+            found += find_videos([target], exclude=exclude, recursive=recursive)
+            continue
+        base, orig = io.resolve(), target.resolve()
+        for read in find_videos([io], recursive=recursive):
+            f = orig / read.relative_to(base) if read.is_relative_to(base) else read
+            # source_remap_exclude: it would be read at the missing original
+            if not matches_glob(f, exclude) and remap_source(f) != f:
+                found.append(f)
+    return list(dict.fromkeys(found))
+
+
 def source_entries(
     p: Path, hl: dict[str, Any] | None, listed: list[Path | str] | None = None
 ) -> list[dict[str, Any]]:
-    """The project's playable-in-principle sources: ``[{path, id, name, duration}]``. The source
-    it lists itself (a picked folder before its analysis) is added to ``listed``, followed by
-    the error message when that listing failed."""
+    """The project's playable-in-principle sources: ``[{path, id, name, duration}]``. The picked
+    inputs it lists itself (before their analysis) are added to ``listed``, followed by the error
+    message when that listing failed."""
     meta = read_meta(p)
     pano = meta.get("kind") == "360"
-    if meta.get("source"):
-        roots = [str(_pano_folder(meta["source"]) if pano else meta["source"])]
+    picked = picked_inputs(meta)
+    if picked:
+        roots = [str(_pano_folder(x)) for x in picked] if pano else picked
     else:  # command-line project: the inputs its analysis recorded
         roots = [str(x) for x in ((hl or {}).get("settings") or {}).get("inputs") or []]
     paths: dict[str, float | None] = {}
@@ -1996,25 +2041,16 @@ def source_entries(
         if isinstance(s, dict) and isinstance(s.get("path"), str):
             dur = s.get("duration")
             paths.setdefault(s["path"], dur if isinstance(dur, (int, float)) else None)
-    if not paths and meta.get("source"):
-        folder = Path(str(meta["source"]))
+    if not paths and picked:
         if listed is not None:
-            listed.append(folder)
+            listed.extend(map(Path, picked))
         try:
             if pano:  # one .lrv per clip 360 analysis can use (those of meta.clips, if set)
                 only = meta.get("clips") or None
-                _, clips, _ = inspect_source(folder)
+                _, clips, _ = inspect_source(Path(picked[0]))
                 found = [clips[n]["lrv"] for n in _usable(clips) if not only or n in only]
             else:
-                io = _listed_folder(folder)
-                found = find_videos([io])
-                if io != folder:  # read at its remap target: videos keep the original spelling
-                    base, orig = io.resolve(), folder.resolve()
-                    found = [
-                        orig / f.relative_to(base) if f.is_relative_to(base) else f for f in found
-                    ]
-                    # source_remap_exclude: they would be read at the missing original
-                    found = [f for f in found if remap_source(f) != f]
+                found = find_picked(picked, *picked_filters(meta))
             paths = dict.fromkeys(map(str, found))
         except OSError as err:  # find_videos: missing, unreadable, stale mount
             if listed is not None:
@@ -2038,12 +2074,12 @@ class Sources:
     requests (each Range request, each still) do not reread and rescan a network share.
 
     The list depends only on ``ui/meta.json``, ``highlights.json`` and, before an analysis, the
-    entries directly inside the picked folder (``find_videos`` does not recurse); a folder's mtime
-    changes when one is added, removed or renamed. So a hit costs two or three stats, and any
-    change to them rebuilds it, as does a change to ``source_remap`` or ``source_remap_exclude``
-    (``get_config`` rereads an edited ``config.json``). ``SOURCES_CACHE_S`` bounds what stats
-    cannot see (a link under a source retargeted, a filesystem with coarse mtimes). Callers must
-    not change the entries."""
+    entries of the picked inputs; a folder's mtime changes when an entry directly inside it is
+    added, removed or renamed. So a hit costs a stat per file and input, and any change to them
+    rebuilds it, as does a change to ``source_remap`` or ``source_remap_exclude`` (``get_config``
+    rereads an edited ``config.json``). ``SOURCES_CACHE_S`` bounds what stats cannot see (a
+    sub-folder of a ``--recursive`` project changed, a link under a source retargeted, a
+    filesystem with coarse mtimes). Callers must not change the entries."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -2075,18 +2111,19 @@ class Sources:
         files = [p / f"{UI_DIR}/meta.json", p / "highlights.json"]
         at, stamps = time.monotonic(), [file_stamp(f) for f in files]
         meta = read_meta(p)
-        source = meta.get("source")
-        if source and meta.get("kind") == "360":
-            source = _pano_folder(source)  # its .lrv files are listed, a picked file's too
-        files += [_listed_folder(Path(str(source)))] if source else []
-        stamps += [file_stamp(files[2])] if source else []
+        picked = picked_inputs(meta)
+        if picked and meta.get("kind") == "360":
+            picked = [str(_pano_folder(picked[0]))]  # its .lrv files are listed, a file's too
+        files += [_listed_folder(Path(x)) for x in picked]
+        stamps += [file_stamp(f) for f in files[2:]]
         listed: list[Path | str] = []
         entries = source_entries(p, _highlights(p), listed)
-        n = 3 if listed else 2  # the picked source counts only while its folder is listed
+        n = 2 + len(picked) if listed else 2  # the picked inputs count only while listed
+        error = next((x for x in listed if isinstance(x, str)), None)
         with self.lock:
             self.kept.pop(key, None)
-            if len(listed) > 1:  # the folder could not be listed: the next request lists again
-                return entries, str(listed[1])
+            if error is not None:  # an input could not be listed: the next request lists again
+                return entries, error
             self.kept[key] = (at, files[:n], stamps[:n], remap, entries)
             while len(self.kept) > SOURCES_CACHE_MAX:
                 del self.kept[next(iter(self.kept))]
@@ -2094,16 +2131,19 @@ class Sources:
 
 
 def source_folder(p: Path) -> Path | None:
-    """The folder holding the project's videos: its picked source (a file's parent), or for a
-    command-line project the deepest folder shared by its recorded sources. Never client input."""
-    source = read_meta(p).get("source")
+    """The folder holding the project's videos: the deepest folder shared by its picked inputs
+    (a file's parent), or for a command-line project by its recorded sources. Never client
+    input."""
+    picked = picked_inputs(read_meta(p))
     try:
-        if source:
+        if picked:
             # A picked folder that is gone must not fall back to its parent; only files step up.
-            x = remap_source(Path(str(source)))
-            missing_file = not x.exists() and x.suffix.lower() in VIDEO_EXTS | PANO_EXTS
-            is_file = x.is_file() or missing_file
-            folders = [x.parent if is_file else x]
+            folders = []
+            for source in picked:
+                x = remap_source(Path(source))
+                missing_file = not x.exists() and x.suffix.lower() in VIDEO_EXTS | PANO_EXTS
+                is_file = x.is_file() or missing_file
+                folders.append(x.parent if is_file else x)
         else:
             entries = source_entries(p, _highlights(p))
             folders = [remap_source(Path(s["path"])).parent for s in entries]
@@ -2426,9 +2466,71 @@ def source_problem(src: Path) -> str | None:
     return None
 
 
+def inputs_problem(srcs: list[Path], exclude: list[str], recursive: bool) -> str | None:
+    """Why several inputs, or one with ``--exclude`` or ``--recursive``, cannot become a UI
+    project, or None when they can: each is a video file or a folder, none holds Insta360 footage
+    (a 360 project takes one folder or file and neither option, as ``360 analyze``), and
+    ``analyze`` would find at least one video in them.
+
+    Raises:
+        OSError: If an input cannot be listed.
+    """
+    for src in srcs:
+        if src.is_file() or src.is_dir():
+            clips = inspect_source(src)[1]
+            # a folder may hold its videos in sub-folders only (--recursive)
+            problem = source_problem(src) if src.is_file() or clips else None
+        else:
+            clips, problem = {}, "source must be a video file or a folder containing videos"
+        if problem:
+            return f"{src}: {problem}" if len(srcs) > 1 else problem
+        if clips:
+            return (
+                f"{src} holds 360 footage (Insta360), which makes a project of its own: choose "
+                "just its folder or file, without sub-folders or exclude patterns."
+            )
+    if find_picked([str(s) for s in srcs], exclude, recursive):
+        return None
+    left = " that the exclude patterns leave" if exclude else ""
+    deeper = "" if recursive else " (sub-folders are searched only with --recursive)"
+    return f"no videos found{left} in the chosen sources{deeper}"
+
+
+def _body_inputs(body: dict[str, Any]) -> list[str]:
+    """``source`` (one path) or ``sources`` (1 to ``MAX_INPUTS``): absolute paths, each once."""
+    source, sources = body.get("source"), body.get("sources")
+    if sources is None:
+        sources = [source]
+    elif source is not None:
+        raise bad("send source or sources, not both")
+    elif not isinstance(sources, list) or not 1 <= len(sources) <= MAX_INPUTS:
+        raise bad(f"sources must list 1-{MAX_INPUTS} paths")
+    if not all(isinstance(x, str) and "\0" not in x and Path(x).is_absolute() for x in sources):
+        raise bad("source must be an absolute path")
+    if len({os.path.normcase(os.path.abspath(x)) for x in sources}) < len(sources):  # noqa: PTH100
+        raise bad("each source can be chosen once")
+    return sources
+
+
+def _exclude_globs(body: dict[str, Any]) -> list[str]:
+    """``exclude``: up to ``MAX_EXCLUDES`` ``analyze --exclude`` patterns, one line each."""
+    v = body.get("exclude", [])
+    if (
+        not isinstance(v, list)
+        or len(v) > MAX_EXCLUDES
+        or not all(
+            isinstance(g, str) and g.strip() and len(g) <= MAX_GLOB and not set(g) & set("\0\r\n")
+            for g in v
+        )
+    ):
+        raise bad(f"exclude must be up to {MAX_EXCLUDES} patterns of 1-{MAX_GLOB} characters")
+    return v
+
+
 def new_project(name: str, source: str, style: str, **extra: Any) -> dict[str, str]:
     """Create the project folder and its ``ui/meta.json`` (``extra``: e.g. ``kind`` and
-    ``clips`` of a 360 project)."""
+    ``clips`` of a 360 project; ``inputs``, ``recursive`` and ``exclude`` of a project made from
+    several inputs or with those ``analyze`` options)."""
     root = projects_dir()
     with cache.created_dirs() as made:  # a failed request leaves no empty folder behind
         cache.make_dirs(root, made)
@@ -2533,11 +2635,9 @@ def _color_args(body: dict[str, Any]) -> list[str]:
 
 
 def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
-    """The inputs and style a project's analysis runs on: the source the user picked, else (made
+    """The inputs and style a project's analysis runs on: the inputs the user picked, else (made
     on the command line) the recorded inputs; either may be missing."""
-    inputs = (
-        [meta["source"]] if meta.get("source") else (hl or {}).get("settings", {}).get("inputs")
-    )
+    inputs = picked_inputs(meta) or (hl or {}).get("settings", {}).get("inputs")
     return inputs, meta.get("style") or (hl or {}).get("style")
 
 
@@ -2559,7 +2659,8 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
     if meta.get("kind") == "360":
         return "Presets are not available for 360 projects (cutpoint edit has no 360 mode)."
     st = (hl or {}).get("settings") or {}
-    if st.get("exclude") or st.get("recursive") is True:
+    exclude, recursive = picked_filters(meta)
+    if st.get("exclude") or st.get("recursive") is True or exclude or recursive:
         return (
             "Presets are not available here: this project's analysis used --exclude or "
             "--recursive, which cutpoint edit does not take."
@@ -2990,14 +3091,30 @@ def create_app(port: int) -> FastAPI:
 
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
-        name, source, style = body.get("name"), body.get("source"), body.get("style", "gaming")
+        name, style = body.get("name"), body.get("style", "gaming")
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise bad("name must be 1-100 characters")
-        if not isinstance(source, str) or not Path(source).is_absolute():
-            raise bad("source must be an absolute path")
+        inputs = _body_inputs(body)
+        recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
         ski = isinstance(style, str) and _ski_style(style)
         if style not in ui_styles() and not ski:
             raise bad(f"unknown style {style!r}")
+        if len(inputs) > 1 or recursive or exclude:  # analyze's inputs, --recursive, --exclude
+            try:
+                problem = inputs_problem([Path(x) for x in inputs], exclude, recursive)
+            except OSError as err:
+                raise bad(f"source is not readable: {err}") from err
+            if problem:
+                raise bad(problem)
+            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
+                raise bad(f"unknown style {style!r}")
+            full = [os.path.abspath(x) for x in inputs]  # noqa: PTH100
+            extra: dict[str, Any] = {"inputs": full} if len(full) > 1 else {}
+            extra |= ({"recursive": True} if recursive else {}) | (
+                {"exclude": exclude} if exclude else {}
+            )
+            return new_project(name.strip(), full[0], style, **extra)
+        source = inputs[0]
         src = Path(source)
         try:
             problem = source_problem(src)
@@ -3170,11 +3287,16 @@ def create_app(port: int) -> FastAPI:
             args = cutpoint_cmd(
                 "analyze", *map(str, inputs), "--style", str(style), "--out", str(p)
             )
-            # Keep what the earlier analysis recorded, or the source set would change.
+            # What the project was made with, else (made, or re-analyzed with these options, on
+            # the command line) what the earlier analysis recorded, or the source set would change.
             st = (hl or {}).get("settings") or {}
-            if isinstance(st.get("exclude"), list):
-                args += [f"--exclude={g}" for g in st["exclude"] if isinstance(g, str)]
-            if st.get("recursive") is True:
+            exclude, recursive = picked_filters(meta)
+            if not picked_inputs(meta) or not (exclude or recursive):
+                ex = st.get("exclude")
+                exclude = [g for g in ex if isinstance(g, str)] if isinstance(ex, list) else []
+                recursive = st.get("recursive") is True
+            args += [f"--exclude={g}" for g in exclude]
+            if recursive:
                 args.append("--recursive")
             if st.get("recover") is True:  # or the parts past a read error drop out
                 args.append("--recover")

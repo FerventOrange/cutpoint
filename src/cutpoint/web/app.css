@@ -850,6 +850,13 @@ dialog form { display: grid; gap: 14px; }
 .row .btn { white-space: nowrap; }
 .field input[readonly] { color: var(--muted); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+/* New project: analyze's inputs and --exclude patterns, one per line (#484) */
+#newDialog textarea {
+  font: inherit; color: var(--text); background: var(--deep); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 6px var(--space-2); min-height: var(--control-h); min-width: 0; resize: vertical;
+}
+.new-sources { align-items: flex-start; }
+.new-sources textarea { flex: 1 1 100%; } /* full width; the Choose buttons wrap below */
 
 /* narrow: one column, preview first */
 @media (max-width: 960px) {

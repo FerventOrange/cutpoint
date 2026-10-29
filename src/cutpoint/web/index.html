@@ -381,14 +381,24 @@
     <form method="dialog" id="newForm" novalidate>
       <h2 id="newTitle">New project</h2>
       <div class="field">
-        <label for="newSource">Source video or folder</label>
-        <span class="row wrap">
-          <input id="newSource" required autocomplete="off" spellcheck="false" aria-describedby="newSourceHint"
-                 placeholder="/path/to/video.mp4 or /path/to/footage">
+        <label for="newSource">Source videos or folders</label>
+        <span class="row wrap new-sources">
+          <!-- analyze's inputs (#484): one path per line -->
+          <textarea id="newSource" rows="3" required autocomplete="off" spellcheck="false" aria-describedby="newSourceHint"
+                    placeholder="/path/to/video.mp4 or /path/to/footage"></textarea>
           <button type="button" class="btn" id="pickFileBtn" data-pick="file" hidden>Choose video…</button>
           <button type="button" class="btn" id="pickFolderBtn" data-pick="folder" hidden>Choose folder…</button>
         </span>
         <p id="newSourceHint" class="hint"></p>
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="newRecursive" aria-describedby="newRecursiveHint"> Include sub-folders</label>
+        <p id="newRecursiveHint" class="hint">Also searches the sub-folders of each folder above (analyze --recursive). Off: only the videos directly inside.</p>
+      </div>
+      <div class="field">
+        <label for="newExclude">Skip files matching</label>
+        <textarea id="newExclude" rows="2" autocomplete="off" spellcheck="false" aria-describedby="newExcludeHint" placeholder="*DVR*"></textarea>
+        <p id="newExcludeHint" class="hint">One pattern per line, matched against each file's name or full path, such as *DVR* or */Captures/* (analyze --exclude). Blank: no file is skipped.</p>
       </div>
       <label class="field">Project name
         <input id="newName" required autocomplete="off" placeholder="Taken from the source name">

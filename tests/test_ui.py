@@ -162,6 +162,146 @@ def test_create_project_refuses_a_ski_style_on_flat_footage(
     assert client.get("/api/projects").json() == {"projects": []}
 
 
+def test_create_project_from_several_inputs_lists_and_analyzes_them_all(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#484: several files and folders are the project's analyze inputs, in the order given."""
+    one, two = tmp_path / "one", tmp_path / "two"
+    for folder in (one, two):
+        folder.mkdir()
+    for f in (one / "a.mp4", one / "other.mp4", two / "b.mp4", two / "c.mkv"):
+        f.write_bytes(b"x")
+    inputs = [str(one / "a.mp4"), str(two)]
+    res = client.post("/api/projects", json={"name": "Two", "sources": inputs, "style": "funny"})
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    meta = ui.read_meta(ui.project_dir(pid))
+    assert (meta["source"], meta["inputs"]) == (inputs[0], inputs)
+    assert "recursive" not in meta and "exclude" not in meta
+    view = client.get(f"/api/projects/{pid}").json()
+    # other.mp4 sits next to a picked file: not an input, so never listed or served
+    assert [s["name"] for s in view["sources"]] == ["a.mp4", "b.mp4", "c.mkv"]
+    assert view["preset_problem"] is None  # edit takes several inputs too
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    ns = cli.build_parser().parse_args(captured[0][3:])
+    assert (ns.inputs, ns.exclude, ns.recursive) == (inputs, None, False)
+
+
+def test_create_project_from_a_folder_passes_recursive_and_exclude_to_analyze(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#484: Include sub-folders and Skip files matching are analyze --recursive and --exclude;
+    the sources listed before analysis are the ones analyze would find."""
+    footage = tmp_path / "footage"
+    (footage / "sub").mkdir(parents=True)
+    (footage / "Captures").mkdir()
+    for rel in ("keep.mp4", "DVR_skip.mp4", "sub/nested.mp4", "sub/DVR_x.mp4", "Captures/c.mp4"):
+        (footage / rel).write_bytes(b"x")
+    exclude = ["*DVR*", "*/Captures/*"]
+    body = {"name": "F", "sources": [str(footage)], "recursive": True, "exclude": exclude}
+    res = client.post("/api/projects", json=body)
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    meta = ui.read_meta(ui.project_dir(pid))
+    assert (meta["source"], meta["recursive"], meta["exclude"]) == (str(footage), True, exclude)
+    assert "inputs" not in meta  # one input: source alone, as before
+    view = client.get(f"/api/projects/{pid}").json()
+    assert {s["name"] for s in view["sources"]} == {"keep.mp4", "nested.mp4"}
+    assert set(map(Path, (s["path"] for s in view["sources"]))) == set(
+        find_videos(footage, exclude=exclude, recursive=True)
+    )
+    assert "--recursive" in view["preset_problem"]  # edit takes neither option
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert [a for a in captured[0] if a.startswith("--exclude")] == [
+        "--exclude=*DVR*",
+        "--exclude=*/Captures/*",
+    ]
+    ns = cli.build_parser().parse_args(captured[0][3:])
+    assert (ns.inputs, ns.exclude, ns.recursive) == ([str(footage)], exclude, True)
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "edit", "kind": "montage"})
+    assert res.status_code == 400 and "--exclude or --recursive" in res.json()["detail"]
+
+
+def test_analyze_again_keeps_options_a_command_line_reanalysis_of_a_ui_project_added(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    footage = tmp_path / "footage"
+    footage.mkdir()
+    (footage / "a.mp4").write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "F", "sources": [str(footage)]})
+    pid = res.json()["id"]
+    settings = {"inputs": [str(footage)], "exclude": ["*DVR*"], "recursive": True}
+    hl = {"style": "funny", "settings": settings, "sources": []}
+    cache.save_json(ui.project_dir(pid) / "highlights.json", hl)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    assert client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"}).status_code == 200
+    ns = cli.build_parser().parse_args(captured[0][3:])
+    assert (ns.exclude, ns.recursive) == (["*DVR*"], True)
+
+
+def test_a_folder_with_videos_only_in_sub_folders_needs_recursive(
+    client: TestClient, tmp_path: Path
+) -> None:
+    footage = tmp_path / "footage"
+    (footage / "day1").mkdir(parents=True)
+    (footage / "day1" / "a.mp4").write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "F", "sources": [str(footage)]})
+    assert res.status_code == 400
+    body = {"name": "F", "sources": [str(footage)], "recursive": True}
+    res = client.post("/api/projects", json=body)
+    assert res.status_code == 200, res.text
+    names = [s["name"] for s in client.get(f"/api/projects/{res.json()['id']}").json()["sources"]]
+    assert names == ["a.mp4"]
+
+
+@pytest.mark.parametrize(
+    ("body", "expect"),
+    [
+        ({"sources": ["relative/clip.mp4"]}, "absolute path"),
+        ({"sources": ["{footage}/a.mp4\x00.txt"]}, "absolute path"),
+        ({"sources": ["{footage}", "{footage}"]}, "once"),
+        ({"sources": ["{footage}", "{pano}"]}, "360 footage"),
+        ({"sources": ["{mixed}"], "exclude": ["*.mp4"]}, "mixes 360 footage"),
+        ({"sources": ["{footage}"], "exclude": ["*.mp4"]}, "no videos found that the exclude"),
+    ],
+    ids=["relative", "nul", "twice", "360-with-flat", "mixed-folder", "all-excluded"],
+)
+def test_create_project_refuses_bad_inputs_and_options(
+    client: TestClient, tmp_path: Path, body: dict, expect: str
+) -> None:
+    """#484: every input is an absolute path to a video or folder, each once; nothing is made
+    when one is refused."""
+    footage, pano, mixed = tmp_path / "footage", tmp_path / "pano", tmp_path / "mixed"
+    for folder in (footage, pano, mixed):
+        folder.mkdir()
+    (footage / "a.mp4").write_bytes(b"x")
+    for name in X3_CLIPS:
+        (pano / name).write_bytes(b"")
+        (mixed / name).write_bytes(b"")
+    (mixed / "a.mp4").write_bytes(b"x")
+
+    def fill(v: object) -> object:
+        if isinstance(v, list):
+            return [fill(x) for x in v]
+        if isinstance(v, str) and v.startswith("{"):
+            return str(Path(v.format(footage=footage, pano=pano, mixed=mixed)))
+        return v
+
+    res = client.post("/api/projects", json={"name": "T", **{k: fill(v) for k, v in body.items()}})
+    assert res.status_code == 400, res.text
+    assert expect in res.json()["detail"]
+    assert client.get("/api/projects").json() == {"projects": []}
+
+
 def test_360_project_lists_one_lrv_per_usable_clip_before_analysis(
     client: TestClient, tmp_path: Path
 ) -> None:

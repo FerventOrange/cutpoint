@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `highlights.json` records the features it could compute in
   `settings.features_available`. The `events.json` rescore is now the scorer's bonus stage,
   with the same points.
+- `cutpoint ui`: New project takes several videos and folders, one path per line, with "Include
+  sub-folders" (`analyze --recursive`) and "Skip files matching" (`--exclude` patterns) (#484).
+  "Analyze again" keeps them; 360 footage still makes a project of its own.
 - `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
   splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and
@@ -96,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dynamic mode whenever the peaks did not fit, which re-levelled the clips, shrank the loudness
   range and undid `--compress-peaks` (#523). Peaky finals can now end below -14 LUFS; a WARNING
   (`loudness_below_target` with `--json`) names the level when it is more than 1 LU below.
+- `clips` and `assemble`: gaps in a source's audio timestamps (game captures such as
+  Battlefield 6) are filled with silence, so clips and the final video no longer come out with
+  audio up to a second short that runs ahead of the video. Audio that starts after the video is
+  no longer moved forward at the start of a clip; sources without gaps or delay are unchanged
+  (#476).
 - HLG exports, UI previews and stills are no longer about 18 % more saturated than a bt.2390
   reference: zscale now applies the HLG OOTF to luminance (`agamma=0`), as BT.2100 specifies,
   not to R, G and B one by one. HLG exports take longer (about 25 instead of 45 fps at 1080p);
