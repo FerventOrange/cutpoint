@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import ClassVar
 
+import cv2
+import numpy as np
 import pytest
 import requests
 
@@ -562,3 +565,160 @@ def test_no_digest_is_stored_when_ollama_lists_none(posts, src, monkeypatch):
     assert rater.available() and rater.digest is None
     rater.rate(src, 0, 4, "ski")
     assert _entries(src) == [{"score": 7.0, "label": "big jump"}]
+
+
+# ---------------------------------------------------------------- rating profiles (#475)
+
+
+def _jpeg(width: int, height: int, value: int) -> bytes:
+    ok, buf = cv2.imencode(".jpg", np.full((height, width, 3), value, np.uint8))
+    assert ok
+    return buf.tobytes()
+
+
+def _logprobs(score_digits: list[tuple[str, dict[str, float]]]) -> list[dict]:
+    """Logprobs of the reply '{"score": <digits>, ...}': one entry per token, the score's
+    digit tokens with their alternatives (token -> probability)."""
+    head = [{"token": t, "logprob": 0.0} for t in ('{"', "score", '":', " ")]
+    digits = [
+        {"token": tok, "logprob": 0.0,
+         "top_logprobs": [{"token": a, "logprob": math.log(p)} for a, p in alts.items()]}
+        for tok, alts in score_digits
+    ]  # fmt: skip
+    return head + digits + [{"token": ",", "logprob": 0.0}]
+
+
+@pytest.mark.parametrize(
+    ("model", "profiled"),
+    [("qwen3.5:9b", True), ("Qwen3.5:27b", True), ("qwen3-vl:8b", False), ("m", False)],
+)
+def test_only_the_qwen35_family_has_a_profile(model, profiled):
+    assert (vision.rating_profile(model) is not None) == profiled
+
+
+def test_the_keys_of_models_without_a_profile_are_unchanged():
+    """The profile joins the hash only for a profiled model, so qwen3-vl's cached ratings
+    stay valid."""
+    times = vision._frame_times(0, 4, 3)
+    params = {
+        "version": vision.RATING_VERSION,
+        "model": "qwen3-vl:8b",
+        "style": "ski",
+        "prompts": list(vision._PROMPTS["ski"]),
+        "attempts": [list(a) for a in vision._ATTEMPTS],
+        "temperatures": list(vision._TEMPERATURES),
+        "width": vision.FRAME_WIDTH,
+    }
+    want = f"{cache.params_hash(params)}@" + ",".join(f"{t:.3f}" for t in times)
+    assert vision.rating_key("qwen3-vl:8b", "ski", times) == want
+
+
+def test_contact_sheet_tiles_the_frames_in_reading_order():
+    frames = [_jpeg(64, 36, v) for v in (0, 50, 100, 150, 200)]
+    sheet = cv2.imdecode(np.frombuffer(vision.contact_sheet(frames, 3), np.uint8), 1)
+    assert sheet.shape == (72, 192, 3)
+    centres = [int(sheet[18 + 36 * (i // 3), 32 + 64 * (i % 3)].mean()) for i in range(6)]
+    assert centres == pytest.approx([0, 50, 100, 150, 200, 0], abs=6)  # black: no 6th frame
+
+
+def test_contact_sheet_rejects_a_frame_it_cannot_decode():
+    with pytest.raises(ValueError, match="decoded"):
+        vision.contact_sheet([b"jpeg"], 3)
+
+
+def test_a_profiled_model_gets_one_sheet_of_six_frames_and_the_expected_score(monkeypatch):
+    grabs: list[float] = []
+    seen: list[dict] = []
+
+    def grab(_src, t, **_k):
+        grabs.append(t)
+        return _jpeg(64, 36, 100)
+
+    def post(url, json, timeout):
+        seen.append(json)
+        lp = _logprobs([("7", {"7": 0.5, "8": 0.3, "6": 0.2})])
+        return _Resp({"message": {"content": '{"score": 7, "label": "jump"}'}, "logprobs": lp})
+
+    monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
+    monkeypatch.setattr(vision.requests, "post", post)
+    res = vision.VisionRater(url="http://x:1", model="qwen3.5:9b").rate(Path("a"), 0, 7, "ski")
+    assert res == vision.VisionResult(7.1, "jump")  # 0.5*7 + 0.3*8 + 0.2*6
+    assert grabs == pytest.approx([1, 2, 3, 4, 5, 6])
+    (payload,) = seen
+    msg = payload["messages"][0]
+    assert len(msg["images"]) == 1
+    assert msg["content"].startswith("This image is a grid of 6 frames, in reading order")
+    assert payload["logprobs"] is True and payload["top_logprobs"] == vision._TOP_LOGPROBS
+
+
+def test_a_model_without_a_profile_asks_for_no_logprobs(posts):
+    vision.VisionRater(url="http://x:1", model="qwen3-vl:8b").rate(Path("a"), 0, 4, "ski")
+    chats = [p for u, p in posts if u.endswith("/api/chat")]
+    assert len(chats) == 2
+    assert all("logprobs" not in p and len(p["messages"][0]["images"]) == 3 for p in chats)
+
+
+@pytest.mark.parametrize(
+    ("digits", "want"),
+    [
+        ([("3", {"3": 0.6, "4": 0.4})], 3.4),
+        ([("1", {"1": 0.5, "9": 0.5}), ("0", {"0": 1.0})], 9.5),  # "1" then "0" is 10
+        ([("1", {"1": 0.5, "2": 0.5})], 1.5),
+        ([("8", {"8": 0.5, "x": 0.5})], 8.0),  # alternatives that are not digits are left out
+        ([("9", {"9": 0.6, "1": 0.4})], 9.4),  # next to a 9, "1" starts "10"
+        ([("3", {"3": 0.6, "1": 0.4})], 2.2),  # next to a 3, "1" is 1
+        ([("1", {"1": 0.8, "9": 0.2}), ("0", {"0": 1.0})], 9.8),  # a chosen "10"
+        ([("1", {"1": 1.0}), ("0", {"0": 0.75, ",": 0.25})], 7.75),  # 10 at 0.75, else 1
+        ([("1", {"1": 1.0})], 1.0),  # a chosen "1" with no "0" after it
+        # "1" as 1 or 10 from the alternatives, whichever digit was sampled
+        ([("3", {"3": 0.5, "6": 0.3, "1": 0.2})], 3.5),
+        ([("6", {"3": 0.5, "6": 0.3, "1": 0.2})], 3.5),
+        ([("6", {"6": 0.5, "3": 0.3, "1": 0.2})], 5.9),
+        ([("3", {"6": 0.5, "3": 0.3, "1": 0.2})], 5.9),
+    ],
+)
+def test_expected_score_weighs_the_score_digit(digits, want):
+    assert vision._expected_score(_logprobs(digits)) == pytest.approx(want)
+
+
+def test_expected_score_skips_garbled_logprobs():
+    def reply(token, alts):
+        return [*_logprobs([("7", {})])[:4], {"token": token, "top_logprobs": alts}]
+
+    garbage = [
+        {"token": "7", "logprob": math.nan},
+        {"token": "7", "logprob": math.inf},
+        {"token": "7", "logprob": 0.5},  # above 0: not a log probability
+        {"token": "7", "logprob": True},
+        {"token": "7", "logprob": "x"},
+        {"token": "12", "logprob": -0.1},  # not one digit
+        {"token": "٣", "logprob": -0.1},  # a digit, but not 0-9
+        "x",
+    ]
+    assert vision._expected_score(reply("7", garbage)) is None
+    assert vision._expected_score(reply("7", "x")) is None  # top_logprobs not a list
+    assert vision._expected_score(reply("x", [{"token": "7", "logprob": 0.0}])) is None
+    good = [{"token": "7", "logprob": math.log(0.5)}, {"token": "8", "logprob": math.log(0.5)}]
+    assert vision._expected_score(reply("7", garbage + good)) == pytest.approx(7.5)
+
+
+@pytest.mark.parametrize("logprobs", [None, [], [{"token": '{"label": "x"}'}], "x"])
+def test_expected_score_is_none_without_a_score_digit(logprobs):
+    assert vision._expected_score(logprobs) is None
+
+
+def test_a_reply_without_logprobs_keeps_the_given_score(monkeypatch):
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda *_a, **_k: _jpeg(64, 36, 100))
+    monkeypatch.setattr(
+        vision.requests, "post",
+        lambda *_a, **_k: _Resp({"message": {"content": '{"score": 6, "label": "x"}'}}),
+    )  # fmt: skip
+    res = vision.VisionRater(url="http://x:1", model="qwen3.5:9b").rate(Path("a"), 0, 7, "ski")
+    assert res == vision.VisionResult(6.0, "x")
+
+
+def test_the_default_model_is_qwen35_unless_cutpoint_vision_model_names_another(monkeypatch):
+    monkeypatch.delenv("CUTPOINT_VISION_MODEL", raising=False)
+    assert vision.default_model() == "qwen3.5:9b" and vision.rating_profile("qwen3.5:9b")
+    monkeypatch.setenv("CUTPOINT_VISION_MODEL", "qwen3-vl:8b")
+    assert vision.VisionRater(url="http://x:1").model == "qwen3-vl:8b"

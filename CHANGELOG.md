@@ -134,9 +134,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `causes` and `cause_share` are unchanged. Every rendered-only frame adds an `evidence` block:
   the cut box and its edge, the matching projected box, its height, area and distance to the
   edge. `edge_gap.json` is version 2; `--json` adds `other_detail`.
+- A rating profile for `qwen3.5` vision models (#475): `--vision` sends six frames of a
+  moment as one 3x2 contact sheet instead of three separate images, asks Ollama for logprobs
+  and takes the expected value over the score digit's alternatives (the score as given when
+  Ollama returns no logprobs). About 1.3 s per rating, against 10-12 s for `qwen3-vl:8b`.
+  Other models are asked as before, and their cached ratings stay valid.
 
 ### Changed
 
+- The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
+  `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
+  pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or
+  `CUTPOINT_VISION_MODEL`, with the same requests and cached ratings as before. Without either,
+  pull the new model once (`ollama pull qwen3.5:9b`); until then `--vision` logs that the model
+  is not pulled and continues without the rating. The AI Chat already used `qwen3.5:9b` when it
+  is pulled; otherwise it now takes `CUTPOINT_VISION_MODEL` or `qwen3-vl:8b` if one of them is
+  pulled.
 - Ski styles score on the feature registry (#514 phase 1b). On a full install every ski score,
   pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
   of the features lite can compute, as the generic styles do since phase 1a. The `events`

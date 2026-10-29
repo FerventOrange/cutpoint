@@ -8,7 +8,7 @@ slip through. For a planned path and its low-res preview this module
 1. picks a few frames: a sparse baseline (every ``every`` s) plus the path's
    suspect times (``vl_suspect`` from :func:`cutpoint.pano.director.compute_path`:
    near people in view, cut destinations), at most ``max_frames``; and
-2. asks the local Ollama vision model (:mod:`cutpoint.vision`, qwen3-vl) one
+2. asks the default vision model (local Ollama, :mod:`cutpoint.vision`) one
    frame per request for strict JSON ``{"blocked", "where", "what", "low_info"}``
    (one retry with a short prompt when the reply does not parse).
 
@@ -18,9 +18,10 @@ director only reports them, they do not drive it. A closed loop (flags as grid
 penalties, then as safe-area obstacles, re-plan kept only if it checks better)
 was measured on 36 segments and fixed too few of the problem frames for its cost.
 
-One frame per request: the model (a thinking variant) reasons even with
-``think=false``; a multi-image request used up its token budget before the
-answer. Replies are cached per (clip, time, view) under the cache folder.
+One frame per request: qwen3-vl:8b (a thinking variant, the default vision
+model when this was measured) reasons even with ``think=false``; a multi-image
+request used up its token budget before the answer. Replies are cached per
+(clip, time, view) under the cache folder.
 """
 
 from __future__ import annotations

@@ -81,8 +81,9 @@ documents every key.
 ``assistant``
     The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default; ``anthropic`` for
     Claude; ``openai`` for OpenAI or a server that speaks its API; ``xai`` for Grok), ``model``
-    (default: Ollama ``qwen3.5:9b`` when it is pulled, else the vision model
-    ``CUTPOINT_VISION_MODEL`` or ``qwen3-vl:8b``; Anthropic ``claude-sonnet-5-5``;
+    (default: the first pulled of Ollama ``qwen3.5:9b``, the vision model
+    ``CUTPOINT_VISION_MODEL`` and ``qwen3-vl:8b``, else ``qwen3.5:9b``; Anthropic
+    ``claude-sonnet-5-5``;
     OpenAI-compatible and xAI: the server's only model), ``url`` (the base URL; default, which
     Settings' presets use: the Ollama URL above, ``https://api.anthropic.com``,
     ``https://api.openai.com/v1`` or ``https://api.x.ai/v1``; another one is shown as custom),
