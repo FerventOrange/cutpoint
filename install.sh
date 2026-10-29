@@ -23,7 +23,7 @@ UV_MIN_MINOR=13
 GIT_URL="https://github.com/FerventOrange/cutpoint.git"
 PYTHON_VERSION="3.12"
 CUDA_BACKEND="cu126"
-OLLAMA_MODEL="qwen3-vl:8b"
+OLLAMA_MODEL="qwen3.5:9b"
 OLLAMA_URL="http://127.0.0.1:11434"
 
 usage() {
@@ -78,7 +78,7 @@ with no terminal the answer is No unless --yes is given):
     Only when no service exists does it start `ollama serve` in the background (log:
     ~/.local/state/cutpoint/ollama-serve.log). A declined or failed
     Ollama install never fails the Cutpoint install.
-  - Pull qwen3-vl:8b (about 6 GB), full mode only, when Ollama is running.
+  - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
   - "cutpoint setup" (model weights, about 8 GB), full mode only.
 EOF
 }
@@ -823,7 +823,7 @@ optional_downloads() {
     fi
   fi
   if [ "$OLLAMA_UP" = 1 ]; then
-    if ask "Pull $OLLAMA_MODEL with Ollama (about 6 GB)?"; then
+    if ask "Pull $OLLAMA_MODEL with Ollama (about 6.6 GB)?"; then
       if run ollama pull "$OLLAMA_MODEL"; then
         OLLAMA_DONE=yes
       else
@@ -866,9 +866,9 @@ summary() {
   fi
   if [ "$OLLAMA_UP" = 1 ] && [ "$OLLAMA_DONE" != yes ]; then
     if [ "$OLLAMA_DONE" = failed ]; then
-      say "  - The model pull failed; run it again (about 6 GB): ollama pull $OLLAMA_MODEL"
+      say "  - The model pull failed; run it again (about 6.6 GB): ollama pull $OLLAMA_MODEL"
     else
-      say "  - Pull the vision model (about 6 GB): ollama pull $OLLAMA_MODEL"
+      say "  - Pull the vision model (about 6.6 GB): ollama pull $OLLAMA_MODEL"
     fi
   fi
   if [ "$OLLAMA_DONE" = yes ]; then

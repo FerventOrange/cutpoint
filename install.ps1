@@ -42,7 +42,7 @@ function Invoke-CutpointInstaller {
     $GIT_URL = "https://github.com/FerventOrange/cutpoint.git"
     $PYTHON_VERSION = "3.12"
     $CUDA_BACKEND = "cu126"
-    $OLLAMA_MODEL = "qwen3-vl:8b"
+    $OLLAMA_MODEL = "qwen3.5:9b"
     $OLLAMA_URL = "http://127.0.0.1:11434"
     $OLLAMA_WINGET_ID = "Ollama.Ollama"
     $OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
@@ -133,7 +133,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
     when winget is missing or fails. Afterwards it waits for the server; it starts `ollama serve`
     (hidden) only when the Ollama app has not. A declined or failed Ollama install never fails the
     Cutpoint install.
-  - Pull qwen3-vl:8b (about 6 GB), full mode only, when Ollama is running.
+  - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
   - "cutpoint setup" (model weights, about 8 GB), full mode only.
 '@
     }
@@ -723,7 +723,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
             }
         }
         if ($S.OllamaUp) {
-            if (Ask "Pull $OLLAMA_MODEL with Ollama (about 6 GB)?") {
+            if (Ask "Pull $OLLAMA_MODEL with Ollama (about 6.6 GB)?") {
                 if (Invoke-Run @("ollama", "pull", $OLLAMA_MODEL)) {
                     $S.OllamaDone = "yes"
                 } else {
@@ -763,9 +763,9 @@ Optional prompts (default No; with no interactive console the answer is No unles
         }
         if ($S.OllamaUp -and $S.OllamaDone -ne "yes") {
             if ($S.OllamaDone -eq "failed") {
-                Say "  - The model pull failed; run it again (about 6 GB): ollama pull $OLLAMA_MODEL"
+                Say "  - The model pull failed; run it again (about 6.6 GB): ollama pull $OLLAMA_MODEL"
             } else {
-                Say "  - Pull the vision model (about 6 GB): ollama pull $OLLAMA_MODEL"
+                Say "  - Pull the vision model (about 6.6 GB): ollama pull $OLLAMA_MODEL"
             }
         }
         if ($S.OllamaDone -eq "yes") {

@@ -10,9 +10,10 @@ rating; if some of the top candidates have cached ratings, it uses those instead
 Chat, `360 director --vl-check` and building a new activity profile use it too. To install it, see
 [getting started](../getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
 
-1. Start Ollama and pull the model: `ollama pull qwen3-vl:8b` (a model-not-found message means
-   it is not pulled; `ollama list` shows what is). For the AI Chat, `ollama pull qwen3.5:9b`
-   works too; without it the chat uses the vision model.
+1. Start Ollama and pull the model: `ollama pull qwen3.5:9b` (a model-not-found message means
+   it is not pulled; `ollama list` shows what is). The AI Chat uses the same model. If you set
+   `CUTPOINT_VISION_MODEL` or pass `--ollama-model` (`qwen3-vl:8b`, the earlier default, still
+   works), pull that model instead.
 2. Check the server: open `http://127.0.0.1:11434` in a browser; it answers "Ollama is running".
 3. The default URL is already `http://127.0.0.1:11434`. If you set `localhost` yourself, note that
    on Windows it can resolve to the IPv6 address `::1` while Ollama listens on IPv4 only. Use the

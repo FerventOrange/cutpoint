@@ -75,7 +75,7 @@ debris on the lens, a tumbling or upside-down view, a person lying on the ground
 words such as "you okay" and "fell". `ski` replaces the base captions with snowy versions.
 Profiles also hold highlight and low-information captions for other layers (not used yet).
 
-New profiles need Ollama with a Qwen model (`CUTPOINT_VISION_MODEL`, default `qwen3-vl:8b`).
+New profiles need Ollama with a Qwen model (`CUTPOINT_VISION_MODEL`, default `qwen3.5:9b`).
 Text-only requests to a model whose name starts with `qwen` skip its reasoning step; other
 models are asked through the normal chat endpoint. The model is unloaded after use, so the GPU
 is free for the CLIP steps.

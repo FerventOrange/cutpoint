@@ -229,19 +229,25 @@ def test_a_cancelled_stream_is_closed_at_the_next_chunk(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("configured", "tags", "want"),
+    ("configured", "env", "tags", "want"),
     [
-        ("", ["qwen3-vl:8b", "qwen3.5:9b"], "qwen3.5:9b"),
-        ("", ["qwen3-vl:8b"], "qwen3-vl:8b"),
-        ("llama3.1:8b", None, "llama3.1:8b"),
+        ("", None, ["qwen3-vl:8b", "qwen3.5:9b"], "qwen3.5:9b"),
+        ("", None, ["qwen3-vl:8b"], "qwen3-vl:8b"),  # pulled for the earlier vision default
+        ("", "llava:7b", ["qwen3-vl:8b", "llava:7b"], "llava:7b"),
+        ("", "llava:7b", [], "qwen3.5:9b"),
+        ("llama3.1:8b", None, None, "llama3.1:8b"),
     ],
-    ids=["has-qwen3.5", "vision-model-only", "configured"],
+    ids=["has-qwen3.5", "qwen3-vl-only", "vision-model", "none-pulled", "configured"],
 )
 def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
-    monkeypatch, configured: str, tags: list[str] | None, want: str
+    monkeypatch, configured: str, env: str | None, tags: list[str] | None, want: str
 ) -> None:
     """An empty assistant.model asked for qwen3.5:9b even when only the vision model was
     pulled, so every turn failed."""
+    if env:
+        monkeypatch.setenv("CUTPOINT_VISION_MODEL", env)
+    else:
+        monkeypatch.delenv("CUTPOINT_VISION_MODEL", raising=False)
     asked: list[str] = []
 
     def get(url, timeout, allow_redirects=True):

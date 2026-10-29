@@ -457,7 +457,7 @@ The AI Chat tab talks to the model set in the [`assistant`](configuration.md#ass
 URL is typed:
 
 - **None (local Ollama)**, the default: the configured Ollama (`OLLAMA_HOST` or `ollama_url`).
-  Choose a pulled model, or Other model… for any id; Default uses `qwen3.5:9b`, else the vision model.
+  Choose a pulled model, or Other model… for any id; Default uses the first pulled of `qwen3.5:9b`, the vision model and `qwen3-vl:8b`, else `qwen3.5:9b`.
 - **Claude (Anthropic)**: `https://api.anthropic.com`; `claude-sonnet-5-5` (default) or
   `claude-opus-5-5`.
 - **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI model. Cutpoint asks
@@ -642,7 +642,7 @@ an analysed set processes only the new file.
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
 | `--vision` / `--no-vision` | Rate top candidates with a local Ollama vision model, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style, so Ollama is never needed unless you ask; `--no-vision` skips it when `config.json` turns it on. The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep theirs, and the model's label names the clip only from a rating of 7. The model is unloaded from GPU memory right after the rating. Ratings are cached per source (`vision-ratings.json`), so a rerun asks Ollama only about candidates it has not rated and repeats the same scores. The cache also records the Ollama model's digest: a model pulled again under the same tag is rated again, and with Ollama down the cached ratings for the tag are used |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
-| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `qwen3-vl:8b` |
+| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`) |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
