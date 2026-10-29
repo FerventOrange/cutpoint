@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from cutpoint import cache, paths
+from cutpoint import cache, features, paths, state
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,11 @@ class Style:
 
     Attributes:
         name: Preset name.
-        weights: Weight per signal (loudness, speech, laughter, scene,
-            continuity); the combined score is their weighted sum, normalised
-            to 0-100. ``continuity`` is the fraction of time someone is talking.
+        weights: Weight per feature (registered in :mod:`cutpoint.features`;
+            generic styles: loudness, speech, laughter, scene, continuity); the
+            combined score is their weighted sum, normalised to 0-100 over the
+            features this install can compute. ``continuity`` is the fraction
+            of time someone is talking.
         vision_weight: The most a vision model rating can raise or lower a
             candidate's score, as a fraction, when vision is requested
             (``--vision``; opt-in for every style): 0.3 means +30% at 10/10,
@@ -317,6 +320,33 @@ STYLES: dict[str, Style] = {
 }
 
 
+def unknown_weights(weights: dict[str, float]) -> list[str]:
+    """The names in ``weights`` that are not registered ``grid`` features
+    (:mod:`cutpoint.features`; a bonus feature is not a weight), in their order."""
+    grid = set(features.names("grid"))
+    return [k for k in weights if k not in grid]
+
+
+def validate(name: str, weights: dict[str, float]) -> None:
+    """Check that every weight of the style ``name`` names a registered grid feature
+    (:mod:`cutpoint.features`).
+
+    Raises:
+        ValueError: Naming the unknown features.
+    """
+    bad = unknown_weights(weights)
+    if bad:
+        raise ValueError(
+            f"{name}: unknown feature{'s' if len(bad) > 1 else ''} "
+            f"{', '.join(map(repr, bad))} in its weights; known: "
+            f"{', '.join(features.names('grid'))}"
+        )
+
+
+for _style in STYLES.values():
+    validate(_style.name, _style.weights)
+
+
 def learned_styles() -> dict[str, Path]:
     """Learned presets in ``<CUTPOINT_HOME>/styles/*.json`` (name -> file)."""
     folder = paths.styles_dir()
@@ -328,6 +358,23 @@ def learned_styles() -> dict[str, Path]:
 def style_names() -> list[str]:
     """Built-in and learned preset names (for ``--style`` choices)."""
     return sorted(STYLES) + [n for n in learned_styles() if n not in STYLES]
+
+
+@state.register_cache
+@functools.cache
+def _warn_unknown(path: str, bad: tuple[str, ...]) -> None:
+    """Warn once per run: one analyze run and the UI load the same preset many times."""
+    one = len(bad) == 1
+    logger.warning(
+        "%s: unknown feature%s %s in its weights; nothing measures %s, but %s still "
+        "count%s, so every score of this style is lower",
+        path,
+        "" if one else "s",
+        ", ".join(map(repr, bad)),
+        "it" if one else "them",
+        "its weight" if one else "their weights",
+        "s" if one else "",
+    )
 
 
 def load_learned(path: Path) -> Style:
@@ -343,6 +390,9 @@ def load_learned(path: Path) -> Style:
     if base is None:
         raise ValueError(f"{path}: unknown base style {data.get('base')!r}")
     weights = {**base.weights, **{k: float(v) for k, v in data.get("weights", {}).items()}}
+    bad = unknown_weights(weights)
+    if bad:  # kept, so the score is as before: counted in the divisor, nothing on the grid
+        _warn_unknown(str(path), tuple(bad))
     if data.get("taste"):  # personal taste head next to the preset (cutpoint refmatch --taste)
         data["taste"] = str((path.parent / data["taste"]).resolve())
     return replace(
