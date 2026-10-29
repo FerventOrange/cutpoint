@@ -14,6 +14,7 @@ import pytest
 
 from cutpoint import cache
 from cutpoint.pano import cli as PC
+from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano import render
 from cutpoint.pano import views as VW
@@ -81,10 +82,10 @@ def test_axis_choice() -> None:
     # FORWARD_V 60 deg from vertical (|horizontal| 0.87): still the helmet axis
     tilt = np.array([0.0, math.sin(math.radians(60)), -math.cos(math.radians(60))])
     assert G.forward_axis(np.tile(tilt, (5, 1))) is G.FORWARD_V
-    assert G.axis_name(G.FORWARD_V) == "-y" and G.axis_name(G.LENS_V) == "-z"
+    assert G.axis_name(G.FORWARD_V) == "-y" and G.axis_name(G.LENS_V) == "+z"
 
 
-@pytest.mark.parametrize(("mount", "axis"), [(HELMET, "-y"), (UPRIGHT, "-z")])
+@pytest.mark.parametrize(("mount", "axis"), [(HELMET, "-y"), (UPRIGHT, "+z")])
 def test_axis_choice_is_stable_under_sway(mount, axis) -> None:
     """One axis per clip from the median: a 25 deg sway does not flip it."""
     o = _fuse(mount, turn_dps=20.0, sway_deg=25.0)
@@ -98,7 +99,7 @@ def test_upright_turn_has_a_smooth_display_heading_in_both_frames() -> None:
     """Turning 30 deg/s while swaying: the display yaw follows the turn without jumps in the
     view layer's ``r_vw`` and the renderer's frame, and the two frames agree."""
     o = _fuse(UPRIGHT, turn_dps=30.0, sway_deg=5.0)
-    assert o.forward_axis == "-z" and o.meta["forward_axis"] == "-z"
+    assert o.forward_axis == "+z" and o.meta["forward_axis"] == "+z"
     view = np.stack([o.r_vw(i / FPS) for i in IDX])
     rend = render.stabilised_r_vw(o, IDX, 1.0, 0.5)
     assert _angle(view, rend).max() < 2.0
@@ -151,9 +152,9 @@ def test_upright_axis_logged_once(home, tmp_path, monkeypatch, caplog) -> None:
     with caplog.at_level(logging.INFO, logger="cutpoint.pano.geometry"):
         G.orientation(src, Path("i00"), FPS, len(o.t))
         G.orientation(src, Path("i00"), FPS, len(o.t))
-    assert sum("_00_ lens axis (-z)" in r.message for r in caplog.records) == 1
-    assert G.cached_forward_axis(src) == "-z"
-    assert cache.load_json(G._orient_path(src).with_suffix(".json"))["forward_axis"] == "-z"
+    assert sum("_10_ lens axis (+z)" in r.message for r in caplog.records) == 1
+    assert G.cached_forward_axis(src) == "+z"
+    assert cache.load_json(G._orient_path(src).with_suffix(".json"))["forward_axis"] == "+z"
 
 
 # --------------------------------------------------------------------------- caches
@@ -177,8 +178,9 @@ def _write_views(src: Path, meta: dict) -> None:
         ([0.0, 0.0, -1.0], {}, True),  # helmet: as before
         (None, {}, True),  # no orientation cached: taken as it is
         ([0.0, -1.0, 0.0], {}, False),  # upright, computed before the fix
-        ([0.0, -1.0, 0.0], {"forward_axis": "-z"}, True),
-        ([0.0, 0.0, -1.0], {"forward_axis": "-z"}, False),
+        ([0.0, -1.0, 0.0], {"forward_axis": "+z"}, True),
+        ([0.0, 0.0, -1.0], {"forward_axis": "+z"}, False),
+        ([0.0, -1.0, 0.0], {"forward_axis": "-z"}, False),  # this branch's first sign
     ],
 )
 def test_views_cache_follows_the_forward_axis(home, tmp_path, up, meta, valid) -> None:
@@ -203,7 +205,7 @@ def test_a_stale_views_cache_is_logged_once(home, tmp_path, caplog) -> None:
 def test_a_cached_track_records_its_axis_in_memory_only_when_upright(home, tmp_path) -> None:
     """Tracks cached before the fix have no ``forward_axis`` in their meta: it is added on
     load for an upright clip, never for a helmet one (whose meta stays as it was)."""
-    for up, want in (([0.0, -1.0, 0.0], "-z"), ([0.0, 0.0, -1.0], None)):
+    for up, want in (([0.0, -1.0, 0.0], "+z"), ([0.0, 0.0, -1.0], None)):
         src = tmp_path / f"{want}.lrv"
         src.write_bytes(b"x")
         path = G._orient_path(src)
@@ -218,7 +220,7 @@ def test_a_cached_track_records_its_axis_in_memory_only_when_upright(home, tmp_p
 def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
     seg = ("001", 1.0, 5.0, "people", False, {"a": 1})
     assert PC._plan_key(*seg) == json.dumps([["001", 1.0, 5.0, "people", False], {"a": 1}])
-    assert PC._plan_key(*seg, "-z") != PC._plan_key(*seg)
+    assert PC._plan_key(*seg, "+z") != PC._plan_key(*seg)
     from cutpoint.pano.director import PATH_VERSION  # noqa: PLC0415
 
     base = {
@@ -230,8 +232,73 @@ def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
         "params": {"a": 1},
     }
     cache.save_json(tmp_path / "001_a.json", base)
-    cache.save_json(tmp_path / "002_b.json", base | {"clip": "002", "forward_axis": "-z"})
+    cache.save_json(tmp_path / "002_b.json", base | {"clip": "002", "forward_axis": "+z"})
     found = PC._reusable(tmp_path)
     assert PC._plan_key(*seg) in found
-    assert PC._plan_key("002", *seg[1:], "-z") in found
+    assert PC._plan_key("002", *seg[1:], "+z") in found
     assert PC._plan_key("002", *seg[1:]) not in found  # planned upright, now default: re-plan
+
+
+# --------------------------------------------------------------------------- wearer prior
+def _still(up: list[float], n: int = 90) -> G.Orientation:
+    return G.Orientation(
+        t=np.arange(n) / FPS,
+        up=np.tile(up, (n, 1)),
+        heading=np.zeros(n),
+        heading_smooth=np.zeros(n),
+        meta={"fps": FPS},
+    )
+
+
+def test_helmet_wearer_is_unchanged() -> None:
+    assert G.wearer_v(G.FORWARD_V) is G.WEARER_V
+    assert _still([0.0, 0.0, -1.0]).wearer is G.WEARER_V
+    pv = VW.PanoViews(np.zeros(1), np.zeros((1, 9, 4)), np.zeros((0, 11)), np.zeros(0), np.zeros(0))
+    pv.meta = {"source": "helmet-wearer.lrv"}
+    assert VW.wearer_axis(pv) is G.WEARER_V
+
+
+def test_upright_wearer_is_the_nadir(caplog) -> None:
+    w = _still([0.0, -1.0, 0.0]).wearer
+    assert np.array_equal(w, -G.UPRIGHT_UP_V) and w.tolist() == [0.0, 1.0, 0.0]
+    pv = VW.PanoViews(np.zeros(1), np.zeros((1, 9, 4)), np.zeros((0, 11)), np.zeros(0), np.zeros(0))
+    pv.meta = {"source": "upright-wearer.lrv", "forward_axis": "+z"}
+    with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
+        assert np.array_equal(VW.wearer_axis(pv), w)  # too few boxes: the mount's default
+        VW.wearer_axis(pv)
+    assert sum("0 large person boxes" in r.message for r in caplog.records) == 1
+
+
+def _box(o: G.Orientation, yaw: float, pitch: float) -> np.ndarray:
+    """One confident person row at display ``yaw`` / ``pitch`` (camera ray in 8:11)."""
+    box = np.zeros((1, 11))
+    ray = o.r_vw(0.5) @ G.yaw_pitch_ray(yaw, pitch)
+    box[0, 1], box[0, 2], box[0, 6], box[0, 8:11] = 1, 0.9, 40.0, ray
+    return box
+
+
+def test_director_wearer_rule_follows_an_upright_mount() -> None:
+    """Upright clip: the nadir prior blanks no direction more than another, takes the pole
+    below for the wearer and spares people seated behind; the helmet prior would have
+    blanked the view ahead and missed the pole."""
+    o = _still([0.0, -1.0, 0.0])
+    p = D.DirectorParams()
+    centres = np.array([0.0, 90.0, 180.0])
+    times = np.array([0.5, 1.5])
+    got = D.wearer_in_view(o, o.wearer, times, centres, p)
+    assert (got == got[:, :1]).all()
+    assert (
+        D.wearer_in_view(o, G.WEARER_V, times, centres, p)[:, [0, 2]].tolist() == [[1.0, 0.0]] * 2
+    )
+    seated, pole = _box(o, 180.0, -20.0), _box(o, 180.0, -70.0)
+    assert VW.is_wearer(seated, max_height_deg=np.inf, axis=o.wearer).tolist() == [False]
+    assert VW.is_wearer(pole, max_height_deg=np.inf, axis=o.wearer).tolist() == [True]
+    assert VW.is_wearer(pole, max_height_deg=np.inf).tolist() == [False]  # helmet prior
+
+
+def test_a_stale_axis_in_the_meta_is_replaced() -> None:
+    o = G.Orientation(
+        t=np.zeros(3), up=np.tile([0.0, -1.0, 0.0], (3, 1)), heading=np.zeros(3),
+        heading_smooth=np.zeros(3), meta={"fps": FPS, "forward_axis": "-z"},
+    )  # fmt: skip
+    assert o.meta["forward_axis"] == "+z"

@@ -501,7 +501,7 @@ def test_compute_path_records_an_upright_forward_axis(stub_scores: dict) -> None
         meta={"fps": 30.0},
     )
     path = D.compute_path(clip, 1.0, 12.0, orient=upright, pv=pv, margin=0.0)
-    assert path["forward_axis"] == "-z"
+    assert path["forward_axis"] == "+z"
 
 
 def test_path_for_replans_a_reused_path_of_another_forward_axis(
@@ -512,7 +512,7 @@ def test_path_for_replans_a_reused_path_of_another_forward_axis(
     from cutpoint.pano import render as R  # noqa: PLC0415
 
     monkeypatch.setattr(R, "load", lambda project: {})
-    monkeypatch.setattr(G, "cached_forward_axis", lambda src: "-z")
+    monkeypatch.setattr(G, "cached_forward_axis", lambda src: "+z")
     monkeypatch.setattr(D, "compute_path", lambda *a, **kw: {"keys": ["new"]})
     ex = R.PanoExporter(tmp_path, tmp_path / "clips")
     old = ex.paths_dir / "001_a.json"
@@ -525,9 +525,12 @@ def test_path_for_replans_a_reused_path_of_another_forward_axis(
         got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
     assert got["keys"] == ["new"] and "another forward axis" in caplog.text
     assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["old"]
-    old.write_text(json.dumps(path | {"forward_axis": "-z"}), encoding="utf-8")
+    old.write_text(json.dumps(path | {"forward_axis": "+z"}), encoding="utf-8")
     got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
     assert got["keys"] == ["old"]
+    old.write_text(json.dumps(path | {"forward_axis": "-z"}), encoding="utf-8")  # first sign
+    got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
+    assert got["keys"] == ["new"]
 
 
 def test_path_for_keeps_bak_of_replanned_reused_path(

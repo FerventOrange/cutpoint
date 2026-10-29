@@ -303,7 +303,7 @@ def test_level_forward_records_an_upright_forward_axis(pano_project, monkeypatch
     upright = G.Orientation(o.t, np.tile([0.0, -1.0, 0.0], (900, 1)), o.heading, o.heading, o.meta)
     monkeypatch.setattr(G, "orientation", lambda *a, **k: upright)
     got = C.preview_path(proj, clip.source, 4.0, 12.5)
-    assert got["kind"] == "level_forward" and got["path"]["forward_axis"] == "-z"
+    assert got["kind"] == "level_forward" and got["path"]["forward_axis"] == "+z"
 
 
 def test_level_forward_has_the_director_margin(pano_project, monkeypatch) -> None:

@@ -551,7 +551,7 @@ def test_cmd_director_renumbered_path_taken_over_by_another_segment_is_not_backe
     assert "re-planned" not in caplog.text
 
 
-@pytest.mark.parametrize(("axis", "replanned"), [(None, False), ("-y", False), ("-z", True)])
+@pytest.mark.parametrize(("axis", "replanned"), [(None, False), ("-y", False), ("+z", True)])
 def test_cmd_director_replans_a_path_of_another_forward_axis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, axis, replanned
 ) -> None:

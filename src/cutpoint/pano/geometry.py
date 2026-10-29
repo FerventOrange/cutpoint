@@ -13,7 +13,7 @@ Frames (all right-handed, x right, y down, z forward, as in ``v360``):
     forward direction (``FORWARD_V``, where the skis point), smoothed over
     ``heading_smooth_s`` so the view does not swing with every turn. A clip
     filmed upright (lenses horizontal: handheld, on a pole) has ``FORWARD_V``
-    near vertical; its yaw 0 is the ``_00_`` lens axis ``LENS_V`` instead
+    near vertical; its yaw 0 is the ``_10_`` lens axis ``LENS_V`` instead
     (:func:`forward_axis`, one choice per clip).
 
 ``v360`` rotation (measured): with ``rorder=ypr``, an output ray ``d`` samples
@@ -51,12 +51,15 @@ ORIENT_VERSION = 2
 LEVEL_VERSION = 1  # the up / heading part of the track (unchanged since v1; views cache key)
 M_IMU_TO_V = np.array([[0.0, 0.0, -1.0], [0.0, -1.0, 0.0], [-1.0, 0.0, 0.0]])
 FORWARD_V = np.array([0.0, -1.0, 0.0])  # where the skis point (camera "front")
-LENS_V = np.array([0.0, 0.0, -1.0])  # the _00_ lens: yaw 0 of an upright clip (forward_axis)
+LENS_V = np.array([0.0, 0.0, 1.0])  # the _10_ lens: yaw 0 of an upright clip (forward_axis)
+UPRIGHT_UP_V = np.array([0.0, -1.0, 0.0])  # nominal up of an upright clip (its wearer_v)
 FORWARD_MIN_HORIZONTAL = 0.5  # forward_axis keeps FORWARD_V while its median |horizontal| >= this
 # The wearer seen from the downward lens: helmet near the +y edge of the
 # _10_ circle, body toward its centre. Measured from person detections (the
 # 366 boxes taller than 60 deg on clip 030 have median direction
 # (0.09, 0.63, 0.69)); detections within a cone around it are the wearer.
+# On the helmet mount (forward FORWARD_V, up -z) that is behind, below and a little
+# to the side; an upright clip uses the nadir instead (wearer_v).
 WEARER_V = np.array([0.05, 0.68, 0.73]) / np.linalg.norm([0.05, 0.68, 0.73])
 WEARER_CONE_DEG = 50.0
 DFISHEYE_FOV = 200.0  # v360 ih_fov / iv_fov used for analysis and rendering
@@ -142,8 +145,20 @@ def level_matrix(up_v: np.ndarray, fwd_v: np.ndarray = FORWARD_V) -> np.ndarray:
 
 
 def axis_name(v: np.ndarray) -> str:
-    """``"-y"`` for :data:`FORWARD_V`, ``"-z"`` for :data:`LENS_V` (meta and cache keys)."""
-    return "-z" if np.array_equal(v, LENS_V) else "-y"
+    """``"-y"`` for :data:`FORWARD_V`, ``"+z"`` for :data:`LENS_V` (meta and cache keys)."""
+    return "+z" if np.array_equal(v, LENS_V) else "-y"
+
+
+def wearer_v(fwd: np.ndarray) -> np.ndarray:
+    """The default wearer direction (camera coordinates) of a clip whose yaw 0 is ``fwd``.
+
+    :data:`WEARER_V` for :data:`FORWARD_V`; for :data:`LENS_V` the nadir
+    (``-UPRIGHT_UP_V``): the pole or hand straight below the upright camera. Its
+    :data:`WEARER_CONE_DEG` cone stays below -40 deg pitch, so people seated
+    behind (a raft's paddlers, pitch -10 to -35) are not taken for the wearer. A
+    heuristic prior, refined per clip by :func:`cutpoint.pano.views.wearer_axis`.
+    """
+    return -UPRIGHT_UP_V if np.array_equal(fwd, LENS_V) else WEARER_V
 
 
 def forward_axis(up: np.ndarray) -> np.ndarray:
@@ -154,8 +169,8 @@ def forward_axis(up: np.ndarray) -> np.ndarray:
     that lies more level (an upright camera, whose ``FORWARD_V`` points near
     up or down, so its horizontal part is tiny and its direction noise). One
     axis per clip, so the yaw 0 never jumps; whichever of the two is more
-    level is at least 45 deg from vertical. The sign is arbitrary for the view:
-    the director measures its travel direction from the wearer.
+    level is at least 45 deg from vertical. Its sign: on upright raft footage the
+    ``_10_`` lens (+z) faced the travel direction (the ``_00_`` lens the paddlers).
     """
     up = np.asarray(up, float).reshape(-1, 3)
     if not len(up):
@@ -189,6 +204,7 @@ class Orientation:
             ``meta["q_offset_s"]`` after each frame time; used by the renderer.
             ``up`` / ``heading`` stay the director's frame.
         fwd: The camera axis of yaw 0 (:func:`forward_axis` of ``up``; set on creation).
+        wearer: The default wearer direction for ``fwd`` (:func:`wearer_v`).
     """
 
     t: np.ndarray
@@ -202,7 +218,12 @@ class Orientation:
     def __post_init__(self) -> None:
         self.fwd = forward_axis(self.up)
         if self.forward_axis != axis_name(FORWARD_V):  # upright: recorded (helmet meta as is)
-            self.meta.setdefault("forward_axis", self.forward_axis)
+            self.meta["forward_axis"] = self.forward_axis
+
+    @property
+    def wearer(self) -> np.ndarray:
+        """:func:`wearer_v` of :attr:`fwd`."""
+        return wearer_v(self.fwd)
 
     @property
     def forward_axis(self) -> str:
@@ -288,8 +309,12 @@ def cached_forward_axis(source: Path) -> str | None:
 _AXIS_LOGGED: set[str] = set()  # sources whose non-default forward axis was logged
 
 
-def wearer_yaw(orient: Orientation, times: np.ndarray, axis: np.ndarray = WEARER_V) -> np.ndarray:
-    """Display yaw (deg) of the wearer (``axis`` in camera coordinates) at ``times``."""
+def wearer_yaw(
+    orient: Orientation, times: np.ndarray, axis: np.ndarray | None = None
+) -> np.ndarray:
+    """Display yaw (deg) of the wearer (``axis`` in camera coordinates, default
+    ``orient.wearer``) at ``times``."""
+    axis = orient.wearer if axis is None else axis
     out = np.empty(len(times))
     for i, t in enumerate(times):
         y, _ = ray_yaw_pitch(orient.r_vw(float(t)).T @ axis)
@@ -530,7 +555,7 @@ def _log_axis(source: Path, o: Orientation) -> None:
     if o.forward_axis != axis_name(FORWARD_V) and str(source) not in _AXIS_LOGGED:
         _AXIS_LOGGED.add(str(source))
         logger.info(
-            "%s: camera upright (lenses horizontal); yaw 0 follows the _00_ lens axis (%s)",
+            "%s: camera upright (lenses horizontal); yaw 0 follows the _10_ lens axis (%s)",
             Path(source).name,
             o.forward_axis,
         )

@@ -447,7 +447,7 @@ def score_grid(
         yaw_score = yaw_score - p.w_occlude * occlude
     wearer = np.zeros((len(times), nb))
     if p.w_wearer and orient is not None:
-        axis = wearer_axis(pv) if pv is not None else G.WEARER_V
+        axis = wearer_axis(pv) if pv is not None else orient.wearer
         wearer = wearer_in_view(orient, axis, times, centres, p, vertical)
         yaw_score = yaw_score - p.w_wearer * wearer
     talk = _voice_at(Path(clip.source), times)
@@ -1132,7 +1132,7 @@ def compute_path(
     t0, t1 = planned_span(clip, start, end, margin)
     from cutpoint.pano.views import wearer_axis  # noqa: PLC0415
 
-    axis = wearer_axis(pv) if pv is not None else G.WEARER_V
+    axis = wearer_axis(pv) if pv is not None else orient.wearer
     sg = score_grid(clip, t0, t1, p, pv, orient=orient, vertical=vertical)
     nb = p.n_bins
     states = _viterbi(sg, p)

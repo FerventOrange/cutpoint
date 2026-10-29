@@ -6,7 +6,8 @@ every second keyframe, the GOP is 0.6 s) feeds the existing visual models
 
 * **Views for CLIP ViT-L/14**: 8 horizon-levelled perspective views (90 deg,
   yaw 0, 45, ..., 315, pitch -10) plus the downward *selfie* view at the
-  wearer (``geometry.WEARER_V``, fixed in camera coordinates), 224x224 each.
+  wearer (``geometry.WEARER_V``, fixed in camera coordinates; the nadir for an upright
+  clip), 224x224 each.
   The embeddings feed the existing zero-shot prompts (beauty, friends/group),
   the LAION aesthetic head and the crash prompts.
 * **Faster R-CNN v2 on a levelled equirect** (1280x512: 1024 px for 360 deg
@@ -185,7 +186,7 @@ def compute_views(
     models: Any,
     p: ViewParams,
     orient: G.Orientation,
-    wearer_v: np.ndarray = G.WEARER_V,
+    wearer_v: np.ndarray | None = None,
     reuse: PanoViews | None = None,
 ) -> PanoViews | None:
     """Run the view layer on one clip's ``.lrv`` (one sequential keyframe decode).
@@ -195,7 +196,7 @@ def compute_views(
         models: Loaded :class:`cutpoint.events.visual.VisualModels`.
         p: Settings.
         orient: The clip's orientation track.
-        wearer_v: Wearer axis in camera coordinates.
+        wearer_v: Wearer axis in camera coordinates (default ``orient.wearer``).
         reuse: This clip's result for another wearer axis (same ``p``, with ``rays``):
             only what depends on the axis is recomputed (#376). The detector, the
             equirect and the person crops are skipped; their rows are kept and
@@ -239,6 +240,7 @@ def compute_views(
     batch_f: list[np.ndarray] = []
     gpu_s = 0.0
     n_rows = 0
+    wearer_v = orient.wearer if wearer_v is None else wearer_v
     wear = wearer_v / np.linalg.norm(wearer_v)
     person_lab = torch.tensor(DET_LABELS, device=dev)
 
@@ -405,7 +407,8 @@ def wearer_axis(pv: PanoViews, min_boxes: int = 15) -> np.ndarray:
     The camera is fixed to the wearer (helmet / backpack pole / selfie stick),
     so the wearer's own body is the most frequent large person box at a fixed
     camera direction. Median direction of confident person boxes taller than
-    45 deg; ``geometry.WEARER_V`` when there are fewer than ``min_boxes``.
+    45 deg; the mount's default (:func:`geometry.wearer_v` of the views' forward axis)
+    when there are fewer than ``min_boxes``.
     Measured: clip 030 (pole mount) -> about (0.09, 0.63, 0.69); clip 020 (4K
     mode, held in front of the face) -> a different axis, hence per clip.
     """
@@ -414,14 +417,22 @@ def wearer_axis(pv: PanoViews, min_boxes: int = 15) -> np.ndarray:
     if cached is not None:
         return cached
     d = pv.det
-    axis = G.WEARER_V
-    if len(d):
-        big = (d[:, 1] == 1) & (d[:, 2] >= 0.8) & (d[:, 6] >= 45.0)
-        if big.sum() >= min_boxes:
-            v = d[big, 8:11].astype(np.float64)
-            v /= np.linalg.norm(v, axis=1, keepdims=True) + 1e-9
-            m = np.median(v, 0)
-            axis = m / (np.linalg.norm(m) + 1e-9)
+    upright = pv.meta.get("forward_axis") == G.axis_name(G.LENS_V)
+    axis = G.wearer_v(G.LENS_V if upright else G.FORWARD_V)
+    big = (d[:, 1] == 1) & (d[:, 2] >= 0.8) & (d[:, 6] >= 45.0) if len(d) else np.zeros(0, bool)
+    if big.sum() >= min_boxes:
+        v = d[big, 8:11].astype(np.float64)
+        v /= np.linalg.norm(v, axis=1, keepdims=True) + 1e-9
+        m = np.median(v, 0)
+        axis = m / (np.linalg.norm(m) + 1e-9)
+    elif upright:  # once per source: the result is kept in _AXES
+        logger.info(
+            "%s: upright clip with %d large person boxes (< %d); the wearer is taken to be "
+            "straight below the camera",
+            Path(key).name,
+            int(big.sum()),
+            min_boxes,
+        )
     _AXES[key] = axis
     return axis
 
@@ -983,7 +994,7 @@ def run_layer(
             c0 = time.perf_counter()
             prior = load_views(src, p)  # a forced re-run reuses the clip's wearer axis
             _AXES.pop(str(src), None)
-            prior_axis = wearer_axis(prior) if prior is not None else G.WEARER_V
+            prior_axis = wearer_axis(prior) if prior is not None else orient.wearer
             data = compute_views(c, models, p, orient, wearer_v=prior_axis)
             if data is None:
                 continue

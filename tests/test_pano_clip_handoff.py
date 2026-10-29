@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import pano_helpers
 from cutpoint import analyze as analyze_mod
 from cutpoint import crash, styles
 from cutpoint.events import common, pipeline
@@ -87,7 +88,7 @@ def pano(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
     monkeypatch.setattr(common, "free_torch", free_torch)
     monkeypatch.setattr(x3, "imu_source", lambda src: src)
-    monkeypatch.setattr(G, "orientation", lambda *a: None)
+    monkeypatch.setattr(G, "orientation", lambda *a: pano_helpers.orientation())
     monkeypatch.setattr(views, "load_views", lambda src, p=None: None)
     monkeypatch.setattr(views, "compute_views", compute)
     monkeypatch.setattr(views, "wearer_axis", lambda data: G.WEARER_V)
