@@ -576,7 +576,7 @@ class _HttpProvider:
         if self._key is None and not self.local:
             raise ProviderError(
                 f"No API key for {self.title}: set {_key_hint(self.name, self.host)} before "
-                "starting cutpoint ui, or save one in Settings (needs the keyring extra)"
+                "starting cutpoint ui, or save one in Settings (kept in the system keyring)"
             )
 
     def _send(

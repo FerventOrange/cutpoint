@@ -186,17 +186,28 @@ affects `--vision`), a non-empty output folder.
 Whisper runs on the CPU unless the `gpu` extra is installed; if the user has an NVIDIA GPU and
 `transcribe` logs an INFO line about missing CUDA libraries, add `gpu` the same way as below.
 
-A missing extra `X` (for example `events`) is added differently per install. Tell the user the
+Cutpoint comes as full (every feature) or lite (no torch: no `events` and `gpu` extras).
+`cutpoint capabilities --json` names it in `outputs.edition`. A feature that needs a missing extra
+says it is "not available in Cutpoint lite" and prints the command for the install. Tell the user the
 command for theirs:
 
-- From a clone: `uv sync --extra X`, listing every other extra in use too (the error prints this
-  form), or `uv sync --extra all` for every extra (`ski`, `events`, `gpu`, `ui`, `keyring`; a large
-  download with torch and CUDA).
-- Tool install: `uv tool install "cutpoint[X]" --reinstall`, listing every extra in use. For a
-  PyPI or wheel install (not one from a clone directory or git URL, with `uv tool` or `uv pip`) with an NVIDIA GPU and the
-  `events` extra, add
-  `--index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match` so torch
-  uses CUDA ([getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#install-as-a-tool-optional)).
+- Tool install (the installer): run the installer again without `--lite` (`-Lite` for
+  `install.ps1`) and with `CUTPOINT_LITE` unset, or it installs lite again. It picks the torch
+  build for the machine and is also how to upgrade (`uv tool upgrade` drops the torch build).
+  `curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh`
+  (Linux, macOS) or
+  `irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`
+  (Windows PowerShell). A tool installed from git or a local path needs its source again; the
+  hint prints both commands with it, for example
+  `curl -LsSf .../install.sh | sh -s -- --source git@main` and
+  `$env:CUTPOINT_SOURCE = 'git@main'; irm .../install.ps1 | iex`. The installers only install
+  from github.com/FerventOrange/cutpoint; for a fork the hint prints a `uv tool install` command
+  with `--torch-backend` instead, as for a wheel or sdist URL.
+- From a clone: `uv sync`. It installs every extra (a large download with torch and CUDA); a
+  lite clone was synced with `--no-group full` or `UV_NO_GROUP=full`, so drop those.
+
+`ui`, `keyring` and `ski` are not extras any more: the browser workspace, the keyring and
+action-cam telemetry are in every install.
 
 ## Rules
 

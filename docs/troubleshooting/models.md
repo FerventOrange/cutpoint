@@ -73,9 +73,11 @@ The `events` model layer does not use Ollama for its main model. It starts its o
 
 ## Missing Python packages
 
-`events` needs the `events` extra; action-cam features and the 360 module need `ski`. A missing
-module produces an error with the exact install command. List every extra you use
-([Optional extras](../getting-started.md#optional-extras)).
+`events` needs the `events` extra, which Cutpoint lite leaves out. A missing module produces an
+error that says the feature is not available in Cutpoint lite, with the install command: the
+installer again without `--lite` / `-Lite` and with `CUTPOINT_LITE` unset for a tool install,
+`uv sync` in a clone. Action-cam telemetry
+and the 360 module are in every install.
 
 ## Whisper model download
 

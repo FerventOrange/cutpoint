@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from cutpoint.extras import install_hint
+from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,8 @@ def load_wav(path: Path) -> Any:
 
 def _cuda_libs_hint() -> str:
     """How to add the CUDA 12 cuBLAS / cuDNN 9 libraries (the 'gpu' extra)."""
+    if edition() == "lite":
+        return f"GPU transcription is {LITE}; to add the 'gpu' extra: {install_hint('gpu')}"
     return f"For GPU transcription add the 'gpu' extra: {install_hint('gpu')}"
 
 

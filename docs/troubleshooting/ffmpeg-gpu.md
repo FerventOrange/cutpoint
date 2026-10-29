@@ -110,8 +110,9 @@ install. With an NVIDIA GPU but no `gpu` extra, Cutpoint logs one line and uses 
 INFO NVIDIA GPU found, but the CUDA libraries for whisper are not installed (...); transcribing on the CPU. For GPU transcription add the 'gpu' extra: <command>
 ```
 
-- Add the `gpu` extra with the command in that line, listing every other extra you use
-  ([Optional extras](../getting-started.md#optional-extras)). With pip: `pip install "cutpoint[gpu]"`.
+- Add the `gpu` extra with the command in that line. For a tool install that is the installer
+  again (it adds the `gpu` extra when it finds an NVIDIA GPU); in a clone, `uv sync`. With pip:
+  `pip install "cutpoint[gpu]"`.
 - Update the NVIDIA driver. On Linux the pip-installed CUDA libraries are preloaded
   automatically; if Whisper still falls back to the CPU, check the driver with `nvidia-smi`.
 - AMD GPUs are not used for transcription: faster-whisper has no AMD GPU backend in Cutpoint, so
@@ -130,7 +131,7 @@ torch line and `outputs.torch` JSON keys:
 
 | Line or key | Meaning |
 |---|---|
-| `torch: not installed (...)` / `installed: false` | The `events` extra is missing; `fix` holds the install command |
+| `torch: not installed (...)` / `installed: false` | The `events` extra is missing (Cutpoint lite; `edition` is `lite`); `fix` holds the install command |
 | `installed but does not load (...)` / `error` | torch is installed but importing it failed (for example a DLL); the error text is kept |
 | `version`, `cuda_build` | torch version and the CUDA version it was built for; `null` for a CPU-only build |
 | `cuda_available` | `true` when torch reaches the GPU (`uses the GPU`), `false` for `runs on the CPU` |
@@ -141,7 +142,8 @@ What to do about the warning:
 
 - **CPU-only build on an NVIDIA machine** (the default PyPI install on Windows): `events`, crash
   detection and 360 views run on the CPU, much slower. Run the command printed after `Fix:`. It
-  is chosen for your install type (tool install, `uv pip` or `pip`, clone) and keeps the extras in use.
+  is chosen for your install type: the installer again for a tool install (it installs CUDA torch
+  when it finds an NVIDIA GPU), `uv sync` in a clone, else `uv pip` or `pip` with the extras in use.
   See also [`events` is very slow](#events-is-very-slow).
 - **CUDA build that cannot use the GPU:** the driver is probably too old for that CUDA version.
   Update the NVIDIA driver (check `nvidia-smi`); for a build other than CUDA 12.6 the fix also
@@ -180,14 +182,14 @@ lower its request size with `events --frames 12 --frame-height 540`, or skip it 
 PANNs, the voice layer and the visual layer pick the GPU automatically when the installed
 torch has CUDA. With CPU-only torch they still work, but the visual layer takes roughly ten
 times longer. Check with `uv run python -c "import torch; print(torch.cuda.is_available())"`.
-`uv sync --extra events` installs the CUDA 12.6 builds on Windows and Linux.
+In a clone, `uv sync` installs the CUDA 12.6 builds on Windows and Linux.
 
-A PyPI or wheel tool install (`uv tool install cutpoint`) gets CPU-only torch on Windows. The CUDA
-index in `pyproject.toml` also applies to tool installs and `uv pip install` from a clone directory
-or git URL, so those need no index flags (with `uv pip install`, an already-installed CPU torch also
-needs `--reinstall-package torch --reinstall-package torchvision`). `pip` does not apply it. For a
-PyPI or wheel install, reinstall with the PyTorch index (add `--reinstall`) and check the tool's
-own Python: see [Install as a tool](../getting-started.md#install-as-a-tool-optional).
+For a tool install, run the installer again: it installs CUDA torch when it finds an NVIDIA GPU.
+Do not use `uv tool upgrade` or a plain `uv tool install "cutpoint[events]"`: without
+`--torch-backend` the torch build does not match the machine. The CUDA index in `pyproject.toml`
+also applies to `uv pip install` from a clone directory or git URL, so that needs no index flags (an
+already-installed CPU torch also needs `--reinstall-package torch --reinstall-package torchvision`).
+`pip` does not apply it.
 
 ## Slow or odd video decoding
 

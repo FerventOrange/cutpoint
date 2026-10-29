@@ -1201,13 +1201,14 @@ def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) ->
         return plan
     missing = [m for m in EVENTS_MODULES if importlib.util.find_spec(m) is None]
     if missing:
-        from cutpoint.extras import install_hint  # noqa: PLC0415
+        from cutpoint.extras import LITE, install_hint  # noqa: PLC0415
 
         names = [LABELS[s].lower() for s in want]
         logger.info(
-            "The events extra is not installed, so the %s %s skipped; to add it: %s",
+            "The %s %s %s (the events extra is not installed) and skipped; to add it: %s",
             " and ".join([", ".join(names[:-1]), names[-1]] if len(names) > 1 else names),
             "step is" if len(names) == 1 else "steps are",
+            LITE,
             install_hint("events"),
         )
         for step in want:

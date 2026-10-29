@@ -232,7 +232,7 @@ host of its base URL. It is taken, in order, from:
 |---|---|
 | `CUTPOINT_ASSISTANT_API_KEY` | any provider and any host (for example a key that only Cutpoint uses, or an OpenRouter key) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com` / `api.x.ai`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine, and an xAI key never anywhere but `api.x.ai` (not to the `openai` provider with an `api.x.ai` URL either) |
-| The system keyring (service `cutpoint`) | saved from Settings for the provider and base URL saved there, with the optional `keyring` extra (`uv sync --extra keyring`, or `uv tool install "cutpoint[ui,keyring]"`). The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
+| The system keyring (service `cutpoint`) | saved from Settings (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
 
 A preset's key is for its own host, so it can be saved before the settings. For a custom base
 URL, save the settings first, then save the key for it. The key is sent

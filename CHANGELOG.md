@@ -110,8 +110,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projects and for projects analyzed with options `edit` cannot repeat.
 - `cutpoint ui`: the trim rail shows a filmstrip of stills (keyframes; exact ones when zoomed in)
   behind the clip markers, and the project's still cache keeps up to 1500 stills (#261).
+- Editions: Cutpoint is full (every feature) or lite (no torch: no `events` or `gpu` extra).
+  `cutpoint capabilities` prints the edition first, and its `--json` has the new key `edition`
+  (`"full"` or `"lite"`; the schema stays 1) (#502).
 
 ### Changed
+
+- A feature that needs a missing extra now says it is "not available in Cutpoint lite" and how
+  to add it: for a tool install, the installer again without `--lite` / `-Lite` and with
+  `CUTPOINT_LITE` unset (`curl -LsSf
+  https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh` or `irm
+  https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`); in a clone,
+  `uv sync` without `--no-group full`. A tool installed from git or a local path gets both
+  commands with its source (`... | sh -s -- --source git@main`, `$env:CUTPOINT_SOURCE =
+  'git@main'; irm ... | iex`); one from a fork or a wheel or sdist URL gets `uv tool install
+  "cutpoint[...] @ <url>" --torch-backend cpu|cu126 --python 3.12 --reinstall --no-sources`,
+  since the installers only install from PyPI, github.com/FerventOrange/cutpoint or a local
+  path. The CUDA torch fix in `capabilities` says the
+  same. The hints no longer print a `uv tool install` command without `--torch-backend`, which
+  can pull CUDA torch on a machine without an NVIDIA GPU. Help, messages and
+  docs no longer call `ui`, `keyring` and `ski` optional extras (#502).
 
 - `--color underwater` grades only clips that look underwater (mean red below 0.77 of green
   and 0.85 of blue, green above 0.79 of blue); the others are skipped as `not_underwater`, and

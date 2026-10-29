@@ -3615,11 +3615,10 @@ function renderAiFields() {
   $('#setAiKeyStatus').textContent = unsaved
     ? 'API key: save the settings first to see or set the key for this provider.'
     : `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
-  $('#setAiKeyRow').hidden = !S.ai.keyring;
   $('#setAiKeySave').disabled = $('#setAiKeyClear').disabled = unsaved;
   $('#setAiKeyHint').textContent = unsaved
     ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
-    : `Read from ${p.key_env.join(' or ')} when cutpoint ui starts, else from the system keyring${S.ai.keyring ? '' : ' (install the keyring extra to save a key here)'}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.${where === 'env' ? ' The environment variable is used before a saved key.' : ''}`;
+    : `Read from ${p.key_env.join(' or ')} when cutpoint ui starts, else from the system keyring. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.${where === 'env' ? ' The environment variable is used before a saved key.' : ''}`;
 }
 
 /** The Model field's suggestions: the models the provider listed, else the preset's defaults. */
