@@ -56,7 +56,6 @@ HOSTED_TIMEOUT_S = 180.0  # a hosted model's whole reply (not streamed)
 CONNECT_TIMEOUT_S = 10.0
 SHOW_TIMEOUT_S = 5.0
 CHECK_TIMEOUT_S = 15.0  # a hosted provider's model list or model
-TEMPERATURE = 0.2
 LOCAL_CONTEXT_TOKENS = 8192  # assistant.context_tokens unset: a model on this machine
 HOSTED_CONTEXT_TOKENS = 32768  # assistant.context_tokens unset: a hosted model
 OPENAI_URL = "https://api.openai.com/v1"
@@ -461,7 +460,7 @@ class OllamaProvider:
             "messages": messages,
             "stream": True,
             "think": False,  # a reply in seconds, not a reasoning trace that fills num_ctx
-            "options": {"num_ctx": self.context_tokens, "temperature": TEMPERATURE},
+            "options": {"num_ctx": self.context_tokens},
         }
         if tools:
             payload["tools"] = tools
@@ -672,7 +671,6 @@ class OpenAIProvider(_HttpProvider):
 
     def __init__(self, url: str, model: str, context_tokens: int, key: str | None) -> None:
         super().__init__(_openai_base(url or self.default_url), model, context_tokens, key)
-        self._temperature = True  # some models (OpenAI's reasoning ones) take only the default
 
     @property
     def title(self) -> str:
@@ -739,24 +737,16 @@ class OpenAIProvider(_HttpProvider):
                 "type": "json_schema",
                 "json_schema": {"name": "cutpoint_reply", "schema": schema},
             }
-        while True:
-            self._stop(cancelled)
-            if self._temperature:
-                payload["temperature"] = TEMPERATURE
-            else:
-                payload.pop("temperature", None)
-            resp = self._send("POST", f"{self.url}/chat/completions", payload, self.timeout)
-            self._stop(cancelled)
-            if resp.status_code < 400:
-                return self._reply(self._read(resp))
-            why = self._why(resp)
-            low = why.lower()
-            if resp.status_code == 400 and self._temperature and "temperature" in low:
-                self._temperature = False  # asked again without it, and from now on
-                continue
-            if tools and "tool" in low and any(w in low for w in _NO_TOOLS):
-                raise ToolsUnsupportedError(why)
-            raise self._fail(resp, why)
+        self._stop(cancelled)
+        resp = self._send("POST", f"{self.url}/chat/completions", payload, self.timeout)
+        self._stop(cancelled)
+        if resp.status_code < 400:
+            return self._reply(self._read(resp))
+        why = self._why(resp)
+        low = why.lower()
+        if tools and "tool" in low and any(w in low for w in _NO_TOOLS):
+            raise ToolsUnsupportedError(why)
+        raise self._fail(resp, why)
 
     def _reply(self, data: dict[str, Any]) -> Reply:
         choices = data.get("choices")
@@ -884,7 +874,6 @@ class AnthropicProvider(_HttpProvider):
         payload: dict[str, Any] = {
             "model": self.model,
             "max_tokens": MAX_TOKENS,
-            "temperature": TEMPERATURE,
             "messages": wire,
         }
         if system:

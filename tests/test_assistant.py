@@ -188,7 +188,7 @@ def test_ollama_streams_native_chat_with_tools_format_and_num_ctx(monkeypatch) -
     url, body = sent[-1]
     assert url == "http://h:1/api/chat"
     assert body["model"] == "qwen3.5:9b" and body["messages"] == msgs
-    assert body["stream"] is True and body["options"]["num_ctx"] == 8192
+    assert body["stream"] is True and body["options"] == {"num_ctx": 8192}  # no temperature
     assert body["tools"][0]["type"] == "function" and "format" not in body
     assert p.tool_result(reply.tool_calls[0], "r") == {
         "role": "tool",
