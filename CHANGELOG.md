@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
+  slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
+  the keyboard and screen readers (#518).
+
 ## [0.4.0] - 2026-10-29
 
 ### Added

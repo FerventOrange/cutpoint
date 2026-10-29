@@ -696,9 +696,11 @@ select { max-width: 100%; }
 .ticks span:nth-child(1) { left: 0; }
 .ticks span:nth-child(2) { left: 50%; }
 .ticks span:nth-child(3) { left: 100%; }
-/* Color's Strength: shown only with a grade; its name and percentage over a slider as wide as Color's */
+/* Color's Strength: shown only with a grade; its name and percentage over a slider as wide as Color's.
+   With Color Off (hidden) the row keeps its room but is invisible, so it cannot be clicked, focused or
+   read by screen readers, and switching the mode moves nothing on the page (#518) */
 .color-strength { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; margin: 6px var(--inset) 0; }
-.color-strength[hidden] { display: none; }
+.color-strength[hidden] { display: grid !important; visibility: hidden; }
 .color .color-strength input[type=range] { grid-row: 2; grid-column: 1 / -1; width: 100%; }
 #colorStrengthOut { text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* Export clips and Assemble side by side, Show Exports Folder across under them */
