@@ -186,7 +186,7 @@ def test_openai_sends_tools_with_the_key_and_reads_tool_calls(monkeypatch) -> No
     assert ask["url"] == "https://api.openai.com/v1/chat/completions"
     assert ask["headers"] == {"Authorization": f"Bearer {KEY}"}
     assert ask["json"]["tools"] == session.TOOLS and ask["json"]["model"] == "gpt-x"
-    assert ask["json"]["temperature"] == providers.TEMPERATURE
+    assert "temperature" not in ask["json"]  # the server's default
     assert ask["timeout"] == (providers.CONNECT_TIMEOUT_S, providers.HOSTED_TIMEOUT_S)
     assert check["allow_redirects"] is False and ask["allow_redirects"] is False
     got = [(c.name, c.arguments, c.error, c.id) for c in reply.tool_calls]
@@ -265,18 +265,6 @@ def test_a_server_refusing_tools_is_asked_again_in_json_mode(monkeypatch, why: s
         OpenAIProvider("", "m", 0, KEY).chat([], tools=session.TOOLS)
 
 
-def test_a_model_without_temperature_is_asked_again_without_it(monkeypatch) -> None:
-    refusal = "Unsupported value: 'temperature' does not support 0.2 with this model."
-    wire = Wire(
-        monkeypatch, _Resp({"error": {"message": refusal}}, 400), oa_reply("a"), oa_reply("b")
-    )
-    p = OpenAIProvider("", "o-model", 0, KEY)
-    assert p.chat([{"role": "user", "content": "hi"}]).text == "a"
-    assert p.chat([{"role": "user", "content": "hi"}]).text == "b"
-    assert "temperature" in wire.sent[0]["json"]
-    assert "temperature" not in wire.sent[1]["json"] and "temperature" not in wire.sent[2]["json"]
-
-
 # -- Anthropic ---------------------------------------------------------------------------------
 
 
@@ -308,6 +296,7 @@ def test_anthropic_messages_api_with_tool_use(monkeypatch) -> None:
     assert ask["headers"]["x-api-key"] == KEY
     body = ask["json"]
     assert body["system"] == "rules\n\ncontext" and body["max_tokens"] == providers.MAX_TOKENS
+    assert "temperature" not in body  # newer models answer 400: `temperature` is deprecated
     assert body["messages"] == [
         {
             "role": "user",

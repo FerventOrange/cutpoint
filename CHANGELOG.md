@@ -202,6 +202,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` AI Chat: the assistant no longer sends a temperature, so newer Claude models that
+  reject one ("Anthropic answered 400: `temperature` is deprecated for this model") work. Every
+  provider (Ollama, OpenAI-compatible, xAI, Anthropic) uses its own default.
 - `cutpoint ui`: Extend export is disabled, with the reason in its tooltip, while Extend start
   and Extend end are blank or 0 and Speech-aware cuts is off. Before, it ran
   `extend --no-speech-aware` with nothing to do, which failed.
