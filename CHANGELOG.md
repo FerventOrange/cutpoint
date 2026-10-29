@@ -14,6 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and
   the preview keeps at least 360 px, so at the narrowest three-column window (961 px) neither it
   nor a column collapses.
+- `install.ps1`: offers to install Ollama when it is missing (full mode only; default No), with
+  `winget install --id Ollama.Ollama -e` or the download link when winget is missing or fails; it
+  waits for the server (starting `ollama serve` hidden only if the Ollama app has not), then offers
+  the `qwen3-vl:8b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
+  `-Yes` answers the prompt. The summary reports the Ollama result. Lite mode has no Ollama: it
+  skips the step, and `-Lite -Ollama` prints a warning and installs nothing.
+- `install.sh`: offers to install Ollama when it is missing (full mode only; default No; Linux
+  uses Ollama's official script and needs sudo, macOS uses `brew install ollama` and
+  `brew services start ollama`), waits for the server (it starts `ollama serve` itself, logging to
+  `~/.local/state/cutpoint/`, only on macOS if brew fails or on Linux without `ollama.service`),
+  then offers the `qwen3-vl:8b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
+  `CUTPOINT_OLLAMA=0`; `--yes` answers the prompt. The summary reports the Ollama result. Lite
+  mode has no Ollama: it skips the step with no prompt, and `--lite --ollama` prints a warning and
+  installs nothing (the UI assistant can use a third-party provider instead).
 
 ### Fixed
 
