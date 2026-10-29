@@ -71,8 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that Candidate ids in the Export tab and `clips --ids` take, and the moments filter matches it
   (#487).
 - `cutpoint ui`: the Moments list's search field has a funnel button beside it that opens Sort and
-  filter: the sort order and quick filters (In sequence, Not in sequence or All; Ready only; Must
-  include; a source file when the project has several). They combine with the search text, a dot
+  filter: the sort order and quick filters (In sequence, Not in sequence or All; Ready only; a
+  source file when the project has several). They combine with the search text, a dot
   on the button shows while a filter or a sort other than Score is on, and with nothing left the
   list reads "No moments match these filters." The sort and filters are remembered per browser,
   the source file only while the project is open.
@@ -139,11 +139,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery again. The OCR layer reads as before, so raw OCR caches stay valid (#443).
 - `clips --force` and `edit --force` log a WARNING when they replace a clips folder whose
   manifest recorded a grade (`lut`/`color`) and the new run has none. The output is unchanged.
-
-### Removed
-
-- `cutpoint ui`: the Must include filter under Show only in the Moments Sort and filter menu.
-  Moment cards still show the "must include" tag; a remembered Must include filter is ignored.
 
 ### Fixed
 

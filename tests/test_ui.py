@@ -5893,10 +5893,21 @@ def test_hidden_advanced_export_fields_still_send_their_values() -> None:
 def test_extend_export_is_off_with_nothing_to_extend() -> None:
     """Extend export with blank (or 0) Extend start and end and Speech-aware cuts off would run
     ``extend --no-speech-aware`` with no padding, which the CLI refuses ("Nothing to do"): the
-    button is disabled with the reason in its title, as Export clips and Assemble give theirs,
-    and follows the fields as they are typed."""
+    button is disabled with the reason in its title (the tooltip) and follows the fields as they
+    are typed. Its aria-describedby hides the title from screen readers, so the same reason is
+    also in the hidden #extendWhy it names (written only when it changes)."""
     js = _web("app.js")
+    html = _web("index.html")
+    btn = re.search(r'<button type="button" id="extendBtn"[^>]*>', html)[0]
+    assert 'aria-describedby="dExtendBtn extendWhy"' in btn
+    assert '<span id="extendWhy" class="vh"></span>' in html
     busy = _js_function(js, "renderBusy")
+    assert "const extendSay = $('#extendWhy');" in busy
+    assert (
+        "if (extendSay.textContent !== $('#extendBtn').title) "
+        "extendSay.textContent = $('#extendBtn').title;"
+    ) in busy
+    assert busy.index("set('#extendBtn'") < busy.index("extendSay.textContent =")
     assert "const ext = extendOptions();" in busy
     assert "!ext.speech_aware && !(ext.extend_start > 0) && !(ext.extend_end > 0)" in busy
     assert "set('#extendBtn', !p || busy || !p.clips || idle, extendWhy);" in busy

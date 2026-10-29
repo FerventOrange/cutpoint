@@ -2558,6 +2558,8 @@ function renderBusy() {
   const idle = !ext.speech_aware && !(ext.extend_start > 0) && !(ext.extend_end > 0);
   const extendWhy = busy ? why : !p?.clips ? 'Export clips first.' : 'Set Extend start or Extend end above 0, or turn Speech-aware cuts on.';
   set('#extendBtn', !p || busy || !p.clips || idle, extendWhy);
+  const extendSay = $('#extendWhy'); // its aria-describedby hides the title from screen readers
+  if (extendSay.textContent !== $('#extendBtn').title) extendSay.textContent = $('#extendBtn').title;
   const preset = p?.preset_problem || (p && !p.sources?.length ? 'Add videos to the source folder first.' : '');
   set('#makeBtn', !p || busy || !!preset, busy ? why : preset);
   const presetWhy = $('#presetWhy');

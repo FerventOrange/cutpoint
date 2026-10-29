@@ -290,7 +290,8 @@ The "Latest export ..." facts under the options are advanced too; warnings and g
 (such as "Exported from the 360 preview (not stitched)") always show.
 
 **Extend export** (advanced) runs [`extend`](#extend) on the latest export into a new `clips_ui_<stamp>`
-folder. The result becomes the current export.
+folder. The result becomes the current export. It is disabled while Extend start and Extend end
+are blank or 0 and Speech-aware cuts is off (extend would have nothing to do); the tooltip says so.
 
 **One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs
 `cutpoint edit --kind <preset>` in the project's own style, with the Vertical and Compress Audio
