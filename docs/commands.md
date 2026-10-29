@@ -175,8 +175,8 @@ preview and trim candidates, save and reorder a sequence, export clips, and asse
 video with optional fades (video and audio set separately), loudness normalization, [peak compression](#peak-compression) and
 captions. Nothing is uploaded. A camera
 folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 analyze --scan`
-(see [360 video](workflows/360.md#in-the-ui)); its moments preview through the camera path the
-analysis cached when it is current (else the raw preview), with badges for poor paths
+(see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
+path (the one the analysis cached when it is current), with badges for poor paths
 ([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
 the action-cam commands or the other `360` commands.
 
