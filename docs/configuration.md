@@ -186,17 +186,31 @@ How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at 
 
 Settings for the `cutpoint ui` [AI Chat tab](commands.md#ai-chat), served by the UI's API
 (`/api/projects/{id}/assistant`, token header only). It writes `ui/assistant/chat.json` and
-`history.json` in the project. Settings > AI assistant changes `provider`, `model` and `url`.
-There is no API key setting (see below).
+`history.json` in the project. There is no API key setting (see below).
+
+Settings > AI assistant offers a Provider preset, so no base URL is typed: it saves `provider`
+and `model`, with `url` empty (the preset's own):
+
+| Preset | `provider` | Base URL | Model |
+|---|---|---|---|
+| None (local Ollama) | `ollama` | `ollama_url` (`OLLAMA_HOST`) | any pulled model; empty: `qwen3.5:9b`, else the vision model |
+| Claude (Anthropic) | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered |
+| Codex (OpenAI) | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name |
+| Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name |
+
+A `url` set in `config.json` that is not the preset's (OpenRouter, LM Studio, a LAN Ollama) keeps
+working and shows as "Custom (from config.json)": its base URL is read-only (edit the file to
+change it), its model can be changed there, and choosing a preset and saving replaces it. The Model field lists the models the provider offers (Refresh
+asks again; see [AI Chat](commands.md#ai-chat)), and any other name can be typed.
 
 - `provider`: `ollama` (default), `openai` (OpenAI or a server that speaks its API: LM Studio,
-  vLLM, llama-server) or `anthropic`.
+  vLLM, llama-server), `anthropic` or `xai` (Grok, OpenAI-compatible).
 - `model`: the model name. Empty (default): for Ollama `qwen3.5:9b` if it is pulled, else the
   vision model (`CUTPOINT_VISION_MODEL`, default `qwen3-vl:8b`); for Anthropic
   `claude-sonnet-5-5` (`claude-opus-5-5` is stronger, slower and costs more); for an
-  OpenAI-compatible server its only model (`/v1/models`); OpenAI itself needs a name.
-- `url`: the base URL. Empty (default): `ollama_url`, `https://api.openai.com/v1` or
-  `https://api.anthropic.com`. An OpenAI-compatible URL with no path gets `/v1`
+  OpenAI-compatible server its only model (`/v1/models`); OpenAI and xAI need a name.
+- `url`: the base URL. Empty (default): `ollama_url`, `https://api.openai.com/v1`,
+  `https://api.anthropic.com` or `https://api.x.ai/v1`. An OpenAI-compatible URL with no path gets `/v1`
   (`http://localhost:1234` is `http://localhost:1234/v1`). A URL with a backslash, a user name or
   password (`https://name@host`), or a host that reads differently to different URL parsers is
   refused, and redirects are not followed (by Ollama either) (set the
@@ -217,10 +231,11 @@ host of its base URL. It is taken, in order, from:
 | Source | Used for |
 |---|---|
 | `CUTPOINT_ASSISTANT_API_KEY` | any provider and any host (for example a key that only Cutpoint uses, or an OpenRouter key) |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine |
-| The system keyring (service `cutpoint`) | saved from Settings for the provider and base URL saved there, with the optional `keyring` extra (`uv sync --extra keyring`, or `uv tool install "cutpoint[ui,keyring]"`). The user is `anthropic` or `openai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com` / `api.x.ai`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine, and an xAI key never anywhere but `api.x.ai` (not to the `openai` provider with an `api.x.ai` URL either) |
+| The system keyring (service `cutpoint`) | saved from Settings for the provider and base URL saved there, with the optional `keyring` extra (`uv sync --extra keyring`, or `uv tool install "cutpoint[ui,keyring]"`). The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
 
-Change the provider or base URL, save the settings, then save the key for it. The key is sent
+A preset's key is for its own host, so it can be saved before the settings. For a custom base
+URL, save the settings first, then save the key for it. The key is sent
 only to the host it belongs to, in a request header, and only over `https://` unless the server
 is on this machine (a key with an `http://` base URL on another machine is refused). `cutpoint
 ui` takes these variables out of its own environment when it starts, so jobs, ffmpeg and file

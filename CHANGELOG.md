@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a WARNING, and Export says "Exported from the 360 preview (not stitched)". The new
   `pano.auto_stitch` key (default `true`) turns it off; the command-line `clips` is unchanged.
 - Docs: how to install Ollama and the models for `--vision` and AI Chat.
+- `cutpoint ui` Settings > AI assistant: choose a Provider preset instead of typing a base URL:
+  None (local Ollama, with a model name), Claude (Anthropic), Codex (OpenAI) or Grok (xAI, the new
+  `assistant.provider` `xai` at `https://api.x.ai/v1`). Grok's key comes from the new
+  `XAI_API_KEY`, used only for `api.x.ai`, kept from jobs and redacted from logs like the others.
+  The Model field lists the provider's models (Ollama's pulled ones; Anthropic, OpenAI and xAI
+  only with a key and after consent; non-chat and `*-codex` models left out), cached 10 minutes, with
+  Refresh list; any name can still be typed. A `url` in `config.json` that no preset has shows as
+  "Custom (from config.json)" and keeps working; its model can still be changed.
 - `cutpoint ui` AI Chat: bring your own AI. `assistant.provider` can be `openai` (OpenAI, or
   LM Studio, vLLM and llama-server at `assistant.url`) or `anthropic` (default model
   `claude-sonnet-5-5`, `claude-opus-5-5` selectable), chosen in Settings with the model and base
@@ -152,12 +160,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: the Play sequence button sits under Undo and Redo, as wide as the pair, and
+  keeps its size and place when it turns into Stop. It used to shrink and jump up beside Redo.
 - `cutpoint ui`: the Sequence, AI Chat and Export tabs share the sequence column's full width
   evenly at any width the column is dragged to; a label too long for a narrow tab ends in an
   ellipsis. Before, they kept their labels' widths at the left of the column.
 - `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
   instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
   there are none.
+- `cutpoint ui` Export tab: after an export with Color on, the export state says how many clips
+  the grade changed and why it left the others as is, from `color.skip` in `manifest.json` (for
+  example "Color: no clips graded (too much highlight clipping)."). An export whose clips the
+  safety checks all skipped looked as if Color had done nothing, with no reason given. The note
+  shows with the advanced export options hidden too.
 - `cutpoint ui`: the final video in the Export tab no longer plays on under Play sequence. It
   kept playing while its tab was hidden, so its audio ran over every sequence clip. Starting
   the preview or leaving the Export tab now pauses it, and playing it stops Play sequence. Play sequence also no longer
