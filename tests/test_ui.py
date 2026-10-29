@@ -2128,10 +2128,10 @@ def test_export_keeps_saved_order_and_each_assembly_is_kept(
     assert first[0]["name"] != f"{taken.stem}.mp4"
     second = run({"action": "assemble", "transition": "cut"})["outputs"]
     assert first[0]["name"].endswith(".mp4") and first[0]["name"] != second[0]["name"]
-    assert [o["name"].rsplit(".", 1)[1] for o in second[:3]] == ["mp4", "fcpxml", "otio"]
-    assert [o["name"] for o in second[3:]][:1] == [
-        first[0]["name"]
-    ]  # the earlier final stays listed
+    new = [o["name"] for o in second if o["name"] not in {x["name"] for x in first}]
+    assert new[0].endswith(".mp4")  # assemble writes no timelines by default
+    assert {n.rsplit(".", 1)[1] for n in new} <= {"mp4", "srt"}
+    assert first[0]["name"] in [o["name"] for o in second]  # the earlier final stays listed
     assert (ui.project_dir(pid) / first[0]["name"]).is_file()  # the earlier final survives
     assert client.get(second[0]["url"]).status_code == 200
 

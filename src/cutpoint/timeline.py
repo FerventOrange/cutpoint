@@ -1,5 +1,6 @@
 """Write DaVinci Resolve-importable timelines (FCPXML 1.10 and OpenTimelineIO).
 
+``cutpoint assemble --format fcpxml|otio`` writes one of them instead of final.mp4.
 Clips are laid out in the given order with absolute file references. Import in
 Resolve via File > Import > Timeline.
 
@@ -240,18 +241,29 @@ def write_otio(
     return out
 
 
-def write_timelines(
-    clips: list[MediaInfo], output_video: Path, fade: float = 0.0, audio_cut: bool = False
-) -> tuple[Path, Path]:
-    """Write ``<name>.fcpxml`` and ``<name>.otio`` next to ``output_video``.
+TIMELINE_FORMATS = ("fcpxml", "otio")  # ``assemble --format`` values that write a timeline
 
-    ``fade``: the crossfade final.mp4 was joined with (:func:`cutpoint.assemble.crossfade_duration`,
-    whole frames), 0 for hard cuts. ``audio_cut``: its audio was joined with hard cuts in the
-    crossfades (``--audio-transition cut``).
+
+def write_timeline(
+    clips: list[MediaInfo],
+    output_video: Path,
+    kind: str,
+    fade: float = 0.0,
+    audio_cut: bool = False,
+) -> Path:
+    """Write the ``kind`` timeline (:data:`TIMELINE_FORMATS`), ``<name>.fcpxml`` or
+    ``<name>.otio``, for ``output_video`` (its folder and stem; the video itself need not exist).
+
+    ``fade``: the crossfade of the join (:func:`cutpoint.assemble.crossfade_duration`, whole
+    frames), 0 for hard cuts. ``audio_cut``: the audio joins with hard cuts in the crossfades
+    (``--audio-transition cut``).
     """
-    name = output_video.stem
-    fcp = write_fcpxml(clips, output_video.with_suffix(".fcpxml"), name, fade, audio_cut)
-    oti = write_otio(clips, output_video.with_suffix(".otio"), name, fade, audio_cut)
+    writers = {"fcpxml": write_fcpxml, "otio": write_otio}
+    if kind not in writers:
+        raise ValueError(f"unknown timeline format {kind!r}")
+    out = writers[kind](
+        clips, output_video.with_suffix(f".{kind}"), output_video.stem, fade, audio_cut
+    )
     if len({c.fps for c in clips}) > 1:
-        logger.warning("Clips have mixed frame rates; timelines use %s fps", clips[0].fps)
-    return fcp, oti
+        logger.warning("Clips have mixed frame rates; the timeline uses %s fps", clips[0].fps)
+    return out

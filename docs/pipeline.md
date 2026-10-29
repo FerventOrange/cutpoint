@@ -63,7 +63,7 @@ flowchart TD
     HL --> CLIPS["cutpoint clips: choose --top, --max-total, --ids or --segments"]
     CLIPS --> CDIR[/"clips/001_label.mp4, manifest.json, .srt"/]
     CDIR -->|"review: delete or rename"| ASM["cutpoint assemble: transition, loudnorm, captions"]
-    ASM --> FIN[/"final.mp4, final.fcpxml, final.otio, final.srt"/]
+    ASM --> FIN[/"final.mp4 or, with --format, final.fcpxml / final.otio; final.srt"/]
     EDIT --> CLIPS
     EDIT --> ASM
     FIN -->|edit only| COPY[/"name-final.mp4 and .srt"/]

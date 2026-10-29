@@ -154,12 +154,12 @@ def test_assemble_json(video, home, capsys):
     assert code == 0 and doc["ok"] is True and doc["command"] == "assemble"
     assert doc["project"] == str(project)
     out = doc["outputs"]
-    assert set(out) == {"final", "fcpxml", "otio", "srt", "duration", "clip_count"}
+    assert set(out) == {"format", "final", "srt", "duration", "clip_count"}  # no timelines
+    assert out["format"] == "mp4"
     assert out["final"] == str(project / "final.mp4")
-    assert out["fcpxml"] == str(project / "final.fcpxml")
-    assert out["otio"] == str(project / "final.otio")
     assert out["srt"] == str(project / "final.srt")
-    assert all(Path(out[k]).is_file() for k in ("final", "fcpxml", "otio", "srt"))
+    assert all(Path(out[k]).is_file() for k in ("final", "srt"))
+    assert not (project / "final.fcpxml").exists() and not (project / "final.otio").exists()
     assert out["duration"] > 0
     assert out["clip_count"] == len(list((project / "clips").glob("*.mp4")))
     assert cli.main(["assemble", "projects/j/clips"]) == 0  # without --json: nothing on stdout
@@ -244,7 +244,7 @@ def test_extend_argument_errors_are_bad_args(home, tmp_path, capsys, caplog, ext
 EDIT_KEYS = {
     "kind", "highlights", "transcript", "candidates", "suggested_top", "style",
     "clips_dir", "manifest", "clips", "count", "total_seconds",
-    "final", "fcpxml", "otio", "srt", "duration", "clip_count", "copy", "copy_srt",
+    "format", "final", "srt", "duration", "clip_count", "copy", "copy_srt",
 }  # fmt: skip
 
 
@@ -266,7 +266,7 @@ def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
     assert out["copy"] == str(project / "clip-final.mp4")
     assert out["copy_srt"] == str(project / "clip-final.srt")
     assert out["final"] == str(project / "final.mp4")
-    for key in ("highlights", "transcript", "manifest", "final", "fcpxml", "otio", "srt"):
+    for key in ("highlights", "transcript", "manifest", "final", "srt"):
         assert Path(out[key]).is_file(), key
     assert Path(out["copy"]).is_file() and Path(out["copy_srt"]).is_file()
     _assert_clips(out, project / "clips")
@@ -357,7 +357,7 @@ def test_edit_events_json_reports_the_re_ranked_highlights(home, tmp_path, capsy
         hl["suggested_top"] = 1
         hl_file.write_text(json.dumps(hl), encoding="utf-8")
 
-    def assemble(clips_dir, **kw):
+    def assemble(clips_dir, out=None, **kw):
         final = clips_dir.parent / "final.mp4"
         final.write_bytes(b"final")
         return final

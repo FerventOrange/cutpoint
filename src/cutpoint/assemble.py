@@ -18,20 +18,33 @@ their ends to overlap without moving the later clips' audio off their video.
 Peak compression (``compress_peaks``, see :data:`cutpoint.encode.PEAK_PRESETS`) works the
 same way: clips exported with it (manifest ``compress_peaks``) are left alone, the others
 are measured and get the compressor and leveling gain in the join, before the edge fade.
+
+Output format (``output_format``, :data:`OUTPUT_FORMATS`): ``mp4`` joins the clips into
+final.mp4; ``fcpxml`` or ``otio`` writes only that timeline, referencing the clips, without
+joining or encoding anything. final.srt is written either way.
+
+:func:`assemble_project` assembles the moments of a project without keeping clips: they are
+exported into a temporary folder in the project (:func:`temporary_clips`), removed afterwards.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
 import shutil
 import subprocess
 import sys
+import uuid
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
+from functools import partial
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 from cutpoint import jsonout, paths
 from cutpoint.encode import (
@@ -52,6 +65,7 @@ from cutpoint.encode import (
 )
 from cutpoint.ffmpeg_utils import (
     FFmpegError,
+    FolderBusyError,
     MediaInfo,
     VideoEncoder,
     atomic_output,
@@ -60,14 +74,17 @@ from cutpoint.ffmpeg_utils import (
     extract_audio,
     ffprobe_json,
     has_soxr,
+    lock_path,
     measure_loudness,
     output_dir,
     probe,
     recover_swap,
+    retry_locked,
     run,
+    staging_path,
     swap_lock,
 )
-from cutpoint.timeline import write_timelines
+from cutpoint.timeline import TIMELINE_FORMATS, write_timeline
 from cutpoint.transcribe import Segment, Transcriber, flat_words
 from cutpoint.utils import clip_files
 
@@ -1189,12 +1206,8 @@ def _join(
     """
     audio = audio_transition or default_audio_transition(transition)
     if transition == "fade" and len(files) > 1:
-        fade_dur = crossfade_duration(infos, fade_dur)
+        fade_dur = join_fade(infos, transition, fade_dur)
         if fade_dur == 0:
-            logger.warning(
-                "One frame is more than 45% of the shortest clip: no room for a crossfade; "
-                "joining with cuts"
-            )
             transition = "cut"
     if len(files) == 1 or transition == "cut":
         fades = _edge_fades(clips_dir, files, audio_fade)
@@ -1215,7 +1228,22 @@ def _join(
     raise ValueError(f"Unknown transition {transition!r}")
 
 
+def join_fade(infos: list[MediaInfo], transition: str, fade_dur: float) -> float:
+    """The crossfade a join of ``infos`` uses (:func:`crossfade_duration`), 0 for cuts or one
+    clip. A fade without room for one frame joins with cuts (one WARNING)."""
+    if transition != "fade" or len(infos) < 2:
+        return 0.0
+    used = crossfade_duration(infos, fade_dur)
+    if used == 0:
+        logger.warning(
+            "One frame is more than 45% of the shortest clip: no room for a crossfade; "
+            "joining with cuts"
+        )
+    return used
+
+
 AUDIO_TRANSITIONS = ("cut", "crossfade")
+OUTPUT_FORMATS = ("mp4", *TIMELINE_FORMATS)  # assemble --format: the final video or a timeline
 
 
 def default_audio_transition(transition: str) -> str:
@@ -1248,11 +1276,18 @@ def assemble(
     audio_fade: float = 0.25,
     compress_peaks: str = "off",
     audio_transition: str | None = None,
+    output_format: str = "mp4",
 ) -> Path:
-    """Assemble ``clips_dir`` into ``out`` and write .otio/.fcpxml timelines next to it.
+    """Assemble ``clips_dir`` into ``out``, or write its timeline instead.
+
+    ``output_format`` (:data:`OUTPUT_FORMATS`): ``mp4`` joins the clips into ``out`` and writes
+    no timeline. ``fcpxml`` or ``otio`` writes only ``<out stem>.fcpxml`` or ``.otio`` next to
+    where ``out`` would be, referencing the clips as they are: nothing is joined or encoded,
+    so ``loudnorm``, ``captions``, ``caption_model``, ``audio_fade`` and ``compress_peaks``
+    do not apply. The timeline has the cuts or crossfades the join would have.
 
     Subtitles ``<out>.srt`` are written from the clips' cached source transcripts
-    (see :func:`cutpoint.srt.write_final_srt`), timed to the joined video.
+    (see :func:`cutpoint.srt.write_final_srt`), timed to the joined video (the timeline).
 
     ``audio_fade``: audio fade in/out (s) added to each clip that has no fade
     baked in by ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored when the
@@ -1269,13 +1304,19 @@ def assemble(
     Like ``clips``, a replace of ``clips_dir`` killed hard is first finished or undone
     (:func:`~cutpoint.ffmpeg_utils.recover_swap`), and the folder is locked for the run.
 
+    Returns:
+        The file written: ``out`` (mp4), or the timeline.
+
     Raises:
         FileNotFoundError: If the folder has no .mp4 clips.
         FolderBusyError: If another run is using ``clips_dir``.
-        ValueError: If ``audio_transition`` does not go with ``transition``.
+        ValueError: If ``audio_transition`` does not go with ``transition``, or
+            ``output_format`` is unknown.
     """
     if (why := check_transitions(transition, audio_transition)) is not None:
         raise ValueError(why)
+    if output_format not in OUTPUT_FORMATS:
+        raise ValueError(f"unknown output format {output_format!r}")
     with swap_lock(clips_dir):  # one run at a time: another would remove a run's staging folder
         recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
         return _assemble(
@@ -1289,6 +1330,7 @@ def assemble(
             audio_fade,
             compress_peaks,
             audio_transition or default_audio_transition(transition),
+            output_format,
         )
 
 
@@ -1303,6 +1345,7 @@ def _assemble(
     audio_fade: float,
     compress_peaks: str,
     audio_transition: str,
+    output_format: str,
 ) -> Path:
     """:func:`assemble`, with ``clips_dir`` locked."""
     if out is None:  # clips -> final.mp4, clips_vertical -> final_vertical.mp4
@@ -1313,6 +1356,10 @@ def _assemble(
     files = list_clips(clips_dir, exclude={out})
     if not files:
         raise FileNotFoundError(f"No .mp4 clips in {clips_dir}")
+    if output_format != "mp4":
+        return _write_timeline(
+            clips_dir, files, out, output_format, transition, fade_dur, audio_transition
+        )
     # A run that fails before writing anything leaves no empty output folder behind.
     with output_dir(out.parent):
         infos = [probe(f) for f in files]
@@ -1356,16 +1403,232 @@ def _assemble(
                 if stage != part:
                     stage.unlink(missing_ok=True)
 
-    fcp, oti = write_timelines(infos, out, used_fade, audio_cut=audio_transition == "cut")
     duration = probe(out).duration
-    logger.info("Wrote %s (%.2fs), %s, %s", out, duration, fcp.name, oti.name)
+    logger.info("Wrote %s (%.2fs)", out, duration)
+    _warn_earlier(out, "mp4")
     from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
 
     srt_path = write_final_srt(clips_dir, files, infos, used_fade, out)
+    jsonout.output("format", "mp4")
     jsonout.output("final", out)
-    jsonout.output("fcpxml", fcp)
-    jsonout.output("otio", oti)
     jsonout.output("srt", srt_path)
     jsonout.output("duration", round(duration, 3))
     jsonout.output("clip_count", len(files))
     return out
+
+
+def _write_timeline(
+    clips_dir: Path,
+    files: list[Path],
+    out: Path,
+    kind: str,
+    transition: str,
+    fade_dur: float,
+    audio_transition: str,
+) -> Path:
+    """The ``kind`` timeline (``fcpxml`` or ``otio``) of :func:`assemble`, and ``<out>.srt``:
+    the clips are only probed, nothing is joined or encoded."""
+    infos = [probe(f) for f in files]
+    fade = join_fade(infos, transition, fade_dur)
+    logger.info(
+        "Writing the %s timeline of %d clips (%s): %s",
+        kind,
+        len(files),
+        "fade" if fade else "cut",
+        ", ".join(f.name for f in files),
+    )
+    with output_dir(out.parent):
+        path = write_timeline(infos, out, kind, fade, audio_cut=audio_transition == "cut")
+    duration = clip_offsets(infos, fade)[-1] + infos[-1].vduration  # as the timeline's length
+    logger.info("Wrote %s (%.2fs, %d clips in %s)", path, duration, len(files), clips_dir)
+    _warn_earlier(out, kind)
+    from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
+
+    srt_path = write_final_srt(clips_dir, files, infos, fade, out)
+    jsonout.output("format", kind)
+    jsonout.output(kind, path)
+    jsonout.output("srt", srt_path)
+    jsonout.output("duration", round(duration, 3))
+    jsonout.output("clip_count", len(files))
+    return path
+
+
+def _warn_earlier(out: Path, written: str) -> None:
+    """WARNING for each of ``out``'s other formats (:data:`OUTPUT_FORMATS`) found next to it:
+    an earlier run wrote it, so it may not match the ``written`` one."""
+    for kind in OUTPUT_FORMATS:
+        other = out.with_suffix(f".{kind}")
+        if kind != written and other.is_file():
+            logger.warning("%s is from an earlier run and may not match %s", other, out.stem)
+
+
+# ------------------------------------------------------- assembling without keeping the clips
+TEMP_PREFIX = ".assemble-tmp-"  # temporary clips folder in the project: .assemble-tmp-<id>
+
+
+def _run_lock(project: Path, name: str) -> Path:
+    """What :func:`temporary_clips` locks (:func:`~cutpoint.ffmpeg_utils.swap_lock`) for the
+    whole run of the temporary folder ``name``: ``<project>/<name>.run``."""
+    return project / f"{name}.run"
+
+
+def _remove_temporary(project: Path, name: str) -> list[Path]:
+    """Remove the temporary clips folder ``name`` of ``project``, its staging folder, its 360
+    paths folder (``pano_paths/<name>``, ``pano_paths`` too once empty) and the lock file of its
+    export. Returns the folders that could not be removed (one WARNING each)."""
+    from cutpoint.pano.render import PATHS_DIR  # noqa: PLC0415
+
+    tmp, pano = project / name, project / PATHS_DIR
+    left = []
+    for folder in (tmp, staging_path(tmp), pano / name):
+        if folder.exists():
+            try:
+                retry_locked(partial(shutil.rmtree, folder), folder, "remove")
+            except OSError as err:
+                logger.warning("Cannot remove the temporary clips %s: %s", folder, err)
+                left.append(folder)
+    with contextlib.suppress(OSError):  # not empty: other paths stay
+        pano.rmdir()
+    if (lock := lock_path(tmp)) is not None:  # left by a hard-killed export
+        with contextlib.suppress(OSError):
+            lock.unlink(missing_ok=True)
+    return left
+
+
+def _sweep_temporary(project: Path) -> None:
+    """Remove what hard-killed runs (a Cancel in the UI included) left of their temporary
+    clips in ``project``: each ``.assemble-tmp-<id>`` whose run lock (:func:`_run_lock`) can be
+    taken, with its staging and 360 paths folders. A folder of a run still going is kept."""
+    from cutpoint.pano.render import PATHS_DIR  # noqa: PLC0415
+
+    if not project.is_dir():
+        return
+    names = set()
+    for path in [*project.iterdir(), *(project / PATHS_DIR).glob(f"{TEMP_PREFIX}*")]:
+        name = path.name.lstrip(".")
+        if not name.startswith(TEMP_PREFIX[1:]):
+            continue
+        for suffix in (".run.cutpoint-lock", ".cutpoint-lock", ".cutpoint-tmp"):
+            name = name.removesuffix(suffix)
+        names.add("." + name)
+    for name in sorted(names):
+        try:
+            with swap_lock(_run_lock(project, name)):
+                logger.info("Removing %s, left by an interrupted run", project / name)
+                _remove_temporary(project, name)
+        except FolderBusyError:
+            continue  # another run is using it
+        except OSError as err:  # best effort: never fails the run
+            logger.warning("Could not check %s left by an earlier run: %s", project / name, err)
+            continue
+
+
+@contextmanager
+def temporary_clips(project: Path) -> Iterator[Path]:
+    """A new temporary clips folder ``<project>/.assemble-tmp-<id>`` (not created yet: export
+    into it with ``export_clips(out_dir=..., temporary=True)``), removed on exit with all in it,
+    its staging folder and its 360 paths folder, after success, a failure and Ctrl+C alike.
+
+    The run holds a lock of its own (:func:`_run_lock`) until then, so a later run can tell a
+    folder left by a hard kill from one in use, and first removes the ones left
+    (:func:`_sweep_temporary`). ``project`` is created if missing and removed again on a failure
+    while it is empty (:func:`~cutpoint.ffmpeg_utils.output_dir`).
+
+    ``--json`` warnings: ``temporary_clips`` after success; ``temporary_clips_left`` naming a
+    folder that could not be removed (still open in another program), also after a failure.
+    """
+    tmp = project / f"{TEMP_PREFIX}{uuid.uuid4().hex[:12]}"
+    with output_dir(project), swap_lock(_run_lock(project, tmp.name)):
+        _sweep_temporary(project)
+        try:
+            yield tmp
+        except BaseException:
+            _warn_left(_remove_temporary(project, tmp.name))
+            raise
+        if left := _remove_temporary(project, tmp.name):
+            _warn_left(left)
+        else:
+            message = (
+                "The clips were temporary and are removed; to keep clips, export them with "
+                "`cutpoint clips` and assemble the clips folder"
+            )
+            logger.info("%s", message)
+            jsonout.warn("temporary_clips", message)
+
+
+def _warn_left(left: list[Path]) -> None:
+    """The ``--json`` warning ``temporary_clips_left`` for the folders ``left``, if any."""
+    if left:
+        message = f"Could not remove the temporary clips {', '.join(map(str, left))}; delete them"
+        jsonout.warn("temporary_clips_left", message, left)
+
+
+def assemble_project(
+    project: Path,
+    out: Path | None = None,
+    *,
+    export: Mapping[str, Any] | None = None,
+    vertical: bool = False,
+    force: bool = False,
+    output_format: str = "mp4",
+    transition: str = "cut",
+    fade_dur: float = 0.25,
+    loudnorm: bool = False,
+    captions: bool = False,
+    caption_model: str | None = None,
+    audio_fade: float = 0.25,
+    compress_peaks: str = "off",
+    audio_transition: str | None = None,
+) -> Path:
+    """Export the moments of ``project`` and assemble them (``cutpoint assemble <project>``).
+
+    ``export``: the selection and export settings of
+    :func:`~cutpoint.clips.export_clips` (``top``, ``ids``, ``segments``, ``max_total``,
+    ``order``, tails, crop, ``lut``, ``color``, 360 options ...); ``vertical``, ``audio_fade``
+    and ``compress_peaks`` go to both the export (baked into the clips) and the join, as in
+    ``cutpoint edit``. The other options are :func:`assemble`'s.
+
+    ``mp4``: the clips are exported into :func:`temporary_clips` and removed after the join, so
+    the project keeps only ``out`` (default ``<project>/final.mp4``, ``final_vertical.mp4``
+    with ``vertical``) and its .srt; a clips folder is never touched, and ``force`` must be
+    False. The free space is checked before the export (``export_clips(temporary=True)``).
+    ``fcpxml`` / ``otio``: the timeline references the clips, so they are kept in the clips
+    folder ``cutpoint clips`` uses (``force`` as ``clips --force``) and the timeline is written
+    as ``assemble <clips_dir> --format`` writes it.
+
+    Returns:
+        The file written: the final video or the timeline.
+
+    Raises:
+        ValueError: If ``audio_transition`` does not go with ``transition``, the format is
+            unknown, ``force`` is given with ``mp4``, or the drive has too little free space;
+            and as :func:`~cutpoint.clips.export_clips` and :func:`assemble` raise.
+    """
+    from cutpoint.clips import export_clips  # noqa: PLC0415 - it imports this module (srt)
+
+    if (why := check_transitions(transition, audio_transition)) is not None:
+        raise ValueError(why)
+    if output_format not in OUTPUT_FORMATS:
+        raise ValueError(f"unknown output format {output_format!r}")
+    shape = {"vertical": vertical, "audio_fade": audio_fade, "compress_peaks": compress_peaks}
+    join = {
+        "transition": transition,
+        "fade_dur": fade_dur,
+        "loudnorm": loudnorm,
+        "captions": captions,
+        "caption_model": caption_model,
+        "audio_fade": audio_fade,
+        "audio_transition": audio_transition,
+        "output_format": output_format,
+    }
+    if output_format != "mp4":  # baked into the kept clips; the timeline uses them as they are
+        clips_dir = export_clips(project, force=force, **dict(export or {}), **shape)
+        return assemble(clips_dir, out, **join)
+    if force:
+        raise jsonout.ArgumentError(
+            "--force replaces kept clips; assembling a project into an mp4 keeps none"
+        )
+    out = out or project / ("final_vertical.mp4" if vertical else "final.mp4")
+    with temporary_clips(project) as tmp:
+        export_clips(project, out_dir=tmp, temporary=True, **dict(export or {}), **shape)
+        return assemble(tmp, out, compress_peaks=compress_peaks, **join)

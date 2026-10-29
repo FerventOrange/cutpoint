@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
@@ -98,6 +99,13 @@ ARC_MAX_REPEAT = 2  # same-category clips in a row
 ARC_WINDOW = 4  # how far ahead a local swap may reach (clips)
 REACTION_LABEL = "crash reaction"  # ``cutpoint mix`` label of a crash's reaction segment
 BOUND_KEYS = ("min_start", "max_end")  # source-time limits of a segment's lead-in and tails
+# Free space check of a temporary export (export_clips(temporary=True)): a clip's size is
+# estimated at this rate for 1920x1080 at 30 fps (scaled by its pixels, and by its frame rate
+# above 30), and the drive must hold the clips, the final video and its staging copy, with
+# this much to spare.
+CLIP_BYTES_PER_S_1080P = 2.5e6  # 20 Mb/s, the typical rate at 1080p30
+TEMP_COPIES = 3
+TEMP_SPARE_GB = 1.0
 _WINDOWS = sys.platform == "win32"  # D:foo is drive-relative only here (elsewhere a file name)
 
 Unit = list[dict[str, Any]]  # a clip, or a crash plus its reaction
@@ -1273,6 +1281,32 @@ def _color_grades(
     return list(grades)
 
 
+def check_free_space(folder: Path, plans: list[ClipPlan], fmt: OutputFormat) -> None:
+    """Refuse a temporary export of ``plans`` at ``fmt`` into ``folder`` when its drive has too
+    little free space for the clips, the final video and its staging copy
+    (:data:`TEMP_COPIES`, :data:`CLIP_BYTES_PER_S_1080P`) plus :data:`TEMP_SPARE_GB`, as
+    ``360 stitch`` checks before a stitch. An unknown free space is not checked.
+
+    Raises:
+        ValueError: Naming the free and the needed space.
+    """
+    from cutpoint.pano.stitch import free_gb  # noqa: PLC0415
+
+    free = free_gb(folder)
+    if free is None:
+        return
+    seconds = sum(p.end - p.start for p in plans)
+    fps = max(1.0, float(Fraction(fmt.fps)) / 30)
+    rate = CLIP_BYTES_PER_S_1080P * fmt.width * fmt.height / (1920 * 1080) * fps
+    need = seconds * rate * TEMP_COPIES / 1e9
+    logger.debug("Temporary clips: %.1f GB free, about %.1f GB needed", free, need)
+    if free - need < TEMP_SPARE_GB:
+        raise ValueError(
+            f"{folder}: {free:.1f} GB free, the temporary clips and the final video need about "
+            f"{need:.1f} GB (and {TEMP_SPARE_GB:g} GB to spare)"
+        )
+
+
 @contextmanager
 def _claimed(out_dir: Path, force: bool) -> Iterator[None]:
     """Hold the lock of ``out_dir`` (:func:`swap_lock`: one run at a time, as another would
@@ -1319,6 +1353,7 @@ def export_clips(
     lut: Lut | None = None,
     color: str | None = None,
     color_strength: float = 1.0,
+    temporary: bool = False,
 ) -> Path:
     """Export moments as normalised, numbered clips plus manifest.json.
 
@@ -1386,13 +1421,18 @@ def export_clips(
     largest source's (useful when 16:9 and taller sources such as GoPro 8:7
     are mixed; give the taller ones a ``crop`` so they fill the frame).
 
+    ``temporary``: ``out_dir`` is a :func:`cutpoint.assemble.temporary_clips` folder, joined
+    and removed right after: the free space for it and the final video is checked before any
+    export (:func:`check_free_space`), and ``--json`` gets no clip outputs.
+
     Returns:
         The clips directory.
 
     Raises:
         FileNotFoundError: If highlights.json / segments / a source is missing.
         FileExistsError: If the clips folder is non-empty and ``force`` is False.
-        ValueError: If the selection or a crop is invalid.
+        ValueError: If the selection or a crop is invalid, or (``temporary``) the drive has
+            too little free space.
         jsonout.ArgumentError: For ``color`` with ``lut``, or ``color_strength`` outside 0-1.
     """
     if not 0 <= color_strength <= 1:
@@ -1504,6 +1544,8 @@ def export_clips(
             pano=pano,
             language=language,
         )
+        if temporary:
+            check_free_space(out_dir.parent, plans, fmt)
         # --force replaces only what an earlier run made, never a file this run reads.
         replace, kept_sources, kept, had_manifest, protected_srts, renamed = _replaced_files(
             out_dir,
@@ -1568,5 +1610,6 @@ def export_clips(
         message = f"Kept {', '.join(kept)} in {out_dir}: {why}; {hint}"
         logger.warning("%s", message)
         jsonout.warn("kept_clips", message, [out_dir / n for n in kept])
-    report_clips(out_dir)
+    if not temporary:
+        report_clips(out_dir)
     return out_dir

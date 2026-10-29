@@ -31,7 +31,7 @@ def pipeline(home, tmp_path, monkeypatch):
     video.parent.mkdir()
     video.write_bytes(b"source bytes")
     calls: list[tuple[str, tuple, dict]] = []
-    state = SimpleNamespace(video=video, calls=calls, write_srt=True)
+    state = SimpleNamespace(video=video, calls=calls, write_srt=True, fail_assemble=None)
 
     def analyze(targets, style, out, **kw):
         calls.append(("analyze", (targets, style.name, out), kw))
@@ -40,19 +40,24 @@ def pipeline(home, tmp_path, monkeypatch):
 
     def export_clips(project, **kw):
         calls.append(("clips", (project,), kw))
-        out = project / ("clips_vertical" if kw["vertical"] else "clips")
+        out = kw.get("out_dir") or project / ("clips_vertical" if kw["vertical"] else "clips")
         out.mkdir(exist_ok=True)
         (out / "001_a.mp4").write_bytes(b"clip")
+        state.listed = sorted(p.name for p in project.iterdir())  # while the clips exist
         return out
 
-    def assemble(clips_dir, **kw):
-        calls.append(("assemble", (clips_dir,), kw))
-        final = clips_dir.parent / ("final" + clips_dir.name[5:] + ".mp4")
-        final.write_bytes(b"final video")
+    def assemble(clips_dir, out=None, **kw):
+        calls.append(("assemble", (clips_dir, out), kw))
+        if out is None:
+            stem = "final" + clips_dir.name[5:]
+            out = clips_dir.parent / f"{stem}.{kw['output_format']}"
+        out.write_bytes(b"final video")
         if state.write_srt:
             text = "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n"
-            final.with_suffix(".srt").write_text(text, encoding="utf-8")
-        return final
+            out.with_suffix(".srt").write_text(text, encoding="utf-8")
+        if state.fail_assemble is not None:
+            raise state.fail_assemble
+        return out
 
     monkeypatch.setattr(cutpoint.analyze, "analyze", analyze)
     monkeypatch.setattr(edit, "export_clips", export_clips)
@@ -71,9 +76,10 @@ def test_edit_runs_the_steps_in_order_and_names_the_final(pipeline, home):
         "top": 8, "max_total": None, "order": "chronological", "vertical": False, "force": False,
         "compress_peaks": "off", "lut": None, "color": None, "color_strength": 1.0,
     }  # fmt: skip
-    assert calls[2][1] == (project / "clips",)
+    assert calls[2][1] == (project / "clips", None)
     assert calls[2][2] == {
         "transition": "cut", "loudnorm": True, "captions": True, "compress_peaks": "off",
+        "output_format": "mp4",
     }  # fmt: skip
     named = project / "My Clip-final.mp4"
     assert named.read_bytes() == b"final video"
@@ -159,7 +165,7 @@ def test_edit_events_without_the_extra_fails_before_analyzing(pipeline, monkeypa
 def test_edit_vertical_names_its_outputs(pipeline, home):
     assert cli.main(["edit", str(pipeline.video), "--vertical"]) == 0
     project = home / "projects" / "My Clip"
-    assert pipeline.calls[2][1] == (project / "clips_vertical",)
+    assert pipeline.calls[2][1] == (project / "clips_vertical", None)
     assert (project / "My Clip-final_vertical.mp4").read_bytes() == b"final video"
     assert (project / "My Clip-final_vertical.srt").is_file()
 
@@ -247,3 +253,68 @@ def test_edit_cancelled_in_clips_fails_that_step(pipeline, home, monkeypatch, ca
     assert cli.main(["edit", str(pipeline.video), "--kind", "clips"]) == 130
     last = _progress_lines(capsys)[-1]
     assert (last["step"], last["state"], last["detail"]) == ("clips", "failed", "cancelled")
+
+
+# -- --no-keep-clips and --format (#519) ---------------------------------------------------
+
+
+def test_edit_no_keep_clips_assembles_temporary_clips_and_leaves_none(pipeline, home, capsys):
+    project = home / "projects" / "My Clip"
+    old = project / "clips" / "001_old.mp4"  # an earlier run's clips: never touched, no --force
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old")
+    code = cli.main(["edit", str(pipeline.video), "--no-keep-clips", "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert code == 0
+    clips_call, assemble_call = pipeline.calls[1], pipeline.calls[2]
+    tmp = clips_call[2]["out_dir"]
+    assert tmp.parent == project and tmp.name.startswith(".assemble-tmp-")
+    assert clips_call[2]["temporary"] is True
+    run_lock = f".{tmp.name}.run.cutpoint-lock"  # held while the temporary clips exist
+    assert pipeline.listed == sorted([run_lock, tmp.name, "clips", "highlights.json"])
+    assert assemble_call[1] == (tmp, project / "final.mp4")
+    assert not tmp.exists()
+    assert sorted(p.name for p in project.iterdir()) == [
+        "My Clip-final.mp4", "My Clip-final.srt", "clips", "final.mp4", "final.srt",
+        "highlights.json",
+    ]  # fmt: skip
+    assert old.read_bytes() == b"old" and list(old.parent.iterdir()) == [old]
+    assert [w["code"] for w in doc["warnings"]] == ["temporary_clips"]
+    assert doc["outputs"]["copy"] == str(project / "My Clip-final.mp4")
+
+
+@pytest.mark.parametrize("error", [RuntimeError("join failed"), KeyboardInterrupt()])
+def test_edit_no_keep_clips_removes_the_temporary_clips_on_failure(pipeline, home, error):
+    pipeline.fail_assemble = error
+    code = cli.main(["edit", str(pipeline.video), "--no-keep-clips"])
+    assert code == (130 if isinstance(error, KeyboardInterrupt) else 1)
+    project = home / "projects" / "My Clip"
+    assert not list(project.glob(".assemble-tmp-*"))
+    assert not list(project.glob(".*cutpoint*"))
+
+
+@pytest.mark.parametrize("fmt", ["fcpxml", "otio"])
+def test_edit_format_keeps_the_clips_and_copies_the_timeline(pipeline, home, fmt):
+    assert cli.main(["edit", str(pipeline.video), "--format", fmt]) == 0
+    project = home / "projects" / "My Clip"
+    assert pipeline.calls[2][1] == (project / "clips", None)
+    assert pipeline.calls[2][2]["output_format"] == fmt
+    assert (project / f"My Clip-final.{fmt}").read_bytes() == b"final video"
+    assert (project / "My Clip-final.srt").is_file()
+    assert not (project / "My Clip-final.mp4").exists()
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--kind", "clips"], "with --kind clips the clips are the deliverable"),
+        (["--format", "otio"], "the --format otio timeline references the clips"),
+        (["--force"], "with --no-keep-clips there are none"),
+    ],
+)
+def test_edit_no_keep_clips_refuses_what_needs_kept_clips(pipeline, capsys, argv, message):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["edit", str(pipeline.video), "--no-keep-clips", *argv])
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert pipeline.calls == []
