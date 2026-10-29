@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg, run_json, set_config, write
-from cutpoint import cli, encode, extend, ffmpeg_utils, jsonout, planning
+from cutpoint import cli, color, encode, extend, ffmpeg_utils, jsonout, planning
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import ClipPlan, RenderResult, _entry
 from cutpoint.color import AutoGrade
@@ -549,13 +549,18 @@ def test_extend_stops_before_any_export_on_a_color_record_it_cannot_redo(
     assert exports == []
 
 
+@pytest.mark.parametrize("version", [1, 2])
 def test_extend_redoes_an_older_color_version_from_its_recorded_parameters(
-    tmp_path, exports, loads
+    tmp_path, exports, loads, version
 ):
-    """A grade an earlier Cutpoint estimated (version 1: luma levels underwater) is redone
-    with the parameters it recorded, and keeps its version: nothing is measured again."""
+    """A grade an earlier Cutpoint estimated (version 1: luma levels underwater; 2: before the
+    underwater gate of #494) is redone with the parameters it recorded, and keeps its version:
+    nothing is measured again."""
+    assert version < color.COLOR_VERSION
     grade = AutoGrade("underwater", black=0.05, white=0.9, gains=(1.3, 0.95, 0.9), mix=0.2)
-    old = grade.to_json()["color"] | {"version": 1}
+    old = grade.to_json()["color"] | {"version": version}
+    for m in ("before", "predicted"):  # metrics without the saturation of version 3
+        old[m] = {"m3": 30.0, "residual": 0.1, "clipped": 0.0, "black": 0.05, "white": 0.9}
     clips = _graded_clips(tmp_path, None, color=old)
     out = extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
     assert exports[0][-1] == grade and exports[0][-1].filter() == grade.filter() != ""

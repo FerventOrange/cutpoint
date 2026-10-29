@@ -8,15 +8,24 @@ timed: all-intra sources decode every frame), runs :func:`cutpoint.color.estimat
 one each mode exports with, :data:`cutpoint.color.MODE_LEVELS`, is marked ``*``) and prints one
 table per window:
 
-- mode, levels, skip reason (``-`` when graded; ``good``, ``log``, ``360``, ``veto_clipped``,
-  ``veto_cast``, ``veto_m3`` for too much colour, ``veto_m3_drop`` for too little)
+- mode, levels, skip reason (``-`` when graded; ``good``, ``log``, ``360``,
+  ``not_underwater`` (``underwater`` only), ``veto_clipped``, ``veto_cast``, ``veto_m3`` for
+  too much colour, ``veto_m3_drop`` (``auto``) or ``veto_faded`` (``underwater``) for too
+  little)
 - gains (r g b), black and white point(s), red-from-green mix, vibrance
 - M3 colourfulness and gray-world residual, before -> predicted
-- predicted clipped share against the share the levels intend (the veto allows +0.5 points),
-  by the variant's own rule and by the per-channel rule (``int/ch``), so the variants can be
-  compared on one rule
+- predicted clipped share against the share the levels intend, by the variant's own rule and
+  by the per-channel rule (``int/ch``), so the variants can be compared on one rule
+- ``exc``: the clipping the veto counts, in points: predicted clipped share, less the red-only
+  highlight clipping (``underwater``: at most 3 points), less the larger of the intended and
+  the source's own share; above 0.5 it vetoes
+- ``sat``: median HSV saturation predicted / before (``underwater`` vetoes below 0.63)
 - median R/G before -> after (scuba target 0.8-0.9)
 - mean CIE76 delta E between the sampled frames and their simulated grade
+
+The window header gives the frames' mean R/G, R/B and G/B (the gate of ``underwater``,
+:func:`cutpoint.color.looks_underwater`: below 0.77, below 0.85, above 0.79) and
+``looks underwater`` when they pass.
 
 Vetoed grades are simulated anyway (without the veto), so the numbers and sheets show what
 the veto prevented. A 360 source is skipped (``360``) as ``clips`` skips it: an X3 clip of
@@ -38,8 +47,9 @@ export chain with :meth:`cutpoint.color.AutoGrade.filter`): ``<label>_before.png
 (``<stem>``: the source's name without extension; times as ``%g`` seconds), with the arrays
 ``frames`` (``(n, h, w, 3)`` ``uint8``) and ``high_bit``. ``--stats DIR`` reads them from there
 instead of decoding (the window's file by the same name; with no windows given, every ``.npz``
-in ``DIR``, its source the stem), so results can be replayed without the footage; contact
-sheets still need the source.
+in ``DIR``, its source the stem; the file name is kept, so a stem with a dot such as
+``Desktop 02.56.27.19.DVR`` replays too), so results can be replayed without the footage;
+contact sheets still need the source.
 """
 
 from __future__ import annotations
@@ -91,7 +101,10 @@ def parse_window(spec: str) -> dict[str, Any]:
 
 
 def stats_name(w: dict[str, Any]) -> str:
-    """File name of a window's sampled frames: ``<stem>_<start>-<end>.npz``."""
+    """File name of a window's sampled frames: ``<stem>_<start>-<end>.npz``, or the file a
+    window of :func:`stats_windows` was read from (``stats``)."""
+    if w.get("stats"):
+        return str(w["stats"])
     return f"{Path(w['source']).stem}_{w['start']:g}-{w['end']:g}.npz"
 
 
@@ -112,12 +125,14 @@ def load_stats(path: Path) -> color.ColorStats:
 
 
 def stats_windows(folder: Path) -> list[dict[str, Any]]:
-    """A window for every ``<stem>_<start>-<end>.npz`` in ``folder`` (source: the stem)."""
+    """A window for every ``<stem>_<start>-<end>.npz`` in ``folder`` (source: the stem; the
+    file's name as ``stats``, for :func:`stats_name`)."""
     windows = []
     for f in sorted(folder.glob("*.npz")):
         m = re.fullmatch(r"(.+)_([0-9.]+)-([0-9.]+)", f.stem)
         if m:
-            windows.append({"source": m[1], "start": float(m[2]), "end": float(m[3])})
+            w = {"source": m[1], "start": float(m[2]), "end": float(m[3]), "stats": f.name}
+            windows.append(w)
     return windows
 
 
@@ -151,6 +166,13 @@ def _rg(rgb: np.ndarray) -> float:
     return float(np.median(means[:, 0] / np.maximum(means[:, 1], 1e-4)))
 
 
+def gate_ratios(rgb: np.ndarray) -> dict[str, float]:
+    """The frames' mean R/G, R/B and G/B, as :func:`cutpoint.color.looks_underwater` takes
+    them."""
+    r, g, b = (float(v) for v in rgb.reshape(-1, 3).mean(axis=0))
+    return {"rg": round(r / g, 3), "rb": round(r / b, 3), "gb": round(g / b, 3)}
+
+
 def _as_channel(g: color.AutoGrade) -> color.AutoGrade:
     """``g`` with its points per channel (the same values), for the per-channel intended
     clipping rule."""
@@ -162,19 +184,27 @@ def evaluate(frames: np.ndarray, grade: color.AutoGrade) -> dict[str, Any]:
     """The numbers of one grade on the sampled ``frames`` (a vetoed grade is simulated as if
     it were not)."""
     before = color._float(frames)
+    b = color.metrics(frames)
     rec: dict[str, Any] = {
         "skip": grade.skip,
         "params": grade.params(),
-        "before": color.metrics(frames).to_json(),
+        "before": b.to_json(),
         "rg_before": round(_rg(before), 3),
     }
     if grade.skip in (color.SKIP_LOG, color.SKIP_NO_FRAMES, color.SKIP_360):
         return rec
     sim = replace(grade, skip=None)
     after = color.simulate(frames, sim)
+    predicted = color.metrics(after)
+    intended = color._intended_clipping(before, sim)
+    red = color._red_highlights(after, color._intended_high(before, sim))
+    allowed = min(red, color.UNDERWATER_RED_CLIP) if grade.mode == "underwater" else 0.0
     rec |= {
-        "predicted": color.metrics(after).to_json(),
-        "intended_clipped": color._intended_clipping(before, sim),
+        "predicted": predicted.to_json(),
+        "intended_clipped": intended,
+        "red_highlights": red,
+        "clip_excess": round(predicted.clipped - allowed - max(intended, b.clipped), 5),
+        "saturation_ratio": round(predicted.saturation / max(b.saturation, 1e-6), 3),
         # The per-channel rule for every variant, so luma and channel compare on one rule.
         "intended_clipped_channel": color._intended_clipping(before, _as_channel(sim)),
         "rg_after": round(_rg(after), 3),
@@ -260,6 +290,7 @@ def run_window(w: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
         "sample_s": round(took, 2),
         "high_bit": stats.high_bit,
         "looks_underwater": color.looks_underwater(stats),
+        "gate": gate_ratios(color._float(stats.frames)),
         "variants": [],
     }
     if args.sheets and info is None and src.is_file():
@@ -301,10 +332,12 @@ def print_table(r: dict[str, Any]) -> None:
         f"sampled in {r['sample_s']:.2f} s{', 10-bit' if r['high_bit'] else ''}"
         f"{', looks underwater' if r['looks_underwater'] else ''}"
     )
+    if gate := r.get("gate"):
+        print(f"   mean R/G {gate['rg']:.3f}  R/B {gate['rb']:.3f}  G/B {gate['gb']:.3f}")
     head = (
-        f"{'mode':<10} {'levels':<8} {'skip':<12} {'gains r/g/b':<17} {'black':<17} "
+        f"{'mode':<10} {'levels':<8} {'skip':<14} {'gains r/g/b':<17} {'black':<17} "
         f"{'white':<17} {'mix':>5} {'vib':>5}  {'M3 bef->pred':<15} {'resid bef->pred':<15} "
-        f"{'clip% pred/int/ch':<18} {'R/G bef->aft':<12} {'dE':>5}"
+        f"{'clip% pred/int/ch':<18} {'exc':>5} {'sat':>5} {'R/G bef->aft':<12} {'dE':>5}"
     )
     print(head)
     print("-" * len(head))
@@ -313,7 +346,7 @@ def print_table(r: dict[str, Any]) -> None:
         gains = "/".join(f"{g:.3f}" for g in p["gains"])
         levels = v["levels"] + ("*" if v.get("production") else "")
         if b is None:  # 360: not sampled
-            print(f"{v['mode']:<10} {levels:<8} {v['skip']:<12}")
+            print(f"{v['mode']:<10} {levels:<8} {v['skip']:<14}")
             continue
         m3 = f"{b['m3']:.1f}->{q['m3']:.1f}" if q else f"{b['m3']:.1f}"
         res = f"{b['residual']:.4f}->{q['residual']:.4f}" if q else f"{b['residual']:.4f}"
@@ -325,10 +358,13 @@ def print_table(r: dict[str, Any]) -> None:
         )
         rg = f"{v['rg_before']:.3f}->{v['rg_after']:.3f}" if q else f"{v['rg_before']:.3f}"
         de = f"{v['delta_e']:.2f}" if q else "-"
+        exc = f"{100 * v['clip_excess']:.2f}" if q else "-"
+        sat = f"{v['saturation_ratio']:.3f}" if q else "-"
         print(
-            f"{v['mode']:<10} {levels:<8} {v['skip'] or '-':<12} {gains:<17} "
+            f"{v['mode']:<10} {levels:<8} {v['skip'] or '-':<14} {gains:<17} "
             f"{_point(p['black']):<17} {_point(p['white']):<17} {p['mix']:>5.3f} "
-            f"{p['vibrance']:>5.3f}  {m3:<15} {res:<15} {clip:<18} {rg:<12} {de:>5}"
+            f"{p['vibrance']:>5.3f}  {m3:<15} {res:<15} {clip:<18} {exc:>5} {sat:>5} "
+            f"{rg:<12} {de:>5}"
         )
 
 
