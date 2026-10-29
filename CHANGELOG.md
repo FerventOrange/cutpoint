@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   footage. `candidate_flags` also returns `reasons`, `diagnostics` and `key` (a hash of the cached
   path), and `render.render_segment(progress=)` reports the rendered fraction (0 to 1, at most
   about 10 times a second, one final 1.0; a failing callback never stops the render).
+- 360 preview API: `candidates.preview_key(path, *, vertical, fmt, settings)` names a rendered
+  preview: a hash, the same on every run and OS, of the path (`path_id`), `vertical`, the format,
+  a preview version and the pano settings a preview's pixels depend on (`imu_offset_s`,
+  `level_strength`, `tilt_follow_s`, `max_follow_deg`); other settings leave it unchanged.
 - 360 path diagnostics: `yaw_travel`, `yaw_travel_per_min` and `net_turns`, and a `spin` flag
   ("keeps turning"): a full turn one way within 30 s, or more than 540 deg of pan per minute
   (with at least one full turn of travel and half a turn net one way, so gentle sweeps back and
@@ -162,6 +166,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 360 preview API: `preview_path` reports `footage offline` only when the source video itself
+  cannot be stat-ed or opened. Another missing file (such as a model) is `missing file: <name>`,
+  any other OSError its class and message; a missing model showed as "footage offline
+  (FileNotFoundError)" while the footage was reachable.
+- 360 preview API: a `level_forward` path is planned over the moment and up to 10 s on either
+  side, as director paths are, so a trimmed or extended preview stays on it (it covered the
+  moment only).
 - `cutpoint ui`: adding or removing a moment while the list shows only moments in or not in
   the sequence keeps the Moments column where it was, with focus on the card that took its
   place (it jumped back to the first card at the top). The Sequence | AI Chat | Export tab bar,

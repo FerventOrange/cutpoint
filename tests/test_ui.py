@@ -32,6 +32,7 @@ from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_c
 from cutpoint import cache, capabilities, cli, config, edit, encode, ffmpeg_utils, ui
 from cutpoint.assistant import session as ai_session
 from cutpoint.pano import candidates as pano_candidates
+from cutpoint.pano import director as pano_director
 from cutpoint.pano import project as pano_project
 from cutpoint.pano import render as pano_render
 from cutpoint.utils import find_videos
@@ -850,16 +851,18 @@ def test_a_stale_or_missing_camera_path_previews_the_library_fallback(
 ) -> None:
     """#517: a moment whose cached path is stale or missing previews the path
     ``candidates.preview_path`` gives (here, as these clips cannot be planned, a level forward
-    view), with its reason, instead of the raw fisheye. A level forward view spans the moment
-    alone, so its render starts on the frame at or before the moment's start (rounded up, the
-    page played the raw fisheye there)."""
+    view), with its reason, instead of the raw fisheye. A level forward view is planned with the
+    director's margin (``PATH_MARGIN_S``) around the moment, so its render starts on the frame
+    at or before the moment's start less that margin (rounded up, the page played the raw
+    fisheye there)."""
     run = DirectorPreviews(client, tmp_path, monkeypatch)
     for cid in ("h002", "h003"):
         run.ask(cid)
         pv = run.wait(cid, "ready")
         assert pv["kind"] == "level_forward" and pv["reason"]
         assert run.renders[-1]["path"]["keys"][0]["target"] == "forward"
-    assert pv["lo"] <= 40.01 and pv["lo"] == round(math.floor(40.01 * 30) / 30, 6)
+    want_lo = 40.01 - pano_director.PATH_MARGIN_S
+    assert pv["lo"] <= want_lo and pv["lo"] == round(math.floor(want_lo * 30) / 30, 6)
     assert round(run.renders[-1]["start"], 6) == pv["lo"]
     assert run.ask("nope").json() == {"pano": None}
 
