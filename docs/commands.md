@@ -219,7 +219,7 @@ After analysis, the Moments list has a search field (label, words spoken, file n
 funnel button beside it that opens Sort and filter. Sort by is Score (the default; rank #1
 first) or Position in video (by source name in natural order, then start time); each card's
 rank badge keeps its score rank either way. The quick filters are Sequence (All, In sequence,
-Not in sequence), Ready only (the moment's preview plays now), Must include, and Source file when
+Not in sequence), Ready only (the moment's preview plays now) and Source file when
 the project has several sources. They combine with the search text. A dot on the button shows
 while a filter or a sort other than Score is on, and when nothing passes the list reads "No
 moments match these filters." Escape closes the menu. The sort and filters are remembered per

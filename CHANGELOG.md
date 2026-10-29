@@ -140,8 +140,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clips --force` and `edit --force` log a WARNING when they replace a clips folder whose
   manifest recorded a grade (`lut`/`color`) and the new run has none. The output is unchanged.
 
+### Removed
+
+- `cutpoint ui`: the Must include filter under Show only in the Moments Sort and filter menu.
+  Moment cards still show the "must include" tag; a remembered Must include filter is ignored.
+
 ### Fixed
 
+- `cutpoint ui`: Extend export is disabled, with the reason in its tooltip, while Extend start
+  and Extend end are blank or 0 and Speech-aware cuts is off. Before, it ran
+  `extend --no-speech-aware` with nothing to do, which failed.
 - `cutpoint ui`: the Sequence, AI Chat and Export tabs share the sequence column's full width
   evenly at any width the column is dragged to; a label too long for a narrow tab ends in an
   ellipsis. Before, they kept their labels' widths at the left of the column.
