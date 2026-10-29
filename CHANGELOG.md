@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `highlights.json` records the features it could compute in
   `settings.features_available`. The `events.json` rescore is now the scorer's bonus stage,
   with the same points.
+- `cutpoint ui`: New project takes several videos and folders, one path per line, with "Include
+  sub-folders" (`analyze --recursive`) and "Skip files matching" (`--exclude` patterns) (#484).
+  "Analyze again" keeps them; 360 footage still makes a project of its own.
 - `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
   splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and

@@ -178,8 +178,14 @@ folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 an
 (see [360 video](workflows/360.md#in-the-ui)). It does not expose the action-cam commands or the
 other `360` commands.
 
-New Project's Source field takes a full path that you type or paste; it always accepts one.
-"Choose video…" and "Choose folder…" open the operating system's own file or folder dialog on the
+New Project's Source field takes the full paths of one or more videos and folders, one per line,
+that you type or paste; it always accepts them. They are the project's `analyze` inputs, as on the
+command line. "Include sub-folders" adds `--recursive` and "Skip files matching" takes `--exclude`
+patterns, one per line (matched against each file's name or full path, such as `*DVR*` or
+`*/Captures/*`); "Analyze again" keeps them. The project is refused when no video is left to
+analyze. Insta360 X3 footage still makes a 360 project of its own: its one folder or file, without
+the two options, and a folder that mixes 360 and regular videos is refused. A project made with
+either option has no one-click presets (`edit` has no `--recursive` or `--exclude`). "Choose video…" and "Choose folder…" add a line; they open the operating system's own file or folder dialog on the
 computer running `cutpoint ui` (Windows: the system dialog through tkinter; Linux, with a display
 (DISPLAY or WAYLAND_DISPLAY): zenity, falling back to kdialog; macOS: osascript). Where no dialog is
 available (headless, Docker, no display, or an SSH session on Windows and macOS), those buttons are
