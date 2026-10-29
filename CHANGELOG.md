@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` AI assistant: OpenAI (`api.openai.com`) is asked through the Responses API, so
+  `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` and `*-codex` models make tool calls instead of
+  failing or falling back to JSON mode; OpenAI-compatible base URLs still use Chat Completions
+  (#536).
 - `cutpoint ui` AI assistant: `CUTPOINT_ASSISTANT_API_KEY` no longer wins over a provider's own
   key and is never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai` (it is for custom
   base URLs only); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` or the keyring key is

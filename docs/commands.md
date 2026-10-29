@@ -406,8 +406,11 @@ URL is typed:
   Choose a pulled model, or Other model… for any id; Default uses `qwen3.5:9b`, else the vision model.
 - **Claude (Anthropic)**: `https://api.anthropic.com`; `claude-sonnet-5-5` (default) or
   `claude-opus-5-5`.
-- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI chat model
-  (`*-codex` models need OpenAI's Responses API and are not supported).
+- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI model. Cutpoint asks
+  `api.openai.com` through OpenAI's Responses API (`/v1/responses`), so every current model
+  (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`, `*-codex`) makes tool calls. Any
+  other base URL (OpenRouter, LM Studio, vLLM, llama-server, Ollama's `/v1`) is asked through
+  `/v1/chat/completions`.
 - **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); choose an xAI model.
 
 A base URL set in `config.json` that no preset has (LM Studio, vLLM, llama-server, OpenRouter, an
@@ -424,7 +427,7 @@ keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which is only for custom bas
 Models that do not chat here are left out by name: ids starting with `text-embedding-`, `tts-`,
 `whisper-`, `dall-e-`, `omni-moderation-`, `text-moderation-`, `gpt-image-`, `sora-`,
 `davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
-`imagine` or `codex` (OpenAI and xAI). A list is
+`imagine` or `codex` (OpenAI and xAI; `codex` ones stay at `api.openai.com`). A list is
 kept for 10 minutes; Refresh list asks again. The Model dropdown offers the listed models; when
 the list cannot be loaded it offers the preset's own models (Claude's two, OpenAI's four and xAI's five current ones, Ollama's `qwen3.5:9b`) and the saved model,
 and "Other model…" shows a Model id field to type any other id.

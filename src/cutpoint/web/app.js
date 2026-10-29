@@ -3564,7 +3564,7 @@ const AI_HINTS = {
 const AI_MODEL_HINTS = {
   ollama: 'The name of a model Ollama has pulled. Default: qwen3.5:9b when Ollama has it, else the vision model.',
   anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
-  openai: 'Needed: the name of an OpenAI chat model your key can use. *-codex models are not supported (chat models only).',
+  openai: "Needed: the name of an OpenAI model your key can use. It is asked through OpenAI's Responses API, so gpt-6-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna and *-codex models all make tool calls.",
   xai: 'Needed: the name of an xAI model your key can use.',
   custom: "The model of the custom provider, saved in config.json. Default: the server's model, when it serves only one.",
 };
