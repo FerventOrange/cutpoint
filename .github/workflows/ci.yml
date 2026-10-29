@@ -195,6 +195,51 @@ jobs:
           rc=0; sh install.sh --dry-run --lite --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--lite --cuda must exit 2, got $rc"; exit 1; }
           rc=0; sh install.sh --source --dry-run > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--source --dry-run must exit 2, got $rc"; exit 1; }
           rc=0; sh install.sh --dry-run --no-ffmpeg --source /does/not/exist > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] || { echo "::error::missing --source path must exit 1, got $rc"; exit 1; }
+          # Ollama: asked in full mode when missing (PATH without it); the remote script only runs
+          # on a yes. Lite has no Ollama. Nothing is installed in a dry run.
+          mkdir -p "$RUNNER_TEMP/no-ollama-bin"
+          for t in sh cat uname sed awk grep id curl env dirname basename mktemp rm sleep uv; do p=$(command -v "$t") && ln -sf "$p" "$RUNNER_TEMP/no-ollama-bin/$t"; done
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
+          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          expect "$out" 'nohup ollama serve'
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" 'Install Ollama (local AI models'
+          if printf '%s\n' "$out" | grep -q 'ollama.com/install.sh | sh'; then echo "::error::Ollama script planned without a yes"; exit 1; fi
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --no-ollama --yes < /dev/null)
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::--no-ollama must not ask or install"; exit 1; fi
+          out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          out=$(CUTPOINT_OLLAMA=0 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
+          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --no-ollama < /dev/null)
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::--no-ollama must beat CUTPOINT_OLLAMA=1"; exit 1; fi
+          out=$(CUTPOINT_OLLAMA=0 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --yes < /dev/null)
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::CUTPOINT_OLLAMA=0 --yes must not install Ollama"; exit 1; fi
+          # Lite: no prompt, no install, no pull; --ollama / CUTPOINT_OLLAMA=1 warns once and exits 0.
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --lite --no-ffmpeg --yes < /dev/null 2>&1)
+          if printf '%s\n' "$out" | grep -qi 'ollama'; then echo "::error::lite must not mention or run Ollama without --ollama"; exit 1; fi
+          for mode in flag env; do
+            rc=0
+            if [ "$mode" = flag ]; then
+              out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --lite --no-ffmpeg --ollama --yes < /dev/null 2>&1) || rc=$?
+            else
+              out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --lite --no-ffmpeg --yes < /dev/null 2>&1) || rc=$?
+            fi
+            [ "$rc" = 0 ] || { echo "::error::lite with Ollama ($mode) must exit 0, got $rc"; exit 1; }
+            expect "$out" 'Ollama is not part of lite'
+            [ "$(printf '%s\n' "$out" | grep -c 'Ollama is not part of lite')" = 1 ] || { echo "::error::lite Ollama warning must print once"; exit 1; }
+            if printf '%s\n' "$out" | grep -q 'ollama.com/install.sh\|ollama pull\|ollama serve'; then echo "::error::lite must not install, start or pull Ollama"; exit 1; fi
+          done
+          # macOS path: fake uname (Darwin) and a no-op brew.
+          mkdir -p "$RUNNER_TEMP/mac-bin"
+          for t in sh cat sed awk grep id curl env dirname basename mktemp rm sleep uv; do p=$(command -v "$t") && ln -sf "$p" "$RUNNER_TEMP/mac-bin/$t"; done
+          printf '#!/bin/sh\necho Darwin\n' > "$RUNNER_TEMP/mac-bin/uname"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/mac-bin/brew"
+          chmod +x "$RUNNER_TEMP/mac-bin/uname" "$RUNNER_TEMP/mac-bin/brew"
+          out=$(PATH="$RUNNER_TEMP/mac-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
+          expect "$out" '+ brew install ollama'
+          expect "$out" '+ brew services start ollama'
+          rc=0; sh install.sh --dry-run --ollama --no-ollama > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--ollama --no-ollama must exit 2, got $rc"; exit 1; }
           # curl | sh: the script is read from stdin.
           cat install.sh | sh -s -- --dry-run --lite --no-ffmpeg | grep -F 'uv tool install'
       # Package-manager ffmpeg commands on other distributions (dry run only, nothing installed).
@@ -237,6 +282,9 @@ jobs:
             $saved = @{}
             foreach ($k in $EnvVars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $EnvVars[$k]) }
             $oldPath = $env:PATH
+            # Hide an ollama.exe on PATH; the Ollama cases also need nothing listening on 127.0.0.1:11434.
+            # winget.exe is hidden too: the cases that plan a winget install put a fake winget.cmd on PATH.
+            $env:PATH = (($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path -LiteralPath ([IO.Path]::Combine($_, 'ollama.exe'))) -and -not (Test-Path -LiteralPath ([IO.Path]::Combine($_, 'winget.exe'))) }) -join ';')
             if ($Path) { $env:PATH = "$Path;$env:PATH" }
             try {
               $out = (& $Shell -NoProfile -File install.ps1 @Words 2>&1 | ForEach-Object { "$_" }) -join "`n"
@@ -291,6 +339,56 @@ jobs:
             # The environment variables do what the flags do.
             $r = Invoke-Installer $sh @() @{ CUTPOINT_DRY_RUN = '1'; CUTPOINT_LITE = '1'; CUTPOINT_NO_FFMPEG = '1' }
             Expect $r 'uv tool install "cutpoint[ui,keyring,ski]=='
+            # Ollama: asked in full mode when missing; the winget install only runs on a yes (prompt, -Ollama,
+            # CUTPOINT_OLLAMA=1 or -Yes). Lite has no Ollama. Nothing is installed in a dry run.
+            $noOl = @{ LOCALAPPDATA = "$tmp\no-localappdata" }
+            $wingetOl = 'winget install --id Ollama.Ollama -e'
+            New-Item -ItemType Directory -Force "$tmp\fake-winget" | Out-Null
+            Set-Content "$tmp\fake-winget\winget.cmd" "@exit /b 0" -Encoding ascii
+            $fw = "$tmp\fake-winget"
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') $noOl $fw; Expect-Rc $r 0 '-Ollama'
+            Expect $r $wingetOl
+            Expect $r '+ ollama serve'
+            Expect $r 'Pull qwen3-vl:8b with Ollama (about 6 GB)?'
+            # Without winget the dry run, like a real run, points to the download link.
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') $noOl; Expect-Rc $r 0 '-Ollama without winget'
+            Expect $r 'download Ollama from https://ollama.com/download'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg') $noOl
+            Expect $r 'Install Ollama (local AI models for vision rating and the AI assistant)?'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Yes') $noOl $fw
+            Expect $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-NoOllama', '-Yes') $noOl
+            Refuse $r 'Install Ollama'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg') (@{ CUTPOINT_OLLAMA = '1' } + $noOl) $fw
+            Expect $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') (@{ CUTPOINT_OLLAMA = '0' } + $noOl) $fw
+            Expect $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-NoOllama') (@{ CUTPOINT_OLLAMA = '1' } + $noOl)
+            Refuse $r 'Install Ollama'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Yes') (@{ CUTPOINT_OLLAMA = '0' } + $noOl)
+            Refuse $r 'Install Ollama'
+            Refuse $r $wingetOl
+            # Lite: no prompt, no install, no pull; -Ollama / CUTPOINT_OLLAMA=1 warns once and exits 0.
+            $r = Invoke-Installer $sh @('-DryRun', '-Lite', '-NoFfmpeg', '-Yes') $noOl; Expect-Rc $r 0 'lite -Yes'
+            Refuse $r 'Ollama'
+            Refuse $r 'ollama'
+            $lite = @(
+              @{ Words = @('-DryRun', '-Lite', '-NoFfmpeg', '-Ollama', '-Yes'); Env = $noOl },
+              @{ Words = @('-DryRun', '-Lite', '-NoFfmpeg', '-Yes'); Env = (@{ CUTPOINT_OLLAMA = '1' } + $noOl) }
+            )
+            foreach ($c in $lite) {
+              $r = Invoke-Installer $sh $c.Words $c.Env; Expect-Rc $r 0 'lite with Ollama'
+              Expect $r 'Ollama is not part of lite'
+              if (([regex]::Matches($r.Out, 'Ollama is not part of lite')).Count -ne 1) { Write-Host $r.Out; throw 'lite Ollama warning must print once' }
+              Refuse $r $wingetOl
+              Refuse $r 'ollama pull'
+              Refuse $r 'ollama serve'
+            }
+            $r = Invoke-Installer $sh @('-DryRun', '-Ollama', '-NoOllama'); Expect-Rc $r 2 '-Ollama -NoOllama'
             # irm | iex: the script text is evaluated with no parameters and no file.
             $saved = @{ D = $env:CUTPOINT_DRY_RUN; L = $env:CUTPOINT_LITE; F = $env:CUTPOINT_NO_FFMPEG }
             $env:CUTPOINT_DRY_RUN = '1'; $env:CUTPOINT_LITE = '1'; $env:CUTPOINT_NO_FFMPEG = '1'

@@ -213,20 +213,29 @@ select { max-width: 100%; }
 .banner { padding: 8px 16px; background: var(--bad-bg); color: var(--bad); border-bottom: 1px solid var(--bad-line); }
 
 /* workspace */
-/* Custom properties inherit by default, so every change of --side-w while dragging the splitter would
-   restyle all of #workspace (each sequence row and its thumbnail). Only #workspace reads it. */
+/* Custom properties inherit by default, so every change of --side-w or --mom-w while dragging a
+   splitter would restyle all of #workspace (each sequence row and its thumbnail). Only #workspace
+   reads them. */
 @property --side-w { syntax: "*"; inherits: false; }
+@property --mom-w { syntax: "*"; inherits: false; }
+/* The preview keeps 360px (STAGE_MIN in app.js): at the narrowest grid window (961px) both columns
+   fit at their minimum beside it, and app.js keeps dragged widths within what is left. */
 #workspace {
   flex: 1; min-height: 0; display: grid;
-  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr) var(--side-w, minmax(290px, 380px));
+  grid-template-columns: var(--mom-w, minmax(260px, 340px)) minmax(360px, 1fr) var(--side-w, minmax(290px, 380px));
 }
-/* drag handle on the sequence column's left edge; app.js sets --side-w on #workspace.
-   It starts at the border and reaches into the side column's padding, clear of the preview's scrollbar. */
+/* drag handles on the preview's and the sequence column's left edges; app.js sets --mom-w and
+   --side-w on #workspace. Each starts at the border and reaches into the padding of the column
+   right of it, clear of the scrollbar of the column left of it. Every column has its own cell, so
+   a handle never pushes one into another row. */
+.moments { grid-area: 1 / 1; }
+.stage { grid-area: 1 / 2; }
 .side { grid-area: 1 / 3; }
 .splitter {
   grid-area: 1 / 3; justify-self: start; position: relative; z-index: 1;
   width: 8px; cursor: col-resize; touch-action: none;
 }
+#momSplit { grid-area: 1 / 2; }
 .splitter::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: transparent; transition: background-color var(--ease); }
 .splitter:hover::after, .splitter.dragging::after, .splitter:focus-visible::after { background: var(--amber-text); }
 .splitter:focus-visible { outline: none; }
@@ -696,9 +705,11 @@ select { max-width: 100%; }
 .ticks span:nth-child(1) { left: 0; }
 .ticks span:nth-child(2) { left: 50%; }
 .ticks span:nth-child(3) { left: 100%; }
-/* Color's Strength: shown only with a grade; its name and percentage over a slider as wide as Color's */
+/* Color's Strength: shown only with a grade; its name and percentage over a slider as wide as Color's.
+   With Color Off (hidden) the row keeps its room but is invisible, so it cannot be clicked, focused or
+   read by screen readers, and switching the mode moves nothing on the page (#518) */
 .color-strength { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; margin: 6px var(--inset) 0; }
-.color-strength[hidden] { display: none; }
+.color-strength[hidden] { display: grid !important; visibility: hidden; }
 .color .color-strength input[type=range] { grid-row: 2; grid-column: 1 / -1; width: 100%; }
 #colorStrengthOut { text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* Export clips and Assemble side by side, Show Exports Folder across under them */

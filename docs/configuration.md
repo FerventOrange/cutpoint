@@ -200,8 +200,8 @@ and `model`, with `url` empty (the preset's own):
 
 A `url` set in `config.json` that is not the preset's (OpenRouter, LM Studio, a LAN Ollama) keeps
 working and shows as "Custom (from config.json)": its base URL is read-only (edit the file to
-change it), its model can be changed there, and choosing a preset and saving replaces it. The Model field lists the models the provider offers (Refresh
-asks again; see [AI Chat](commands.md#ai-chat)), and any other name can be typed.
+change it), its model can be changed there, and choosing a preset and saving replaces it. The Model dropdown lists the models the provider offers (Refresh
+asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any other id.
 
 - `provider`: `ollama` (default), `openai` (OpenAI or a server that speaks its API: LM Studio,
   vLLM, llama-server), `anthropic` or `xai` (Grok, OpenAI-compatible).
