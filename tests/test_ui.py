@@ -993,6 +993,28 @@ def test_a_changed_imu_offset_or_render_format_renders_a_fresh_preview(
     assert run.renders[-1]["fmt"].width == 480
 
 
+def test_a_director_preview_is_named_by_the_library_preview_key(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: Path
+) -> None:
+    """A preview's file is ``<candidate>-<candidates.preview_key>`` of the path it renders, its
+    16:9 format and the pano settings, so a changed render setting names another file."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    names = []
+    for level in (None, 0.5):
+        if level is not None:
+            set_config(home, pano={"level_strength": level})
+        run.ask("h001")
+        run.wait("h001", "ready")
+        r = run.renders[-1]
+        key = pano_candidates.preview_key(
+            r["path"], vertical=False, fmt=r["fmt"], settings=pano_project.pano_config()
+        )
+        assert r["out"].name == f"h001-{key}.mp4"
+        assert ui.PanoPreviews().entries(run.p)["h001"]["name"] == r["out"].stem  # prune keeps it
+        names.append(r["out"].name)
+    assert len(run.renders) == 2 and names[0] != names[1]
+
+
 def test_a_spinning_camera_path_reaches_the_moment_badges(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6051,7 +6073,7 @@ def test_project_reports_the_video_length_and_time_of_the_last_analysis(
     assert analysis == {"video_s": 900.5, "took_s": 75.25}
     cache.save_json(ui.project_dir(pid) / "highlights.json", {**hl, "timings": {}})
     assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
-    # 360: the events re-rank rewrote total_s, so the time is pano_timings.json's scan + analyze
+    # 360: total_s is the flat analysis alone, so the time is pano_timings.json's scan + analyze
     p = ui.project_dir(pid)
     cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), "kind": "360"})
     cache.save_json(p / "highlights.json", hl)

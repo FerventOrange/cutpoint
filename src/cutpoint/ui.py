@@ -1943,21 +1943,11 @@ class Media:
 # it (#517): the one ``360 analyze`` cached, one planned now as ``clips`` would, or a level
 # forward view when the director cannot plan (never the raw fisheye). A small flat render of the
 # .lrv along that path, as ``360 director --preview`` makes, lands in
-# ui/pano/<candidate id>-<hash>.mp4. The hash covers the path (``candidates.path_id``), the
-# render format and the pano settings the render reads (``imu_offset_s`` and the levelling ones),
-# so a re-planned path or a changed render is never served from an older file. The render spans
-# what the path was planned for: for a director path the moment and up to 10 s on either side.
+# ui/pano/<candidate id>-<key>.mp4. The key is ``candidates.preview_key``: it covers the path,
+# the render format and the pano settings the render reads (``imu_offset_s`` and the levelling
+# ones), so a re-planned path or a changed render is never served from an older file. The render
+# spans what the path was planned for: the moment and up to 10 s on either side.
 PANO_PREVIEW_W, PANO_PREVIEW_H = 640, 360
-PANO_PREVIEW_VERSION = 1  # bump when previews render differently
-# the pano settings of config.json render_segment reads for a preview (render.clip_orientation,
-# command_lines); not equirect_yaw_offset: it turns levelled (stitched) sources only, never the
-# unlevelled .lrv a preview renders from
-PANO_RENDER_KEYS = (
-    "imu_offset_s",
-    "level_strength",
-    "tilt_follow_s",
-    "max_follow_deg",
-)
 PANO_PREVIEW_NAME = re.compile(r"[A-Za-z0-9_]{1,40}-[0-9a-f]{16}")
 # a preview, its temporary (ffmpeg_utils.part_path) or the sendcmd file render_segment leaves
 PANO_PREVIEW_FILE = re.compile(r"\.?([A-Za-z0-9_]{1,40}-[0-9a-f]{16})(?:\.part)?\.(?:mp4|cmd)")
@@ -1969,31 +1959,26 @@ def _pano_format() -> Any:
     return pano_render.Format360(PANO_PREVIEW_W, PANO_PREVIEW_H)
 
 
-def _pano_settings() -> str:
-    """Identity of what a preview renders with besides its path: the format and the pano
-    settings ``render_segment`` reads (``imu_offset_s`` decides how the view is levelled)."""
+def _pano_settings() -> dict[str, Any]:
+    """The pano settings of config.json (``pano_project.pano_config``), {} when unreadable."""
     try:
-        cfg = pano_project.pano_config()
+        return pano_project.pano_config()
     except ValueError:  # config.json unreadable: the render fails and says so
-        cfg = {}
-    fmt = _pano_format()
-    blob = json.dumps(
-        [
-            PANO_PREVIEW_VERSION,
-            [fmt.width, fmt.height, fmt.fps],
-            {k: cfg.get(k) for k in PANO_RENDER_KEYS},
-        ],
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha1(blob.encode()).hexdigest()[:16]
+        return {}
 
 
-def _pano_name(cid: str, path_key: str, settings: str) -> str:
-    """File stem of the preview of candidate ``cid`` along the path whose
-    ``candidates.path_id`` is ``path_key``, rendered with ``settings`` (:func:`_pano_settings`)."""
-    digest = hashlib.sha1(f"{path_key}:{settings}".encode()).hexdigest()[:16]
-    return f"{_pano_safe(cid)}-{digest}"
+def _pano_key(path: dict[str, Any], settings: dict[str, Any]) -> str:
+    """``candidates.preview_key`` of a 16:9 preview along ``path`` in the UI's format with
+    ``settings`` (:func:`_pano_settings`). Of the empty path ``{}``: what a preview renders
+    with besides its path."""
+    from cutpoint.pano.candidates import preview_key  # noqa: PLC0415
+
+    return preview_key(path, vertical=False, fmt=_pano_format(), settings=settings)
+
+
+def _pano_name(cid: str, key: str) -> str:
+    """File stem of the preview of candidate ``cid`` whose :func:`_pano_key` is ``key``."""
+    return f"{_pano_safe(cid)}-{key}"
 
 
 def _pano_safe(cid: str) -> str:
@@ -2005,8 +1990,8 @@ def _pano_span(path: dict[str, Any], clip: Any) -> tuple[float, float] | None:
     """The source range a preview of ``path`` covers: its planned span, starting on the frame at
     or before its start (``render_segment`` keeps a start on a frame, so the file's 0 is ``lo``;
     a path holds its first view before its planned span) and ending with the clip at the latest.
-    A level forward view is planned for the moment alone: a start rounded up would miss its
-    first frame."""
+    A director path and a level forward view are both planned with the director's margin
+    (``director.planned_span``): a start rounded up would miss the path's first frame."""
     planned = path.get("planned") or path.get("segment") or {}
     try:
         lo, hi = float(planned["start"]), float(planned["end"])
@@ -2122,17 +2107,19 @@ class PanoPreviews:
         )
 
     def entries(self, project: Path) -> dict[str, dict[str, Any]]:
-        """``{cid: {flags, reasons, key, ident, settings, clip, source, start, end}}`` of the
-        candidates of the project's 360 clips. ``flags``, ``reasons`` and ``key`` (the cached
-        path's ``path_id``, else None) come from ``candidates.candidate_flags``; ``ident`` names
-        what a preview is made of (the candidate's span, its cached path, the render settings):
-        when it changes, the page asks again. Rebuilt only when ``highlights.json``,
+        """``{cid: {flags, reasons, name, ident, clip, source, start, end}}`` of the candidates
+        of the project's 360 clips. ``flags`` and ``reasons`` come from
+        ``candidates.candidate_flags``; ``name`` is the preview file stem of the cached path
+        (:func:`_pano_name`), else None; ``ident`` names what a preview is made of (the
+        candidate's span, its cached path, the render settings): when it changes, the page asks
+        again. Rebuilt only when ``highlights.json``,
         ``pano.json``, a cache file or the render settings changed. No freshness check
         (``preview_path`` decides that)."""
         from cutpoint.pano import candidates as PC  # noqa: PLC0415
 
         settings = _pano_settings()
-        sig = self._signature(project, settings)
+        render = _pano_key({}, settings)
+        sig = self._signature(project, render)
         with self.lock:
             hit = self.memo.get(project)
         if hit is not None and hit[0] == sig:
@@ -2158,16 +2145,18 @@ class PanoPreviews:
             cid = str(c.get("id"))
             info = flagged.get(cid) or {}
             flags = list(info.get("flags") or [])
-            key = info.get("key")
-            blob = json.dumps([c["source"], start, end, key, settings])
+            entry = cache.load_json(info["file"]) if info.get("file") else None
+            cached = entry.get("path") if isinstance(entry, dict) else None
+            key = _pano_key(cached, settings) if isinstance(cached, dict) else None
+            name = _pano_name(cid, key) if key else None
+            blob = json.dumps([c["source"], start, end, name, render])
             out[cid] = {
                 "flags": flags,
                 "reasons": _pano_reasons(
                     flags, info.get("reasons") or {}, info.get("diagnostics") or {}
                 ),
-                "key": key,
+                "name": name,
                 "ident": f"{cid}-{hashlib.sha1(blob.encode()).hexdigest()[:16]}",
-                "settings": settings,
                 "clip": clip,
                 "source": c["source"],
                 "start": start,
@@ -2337,7 +2326,7 @@ class PanoPreviews:
                 job.scope.check()  # cancelled before it started
                 plan = PC.preview_path(p, job.source, job.start, job.end)
                 job.scope.check()  # cancelled while its path was planned
-                name = _pano_name(job.cid, PC.path_id(plan["path"]), _pano_settings())
+                name = _pano_name(job.cid, _pano_key(plan["path"], _pano_settings()))
                 span = _pano_span(plan["path"], job.clip)
                 if span is None:
                     raise ValueError("the camera path spans no video")
@@ -2414,7 +2403,7 @@ class PanoPreviews:
         if not folder.is_dir() or not _inside(project, f"{UI_DIR}/pano"):
             return  # never delete in a folder a link takes outside the project
         entries = self.entries(project)
-        keep = {_pano_name(cid, i["key"], i["settings"]) for cid, i in entries.items() if i["key"]}
+        keep = {i["name"] for i in entries.values() if i["name"]}
         prefixes = {_pano_safe(cid) for cid in entries}
         newest: dict[str, tuple[int, str]] = {}  # candidate prefix -> (mtime, name)
         for f in folder.glob("*.mp4"):
@@ -2706,9 +2695,10 @@ def _secs(v: Any) -> float | None:
 
 
 def analysis_took(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> float | None:
-    """Wall-clock seconds of the last analysis. ``360 analyze`` re-ranks after its events, which
-    rewrites ``timings.total_s`` with the re-rank's few seconds, so a 360 project's time is the
-    scan and analyze totals in ``pano_timings.json``; None when one is missing."""
+    """Wall-clock seconds of the last analysis. ``timings.total_s`` covers the flat analysis
+    only (a re-rank keeps it and adds ``timings.rerank_s``), not the scan, events and camera
+    paths of ``360 analyze``, so a 360 project's time is the scan and analyze totals in
+    ``pano_timings.json``; None when one is missing."""
     if meta.get("kind") == "360":
         pano = _load(p, "pano_timings.json")
         pano = pano if isinstance(pano, dict) else {}
