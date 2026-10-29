@@ -12,7 +12,7 @@
 # PyPI (for example: sed -i 's/^CUTPOINT_VERSION_DEFAULT=.*/CUTPOINT_VERSION_DEFAULT="0.4.0"/'
 # install.sh) and attaches/serves the script from that tag. The env var CUTPOINT_VERSION
 # overrides it at run time.
-CUTPOINT_VERSION_DEFAULT="0.3.0"
+CUTPOINT_VERSION_DEFAULT="0.4.0"
 
 # uv is installed from this pinned installer when missing (keep in step with the Dockerfile pin).
 UV_VERSION="0.13.5"
