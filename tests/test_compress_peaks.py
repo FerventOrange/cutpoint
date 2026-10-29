@@ -196,7 +196,7 @@ def test_assemble_chain_puts_peaks_before_the_fade():
     info = media_info(Path("x.mp4"), 2.0)
     off = assemble._audio_chain(0, info, 0.25)
     on = assemble._audio_chain(0, info, 0.25, peaks=",acompressor=x")
-    assert on == off.replace("asetpts=PTS-STARTPTS,", "asetpts=PTS-STARTPTS,acompressor=x,", 1)
+    assert on == off.replace(encode.A_FMT, f"{encode.A_FMT},acompressor=x", 1)
 
 
 def test_concat_copy_rebuilds_the_audio_for_peaks_without_fades(monkeypatch, tmp_path):

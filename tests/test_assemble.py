@@ -361,6 +361,77 @@ def test_clip_export_keeps_late_starting_audio_audible_to_its_end(tmp_path):
     assert _tail_peak_db(out) < -25.0  # and faded out at the end
 
 
+def _gap_clip(out: Path) -> None:
+    """A 2.5 s 64x48 clip whose audio timestamps skip 1.0-1.5 s (a game capture's gap): 2.5 s
+    of timestamps, 2.0 s of samples."""
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+         "testsrc=size=64x48:rate=25:duration=2.5", "-f", "lavfi", "-i",
+         "sine=frequency=440:sample_rate=48000:samples_per_frame=1024:duration=2.5",
+         "-filter_complex", "[1:a]aselect='not(between(t,1,1.5))'[a]", "-map", "0:v",
+         "-map", "[a]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(out)],
+        check=True,
+    )  # fmt: skip
+
+
+def _db(pcm: np.ndarray, start: float, end: float) -> float:
+    return 20 * np.log10(np.abs(pcm[int(48000 * start) : int(48000 * end)]).max() + 1e-9)
+
+
+@needs_ffmpeg
+def test_clip_export_fills_source_audio_timestamp_gaps_with_silence(tmp_path):
+    """#476: the 0.5 s gap was dropped, so the clip's audio came out 0.5 s short and ran
+    ahead of the video after the gap."""
+    src = tmp_path / "gap.mp4"
+    _gap_clip(src)
+    assert len(ffmpeg_utils.decode_pcm(src, sr=48000)) / 48000 < 2.1  # the gap is real
+    out = tmp_path / "001.mp4"
+    encode.export_clip(src, ffmpeg_utils.probe(src), 0.0, 2.5, out,
+                       encode.OutputFormat(64, 48, 25), False)  # fmt: skip
+    pcm = ffmpeg_utils.decode_pcm(out, sr=48000).astype(np.float64) / 32768
+    assert len(pcm) / 48000 == pytest.approx(2.5, abs=0.03)
+    assert _db(pcm, 1.05, 1.45) < -60.0  # the gap is silence
+    assert _db(pcm, 1.55, 2.4) > -25.0  # and the tone after it is back on its time
+
+
+@needs_ffmpeg
+def test_assemble_fills_clip_audio_timestamp_gaps(tmp_path, monkeypatch):
+    """#476: clips with gaps in their audio timestamps (exported before the fix) made a
+    crossfade's audio 1 s short of its video."""
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    names = ["001_a.mp4", "002_b.mp4"]
+    for name in names:
+        _gap_clip(clips_dir / name)
+    entries = [{"file": n, "source": "s.mp4", "start": 0.0, "end": 2.5} for n in names]
+    (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
+    final = assemble.assemble(clips_dir, transition="fade", audio_transition="crossfade")
+    video = _stream_durations(final)["video"]
+    decoded = len(ffmpeg_utils.decode_pcm(final, sr=48000)) / 48000
+    assert decoded == pytest.approx(video, abs=0.04)  # one video frame
+
+
+@needs_ffmpeg
+def test_concat_copy_keeps_the_audio_of_clips_that_start_after_zero(tmp_path):
+    """#476 F1: ``-copyts`` hands a clip's raw timestamps (here 2 s, ``-output_ts_offset``) to
+    the audio chain; aligning them to 0 there padded 2 s of silence and trimmed the tone off."""
+    files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
+    for f in files:
+        subprocess.run(
+            [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+             "testsrc=size=64x48:rate=25:duration=2", "-f", "lavfi", "-i",
+             "sine=frequency=440:sample_rate=48000:duration=2", "-c:v", "libx264",
+             "-pix_fmt", "yuv420p", "-c:a", "aac", "-output_ts_offset", "2", str(f)],
+            check=True,
+        )  # fmt: skip
+    out = tmp_path / "final.mp4"
+    assemble.concat_copy(files, out, [ffmpeg_utils.probe(f) for f in files])
+    pcm = ffmpeg_utils.decode_pcm(out, sr=48000).astype(np.float64) / 32768
+    assert _db(pcm, 0.1, 1.9) > -25.0
+    assert _db(pcm, 2.1, 3.9) > -25.0
+
+
 class _Transcribed(Exception):
     """Raised by the stub Transcriber once its arguments are recorded."""
 
