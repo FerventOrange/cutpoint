@@ -20,6 +20,7 @@ import logging
 import os
 import time
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -107,10 +108,49 @@ def _timing(project: Path, key: str, value: Any) -> None:
 def _save_timings(project: Path, timings: dict[str, Any], t_start: float) -> None:
     """Write this ``360 analyze`` run's ``pano_timings.json`` (no keys of an earlier run):
     ``views``, ``analyze_s``, ``events_s``, ``paths_s``, ``scan_s`` (with ``--scan``) as
-    far as the run got, ``analyze_total_s`` (deprecated; full runs only) and ``total_s``,
-    the seconds since the run started."""
+    far as the run got, and ``total_s``, the seconds since the run started."""
     timings["total_s"] = round(time.perf_counter() - t_start, 1)
     cache.save_json(project / TIMINGS_FILE, timings)
+
+
+def _save_views_only_timings(project: Path, timings: dict[str, Any], t_start: float) -> None:
+    """``360 analyze --views-only`` leaves highlights.json as it was, so an earlier run's
+    ``pano_timings.json`` that times an analysis (``analyze_s``, or ``analyze_total_s``
+    of an older file) still describes it: keep its keys (its ``total_s`` and ``scan_s``
+    too), with this run's ``views`` and ``views_only_s``, the seconds of this run (its scan
+    included). Without one (none, a standalone ``360 scan``'s, a views-only run's), write
+    this run's as :func:`_save_timings` does."""
+    path = project / TIMINGS_FILE
+    earlier = cache.load_json(path)
+    if not (isinstance(earlier, dict) and ({"analyze_s", "analyze_total_s"} & earlier.keys())):
+        _save_timings(project, timings, t_start)
+        return
+    earlier["views"] = timings["views"]
+    earlier["views_only_s"] = round(time.perf_counter() - t_start, 1)
+    cache.save_json(path, earlier)
+
+
+def _stamp(path: Path) -> tuple[int, int, int] | None:
+    """``(inode, mtime_ns, size)`` of ``path``, or None if it cannot be stat-ed: an atomic
+    rewrite (a rename over it) changes it."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_ino, st.st_mtime_ns, st.st_size
+
+
+def _drop_timings(project: Path) -> None:
+    """Remove a ``pano_timings.json`` that describes another analysis than the project's.
+    If it cannot be removed (held open on Windows), only warn, so the run's own error is
+    never hidden."""
+    from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415
+
+    path = project / TIMINGS_FILE
+    try:
+        retry_locked(partial(path.unlink, missing_ok=True), path, "delete")
+    except OSError as err:
+        logger.warning("%s of an earlier analysis not removed: %s", path, err)
 
 
 # --------------------------------------------------------------------------- commands
@@ -277,40 +317,44 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     if a.views_only:
         for step in ("analyze", "events"):
             steps.skip(step, "--views-only")
-        _save_timings(project, timings, t_start)
+        _save_views_only_timings(project, timings, t_start)
         return
-    t1 = time.perf_counter()
     from cutpoint.pano.project import default_style  # noqa: PLC0415
 
-    with steps.step("analyze"):
-        analyze(
-            [Path(c.lrv) for c in clips],
-            get_style(a.style or default_style()),
-            project,
-            vision=False,
-            model=a.model,
-            language=a.language,
-            use_scenes=False,
-        )
-    timings["analyze_s"] = round(time.perf_counter() - t1, 1)
-    if a.no_events:
-        steps.skip("events", "--no-events")
+    highlights = project / "highlights.json"
+    before = _stamp(highlights)
+    try:  # once highlights.json changed, a failure must not leave an earlier run's timings
+        t1 = time.perf_counter()
+        with steps.step("analyze"):
+            analyze(
+                [Path(c.lrv) for c in clips],
+                get_style(a.style or default_style()),
+                project,
+                vision=False,
+                model=a.model,
+                language=a.language,
+                use_scenes=False,
+            )
+        timings["analyze_s"] = round(time.perf_counter() - t1, 1)
+        if a.no_events:
+            steps.skip("events", "--no-events")
+            _plan_paths(project, timings)
+            _save_timings(project, timings, t_start)
+            return
+        from cutpoint.events.pipeline import run_events  # noqa: PLC0415
+
+        t2 = time.perf_counter()
+        with steps.step("events"):
+            run_events(project, layers=EVENT_LAYERS, encoder=kept[0] if kept else None)
+            rescored = reanalyze_if_reachable(project)
+        timings["events_s"] = round(time.perf_counter() - t2, 1)
+        jsonout.output("events", project / "events.json")
         _plan_paths(project, timings)
         _save_timings(project, timings, t_start)
-        return
-    from cutpoint.events.pipeline import run_events  # noqa: PLC0415
-
-    t2 = time.perf_counter()
-    with steps.step("events"):
-        run_events(project, layers=EVENT_LAYERS, encoder=kept[0] if kept else None)
-        rescored = reanalyze_if_reachable(project)
-    timings["events_s"] = round(time.perf_counter() - t2, 1)
-    jsonout.output("events", project / "events.json")
-    _plan_paths(project, timings)
-    # deprecated (total_s): a full run's time from the views on, the scan left out, read
-    # with scan_s by the UI until it reads total_s
-    timings["analyze_total_s"] = round(time.perf_counter() - t0, 1)
-    _save_timings(project, timings, t_start)
+    except BaseException:  # Ctrl+C too (one held until analyze's commit included); re-raised
+        if _stamp(highlights) != before:
+            _drop_timings(project)
+        raise
     if rescored is None:  # footage went offline: highlights.json lacks the events
         jsonout.warn(
             "events_not_in_highlights",
