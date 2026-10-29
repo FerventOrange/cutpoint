@@ -29,9 +29,11 @@ with the opposite sign).
 
 from __future__ import annotations
 
+import io
 import logging
 import math
 import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -201,19 +203,32 @@ def _cached_orientation(z: Any, meta: dict[str, Any]) -> Orientation:
     )
 
 
+#: What reading a damaged or half-written ``.npz`` raises.
+_NPZ_ERRORS = (OSError, ValueError, EOFError, KeyError, zipfile.BadZipFile)
+
+
+def _read_orientation(path: Path, meta: dict[str, Any]) -> Orientation | None:
+    """The track cached in ``path``, or None when it is missing or unreadable (corrupt)."""
+    if not path.exists():
+        return None
+    try:
+        with np.load(path) as z:
+            return _cached_orientation(z, meta)
+    except _NPZ_ERRORS as err:
+        logger.debug("%s: orientation cache unreadable (%s); treated as missing", path, err)
+        return None
+
+
 def load_orientation(source: Path) -> Orientation | None:
     """The cached orientation track of a clip, or None (never parses the IMU)."""
     try:
         path = _orient_path(source)
     except OSError:
         return None
-    if not path.exists():
+    meta = cache.load_json(path.with_suffix(".json")) or {}
+    if "fps" not in meta:
         return None
-    with np.load(path) as z:
-        meta = cache.load_json(path.with_suffix(".json")) or {}
-        if "fps" not in meta:
-            return None
-        return _cached_orientation(z, meta)
+    return _read_orientation(path, meta)
 
 
 def wearer_yaw(orient: Orientation, times: np.ndarray, axis: np.ndarray = WEARER_V) -> np.ndarray:
@@ -424,26 +439,29 @@ def orientation(
     """Cached :func:`fuse` for one clip (``cache/<lrv>/x3-orient-v2.npz``).
 
     ``q_offset_s`` (the renderer's IMU sync) recomputes a track cached with
-    another offset; None takes any.
+    another offset; None takes any. An unreadable (corrupt) cache file is computed anew. The
+    ``.npz`` is written atomically (:func:`cutpoint.cache.save_bytes`), so a concurrent
+    reader never sees half of it.
     """
     path = _orient_path(source)
     meta = cache.load_json(path.with_suffix(".json")) or {"fps": fps}
     same = q_offset_s is None or meta.get("q_offset_s", 0.0) == q_offset_s
-    if not force and same and path.exists():
-        with np.load(path) as z:
-            return _cached_orientation(z, meta)
+    if not force and same and (cached := _read_orientation(path, meta)) is not None:
+        return cached
     t0 = time.perf_counter()
     t, acc, gyr = load_imu(insv00)
     o = fuse(t, acc, gyr, fps, n_frames, q_offset_s=q_offset_s or 0.0)
     o.meta["elapsed_s"] = round(time.perf_counter() - t0, 2)
+    buf = io.BytesIO()  # a file object: numpy adds no suffix
     np.savez_compressed(
-        path,
+        buf,
         t=o.t.astype(np.float32),
         up=o.up.astype(np.float32),
         heading=o.heading.astype(np.float32),
         heading_smooth=o.heading_smooth.astype(np.float32),
         q=o.q.astype(np.float32),
     )
+    cache.save_bytes(path, buf.getvalue())
     cache.save_json(path.with_suffix(".json"), o.meta)
     return o
 

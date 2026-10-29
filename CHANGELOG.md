@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 360 preview API (#517): `candidates.preview_path(project, source, start, end, vertical=)`
+  gives the path to preview a moment with: the one `360 analyze` cached (`cached`), one planned
+  now as `clips` would (`planned`, with the reason), or, when the director cannot plan, a constant
+  forward view levelled by the IMU or for the upright mount without one (`level_forward`), never
+  the raw fisheye. It is safe from worker threads; its source access is documented for offline
+  footage. `candidate_flags` also returns `reasons`, `diagnostics` and `key` (a hash of the cached
+  path), and `render.render_segment(progress=)` reports the rendered fraction (0 to 1, at most
+  about 10 times a second, one final 1.0; a failing callback never stops the render).
+- 360 path diagnostics: `yaw_travel`, `yaw_travel_per_min` and `net_turns`, and a `spin` flag
+  ("keeps turning"): a full turn one way within 30 s, or more than 540 deg of pan per minute
+  (with at least one full turn of travel and half a turn net one way, so gentle sweeps back and
+  forth are not flagged), catches a camera that keeps rotating without whip pans.
 - `cutpoint ui`: 360 moments preview through the camera path `360 analyze` cached for them
   (part of #517): a 640x360 view of the `.lrv` along the path, rendered in the background on first view
   (with Cancel) and kept in `ui/pano/`, in place of the raw dual fisheye. The raw preview stays,
@@ -96,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 360: the cached IMU orientation track (`x3-orient-v2.npz`) is written atomically, so a
+  render or preview reading it while another job writes it never sees half a file, and a
+  damaged one is computed anew instead of failing every 360 render of that clip.
 - `cutpoint ui` AI assistant: OpenAI (`api.openai.com`) is asked through the Responses API, so
   `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` and `*-codex` models make tool calls instead of
   failing or falling back to JSON mode; OpenAI-compatible base URLs still use Chat Completions
