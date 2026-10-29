@@ -149,6 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: the Play sequence button sits under Undo and Redo, as wide as the pair, and
+  keeps its size and place when it turns into Stop. It used to shrink and jump up beside Redo.
 - `cutpoint ui`: the Sequence, AI Chat and Export tabs share the sequence column's full width
   evenly at any width the column is dragged to; a label too long for a narrow tab ends in an
   ellipsis. Before, they kept their labels' widths at the left of the column.
