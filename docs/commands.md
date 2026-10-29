@@ -594,7 +594,13 @@ an analysed set processes only the new file.
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
 transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations
 (a short phrase repeated, very low confidence) are dropped first. Boundaries are snapped to
-scene cuts and never cut a word.
+scene cuts and never cut a word. Each signal is a named feature, and a style's weights name
+these features. The `score` is a candidate's weighted peak divided by the weights of the
+features this install can compute. A feature that needs a missing extra (the `events` extra
+in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,
+commentary) score the same on lite and full installs; ski styles still divide by all their
+weights until #514 phase 1b. The features it could compute are in
+`settings.features_available`.
 
 Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` (0-100),
 `signals`, `label` and a `transcript` snippet; `transcript_unsure` lists the snippet's words
