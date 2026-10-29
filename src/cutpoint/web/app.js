@@ -42,14 +42,19 @@ const OPTS_KEY = 'cutpoint.exportOptions';
 const OPT_DEFAULTS = {
   vertical: false, captions: false, speech_aware: true, smart_tail: true, loudnorm: true, link: true,
   transition: 'cut', audio_transition: 'cut', compress_peaks: 'light',
-  picks: 'sequence', order: '', event_tails: 'auto', kind: 'highlights',
+  picks: 'sequence', order: '', event_tails: 'auto', kind: 'highlights', crop_mode: '', caption_model: '',
 };
 // The Export tab's number and text fields, by the option they send; blank sends nothing (the CLI's default)
 const OPT_FIELDS = {
   top: '#optTop', max_total: '#optMaxTotal', ids: '#optIds', speech_max_extend: '#optSpeechExtend',
   speech_max_lead: '#optSpeechLead', tail_min: '#optTailMin', tail_max: '#optTailMax',
   event_window: '#optEventWindow', extend_start: '#optExtendStart', extend_end: '#optExtendEnd',
+  crop: '#optCropBox', size: '#optSize', audio_fade: '#optAudioFade', fade_dur: '#optFadeDur',
+  final_audio_fade: '#optFinalAudioFade', // sent as Assemble's audio_fade (assembleOptions)
 };
+const TEXT_FIELDS = new Set(['crop', 'size']); // OPT_FIELDS sent as typed, not as numbers
+// The Export tab's selects that keep their choice, by their storage key; '' (Default) sends nothing
+const OPT_SELECTS = { order: '#optOrder', crop_mode: '#optCrop', caption_model: '#optCaptionModel' };
 const PEAK_STOPS = ['off', 'light', 'strong']; // the Compress Audio Peaks slider's stops, left to right
 const PEAK_NAMES = { off: 'None', light: 'Light', strong: 'Max' };
 const COLOR_STOPS = ['off', 'auto', 'underwater']; // the Color slider's stops, left to right (--color)
@@ -396,6 +401,7 @@ function adopt(p, switched) {
   if (!current()) S.focus = S.segments[0]?.id ?? cands()[0]?.id ?? null;
   clearTimeout(S.prepTimer);
   if (switched) startColor();
+  if (switched) syncTiming(); // Crop and Output size are off for 360 projects
   renderAll(switched);
   if (switched) loadAssistant();
 }
@@ -3073,7 +3079,7 @@ function fields(...keys) {
     const el = $(OPT_FIELDS[key]);
     const v = el.value.trim();
     if (el.disabled || !v) continue;
-    out[key] = key === 'ids' ? v.split(/[\s,]+/).filter(Boolean) : Number(v);
+    out[key] = key === 'ids' ? v.split(/[\s,]+/).filter(Boolean) : TEXT_FIELDS.has(key) ? v : Number(v);
   }
   return out;
 }
@@ -3090,6 +3096,16 @@ function validOptions(body) {
   return !bad;
 }
 
+/**
+ * Crop as Export clips sends it (clips --crop): nothing for Default, auto or none, or Custom's box
+ * as typed (validOptions checks it, blank included); nothing while Crop is off (360 projects).
+ */
+function cropOption() {
+  const mode = $('#optCrop').value;
+  if (!mode || $('#optCrop').disabled) return {};
+  return { crop: mode === 'custom' ? $('#optCropBox').value.trim() : mode };
+}
+
 /** Extend export's options (Export clips sends them too): speech-aware cuts and the padding. */
 function extendOptions() {
   return { speech_aware: $('#optSpeech').checked, ...fields('speech_max_extend', 'speech_max_lead', 'extend_start', 'extend_end') };
@@ -3098,7 +3114,8 @@ function extendOptions() {
 function exportOptions() {
   const body = {
     picks: picks(), vertical: $('#optVertical').checked, smart_tail: $('#optTail').checked, compress_peaks: peaks(),
-    ...colorOptions(), ...extendOptions(), ...fields('tail_min', 'tail_max', 'event_window'),
+    ...colorOptions(), ...extendOptions(), ...fields('tail_min', 'tail_max', 'event_window', 'size', 'audio_fade'),
+    ...cropOption(),
   };
   if (body.picks === 'auto') Object.assign(body, fields('top', 'max_total', 'ids'), $('#optOrder').value ? { order: $('#optOrder').value } : {});
   if (!$('#optEventTails').disabled) body.event_tails = $('#optEventTails').value;
@@ -3122,13 +3139,23 @@ async function makePreset() {
   startJob('edit', body);
 }
 
+/** Assemble's number fields, by their OPT_FIELDS names (validOptions checks them). */
+function assembleFields() {
+  return fields('fade_dur', 'final_audio_fade');
+}
+
 function assembleOptions() {
+  const { final_audio_fade: audioFade, ...rest } = assembleFields();
+  const model = $('#optCaptionModel');
   return {
     transition: $('#optTransition').value,
     audio_transition: $('#optAudioTransition').value,
     loudnorm: $('#optLoudnorm').checked,
     compress_peaks: peaks(),
     captions: $('#optCaptions').checked,
+    ...rest,
+    ...(audioFade === undefined ? {} : { audio_fade: audioFade }),
+    ...(model.value && !model.disabled ? { caption_model: model.value } : {}),
   };
 }
 
@@ -4030,7 +4057,7 @@ function showAdvExport(on) {
 function renderAdvInUse() {
   const out = $('#advInUse');
   const shown = $('#panelExport').classList.contains('show-adv');
-  const used = shown ? [] : Object.values(OPT_FIELDS).map((id) => $(id))
+  const used = shown ? [] : [...Object.values(OPT_FIELDS), ...Object.values(OPT_SELECTS)].map((id) => $(id))
     .filter((el) => el.classList.contains('adv') && !el.disabled && el.value.trim())
     .map((el) => document.querySelector(`label[for=${el.id}]`).textContent.replace(/ \(s\)$/, ''));
   out.hidden = !used.length;
@@ -4532,11 +4559,16 @@ function initExportOptions() {
       syncTiming();
     });
   }
-  const order = $('#optOrder');
+  for (const [key, id] of Object.entries(OPT_SELECTS)) {
+    const el = $(id);
+    el.value = [...el.options].some((o) => o.value === saved[key]) ? saved[key] : OPT_DEFAULTS[key];
+    el.addEventListener('change', () => {
+      store(key, el.value);
+      syncTiming();
+    });
+  }
   const events = $('#optEventTails');
-  order.value = [...order.options].some((o) => o.value === saved.order) ? saved.order : OPT_DEFAULTS.order;
   events.value = [...events.options].some((o) => o.value === saved.event_tails) ? saved.event_tails : OPT_DEFAULTS.event_tails;
-  order.addEventListener('change', () => store('order', order.value));
   const kind = $('#optKind');
   kind.value = [...kind.options].some((o) => o.value === saved.kind) ? saved.kind : OPT_DEFAULTS.kind;
   kind.addEventListener('change', () => store('kind', kind.value));
@@ -4561,7 +4593,10 @@ function initExportOptions() {
     store('transition', video.value);
     syncAudio();
   });
-  audio.addEventListener('change', () => store('audio_transition', audio.value));
+  audio.addEventListener('change', () => {
+    store('audio_transition', audio.value);
+    syncTiming();
+  });
   syncAudio();
   const range = $('#optPeaks');
   range.addEventListener('input', () => {
@@ -4592,7 +4627,10 @@ function initExportOptions() {
  * Enable the Export tab's fields that apply: the automatic-pick fields with Automatic picks, Top
  * moments without candidate ids (the CLI takes one or the other), the speech caps with Speech-aware
  * cuts, the tail lengths with Smart tails. The sequence's moments keep their exact ends with Smart
- * tails off, which turns event tails off too, so Event tails is not sent then.
+ * tails off, which turns event tails off too, so Event tails is not sent then. The fields the CLI
+ * would not use are off too: Output size with Vertical 9:16, Fade length under a video Cut,
+ * Assembly audio fade with the Crossfade audio transition, Captions model without captions. The
+ * crop box shows with Crop Custom.
  */
 function syncTiming() {
   const auto = picks() === 'auto';
@@ -4612,6 +4650,17 @@ function syncTiming() {
   able('#optTailMax', tail);
   able('#optEventTails', auto || tail);
   able('#optEventWindow', (auto || tail) && $('#optEventTails').value !== 'off');
+  const pano = S.project?.kind === '360'; // the 360 exporter renders its own frame: no crop or size
+  able('#optCrop', !pano);
+  const custom = $('#optCrop').value === 'custom';
+  // hidden and disabled: a required box Crop does not use must not block Export clips
+  $('#optCropBox').hidden = !custom;
+  $('#optCropBox').disabled = !custom || pano;
+  document.querySelector('label[for=optCropBox]').hidden = !custom;
+  able('#optSize', !$('#optVertical').checked && !pano);
+  able('#optFadeDur', $('#optTransition').value === 'fade');
+  able('#optFinalAudioFade', $('#optAudioTransition').value !== 'crossfade');
+  able('#optCaptionModel', $('#optCaptions').checked);
   renderAdvInUse();
 }
 
@@ -4626,6 +4675,7 @@ function syncAudio() {
   if (linked) audio.value = LINKED_AUDIO[video];
   else if (fade.disabled && audio.value === 'crossfade') audio.value = 'cut';
   audio.disabled = linked;
+  syncTiming(); // Fade length and Assembly audio fade follow the transitions
 }
 
 /** Set the Compress Audio Peaks slider to ``value`` ('off', 'light' or 'strong'). */
@@ -4729,7 +4779,9 @@ function bind() {
     const body = exportOptions();
     if (validOptions(body)) startJob('clips', body);
   });
-  $('#assembleBtn').addEventListener('click', () => startJob('assemble', assembleOptions()));
+  $('#assembleBtn').addEventListener('click', () => {
+    if (validOptions(assembleFields())) startJob('assemble', assembleOptions());
+  });
   $('#extendBtn').addEventListener('click', () => {
     const body = extendOptions();
     if (validOptions(body)) startJob('extend', body);
