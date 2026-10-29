@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CUTPOINT_OLLAMA=0`; `--yes` answers the prompt. The summary reports the Ollama result. Lite
   mode has no Ollama: it skips the step with no prompt, and `--lite --ollama` prints a warning and
   installs nothing (the UI assistant can use a third-party provider instead).
+- `360 analyze` plans the director path of every 360 candidate at its end (16:9, the settings
+  `clips` uses) from the cached layers, without decoding video, and keeps it in
+  `<project>/pano_candidates/` with a `diagnostics` block: time at the sky or above the
+  horizon, peak pan rate, hard cuts per minute, time with the wearer in frame, how often the
+  view misses a clearly better direction, the geometric QA result, and `flags` (`sky`, `whip`,
+  `cuts`, `wearer`, `off_target`, `qa_fail`; provisional thresholds). `clips` reuses a cached
+  path when the span, kind, settings, layers and planning code are unchanged, else plans it as
+  before and logs why (`director path re-planned (span differs from 360 analyze)`, or
+  `(9:16 not planned by 360 analyze)` under `--vertical`). A failed path logs a WARNING and the
+  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag).
+  `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
+  diagnostics for previews (#517).
 
 ### Fixed
 
@@ -47,6 +59,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list lacks; a saved model the list lacks stays chosen, marked "(not in the provider's list)",
   and without a list (no key, offline, Ollama not running) the dropdown offers the preset's own
   models and the saved model.
+- `clips` and `edit --color auto|underwater` log one INFO line per clip not graded, naming the
+  clip and its skip code (`not_underwater` adds that `--color auto` may suit it, `log` that
+  `--lut` fits it). They replace the lines that listed the 360 and log/flat clips; the summary
+  count is unchanged.
+
+### Fixed
+
+- `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
+  slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
+  the keyboard and screen readers (#518).
+- `clips/manifest.json`: the header's `smart_tail.enabled` and `speech_aware.enabled` are now
+  `false` when no clip got them, as for a `--segments` export whose every segment turned them
+  off; they used to show the run's setting. `extend` does the same for `speech_aware`.
+- `clips`: the `Exporting ...` INFO line says `smart tail off` when no clip gets a smart tail
+  (every segment has `"smart_tail": false` or a fixed `"tail"`), as the manifest header does;
+  it used to say `on` with the run's setting.
 
 ## [0.4.0] - 2026-10-29
 
