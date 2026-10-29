@@ -8,11 +8,6 @@ only the rendered QA flags to one cause, checked in this order:
 
 ``unpaired``
     the geometric QA has no frame at that time (other ``--fps``, or a shorter clip);
-``outside_segment``
-    the frame's source time lies outside the selected moment: the path's ``selected``
-    span (``cutpoint clips``: the pick before tails and padding), else its planned
-    ``segment`` (director previews, older clip paths); a clip's tails and padding are
-    not part of the moment the preview checked;
 ``wearer_overlap``
     a cut box of the rendered frame shares ``edge_self_overlap`` of the smaller
     box with a self box the geometric QA projected there, also one it dropped as
@@ -71,7 +66,11 @@ counts for its edge cut (:func:`~cutpoint.pano.qa.edge_candidates` touching an e
 Projected boxes include those the geometric QA dropped as mostly outside the view
 (``slivers`` of its frames). Each rendered-only frame records ``evidence``: the cut box
 and the edge it touches, the projected box it matches and that box's distance to the
-edge (:func:`explain`).
+edge (:func:`explain`), and ``in_selected``: whether its source time lies in the moment
+picked (the path's ``selected`` span, ``cutpoint clips``' pick before tails and padding;
+else its ``segment``, as for director previews and older clip paths; None when the
+reports do not say). Tails are planned and checked like the moment, so a frame outside
+it still gets its cause; ``outside_selected`` counts those frames.
 Writes ``edge_gap.json`` next to the rendered ``qa.json``; its edit summary also counts
 the frames by the rendered clips' render ``mode`` and ``self_method`` (``by_mode``,
 ``by_self_method``; ``unknown`` for older reports). Per clip and for the edit,
@@ -95,11 +94,10 @@ from cutpoint.pano import qa as Q
 logger = logging.getLogger(__name__)
 
 GAP_VERSION = 4  # 2: other_detail and evidence; 3: position_mismatch, by_mode, by_self_method;
-# 4: size_ratio
+# 4: size_ratio, in_selected and outside_selected instead of the outside_segment cause
 GAP_FILE = "edge_gap.json"
 CAUSES = (
     "unpaired",
-    "outside_segment",
     "wearer_overlap",
     "yaw_offset",
     "stale_view",
@@ -363,9 +361,10 @@ def explain(
     segment: list[float] | None,
     dx: float | None,
 ) -> dict[str, Any]:
-    """``{"cause", "other_detail", "evidence"}`` of a frame only the rendered QA flags
-    ``edge_cut``: the cause (one of :data:`CAUSES`), for ``other`` its sub-cause (one of
-    :data:`OTHER_DETAILS`, else None) and the boxes behind it.
+    """``{"cause", "other_detail", "evidence", "in_selected"}`` of a frame only the
+    rendered QA flags ``edge_cut``: the cause (one of :data:`CAUSES`), for ``other`` its
+    sub-cause (one of :data:`OTHER_DETAILS`, else None), the boxes behind it and whether
+    source time ``src_t`` lies in ``segment`` (the moment picked; None when either is unknown).
 
     ``evidence``: the rendered cut box (``rendered_box``, its ``rendered_area`` and the
     ``edge`` it touches), the projected box it matches (``paths_box``, ``paths_kind``
@@ -400,7 +399,11 @@ def explain(
         detail = None
         if cause == "other":
             detail = other_detail_of(cut[ci], box, kind == "sliver", p, th)
-        return {"cause": cause, "other_detail": detail, "evidence": ev}
+        return {"cause": cause, "other_detail": detail, "evidence": ev, "in_selected": inside}
+
+    inside = None
+    if src_t is not None and segment is not None:
+        inside = bool(segment[0] <= src_t <= segment[1])
 
     if p is None:
         return done("unpaired")
@@ -413,8 +416,6 @@ def explain(
         i, j = np.unravel_index(int(ov.argmax()), ov.shape)
         if ov[i, j] > 0:
             match = (others[j], "box" if j < len(oth_b) else "sliver", int(i))
-    if src_t is not None and segment is not None and not segment[0] <= src_t <= segment[1]:
-        return done("outside_segment", *(match or ()))
     if len(cut) and len(own_b) + len(own_s):
         own = np.concatenate([own_b, own_s])
         ov = Q._overlap(cut, own)
@@ -464,6 +465,7 @@ def compare_clip(
     # the selected moment (clips), else the planned segment (previews, older reports)
     segment = rc.get("selected") or pc.get("selected") or rc.get("segment") or pc.get("segment")
     counts = dict.fromkeys(COUNT_KEYS, 0)
+    outside = 0
     causes = dict.fromkeys(CAUSES, 0)
     detail = dict.fromkeys(OTHER_DETAILS, 0)
     only: list[dict[str, Any]] = []
@@ -481,6 +483,7 @@ def compare_clip(
         src_t = None if offset is None else float(offset) + float(r["t"])
         got = explain(r, p, th, src_t, segment, dx)
         causes[got["cause"]] += 1
+        outside += got["in_selected"] is False
         if got["other_detail"] is not None:
             detail[got["other_detail"]] += 1
         only.append({"t": r["t"], **got})
@@ -489,6 +492,7 @@ def compare_clip(
         "mode": rc.get("mode"),
         "self_method": rc.get("self_method"),
         **counts,
+        "outside_selected": outside,
         "median_dx": dx,
         "size_ratio": size_ratio(sizes),
         "causes": causes,
@@ -556,6 +560,7 @@ def run_compare(qa_dir: Path, a: Path, b: Path) -> dict[str, Any]:
     }
     edit: dict[str, Any] = {k: sum(c[k] for c in clips) for k in COUNT_KEYS}
     edit["causes"] = {k: sum(c["causes"][k] for c in clips) for k in CAUSES}
+    edit["outside_selected"] = sum(c["outside_selected"] for c in clips)
     n = edit["rendered_only"]
     edit["cause_share"] = {k: round(v / n, 3) if n else 0.0 for k, v in edit["causes"].items()}
     edit["other_detail"] = {k: sum(c["other_detail"][k] for c in clips) for k in OTHER_DETAILS}

@@ -860,6 +860,18 @@ def test_evaluate_seeded_fuzz_never_pans_faster_or_fails_a_gate_linear_passes(
 NEAR = np.array([[40.0, -10.0, 12.0, 30.0]])  # a near person split by the right edge of 86 deg
 
 
+# a stranger too wide to frame whole or keep out at any reachable view: only a cut-away helps
+STRANGER = np.array([[45.0, -10.0, 64.0, 60.0, 0.0, 0.9]])
+
+
+def block(ctx: dict, steps: range | list[int]) -> None:
+    """Put :data:`STRANGER` at ``steps`` (``persons`` for the QA and ``near`` for v4)."""
+    rows = [np.zeros((0, 6))] * len(ctx["times"])
+    for i in steps:
+        rows[i] = STRANGER
+    ctx["persons"] = ctx["near"] = rows
+
+
 def all_fine(ctx: dict, p: D.DirectorParams, span: tuple[int, int] | None = None) -> bool:
     n = len(ctx["times"])
     chk = D._framing_checks(ctx, span or (0, n), p)
@@ -950,9 +962,9 @@ def test_a_margin_only_violation_is_fixed_and_the_segment_holds() -> None:
     n = 40
     p = D.DirectorParams()
     min_steps = round(p.min_hold_s / p.dt)
-    for lost, cut_at in ((range(2, 9), 0), (range(7, 12), 7)):
+    for lost, cut_at in ((range(2, 9), 0), (range(9, 13), 8)):  # 8: the held view at 9
         ctx = safe_ctx(n, 0.0, 80.0)
-        ctx["subj"][list(lost), 0] = 90.0  # out of reach: only a cut-away helps
+        block(ctx, lost)
         ctx["yaw_score"][:, 27] = 1.0
         shots = D._safe_area_pass(ctx, [(0, n)], (10, 30), p, (0, n))  # segment: steps 10-29
         assert ctx["target"][lost[0]] == "view" and shots[0][0] == 0
@@ -963,7 +975,7 @@ def test_a_margin_only_violation_is_fixed_and_the_segment_holds() -> None:
         if cut_at:
             assert min(shots[1][1], 30) - 10 >= min_steps  # the cut-away lasts in the segment
         ctx = safe_ctx(n, 0.0, 80.0)
-        ctx["subj"][list(lost), 0] = 90.0
+        block(ctx, lost)
         ctx["yaw_score"][:, 27] = 1.0
         if cut_at == 0:  # the v4 rule fixes the segment only
             assert D._safe_area_pass(ctx, [(0, n)], (10, 30), LEGACY_EDGES) == [(0, n)]
@@ -1040,16 +1052,107 @@ def test_smoothing_keeps_a_smaller_subject_tall_enough() -> None:
     assert ctx["fov"][:8].min() > 90.0  # the taller subject still widens
 
 
+def test_widening_clears_hard_cuts_up_to_the_subject_ceiling() -> None:
+    n, p = 20, D.DirectorParams()
+    for h, widens in ((25.0, True), (11.0, False)):  # 11 deg: the subject would get too small
+        ctx = safe_ctx(n, 0.0, 80.0)
+        ctx["subj"][:, 3] = h
+        rows = [np.zeros((0, 6))] * n
+        for i in range(8, 12):
+            rows[i] = np.array([[44.0, -10.0, 10.0, 30.0, 0.0, 0.9]])  # cut by the right edge
+        ctx["persons"] = ctx["near"] = rows
+        chk = D._framing_checks(ctx, (0, n), p)
+        assert chk.n_bad(0, n)[0] == 4
+        top = D._subject_ceiling(ctx, chk, 0, n, p)
+        assert D._widen_only(ctx, chk, 0, n, p, hard=True) == widens
+        assert (chk.n_bad(0, n)[0] == 0) == widens
+        assert (ctx["fov"] <= np.maximum(top, 80.0) + 1e-6).all()
+        assert (ctx["fov"][8:12] > 80.0).all() == widens
+
+
+def test_the_wearer_is_seen_only_inside_the_frame() -> None:
+    n = 4
+    ctx = safe_ctx(n, 0.0, 80.0)
+    for yaw, seen in ((80.0, False), (20.0, True)):  # 80: in front, wholly right of the view
+        ctx["persons"] = [np.array([[yaw, -40.0, 20.0, 30.0, 1.0, 0.9]])] * n
+        chk = D._framing_checks(ctx, (0, n), D.DirectorParams())
+        assert chk.wearer_seen(1) == seen
+
+
 def test_a_cut_away_after_the_segment_leaves_it_whole() -> None:
     n = 40
     p = D.DirectorParams()
     ctx = safe_ctx(n, 0.0, 80.0)
-    ctx["subj"][32:38, 0] = 90.0  # out of reach in the margin after the segment
+    block(ctx, range(32, 38))  # in the margin after the segment
     ctx["yaw_score"][:, 27] = 1.0
     shots = D._safe_area_pass(ctx, [(0, n)], (10, 30), p, (0, n))
     assert shots[0][0] == 0 and shots[0][1] >= 30  # the segment's shot
     away = [i for i in range(n) if ctx["target"][i] == "view"]
     assert away and min(away) >= 30
+
+
+def test_a_cut_away_needs_hard_bad_steps() -> None:
+    n = 30
+    p = D.DirectorParams()
+    ctx = safe_ctx(n, 0.0, 80.0)
+    ctx["subj"][10:20, 0] = 90.0  # the subject out of view: hard bad, a cut-away helps
+    ctx["yaw_score"][:, 27] = 1.0
+    assert len(D._safe_area_pass(ctx, [(0, n)], (0, n), p)) == 3
+    assert ctx["target"][12] == "view" and ctx["target"][25] == "friend"
+    ctx = safe_ctx(n, 0.0, 80.0)
+    soft = STRANGER.copy()
+    soft[0, 5] = 0.5  # seen by the director's rule (near_min_score 0.3), not by the QA
+    ctx["persons"] = ctx["near"] = [soft] * n
+    ctx["yaw_score"][:, 27] = 1.0
+    q = D.with_params(p, {"near_min_score": 0.3})
+    assert D._framing_checks(ctx, (0, n), q).bad(5)
+    assert D._safe_area_pass(ctx, [(0, n)], (0, n), q) == [(0, n)]  # soft only: no cut
+    assert set(ctx["target"]) == {"friend"}
+    # 4 steps (2 s) the QA counts; within the shot the cut-away adds 2 cuts, at its end 1
+    for steps, gain, cuts in (
+        (range(12, 16), 2.5, False),
+        (range(12, 16), 1.5, False),
+        (range(12, 16), 1.0, True),
+        (range(26, 30), 1.5, True),
+    ):
+        ctx = safe_ctx(n, 0.0, 80.0)
+        block(ctx, steps)
+        ctx["yaw_score"][:, 27] = 1.0
+        q = D.with_params(p, {"cut_min_gain_s": gain})
+        assert (len(D._safe_area_pass(ctx, [(0, n)], (0, n), q)) > 1) == cuts
+
+
+def test_violations_close_together_get_one_cut_away() -> None:
+    n = 40
+
+    def cut_aways(gap_steps: int, p: D.DirectorParams) -> int:
+        ctx = safe_ctx(n, 0.0, 80.0)
+        block(ctx, [*range(10, 16), *range(16 + gap_steps, 22 + gap_steps)])
+        ctx["yaw_score"][:, 27] = 1.0
+        D._safe_area_pass(ctx, [(0, n)], (0, n), p)
+        away = [ctx["target"][i] == "view" for i in range(n)]
+        return sum(a and not b for a, b in pairwise([False, *away]))
+
+    p = D.DirectorParams()
+    assert cut_aways(4, p) == 1 and cut_aways(7, p) == 1  # 2 s and 3.5 s apart
+    assert cut_aways(7, D.with_params(p, {"cut_min_gap_s": 0.0})) == 2  # min_hold_s only
+
+
+def test_the_tighter_margin_retry_avoids_a_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    n = 30
+    p = D.DirectorParams()
+
+    def run() -> dict:
+        ctx = safe_ctx(n, 0.0, 86.0)
+        ctx["persons"] = ctx["near"] = [np.array([[45.0, -10.0, 56.0, 60.0, 0.0, 0.9]])] * n
+        ctx["yaw_score"][:, 27] = 1.0
+        D._safe_area_pass(ctx, [(0, n)], (0, n), p)
+        return ctx
+
+    ctx = run()  # framed whole at the widest view, closer to the side than include_margin
+    assert set(ctx["target"]) == {"friend"} and ctx["fov"].max() > 105.0
+    monkeypatch.setattr(D, "INCLUDE_MARGIN_RETRY", p.include_margin)  # no tighter retry
+    assert set(run()["target"]) == {"view"}
 
 
 def test_keys_fall_on_the_segment_grid(stub_scores: dict) -> None:
@@ -1100,6 +1203,8 @@ def test_new_params_are_validated() -> None:
         {"near_box_scale": 0},
         {"include_margin": 0.5},
         {"near_min_score": -0.1},
+        {"cut_min_gain_s": -1},
+        {"cut_min_gap_s": -0.5},
     ):
         with pytest.raises(ValueError, match="director param"):
             D.with_params(base, bad)
@@ -1148,12 +1253,13 @@ def test_include_exclude_widens_shifts_then_cuts() -> None:
         ctx = safe_ctx(n, subj_yaw, 80.0)
         assert D._safe_area_pass(ctx, [(0, n)], (0, n), p) == [(0, n)]
         assert set(ctx["target"]) == {"friend"} and all_fine(ctx, p)
-    ctx = safe_ctx(n, 90.0, 80.0)  # out of reach: only a cut helps
+    ctx = safe_ctx(n, 0.0, 80.0)  # out of reach: only a cut helps
+    block(ctx, range(n))
     ctx["yaw_score"][:, 18] = 0.5
     assert D._safe_area_pass(ctx, [(0, n)], (0, n), p) == [(0, n)]
     assert set(ctx["target"]) == {"forward"} and ctx["yaw"] == pytest.approx(180.0)
     ctx = safe_ctx(60, 0.0, 80.0)  # two bad stretches in one shot: two cuts
-    ctx["subj"][10:20, 0] = ctx["subj"][35:45, 0] = 90.0
+    block(ctx, [*range(10, 20), *range(35, 45)])
     ctx["yaw_score"][:, 27] = 1.0
     shots = D._safe_area_pass(ctx, [(0, 60)], (0, 60), p)
     assert len(shots) == 5 and all(x[1] == y[0] for x, y in pairwise(shots))
@@ -1191,7 +1297,7 @@ def test_include_exclude_cut_away_only_where_it_helps() -> None:
     assert D._safe_area_pass(ctx, [(0, n)], (0, n), p) == [(0, n)]  # no view is better
     assert set(ctx["target"]) == {"friend"}
     ctx = safe_ctx(n, 0.0, 80.0)
-    ctx["subj"][15:, 0] = 90.0  # lost from step 15; the segment ends at step 19 (9.5 s)
+    block(ctx, range(15, n))  # from step 15; the segment ends at step 19 (9.5 s)
     ctx["yaw_score"][:, 27] = 1.0
     shots = D._safe_area_pass(ctx, [(0, n)], (0, 20), p, (0, n))
     c0 = shots[1][0]

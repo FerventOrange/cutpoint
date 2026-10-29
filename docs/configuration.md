@@ -264,7 +264,7 @@ Settings for the optional 360 module. Every key is optional.
 | `max_follow_deg` | Largest camera lean, in degrees from the clip's average attitude, that the view follows when `level_strength` is below 1. A larger lean (a fall, the camera being handled) is followed as this much. Default 30 |
 | `imu_offset_s` | Time offset in seconds between the motion sensor and the video, if a clip's correction looks early or late. Default 0 |
 | `equirect_yaw_offset` | Degrees added to the director's yaw for Studio exports whose yaw 0 is not the camera's forward direction. Default 0 |
-| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score` and `near_box_scale`. See [360 director](workflows/360-director.md#director) |
+| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. See [360 director](workflows/360-director.md#director) |
 
 ## Styles
 

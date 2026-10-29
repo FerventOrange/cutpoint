@@ -134,6 +134,8 @@ class DirectorParams:
     near_min_h_deg: float = 15.0  # other people this tall may intrude at the frame edge
     near_box_scale: float = 1.0  # near people's boxes scaled by this (about the centre)
     near_min_score: float = 0.6  # ... and detected with at least this score
+    cut_min_gain_s: float = 1.0  # time the QA counts as cut a cut-away removes, per cut
+    cut_min_gap_s: float = 4.0  # ... and starts / ends this far from another cut, or merges
 
     @classmethod
     def legacy(cls) -> DirectorParams:
@@ -204,6 +206,8 @@ class DirectorParams:
             near_min_h_deg=15.0,
             near_box_scale=1.0,
             near_min_score=0.6,
+            cut_min_gain_s=1.0,
+            cut_min_gap_s=4.0,
         )
 
 
@@ -231,6 +235,8 @@ NONNEG_PARAMS = (
     "include_bridge_s",
     "near_min_h_deg",
     "near_min_score",
+    "cut_min_gain_s",
+    "cut_min_gap_s",
 )
 CHOICE_PARAMS = {
     "selfie_mode": ("auto", "off"),
@@ -646,6 +652,7 @@ REFRAME_SHARE = 0.35  # its reframing shifts the yaw by up to this share of half
 INCLUDE_TRIES = 6  # include / exclude: the cheapest solutions checked per step before the grid
 GRID_TRIES = 12  # ... and the cheapest grid points checked after them
 STICKY_MISS = 10.0  # ... cost of a step a forced side leaves unsolved
+INCLUDE_MARGIN_RETRY = 0.015  # ... the margin of the last try before a cut-away: inside the QA's
 INCLUDE_ROUNDS = 3  # ... rounds per shot while they reduce the bad steps
 
 
@@ -1010,9 +1017,10 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
     def view_offenders(
         vy: float, vp: float, vf: float, tg: str, sj: np.ndarray | None, rows: np.ndarray
     ) -> tuple[list[float], bool]:
-        """``(yaws, edge cut)``: what is badly framed in one view by the include / exclude
+        """``(yaws, hard)``: what is badly framed in one view by the include / exclude
         rule (the subject's safe area, the wearer, near people split by the edge and the
-        geometric QA's edge cuts), and whether the geometric QA counts an edge cut."""
+        geometric QA's edge cuts), and whether the geometric QA counts an edge cut or the
+        subject is out of view."""
         if tg == "selfie":
             return [], False
         rows = rows[in_view(rows, vy, vp, vf)]
@@ -1024,8 +1032,10 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
             vy, vp, vf, size, np.concatenate([np.reshape(own, (-1, 4)), rows[:, :4], near, wide])
         )
         out = []
+        lost = False
         if sj is not None:
             r = res.pop(0)
+            lost = r is None or not (r[0][0] < 1 and r[0][2] > 0 and r[0][1] < 1 and r[0][3] > 0)
             if r is None:
                 out.append(float(sj[0]))
             else:
@@ -1061,7 +1071,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         ]
         keep_k = np.flatnonzero(ok)
         if not np.asarray(touch, bool)[keep_k].any():
-            return out, False
+            return out, lost
         qa_rows = rows[keep_k]
         det, sel, sl, src, sl_src = QP.project_frame(
             qa_rows[:, :4],
@@ -1086,7 +1096,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         ):
             out += [float(qa_rows[k, 0]) for k in sl_src]
             qa = True
-        return out, qa
+        return out, qa or lost
 
     def at(
         vy: float, vp: float, vf: float, tg: str, sj: np.ndarray | None, rows: np.ndarray
@@ -1115,9 +1125,28 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
             return legacy_offenders(i, f, y)
         return at(*view(i, f, y), target[i], subject(i), persons[i])[0]
 
+    def wearer_seen(i: int) -> bool:
+        """Step ``i``'s view shows part of the wearer (any self box, allowed or not)."""
+        rows = persons[i]
+        own = rows[is_self(rows)] if target[i] != "selfie" else rows[:0]
+        if not len(own):
+            return False
+        return any(  # in front and overlapping the frame
+            r is not None and r[0][0] < 1 and r[0][2] > 0 and r[0][1] < 1 and r[0][3] > 0
+            for r in project_boxes(*view(i), size, own[:, :4])
+        )
+
+    def held_bad(j: int) -> bool:
+        """Step ``j``'s view, held until a cut after it, is hard bad at step ``j + 1``'s
+        time (:func:`qa_bad`)."""
+        if legacy or j < 0 or j + 1 >= len(yaw) or target[j] == "selfie":
+            return False
+        return at(*view(j), target[j], subject(j), persons[j + 1])[1]
+
     def qa_bad(i: int, f: float | None = None, y: float | None = None) -> bool:
-        """The geometric QA counts an edge cut at step ``i`` (its view, or the view held
-        until a cut to it, at its time; with ``f`` / ``y``: in that view only)."""
+        """Step ``i`` is hard bad: the geometric QA counts an edge cut or the subject is
+        out of view (in its view, or the view held until a cut to it, at its time; with
+        ``f`` / ``y``: in that view only)."""
         if legacy:
             return False
         if at(*view(i, f, y), target[i], subject(i), persons[i])[1]:
@@ -1186,8 +1215,8 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         return out
 
     def n_bad(a: int, b: int) -> tuple[int, int]:
-        """``(QA edge cuts, bad steps)`` of ``[a, b)`` inside ``fix`` (legacy: no QA
-        count), compared in that order: a fix never adds steps the QA counts."""
+        """``(hard bad steps, bad steps)`` of ``[a, b)`` inside ``fix`` (:func:`qa_bad`;
+        legacy: none hard), compared in that order: a fix never adds hard bad steps."""
         lo, fl = flags(a, b)
         return sum(qa_bad(i) for i in range(lo, lo + len(fl))), sum(fl)
 
@@ -1212,6 +1241,8 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         runs=runs,
         n_bad=n_bad,
         qa_bad=qa_bad,
+        held_bad=held_bad,
+        wearer_seen=wearer_seen,
         subject=subject,
         constraints=constraints,
     )
@@ -1255,6 +1286,54 @@ def _widen(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -> 
             fov[j] = max(fov[j], min(env, hi))
 
     _keep_if_better(ctx, chk, a, b, apply)
+
+
+def _subject_ceiling(
+    ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams
+) -> np.ndarray:
+    """Per step of ``[a, b)``: the widest FOV that keeps the subject at ``min(its height
+    now, include_min_subject_h)`` (never below the FOV now; ``fov_hi`` without one)."""
+    fov, size = ctx["fov"], ctx["size"]
+    top = np.maximum(ctx["fov_hi"], fov[a:b])
+    for k in range(a, b):
+        sj = chk.subject(k)
+        if sj is not None:
+            floor = min(_height_share(sj[3], fov[k], size), p.include_min_subject_h)
+            top[k - a] = max(fov[k], min(top[k - a], _max_fov(sj[3], floor, size)))
+    return top
+
+
+def _widen_only(
+    ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams, hard: bool = False
+) -> bool:
+    """:func:`_widen` for ``include_exclude``: each bad step of ``[a, b)`` gets the least
+    FOV (2 deg steps) that frames it well, else one where it is not hard bad
+    (``chk.qa_bad``), up to its :func:`_subject_ceiling`; a cone envelope keeps
+    ``fov_rate``; each stretch is kept only when the bad steps drop. ``hard``: only the
+    hard bad steps, to the least FOV where they are not. Returns whether any was kept."""
+    times, fov = ctx["times"], ctx["fov"]
+    top = _subject_ceiling(ctx, chk, a, b, p)
+    kept = False
+    for r0, r1 in chk.runs(a, b, 1):
+        need = {}
+        for i in range(r0, r1):
+            fs = [float(f) for f in np.arange(fov[i] + 2.0, top[i - a] + 1e-6, 2.0)]
+            ok = None if hard else next((f for f in fs if not chk.bad(i, f=f)), None)
+            if ok is None and chk.qa_bad(i):
+                ok = next((f for f in fs if not chk.qa_bad(i, f=f)), None)
+            if ok is not None:
+                need[i] = ok
+        if not need:
+            continue
+        base_f = fov[a:b].copy()
+
+        def apply(need=need, base_f=base_f) -> None:
+            for j in range(a, b):
+                env = max(v - p.fov_rate * abs(times[j] - times[i]) for i, v in need.items())
+                fov[j] = max(base_f[j - a], min(env, top[j - a]))
+
+        kept = _keep_if_better(ctx, chk, a, b, apply) or kept
+    return kept
 
 
 def _reframe(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -> None:
@@ -1429,7 +1508,7 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
     the yaw limits, ``fov_rate``), capped where the smoothed widening would take a
     subject below its ``include_min_subject_h`` floor, and kept only when they reduce
     the bad steps."""
-    yaw, fov, lo, hi = ctx["yaw"], ctx["fov"], ctx["fov_lo"], ctx["fov_hi"]
+    yaw, fov, lo = ctx["yaw"], ctx["fov"], ctx["fov_lo"]
     sm = p.smooth_s / p.dt
     gap = p.include_bridge_s / p.dt - 1e-6
 
@@ -1462,16 +1541,7 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
         dy[j - a] = np.interp(j, idx, [sol[k][1] for k in idx])  # held beyond the ends
         df[j - a] = np.interp(j, idx, [sol[k][2] for k in idx])
         base_y, base_f = yaw[a:b].copy(), fov[a:b].copy()
-        top = np.maximum(hi, base_f)  # smoothing must not shrink a subject below its floor
-        for k in range(a, b):
-            sj = chk.subject(k)
-            if sj is not None:
-                floor = min(
-                    _height_share(sj[3], base_f[k - a], ctx["size"]), p.include_min_subject_h
-                )
-                top[k - a] = max(
-                    base_f[k - a], min(top[k - a], _max_fov(sj[3], floor, ctx["size"]))
-                )
+        top = _subject_ceiling(ctx, chk, a, b, p)  # smoothing must not shrink a subject
 
         def apply() -> None:
             f = _limit(base_f + _gauss(df, sm / 2), p.dt, p.fov_rate, 2 * p.fov_rate)
@@ -1533,7 +1603,8 @@ def _best_away(
 ) -> tuple[tuple[int, int], float]:
     """``(bad steps, yaw)`` of the candidate cut-away of ``[c0, c1)`` with the fewest bad
     steps (``chk.n_bad`` of ``[c0, c1]``: step ``c1`` may show it held; the first of
-    equals; ``cands`` is non-empty); ``ctx`` is left unchanged."""
+    equals; ``cands`` is non-empty); ``ctx`` is left unchanged. ``include_exclude``:
+    among equal QA edge cuts, the fewest steps that show the wearer first."""
     keys = ("yaw", "pitch", "fov", "subj")
     keep = {k: ctx[k][c0:c1].copy() for k in keys}
     keep_target = ctx["target"][c0:c1]
@@ -1544,14 +1615,16 @@ def _best_away(
     for ctr in cands:
         _apply_away(ctx, c0, c1, ctr, p)
         n = chk.n_bad(c0, c1 + 1)
+        seen = 0 if p.edge_rule == "legacy" else sum(chk.wearer_seen(i) for i in range(c0, c1))
         for k in keys:
             ctx[k][c0:c1] = keep[k]
         ctx["target"][c0:c1] = keep_target
-        tried.append((n, ctr))
-        if not any(n):
+        tried.append(((n[0], seen, n[1]), n, ctr))
+        if not any(n) and not seen:
             break
     cuts -= new
-    return min(tried, key=lambda x: x[0])
+    best = min(tried, key=lambda x: x[0])
+    return best[1], best[2]
 
 
 def _cut_away(
@@ -1568,9 +1641,19 @@ def _cut_away(
     steps than the shot. Cut-aways and the pieces they leave last ``min_hold_s`` within
     ``span`` (the segment's steps; or reach the shot's ends); a cut-away in the planned
     margins (``edge_rule="include_exclude"``) may be shorter there. Returns the shot's
-    pieces."""
+    pieces.
+
+    ``include_exclude`` also: a cut-away ends ``cut_min_gap_s`` or more from the shot's
+    cuts and the previous cut-away (else it reaches them), and is made only when it
+    removes ``cut_min_gain_s`` or more, per cut it adds, of the steps the geometric QA
+    counts as cut or where the subject is out of view."""
     subj, cen = ctx["subj"], ctx["centres"]
     min_steps = max(1, round(p.min_hold_s / p.dt))
+    snap = min_steps
+    gain = 0
+    if p.edge_rule != "legacy":
+        snap = max(min_steps, round(p.cut_min_gap_s / p.dt))
+        gain = max(1, round(p.cut_min_gain_s / p.dt))
     pb, done = b, []
     last_c0, last_sy = -1, []  # the previous cut-away (merged when they would touch)
     last = span[1] - 1  # the segment's last step: a piece ending there ends with the segment
@@ -1578,15 +1661,17 @@ def _cut_away(
         if r0 >= pb:  # inside the previous cut-away
             continue
         c0, c1 = r0, min(max(r1, r0 + min_steps), pb)
-        if pb - c1 < min_steps or 0 <= last - c1 < min_steps:
+        if c0 > a and chk.held_bad(c0 - 1):  # the frame before the cut shows it held
+            c0 -= 1
+        if pb - c1 < snap or 0 <= last - c1 < min_steps:
             c1 = pb
         if c0 <= last and min(c1, last) - c0 < min_steps:  # cut short by the shot / segment end
             c0 = max(a, min(c1, last) - min_steps)
         if c0 < span[0] < c1 < span[0] + min_steps:  # entering the segment: last there too
             c1 = min(pb, span[0] + min_steps)
-            if pb - c1 < min_steps or 0 <= last - c1 < min_steps:
+            if pb - c1 < snap or 0 <= last - c1 < min_steps:
                 c1 = pb
-        if c0 - a < min_steps or 0 < c0 - span[0] < min_steps:
+        if c0 - a < snap or 0 < c0 - span[0] < min_steps:
             c0 = a
         if c1 <= c0:
             continue
@@ -1604,7 +1689,9 @@ def _cut_away(
         away &= ctx["people"][c0:c1].max(0) <= 0.3
         cands = [float(cen[k]) for k in np.flatnonzero(away)[np.argsort(-score[away])]]
         best = _best_away(ctx, chk, c0, c1, cands or [float(ctx["forward_yaw"])], p)
-        if best[0] >= chk.n_bad(c0, c1 + 1):
+        now = chk.n_bad(c0, c1 + 1)
+        cuts = (c0 > a) + (c1 < pb and merged is None)  # cuts the cut-away adds
+        if best[0] >= now or now[0] - best[0][0] < gain * max(1, cuts):
             if merged is not None:
                 done.insert(0, merged)
             continue
@@ -1635,6 +1722,31 @@ def _suspect_steps(ctx: dict[str, Any], span: tuple[int, int]) -> set[int]:
                 out.add(i)
                 break
     return out
+
+
+def _fix_shot(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -> None:
+    """``include_exclude`` fixes of shot ``[a, b)``: :func:`_include_exclude` (up to
+    :data:`INCLUDE_ROUNDS` rounds while it helps), and :func:`_widen_only` before
+    them when the rounds leave hard bad steps; the one with fewer bad steps
+    (``chk.n_bad``, hard ones first) is kept, then
+    hard bad steps left are widened (``_widen_only(hard=True)``)."""
+    yaw, fov = ctx["yaw"], ctx["fov"]
+
+    def rounds() -> tuple[int, int]:
+        for _ in range(INCLUDE_ROUNDS):  # the eased edges of a fix may need another
+            if not chk.runs(a, b, 1) or not _include_exclude(ctx, chk, a, b, p):
+                break
+        return chk.n_bad(a, b + 1)
+
+    base = yaw[a:b].copy(), fov[a:b].copy()
+    first = rounds()
+    if first[0]:  # B only where A left hard bad steps
+        got = yaw[a:b].copy(), fov[a:b].copy()
+        yaw[a:b], fov[a:b] = base
+        if not _widen_only(ctx, chk, a, b, p) or rounds() >= first:
+            yaw[a:b], fov[a:b] = got
+    if chk.n_bad(a, b + 1)[0]:  # the rounds may narrow a step back to a hard cut
+        _widen_only(ctx, chk, a, b, p, hard=True)
 
 
 def _safe_area_pass(
@@ -1674,8 +1786,11 @@ def _safe_area_pass(
     confident person, its sliver rules included), or the view halfway to a
     neighbouring step is (:func:`_framing_checks`). Bad runs of any length get
     :func:`_include_exclude` (up to :data:`INCLUDE_ROUNDS` rounds while it helps), then
-    :func:`_relimit`; :func:`_cut_away` takes runs longer than :data:`SAFE_MIN_S` that
-    are left.
+    :func:`_relimit`. Where a stretch longer than :data:`SAFE_MIN_S` with steps the
+    geometric QA counts as cut is left, :func:`_include_exclude` runs once more with
+    ``include_margin`` :data:`INCLUDE_MARGIN_RETRY` (people framed whole may come as
+    close to the sides as the QA's ``edge_margin`` allows), and
+    :func:`_cut_away` takes what is left by that rule.
     """
     fix = span if fix is None else fix
     ctx["yaw0"] = ctx["yaw"].copy()  # the include / exclude shift cap counts from here
@@ -1693,12 +1808,16 @@ def _safe_area_pass(
             if chk.runs(a, b):
                 _reframe(ctx, chk, a, b, p)
         else:
-            for _ in range(INCLUDE_ROUNDS):  # the eased edges of a fix may need another
-                if not chk.runs(a, b, 1) or not _include_exclude(ctx, chk, a, b, p):
-                    break
+            _fix_shot(ctx, chk, a, b, p)
         if chk.runs(a, b, first):
             _relimit(ctx, chk, a, b, p)
-        out += _cut_away(ctx, chk, a, b, span, p)
+        shot_chk = chk
+        gain = max(1, round(p.cut_min_gain_s / p.dt))
+        if not legacy and chk.runs(a, b) and chk.n_bad(a, b)[0] >= gain:  # a cut-away may come
+            p0 = replace(p, include_margin=min(p.include_margin, INCLUDE_MARGIN_RETRY))
+            shot_chk = _framing_checks(ctx, fix, p0)
+            _include_exclude(ctx, shot_chk, a, b, p0)
+        out += _cut_away(ctx, shot_chk, a, b, span, p)
     return out
 
 

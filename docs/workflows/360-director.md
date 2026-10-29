@@ -56,8 +56,16 @@ in the spirit of Pano2Vid and AutoCam.
   (in, or out to the same side), and stretches closer than `include_bridge_s` are fixed as one.
   The check is the one `360 qa --paths` makes (the subject and the largest person count at the
   edge too) at every 0.5 s key and between keys, and a fix is kept only when it lowers the
-  edge cuts that check counts (then the other bad steps). Where no shift or widening frames
-  everyone well, it settles for one without an edge cut the check counts, and else cuts away. `edge_rule` `legacy` keeps the earlier rule: widen, then reframe, then
+  edge cuts that check counts (then the other bad steps). Plain widening (as far as the
+  subject allows) is tried too, and the one that leaves fewer edge cuts is kept; edge cuts
+  left after that are widened away where the subject allows. Where no shift or widening
+  frames everyone well, it settles for one without an edge cut the check counts, then tries
+  a tighter side margin, and else cuts away: only where that removes at least
+  `cut_min_gain_s` (1 s) per cut it adds (two inside a shot, one at its end) of edge cuts
+  the check counts or of steps where the subject is out of view, never within
+  `cut_min_gap_s` (4 s) of another cut (it joins it instead), and to a view without the
+  wearer where one is as good. When the view held before the cut is itself cut at the edge,
+  the cut-away starts one key earlier. `edge_rule` `legacy` keeps the earlier rule: widen, then reframe, then
   cut away, inside the moment only.
 - The fix covers the whole planned span, not only the moment, so padding and tails added later
   are clean too. Keys fall on the 0.5 s grid of the moment's start. The path records that span
