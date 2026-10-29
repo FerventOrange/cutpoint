@@ -88,6 +88,18 @@ def test_extend_reuse_copies_unchanged_clips_when_only_the_file_read_differs(tmp
     assert (out / "001_a.mp4").read_text(encoding="utf-8") == "earlier"
 
 
+@pytest.mark.parametrize(("entry", "on"), [({}, True), ({"speech_aware": False}, False)])
+def test_extend_header_speech_aware_is_off_when_every_clip_turned_it_off(
+    tmp_path, monkeypatch, reads, entry, on
+):
+    monkeypatch.setattr(extend, "speech_pass", lambda *a, **kw: {})
+    clips = _clips_dir(tmp_path, source=str(write(tmp_path / "a.mp4")), **entry)
+    out = extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings())
+    doc = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert doc["speech_aware"] == SpeechSettings().to_json() | {"enabled": on}
+    assert doc["clips"][0].get("speech_aware", True) is on  # the clip's record as it was
+
+
 WORDS = [{"start": 9.4, "end": 9.8, "word": "early."}, {"start": 20.2, "end": 20.6, "word": "late"}]
 
 

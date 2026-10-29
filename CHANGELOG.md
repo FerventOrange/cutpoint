@@ -121,6 +121,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to 3 % of the frame, no longer counts toward its clipping veto. `--color underwater` on
   `gaming` footage logs a stronger WARNING (it still grades). Cached measurements are redone
   (color version 3); `extend` keeps re-applying older records as they were (#494).
+- `clips` and `edit --color auto|underwater` log one INFO line per clip not graded, naming the
+  clip and its skip code (`not_underwater` adds that `--color auto` may suit it, `log` that
+  `--lut` fits it). They replace the lines that listed the 360 and log/flat clips; the summary
+  count is unchanged.
 
 - Packaging: the `ui`, `keyring` and `ski` packages (fastapi, uvicorn, keyring, telemetry-parser)
   are core dependencies, so a plain `uv tool install cutpoint` or `pip install cutpoint` runs
@@ -184,6 +188,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clips/manifest.json`: the header's `smart_tail.enabled` and `speech_aware.enabled` are now
+  `false` when no clip got them, as for a `--segments` export whose every segment turned them
+  off; they used to show the run's setting. `extend` does the same for `speech_aware`.
 - `cutpoint ui`: Extend export is disabled, with the reason in its tooltip, while Extend start
   and Extend end are blank or 0 and Speech-aware cuts is off. Before, it ran
   `extend --no-speech-aware` with nothing to do, which failed.

@@ -871,8 +871,10 @@ Notes:
   a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
   (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
   as flat sand turned grey (`veto_faded`), or when its frames could not be decoded
-  (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater (by the same
-  rule); it does not change them. `gaming` footage is graded
+  (`no_frames`). An INFO line names each clip not graded with its reason, as recorded
+  (`not_underwater` adds that `--color auto` may suit it; `log` that `--lut` fits it). Plain
+  `auto` logs an INFO line naming clips that look underwater (by the same rule); it does not
+  change them. `gaming` footage is graded
   only with an explicit `--color` (with a WARNING, a stronger one for `underwater`, and a
   `color_on_gaming` `--json` warning): `color` in `config.json` never applies to
   it. `--color` cannot be combined with `--lut`. Each clip records a `color` entry (method,
@@ -880,7 +882,10 @@ Notes:
   grades its re-exports with those parameters without measuring again. Measurements are cached
   per source (`color/` in its cache folder).
 - `manifest.json` records each clip's source, start, end, score, label, tail, crop, grade (`lut` or `color`), padding,
-  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. `extend` and
+  speech moves and size in bytes (`size`), and `"generator": "cutpoint"`. Its header's
+  `smart_tail.enabled` and `speech_aware.enabled` are `true` only when at least one clip got
+  them (a sequence whose every segment sets `"smart_tail": false` or a `tail`, or
+  `"speech_aware": false`, records `false`). `extend` and
   `assemble` read it. Manifests without `size` or `generator` (written by earlier versions)
   still work; their clips are matched by name only.
 - **Subtitles.** Each clip gets `001_<label>.srt` next to it, from the source's cached
