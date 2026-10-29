@@ -6059,6 +6059,30 @@ def test_span_text_formats_analysis_lengths(tmp_path: Path, seconds: float, text
     assert out.stdout.strip() == text
 
 
+@pytest.mark.parametrize(("at", "n", "row"), [(2, 5, 2), (4, 4, 3), (0, 0, -1)])
+def test_focus_goes_to_the_row_in_place_of_one_that_left_the_list(
+    tmp_path: Path, at: int, n: int, row: int
+) -> None:
+    """Add under "Not in sequence" jumped the Moments column to the top: the added card left the
+    list and preserveFocus focused the list's first button. util.js rowInPlace picks the row now at
+    the card's index instead (the last one past the end, none in an empty list)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    mod = tmp_path / "util.mjs"  # .mjs: an ES module for every node >= 18 (see _sort_positions)
+    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
+    script = (
+        f"import {{ rowInPlace }} from {json.dumps(mod.resolve().as_uri())};"
+        "console.log(rowInPlace(Number(process.argv[1]), Number(process.argv[2])));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, str(at), str(n)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )  # fmt: skip
+    assert out.stdout.strip() == str(row)
+    assert "rowInPlace(at, rows.length)" in _web("app.js")  # preserveFocus uses it
+
+
 def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6586,6 +6610,42 @@ def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
     names = re.findall(r'<button\b[^>]*role="tab"[^>]*>([^<]+)</button>', tablist)
     assert names == ["Sequence", "AI Chat", "Export"]  # the visible text is the accessible name
     assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
+
+
+def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
+    """Contract pin: the tab bar (at the column's -12 px padding) and the Sequence and AI Chat
+    headers under it are sticky, and the Selected clips bar sticks under them (--side-bars); below
+    960 px, where the page scrolls, they are static. revealRow keeps rows clear of them through the
+    scroll padding app.js sets. Before, the tab bar and headers scrolled away with a long panel.
+
+    Check in a browser (no browser in the test suite): at 1600x800, with each panel scrolled to
+    the bottom, the tab bar's and header's tops do not move, the header's top equals the tab
+    bar's bottom, the batch bar's top equals the header's bottom, and a focused row lands below
+    them."""
+    css = _web("app.css")
+    band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
+    assert "position: sticky; top: -12px;" in band
+    heads = re.search(
+        r"^#panelSequence > \.col-head, #panelAssistant > \.chat-head \{([^}]*)\}", css, re.M
+    )[1]
+    assert "position: sticky; top: calc(var(--control-h-lg) + 1px - 12px);" in heads
+    batch = re.search(r"^\.seq-batch \{([^}]*)\}", css, re.M)[1]
+    assert "top: calc(var(--side-bars, 12px) - 12px);" in batch
+    narrow = css[css.index("@media (max-width: 960px)") :]
+    narrow = narrow[: narrow.index("\n}\n")]
+    assert (
+        ".side-tabs, #panelSequence > .col-head, #panelAssistant > .chat-head { position: static; }"
+        in narrow
+    )
+    assert ".seq-batch { top: 0; }" in narrow
+    js = _web("app.js")
+    reveal = js[js.index("function revealRow(") :]
+    reveal = reveal[: reveal.index("\n}\n")]
+    assert "scrollPaddingTop" in reveal and "scrollPaddingBottom" in reveal
+    assert (
+        "side.style.scrollPaddingTop = px;" in js
+        and "side.style.setProperty('--side-bars', px);" in js
+    )
 
 
 @pytest.mark.parametrize(

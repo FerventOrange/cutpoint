@@ -267,10 +267,13 @@ select { max-width: 100%; }
 /* the column's tabs (Sequence | AI Chat | Export): a band across the top like the moments header; the
    selected tab is underlined in amber, the others muted. The tabs share the column's full width
    evenly at any width the splitter sets (equal grid columns, however many tabs); a label that does
-   not fit ends in an ellipsis, and its full text stays the tab's name for screen readers. */
+   not fit ends in an ellipsis, and its full text stays the tab's name for screen readers. It stays at
+   the top while a long panel scrolls under it (top: the column's padding), the panel's header right
+   under it; app.js sets the column's scroll-padding-top to both heights. */
 .side-tabs {
   display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); margin: -12px -14px 0;
   background: var(--slate); border-bottom: 1px solid var(--line);
+  position: sticky; top: -12px; z-index: 2;
 }
 .side-tab {
   font: inherit; font-weight: 650; color: var(--muted); background: none; cursor: pointer;
@@ -282,6 +285,12 @@ select { max-width: 100%; }
 .side-tab:focus-visible { outline-offset: -2px; }
 .side-panel { display: flex; flex-direction: column; gap: var(--space-3); }
 .side-panel > * { flex: none; }
+/* the Sequence and AI Chat headers stick under the tab bar (its 41 px less the column's 12 px padding),
+   across the column's padding so no row shows beside them */
+#panelSequence > .col-head, #panelAssistant > .chat-head {
+  position: sticky; top: calc(var(--control-h-lg) + 1px - 12px); z-index: 2;
+  margin-inline: -14px; padding-inline: 14px; background: var(--panel);
+}
 /* the title stays for screen readers and as a focus target; the tab shows it */
 .side .col-head { position: relative; }
 .side .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -620,7 +629,9 @@ body.tips-off .flag-tip { display: none; }
 
 /* sequence: one compact card per clip */
 .seq-batch {
-  position: sticky; top: 0; z-index: 2; /* stays in view while ticking rows far down the list */
+  /* stays in view while ticking rows far down the list, under the sticky tabs and header (app.js sets
+     --side-bars to their height; less the column's 12 px padding) */
+  position: sticky; top: calc(var(--side-bars, 12px) - 12px); z-index: 2;
   display: flex; align-items: center; gap: var(--space-2); padding: 6px 8px; margin-bottom: 6px;
   background: var(--deep); border: 1px solid var(--card-line); border-radius: 6px;
 }
@@ -890,7 +901,8 @@ dialog form { display: grid; gap: 14px; }
   .side { order: 3; border-left: 0; border-top: 1px solid var(--line); }
   .splitter { display: none; }
   .jobs { position: sticky; bottom: 0; }
-  .chat-form, .prop-bar { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
+  .chat-form, .prop-bar, .side-tabs, #panelSequence > .col-head, #panelAssistant > .chat-head { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
+  .seq-batch { top: 0; } /* sticks to the window top: the bars above are static here */
   .top { flex-wrap: wrap; }
   .proj-pick select { max-width: 60vw; }
   .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: none; }
