@@ -437,8 +437,18 @@ def wearer_axis(pv: PanoViews, min_boxes: int = 15) -> np.ndarray:
     return axis
 
 
+def _nadir_wearer(pv: PanoViews) -> bool:
+    """An upright clip whose wearer axis is the default nadir: it has no yaw of its own
+    (its yaw would be where the camera tips)."""
+    upright = pv.meta.get("forward_axis") == G.axis_name(G.LENS_V)
+    return upright and np.array_equal(wearer_axis(pv), G.wearer_v(G.LENS_V))
+
+
 def forward_yaw(pv: PanoViews) -> float:
-    """Display yaw of the travel direction: opposite the wearer (circular median)."""
+    """Display yaw of the travel direction: opposite the wearer (circular median); 0 (the
+    upright yaw 0, the ``_10_`` lens) for the nadir wearer of an upright clip."""
+    if _nadir_wearer(pv):
+        return 0.0
     src = pv.meta.get("source")
     o = G.load_orientation(Path(src)) if src else None
     if o is None or not len(pv.t):
@@ -513,7 +523,10 @@ WEARER_VIEW_DAMP = 0.25  # ... so their group / beauty prompts are scaled down
 
 def wearer_view_mask(pv: PanoViews) -> np.ndarray | None:
     """``(N, 8)`` True where a horizon view faces the wearer (needs the cached
-    orientation track), else None."""
+    orientation track, and a wearer with a yaw: not the nadir of an upright clip), else
+    None."""
+    if _nadir_wearer(pv):
+        return None
     src = pv.meta.get("source")
     o = G.load_orientation(Path(src)) if src else None
     if o is None:

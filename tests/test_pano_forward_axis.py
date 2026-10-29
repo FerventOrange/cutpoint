@@ -302,3 +302,30 @@ def test_a_stale_axis_in_the_meta_is_replaced() -> None:
         heading_smooth=np.zeros(3), meta={"fps": FPS, "forward_axis": "-z"},
     )  # fmt: skip
     assert o.meta["forward_axis"] == "+z"
+
+
+def _upright_views(source: str, rays: list[list[float]]) -> VW.PanoViews:
+    det = np.zeros((len(rays), 11))
+    if rays:
+        det[:, 1], det[:, 2], det[:, 6], det[:, 8:11] = 1, 0.9, 60.0, rays
+    n = 20
+    return VW.PanoViews(
+        t=np.arange(n) * 0.5, emb=np.zeros((n, 9, 4)), det=det, box_emb=np.zeros(0),
+        box_idx=np.zeros(0), meta={"source": source, "forward_axis": "+z"},
+    )  # fmt: skip
+
+
+def test_the_nadir_wearer_has_no_yaw(monkeypatch) -> None:
+    """A swaying upright clip with too few wearer boxes: the travel direction is yaw 0 (not
+    where the camera tips) and no horizon view is damped; a measured wearer axis still
+    gives its own yaw."""
+    o = _fuse(UPRIGHT, sway_deg=8.0)
+    monkeypatch.setattr(G, "load_orientation", lambda src: o)
+    pv = _upright_views("nadir.lrv", [])
+    assert VW.forward_yaw(pv) == 0.0 and VW.wearer_view_mask(pv) is None
+    side = _upright_views("side.lrv", [[1.0, 0.3, 0.0]] * 15)  # the wearer to the right
+    fy = VW.forward_yaw(side)
+    assert abs(fy) > 45.0 and VW.wearer_view_mask(side) is not None
+    wy = G.wearer_yaw(o, side.t[:: max(1, len(side.t) // 200)].astype(float), VW.wearer_axis(side))
+    a = np.radians(wy + 180.0)
+    assert fy == pytest.approx(float(np.degrees(np.arctan2(np.sin(a).mean(), np.cos(a).mean()))))
