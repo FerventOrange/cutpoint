@@ -136,52 +136,104 @@ def _receipt_with(source: str) -> str:
 
 
 @pytest.mark.parametrize(
-    ("source", "notes"),
+    ("source", "src", "sh_src", "editable"),
     [
         (
             'git = "https://github.com/FerventOrange/cutpoint?rev=main"',
-            "add --source git@main, or set CUTPOINT_SOURCE=git@main for irm | iex",
+            "git@main",
+            "git@main",
+            False,
         ),
         (
-            'git = "https://github.com/FerventOrange/cutpoint?tag=v1#subdirectory=pkg"',
-            "add --source git@v1, or set CUTPOINT_SOURCE=git@v1 for irm | iex",
+            'git = "https://github.com/FerventOrange/cutpoint.git?tag=v1#subdirectory=pkg"',
+            "git@v1",
+            "git@v1",
+            False,
         ),
         (
-            'git = "https://github.com/FerventOrange/cutpoint", branch = "dev"',
-            "add --source git@dev, or set CUTPOINT_SOURCE=git@dev for irm | iex",
+            'git = "https://GitHub.com/ferventorange/Cutpoint", branch = "dev"',
+            "git@dev",
+            "git@dev",
+            False,
         ),
+        ('git = "https://github.com/FerventOrange/cutpoint"', "git", "git", False),
+        ('directory = "C:/src/cutpoint"', "C:/src/cutpoint", "C:/src/cutpoint", False),
         (
-            'git = "https://github.com/FerventOrange/cutpoint"',
-            "add --source git, or set CUTPOINT_SOURCE=git for irm | iex",
+            'path = "C:/My Downloads/cutpoint-1.0-py3-none-any.whl"',
+            "C:/My Downloads/cutpoint-1.0-py3-none-any.whl",
+            "'C:/My Downloads/cutpoint-1.0-py3-none-any.whl'",  # quoted for sh
+            False,
         ),
-        (
-            'directory = "C:/src/cutpoint"',
-            'add --source "C:/src/cutpoint", or set CUTPOINT_SOURCE="C:/src/cutpoint" for irm | iex',
-        ),
-        (
-            'path = "C:/dl/cutpoint-1.0-py3-none-any.whl"',
-            'add --source "C:/dl/cutpoint-1.0-py3-none-any.whl", or set '
-            'CUTPOINT_SOURCE="C:/dl/cutpoint-1.0-py3-none-any.whl" for irm | iex',
-        ),
-        (
-            'editable = "C:/src/cutpoint"',
-            'add --source "C:/src/cutpoint", or set CUTPOINT_SOURCE="C:/src/cutpoint" for irm | '
-            "iex; the installer does not make an editable install",
-        ),
-        ('extras = ["all"]', None),  # PyPI: the installer's default source
+        ('editable = "C:/src/cutpoint"', "C:/src/cutpoint", "C:/src/cutpoint", True),
     ],
-    ids=["git-rev", "git-tag", "git-branch-key", "git", "directory", "path", "editable", "pypi"],
+    ids=["git-rev", "git-tag", "git-branch-key", "git", "directory", "path-space", "editable"],
 )
-def test_installer_hint_keeps_the_tool_source(monkeypatch, tmp_path, source, notes):
-    # the bare installer installs the PyPI release, which would replace a git or local install
+def test_installer_hint_keeps_the_tool_source(monkeypatch, tmp_path, source, src, sh_src, editable):
+    # the bare installer installs the PyPI release, which would replace a git or local install;
+    # sh takes options after `-s --`, and PowerShell needs $env: (`set` is Set-Variable there)
     _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
     monkeypatch.setattr(extras, "edition", lambda: "full")
-    want = f"re-run the installer: {_RERUN}" + (f" ({notes})" if notes else "")
-    assert extras.install_hint("events") == want
-    cuda = "; ".join(
-        [*([notes] if notes else []), "it installs CUDA torch when it finds an NVIDIA GPU"]
+    commands = (
+        f"{extras.INSTALL_SH} -s -- --source {sh_src} (Linux, macOS) or "
+        f'$env:CUTPOINT_SOURCE = "{src}"; {extras.INSTALL_PS1} (Windows PowerShell)'
     )
-    assert extras.torch_cuda_hint() == f"re-run the installer: {_RERUN} ({cuda})"
+    note = "the installer does not make an editable install" if editable else ""
+    want = f"re-run the installer: {commands}"
+    assert extras.install_hint("events") == want + (f" ({note})" if note else "")
+    cuda = "; ".join([n for n in (note, "it installs CUDA torch when it finds an NVIDIA GPU") if n])
+    assert extras.torch_cuda_hint() == f"{want} ({cuda})"
+
+
+def test_installer_hint_pypi_tool_has_no_source(monkeypatch, tmp_path):
+    _set_install(monkeypatch, tmp_path, receipt=_receipt_with('extras = ["all"]'), uv=True)
+    monkeypatch.setattr(extras, "edition", lambda: "full")
+    assert extras.install_hint("events") == f"re-run the installer: {_RERUN}"
+
+
+_FORK = "https://github.com/someone/cutpoint"
+
+
+@pytest.mark.parametrize(
+    ("source", "url"),
+    [
+        (f'git = "{_FORK}?rev=fix"', f"git+{_FORK}@fix"),
+        (f'git = "{_FORK}#subdirectory=pkg", extras = ["gpu"]', f"git+{_FORK}#subdirectory=pkg"),
+        (
+            'git = "https://gitlab.com/FerventOrange/cutpoint"',
+            "git+https://gitlab.com/FerventOrange/cutpoint",
+        ),
+    ],
+    ids=["fork-rev", "fork-subdirectory", "other-host"],
+)
+@pytest.mark.parametrize(
+    ("torch", "backend", "note"),
+    [
+        ("2.14.1+cu126", "cu126", ""),
+        ("2.14.1+cpu", "cpu", ""),
+        (None, "cpu", " (cu126 instead of cpu with an NVIDIA GPU)"),  # lite: no torch yet
+    ],
+)
+def test_installer_hint_fork_gives_uv_tool_install(
+    monkeypatch, tmp_path, source, url, torch, backend, note
+):
+    # the installers only install from github.com/FerventOrange/cutpoint, so a fork keeps its
+    # source with an explicit --torch-backend
+    _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
+
+    def from_name(name):
+        if torch is None:
+            raise extras.importlib.metadata.PackageNotFoundError(name)
+        return SimpleNamespace(version=torch)
+
+    monkeypatch.setattr(extras.importlib.metadata.Distribution, "from_name", from_name)
+    extras_list = "events,gpu" if "gpu" in source else "events"
+    tail = "--python 3.12 --reinstall --no-sources"
+    assert extras.install_hint("events") == (
+        "the installer only installs from github.com/FerventOrange/cutpoint; for this git "
+        f'install run: uv tool install "cutpoint[{extras_list}] @ {url}" '
+        f"--torch-backend {backend} {tail}{note}"
+    )
+    assert f"--torch-backend cu126 {tail}" in extras.torch_cuda_hint()  # its purpose is CUDA
 
 
 def test_installer_one_liners():

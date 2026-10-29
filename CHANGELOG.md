@@ -117,12 +117,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A feature that needs a missing extra now says it is "not available in Cutpoint lite" and how
   to add it: for a tool install, the installer again without `--lite` / `-Lite` and with
-  `CUTPOINT_LITE` unset, keeping a git or local `--source` (`curl -LsSf
+  `CUTPOINT_LITE` unset (`curl -LsSf
   https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh` or `irm
   https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`); in a clone,
-  `uv sync` without `--no-group full`. The CUDA torch fix in `capabilities` says the same. The
-  hints no longer print a `uv tool install "cutpoint[...]"` command, which without
-  `--torch-backend` can pull CUDA torch on a machine without an NVIDIA GPU. Help, messages and
+  `uv sync` without `--no-group full`. A tool installed from git or a local path gets both
+  commands with its source (`... | sh -s -- --source git@main`, `$env:CUTPOINT_SOURCE =
+  "git@main"; irm ... | iex`); one from a fork gets `uv tool install "cutpoint[...] @ git+<url>"
+  --torch-backend cpu|cu126 --python 3.12 --reinstall --no-sources`, since the installers only
+  install from github.com/FerventOrange/cutpoint. The CUDA torch fix in `capabilities` says the
+  same. The hints no longer print a `uv tool install` command without `--torch-backend`, which
+  can pull CUDA torch on a machine without an NVIDIA GPU. Help, messages and
   docs no longer call `ui`, `keyring` and `ski` optional extras (#502).
 
 - Packaging: the `ui`, `keyring` and `ski` packages (fastapi, uvicorn, keyring, telemetry-parser)

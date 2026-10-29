@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 import tomllib
 import urllib.parse
@@ -157,9 +158,64 @@ def _git_ref(git: str, req: dict[str, Any]) -> str | None:
     return None
 
 
-def _source_notes(receipt: dict[str, Any]) -> list[str]:
-    """Notes that keep a tool's git, directory, path or editable source when the installer runs
-    again (it installs the PyPI release by default); none for a registry install."""
+def _git_url(git: str, ref: str | None) -> str:
+    """PEP 508 ``git+`` URL of a receipt's ``git`` source at ``ref``, keeping a
+    ``#subdirectory=`` fragment or ``?subdirectory=`` query."""
+    parts = urllib.parse.urlsplit(git)
+    sub = (
+        urllib.parse.parse_qs(parts.fragment).get("subdirectory")
+        or urllib.parse.parse_qs(parts.query).get("subdirectory")
+        or [None]
+    )[0]
+    scheme = parts.scheme if parts.scheme.startswith("git+") else f"git+{parts.scheme}"
+    url = urllib.parse.urlunsplit((scheme, parts.netloc, parts.path, "", ""))
+    if ref:
+        url += f"@{ref}"
+    if sub:
+        url += f"#subdirectory={sub}"
+    return url
+
+
+def _upstream(git: str) -> bool:
+    """True for cutpoint's own repository, the only git source the installers install from."""
+    parts = urllib.parse.urlsplit(git.removeprefix("git+"))
+    path = parts.path.rstrip("/").lower().removesuffix(".git")
+    return (parts.hostname or "").lower() == "github.com" and path == "/ferventorange/cutpoint"
+
+
+def _installed_torch_backend() -> str | None:
+    """``cu126`` for an installed CUDA torch, ``cpu`` for a CPU one, None without torch."""
+    try:
+        version = importlib.metadata.Distribution.from_name("torch").version
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    return "cu126" if "+cu" in version else "cpu"
+
+
+def _fork_hint(req: dict[str, Any], extra: str, backend: str | None) -> str:
+    """``uv tool install`` from a git repository the installers do not install from (a fork),
+    with an explicit ``--torch-backend`` (``backend``, else that of the installed torch)."""
+    extras = {extra, *(str(e) for e in req.get("extras", []) if isinstance(e, str))}
+    url = _git_url(str(req["git"]), _git_ref(str(req["git"]), req))
+    backend = backend or _installed_torch_backend()
+    note = "" if backend else " (cu126 instead of cpu with an NVIDIA GPU)"
+    return (
+        "the installer only installs from github.com/FerventOrange/cutpoint; for this git "
+        f'install run: uv tool install "cutpoint[{",".join(sorted(extras))}] @ {url}" '
+        f"--torch-backend {backend or 'cpu'} --python 3.12 --reinstall --no-sources{note}"
+    )
+
+
+def _installer_hint(
+    receipt: dict[str, Any], extra: str, *notes: str, backend: str | None = None
+) -> str:
+    """What a tool install runs: the installer again (not lite in the lite edition), with the
+    receipt's git, directory, path or editable source (it installs the PyPI release by
+    default); a fork of the repository gets a ``uv tool install`` command instead.
+
+    The installer picks the torch backend for this machine; a ``uv tool install`` without
+    ``--torch-backend`` would pull CUDA torch on a machine without an NVIDIA GPU.
+    """
     try:
         req = next(
             (
@@ -169,33 +225,26 @@ def _source_notes(receipt: dict[str, Any]) -> list[str]:
             ),
             {},
         )
+        if req.get("git") and not _upstream(str(req["git"])):
+            return _fork_hint(req, extra, backend)
         if req.get("git"):
             ref = _git_ref(str(req["git"]), req)
-            source = f"git@{ref}" if ref else "git"
+            source: str | None = f"git@{ref}" if ref else "git"
         else:
             key = next((k for k in ("editable", "directory", "path") if req.get(k)), None)
-            if key is None:
-                return []
-            source = f'"{req[key]}"'
+            source = str(req[key]) if key else None
+        editable = bool(req.get("editable"))
     except (AttributeError, TypeError):
-        return []
-    notes = [f"add --source {source}, or set CUTPOINT_SOURCE={source} for irm | iex"]
-    if req.get("editable"):
-        notes.append("the installer does not make an editable install")
-    return notes
-
-
-def _installer_hint(receipt: dict[str, Any], *notes: str) -> str:
-    """What a tool install runs: the installer again (not lite in the lite edition), keeping
-    the receipt's source.
-
-    No ``uv tool install`` command: without ``--torch-backend`` it pulls CUDA torch on a
-    machine without an NVIDIA GPU, and the installer picks the backend for this machine.
-    """
+        source, editable = None, False
+    sh, ps1 = INSTALL_SH, INSTALL_PS1
+    if source is not None:
+        sh = f"{INSTALL_SH} -s -- --source {shlex.quote(source)}"
+        ps1 = f'$env:CUTPOINT_SOURCE = "{source}"; {INSTALL_PS1}'
     lite = " without --lite / -Lite and with CUTPOINT_LITE unset" if edition() == "lite" else ""
-    return (
-        f"re-run the installer{lite}: {INSTALL_SH} (Linux, macOS) or {INSTALL_PS1} "
-        f"(Windows PowerShell){_notes(*_source_notes(receipt), *notes)}"
+    if editable:
+        notes = ("the installer does not make an editable install", *notes)
+    return f"re-run the installer{lite}: {sh} (Linux, macOS) or {ps1} (Windows PowerShell)" + (
+        _notes(*notes)
     )
 
 
@@ -245,7 +294,7 @@ def install_hint(extra: str) -> str:
     install, ``uv sync`` in a clone, else ``uv pip`` or pip."""
     receipt = _tool_receipt()
     if receipt is not None:
-        return _installer_hint(receipt)
+        return _installer_hint(receipt, extra)
     info = _direct_url()
     if not _editable(info):
         source = _pip_source(info or {}, extra)
@@ -347,7 +396,9 @@ def torch_cuda_hint() -> str:
     build, for this install type, keeping the extras in use."""
     receipt = _tool_receipt()
     if receipt is not None:
-        return _installer_hint(receipt, "it installs CUDA torch when it finds an NVIDIA GPU")
+        return _installer_hint(
+            receipt, "events", "it installs CUDA torch when it finds an NVIDIA GPU", backend="cu126"
+        )
     in_use = sorted({"events", *extras_in_use()})
     extras = ",".join(in_use)
     uv = uv_managed()

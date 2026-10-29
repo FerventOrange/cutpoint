@@ -194,12 +194,15 @@ command for theirs:
 - Tool install (the installer): run the installer again without `--lite` (`-Lite` for
   `install.ps1`) and with `CUTPOINT_LITE` unset, or it installs lite again. It picks the torch
   build for the machine and is also how to upgrade (`uv tool upgrade` drops the torch build).
-  A tool installed from git or a local path needs `--source` again (`CUTPOINT_SOURCE` for
-  `irm | iex`); the hint names it:
   `curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh`
   (Linux, macOS) or
   `irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`
-  (Windows PowerShell).
+  (Windows PowerShell). A tool installed from git or a local path needs its source again; the
+  hint prints both commands with it, for example
+  `curl -LsSf .../install.sh | sh -s -- --source git@main` and
+  `$env:CUTPOINT_SOURCE = "git@main"; irm .../install.ps1 | iex`. The installers only install
+  from github.com/FerventOrange/cutpoint; for a fork the hint prints a `uv tool install` command
+  with `--torch-backend` instead.
 - From a clone: `uv sync`. It installs every extra (a large download with torch and CUDA); a
   lite clone was synced with `--no-group full` or `UV_NO_GROUP=full`, so drop those.
 
