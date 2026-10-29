@@ -147,11 +147,26 @@ def test_progress_rises_to_one_and_stops(fake_ffmpeg, tmp_path) -> None:
 
 def test_progress_is_rate_limited(fake_ffmpeg, tmp_path) -> None:
     _, opts = fake_ffmpeg
-    opts.update(ticks=200, spacing=0.002)  # 200 updates in 0.4 s
+    opts.update(ticks=200, spacing=0.002)  # 200 updates; the sleeps' real length varies by OS
     clip = helpers.x3clip(lrv="x.lrv", fps=30.0, frames=300, duration=10.0)
     seen: list[float] = []
-    _render(clip, tmp_path, seen.append)
-    assert len(seen) <= 0.4 / R.PROGRESS_MIN_S + 3 and seen[-1] == 1.0
+    stamps: list[float] = []
+
+    def on_progress(frac: float) -> None:
+        seen.append(frac)
+        stamps.append(time.monotonic())
+
+    t0 = time.monotonic()
+    _render(clip, tmp_path, on_progress)
+    elapsed = time.monotonic() - t0
+    # One call per PROGRESS_MIN_S of the measured run, plus the first and the final 1.0
+    # (and one more for a timer that fires late), however slow the machine is.
+    assert len(seen) <= elapsed / R.PROGRESS_MIN_S + 3
+    assert seen[-1] == 1.0 and seen == sorted(seen) and len(set(seen)) == len(seen)
+    # Not a call per tick: the calls before the final 1.0 are spaced by the limit (half of it
+    # here, since a loaded machine can delay one callback after the limiter's own timestamp).
+    gaps = np.diff(stamps[:-1])
+    assert (gaps >= R.PROGRESS_MIN_S * 0.5).all()
 
 
 def test_a_raising_callback_does_not_break_the_render(fake_ffmpeg, tmp_path, caplog) -> None:
