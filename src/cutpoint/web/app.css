@@ -392,7 +392,7 @@ select { max-width: 100%; }
 .cand {
   display: grid; grid-template-columns: minmax(0, 1fr); align-items: start;
   background: var(--slate); border: 1px solid transparent; border-left: 3px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-sm); position: relative;
 }
 .cand > * { grid-area: 1 / 1; }
 .cand > .btn { justify-self: end; margin: 5px 6px 0 0; }
@@ -430,20 +430,19 @@ select { max-width: 100%; }
 .seq-dur .prep { margin-left: var(--space-2); min-width: 0; vertical-align: -2px; }
 /* 360 camera path flags (#517): word badges, never colour alone; the card's reasons show on hover and
    keyboard focus (Escape hides them: body.tips-off) and are its description */
-.cand { position: relative; }
-.cand-flags { display: flex; flex-wrap: wrap; gap: 4px; }
-.flag { font-size: 11.5px; line-height: 16px; color: var(--text); border: 1px solid var(--bad); border-radius: 3px; padding: 0 4px; }
+.cand-flags { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.flag { font-size: 11.5px; line-height: 16px; color: var(--text); border: 1px solid var(--bad); border-radius: 3px; padding: 0 var(--space-1); }
 .flag-tip {
-  display: none; position: absolute; z-index: 4; left: 8px; right: 8px; top: calc(100% - 2px); padding: 6px 8px;
-  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; font-size: 12.5px;
+  display: none; position: absolute; z-index: 4; left: var(--space-2); right: var(--space-2); top: calc(100% - 2px); padding: 6px var(--space-2);
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: 12.5px;
   box-shadow: 0 6px 18px var(--shadow);
 }
 .cand:hover .flag-tip, .cand:has(.cand-main:focus-visible) .flag-tip { display: block; }
 body.tips-off .flag-tip { display: none; }
-.pano-note { font-size: 12.5px; margin-bottom: 6px; display: grid; gap: 4px; }
-.pano-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--muted); }
+.pano-note { font-size: 12.5px; margin-bottom: 6px; display: grid; gap: var(--space-1); }
+.pano-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); color: var(--muted); }
 .pano-flags ul { display: grid; gap: 2px; margin-top: 2px; }
-.pano-flags .flag { margin-right: 4px; }
+.pano-flags .flag { margin-right: var(--space-1); }
 
 /* preview: meta and add/remove on one row at the top (the title is visually hidden); video, transport bar,
    rail and the trim row all full width. The column is a flex column and the video panel takes the height

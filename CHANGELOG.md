@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `cutpoint ui`: 360 moments preview through the camera path `360 analyze` cached for them
-  (#517): a 640x360 view of the `.lrv` along the path, rendered in the background on first view
+  (part of #517): a 640x360 view of the `.lrv` along the path, rendered in the background on first view
   (with Cancel) and kept in `ui/pano/`, in place of the raw dual fisheye. The raw preview stays,
   with a note saying why, when a moment has no current cached path. Flagged paths get word
   badges on the moment cards (Sky, Whip pans, Many cuts, Wearer, Off target, QA fail) whose
-  reasons show on hover and keyboard focus and in the note above the preview.
+  reasons show on hover and keyboard focus and in the note above the preview. Not built yet: an
+  IMU-levelled flat fallback for a moment without a current path, and re-planning the path for
+  a trimmed span; both play the raw preview.
 - `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
   splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and

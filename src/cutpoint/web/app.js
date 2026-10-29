@@ -165,9 +165,11 @@ function playable(src, t, raw = false) {
  * ``t``: a flat view along the camera path 360 analysis planned, in place of the raw fisheye, played
  * like a window proxy. Not during "Play sequence", which plays the raw preview.
  */
+/** Director preview urls the browser could not play (a 404 after a re-plan): never tried again. */
+const directorBad = new Set();
 function directed(src, t, c = current()) {
   const d = c?.cand?.pano?.preview;
-  if (S.seqPlay || d?.state !== 'ready' || !src || t == null || c.cand.source !== src.path) return null;
+  if (S.seqPlay || d?.state !== 'ready' || directorBad.has(d.url) || !src || t == null || c.cand.source !== src.path) return null;
   return covers(d, t, sourceDur(src.path)) ? { url: d.url, offset: d.lo, lo: d.lo, hi: d.hi, director: c.id } : null;
 }
 /** The window ``w`` plays all of ``seg`` ({start, end}); one ending with the source covers an end past its centisecond-floored ``hi``. */
@@ -774,13 +776,13 @@ function renderNerdStats(c = current()) {
 
 // ---------- 360 director previews (#517) ----------
 
-let panoAsked = null; // "<project>:<candidate>" whose director preview the page last asked for
+let panoAsked = null; // "<project>:<candidate>:<path>" whose director preview the page last asked for
 
 /** Ask the server once for the director preview of 360 moment ``c``: it checks the cached camera path and renders it in the background. */
 function askDirector(c) {
   const cand = c?.cand;
   if (S.project?.kind !== '360' || !cand?.pano || cand.pano.preview || S.seqPlay) return;
-  const k = `${S.id}:${cand.cli_id}`;
+  const k = `${S.id}:${cand.cli_id}:${cand.pano.path}`; // a new plan (Analyze again) is asked for again
   if (panoAsked === k) return;
   panoAsked = k;
   postDirector(cand.cli_id);
@@ -802,15 +804,23 @@ const panoTime = (pv) => (pv?.state === 'rendering' ? ` ${Math.round(pv.elapsed)
 /**
  * Under the preview of a 360 moment: what it shows (the director view, or the raw fisheye and why),
  * a render's state with Cancel or a retry, and the camera path's flags with their reasons as text.
- * Rebuilt only when that changes, so the status is not announced again on every poll.
+ * The one status region keeps its node and changes text only when the status does; the button and
+ * the flag list are rebuilt only when they change.
  */
 function renderPanoNote(c) {
   const el = $('#panoNote');
   clearTimeout(S.panoTimer);
   const cand = S.project?.kind === '360' ? c?.cand : null;
+  const status = el.querySelector('.pano-status');
+  const actEl = el.querySelector('.pano-act');
+  const flagsEl = el.querySelector('.pano-flags');
   if (!cand) {
     el.hidden = true;
-    el.replaceChildren();
+    status.textContent = '';
+    delete status.dataset.want;
+    actEl.replaceChildren();
+    flagsEl.replaceChildren();
+    flagsEl.hidden = true;
     delete el.dataset.key;
     return;
   }
@@ -825,6 +835,8 @@ function renderPanoNote(c) {
   if (S.seqPlay) text = 'Play sequence shows the raw 360 preview.';
   else if (state === 'none') text = 'Raw 360 preview: no camera path is cached for this moment. Analyze again to plan one.';
   else if (state === 'asking') text = 'Raw 360 preview: checking the camera path…';
+  else if (state === 'ready' && directorBad.has(pv.url))
+    text = 'Raw 360 preview: the browser could not play the director view.';
   else if (state === 'ready')
     text = on ? `Director view: the camera path the analysis planned, ${fmt(pv.lo)} to ${fmt(pv.hi)}.`
       : `Raw 360 preview here: the director view covers ${fmt(pv.lo)} to ${fmt(pv.hi)}.`;
@@ -839,25 +851,26 @@ function renderPanoNote(c) {
     act = ['Retry director view', false];
   } else text = `Raw 360 preview: ${pv.reason}.`; // stale, unchecked
   const reasons = pano?.reasons ?? [];
-  const keyNow = JSON.stringify([c.id, text, act, reasons]);
-  if (el.dataset.key === keyNow) {
-    const timer = el.querySelector('.pano-time');
-    if (timer) timer.textContent = panoTime(pv);
-    return;
-  }
+  // shown before its status changes, so the first status is announced too (on the next frame)
+  const wasHidden = el.hidden;
+  el.hidden = false;
+  status.dataset.want = text;
+  const put = () => {
+    if (status.dataset.want === text && status.textContent !== text) status.textContent = text;
+  };
+  if (wasHidden) requestAnimationFrame(put);
+  else put();
+  el.querySelector('.pano-time').textContent = panoTime(pv);
+  const keyNow = JSON.stringify([c.id, act, reasons]);
+  if (el.dataset.key === keyNow) return;
   el.dataset.key = keyNow;
   const cid = cand.cli_id;
   const hadFocus = el.contains(document.activeElement);
-  el.replaceChildren(
-    h('p', { class: 'pano-state' },
-      h('span', { role: 'status', text }),
-      h('span', { class: 'pano-time', 'aria-hidden': 'true', text: panoTime(pv) }),
-      act ? h('button', { type: 'button', class: 'btn small', onclick: () => postDirector(cid, act[1]), text: act[0] }) : null),
-    ...(reasons.length ? [h('div', { class: 'pano-flags' },
-      h('span', { class: 'pano-flags-title', text: 'Camera path looks poor:' }),
-      h('ul', {}, ...reasons.map((r) => h('li', {}, h('span', { class: 'flag', 'data-flag': r.flag, text: PANO_FLAGS[r.flag] ?? r.flag }), ` ${r.text}`))))] : []),
-  );
-  el.hidden = false;
+  actEl.replaceChildren(...(act ? [h('button', { type: 'button', class: 'btn small', onclick: () => postDirector(cid, act[1]), text: act[0] })] : []));
+  flagsEl.replaceChildren(...(reasons.length ? [
+    h('span', { class: 'pano-flags-title', text: 'Camera path looks poor:' }),
+    h('ul', {}, ...reasons.map((r) => h('li', {}, h('span', { class: 'flag', 'data-flag': r.flag, text: PANO_FLAGS[r.flag] ?? r.flag }), ` ${r.text}`)))] : []));
+  flagsEl.hidden = !reasons.length;
   if (hadFocus) (el.querySelector('button') ?? $('#playBtn')).focus(); // Cancel became Render director view
 }
 
@@ -1640,6 +1653,18 @@ onStage('ended', () => {
 onStage('error', () => {
   seekWant = null;
   if (!v.dataset.url) return;
+  if (v.dataset.director) {
+    // A director preview that fails (its path was re-planned since the listing) plays raw meanwhile;
+    // one refresh per url picks up the new preview, and a url that failed is not tried again.
+    const bad = v.dataset.url;
+    const first = !directorBad.has(bad);
+    directorBad.add(bad);
+    delete v.dataset.director;
+    delete v.dataset.url;
+    ensureVideo(); // Retry shows if the raw preview fails too
+    if (first) refreshProject();
+    return;
+  }
   const url = v.dataset.url;
   const msg = `The browser could not play this video${v.error?.message ? `: ${v.error.message}` : ''}.`;
   // The element hides the status; one API call tells an expired token (banner only) from a bad

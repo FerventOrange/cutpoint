@@ -615,7 +615,8 @@ def test_360_moments_carry_camera_path_flags_and_reasons(
         "fails the geometric direction QA: edge_cut 27%",
     ]
     assert pano["preview"] is None  # nothing is rendered before the page asks
-    assert run.candidate("h002")["pano"] == {"flags": [], "reasons": [], "preview": None}
+    h002 = run.candidate("h002")["pano"]
+    assert {**h002, "path": None} == {"flags": [], "reasons": [], "path": None, "preview": None}
     assert run.candidate("h003")["pano"] is None
     assert run.renders == []
 
@@ -728,21 +729,63 @@ def test_leftover_director_previews_of_old_paths_are_pruned(
     assert run.folder() == ["h009-fedcba9876543210.mp4", "notes.txt"]
 
 
-def test_the_page_plays_a_director_preview_and_explains_the_raw_fallback() -> None:
-    """Contract pin (#517): a ready director preview plays like a window proxy of the focused
-    moment, not during "Play sequence"; the note says when the raw fisheye plays and why; card
-    badges are words with their reasons as a tooltip that is also the card's description."""
+def test_a_replanned_camera_path_has_a_new_identity(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review F1: the page asks again per path identity, so "Analyze again" (a new plan in the
+    cache) must change ``path``; the old ready preview no longer counts."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    before = run.candidate("h001")["pano"]["path"]
+    assert isinstance(before, str) and before.startswith("h001-")
+    run.ask("h001")
+    run.wait("h001", "ready")
+    slot = run.p / pano_candidates.CACHE_DIR / pano_candidates.slot_name(run.clip, 5.0, 10.0)
+    entry = cache.load_json(slot)
+    entry["path"]["keys"][0]["yaw"] = 30.0  # re-planned
+    cache.save_json(slot, entry)
+    later = time.time() + 5
+    os.utime(slot, (later, later))
+    pano = run.candidate("h001")["pano"]
+    assert pano["path"] != before and pano["path"].startswith("h001-")
+    assert pano["preview"] is None  # the page asks for the new path's preview
+    assert run.ask("h001").json()["pano"]["preview"]["state"] in ("queued", "rendering", "ready")
+    run.wait("h001", "ready")
+    assert len(run.renders) == 2
+
+
+def test_a_director_preview_is_only_for_a_project_source(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review F4: a candidate whose source is not one of the project's gets ``{"pano": null}``
+    and renders nothing; the media route serves only the listed preview of that source."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    run.ask("h001")
+    pv = run.wait("h001", "ready")
+    stray = run.p / ui.UI_DIR / "pano" / "h002-0123456789abcdef.mp4"
+    stray.write_bytes(b"x")  # a preview-like file no listed candidate names
+    url = pv["url"].replace("http://127.0.0.1", "")
+    head, tail = url.split("/director/")
+    assert run.client.get(url).status_code == 200
+    stray_url = f"{head}/director/{stray.stem}?{tail.split('?')[1]}"
+    assert run.client.get(stray_url).status_code == 404
+    hl = cache.load_json(run.p / "highlights.json")
+    hl["candidates"][0]["source"] = str(tmp_path / "elsewhere" / X3_LRV)
+    cache.save_json(run.p / "highlights.json", hl)
+    assert run.ask("h001").json() == {"pano": None}
+    assert len(run.renders) == 1
+
+
+def test_the_page_describes_camera_path_flags_accessibly() -> None:
+    """Accessibility contract (#517): card badges' reasons are a tooltip that is also the card's
+    description, shown on keyboard focus and hidden by Escape; the note has its own region."""
     js = _web("app.js")
-    directed = _js_function(js, "directed")
-    assert "S.seqPlay" in directed and "covers(d, t" in directed
-    assert "const d = !raw && directed(src, t);" in _js_function(js, "playable")
-    assert "askDirector(c);" in _js_function(js, "stageVideo")
-    note = _js_function(js, "renderPanoNote")
-    for text in ("Raw 360 preview", "no camera path is cached", "Cancel", "Retry director view"):
-        assert text in note
     render = _js_function(js, "renderMoments")
     assert "'aria-describedby': tip" in render and "role: 'tooltip'" in render
-    assert "tips-off" in js and 'id="panoNote"' in _web("index.html")
+    html = _web("index.html")
+    assert "tips-off" in js and 'id="panoNote"' in html
+    # one permanent status region: its text changes, the node is never replaced
+    assert 'role="status" class="pano-status"' in html
+    assert "el.replaceChildren(" not in _js_function(js, "renderPanoNote")
     css = _web("app.css")
     assert ".cand:has(.cand-main:focus-visible) .flag-tip" in css
     assert "body.tips-off .flag-tip { display: none; }" in css

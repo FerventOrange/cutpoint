@@ -1964,7 +1964,7 @@ def _pano_span(path: dict[str, Any], clip: Any) -> tuple[float, float] | None:
     lo = math.ceil(max(0.0, lo) * fps - 1e-6) / fps
     if clip.duration > 0:
         hi = min(hi, float(clip.duration))
-    return (round(lo, 6), round(hi, 6)) if hi - lo >= 0.1 else None
+    return (lo, hi) if hi - lo >= 0.1 else None  # unrounded: render_segment rounds lo again
 
 
 def _pano_reasons(flags: list[str], diag: dict[str, Any]) -> list[dict[str, str]]:
@@ -2113,7 +2113,8 @@ class PanoPreviews:
         return out
 
     def listing(self, project: Path) -> dict[str, dict[str, Any]]:
-        """Per candidate id with a cached camera path: ``flags``, ``reasons`` and ``preview``
+        """Per candidate id with a cached camera path: ``flags``, ``reasons``, ``path`` (the
+        path's identity, None without an .lrv to render it from) and ``preview``
         (None until asked for; else ``state`` ready (``name``, ``lo``, ``hi``) | rendering
         (``elapsed``, ``seconds``) | queued | failed | cancelled | stale | unchecked, with a
         ``reason`` for the last four)."""
@@ -2121,6 +2122,7 @@ class PanoPreviews:
             cid: {
                 "flags": info["flags"],
                 "reasons": info["reasons"],
+                "path": info["name"],  # the path's identity: a new plan is asked for again
                 "preview": self._state(project, cid, info),
             }
             for cid, info in self.entries(project).items()
@@ -2143,7 +2145,12 @@ class PanoPreviews:
         if done is not None and done.get("name") == name:
             return {"state": done["state"], "reason": done["reason"]}
         if checked == name and self.file(project, name, mark=False) is not None:
-            return {"state": "ready", "name": name, "lo": span[0], "hi": span[1]}
+            return {
+                "state": "ready",
+                "name": name,
+                "lo": round(span[0], 6),
+                "hi": round(span[1], 6),
+            }
         return None
 
     def file(self, project: Path, name: str, *, mark: bool = True) -> Path | None:
@@ -2273,6 +2280,7 @@ class PanoPreviews:
         try:
             _ui_folder(p, "pano")  # ui or ui/pano a file: a clear refusal, not a traceback
             _own(p, f"{UI_DIR}/pano/{part_path(out).name}")  # a link made while it was queued
+            _own(p, f"{UI_DIR}/pano/{job.name}.cmd")  # render_segment writes it beside the file
             src = pano_project.RenderSource(
                 "proxy", (job.clip.lrv,), "dfisheye", False, True, "lrv proxy"
             )
@@ -3947,8 +3955,17 @@ def create_app(port: int) -> FastAPI:
     @served.api_route("/projects/{pid}/sources/{sid}/director/{name}", methods=["GET", "HEAD"])
     def source_director(pid: str, sid: str, name: str, request: Request):
         """A rendered director preview of a 360 moment of this source (#517)."""
-        p, _ = find_source(pid, sid)
-        file = previews.file(p, name)
+        p, entry = find_source(pid, sid)
+        hl = _highlights(p) or {}
+        mine = {
+            str(c.get("id")) for c in hl.get("candidates") or [] if c.get("source") == entry["path"]
+        }
+        listed = {
+            view["preview"].get("name")
+            for cid, view in previews.listing(p).items()
+            if cid in mine and view["preview"] is not None and view["preview"]["state"] == "ready"
+        }
+        file = previews.file(p, name) if name in listed else None
         if file is None:
             raise bad("director preview is not ready", 404)
         return send(file, request, proxy=True)
@@ -3967,9 +3984,14 @@ def create_app(port: int) -> FastAPI:
         p = pano_project_dir(pid)
         if media.closing:
             raise bad("the server is stopping", 503)
+        listing = sources.entries(p)
+        hl = _highlights(p) or {}
+        where = {str(c.get("id")): c.get("source") for c in hl.get("candidates") or []}
+        if where.get(cid) not in {s["path"] for s in listing}:  # nothing may serve it
+            return {"pano": None}
         if previews.request(p, cid) is None:
             return {"pano": None}
-        return {"pano": pano_views(pid, p, sources.entries(p), cid).get(cid)}
+        return {"pano": pano_views(pid, p, listing, cid).get(cid)}
 
     @owned.post("/projects/{pid}/director/{cid}/cancel")
     def cancel_director(pid: str, cid: str):

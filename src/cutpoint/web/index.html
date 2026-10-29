@@ -90,7 +90,10 @@
           <button type="button" id="toggleBtn" class="btn" hidden></button>
         </div>
         <!-- 360 moments (#517): director view or raw preview, the render's state and the camera path's flags -->
-        <div id="panoNote" class="pano-note" hidden></div>
+        <div id="panoNote" class="pano-note" hidden>
+          <p class="pano-state"><span role="status" class="pano-status"></span><span class="pano-time" aria-hidden="true"></span><span class="pano-act"></span></p>
+          <div class="pano-flags" hidden></div>
+        </div>
         <div class="screen">
           <video id="video" class="active" playsinline preload="metadata"></video>
           <video id="video2" playsinline preload="auto"></video>
