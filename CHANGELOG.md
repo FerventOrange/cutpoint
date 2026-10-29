@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: the Moments header shows "Analyzed X of video in Y" under Analyze again and
+  Show folder (#459), from the sources and `timings.total_s` that `highlights.json` already
+  records (360 projects: the scan and analyze times in `pano_timings.json`); hidden when they
+  are not recorded. Known limit: on ski projects, an `events` or `crashes --reanalyze` re-rank
+  replaces the time shown with the re-rank's.
 - Feature registry (#514 phase 1a): every scoring signal is a named feature with a
   description, the layer it comes from and the extra it needs. Each built-in style's weights
   name registered features; a learned style with a name that is not one logs a WARNING that

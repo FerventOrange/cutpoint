@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, spanText, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -386,6 +386,9 @@ function renderMoments() {
   $('#analyzeBtn').textContent = 'Analyze again';
   $('#filterWrap').hidden = !list.length;
   $('#momentsCount').textContent = hl ? `${list.length} found, ${hl.style ?? p.style} style` : '';
+  const stats = hl ? p.analysis : null; // null when the length or the time is unknown
+  $('#analyzeStats').hidden = !stats;
+  $('#analyzeStats').textContent = stats ? `Analyzed ${spanText(stats.video_s)} of video in ${spanText(stats.took_s)}` : '';
   const empty = $('#momentsEmpty');
   // the big button had focus (disabling it while analysis runs moves focus to body): keep it in this column
   const hadFocus = empty.contains(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);

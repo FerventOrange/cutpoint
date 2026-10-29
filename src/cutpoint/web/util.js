@@ -48,6 +48,14 @@ export function fmtLen(t) {
   return `${m}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** A length in words (#459): 45 -> "45 s", 540 -> "9 min", 8040 -> "2 h 14 min", 7200 -> "2 h". */
+export function spanText(t) {
+  if (Math.round(t) < 60) return `${Math.max(1, Math.round(t))} s`;
+  const m = Math.round(t / 60);
+  if (m < 60) return `${m} min`;
+  return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
+}
+
 /** "83.5", "1:23.5", "1:02:03" -> seconds, or NaN. */
 export function parseTime(text) {
   const parts = String(text).trim().split(':');
