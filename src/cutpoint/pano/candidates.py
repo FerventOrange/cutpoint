@@ -11,7 +11,7 @@ Cache: one JSON per candidate in ``<project>/pano_candidates/`` (:data:`CACHE_DI
 after the candidate's slot (clip, source, start, end, 16:9 / 9:16;
 :func:`slot_name`), holding::
 
-    {"version": 1, "key": {...}, "candidate": {"id", "source", "start", "end", "kind",
+    {"version": 2, "key": {...}, "candidate": {"id", "source", "start", "end", "kind",
      "label"}, "diagnostics": {...}, "path": {... the director path ...}}
 
 It is a folder of its own, not ``pano_paths/<name>/``: those names are the user's (clips
@@ -39,6 +39,12 @@ Diagnostics (:func:`diagnostics`; shares of the segment, sampled at :data:`DIAG_
     sky              horizon below the frame's lower third line (SKY_HORIZON_LINE):
                      more than two thirds of the picture is above the horizon
     peak_yaw_rate    fastest yaw change within a shot (deg/s, at RATE_FPS; cuts excluded)
+    yaw_travel       total absolute yaw change within shots (deg, the same samples as
+                     peak_yaw_rate; cuts excluded)
+    yaw_travel_per_min   yaw_travel per minute (deg/min)
+    net_turns        largest net rotation in one direction within any SPIN_WINDOW_S window
+                     (the whole segment if shorter), in full turns: the range (max - min) of
+                     the yaw accumulated within shots (cuts add nothing) over the window
     cuts, cuts_per_min   hard cuts inside the segment (flagged from CUTS_MIN cuts on)
     wearer_in_view   the wearer's axis (path wearer_axis) inside the frame; samples whose
                      nearest key is a selfie shot count as not in view
@@ -61,6 +67,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import threading
 import time
 from collections import Counter
 from dataclasses import asdict
@@ -76,7 +83,8 @@ from cutpoint.pano import geometry as G
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = "pano_candidates"
-CACHE_VERSION = 1  # bump when the file layout, the key or the diagnostics change
+CACHE_VERSION = 2  # bump when the file layout, the key or the diagnostics change
+# (2: yaw_travel_per_min, net_turns)
 DIAG_FPS = 10.0  # path samples per second for the shares
 RATE_FPS = 30.0  # ... for the yaw rate (as qa.pan_metrics)
 
@@ -86,6 +94,13 @@ SKY_HORIZON_LINE = 1 / 3  # horizon this share of the half height below the cent
 # frame's lower third line) or lower: more than two thirds of the picture is sky
 SKY_MAX_SHARE = 0.2  # flag ``sky`` above this share of the segment
 WHIP_DEG_S = 55.0  # flag ``whip`` above this peak yaw rate (the QA's max_pan_max)
+SPIN_WINDOW_S = 30.0  # ``net_turns``: rolling window (s)
+SPIN_TURNS = 1.0  # flag ``spin`` from this many net turns in one window (a full 360 in 30 s) ...
+SPIN_TRAVEL_DEG_MIN = 540.0  # ... or above this yaw travel per minute (9 deg/s on average) ...
+SPIN_MIN_TRAVEL_DEG = 360.0  # ... with at least a full turn of travel in the segment (a
+# few seconds of one deliberate pan is over the rate, but no spinning camera) ...
+SPIN_TRAVEL_MIN_TURNS = 0.5  # ... and at least this many net turns (half a turn one way in a
+# window): gentle sweeps back and forth travel far but go nowhere
 CUTS_MAX_PER_MIN = 6.0  # flag ``cuts`` above this many hard cuts per minute ...
 CUTS_MIN = 2  # ... and from this many cuts on (one cut in a short span is no cut-heavy path)
 WEARER_MAX_SHARE = 0.25  # flag ``wearer`` above this share with the wearer in frame
@@ -97,6 +112,7 @@ OFF_TARGET_MAX_SHARE = 0.4  # flag ``off_target`` above this share of the steps
 FLAGS = {
     "sky": "looks at the sky",
     "whip": "whip pans",
+    "spin": "keeps turning",
     "cuts": "many hard cuts",
     "wearer": "shows the wearer",
     "off_target": "misses the best view",
@@ -275,6 +291,33 @@ def cached_path(
     return None, _miss_reason(entry["key"], key)
 
 
+def plan_path(
+    project: Path,
+    clip: Any,
+    start: float,
+    end: float,
+    kind: str | None,
+    overrides: dict[str, Any] | None,
+    vertical: bool = False,
+) -> tuple[dict[str, Any], bool, str | None]:
+    """The director path ``clips`` renders ``[start, end]`` with when no path file is reused:
+    the one ``360 analyze`` cached when :func:`cached_path` reuses it, else a new
+    :func:`director.compute_path` (orientation and view layer loaded as there). Writes nothing.
+
+    Returns:
+        ``(path, cached, reason)``: ``reason`` is :func:`cached_path`'s (None on a hit, or
+        when ``360 analyze`` cached no paths).
+
+    Raises:
+        Exception: Whatever :func:`director.compute_path` raises (footage offline, no IMU).
+    """
+    path, why = cached_path(project, clip, start, end, kind, overrides, vertical)
+    if path is not None:
+        return path, True, None
+    path = D.compute_path(clip, start, end, vertical=vertical, kind=kind, overrides=overrides)
+    return path, False, why
+
+
 def reusable_path(
     project: Path,
     clip: Any,
@@ -375,7 +418,9 @@ def diagnostics(
     rt = start + np.arange(0.0, max(dur, 1.0 / RATE_FPS), 1.0 / RATE_FPS)
     ry, _, _ = D.evaluate(path, rt)
     seg = D.shot_index(path, rt)
-    rate = np.abs(np.diff(ry))[seg[1:] == seg[:-1]] * RATE_FPS
+    step = np.where(seg[1:] == seg[:-1], np.diff(ry), 0.0)  # yaw change within shots
+    rate = np.abs(step[seg[1:] == seg[:-1]]) * RATE_FPS
+    travel = float(np.abs(step).sum())
     cuts = [c for c in path.get("cuts", []) if start < c < end]
     q = path.get("quality")
     diag = {
@@ -384,6 +429,9 @@ def diagnostics(
         "above_horizon": _share(pitch > ABOVE_HORIZON_DEG),
         "sky": _share(_sky(pitch, fov, size)),
         "peak_yaw_rate": round(float(rate.max()), 1) if len(rate) else 0.0,
+        "yaw_travel": round(travel, 1),
+        "yaw_travel_per_min": round(travel / max(dur / 60.0, 1e-6), 1),
+        "net_turns": _net_turns(step),
         "cuts": len(cuts),
         "cuts_per_min": round(len(cuts) / max(dur / 60.0, 1e-6), 2),
         "wearer_in_view": wearer,
@@ -393,19 +441,40 @@ def diagnostics(
     return diag
 
 
+def _net_turns(step: np.ndarray) -> float:
+    """Largest net rotation (turns) within any :data:`SPIN_WINDOW_S` window of the yaw
+    steps ``step`` (at :data:`RATE_FPS`): the range of their running sum per window."""
+    acc = np.concatenate([[0.0], np.cumsum(step)])
+    win = min(len(acc), round(SPIN_WINDOW_S * RATE_FPS) + 1)
+    w = np.lib.stride_tricks.sliding_window_view(acc, win)
+    return round(float((w.max(1) - w.min(1)).max()) / 360.0, 2)
+
+
 def path_flags(diag: dict[str, Any]) -> list[str]:
     """:data:`FLAGS` codes a diagnostics record exceeds (current thresholds; a missing
     measure never flags)."""
 
-    def over(name: str, limit: float) -> bool:
+    def num(name: str) -> float | None:
         v = diag.get(name)
-        return isinstance(v, (int, float)) and not isinstance(v, bool) and v > limit
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    def over(name: str, limit: float) -> bool:
+        v = num(name)
+        return v is not None and v > limit
 
     out = []
     if over("sky", SKY_MAX_SHARE):
         out.append("sky")
     if over("peak_yaw_rate", WHIP_DEG_S):
         out.append("whip")
+    turns = num("net_turns")
+    if (turns is not None and turns >= SPIN_TURNS) or (
+        over("yaw_travel_per_min", SPIN_TRAVEL_DEG_MIN)
+        and (num("yaw_travel") or 0.0) >= SPIN_MIN_TRAVEL_DEG
+        and turns is not None
+        and turns >= SPIN_TRAVEL_MIN_TURNS
+    ):
+        out.append("spin")
     if over("cuts_per_min", CUTS_MAX_PER_MIN) and over("cuts", CUTS_MIN - 1):
         out.append("cuts")
     if over("wearer_in_view", WEARER_MAX_SHARE):
@@ -614,9 +683,25 @@ def candidate_path(project: Path, cid: str) -> dict[str, Any] | None:
     return {"id": cid, "file": file, "path": entry["path"], "diagnostics": diag, "current": current}
 
 
+def path_id(path: dict[str, Any]) -> str:
+    """Short stable identity of a path's content: 12 hex characters of the sha1 of its
+    canonical JSON (sorted keys). Equal paths give equal ids; any change gives another."""
+    text = json.dumps(path, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
 def candidate_flags(project: Path) -> dict[str, dict[str, Any]]:
-    """Per candidate id with a cache entry: ``file`` and ``flags`` (current thresholds), for
-    badges on every moment at once (no freshness check: see :func:`candidate_path`)."""
+    """Per candidate id with a cache entry, for badges on every moment at once (no freshness
+    check: see :func:`candidate_path`):
+
+    ``file`` (the cache file), ``flags`` (:data:`FLAGS` codes by the current thresholds),
+    ``reasons`` (code -> text), ``diagnostics`` (the stored record, its ``flags`` replaced by
+    the current ones) and ``key`` (:func:`path_id` of the cached path: it changes whenever
+    the cached path does, so it can name a rendered preview).
+
+    Reads only ``pano.json``, ``highlights.json`` and the cache files (on POSIX the case
+    check of a source's folder, :func:`cutpoint.config.folds_case`, may stat that folder once
+    per process)."""
     from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
 
     folder = project / CACHE_DIR
@@ -631,8 +716,207 @@ def candidate_flags(project: Path) -> dict[str, dict[str, Any]]:
         name = slot_name(clip, float(c["start"]), float(c["end"]))
         entry = _entry(folder, name)
         if entry is not None:
+            diag = dict(entry.get("diagnostics") or {})
+            diag["flags"] = flags = path_flags(diag)
             out[str(c.get("id"))] = {
                 "file": folder / name,
-                "flags": path_flags(entry.get("diagnostics") or {}),
+                "flags": flags,
+                "reasons": {f: FLAGS[f] for f in flags},
+                "diagnostics": diag,
+                "key": path_id(entry["path"]),
             }
     return out
+
+
+# --------------------------------------------------------------------------- preview API
+_LOCKS: dict[str, threading.Lock] = {}  # per clip source: one preview_path at a time
+_LOCKS_GUARD = threading.Lock()
+
+
+def _clip_lock(source: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(source, threading.Lock())
+
+
+def _kind_for(project: Path, clip: Any, start: float, end: float) -> str | None:
+    """The ``kind`` of the ``highlights.json`` candidate of ``clip`` overlapping ``[start,
+    end]`` most (the moment being previewed, possibly trimmed), else None."""
+    from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
+
+    clips = load(project)
+    best, kind = 0.0, None
+    for c in _candidates(project):
+        try:
+            ov = min(end, float(c["end"])) - max(start, float(c["start"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        hit = clip_for(clips, c.get("source", ""))
+        if ov > best and hit is not None and hit.clip_id == clip.clip_id:
+            best, kind = ov, c.get("kind")
+    return kind
+
+
+def _level_forward(
+    clip: Any,
+    start: float,
+    end: float,
+    kind: str | None,
+    overrides: dict[str, Any] | None,
+    vertical: bool,
+    why: str,
+) -> dict[str, Any]:
+    """A constant forward view: yaw at the travel direction (:func:`views.forward_yaw`,
+    0 without a view layer), the director's default pitch and wide FOV, levelled by the IMU
+    as any render (``level`` ``imu``) or, without an orientation track, for the nominal
+    mount (``level`` :data:`~cutpoint.pano.render.UPRIGHT`)."""
+    from cutpoint.pano import render as R  # noqa: PLC0415
+    from cutpoint.pano.views import forward_yaw, load_views  # noqa: PLC0415
+
+    try:
+        p = effective_params(kind, overrides)
+    except ValueError:
+        p = D.params_for(kind)
+    level, yaw = "imu", 0.0
+    try:
+        R.clip_orientation(clip)  # the track render_segment levels with (now cached)
+    except Exception as err:  # noqa: BLE001 - no IMU: the upright horizon
+        # footage offline: levelled by the IMU once it is back (render_segment reads it)
+        if _reachable(clip) and (not isinstance(err, OSError) or _no_imu(clip)):
+            level = R.UPRIGHT
+            why += f"; no IMU orientation ({type(err).__name__}), levelled for the upright mount"
+    else:
+        with contextlib.suppress(Exception):  # no view layer: yaw 0 (the camera's forward)
+            pv = load_views(Path(clip.source))
+            yaw = forward_yaw(pv) if pv is not None else 0.0
+    fov = p.vertical_fov_wide if vertical else p.fov_wide
+    keys = [
+        {"t": round(t, 3), "yaw": round(yaw, 2), "pitch": p.pitch_default, "fov": fov}
+        | {"target": "forward"}
+        for t in (start, end)
+    ]
+    path = {
+        "version": D.PATH_VERSION,
+        "clip": clip.clip_id,
+        "source": str(clip.source),
+        "segment": {"start": round(start, 3), "end": round(end, 3)},
+        "planned": {"start": round(start, 3), "end": round(end, 3)},
+        "vertical": vertical,
+        "kind": kind,
+        "forward_yaw": round(yaw, 1),
+        "level": level,
+        "params": asdict(p),
+        "cuts": [],
+        "seconds_by_target": {"forward": round(end - start, 1)},
+        "keys": keys,
+    }
+    return {"path": path, "kind": "level_forward", "reason": why}
+
+
+def _reachable(clip: Any) -> bool:
+    """The clip's source can be stat-ed (through ``source_remap``)."""
+    from cutpoint.config import remap_source  # noqa: PLC0415
+
+    try:
+        remap_source(clip.source).stat()
+    except OSError:
+        return False
+    return True
+
+
+def _no_imu(clip: Any) -> bool:
+    """``clip`` has no ``_00_.insv`` to read the IMU from (False when that cannot be checked;
+    meaningful only for a :func:`_reachable` clip: an offline folder has no files either)."""
+    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+
+    try:
+        return imu_source(clip.source) is None
+    except OSError:  # the folder cannot be checked: assume the IMU is there
+        return False
+
+
+def _failure(clip: Any, err: Exception) -> str:
+    """Why the director could not plan ``clip`` (``err``), for ``preview_path``'s reason."""
+    if not _reachable(clip):
+        what = err.strerror if isinstance(err, OSError) else None
+        return f"footage offline ({what or 'source not reachable'})"
+    if _no_imu(clip):
+        return "no IMU (no _00_.insv next to the clip)"
+    if isinstance(err, OSError):
+        return f"footage offline ({err.strerror or type(err).__name__})"
+    return f"director could not plan ({type(err).__name__}: {err})"
+
+
+def preview_path(
+    project: Path,
+    source: str | Path,
+    start: float,
+    end: float,
+    *,
+    vertical: bool = False,
+) -> dict[str, Any]:
+    """The virtual-camera path to preview ``[start, end]`` of a 360 clip with (16:9, or 9:16
+    with ``vertical``); render it with :func:`cutpoint.pano.render.render_segment`.
+
+    Returns:
+        ``{"path": ..., "kind": ..., "reason": ...}``, ``kind`` one of:
+
+        - ``cached``: the path ``360 analyze`` planned, reused exactly as ``clips`` reuses it
+          (:func:`cached_path`: same span, settings, layers and code); ``reason`` None.
+        - ``planned``: planned now by the director as ``clips`` would (:func:`plan_path`:
+          ``pano.director`` of config.json, the moment's kind tweaks, the cached orientation
+          and view layer); ``reason`` says why the cached one is not used
+          (:func:`cached_path`'s text, or ``not planned by 360 analyze``). It is not written
+          to the analysis cache: that holds the candidates of ``highlights.json`` only, and
+          ``360 analyze`` prunes anything else.
+        - ``level_forward``: the director cannot plan (footage offline, no IMU, bad
+          ``pano.director`` settings, any other error): a constant forward view (travel
+          direction, the director's default pitch and wide FOV), levelled by the IMU like any
+          render or, without an orientation track, for the nominal upright mount (path
+          ``level`` ``upright``); never the raw fisheye. ``reason`` says why.
+
+        The kind (``laughter``, ``people``, ...) is that of the ``highlights.json`` candidate
+        of the clip overlapping the span most.
+
+    Never raises for footage or layer problems.
+
+    Raises:
+        ValueError: If ``source`` is not a 360 clip of ``project`` or ``end <= start``.
+
+    Thread safety: safe from worker threads. Calls on the same clip run one at a time (a
+    per-clip lock), so the caches they fill (orientation track, view scores) are written
+    once; calls on different clips run in parallel. It changes no working directory and no
+    logging setup. The per-process memo caches it fills (view scores, wearer axis, the CLIP
+    text model of the view scores, config.json) are shared; two clips at once may compute
+    the same entry twice.
+
+    Source access (all kinds): besides ``pano.json``, ``highlights.json`` and the cache files,
+    it stats the source (``clip.source``, through ``source_remap``) several times: the
+    cache folders of its layers are keyed by its size and mtime (:func:`cache.source_dir`),
+    and so is the freshness of a cached path. On POSIX the source's folder may also be
+    stat-ed once per process (:func:`cutpoint.config.folds_case`). When the orientation
+    track is not cached yet, ``planned`` and ``level_forward`` look up the clip's
+    ``_00_.insv`` (which may list the source's folder) and read its IMU trailer. An
+    unmounted source fails fast (``level_forward``, ``footage offline``); a hung network
+    mount blocks the calling thread in that stat.
+    """
+    from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
+
+    start, end = float(start), float(end)
+    if not end > start:
+        raise ValueError(f"preview span {start:g}-{end:g} s is empty")
+    clip = clip_for(load(project), source)
+    if clip is None:
+        raise ValueError(f"{source} is not a 360 clip of {project}")
+    kind = _kind_for(project, clip, start, end)
+    with _clip_lock(str(clip.source)):
+        try:
+            overrides = D.config_overrides() or None
+        except ValueError as err:
+            return _level_forward(clip, start, end, kind, None, vertical, f"settings: {err}")
+        try:
+            path, cached, why = plan_path(project, clip, start, end, kind, overrides, vertical)
+        except Exception as err:  # noqa: BLE001 - a preview never fails on the footage
+            return _level_forward(clip, start, end, kind, overrides, vertical, _failure(clip, err))
+    if cached:
+        return {"path": path, "kind": "cached", "reason": None}
+    return {"path": path, "kind": "planned", "reason": why or "not planned by 360 analyze"}
