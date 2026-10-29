@@ -109,8 +109,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projects and for projects analyzed with options `edit` cannot repeat.
 - `cutpoint ui`: the trim rail shows a filmstrip of stills (keyframes; exact ones when zoomed in)
   behind the clip markers, and the project's still cache keeps up to 1500 stills (#261).
+- Editions: Cutpoint is full (every feature) or lite (no torch: no `events` or `gpu` extra).
+  `cutpoint capabilities` prints the edition first, and its `--json` has the new key `edition`
+  (`"full"` or `"lite"`; the schema stays 1) (#502).
 
 ### Changed
+
+- A feature that needs a missing extra now says it is "not available in Cutpoint lite" and how
+  to add it: for a tool install, the installer again without `--lite` / `-Lite` and with
+  `CUTPOINT_LITE` unset, keeping a git or local `--source` (`curl -LsSf
+  https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh` or `irm
+  https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`); in a clone,
+  `uv sync` without `--no-group full`. The CUDA torch fix in `capabilities` says the same. The
+  hints no longer print a `uv tool install "cutpoint[...]"` command, which without
+  `--torch-backend` can pull CUDA torch on a machine without an NVIDIA GPU. Help, messages and
+  docs no longer call `ui`, `keyring` and `ski` optional extras (#502).
 
 - Packaging: the `ui`, `keyring` and `ski` packages (fastapi, uvicorn, keyring, telemetry-parser)
   are core dependencies, so a plain `uv tool install cutpoint` or `pip install cutpoint` runs

@@ -621,7 +621,7 @@ def _setup_state(files: list[Path]) -> dict[Path, tuple[int, int] | None]:
 def _report_setup(components: list[str], before: dict[str, dict]) -> None:
     """``--json`` outputs of ``setup``: per component the files downloaded or found."""
     from cutpoint.events.setup import EVENTS_MODULES  # noqa: PLC0415
-    from cutpoint.extras import install_hint  # noqa: PLC0415
+    from cutpoint.extras import LITE, install_hint  # noqa: PLC0415
 
     report: dict[str, dict] = {}
     for name in dict.fromkeys(components):
@@ -631,8 +631,9 @@ def _report_setup(components: list[str], before: dict[str, dict]) -> None:
             if missing:
                 jsonout.warn(
                     "events_extra_missing",
-                    f"Missing Python packages for cutpoint events: {', '.join(missing)}. "
-                    f"Install the events extra: {install_hint('events')}",
+                    f"Missing Python packages for cutpoint events: {', '.join(missing)}; "
+                    f"cutpoint events is {LITE}. To add the events extra: "
+                    f"{install_hint('events')}",
                 )
             continue
         files = []
@@ -1448,8 +1449,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui = sub.add_parser(
         "ui",
-        help="serve the local browser workspace for standard video highlights "
-        "(127.0.0.1 only; needs the 'ui' extra)",
+        help="serve the local browser workspace for standard video highlights (127.0.0.1 only)",
     )
     ui.add_argument("--port", type=_port, default=8765, help="port on 127.0.0.1 (default 8765)")
     ui.set_defaults(func=_cmd_ui)

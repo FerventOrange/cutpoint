@@ -80,8 +80,9 @@ Choosing the moments yourself:
   `cutpoint edit`), its `.srt` and the clips folder, exactly as the last log lines print them;
   do not shorten them. If a WARNING starts with "Kept" (clips renamed or added by hand), tell
   the user which files it names.
-- A missing optional extra (an `ERROR` naming a module): tell the user the install command for
-  their install; `cutpoint guide` lists both forms (clone and tool install).
+- A missing optional extra (an `ERROR` naming a module, "not available in Cutpoint lite"): tell
+  the user the install command for their install; `cutpoint guide` lists both forms (installer
+  and clone).
 
 ## Example prompts
 

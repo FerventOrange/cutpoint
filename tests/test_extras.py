@@ -18,8 +18,23 @@ def test_missing_module_message():
         assert extras.missing_module_message(core) is None
     msg = extras.missing_module_message("torch.nn.functional")  # top-level package decides
     assert msg is not None and msg.startswith("torch is not installed")
-    assert "'events' extra" in msg
+    assert "not available in Cutpoint lite" in msg and "'events' extra" in msg
     assert extras.missing_module_message("definitely_not_an_extra") is None
+
+
+# --- edition ------------------------------------------------------------------------------
+
+
+def test_edition_is_full_only_with_every_events_module(monkeypatch):
+    present = set(extras.MODULE_EXTRA)
+    monkeypatch.setattr(
+        extras.importlib.util, "find_spec", lambda name: object() if name in present else None
+    )
+    assert extras.edition() == "full"
+    present.discard("torch")
+    assert extras.edition() == "lite"
+    present.clear()
+    assert extras.edition() == "lite"
 
 
 def _editable_url(clone) -> str:
@@ -90,40 +105,89 @@ def _set_install(monkeypatch, tmp_path, *, receipt=None, direct_url=None, uv=Fal
     monkeypatch.setattr(extras, "uv_managed", lambda: uv)
 
 
-def test_install_hint_uv_tool_keeps_extras_and_index(monkeypatch, tmp_path):
-    _set_install(monkeypatch, tmp_path, receipt=RECEIPT, uv=True)
-    hint = extras.install_hint("ski")
-    assert hint == (
-        'uv tool install "cutpoint[all,ski]" --reinstall '
-        "--index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match"
-    )
-    assert "NVIDIA" not in hint  # index already carried over
+_RERUN = f"{extras.INSTALL_SH} (Linux, macOS) or {extras.INSTALL_PS1} (Windows PowerShell)"
 
 
 @pytest.mark.parametrize(
-    ("platform", "note"),
+    "receipt",
     [
-        ("win32", "(with an NVIDIA GPU add --index " + extras.TORCH_INDEX),
-        ("linux", "(with an NVIDIA driver too old for CUDA 13, add --index " + extras.TORCH_INDEX),
-        ("darwin", None),
+        RECEIPT,
+        "[tool\nnot toml {{{",  # an unreadable receipt still marks a tool install
     ],
+    ids=["pypi", "malformed"],
 )
-def test_install_hint_uv_tool_gpu_note_by_platform(monkeypatch, tmp_path, platform, note):
-    receipt = '[tool]\nrequirements = [{ name = "cutpoint" }]\n'
+@pytest.mark.parametrize(
+    ("edition", "lite"),
+    [("lite", " without --lite / -Lite and with CUTPOINT_LITE unset"), ("full", "")],
+)
+@pytest.mark.parametrize("extra", ["events", "gpu"])
+def test_install_hint_uv_tool_reruns_the_installer(
+    monkeypatch, tmp_path, receipt, edition, lite, extra
+):
+    # uv tool install without --torch-backend pulls CUDA torch on a CPU-only machine; the
+    # installer picks the backend for this machine
     _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
-    monkeypatch.setattr(extras.sys, "platform", platform)
-    hint = extras.install_hint("events")
-    assert hint.startswith('uv tool install "cutpoint[events]" --reinstall')
-    if note is None:
-        assert "NVIDIA" not in hint
-    else:
-        assert note in hint and "--index-strategy unsafe-best-match" in hint
-    assert "NVIDIA" not in extras.install_hint("ski")  # not a torch extra
+    monkeypatch.setattr(extras, "edition", lambda: edition)
+    assert extras.install_hint(extra) == f"re-run the installer{lite}: {_RERUN}"
 
 
-def test_install_hint_uv_tool_malformed_receipt_falls_back(monkeypatch, tmp_path):
-    _set_install(monkeypatch, tmp_path, receipt="[tool\nnot toml {{{", uv=True)
-    assert extras.install_hint("ski").startswith('uv tool install "cutpoint[ski]" --reinstall')
+def _receipt_with(source: str) -> str:
+    return f'[tool]\nrequirements = [{{ name = "cutpoint", {source} }}]\n'
+
+
+@pytest.mark.parametrize(
+    ("source", "notes"),
+    [
+        (
+            'git = "https://github.com/FerventOrange/cutpoint?rev=main"',
+            "add --source git@main, or set CUTPOINT_SOURCE=git@main for irm | iex",
+        ),
+        (
+            'git = "https://github.com/FerventOrange/cutpoint?tag=v1#subdirectory=pkg"',
+            "add --source git@v1, or set CUTPOINT_SOURCE=git@v1 for irm | iex",
+        ),
+        (
+            'git = "https://github.com/FerventOrange/cutpoint", branch = "dev"',
+            "add --source git@dev, or set CUTPOINT_SOURCE=git@dev for irm | iex",
+        ),
+        (
+            'git = "https://github.com/FerventOrange/cutpoint"',
+            "add --source git, or set CUTPOINT_SOURCE=git for irm | iex",
+        ),
+        (
+            'directory = "C:/src/cutpoint"',
+            'add --source "C:/src/cutpoint", or set CUTPOINT_SOURCE="C:/src/cutpoint" for irm | iex',
+        ),
+        (
+            'path = "C:/dl/cutpoint-1.0-py3-none-any.whl"',
+            'add --source "C:/dl/cutpoint-1.0-py3-none-any.whl", or set '
+            'CUTPOINT_SOURCE="C:/dl/cutpoint-1.0-py3-none-any.whl" for irm | iex',
+        ),
+        (
+            'editable = "C:/src/cutpoint"',
+            'add --source "C:/src/cutpoint", or set CUTPOINT_SOURCE="C:/src/cutpoint" for irm | '
+            "iex; the installer does not make an editable install",
+        ),
+        ('extras = ["all"]', None),  # PyPI: the installer's default source
+    ],
+    ids=["git-rev", "git-tag", "git-branch-key", "git", "directory", "path", "editable", "pypi"],
+)
+def test_installer_hint_keeps_the_tool_source(monkeypatch, tmp_path, source, notes):
+    # the bare installer installs the PyPI release, which would replace a git or local install
+    _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
+    monkeypatch.setattr(extras, "edition", lambda: "full")
+    want = f"re-run the installer: {_RERUN}" + (f" ({notes})" if notes else "")
+    assert extras.install_hint("events") == want
+    cuda = "; ".join(
+        [*([notes] if notes else []), "it installs CUDA torch when it finds an NVIDIA GPU"]
+    )
+    assert extras.torch_cuda_hint() == f"re-run the installer: {_RERUN} ({cuda})"
+
+
+def test_installer_one_liners():
+    raw = "https://raw.githubusercontent.com/FerventOrange/cutpoint/main"
+    assert f"curl -LsSf {raw}/install.sh | sh" == extras.INSTALL_SH
+    assert f"irm {raw}/install.ps1 | iex" == extras.INSTALL_PS1
 
 
 def test_install_hint_editable_uv_outside_clone_venv(monkeypatch, tmp_path):
@@ -131,8 +195,8 @@ def test_install_hint_editable_uv_outside_clone_venv(monkeypatch, tmp_path):
     _set_install(monkeypatch, tmp_path, direct_url=_editable_url(clone), uv=True)
     monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / "other-venv"))
     monkeypatch.setattr(extras.sys, "executable", "/the/python")
-    hint = extras.install_hint("ski")
-    assert hint == f'uv pip install --python "/the/python" -e "{clone.as_posix()}[ski]"'
+    hint = extras.install_hint("gpu")
+    assert hint == f'uv pip install --python "/the/python" -e "{clone.as_posix()}[gpu]"'
 
 
 def test_install_hint_not_installed_counts_as_source_tree(monkeypatch, tmp_path):
@@ -142,18 +206,18 @@ def test_install_hint_not_installed_counts_as_source_tree(monkeypatch, tmp_path)
         raise extras.importlib.metadata.PackageNotFoundError(name)
 
     monkeypatch.setattr(extras.importlib.metadata, "distribution", missing)
-    assert extras.install_hint("ski").startswith("uv sync --extra ski")
+    assert extras.install_hint("events") == extras.UV_SYNC
 
 
 @pytest.mark.parametrize("direct_url", [None, '{"dir_info": {}}', "not json"])
 def test_install_hint_regular_install(monkeypatch, tmp_path, direct_url):
     _set_install(monkeypatch, tmp_path, direct_url=direct_url, uv=False)
-    hint = extras.install_hint("ski")
-    assert "-m pip install" in hint and 'pip install "cutpoint[ski]"' in hint
+    hint = extras.install_hint("gpu")
+    assert "-m pip install" in hint and 'pip install "cutpoint[gpu]"' in hint
     assert " -e " not in hint
     _set_install(monkeypatch, tmp_path, direct_url=direct_url, uv=True)
-    hint = extras.install_hint("ski")
-    assert hint.startswith("uv pip install --python") and hint.endswith('"cutpoint[ski]"')
+    hint = extras.install_hint("gpu")
+    assert hint.startswith("uv pip install --python") and hint.endswith('"cutpoint[gpu]"')
 
 
 # --- _python: shell prefix for sys.executable ---------------------------------------------
@@ -181,50 +245,11 @@ def test_python_prefix(monkeypatch, tmp_path, exe, os_name, expected):
     assert extras._python() == expected
     prefix, note = expected  # and the pip hint carries it, with the shell note
     _set_install(monkeypatch, tmp_path, direct_url=None, uv=False)
-    want = f'{prefix} -m pip install "cutpoint[ski]"' + (f" ({note})" if note else "")
-    assert extras.install_hint("ski") == want
+    want = f'{prefix} -m pip install "cutpoint[gpu]"' + (f" ({note})" if note else "")
+    assert extras.install_hint("gpu") == want
 
 
-# --- uv tool receipts: reinstall from the original source ---------------------------------
-
-
-def _receipt_with(source: str) -> str:
-    return f'[tool]\nrequirements = [{{ name = "cutpoint", {source} }}]\n'
-
-
-@pytest.mark.parametrize(
-    ("source", "expected_target"),
-    [
-        (
-            'extras = ["ski"], editable = "C:/src/cutpoint"',
-            '--editable "C:/src/cutpoint[events,ski]"',
-        ),
-        ('directory = "C:/src/cutpoint"', '"C:/src/cutpoint[events]"'),
-        (
-            'git = "https://github.com/FerventOrange/cutpoint?rev=main"',
-            '"cutpoint[events] @ git+https://github.com/FerventOrange/cutpoint@main"',
-        ),
-        (
-            'git = "https://github.com/FerventOrange/cutpoint?tag=v1#subdirectory=pkg"',
-            '"cutpoint[events] @ git+https://github.com/FerventOrange/cutpoint@v1#subdirectory=pkg"',
-        ),
-        (
-            'git = "https://github.com/FerventOrange/cutpoint"',
-            '"cutpoint[events] @ git+https://github.com/FerventOrange/cutpoint"',
-        ),
-        (
-            'url = "https://example.com/cutpoint-0.1.0-py3-none-any.whl"',
-            '"cutpoint[events] @ https://example.com/cutpoint-0.1.0-py3-none-any.whl"',
-        ),
-    ],
-)
-def test_install_hint_uv_tool_source(monkeypatch, tmp_path, source, expected_target):
-    _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
-    hint = extras.install_hint("events")
-    assert hint.startswith(f"uv tool install {expected_target} --reinstall")
-
-
-# --- install_hint: non-editable installs and tool receipts (#34) ---------------------------
+# --- install_hint: non-editable installs (#34) --------------------------------------------
 
 
 @pytest.mark.parametrize("kind", ["file", "git"])
@@ -232,15 +257,15 @@ def test_install_hint_non_editable_reinstalls_from_origin(monkeypatch, tmp_path,
     if kind == "file":
         src = tmp_path / "src"
         direct_url = {"url": src.as_uri(), "dir_info": {}}
-        expected = f'"{src.as_posix()}[ski]"'
+        expected = f'"{src.as_posix()}[gpu]"'
     else:
         direct_url = {
             "url": "https://github.com/x/cutpoint",
             "vcs_info": {"vcs": "git", "commit_id": "abc123"},
         }
-        expected = '"cutpoint[ski] @ git+https://github.com/x/cutpoint@abc123"'
+        expected = '"cutpoint[gpu] @ git+https://github.com/x/cutpoint@abc123"'
     _set_install(monkeypatch, tmp_path, direct_url=json.dumps(direct_url), uv=True)
-    assert extras.install_hint("ski").endswith(f" {expected}")
+    assert extras.install_hint("gpu").endswith(f" {expected}")
 
 
 _UV_INDEX = f"--index {extras.TORCH_INDEX} --index-strategy unsafe-best-match"
@@ -270,72 +295,7 @@ def test_install_hint_non_editable_events_on_windows_cuda_note(
     assert not any(a in hint for a in absent)
 
 
-def test_install_hint_tool_receipt_keeps_default_index_and_python(monkeypatch, tmp_path):
-    receipt = (
-        '[tool]\nrequirements = [{ name = "cutpoint" }]\npython = "C:/Py/python.exe"\n'
-        '[tool.options]\nindex = [{ url = "https://example.com/simple", default = true }]\n'
-    )
-    _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
-    hint = extras.install_hint("ski")
-    assert '--python "C:/Py/python.exe"' in hint
-    assert "--default-index https://example.com/simple" in hint
-    assert "--index https://example.com/simple" not in hint
-
-
-# --- install_hint: explicit indexes, CUDA note and installed CPU torch (#50) --------------
-
-_TOOL = '[tool]\nrequirements = [{ name = "cutpoint" }]\n[tool.options]\n'
-
-
-def test_install_hint_tool_receipt_explicit_index_is_left_out(monkeypatch, tmp_path):
-    receipt = _TOOL + (
-        'index = [{ name = "pytorch", url = "https://example.com/cu126", explicit = true }]\n'
-    )
-    _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
-    hint = extras.install_hint("ski")
-    assert "https://example.com/cu126" not in hint
-    assert "(explicit index pytorch left out" in hint
-
-
-@pytest.mark.parametrize(
-    ("options", "note_has_strategy"),
-    [
-        ('index = [{ url = "https://mirror.example/simple", default = true }]', True),
-        ('index = [{ url = "https://download.pytorch.org/whl/cpu" }]', True),
-        (
-            'index = [{ url = "https://mirror.example/simple", default = true }]\n'
-            'index-strategy = "unsafe-best-match"',
-            False,
-        ),
-    ],
-)
-def test_install_hint_tool_cuda_note_kept_without_cuda_index(
-    monkeypatch, tmp_path, options, note_has_strategy
-):
-    monkeypatch.setattr(extras.sys, "platform", "win32")
-    _set_install(monkeypatch, tmp_path, receipt=_TOOL + options + "\n", uv=True)
-    hint = extras.install_hint("events")
-    note = hint[hint.index("(with an NVIDIA GPU") :]
-    assert f"add --index {extras.TORCH_INDEX}" in note
-    assert ("--index-strategy unsafe-best-match" in note) is note_has_strategy
-    # the receipt's own strategy is never repeated in the note
-    assert hint.count("--index-strategy") == 1
-
-
-@pytest.mark.parametrize(
-    ("source", "note"),
-    [
-        ('directory = "C:/src/cutpoint"', False),
-        ('editable = "C:/src/cutpoint"', False),
-        ('git = "https://github.com/FerventOrange/cutpoint"', False),
-        ('path = "C:/dl/cutpoint-1.0-py3-none-any.whl"', True),
-    ],
-)
-def test_install_hint_gpu_note_skipped_for_project_sources(monkeypatch, tmp_path, source, note):
-    # a directory/editable/git install resolves with cutpoint's own [tool.uv.sources] (#61)
-    monkeypatch.setattr(extras.sys, "platform", "win32")
-    _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
-    assert ("(with an NVIDIA GPU" in extras.install_hint("events")) is note
+# --- install_hint: installed CPU torch (#50) ----------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -355,24 +315,25 @@ def test_install_hint_reinstalls_installed_cpu_torch(monkeypatch, tmp_path, uv, 
 
 
 @pytest.mark.parametrize("in_clone_venv", [True, False])
-def test_install_hint_editable_cpu_torch_adds_reinstall_note(monkeypatch, tmp_path, in_clone_venv):
-    # uv pip keeps an installed CPU torch, so the -e forms say how to get CUDA (#96)
+def test_install_hint_editable_cpu_torch(monkeypatch, tmp_path, in_clone_venv):
+    # uv pip keeps an installed CPU torch, so the -e form says how to get CUDA (#96); uv sync
+    # in the clone's own .venv installs the locked CUDA build
     clone = tmp_path / "clone"
     _set_install(monkeypatch, tmp_path, direct_url=_editable_url(clone), uv=True)
     monkeypatch.setattr(extras.sys, "platform", "win32")
     monkeypatch.setattr(extras, "_cpu_torch", lambda: True)
     monkeypatch.setattr(extras.sys, "prefix", str(clone / ".venv" if in_clone_venv else tmp_path))
-    note = " (with an NVIDIA GPU add --reinstall-package torch --reinstall-package torchvision"
     hint = extras.install_hint("events")
-    assert hint.count(note) == 1 and hint.endswith("so torch uses CUDA)")
-    assert hint.startswith("uv sync --extra events") == in_clone_venv
     if in_clone_venv:
-        assert "or use --extra all for everything, a large download with torch and CUDA" in hint
+        assert hint == extras.UV_SYNC
+    else:
+        note = " (with an NVIDIA GPU add --reinstall-package torch --reinstall-package torchvision"
+        assert hint.count(note) == 1 and hint.endswith("so torch uses CUDA)")
 
 
 @pytest.mark.parametrize(
     ("platform", "cpu_torch", "extra"),
-    [("win32", False, "events"), ("win32", True, "ski"), ("linux", True, "events")],
+    [("win32", False, "events"), ("win32", True, "gpu"), ("linux", True, "events")],
 )
 def test_install_hint_editable_no_reinstall_note(monkeypatch, tmp_path, platform, cpu_torch, extra):
     _set_install(monkeypatch, tmp_path, direct_url=_editable_url(tmp_path / "clone"), uv=True)
@@ -396,7 +357,7 @@ def test_install_hint_editable_no_reinstall_note(monkeypatch, tmp_path, platform
             True,
             f"; with an NVIDIA GPU add --extra-index-url {extras.TORCH_INDEX} --force-reinstall",
         ),
-        ("win32", "ski", True, ""),
+        ("win32", "gpu", True, ""),
         ("linux", "events", True, ""),
     ],
 )

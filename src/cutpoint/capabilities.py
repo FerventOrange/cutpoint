@@ -127,7 +127,10 @@ def _torch(nvidia_driver: bool) -> dict[str, Any]:
         "fix": None,
     }
     if importlib.util.find_spec("torch") is None:
-        info["fix"] = f"it comes with the 'events' extra: {extras.install_hint('events')}"
+        info["fix"] = (
+            f"it comes with the 'events' extra, {extras.LITE}; to add it: "
+            f"{extras.install_hint('events')}"
+        )
         return info
     try:
         import torch  # noqa: PLC0415 - optional and slow; only for this report
@@ -193,6 +196,8 @@ def _insta360_sdk(nvidia: bool) -> dict[str, Any]:
 
 def report() -> dict[str, Any]:
     """The capability report ``cutpoint capabilities`` prints (JSON-serialisable)."""
+    from cutpoint import extras  # noqa: PLC0415
+
     compiled = _compiled_encoders()
     encoders: dict[str, Any] = {}
     for kind, codec in VIDEO_CODECS.items():
@@ -217,6 +222,7 @@ def report() -> dict[str, Any]:
     # gpu extra's newer cuDNN): on Windows, the other order makes `import torch` fail.
     torch_info = _torch(nvidia_driver)
     return {
+        "edition": extras.edition(),
         "platform": sys.platform,
         "gpu_vendors_present": vendors,
         "video_encoders": encoders,
@@ -231,7 +237,9 @@ def report() -> dict[str, Any]:
 def format_report(data: dict[str, Any]) -> str:
     """The report as text for people."""
     v = data["gpu_vendors_present"]
+    lite = " (no torch: the 'events' extra is not installed)" if data["edition"] == "lite" else ""
     lines = [
+        f"Edition: {data['edition']}{lite}",
         f"GPU vendors present: NVIDIA {'yes' if v['nvidia'] else 'no'}, "
         f"AMD {'yes' if v['amd'] else 'no'} (hardware only; says nothing about usable runtimes)",
         "Video encoders (a short clip was really encoded with each):",

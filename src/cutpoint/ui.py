@@ -1,6 +1,6 @@
 """``cutpoint ui``: local browser workspace for the standard-video highlight workflow.
 
-A loopback-only FastAPI app (optional ``ui`` extra) that serves ``cutpoint/web`` and a small JSON
+A loopback-only FastAPI app that serves ``cutpoint/web`` and a small JSON
 API over the projects folder. Heavy work (analyze, clips, extend, assemble) runs as ordinary
 ``python -m cutpoint ...`` child processes, one at a time, so the browser and the CLI share one
 implementation. Source videos are only ever read.
@@ -640,7 +640,6 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
             for p, title in ai_providers.PRESETS.items()
         ],
         **key_status(data),
-        "keyring": ai_keys.keyring_available(),
     }
 
 
@@ -2851,7 +2850,7 @@ def create_app(port: int) -> FastAPI:
 
     @secure.post("/assistant/key")
     def save_key(body: dict[str, Any]):
-        """Save ``key`` for ``provider`` in the system keyring (the keyring extra), for the host
+        """Save ``key`` for ``provider`` in the system keyring, for the host
         its configured base URL names (``key_hosts``): a key saved for OpenRouter is never sent
         to OpenAI. The answer says only where each key now comes from, never a key."""
         name = keyed_provider(body)
@@ -2861,7 +2860,7 @@ def create_app(port: int) -> FastAPI:
         except ValueError as err:
             raise bad(str(err)) from None
         except ai_keys.KeyringError as err:
-            raise bad(str(err), 501 if not ai_keys.keyring_available() else 500) from None
+            raise bad(str(err), 500) from None
         return key_status(data)
 
     @secure.post("/assistant/key/clear")
@@ -2873,7 +2872,7 @@ def create_app(port: int) -> FastAPI:
         try:
             ai_keys.clear(name, key_hosts(data)[name])
         except ai_keys.KeyringError as err:
-            raise bad(str(err), 501 if not ai_keys.keyring_available() else 500) from None
+            raise bad(str(err), 500) from None
         return key_status(data)
 
     @secure.post("/assistant/consent")

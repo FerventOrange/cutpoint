@@ -45,6 +45,7 @@ def test_torch_not_installed(monkeypatch):
     monkeypatch.setattr(extras, "install_hint", lambda extra: f"HINT[{extra}]")
     info = capabilities._torch(True)
     assert info["installed"] is False
+    assert "not available in Cutpoint lite" in info["fix"]
     assert info["fix"].endswith("HINT[events]")
 
 
@@ -97,8 +98,10 @@ def test_report_probes_torch_before_transcription(monkeypatch):
     )
     monkeypatch.setattr(capabilities, "gpu_vendors", lambda: {"nvidia": False, "amd": False})
     monkeypatch.setattr(capabilities, "_nvidia_driver_usable", lambda: False)
-    capabilities.report()
+    monkeypatch.setattr(extras, "edition", lambda: "lite")
+    data = capabilities.report()
     assert calls.index("_torch") < calls.index("_transcription")
+    assert data["edition"] == "lite"
 
 
 # --------------------------------------------------------------------------- Insta360 SDK
@@ -140,9 +143,10 @@ def test_sdk_malformed_pano_config(sdk, monkeypatch):
 # --------------------------------------------------------------------------- format_report
 
 
-def _data(torch_info, sdk_info):
+def _data(torch_info, sdk_info, edition="full"):
     ok = {"kind": None, "error": "x", "codec": None, "device": None, "requested": "auto"}
     return {
+        "edition": edition,
         "platform": "linux",
         "gpu_vendors_present": {"nvidia": False, "amd": False, "intel": False},
         "video_encoders": {},
@@ -172,6 +176,16 @@ def test_format_report_has_torch_and_sdk_lines(sdk, torch_stub):
     sdk_line = next(ln for ln in with_gpu.splitlines() if ln.startswith("Insta360 Media SDK:"))
     assert sdk_line.endswith("yes") and capabilities.SDK_NEEDS_NVIDIA not in with_gpu
     assert capabilities.SDK_NEEDS_NVIDIA in text
+
+
+@pytest.mark.parametrize(
+    ("edition", "line"),
+    [("full", "Edition: full"), ("lite", "Edition: lite (no torch: the 'events' extra")],
+)
+def test_format_report_starts_with_the_edition(sdk, torch_stub, edition, line):
+    torch_stub()
+    data = _data(capabilities._torch(False), capabilities._insta360_sdk(False), edition)
+    assert capabilities.format_report(data).splitlines()[0].startswith(line)
 
 
 # --------------------------------------------------------------------------- extras
@@ -217,38 +231,6 @@ def test_extras_in_use(monkeypatch):
     assert extras.extras_in_use() == []
 
 
-def _receipt(req=None, **options):
-    return {"tool": {"requirements": [{"name": "cutpoint", **(req or {})}], "options": options}}
-
-
-def test_with_torch_index_added_for_pypi_and_wheel():
-    for req in ({}, {"url": "https://x/cutpoint-1.0-py3-none-any.whl"}):
-        out = extras._with_torch_index(_receipt(req, index=[{"url": "https://mirror/simple"}]))
-        opts = out["tool"]["options"]
-        assert opts["index"][-1] == {"url": extras.TORCH_INDEX}
-        assert opts["index"][0] == {"url": "https://mirror/simple"}
-        assert opts["index-strategy"] == "unsafe-best-match"
-
-
-@pytest.mark.parametrize(
-    "receipt",
-    [
-        _receipt({"editable": "/src/cutpoint"}),
-        _receipt({"directory": "/src/cutpoint"}),
-        _receipt({"git": "https://github.com/x/cutpoint"}),
-        _receipt(index=[{"url": "https://download.pytorch.org/whl/cu128"}]),
-    ],
-    ids=["editable", "directory", "git", "cuda-index"],
-)
-def test_with_torch_index_left_alone(receipt):
-    assert extras._with_torch_index(receipt) is receipt
-
-
-def test_with_torch_index_explicit_pytorch_index_does_not_count():
-    r = _receipt(index=[{"url": "https://download.pytorch.org/whl/cu126", "explicit": True}])
-    assert "index-strategy" in extras._with_torch_index(r)["tool"]["options"]
-
-
 def _install(monkeypatch, receipt=None, direct_url=None, uv=False, in_use=()):
     monkeypatch.setattr(extras, "_tool_receipt", lambda: receipt)
     monkeypatch.setattr(extras, "_direct_url", lambda: direct_url)
@@ -257,19 +239,24 @@ def _install(monkeypatch, receipt=None, direct_url=None, uv=False, in_use=()):
     monkeypatch.setattr(extras.sys, "executable", "/py/python")
 
 
-def test_hint_tool_pypi_adds_cuda_index(monkeypatch):
-    _install(monkeypatch, receipt=_receipt({"extras": ["gpu"]}))
+def test_hint_tool_reruns_the_installer(monkeypatch):
+    # uv tool install without --torch-backend would pull CUDA torch on a CPU-only machine
+    _install(monkeypatch, receipt={"tool": {"requirements": [{"name": "cutpoint"}]}})
+    monkeypatch.setattr(extras, "edition", lambda: "full")
     hint = extras.torch_cuda_hint()
-    assert hint.startswith('uv tool install "cutpoint[events,gpu]" --reinstall')
-    assert f"--index {extras.TORCH_INDEX}" in hint and "unsafe-best-match" in hint
+    assert hint.startswith("re-run the installer: ")
+    assert extras.INSTALL_SH in hint and extras.INSTALL_PS1 in hint
+    assert hint.endswith("(it installs CUDA torch when it finds an NVIDIA GPU)")
+    assert "uv tool install" not in hint
 
 
-def test_hint_clone_uv_sync_keeps_extras(monkeypatch, tmp_path):
+def test_hint_clone_uv_sync(monkeypatch, tmp_path):
     clone = tmp_path / "clone"
     monkeypatch.setattr(extras.sys, "prefix", str(clone / ".venv"))
     info = {"url": clone.as_uri(), "dir_info": {"editable": True}}
     _install(monkeypatch, direct_url=info, uv=True, in_use=["gpu"])
-    assert extras.torch_cuda_hint() == "uv sync --extra events --extra gpu"
+    assert extras.torch_cuda_hint() == extras.UV_SYNC
+    assert extras.UV_SYNC.startswith("uv sync (without --no-group full or UV_NO_GROUP=full")
 
 
 def test_hint_clone_other_env_uses_uv_pip(monkeypatch, tmp_path):

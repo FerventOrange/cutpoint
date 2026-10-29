@@ -39,9 +39,18 @@ def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """No real key variable or keyring reaches a test."""
     for name in keys.ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(keys, "_keyring", lambda: None)
+    monkeypatch.setattr(keys, "_keyring", NoRing)
     monkeypatch.setattr(keys, "_SEEN", set())
     monkeypatch.setattr(keys, "_CAPTURED", {})
+
+
+class NoRing:
+    """A keyring without a backend, as keyring's fail backend: every call raises."""
+
+    def _fail(self, *args: str) -> None:
+        raise RuntimeError("No recommended backend was available")
+
+    get_password = set_password = delete_password = _fail
 
 
 class FakeRing:
@@ -553,11 +562,12 @@ def test_a_key_for_another_host_is_saved_under_provider_at_host(ring: FakeRing) 
     assert ring.saved == {}
 
 
-def test_saving_a_key_without_the_extra_says_how_to_set_one() -> None:
-    assert not keys.keyring_available()
-    with pytest.raises(keys.KeyringError, match=r"keyring extra.*OPENAI_API_KEY"):
+def test_saving_a_key_without_a_keyring_backend_says_how_to_set_one() -> None:
+    assert keys.lookup("openai", "api.openai.com") == (None, None)  # a failed read: no key
+    with pytest.raises(keys.KeyringError, match=r"did not save the key.*OPENAI_API_KEY") as err:
         keys.save("openai", OTHER, "api.openai.com")
-    with pytest.raises(keys.KeyringError):
+    assert OTHER not in str(err.value)
+    with pytest.raises(keys.KeyringError, match="did not remove the key"):
         keys.clear("anthropic", "api.anthropic.com")
 
 

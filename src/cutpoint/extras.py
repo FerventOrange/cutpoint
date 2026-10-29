@@ -1,7 +1,8 @@
-"""Optional dependency groups (``pyproject.toml`` extras) and how to install them.
+"""Optional dependency groups (``pyproject.toml`` extras), the edition they make (full or lite)
+and how to install them.
 
 Used to turn a missing optional import into an actionable message such as
-"torch is not installed; it comes with the 'events' extra: ...".
+"torch is not installed: this feature is not available in Cutpoint lite. ...".
 """
 
 from __future__ import annotations
@@ -34,6 +35,24 @@ MODULE_EXTRA: dict[str, str] = {
 # Extras that pull in torch (the CUDA build needs the PyTorch index).
 TORCH_EXTRAS = ("events", "all")
 TORCH_INDEX = "https://download.pytorch.org/whl/cu126"
+# The one-step installers. They pick the torch build for the machine, so re-running one is also
+# how a tool install adds the full edition or upgrades (`uv tool upgrade` drops the torch backend).
+_RAW = "https://raw.githubusercontent.com/FerventOrange/cutpoint/main"
+INSTALL_SH = f"curl -LsSf {_RAW}/install.sh | sh"
+INSTALL_PS1 = f"irm {_RAW}/install.ps1 | iex"
+# What a clone runs: its default `full` group installs every extra.
+UV_SYNC = (
+    "uv sync (without --no-group full or UV_NO_GROUP=full: a clone installs every extra by "
+    "default, a large download with torch and CUDA)"
+)
+LITE = "not available in Cutpoint lite"
+
+
+def edition() -> str:
+    """``"full"`` when the full-only packages (torch and the rest of the ``events`` extra) can
+    be imported, else ``"lite"``."""
+    full_only = [m for m, extra in MODULE_EXTRA.items() if extra == "events"]
+    return "full" if all(importlib.util.find_spec(m) for m in full_only) else "lite"
 
 
 def _notes(*notes: str) -> str:
@@ -124,107 +143,60 @@ def _file_path(url: Any) -> Path | None:
     return Path(urllib.request.url2pathname(raw))
 
 
-def _git_url(git: str, req: dict[str, Any]) -> str:
-    """PEP 508 ``git+`` URL for a receipt's ``git`` source.
+def _git_ref(git: str, req: dict[str, Any]) -> str | None:
+    """The rev, tag or branch of a receipt's ``git`` source.
 
-    uv writes the ref as a ``?rev=``/``?tag=``/``?branch=`` query and the subdirectory as a
-    ``#subdirectory=`` fragment or ``?subdirectory=`` query; separate keys are a fallback.
+    uv writes it as a ``?rev=``/``?tag=``/``?branch=`` query; separate keys are a fallback.
     """
-    parts = urllib.parse.urlsplit(git)
-    query = urllib.parse.parse_qs(parts.query)
-    fragment = urllib.parse.parse_qs(parts.fragment)
-
-    def first(key: str, *sources: dict[str, list[str]]) -> str | None:
-        for src in sources:
-            if src.get(key):
-                return src[key][0]
-        return str(req[key]) if req.get(key) else None
-
-    ref = next((r for k in ("rev", "tag", "branch") if (r := first(k, query))), None)
-    subdirectory = first("subdirectory", fragment, query)
-    scheme = parts.scheme if parts.scheme.startswith("git+") else f"git+{parts.scheme}"
-    url = urllib.parse.urlunsplit((scheme, parts.netloc, parts.path, "", ""))
-    if ref:
-        url += f"@{ref}"
-    if subdirectory:
-        url += f"#subdirectory={subdirectory}"
-    return url
-
-
-def _tool_source(req: dict[str, Any], extras: str) -> str:
-    """The ``uv tool install`` target that reinstalls ``req`` from where it came from.
-
-    ``req`` is the receipt's requirement without name and extras; none of the source keys
-    means a registry (PyPI) install.
-    """
-    for key in ("editable", "directory", "path"):
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(git).query)
+    for key in ("rev", "tag", "branch"):
+        if query.get(key):
+            return query[key][0]
         if req.get(key):
-            target = f'"{req[key]}[{extras}]"'
-            return f"--editable {target}" if key == "editable" else target
-    if req.get("git"):
-        return f'"cutpoint[{extras}] @ {_git_url(str(req["git"]), req)}"'
-    if req.get("url"):
-        return f'"cutpoint[{extras}] @ {req["url"]}"'
-    return f'"cutpoint[{extras}]"'
+            return str(req[key])
+    return None
 
 
-def _tool_hint(receipt: dict[str, Any], extra: str) -> str:
-    """``uv tool install`` command that keeps the receipt's source, extras and indexes and adds
-    ``extra``."""
-    tool = receipt.get("tool", {})
-    extras = {extra}
-    source: dict[str, Any] = {}
+def _source_notes(receipt: dict[str, Any]) -> list[str]:
+    """Notes that keep a tool's git, directory, path or editable source when the installer runs
+    again (it installs the PyPI release by default); none for a registry install."""
     try:
-        for req in tool.get("requirements", []):
-            if str(req.get("name", "")).lower() == "cutpoint":
-                extras.update(str(e) for e in req.get("extras", []))
-                source = {k: req[k] for k in req if k not in ("name", "extras")}
-        options = tool.get("options", {})
-        # An explicit index only serves packages pinned to it in tool.uv.sources, which the
-        # CLI cannot express; as --index it would serve every package. It comes from uv
-        # config (no flag sets it), which the reinstall reads again.
-        entries = [i for i in options.get("index", []) if i.get("url")]
-        indexes = [
-            ("--default-index" if i.get("default") else "--index", str(i["url"]))
-            for i in entries
-            if not i.get("explicit")
-        ]
-        explicit = [str(i.get("name") or i["url"]) for i in entries if i.get("explicit")]
-        strategy = options.get("index-strategy")
-        python = tool.get("python")
-    except (AttributeError, TypeError, KeyError):
-        extras, source, indexes, explicit, strategy, python = {extra}, {}, [], [], None, None
-    cmd = f"uv tool install {_tool_source(source, ','.join(sorted(extras)))} --reinstall"
-    if python:
-        cmd += f' --python "{python}"'
-    cmd += "".join(f" {flag} {url}" for flag, url in indexes)
-    if strategy:
-        cmd += f" --index-strategy {strategy}"
-    notes = []
-    if explicit:
-        notes.append(
-            f"explicit index {', '.join(explicit)} left out: it applies through your uv "
-            "config, so keep that config in place"
+        req = next(
+            (
+                r
+                for r in receipt.get("tool", {}).get("requirements", [])
+                if str(r.get("name", "")).lower() == "cutpoint"
+            ),
+            {},
         )
-    # A PyTorch CUDA index (download.pytorch.org/whl/cu126, .../nightly/cu128) already
-    # serves the CUDA wheels; a mirror or the CPU index does not.
-    has_torch_index = any("download.pytorch.org/whl/" in url and "/cu" in url for _, url in indexes)
-    # A directory, editable or git install resolves with cutpoint's own [tool.uv.sources],
-    # which already pins torch to the cu126 index on Windows and Linux.
-    project_sources = any(source.get(k) for k in ("editable", "directory", "git"))
-    if not has_torch_index and not project_sources and extra in TORCH_EXTRAS:
-        # PyPI torch is CPU-only on Windows; on Linux it is already a CUDA 13 build.
-        # --reinstall already replaces an installed CPU torch (the tool is resolved anew).
-        flags = f"--index {TORCH_INDEX}"
-        if not strategy:
-            flags += " --index-strategy unsafe-best-match"
-        elif strategy != "unsafe-best-match":
-            flags += " and change --index-strategy to unsafe-best-match"
-        if sys.platform == "win32":
-            notes.append(f"with an NVIDIA GPU add {flags} so torch uses CUDA")
-        elif sys.platform == "linux":
-            notes.append(f"with an NVIDIA driver too old for CUDA 13, add {flags}")
-    return cmd + _notes(*notes)
+        if req.get("git"):
+            ref = _git_ref(str(req["git"]), req)
+            source = f"git@{ref}" if ref else "git"
+        else:
+            key = next((k for k in ("editable", "directory", "path") if req.get(k)), None)
+            if key is None:
+                return []
+            source = f'"{req[key]}"'
+    except (AttributeError, TypeError):
+        return []
+    notes = [f"add --source {source}, or set CUTPOINT_SOURCE={source} for irm | iex"]
+    if req.get("editable"):
+        notes.append("the installer does not make an editable install")
+    return notes
+
+
+def _installer_hint(receipt: dict[str, Any], *notes: str) -> str:
+    """What a tool install runs: the installer again (not lite in the lite edition), keeping
+    the receipt's source.
+
+    No ``uv tool install`` command: without ``--torch-backend`` it pulls CUDA torch on a
+    machine without an NVIDIA GPU, and the installer picks the backend for this machine.
+    """
+    lite = " without --lite / -Lite and with CUTPOINT_LITE unset" if edition() == "lite" else ""
+    return (
+        f"re-run the installer{lite}: {INSTALL_SH} (Linux, macOS) or {INSTALL_PS1} "
+        f"(Windows PowerShell){_notes(*_source_notes(receipt), *notes)}"
+    )
 
 
 def _cpu_torch() -> bool:
@@ -269,18 +241,19 @@ def _torch_index_note(uv: bool) -> str:
 
 
 def install_hint(extra: str) -> str:
-    """The command that adds ``extra`` to the running environment."""
+    """The command that adds ``extra`` to the running environment: the installer for a tool
+    install, ``uv sync`` in a clone, else ``uv pip`` or pip."""
     receipt = _tool_receipt()
     if receipt is not None:
-        return _tool_hint(receipt, extra)
+        return _installer_hint(receipt)
     info = _direct_url()
     if not _editable(info):
         source = _pip_source(info or {}, extra)
         uv = uv_managed()
-        # PyPI torch is CPU-only on Windows (as in _tool_hint).
+        # PyPI torch is CPU-only on Windows.
         gpu = ""
         # uv installs of a directory or git source apply cutpoint's own [tool.uv.sources],
-        # which pin torch to the cu126 index (as in _tool_hint); an archive or pip does not.
+        # which pin torch to the cu126 index; an archive or pip does not.
         project_sources = (
             uv
             and isinstance(info, dict)
@@ -296,26 +269,22 @@ def install_hint(extra: str) -> str:
         exe, note = _python()
         return f"{exe} -m pip install {source}{_notes(gpu, note)}"
     if uv_managed():
-        # uv pip applies the clone's [tool.uv.sources] (cu126 torch) but keeps an installed
-        # CPU torch. uv sync installs the locked +cu126 build, replacing a +cpu one.
-        gpu = (
-            _REINSTALL_TORCH_NOTE
-            if extra in TORCH_EXTRAS and sys.platform == "win32" and _cpu_torch()
-            else ""
-        )
         clone = _file_path(info.get("url")) if info else None
         if clone is not None and Path(sys.prefix).resolve() != (clone / ".venv").resolve():
             # uv sync would change the clone's .venv, not the environment that is running.
+            # uv pip applies the clone's [tool.uv.sources] (cu126 torch) but keeps an installed
+            # CPU torch.
+            gpu = (
+                _REINSTALL_TORCH_NOTE
+                if extra in TORCH_EXTRAS and sys.platform == "win32" and _cpu_torch()
+                else ""
+            )
             return (
                 f'uv pip install --python "{sys.executable}" '
                 f'-e "{clone.as_posix()}[{extra}]"{_notes(gpu)}'
             )
-        return (
-            f"uv sync --extra {extra} (list every other extra you use too, since uv sync removes "
-            f"packages of extras you leave out, or use --extra all for everything, a large "
-            f"download with torch and CUDA), or: uv pip "
-            f'install --python "{sys.executable}" -e ".[{extra}]"{_notes(gpu)}'
-        )
+        # uv sync installs the locked +cu126 build, replacing a +cpu one.
+        return UV_SYNC
     # pip ignores [tool.uv.sources], so it installs PyPI torch (CPU-only on Windows).
     gpu = _torch_index_note(False) if extra in TORCH_EXTRAS and sys.platform == "win32" else ""
     exe, note = _python()
@@ -328,7 +297,10 @@ def missing_module_message(module: str) -> str | None:
     extra = MODULE_EXTRA.get(top)
     if extra is None:
         return None
-    return f"{top} is not installed; it comes with the '{extra}' extra: {install_hint(extra)}"
+    return (
+        f"{top} is not installed: this feature is {LITE} (it needs the '{extra}' extra). "
+        f"To add it: {install_hint(extra)}"
+    )
 
 
 _EXTRA_MARKER = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
@@ -370,39 +342,12 @@ def extras_in_use() -> list[str]:
     return sorted(e for e, names in needs.items() if names and all(map(_installed, names)))
 
 
-def _with_torch_index(receipt: dict[str, Any]) -> dict[str, Any]:
-    """``receipt`` with the CUDA torch index and ``unsafe-best-match`` added, unless its source
-    (directory, editable, git: cutpoint's own [tool.uv.sources]) or a PyTorch CUDA index
-    already gives CUDA torch."""
-    try:
-        tool = receipt.get("tool", {})
-        for req in tool.get("requirements", []):
-            if str(req.get("name", "")).lower() == "cutpoint" and any(
-                req.get(k) for k in ("editable", "directory", "git")
-            ):
-                return receipt
-        options = tool.get("options", {})
-        indexes = list(options.get("index", []))
-        for i in indexes:
-            url = str(i.get("url") or "")
-            if not i.get("explicit") and "download.pytorch.org/whl/" in url and "/cu" in url:
-                return receipt
-    except (AttributeError, TypeError):
-        return receipt
-    options = {
-        **options,
-        "index": [*indexes, {"url": TORCH_INDEX}],
-        "index-strategy": "unsafe-best-match",
-    }
-    return {**receipt, "tool": {**tool, "options": options}}
-
-
 def torch_cuda_hint() -> str:
     """The command that replaces an installed torch that cannot use CUDA with the CUDA 12.6
     build, for this install type, keeping the extras in use."""
     receipt = _tool_receipt()
     if receipt is not None:
-        return _tool_hint(_with_torch_index(receipt), "events")
+        return _installer_hint(receipt, "it installs CUDA torch when it finds an NVIDIA GPU")
     in_use = sorted({"events", *extras_in_use()})
     extras = ",".join(in_use)
     uv = uv_managed()
@@ -427,6 +372,6 @@ def torch_cuda_hint() -> str:
                 f'-e "{clone.as_posix()}[{extras}]" {_REINSTALL_TORCH}'
             )
         # uv sync installs the locked +cu126 build, replacing a +cpu one.
-        return "uv sync " + " ".join(f"--extra {e}" for e in in_use)
+        return UV_SYNC
     exe, note = _python()
     return f'{exe} -m pip install -e ".[{extras}]" {pip_flags}{_notes("from the repository", note)}'

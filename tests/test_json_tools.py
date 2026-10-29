@@ -261,7 +261,9 @@ def test_setup_json_visual_without_events_extra_is_missing_extra(home, monkeypat
     code, doc = run_json(capsys, ["setup", "--only", "visual"])
     assert code == 1 and doc["ok"] is False
     assert doc["error"]["code"] == "missing_extra"
-    assert doc["error"]["message"].startswith("torch is not installed; it comes with the 'events'")
+    assert doc["error"]["message"].startswith(
+        "torch is not installed: this feature is not available in Cutpoint lite"
+    )
 
 
 # ------------------------------------------------------------------------------ 360: helpers
