@@ -75,6 +75,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
+| `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
@@ -856,18 +857,24 @@ Notes:
   from the near-neutral mid-tones (60 % of the cast, at most ±12 % per channel) and a vibrance
   boost for dull clips. `--color underwater` also borrows red from green, takes the black and
   white points per channel (stretching the red the water took) and lets the red gain reach
-  +60 %; it is only used when asked for. `--color-strength` below 1 makes every
+  +60 %; it is only used when asked for, and only grades clips that look underwater: mean red
+  below 0.77 of the mean green and 0.85 of the mean blue, and green above 0.79 of the blue
+  (`not_underwater` for the others; water bluer than that, such as open ocean, does not pass
+  either). `--color-strength` below 1 makes every
   correction milder. A clip gets no grade, with the reason in its manifest entry, when it
   already looks good (`good`), is log or flat 10-bit footage (`log`: use `--lut` with the
   camera's LUT; an INFO line says so), is a `360` clip (`360`), or when a simulation on the
-  measured frames predicts more clipping than the levels intend (`veto_clipped`), a worse cast
+  measured frames predicts more clipping than the levels intend (`veto_clipped`; underwater,
+  pixels whose red alone clips high, up to 3 % of the frame, do not count), a worse cast
   (`veto_cast`: the gray-world cast rises by more than 0.005 of the luma range, or to more than
   1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`) or
-  one that loses more than 15 % of its colorfulness, such as flat sand turned grey (`veto_m3_drop`;
-  correcting a very strong cast also lowers it, so deep-water clips with little red left can
-  stay ungraded), or when its frames could not be decoded (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater; it
-  does not change them. `gaming` footage is graded
-  only with an explicit `--color` (with a WARNING): `color` in `config.json` never applies to
+  a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
+  (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
+  as flat sand turned grey (`veto_faded`), or when its frames could not be decoded
+  (`no_frames`). Plain `auto` logs an INFO line naming clips that look underwater (by the same
+  rule); it does not change them. `gaming` footage is graded
+  only with an explicit `--color` (with a WARNING, a stronger one for `underwater`, and a
+  `color_on_gaming` `--json` warning): `color` in `config.json` never applies to
   it. `--color` cannot be combined with `--lut`. Each clip records a `color` entry (method,
   version, strength, parameters, skip reason, metrics before and predicted), and `extend`
   grades its re-exports with those parameters without measuring again. Measurements are cached

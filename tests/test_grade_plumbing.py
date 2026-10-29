@@ -302,6 +302,7 @@ LUT = Lut(Path("/l/a.cube"), 1.0)
         ("auto", "off", None, FUNNY, "off", None),  # a given mode wins over config
         ("off", "underwater", None, FUNNY, "underwater", None),
         ("off", "auto", None, GAMING, "auto", "WARNING"),  # explicit on gaming: allowed, warned
+        ("off", "underwater", None, GAMING, "underwater", "WARNING"),
         ("auto", "off", None, GAMING, "off", None),
     ],
 )
@@ -315,6 +316,18 @@ def test_color_mode_resolves_flag_config_lut_and_gaming(
     assert seen == ({level} if level else set())
     if level:
         assert "gaming" in caplog.text
+
+
+@pytest.mark.parametrize("given", ["auto", "underwater"])
+def test_color_mode_on_gaming_footage_warns_on_json_too(home, monkeypatch, caplog, given):
+    got: list[tuple[str, str]] = []
+    monkeypatch.setattr(jsonout, "warn", lambda code, msg, files=(): got.append((code, msg)))
+    assert clips._color_mode(given, None, GAMING) == given
+    ((code, message),) = got
+    assert code == "color_on_gaming" and message in caplog.text and "gaming" in message
+    # underwater is made for footage shot underwater: a stronger warning, still graded
+    stronger = ("may look worse", "--color auto or a LUT", "not_underwater")
+    assert all((s in message) is (given == "underwater") for s in stronger)
 
 
 @pytest.mark.parametrize(("cfg", "given"), [("auto", None), ("off", "auto")])
