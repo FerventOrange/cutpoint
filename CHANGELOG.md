@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `cutpoint ui` Settings > AI assistant: Model is a dropdown of the provider's models (#521)
+  instead of a text box with suggestions. "Other model…" shows a Model id field for an id the
+  list lacks; a saved model the list lacks stays chosen, marked "(not in the provider's list)",
+  and without a list (no key, offline, Ollama not running) the dropdown offers the preset's own
+  models and the saved model.
+
 ## [0.4.0] - 2026-10-29
 
 ### Added

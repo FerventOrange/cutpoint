@@ -10,6 +10,8 @@ import io
 import json
 import logging
 import re
+import shutil
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -537,8 +539,15 @@ def test_the_settings_dialog_has_a_provider_choice_and_no_base_url_for_presets()
         html.index('id="setAssistant"') : html.index("</fieldset>", html.index('id="setAssistant"'))
     ]
     assert '<select id="setAiProvider"' in section
-    assert '<input id="setAiModel" list="setAiModels"' in section  # any name can be typed
-    assert '<datalist id="setAiModels">' in section
+    # #521: one native select, labelled Model; the id field only for "Other model…"
+    assert '<label for="setAiModel">Model</label>' in section
+    assert '<select id="setAiModel" aria-describedby="setAiModelHint setAiModelsStatus">' in section
+    assert "datalist" not in section and 'list="' not in section
+    other = re.search(
+        r'<label class="field" id="setAiModelOtherField" hidden>Model id\s*<input id="setAiModelOther"',
+        section,
+    )
+    assert other
     assert 'id="setAiModelsRefresh"' in section and 'id="setAiModelsStatus"' in section
     url_field = re.search(
         r'<label class="field" id="setAiUrlField" hidden>.*?</label>', section, re.S
@@ -557,23 +566,108 @@ def test_the_settings_script_shows_fields_by_the_provider_chosen() -> None:
     render = js[js.index("function renderAiFields(") : js.index("async function loadAiModels(")]
     assert "$('#setAiUrlField').hidden = $('#setAiUrlHint').hidden = !custom;" in render
     assert "readOnly" not in render  # a custom provider's model can still be changed
-    assert "model.placeholder = custom ? '' : p.placeholder;" in render
-    assert "renderAiModelList();" in render
+    assert "renderAiModelList(model);" in render
     listing = js[js.index("function renderAiModelList(") : js.index("async function loadAiModels(")]
-    assert "const defaults = aiCustom() ? [] : p.models;" in listing  # fallback list
+    assert "aiModelChoices(current, S.aiModels?.[$('#setAiProvider').value], {" in listing
+    assert "$('#setAiModelOtherField').hidden = value !== AI_OTHER;" in listing
+    assert "fallback: custom ? [] : p.models," in listing  # the preset's models without a list
+    assert "renderAiFields(a.model);" in fill  # the saved model, whatever the list holds
     changes = js[js.index("function aiChanges(") : js.index("/** Save the typed key")]
     # Custom sends only a changed model: its provider and base URL are never rewritten
-    assert (
-        "if (aiCustom()) return model.value.trim() !== model.dataset.saved"
-        " ? { model: model.value.trim() } : null;"
-    ) in changes
+    assert "if (aiCustom()) return aiModel() !== saved ? { model: aiModel() } : null;" in changes
     assert "url: ''" in changes  # a preset's URL is its own
     load = js[js.index("async function loadAiModels(") : js.index("function aiChanges(")]
     assert "/api/assistant/models?provider=${encodeURIComponent(choice)}" in load
     assert "AI_CUSTOM" not in load  # Custom lists its models too (?provider=custom)
     assert "renderAiModelList(); // only the list" in load and "renderAiFields()" not in load
-    assert ".replace(/\\.?$/, '.')} You can type a name." in load
+    assert ".replace(/\\.?$/, '.')} ${AI_TYPE_ID}" in load
     save = js[js.index("async function saveSettings(") : js.index("// The AI assistant's provider")]
     assert "if (ai && !ai.model && !aiCustom() && aiOffer()?.model_required) {" in save
     assert "*-codex models are not supported (chat models only)." in js
     assert "$('#setAiModelsRefresh').addEventListener('click', () => loadAiModels(true));" in js
+    # switching provider shows its saved model or the default, with that provider's options
+    assert (
+        "renderAiFields(back ? $('#setAiModel').dataset.saved : '');\n    loadAiModels(false);"
+        in js
+    )
+    assert "$('#setAiModelOtherField').hidden = e.target.value !== AI_OTHER;" in js
+    aim = js[js.index("const aiModel = ") : js.index("function renderAiFields(")]
+    assert "=== AI_OTHER ? $('#setAiModelOther').value.trim() : $('#setAiModel').value;" in aim
+
+
+def _model_choices(tmp: Path, current: str, listed: list[dict] | None, **opts) -> dict:
+    """Run util.js's aiModelChoices under node (util.js copied to util.mjs, as test_ui does)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    mod = tmp / "util.mjs"
+    shutil.copyfile(_ui().WEB_DIR / "util.js", mod)
+    script = (
+        f"import {{ aiModelChoices, AI_OTHER }} from {json.dumps(mod.resolve().as_uri())};"
+        "const [c, l, o] = JSON.parse(process.argv[1]);"
+        "const r = aiModelChoices(c, l, o);"
+        "const other = (v) => (v === AI_OTHER ? 'OTHER' : v);"
+        "console.log(JSON.stringify({ value: other(r.value),"
+        " options: r.options.map((x) => [other(x.value), x.text]) }));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, json.dumps([current, listed, opts])],
+        capture_output=True, text=True, encoding="utf-8", check=True, timeout=30,
+    )  # fmt: skip
+    return json.loads(out.stdout)
+
+
+LISTED = [{"id": "claude-a", "name": "Claude A"}, {"id": "claude-b", "name": "claude-b"}]
+
+
+def test_the_model_select_chooses_a_listed_model(tmp_path: Path) -> None:
+    """#521: the provider's models, the saved one chosen, the default first, Other last."""
+    got = _model_choices(tmp_path, "claude-b", LISTED, placeholder="claude-sonnet-5-5")
+    assert got == {
+        "value": "claude-b",
+        "options": [
+            ["", "Default (claude-sonnet-5-5)"],
+            ["claude-a", "Claude A (claude-a)"],
+            ["claude-b", "claude-b"],
+            ["OTHER", "Other model…"],
+        ],
+    }
+    # an empty saved model is the default; a provider that needs a model asks for one
+    assert _model_choices(tmp_path, "", LISTED)["value"] == ""
+    assert _model_choices(tmp_path, "", [], required=True)["options"] == [
+        ["", "Choose a model"],
+        ["OTHER", "Other model…"],
+    ]
+
+
+def test_the_model_select_keeps_a_saved_model_the_list_lacks(tmp_path: Path) -> None:
+    """#521: opening Settings never changes the model: one the list lacks stays chosen, marked;
+    with no list (no key, offline, Ollama down) the preset's own models are offered and the saved
+    one shows unmarked next to them and Other."""
+    got = _model_choices(tmp_path, "claude-old", LISTED, fallback=["claude-x"])
+    assert got["value"] == "claude-old"
+    assert got["options"][1] == ["claude-old", "claude-old (not in the provider's list)"]
+    assert [v for v, _ in got["options"]] == ["", "claude-old", "claude-a", "claude-b", "OTHER"]
+    presets = ["claude-sonnet-5-5", "claude-opus-5-5"]
+    got = _model_choices(tmp_path, "my-model:7b", None, fallback=presets)
+    assert got["value"] == "my-model:7b"
+    assert got["options"] == [
+        ["", "Default"],
+        ["my-model:7b", "my-model:7b"],
+        ["claude-sonnet-5-5", "claude-sonnet-5-5"],
+        ["claude-opus-5-5", "claude-opus-5-5"],
+        ["OTHER", "Other model…"],
+    ]
+    got = _model_choices(tmp_path, "claude-opus-5-5", None, fallback=presets)
+    assert got["value"] == "claude-opus-5-5"  # a preset model: no extra option, no mark
+    assert [v for v, _ in got["options"]] == ["", *presets, "OTHER"]
+
+
+def test_the_model_select_keeps_other_while_an_id_is_typed(tmp_path: Path) -> None:
+    """#521: under "Other model…" a typed id (or none yet) keeps Other chosen when the list
+    reloads, with no extra option; an id the list has is chosen in the list instead."""
+    for typed in ("new-model", ""):
+        got = _model_choices(tmp_path, typed, LISTED, typing=True)
+        assert got["value"] == "OTHER"
+        assert [v for v, _ in got["options"]] == ["", "claude-a", "claude-b", "OTHER"]
+    assert _model_choices(tmp_path, "claude-a", LISTED, typing=True)["value"] == "claude-a"
