@@ -2699,8 +2699,9 @@ def analysis_took(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> f
     only (a re-rank keeps it and adds ``timings.rerank_s``), not the scan, events and camera
     paths of ``360 analyze``, so a 360 project's time is ``total_s`` in
     ``pano_timings.json`` (every analyze run since #564; a ``--views-only`` run, which leaves
-    ``highlights.json`` alone, does not count), or for an older file without it the scan and
-    analyze totals; None when they are missing."""
+    ``highlights.json`` alone, keeps the earlier analysis keys and time and adds
+    ``views_only_s``), or for an older file without it the scan and analyze totals; None
+    when they are missing."""
     if meta.get("kind") == "360":
         pano = _load(p, "pano_timings.json")
         pano = pano if isinstance(pano, dict) else {}
