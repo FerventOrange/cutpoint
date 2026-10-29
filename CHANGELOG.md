@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--no-scenes`, `--recover` and `--skip`. They start with what the project's analysis used, so
   Analyze again repeats it; One-Click Edit passes Skip steps on as `edit --skip` and stays off
   for the others, now including `--must-include-crash`.
+- `cutpoint ui`: the Export tab has a Clip Picture & Audio section with Crop (Default, Auto,
+  None or a Custom `W:H:X:Y` box; `clips --crop`), Output size (`clips --size`) and Clip audio
+  fade (`clips --audio-fade`), and Fade length (`assemble --fade-dur`), Assembly audio fade
+  (`assemble --audio-fade`) and Captions model (`assemble --model`) next to the transitions
+  (#485). All but Crop are advanced options; a blank field or Default sends no flag.
 - `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
   splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and

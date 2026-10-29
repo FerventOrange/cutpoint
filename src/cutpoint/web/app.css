@@ -731,8 +731,8 @@ body.tips-off .flag-tip { display: none; }
 .opt-grid input[type=number] { width: 7em; max-width: 100%; justify-self: start; }
 .opt-grid input:disabled, .opt-grid label.off { opacity: 0.6; }
 /* Clips to Export and Cut Timing: nested panels in the options */
-.opts .picks, .opts .timing { gap: var(--space-0); margin-top: 6px; }
-.opts .picks legend, .opts .timing legend { font-weight: 550; font-size: 14.5px; }
+.opts .picks, .opts .timing, .opts .picture { gap: var(--space-0); margin-top: 6px; }
+.opts .picks legend, .opts .timing legend, .opts .picture legend { font-weight: 550; font-size: 14.5px; }
 .opts .peaks, .opts .color { gap: var(--space-0); margin-top: 6px; }
 .opts .peaks legend, .opts .color legend { font-weight: 550; font-size: 14.5px; }
 /* The sliders sit centred with equal margins (--inset); a stop is at the track's ends and middle,
