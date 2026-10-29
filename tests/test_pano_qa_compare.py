@@ -159,6 +159,8 @@ def test_360_qa_compare_json(home, capsys) -> None:
     assert (out["mode"], out["rendered"], out["paths"]) == ("compare", str(a), str(b))
     assert (out["count"], out["rendered_only"]) == (1, 6)
     assert out["causes"] == {**dict.fromkeys(QC.CAUSES, 1), "unpaired": 0}
+    assert out["other_detail"] == {**dict.fromkeys(QC.OTHER_DETAILS, 0), "paths_inside": 1}
+    assert out["clips"][0]["other_detail"]["paths_inside"] == 1
     assert out["clips"][0]["file"] == str(d / "001_a.mp4")
     assert warning_codes(doc) == ["qa_clips_unmatched"]
     # --paths with --compare: a bad option, nothing written
@@ -187,6 +189,8 @@ def test_a_wearer_seen_only_as_a_sliver_is_wearer_overlap() -> None:
     assert QC.cause_of(r, wearer, TH, None, None, None) == "wearer_overlap"
     other = fr(0.0, slivers=[[0.0, 0.3, 0.11, 0.8, False]])
     assert QC.cause_of(r, other, TH, None, None, None) == "other"  # matched, not no box
+    # the sliver would be the paths subject: the paths QA counts it (a hand-built pair)
+    assert QC.explain(r, other, TH, None, None, None)["other_detail"] == "unexplained"
     assert QC.cause_of(r, fr(0.0), TH, None, None, None) == "no_projected_box"
 
 
@@ -218,3 +222,117 @@ def test_a_tiny_far_person_at_the_edge_does_not_decide_the_cause() -> None:
     p = fr(0.0, own=[[0.96, 0.4, 1.0, 0.5]])  # the projected wearer covers the tiny one
     assert QC.cut_boxes(r, TH).tolist() == [LEFT]
     assert QC.cause_of(r, p, TH, None, None, None) == "no_projected_box"
+
+
+BIG_LEFT = [0.0, 0.3, 0.25, 0.8]  # counted by its area (0.125)
+BIG_INSIDE = [0.4, 0.1, 0.8, 0.9]  # the paths subject, well inside
+TOP = [0.4, 0.0, 0.6, 0.5]  # cut at the top
+# sub-cause -> (rendered boxes, paths frame keyword arguments)
+OTHER_CASES = {
+    "paths_top_edge": ([TOP], {"boxes": [[0.4, 0.0, 0.6, 0.25]]}),  # too short for the top
+    "paths_inside_margin": ([BIG_LEFT], {"boxes": [[0.02, 0.3, 0.27, 0.8]]}),
+    "rendered_box_larger": ([[0.0, 0.2, 0.3, 0.9]], {"boxes": [[0.1, 0.4, 0.2, 0.7]]}),
+    "paths_inside": ([[0.0, 0.3, 0.3, 0.8]], {"boxes": [[0.2, 0.3, 0.4, 0.8]]}),
+    "paths_below_size": ([BIG_LEFT], {"boxes": [[0.0, 0.5, 0.2, 0.55]]}),  # under subject_min_h
+    # the projected box shares half its area with a paths self box, the cut box 0.4 of its own
+    "paths_self": ([LEFT], {"boxes": [[0.0, 0.3, 0.12, 0.8]], "own": [[0.06, 0.3, 0.3, 0.8]]}),
+    "paths_below_area": ([BIG_LEFT], {"boxes": [[0.0, 0.3, 0.15, 0.8], BIG_INSIDE]}),
+    "paths_not_subject": ([LEFT], {"boxes": [LEFT, BIG_INSIDE]}),  # LEFT: the rendered subject
+}
+
+
+@pytest.mark.parametrize("detail", list(OTHER_CASES))
+def test_each_other_detail(detail: str) -> None:
+    rend_boxes, kw = OTHER_CASES[detail]
+    r = fr(0.0, ["edge_cut"], rend_boxes)
+    assert len(QC.cut_boxes(r, TH)) == 1
+    got = QC.explain(r, fr(0.0, **kw), TH, None, None, None)
+    assert (got["cause"], got["other_detail"]) == ("other", detail)
+
+
+def test_the_paths_subject_under_size_min_h_and_a_top_sliver() -> None:
+    # the rendered subject (0.5 tall) is the only projected box but 0.15 tall
+    r = fr(0.0, ["edge_cut"], [LEFT])
+    got = QC.explain(r, fr(0.0, [], [[0.0, 0.3, 0.1, 0.45]]), TH, None, None, None)
+    assert got["other_detail"] == "paths_below_size"
+    # a large sliver at the top, smaller than a kept box: the sliver rule counts side edges
+    p = fr(0.0, [], [[0.65, 0.1, 0.95, 0.95]], slivers=[[0.4, 0.0, 0.7, 0.5, False]])
+    got = QC.explain(fr(0.0, ["edge_cut"], [TOP]), p, TH, None, None, None)
+    assert (got["other_detail"], got["evidence"]["paths_kind"]) == ("paths_top_edge", "sliver")
+
+
+def test_evidence_names_the_boxes_and_the_gap() -> None:
+    rend_boxes, kw = OTHER_CASES["paths_inside_margin"]
+    got = QC.explain(fr(0.0, ["edge_cut"], rend_boxes), fr(0.0, **kw), TH, None, None, None)
+    assert got["evidence"] == {
+        "rendered_box": BIG_LEFT,
+        "rendered_area": 0.125,
+        "edge": "left",
+        "paths_box": [0.02, 0.3, 0.27, 0.8],
+        "paths_kind": "box",
+        "paths_h": 0.5,
+        "paths_area": 0.125,
+        "edge_gap": 0.02,
+    }
+    # the wearer's box for wearer_overlap; nothing projected: no paths box
+    r = fr(0.0, ["edge_cut"], [RIGHT])
+    w = QC.explain(r, fr(0.0, own=[RIGHT]), TH, None, None, None)
+    assert (w["cause"], w["other_detail"]) == ("wearer_overlap", None)
+    assert (w["evidence"]["paths_kind"], w["evidence"]["edge_gap"]) == ("wearer", 0.0)
+    n = QC.explain(r, None, TH, None, None, None)
+    assert n["cause"] == "unpaired" and n["evidence"]["edge"] == "right"
+    assert n["evidence"]["paths_box"] is None
+
+
+def test_old_frames_without_slivers_or_view_dt_get_a_detail() -> None:
+    rend_boxes, kw = OTHER_CASES["paths_not_subject"]
+    old = {k: v for k, v in fr(0.0, **kw).items() if k not in ("slivers", "view_dt", "self")}
+    got = QC.explain(fr(0.0, ["edge_cut"], rend_boxes), old, TH, None, None, None)
+    assert (got["cause"], got["other_detail"]) == ("other", "paths_not_subject")
+
+
+def test_other_detail_totals_match_other(tmp_path: Path) -> None:
+    d = tmp_path / "mix"
+    rend, paths = [], []
+    for k, (rb, kw) in enumerate(OTHER_CASES.values()):
+        rend.append(fr(k / 2, ["edge_cut"], rb))
+        paths.append(fr(k / 2, **kw))
+    n = len(rend)
+    rend.append(fr(n / 2, ["edge_cut"], [RIGHT]))  # no_projected_box
+    paths.append(fr(n / 2))
+    a, b = tmp_path / "r.json", tmp_path / "p.json"
+    seg = (10.0, 20.0)
+    a.write_text(
+        json.dumps(report("rendered", d, [clip("001_a.mp4", rend, seg)])), encoding="utf-8"
+    )
+    b.write_text(json.dumps(report("paths", d, [clip("001_a.mp4", paths, seg)])), encoding="utf-8")
+    rep = QC.run_compare(d, a, b)
+    saved = json.loads((tmp_path / "edge_gap.json").read_text(encoding="utf-8"))
+    assert saved["version"] == QC.GAP_VERSION
+    (c,) = saved["clips"]
+    assert [f["other_detail"] for f in c["rendered_only_frames"]] == [*OTHER_CASES, None]
+    assert sum(c["other_detail"].values()) == c["causes"]["other"] == n
+    e = saved["edit"]
+    assert e["causes"] == {**dict.fromkeys(QC.CAUSES, 0), "other": n, "no_projected_box": 1}
+    assert sum(e["other_detail"].values()) == e["causes"]["other"]
+    assert e["cause_share"]["other"] == pytest.approx(round(n / (n + 1), 3))
+    assert sum(e["other_detail_share"].values()) == pytest.approx(
+        e["cause_share"]["other"], abs=0.005
+    )
+    assert rep["edit"]["other_detail"] == e["other_detail"]
+    (tmp_path / "edge_gap.json").unlink()
+
+
+def test_a_side_sliver_over_edge_min_area_is_counted_even_over_a_self_box() -> None:
+    """F1: sliver_edge_frames has no self-overlap exclusion, so this is no paths_self."""
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    p = fr(0.0, own=[[0.3, 0.3, 0.5, 0.8]], slivers=[[0.0, 0.3, 0.5, 0.8, False]])
+    got = QC.explain(r, p, TH, None, None, None)
+    assert (got["cause"], got["other_detail"]) == ("other", "unexplained")
+
+
+def test_the_paths_subject_under_size_min_h_beats_below_area() -> None:
+    """F2: the only (largest) projected box, 0.15 tall, against a cut box of 0.125 area."""
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    got = QC.explain(r, fr(0.0, [], [[0.0, 0.3, 0.2, 0.45]]), TH, None, None, None)
+    assert (got["cause"], got["other_detail"]) == ("other", "paths_below_size")

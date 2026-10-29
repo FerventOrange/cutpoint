@@ -28,12 +28,42 @@ only the rendered QA flags to one cause, checked in this order:
     no projected box overlaps the cut box (the proxy detector missed the person);
 ``other``
     a projected box is there, from a recent view frame, but the geometric QA does
-    not count it as cut (smaller, or inside the frame).
+    not count it as cut; ``other_detail`` says why (:data:`OTHER_DETAILS`, the
+    first that applies, :func:`other_detail_of`):
+
+    ``paths_top_edge``
+        the cut box touches the top and the projected box does too, but is not
+        taller than ``edge_top_h`` or reaches ``edge_top_max_y2`` (or is a large
+        sliver at the top: the sliver rule counts the side edges only);
+    ``paths_inside_margin``
+        the projected box misses the edge margin by less than :data:`NEAR_EDGE`;
+    ``rendered_box_larger``
+        it lies farther inside and the cut box has :data:`LARGER_AREA` times its
+        area or more (a detection or size mismatch);
+    ``paths_inside``
+        it lies farther inside at a similar size (a position mismatch);
+    ``paths_below_size``
+        it touches the edge but is under ``subject_min_h``, or it is the paths
+        subject but under ``size_min_h``, or the cut box counted as the rendered
+        subject and it is under ``size_min_h``;
+    ``paths_self``
+        it shares ``edge_self_overlap`` with a paths self box (the wearer detected
+        twice, :func:`~cutpoint.pano.qa.edge_candidates`), the cut box does not;
+    ``paths_below_area``
+        it is not the paths subject and under ``edge_min_area``, while the cut box
+        has ``edge_min_area`` or more (counted by its area);
+    ``paths_not_subject``
+        the cut box counted as the rendered subject, but in the paths frame another
+        box is the largest;
+    ``unexplained``
+        the paths rule would count it (an inconsistent pair of reports).
 
 A cut box is a box of the rendered frame that :func:`cutpoint.pano.qa.frame_flags`
 counts for its edge cut (:func:`~cutpoint.pano.qa.edge_candidates` touching an edge).
 Projected boxes include those the geometric QA dropped as mostly outside the view
-(``slivers`` of its frames).
+(``slivers`` of its frames). Each rendered-only frame records ``evidence``: the cut box
+and the edge it touches, the projected box it matches and that box's distance to the
+edge (:func:`explain`).
 Writes ``edge_gap.json`` next to the rendered ``qa.json``.
 """
 
@@ -51,7 +81,7 @@ from cutpoint.pano import qa as Q
 
 logger = logging.getLogger(__name__)
 
-GAP_VERSION = 1
+GAP_VERSION = 2  # 2: other_detail and evidence
 GAP_FILE = "edge_gap.json"
 CAUSES = (
     "unpaired",
@@ -62,11 +92,24 @@ CAUSES = (
     "no_projected_box",
     "other",
 )
+OTHER_DETAILS = (
+    "paths_top_edge",
+    "paths_inside_margin",
+    "rendered_box_larger",
+    "paths_inside",
+    "paths_below_size",
+    "paths_self",
+    "paths_below_area",
+    "paths_not_subject",
+    "unexplained",
+)
 COUNT_KEYS = ("frames", "rendered_edge", "paths_edge", "both", "rendered_only", "paths_only")
 STALE_VIEW_S = 0.5  # view frames are ~1.2 s apart: half of that is a stale position
 MATCH_IOU = 0.3  # rendered / projected box pairs for the median offset
 MIN_PAIRS = 5  # fewer matched pairs: no median offset
 MIN_DX = 0.01  # a smaller median offset explains nothing
+NEAR_EDGE = 0.03  # a projected box this close to the cut edge just missed the margin
+LARGER_AREA = 2.0  # a rendered box this many times the projected one's area: a size mismatch
 
 
 def load_report(path: Path) -> dict[str, Any]:
@@ -167,6 +210,167 @@ def median_dx(
     return round(float(np.median(dx)), 4) if len(dx) >= MIN_PAIRS else None
 
 
+def _area(b: Any) -> float:
+    return float(max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0))
+
+
+def edge_of(box: Any, th: Q.QAThresholds) -> str | None:
+    """The edge a box touches by :func:`qa.edge_hit`'s rule (``left``, ``right`` or
+    ``top``, first in that order), or None."""
+    m = th.edge_margin
+    if box[0] <= m:
+        return "left"
+    if box[2] >= 1 - m:
+        return "right"
+    if box[1] <= m and box[3] - box[1] > th.edge_top_h and box[3] < th.edge_top_max_y2:
+        return "top"
+    return None
+
+
+def edge_gap(box: Any, edge: str | None) -> float | None:
+    """Distance of ``box`` to ``edge`` (a share of the frame width, or height for the top)."""
+    if edge is None:
+        return None
+    return round(float({"left": box[0], "right": 1 - box[2], "top": box[1]}[edge]), 4)
+
+
+def other_detail_of(
+    cut: Any, match: Any, sliver: bool, p: dict[str, Any], th: Q.QAThresholds
+) -> str:
+    """Why the paths QA did not count ``match`` (a projected box overlapping the rendered
+    cut box ``cut``; ``sliver``: one it dropped as mostly outside the view) as an edge
+    cut: one of :data:`OTHER_DETAILS`, the first that applies.
+
+    Replays :func:`qa.edge_hit` and :func:`qa.edge_candidates` (boxes) or
+    :func:`qa_paths.sliver_edge_frames` and :func:`qa_paths.sliver_subject_frames`
+    (slivers) on the paths frame ``p``."""
+    m = th.edge_margin
+    edge = edge_of(cut, th)
+    x1, y1, x2, y2 = (float(v) for v in match)
+    h, area = y2 - y1, _area(match)
+    if edge_of(match, th) is None:
+        if edge == "top" and y1 <= m:  # at the top, but too short or reaching too low
+            return "paths_top_edge"
+        gap = edge_gap(match, edge)
+        if gap is not None and gap < NEAR_EDGE:
+            return "paths_inside_margin"
+        if _area(cut) >= LARGER_AREA * max(area, 1e-9):
+            return "rendered_box_larger"
+        return "paths_inside"
+    if h < th.subject_min_h:
+        return "paths_below_size"
+    if sliver and area >= th.edge_min_area and (x1 <= m or x2 >= 1 - m):
+        return "unexplained"  # sliver_edge_frames counts it, a self box or not
+    own = _boxes(p, th, own=True)
+    if len(own) and Q._overlap(np.asarray([match], float), own).max() >= th.edge_self_overlap:
+        return "paths_self"  # edge_candidates: the wearer detected twice
+    kept = _boxes(p, th, own=False)
+    kept = kept[(kept[:, 3] - kept[:, 1]) >= th.subject_min_h]
+    kept_max = max((_area(b) for b in kept), default=0.0)
+    if sliver:
+        sl = _slivers(p, own=False)
+        sl = sl[(sl[:, 3] - sl[:, 1]) >= th.subject_min_h]
+        subj = area >= max(_area(b) for b in sl) - 1e-9 and area > kept_max
+        side = x1 <= m or x2 >= 1 - m
+        counted = (area >= th.edge_min_area and side) or (subj and h >= th.size_min_h)
+    else:
+        subj = area >= kept_max - 1e-9
+        counted = area >= th.edge_min_area or (subj and h >= th.size_min_h)
+    if counted:
+        return "unexplained"  # the paths rule counts it: an inconsistent report
+    if sliver and area >= th.edge_min_area:
+        return "paths_top_edge"  # a large sliver at the top: only the side edges count
+    if subj and h < th.size_min_h:  # the paths subject, too small to count
+        return "paths_below_size"
+    if _area(cut) >= th.edge_min_area:  # the rendered QA counted it by its area
+        return "paths_below_area"
+    if h < th.size_min_h:
+        return "paths_below_size"
+    return "paths_not_subject"
+
+
+def _rounded(b: Any) -> list[float]:
+    return [round(float(v), 4) for v in b]
+
+
+def explain(
+    r: dict[str, Any],
+    p: dict[str, Any] | None,
+    th: Q.QAThresholds,
+    src_t: float | None,
+    segment: list[float] | None,
+    dx: float | None,
+) -> dict[str, Any]:
+    """``{"cause", "other_detail", "evidence"}`` of a frame only the rendered QA flags
+    ``edge_cut``: the cause (one of :data:`CAUSES`), for ``other`` its sub-cause (one of
+    :data:`OTHER_DETAILS`, else None) and the boxes behind it.
+
+    ``evidence``: the rendered cut box (``rendered_box``, its ``rendered_area`` and the
+    ``edge`` it touches), the projected box it matches (``paths_box``, ``paths_kind``
+    ``box`` / ``sliver`` / ``wearer`` / ``wearer_sliver``, ``paths_h``, ``paths_area``)
+    and that box's distance to the edge (``edge_gap``); None where there is none.
+
+    The geometric QA's dropped boxes (``slivers``) count too: the wearer's in the wearer
+    test, the others' as projected boxes to match."""
+    cut = cut_boxes(r, th)
+    ev: dict[str, Any] = dict.fromkeys(
+        ("rendered_box", "rendered_area", "edge", "paths_box", "paths_kind"), None
+    )
+    ev |= dict.fromkeys(("paths_h", "paths_area", "edge_gap"), None)
+    if len(cut):
+        big = cut[int(np.argmax([_area(b) for b in cut]))]
+        ev |= {"rendered_box": _rounded(big), "rendered_area": round(_area(big), 4)}
+        ev["edge"] = edge_of(big, th)
+
+    def done(cause: str, box: Any = None, kind: str | None = None, ci: int | None = None):
+        if box is not None:
+            rb = cut[ci]
+            ev.update(
+                rendered_box=_rounded(rb),
+                rendered_area=round(_area(rb), 4),
+                edge=edge_of(rb, th),
+                paths_box=_rounded(box),
+                paths_kind=kind,
+                paths_h=round(float(box[3] - box[1]), 4),
+                paths_area=round(_area(box), 4),
+                edge_gap=edge_gap(box, edge_of(rb, th)),
+            )
+        detail = None
+        if cause == "other":
+            detail = other_detail_of(cut[ci], box, kind == "sliver", p, th)
+        return {"cause": cause, "other_detail": detail, "evidence": ev}
+
+    if p is None:
+        return done("unpaired")
+    own_b, own_s = _boxes(p, th, own=True), _slivers(p, own=True)
+    oth_b, oth_s = _boxes(p, th, own=False), _slivers(p, own=False)
+    match = None
+    if len(cut) and len(oth_b) + len(oth_s):
+        others = np.concatenate([oth_b, oth_s])
+        ov = Q._overlap(cut, others)
+        i, j = np.unravel_index(int(ov.argmax()), ov.shape)
+        if ov[i, j] > 0:
+            match = (others[j], "box" if j < len(oth_b) else "sliver", int(i))
+    if src_t is not None and segment is not None and not segment[0] <= src_t <= segment[1]:
+        return done("outside_segment", *(match or ()))
+    if len(cut) and len(own_b) + len(own_s):
+        own = np.concatenate([own_b, own_s])
+        ov = Q._overlap(cut, own)
+        if (ov >= th.edge_self_overlap).any():
+            i, j = np.unravel_index(int(ov.argmax()), ov.shape)
+            kind = "wearer" if j < len(own_b) else "wearer_sliver"
+            return done("wearer_overlap", own[j], kind, int(i))
+    view_dt = p.get("view_dt", 0.0)  # old reports: not recorded
+    stale = view_dt is None or view_dt > STALE_VIEW_S
+    if match is not None:
+        box = match[0]
+        m = th.edge_margin
+        if dx is not None and abs(dx) >= MIN_DX and (box[0] + dx <= m or box[2] + dx >= 1 - m):
+            return done("yaw_offset", *match)
+        return done("stale_view" if stale else "other", *match)
+    return done("stale_view" if stale else "no_projected_box")
+
+
 def cause_of(
     r: dict[str, Any],
     p: dict[str, Any] | None,
@@ -175,34 +379,9 @@ def cause_of(
     segment: list[float] | None,
     dx: float | None,
 ) -> str:
-    """The cause (one of :data:`CAUSES`) of a frame only the rendered QA flags ``edge_cut``.
-
-    The geometric QA's dropped boxes (``slivers``) count too: the wearer's in the wearer
-    test, the others' as projected boxes to match."""
-    if p is None:
-        return "unpaired"
-    if src_t is not None and segment is not None and not segment[0] <= src_t <= segment[1]:
-        return "outside_segment"
-    cut = cut_boxes(r, th)
-    if len(cut):
-        own = np.concatenate([_boxes(p, th, own=True), _slivers(p, own=True)])
-        if len(own) and (Q._overlap(cut, own) >= th.edge_self_overlap).any():
-            return "wearer_overlap"
-    others = np.concatenate([_boxes(p, th, own=False), _slivers(p, own=False)])
-    match = None
-    if len(cut) and len(others):
-        ov = Q._overlap(cut, others)
-        i, j = np.unravel_index(int(ov.argmax()), ov.shape)
-        if ov[i, j] > 0:
-            match = others[j]
-    view_dt = p.get("view_dt", 0.0)  # old reports: not recorded
-    stale = view_dt is None or view_dt > STALE_VIEW_S
-    if match is not None:
-        m = th.edge_margin
-        if dx is not None and abs(dx) >= MIN_DX and (match[0] + dx <= m or match[2] + dx >= 1 - m):
-            return "yaw_offset"
-        return "stale_view" if stale else "other"
-    return "stale_view" if stale else "no_projected_box"
+    """The cause (one of :data:`CAUSES`) of a frame only the rendered QA flags ``edge_cut``
+    (:func:`explain`)."""
+    return explain(r, p, th, src_t, segment, dx)["cause"]
 
 
 def compare_clip(
@@ -215,6 +394,7 @@ def compare_clip(
     segment = rc.get("segment") or pc.get("segment")
     counts = dict.fromkeys(COUNT_KEYS, 0)
     causes = dict.fromkeys(CAUSES, 0)
+    detail = dict.fromkeys(OTHER_DETAILS, 0)
     only: list[dict[str, Any]] = []
     for r, p in pairs:
         counts["frames"] += 1
@@ -228,14 +408,17 @@ def compare_clip(
             continue
         counts["rendered_only"] += 1
         src_t = None if offset is None else float(offset) + float(r["t"])
-        cause = cause_of(r, p, th, src_t, segment, dx)
-        causes[cause] += 1
-        only.append({"t": r["t"], "cause": cause})
+        got = explain(r, p, th, src_t, segment, dx)
+        causes[got["cause"]] += 1
+        if got["other_detail"] is not None:
+            detail[got["other_detail"]] += 1
+        only.append({"t": r["t"], **got})
     return {
         "file": rc["file"],
         **counts,
         "median_dx": dx,
         "causes": causes,
+        "other_detail": detail,
         "rendered_only_frames": only,
     }
 
@@ -285,6 +468,10 @@ def run_compare(qa_dir: Path, a: Path, b: Path) -> dict[str, Any]:
     edit["causes"] = {k: sum(c["causes"][k] for c in clips) for k in CAUSES}
     n = edit["rendered_only"]
     edit["cause_share"] = {k: round(v / n, 3) if n else 0.0 for k, v in edit["causes"].items()}
+    edit["other_detail"] = {k: sum(c["other_detail"][k] for c in clips) for k in OTHER_DETAILS}
+    edit["other_detail_share"] = {
+        k: round(v / n, 3) if n else 0.0 for k, v in edit["other_detail"].items()
+    }
     mismatch = [
         str(rep["source_dir"])
         for rep in (rendered, paths)
@@ -343,6 +530,12 @@ def log_compare(report: dict[str, Any]) -> None:
         e["rendered_only"],
         ", ".join(f"{k} {v:.0%}" for k, v in e["cause_share"].items() if v) or "-",
     )
+    if e["causes"]["other"]:
+        logger.info(
+            "other %d: %s",
+            e["causes"]["other"],
+            ", ".join(f"{k} {v}" for k, v in e["other_detail"].items() if v),
+        )
     for side, files in report["unmatched"].items():
         if files:
             logger.warning(
