@@ -26,7 +26,13 @@ from typing import NoReturn
 from cutpoint import __version__, cache, jsonout, paths, stage
 from cutpoint.activity import ACTIVITY_FILE
 from cutpoint.activity import resolve as resolve_activity
-from cutpoint.assemble import AUDIO_TRANSITIONS, assemble, check_transitions
+from cutpoint.assemble import (
+    AUDIO_TRANSITIONS,
+    OUTPUT_FORMATS,
+    assemble,
+    assemble_project,
+    check_transitions,
+)
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import export_clips
 from cutpoint.config import (
@@ -83,14 +89,18 @@ def _add_compress_peaks_argument(p: argparse.ArgumentParser, what: str) -> None:
     )
 
 
-def _add_lut_arguments(p: argparse.ArgumentParser) -> None:
-    """``--lut FILE`` and ``--lut-strength 0-1`` (see cutpoint.encode.lut_filter)."""
+RECORDED = "Recorded in clips/manifest.json"  # where --lut and --color say the grade is kept
+
+
+def _add_lut_arguments(p: argparse.ArgumentParser, recorded: str = RECORDED) -> None:
+    """``--lut FILE`` and ``--lut-strength 0-1`` (see cutpoint.encode.lut_filter); ``recorded``
+    says where the grade is recorded."""
     p.add_argument(
         "--lut",
         metavar="FILE",
         help=f"grade every clip with this 3D LUT ({' or '.join(LUT_SUFFIXES)}), applied to "
         "BT.709 video: use the LUT made for the footage's log or flat profile (e.g. GoPro "
-        "Flat to Rec.709). Recorded in clips/manifest.json; default: no grade",
+        f"Flat to Rec.709). {recorded}; default: no grade",
     )
     p.add_argument(
         "--lut-strength",
@@ -100,15 +110,16 @@ def _add_lut_arguments(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_color_arguments(p: argparse.ArgumentParser) -> None:
-    """``--color off|auto|underwater`` and ``--color-strength 0-1`` (see cutpoint.color)."""
+def _add_color_arguments(p: argparse.ArgumentParser, recorded: str = RECORDED) -> None:
+    """``--color off|auto|underwater`` and ``--color-strength 0-1`` (see cutpoint.color);
+    ``recorded`` says where the grade is recorded."""
     p.add_argument(
         "--color",
         choices=COLOR_MODES,
         default=None,
         help="automatic color correction per clip: auto (levels, white balance, vibrance) or "
         "underwater (also restores red); clips that already look good, log/flat footage (use "
-        "--lut) and 360 clips are left as they are. Recorded in clips/manifest.json; not with "
+        f"--lut) and 360 clips are left as they are. {recorded}; not with "
         "--lut (default: color in config.json, never for gaming footage, else off)",
     )
     p.add_argument(
@@ -215,6 +226,8 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         lut=lut,
         color=color,
         color_strength=color_strength,
+        keep_clips=a.keep_clips,
+        output_format=a.output_format,
     )
 
 
@@ -231,17 +244,52 @@ def _segments_where(text: str, given: PurePath, segments: Path) -> str:
     return f" ({text}, relative to the projects folder {projects_dir()})"  # projects/<name>/...
 
 
-def _cmd_clips(a: argparse.Namespace) -> None:
-    project = resolve_project_path(a.project)
-    jsonout.set_project(project)
-    lut = _lut(a)
-    color, color_strength = _color(a, lut)
+def _segments_file(a: argparse.Namespace, *, mix: bool = False) -> Path | None:
+    """``--segments`` resolved (None without it), checked to be a file unless ``mix``."""
     segments = resolve_project_path(a.segments, bare_names=False) if a.segments else None
-    if segments is not None and not a.mix and not segments.is_file():
+    if segments is not None and not mix and not segments.is_file():
         if segments.is_dir():
             raise IsADirectoryError(f"{segments} is a folder, not a segments file")
         where = _segments_where(a.segments, Path(a.segments), segments)
         raise FileNotFoundError(f"Segments file not found: {segments}{where}")
+    return segments
+
+
+def _export_options(a: argparse.Namespace) -> dict:
+    """``export_clips`` arguments of the export options (:func:`_add_selection_arguments` but
+    ``--segments``, ``--mix`` and ``--order``, :func:`_add_export_arguments` but
+    ``--vertical``, ``--force``, ``--audio-fade`` and ``--compress-peaks``), ``--lut`` and
+    ``--color`` checked."""
+    lut = _lut(a)
+    color, color_strength = _color(a, lut)
+    return {
+        "top": a.top,
+        "ids": a.ids,
+        "max_total": a.max_total,
+        "crop": a.crop,
+        "smart_tail_on": a.smart_tail,
+        "tail_min": a.tail_min,
+        "tail_max": a.tail_max,
+        "event_tails": a.event_tails,
+        "event_window": a.event_window,
+        "extend": Padding.from_args(a.extend, a.extend_start, a.extend_end),
+        "speech_aware": a.speech_aware,
+        "speech_max_extend": a.speech_max_extend,
+        "speech_max_lead": a.speech_max_lead,
+        "pano_source": a.pano_source,
+        "pano_cmd_every": a.pano_cmd_every,
+        "size": a.size,
+        "lut": lut,
+        "color": color,
+        "color_strength": color_strength,
+    }
+
+
+def _cmd_clips(a: argparse.Namespace) -> None:
+    project = resolve_project_path(a.project)
+    jsonout.set_project(project)
+    options = _export_options(a)
+    segments = _segments_file(a, mix=a.mix)
     order = a.order
     if a.mix:  # cutpoint mix's selection, played in arc order
         segments, order = project / "mix_segments.json", a.order or "arc"
@@ -249,34 +297,16 @@ def _cmd_clips(a: argparse.Namespace) -> None:
             run_mix(project, out=segments)
     export_clips(
         project,
-        top=a.top,
-        ids=a.ids,
         order=order,
-        max_total=a.max_total,
         segments=segments,
         out_dir=resolve_project_path(a.out, bare_names=False)
         if a.out
         else (project / ("clips_mix_vertical" if a.vertical else "clips_mix") if a.mix else None),
         vertical=a.vertical,
         force=a.force,
-        crop=a.crop,
-        smart_tail_on=a.smart_tail,
-        tail_min=a.tail_min,
-        tail_max=a.tail_max,
-        event_tails=a.event_tails,
-        event_window=a.event_window,
-        extend=Padding.from_args(a.extend, a.extend_start, a.extend_end),
-        speech_aware=a.speech_aware,
-        speech_max_extend=a.speech_max_extend,
-        speech_max_lead=a.speech_max_lead,
         audio_fade=a.audio_fade,
-        pano_source=a.pano_source,
-        pano_cmd_every=a.pano_cmd_every,
-        size=a.size,
         compress_peaks=_compress_peaks(a),
-        lut=lut,
-        color=color,
-        color_strength=color_strength,
+        **options,
     )
 
 
@@ -555,27 +585,103 @@ def _report_mix(out: Path, report: dict) -> None:
         jsonout.warn("content_qa_failed", f"mix content QA failed: {', '.join(failed)}", [out])
 
 
+# ``assemble`` options that only apply when it exports the moments of a project first
+PROJECT_OPTIONS = (
+    "top", "ids", "segments", "max_total", "order", "vertical", "size", "force", "crop",
+    "smart_tail", "tail_min", "tail_max", "event_tails", "event_window", "extend",
+    "extend_start", "extend_end", "speech_aware", "speech_max_extend", "speech_max_lead",
+    "pano_source", "pano_cmd_every", "lut", "lut_strength", "color", "color_strength",
+)  # fmt: skip
+
+
+def _assemble_project(a: argparse.Namespace, given: Path) -> Path | None:
+    """The project ``assemble`` exports the moments of first, or None for a clips folder:
+    with ``--segments``, the positional as ``clips`` reads its project; else ``given`` (or
+    the bare name in the projects folder) when it holds highlights.json.
+
+    Raises:
+        jsonout.ArgumentError: For ``--segments`` with a clips folder (it has manifest.json),
+            and for a project without highlights.json (a ``clips`` or ``clips_vertical``
+            folder or project.json, and no manifest.json of its own).
+    """
+    candidates = (given, resolve_project_path(a.clips_dir))
+    if a.segments:
+        project = candidates[1]
+        if (project / "manifest.json").is_file():
+            raise jsonout.ArgumentError(
+                f"{project} is a clips folder; --segments needs the project folder"
+            )
+        return project
+    for candidate in candidates:
+        if (candidate / "highlights.json").is_file():
+            return candidate
+    folder = next((c for c in candidates if c.is_dir()), None)
+    if folder is not None and not (folder / "manifest.json").exists():
+        marks = [folder / "clips", folder / "clips_vertical"]
+        if any(m.is_dir() for m in marks) or (folder / "project.json").is_file():
+            raise jsonout.ArgumentError(
+                f"{folder} is a project without highlights.json: run analyze, pass --segments, "
+                "or give its clips folder"
+            )
+    return None
+
+
 def _cmd_assemble(a: argparse.Namespace) -> None:
-    clips_dir = resolve_project_path(a.clips_dir, bare_names=False)
-    _set_clips_project(clips_dir)
-    assemble(
-        clips_dir,
-        resolve_project_path(a.out, bare_names=False) if a.out else None,
-        transition=a.transition,
-        fade_dur=a.fade_dur,
-        loudnorm=a.loudnorm,
-        captions=a.captions,
-        caption_model=a.model,
-        audio_fade=a.audio_fade,
-        compress_peaks=_compress_peaks(a),
-        audio_transition=a.audio_transition,
-    )
+    given = resolve_project_path(a.clips_dir, bare_names=False)
+    out = resolve_project_path(a.out, bare_names=False) if a.out else None
+    join = {
+        "transition": a.transition,
+        "fade_dur": a.fade_dur,
+        "loudnorm": a.loudnorm,
+        "captions": a.captions,
+        "caption_model": a.model,
+        "audio_fade": a.audio_fade,
+        "compress_peaks": _compress_peaks(a),
+        "audio_transition": a.audio_transition,
+        "output_format": a.output_format,
+    }
+    project = _assemble_project(a, given)
+    if project is None:
+        if used := [d for d, default in a.project_defaults.items() if getattr(a, d) != default]:
+            raise jsonout.ArgumentError(
+                f"--{used[0].replace('_', '-')} needs a project (a folder with highlights.json) "
+                f"or --segments; {given} is not one"
+            )
+        _set_clips_project(given)
+        assemble(given, out, **join)
+        return
+    jsonout.set_project(project)
+    export = {**_export_options(a), "segments": _segments_file(a), "order": a.order}
+    assemble_project(project, out, export=export, vertical=a.vertical, force=a.force, **join)
 
 
 def _check_assemble(parser: argparse.ArgumentParser, a: argparse.Namespace) -> None:
-    """Refuse an ``--audio-transition`` that does not go with ``--transition`` (exit 2)."""
+    """Refuse an ``--audio-transition`` that does not go with ``--transition``, and options of
+    the final video with a timeline ``--format`` (exit 2)."""
     if (why := check_transitions(a.transition, a.audio_transition)) is not None:
         parser.error(f"--audio-transition {a.audio_transition}: {why}")
+    if a.output_format != "mp4":
+        given = [f"--{n}" for n in ("loudnorm", "captions", "model") if getattr(a, n)]
+        if given:
+            parser.error(
+                f"{given[0]} applies to the final video; --format {a.output_format} writes "
+                "only the timeline (use --format mp4)"
+            )
+
+
+def _check_edit(parser: argparse.ArgumentParser, a: argparse.Namespace) -> None:
+    """Refuse ``--no-keep-clips`` where the clips are needed or nothing is replaced (exit 2)."""
+    if a.keep_clips:
+        return
+    if a.kind == "clips":
+        parser.error("--no-keep-clips: with --kind clips the clips are the deliverable")
+    if a.output_format != "mp4":
+        parser.error(
+            f"--no-keep-clips: the --format {a.output_format} timeline references the clips, "
+            "so they must be kept"
+        )
+    if a.force:
+        parser.error("--force replaces kept clips; with --no-keep-clips there are none")
 
 
 def _cmd_setup(a: argparse.Namespace) -> int:
@@ -745,8 +851,144 @@ def _cmd_ui(a: argparse.Namespace) -> None:
     run(a.port)
 
 
-def _add_speech_arguments(p: argparse.ArgumentParser, default_on: str) -> None:
-    """``--speech-aware``, ``--speech-max-extend``, ``--speech-max-lead``, ``--audio-fade``."""
+def _add_selection_arguments(p: argparse.ArgumentParser, *, mix: bool) -> None:
+    """Which moments ``clips`` exports (``assemble <project>`` too): ``--top``, ``--ids``,
+    ``--segments`` (and ``--mix`` with ``mix``), ``--max-total`` and ``--order``."""
+    sel = p.add_mutually_exclusive_group()
+    sel.add_argument("--top", type=positive_int, help="top N by score (default: fits style target)")
+    sel.add_argument("--ids", nargs="+", help="explicit candidate ids, e.g. h001 h004")
+    sel.add_argument(
+        "--segments",
+        help="JSON list of {source,start,end,label} exported "
+        "exactly, in the given order (no highlights.json needed; --order arc reorders "
+        "a cutpoint mix file)",
+    )
+    if mix:
+        sel.add_argument(
+            "--mix",
+            action="store_true",
+            help="(action-cam/ski module) export <project>/mix_segments.json (runs "
+            "`cutpoint mix` first if missing) in arc order",
+        )
+    p.add_argument(
+        "--max-total",
+        type=positive_float,
+        help="cap total duration (s): best-scoring moments that fit, e.g. 60",
+    )
+    p.add_argument(
+        "--order",
+        choices=["chronological", "score", "story", "arc"],
+        help="playback order (default: story; chronological for commentary"
+        + (
+            "; arc with --mix: scenic opener, the day by stretch, crash finale, scenic outro)"
+            if mix
+            else ")"
+        ),
+    )
+
+
+def _add_export_arguments(
+    p: argparse.ArgumentParser,
+    *,
+    force: str,
+    audio_fade: str | None,
+    peaks: str,
+    recorded: str = RECORDED,
+) -> None:
+    """How ``clips`` exports the moments (``assemble <project>`` too): ``--vertical``, ``--size``,
+    ``--force`` (help ``force``), ``--crop``, the tails, the padding, the speech options and
+    ``--audio-fade`` (help ``audio_fade``; None: the export's), the 360, peak compression
+    (``peaks``: what it applies to), LUT and colour options (``recorded``: where the grade is
+    recorded)."""
+    p.add_argument("--vertical", action="store_true", help="9:16 1080x1920 center crop")
+    p.add_argument(
+        "--size",
+        type=parse_size,
+        metavar="WxH",
+        help="output resolution, e.g. 1920x1080 (default: the largest source's, "
+        "capped at 1080p); ignored with --vertical",
+    )
+    p.add_argument("--force", action="store_true", help=force)
+    p.add_argument(
+        "--crop",
+        metavar="auto|none|W:H:X:Y",
+        help="crop before scaling: auto = cropdetect per source (cached); "
+        "default: project.json per-source setting, else none",
+    )
+    p.add_argument(
+        "--smart-tail",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="extend speech-ended clips until the reaction settles (default: on, per style)",
+    )
+    p.add_argument(
+        "--tail-min",
+        type=float,
+        metavar="S",
+        help="guaranteed tail after the last word (default: style, 1.5 s)",
+    )
+    p.add_argument(
+        "--tail-max",
+        type=float,
+        metavar="S",
+        help="max extension after the last word (default: style, 5 s)",
+    )
+    p.add_argument(
+        "--event-tails",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="extend clips to cover a payoff event (kill, banner, laughter, "
+        "VLM moment) that starts soon after the speech (default: on when "
+        "<project>/events.json exists)",
+    )
+    p.add_argument(
+        "--event-window",
+        type=float,
+        metavar="S",
+        help="payoff must start within S s after the speech (default: 10)",
+    )
+    p.add_argument(
+        "--extend",
+        type=float,
+        metavar="S",
+        help="pad both ends of every clip by S seconds, after smart/event tails "
+        "(clamped to the source and its readable range; default 0)",
+    )
+    p.add_argument(
+        "--extend-start",
+        type=float,
+        metavar="S",
+        help="padding before the start (overrides --extend)",
+    )
+    p.add_argument(
+        "--extend-end", type=float, metavar="S", help="padding after the end (overrides --extend)"
+    )
+    _add_speech_arguments(p, "on, per style", audio_fade)
+    _add_pano_arguments(p, "auto")
+    _add_compress_peaks_argument(p, peaks)
+    _add_lut_arguments(p, recorded)
+    _add_color_arguments(p, recorded)
+
+
+def _add_format_argument(p: argparse.ArgumentParser) -> None:
+    """``--format mp4|fcpxml|otio`` (``output_format``, see cutpoint.assemble.OUTPUT_FORMATS)."""
+    p.add_argument(
+        "--format",
+        dest="output_format",
+        choices=OUTPUT_FORMATS,
+        default="mp4",
+        help="mp4: join the clips into the final video, without timelines; fcpxml (Final Cut "
+        "Pro, DaVinci Resolve) or otio (DaVinci Resolve 18.5+, OpenTimelineIO tools): write "
+        "only that timeline, referencing the kept clips, without joining or encoding; the "
+        ".srt subtitles either way (default: mp4)",
+    )
+
+
+def _add_speech_arguments(
+    p: argparse.ArgumentParser, default_on: str, audio_fade: str | None = None
+) -> None:
+    """``--speech-aware``, ``--speech-max-extend``, ``--speech-max-lead``, ``--audio-fade``
+    (help ``audio_fade``; None: the fade baked into every clip)."""
     p.add_argument(
         "--speech-aware",
         action=argparse.BooleanOptionalAction,
@@ -772,7 +1014,7 @@ def _add_speech_arguments(p: argparse.ArgumentParser, default_on: str) -> None:
         type=float,
         default=0.25,
         metavar="S",
-        help="audio fade in/out baked into every clip (default 0.25; 0 = off)",
+        help=audio_fade or "audio fade in/out baked into every clip (default 0.25; 0 = off)",
     )
 
 
@@ -927,6 +1169,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="replace the clips of an earlier run (as clips --force)",
     )
     ed.add_argument(
+        "--keep-clips",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="keep the clips in the clips folder; --no-keep-clips exports them into a "
+        "temporary folder, removed after the final video is made, and leaves the clips "
+        "folder alone (not with --kind clips or a timeline --format; default: keep)",
+    )
+    _add_format_argument(ed)
+    ed.add_argument(
         "--events",
         action="store_true",
         help="also run `cutpoint events` to re-rank the moments (needs the events extra and "
@@ -941,7 +1192,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_lut_arguments(ed)
     _add_color_arguments(ed)
     _add_json_argument(ed)
-    ed.set_defaults(func=_cmd_edit)
+    ed.set_defaults(func=_cmd_edit, usage_check=lambda a: _check_edit(ed, a))
 
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
     an.add_argument(
@@ -992,32 +1243,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="project dir containing highlights.json (a bare name "
         "is looked up in the projects folder)",
     )
-    sel = cl.add_mutually_exclusive_group()
-    sel.add_argument("--top", type=positive_int, help="top N by score (default: fits style target)")
-    sel.add_argument("--ids", nargs="+", help="explicit candidate ids, e.g. h001 h004")
-    sel.add_argument(
-        "--segments",
-        help="JSON list of {source,start,end,label} exported "
-        "exactly, in the given order (no highlights.json needed; --order arc reorders "
-        "a cutpoint mix file)",
-    )
-    sel.add_argument(
-        "--mix",
-        action="store_true",
-        help="(action-cam/ski module) export <project>/mix_segments.json (runs "
-        "`cutpoint mix` first if missing) in arc order",
-    )
-    cl.add_argument(
-        "--max-total",
-        type=positive_float,
-        help="cap total duration (s): best-scoring moments that fit, e.g. 60",
-    )
-    cl.add_argument(
-        "--order",
-        choices=["chronological", "score", "story", "arc"],
-        help="playback order (default: story; chronological for commentary; arc with "
-        "--mix: scenic opener, the day by stretch, crash finale, scenic outro)",
-    )
+    _add_selection_arguments(cl, mix=True)
     cl.add_argument(
         "--out",
         help=(
@@ -1025,74 +1251,12 @@ def build_parser() -> argparse.ArgumentParser:
             "clips_mix_vertical)"
         ),
     )
-    cl.add_argument("--vertical", action="store_true", help="9:16 1080x1920 center crop")
-    cl.add_argument(
-        "--size",
-        type=parse_size,
-        metavar="WxH",
-        help="output resolution, e.g. 1920x1080 (default: the largest source's, "
-        "capped at 1080p); ignored with --vertical",
+    _add_export_arguments(
+        cl,
+        force="replace clips in a non-empty dir",
+        audio_fade=None,
+        peaks="baked into every clip with a true-peak limiter",
     )
-    cl.add_argument("--force", action="store_true", help="replace clips in a non-empty dir")
-    cl.add_argument(
-        "--crop",
-        metavar="auto|none|W:H:X:Y",
-        help="crop before scaling: auto = cropdetect per source (cached); "
-        "default: project.json per-source setting, else none",
-    )
-    cl.add_argument(
-        "--smart-tail",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="extend speech-ended clips until the reaction settles (default: on, per style)",
-    )
-    cl.add_argument(
-        "--tail-min",
-        type=float,
-        metavar="S",
-        help="guaranteed tail after the last word (default: style, 1.5 s)",
-    )
-    cl.add_argument(
-        "--tail-max",
-        type=float,
-        metavar="S",
-        help="max extension after the last word (default: style, 5 s)",
-    )
-    cl.add_argument(
-        "--event-tails",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="extend clips to cover a payoff event (kill, banner, laughter, "
-        "VLM moment) that starts soon after the speech (default: on when "
-        "<project>/events.json exists)",
-    )
-    cl.add_argument(
-        "--event-window",
-        type=float,
-        metavar="S",
-        help="payoff must start within S s after the speech (default: 10)",
-    )
-    cl.add_argument(
-        "--extend",
-        type=float,
-        metavar="S",
-        help="pad both ends of every clip by S seconds, after smart/event tails "
-        "(clamped to the source and its readable range; default 0)",
-    )
-    cl.add_argument(
-        "--extend-start",
-        type=float,
-        metavar="S",
-        help="padding before the start (overrides --extend)",
-    )
-    cl.add_argument(
-        "--extend-end", type=float, metavar="S", help="padding after the end (overrides --extend)"
-    )
-    _add_speech_arguments(cl, "on, per style")
-    _add_pano_arguments(cl, "auto")
-    _add_compress_peaks_argument(cl, "baked into every clip with a true-peak limiter")
-    _add_lut_arguments(cl)
-    _add_color_arguments(cl)
     _add_json_argument(cl)
     cl.set_defaults(func=_cmd_clips)
 
@@ -1356,12 +1520,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_argument(mx)
     mx.set_defaults(func=_cmd_mix)
 
-    asm = sub.add_parser("assemble", help="join clips (filename order) into one video")
-    asm.add_argument("clips_dir")
+    asm = sub.add_parser(
+        "assemble",
+        help="join clips (filename order) into one video, or write their timeline; from a "
+        "project, export its moments into a temporary folder first",
+    )
+    asm.add_argument(
+        "clips_dir",
+        metavar="clips_dir|project",
+        help="a clips folder; or a project folder (with highlights.json, a bare name is looked "
+        "up in the projects folder) or, with --segments, the project to write to: its moments "
+        "are exported first (see the project options below)",
+    )
     asm.add_argument(
         "--out",
-        help="output file (default: <project>/final.mp4, or final_vertical.mp4 for clips_vertical)",
+        help="output file (default: <project>/final.mp4, or final_vertical.mp4 for clips_vertical "
+        "or --vertical; the extension follows --format)",
     )
+    _add_format_argument(asm)
     asm.add_argument("--transition", choices=["cut", "fade"], default="cut")
     asm.add_argument(
         "--audio-transition",
@@ -1375,20 +1551,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     asm.add_argument("--captions", action="store_true", help="burn in captions")
     asm.add_argument("--model", help="whisper model for captions")
-    asm.add_argument(
-        "--audio-fade",
-        type=float,
-        default=0.25,
-        metavar="S",
-        help="audio fade in/out added to clips that have none baked in "
-        "(clips from cutpoint clips / cutpoint extend already do; default "
-        "0.25, 0 = off)",
-    )
-    _add_compress_peaks_argument(
-        asm, "for clips not exported with it; the true-peak limiter runs even without --loudnorm"
-    )
     _add_json_argument(asm)
-    asm.set_defaults(func=_cmd_assemble, usage_check=lambda a: _check_assemble(asm, a))
+    proj = asm.add_argument_group(
+        "from a project",
+        "With a project instead of a clips folder, the moments are exported as `cutpoint clips` "
+        "exports them, with these options, into a temporary folder in the project, assembled, "
+        "and the folder is removed (after a failure or Ctrl+C too); a clips folder is never "
+        "touched. With --format fcpxml or otio the timeline references the clips, so they are "
+        "kept in the clips folder `cutpoint clips` writes (--force to replace its clips).",
+    )
+    _add_selection_arguments(proj, mix=False)
+    _add_export_arguments(
+        proj,
+        force="--format fcpxml|otio from a project: replace the clips in a non-empty clips "
+        "folder (as clips --force)",
+        audio_fade="audio fade in/out: baked into the clips exported from a project; added to "
+        "the clips of a clips folder that have none baked in (clips from cutpoint clips / "
+        "cutpoint extend already do); default 0.25, 0 = off",
+        peaks="baked into the clips exported from a project, else applied to the clips not "
+        "exported with it; the true-peak limiter runs even without --loudnorm",
+        recorded="Recorded in the clips' manifest.json, kept only with --format fcpxml|otio",
+    )
+    asm.set_defaults(
+        func=_cmd_assemble,
+        usage_check=lambda a: _check_assemble(asm, a),
+        project_defaults={d: asm.get_default(d) for d in PROJECT_OPTIONS},
+    )
 
     from cutpoint.pano.cli import add_parser as add_pano_parser  # noqa: PLC0415
 

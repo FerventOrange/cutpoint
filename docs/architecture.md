@@ -13,7 +13,7 @@ sources --> analyze --> highlights.json, transcript.txt
                 |
            extend (optional) --> clips_ext<S>s/
                 |
-          assemble --> final.mp4 + final.fcpxml + final.otio
+          assemble --> final.mp4, or final.fcpxml / final.otio (--format); + final.srt
 ```
 
 Each stage reads the previous stage's files in the project folder, so any stage can be re-run

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -633,9 +634,10 @@ class DirectorPreviews:
     (sky, whip pans, failed QA), ``h002`` stale (planned with other settings), ``h003`` none.
 
     The cache entries are written in ``cutpoint.pano.candidates``' own layout and key, so its
-    read API (``candidate_flags``, ``candidate_path``) runs for real. Only the render is faked
-    (``pano.render.render_segment``): it writes through ``atomic_output`` as the real one does
-    and, with ``hold``, blocks like ffmpeg until its child scope is stopped.
+    preview API (``candidate_flags``, ``preview_path``) runs for real. Only the render is faked
+    (``pano.render.render_segment``): it reports ``progress`` 0.5, writes through
+    ``atomic_output`` as the real one does and, with ``hold``, blocks like ffmpeg until its child
+    scope is stopped.
     """
 
     PLANNED = (0.0, 15.0)
@@ -655,7 +657,8 @@ class DirectorPreviews:
         )
         self.clip = clip
         pano_project.save(self.p, [clip], [folder])
-        spans = {"h001": (5.0, 10.0), "h002": (20.0, 25.0), "h003": (40.0, 45.0)}
+        # h003 starts off a frame: its level forward view must still show its first frame
+        spans = {"h001": (5.0, 10.0), "h002": (20.0, 25.0), "h003": (40.01, 45.0)}
         cands = [
             {"id": c, "source": self.lrv, "start": a, "end": b, "score": 50, "label": c}
             for c, (a, b) in spans.items()
@@ -708,6 +711,7 @@ class DirectorPreviews:
             (kw["work_dir"] / f"{out.stem}.cmd").write_text("# cmd\n", encoding="utf-8")
             with ffmpeg_utils.atomic_output(out) as part:
                 part.write_bytes(b"partial")
+                kw["progress"](0.5)
                 self.started.set()
                 scope = ffmpeg_utils._SCOPE.current
                 while self.hold is not None and not self.hold.is_set():
@@ -716,6 +720,7 @@ class DirectorPreviews:
                 if self.fail is not None:
                     raise self.fail
                 part.write_bytes(b"director view")
+            kw["progress"](1.0)
             return {"mode": "proxy", "seconds": 0.0}
 
         monkeypatch.setattr(pano_render, "render_segment", render_segment)
@@ -749,7 +754,7 @@ def test_360_moments_carry_camera_path_flags_and_reasons(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#517: each 360 moment lists the flags of its cached camera path, each with the reason
-    and its measure; one without a cached path has ``pano: null`` (the page says so)."""
+    and its measure; one without a cached path has none."""
     run = DirectorPreviews(client, tmp_path, monkeypatch)
     pano = run.candidate("h001")["pano"]
     assert pano["flags"] == ["sky", "whip", "qa_fail"]
@@ -761,7 +766,7 @@ def test_360_moments_carry_camera_path_flags_and_reasons(
     assert pano["preview"] is None  # nothing is rendered before the page asks
     h002 = run.candidate("h002")["pano"]
     assert {**h002, "path": None} == {"flags": [], "reasons": [], "path": None, "preview": None}
-    assert run.candidate("h003")["pano"] is None
+    assert run.candidate("h003")["pano"]["flags"] == []
     assert run.renders == []
 
 
@@ -806,21 +811,34 @@ def test_a_director_preview_renders_in_the_background_and_is_reused(
         c2.headers["X-Cutpoint-Token"] = app.state.token
         listed = c2.get(f"/api/projects/{run.pid}").json()["highlights"]["candidates"][0]
         assert listed["pano"]["preview"] is None  # not checked current yet this run
-        got = c2.post(f"/api/projects/{run.pid}/director/h001").json()["pano"]["preview"]
-        assert got["state"] == "ready"
+        c2.post(f"/api/projects/{run.pid}/director/h001")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            got = c2.get(f"/api/projects/{run.pid}").json()["highlights"]["candidates"][0]
+            if (got["pano"]["preview"] or {}).get("state") == "ready":
+                break
+            time.sleep(0.02)
+        assert got["pano"]["preview"]["state"] == "ready"
     assert len(run.renders) == 1
 
 
-def test_a_stale_or_missing_camera_path_falls_back_to_the_raw_preview(
+def test_a_stale_or_missing_camera_path_previews_the_library_fallback(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """#517: a moment whose cached path is stale or missing previews the path
+    ``candidates.preview_path`` gives (here, as these clips cannot be planned, a level forward
+    view), with its reason, instead of the raw fisheye. A level forward view spans the moment
+    alone, so its render starts on the frame at or before the moment's start (rounded up, the
+    page played the raw fisheye there)."""
     run = DirectorPreviews(client, tmp_path, monkeypatch)
-    pv = run.ask("h002").json()["pano"]["preview"]
-    assert pv == {"state": "stale", "reason": ui.PANO_STALE}
-    assert run.candidate("h002")["pano"]["preview"] == pv  # the listing says so too
-    assert run.ask("h003").json() == {"pano": None}
+    for cid in ("h002", "h003"):
+        run.ask(cid)
+        pv = run.wait(cid, "ready")
+        assert pv["kind"] == "level_forward" and pv["reason"]
+        assert run.renders[-1]["path"]["keys"][0]["target"] == "forward"
+    assert pv["lo"] <= 40.01 and pv["lo"] == round(math.floor(40.01 * 30) / 30, 6)
+    assert round(run.renders[-1]["start"], 6) == pv["lo"]
     assert run.ask("nope").json() == {"pano": None}
-    assert run.renders == [] and run.folder() == []
 
 
 def test_cancelling_a_director_preview_removes_its_partial_render(
@@ -830,7 +848,8 @@ def test_cancelling_a_director_preview_removes_its_partial_render(
     run.hold = threading.Event()
     run.ask("h001")
     assert run.started.wait(10)
-    assert run.wait("h001", "rendering")["seconds"] == 15.0
+    pv = run.wait("h001", "rendering")
+    assert (pv["seconds"], pv["progress"]) == (15.0, 0.5)  # render_segment's progress
     assert any(n.endswith(".part.mp4") for n in run.folder())
     pv = run.ask("h001", cancel=True).json()["pano"]["preview"]
     assert pv == {"state": "cancelled", "reason": ""}
@@ -864,13 +883,20 @@ def test_leftover_director_previews_of_old_paths_are_pruned(
     folder = run.p / ui.UI_DIR / "pano"
     folder.mkdir(parents=True)
     old = time.time() - ui.PROXY_PRUNE_GRACE_S - 60
-    names = ["h001-0123456789abcdef.mp4", ".h001-0123456789abcdef.part.mp4", "notes.txt"]
+    names = ["h099-0123456789abcdef.mp4", ".h001-0123456789abcdef.part.mp4", "notes.txt"]
     for name in names:
         (folder / name).write_bytes(b"x")
         os.utime(folder / name, (old, old))
     (folder / "h009-fedcba9876543210.mp4").write_bytes(b"x")  # recent: another run may serve it
+    # review F1: a moment's newest preview stays (a path planned now is named only once planned)
+    newest = folder / "h003-aaaaaaaaaaaaaaaa.mp4"
+    newest.write_bytes(b"x")
+    os.utime(newest, (old + 30, old + 30))
+    older = folder / "h003-bbbbbbbbbbbbbbbb.mp4"
+    older.write_bytes(b"x")
+    os.utime(older, (old, old))
     run.candidate("h001")
-    assert run.folder() == ["h009-fedcba9876543210.mp4", "notes.txt"]
+    assert run.folder() == [newest.name, "h009-fedcba9876543210.mp4", "notes.txt"]
 
 
 def test_a_replanned_camera_path_has_a_new_identity(
@@ -917,6 +943,44 @@ def test_a_director_preview_is_only_for_a_project_source(
     cache.save_json(run.p / "highlights.json", hl)
     assert run.ask("h001").json() == {"pano": None}
     assert len(run.renders) == 1
+
+
+def test_a_changed_imu_offset_or_render_format_renders_a_fresh_preview(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: Path
+) -> None:
+    """Review of #541: the library's path ``key`` covers only the path, but a preview is also
+    levelled with ``pano.imu_offset_s`` and rendered in the UI's format; changing either must
+    give a new preview (a new identity the page asks again for, a new render), not the old
+    file."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    names = []
+    for change in (
+        lambda: None,
+        lambda: set_config(home, pano={"imu_offset_s": 0.25}),
+        lambda: monkeypatch.setattr(ui, "PANO_PREVIEW_W", 480),
+    ):
+        change()
+        assert run.candidate("h001")["pano"]["preview"] is None  # nothing ready for this one
+        run.ask("h001")
+        names.append(run.wait("h001", "ready")["url"].split("/director/")[1].split("?")[0])
+    assert len(run.renders) == 3 and len(set(names)) == 3
+    assert run.renders[-1]["fmt"].width == 480
+
+
+def test_a_spinning_camera_path_reaches_the_moment_badges(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#541 added the ``spin`` flag (a director that keeps turning): the listing passes it on
+    from ``candidate_flags``, with its reason, for the card's badge and tooltip."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    slot = run.p / pano_candidates.CACHE_DIR / pano_candidates.slot_name(run.clip, 20.0, 25.0)
+    entry = cache.load_json(slot)
+    entry["diagnostics"] |= {"net_turns": 1.5, "yaw_travel": 540.0, "yaw_travel_per_min": 6480.0}
+    cache.save_json(slot, entry)
+    pano = run.candidate("h002")["pano"]
+    assert pano["flags"] == ["spin"]
+    assert pano["reasons"][0]["flag"] == "spin"
+    assert pano["reasons"][0]["text"].startswith(pano_candidates.FLAGS["spin"])
 
 
 def test_the_page_describes_camera_path_flags_accessibly() -> None:
@@ -2064,10 +2128,10 @@ def test_export_keeps_saved_order_and_each_assembly_is_kept(
     assert first[0]["name"] != f"{taken.stem}.mp4"
     second = run({"action": "assemble", "transition": "cut"})["outputs"]
     assert first[0]["name"].endswith(".mp4") and first[0]["name"] != second[0]["name"]
-    assert [o["name"].rsplit(".", 1)[1] for o in second[:3]] == ["mp4", "fcpxml", "otio"]
-    assert [o["name"] for o in second[3:]][:1] == [
-        first[0]["name"]
-    ]  # the earlier final stays listed
+    new = [o["name"] for o in second if o["name"] not in {x["name"] for x in first}]
+    assert new[0].endswith(".mp4")  # assemble writes no timelines by default
+    assert {n.rsplit(".", 1)[1] for n in new} <= {"mp4", "srt"}
+    assert first[0]["name"] in [o["name"] for o in second]  # the earlier final stays listed
     assert (ui.project_dir(pid) / first[0]["name"]).is_file()  # the earlier final survives
     assert client.get(second[0]["url"]).status_code == 200
 

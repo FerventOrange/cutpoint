@@ -32,7 +32,13 @@ cutpoint clips my-edit --top 8
 cutpoint assemble projects/my-edit/clips --transition fade --loudnorm
 ```
 
-Output: `projects/my-edit/final.mp4`, `final.fcpxml` and `final.otio`.
+Output: `projects/my-edit/final.mp4` and `final.srt`. For a timeline to edit further, run
+`assemble` with `--format fcpxml` or `--format otio` (see
+[Importing into DaVinci Resolve](#importing-into-davinci-resolve-free)).
+
+To skip keeping the clips, assemble the project directly: `cutpoint assemble my-edit --top 8
+--transition fade --loudnorm` exports the moments into a temporary folder, writes
+`final.mp4` and `final.srt`, and removes the temporary clips.
 
 Choose the style by content: `funny` for banter and laughter, `gaming` or `action` for fast
 footage, `sport` for crowd-driven events, `commentary` for long talk (clips of 20-120 s, in
@@ -77,14 +83,21 @@ frames the shot itself (see [360 video](360.md)).
 
 ## Importing into DaVinci Resolve (Free)
 
-Resolve Free has no Python API, so the hand-off is through files.
+Resolve Free has no Python API, so the hand-off is through files. Write the timeline from the
+clips folder:
+
+```powershell
+cutpoint assemble projects/my-edit/clips --format fcpxml --transition fade   # final.fcpxml
+```
+
+It only writes the timeline and `final.srt`; nothing is joined or encoded.
 
 1. Open your project and choose File > Import > Timeline (Ctrl+Shift+I).
 2. Pick `final.fcpxml`. `final.otio` also works.
 3. Leave "Automatically import source clips into media pool" checked and click OK.
 
 The timeline places the clips in filename order at their frame rate. With `--transition fade` it
-holds a cross-dissolve at each join, starting on the edit, matching `final.mp4`; with cuts the
+holds a cross-dissolve at each join, starting on the edit, as `final.mp4` would have; with cuts the
 clips sit back to back. Audio fades are baked into the clip files. If you move the clips folder, relink the media in
 Resolve or run `assemble` again.
 
