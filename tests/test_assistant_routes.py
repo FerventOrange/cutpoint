@@ -23,7 +23,7 @@ from cutpoint import cache, ui
 from cutpoint.assistant import keys, providers
 from cutpoint.assistant import store as ai_store
 from test_assistant import FakeProvider, Reply, _Resp, call
-from test_assistant_byo import FakeRing
+from test_assistant_byo import FakeRing, NoRing
 
 PORT = 8765
 
@@ -318,7 +318,7 @@ def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """No real key variable or keyring reaches a test."""
     for name in keys.ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(keys, "_keyring", lambda: None)
+    monkeypatch.setattr(keys, "_keyring", NoRing)
     monkeypatch.setattr(keys, "_SEEN", set())
 
 
@@ -387,7 +387,7 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     assert SECRET not in res.text
     assert got["provider"] == "ollama" and got["model"] == "" and got["url"] == ""
     assert got["keys"] == {"anthropic": "env", "openai": None, "xai": None}
-    assert got["keyring"] is False and got["custom"] is False
+    assert "keyring" not in got and got["custom"] is False
     assert [p["name"] for p in got["providers"]] == ["ollama", "anthropic", "openai", "xai"]
     claude = got["providers"][1]
     assert claude["default_model"] == "claude-sonnet-5-5"
@@ -443,7 +443,7 @@ def test_a_key_is_saved_in_the_keyring_and_never_sent_back(
     client: TestClient, monkeypatch, home: Path
 ) -> None:
     res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
-    assert res.status_code == 501 and "keyring extra" in res.json()["detail"]
+    assert res.status_code == 500 and "did not save the key" in res.json()["detail"]
     assert SECRET not in res.text
 
     ring = FakeRing()
@@ -456,7 +456,6 @@ def test_a_key_is_saved_in_the_keyring_and_never_sent_back(
     assert ring.saved == {("cutpoint", "openai"): SECRET}
     settings = client.get("/api/settings")
     assert settings.json()["assistant"]["keys"]["openai"] == "keyring"
-    assert settings.json()["assistant"]["keyring"] is True
     assert SECRET not in settings.text
     assert not (home / "config.json").exists()  # a key is never written there
     res = client.post("/api/assistant/key/clear", json={"provider": "openai"})

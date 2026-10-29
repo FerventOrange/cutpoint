@@ -62,7 +62,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `bad_args` | 2 (1 for the checks above) | The command line or an option value is invalid |
 | `not_found` | 1 | An input, project or file is missing |
 | `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
-| `missing_extra` | 1 | An optional extra is not installed |
+| `missing_extra` | 1 | An optional extra is not installed (the feature is not available in Cutpoint lite) |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
 | `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
@@ -104,7 +104,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
 | `assemble` | `final`, `fcpxml`, `otio`, `srt`, `duration`, `clip_count` |
 | `edit` | `kind`, the outputs of `analyze`, `clips` and `assemble`, and `copy` and `copy_srt` (the `<name>-final` files; `copy_srt` is `null` if none was written). One envelope holds the warnings of all steps |
-| `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `torch` and `insta360_sdk`) |
+| `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `edition`, `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
 | `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`), and `version` for `llama`; for `pip`, `installed` and `missing` |
@@ -166,9 +166,7 @@ error, steps after the failed one are not emitted. A first-time HUD discovery sh
 cutpoint ui [--port 8765]
 ```
 
-Requires the `ui` extra: from a clone, `uv run --extra ui cutpoint ui`; for a tool install,
-`uv tool install "cutpoint[ui]" --reinstall`, then `cutpoint ui`. Include any other extras
-you already use when installing or running.
+Part of every install, lite included: run `cutpoint ui` (`uv run cutpoint ui` from a clone).
 
 Open the complete printed loopback URL, including `#t=…`; keep it private because it grants access
 to local footage. The workspace can create/open projects, analyze standard video,
@@ -433,7 +431,7 @@ cannot. Another
 host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
 send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `XAI_API_KEY` or `CUTPOINT_ASSISTANT_API_KEY` when `cutpoint ui` starts, else from the system
-keyring: with the `keyring` extra, Settings has Save key and Clear key. `ANTHROPIC_API_KEY`,
+keyring: Settings has Save key and Clear key. `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`, `api.openai.com` and
 `api.x.ai`; a key for another host (OpenRouter, a LAN
 server) comes from `CUTPOINT_ASSISTANT_API_KEY` or is saved for that base URL, and goes only over
@@ -488,12 +486,14 @@ comes from (`keys`) and the host it is for (`key_hosts`). `GET /api/assistant/mo
 cutpoint capabilities [--json]
 ```
 
-Reports GPU vendors present separately from usable video encoders, the selected encoder,
+Reports the edition first: `full`, or `lite` when torch and the rest of the `events` extra are
+not installed. Then GPU vendors present separately from usable video encoders, the selected encoder,
 faster-whisper's transcription device, and the backend order `setup` would use for llama.cpp.
 It also reports torch (installed, CUDA or CPU-only build, whether it reaches the GPU; with the
 reinstall command when it is CPU-only on a machine with a usable NVIDIA driver) and the Insta360
 Media SDK (found or not, and a warning when no NVIDIA GPU is found). `360 stitch` logs that
-warning before it runs. The JSON keys are `torch` and `insta360_sdk`; see
+warning before it runs. The JSON keys are `edition` (`"full"` or `"lite"`), `torch` and
+`insta360_sdk`; see
 [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities).
 Encoder checks actually encode a short clip; an encoder listed by ffmpeg is not necessarily
 usable. This command downloads nothing. `--json` writes the report, one key per section, in the
@@ -1100,7 +1100,8 @@ cutpoint crashes <project> [--dense | --no-dense] [--dense-top N] [--sheets N] [
                  [--activity NAME] [--context TEXT] [--refresh-profile] [--json]
 ```
 
-Action-cam module (extras `ski` and `events`). Finds crashes and wipeouts in an analysed
+Action-cam module (its visual check needs the `events` extra, which Cutpoint lite leaves out).
+Finds crashes and wipeouts in an analysed
 project from full-rate IMU data, visual, audio and transcript evidence, and writes
 `crashes.json` plus contact sheets in `crash_check\`. Confident crashes are always exported by
 `clips`. The visual prompts and crash words come from the project's activity profile (see

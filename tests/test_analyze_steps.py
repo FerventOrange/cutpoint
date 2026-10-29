@@ -1428,7 +1428,7 @@ def test_plan_without_the_events_extra_skips_every_step(env, monkeypatch, caplog
     got, why = planned("action")
     assert got == {}
     assert why == dict.fromkeys(("reactions", "keyframes", "crashes"), "events extra not installed")
-    assert "events extra is not installed" in caplog.text
+    assert "not available in Cutpoint lite (the events extra is not installed)" in caplog.text
 
 
 def test_plan_without_the_extra_still_reports_the_steps_not_wanted(env, monkeypatch):

@@ -1,7 +1,7 @@
 # Action-cam footage
 
-This is an optional module (extra `ski`; the full feature set also needs the `events` extra and
-`cutpoint setup`). It uses telemetry in GoPro HERO 9-13 files (accelerometer, gyro, GPS) to
+This module is part of every install; the full feature set needs the `events` extra, which
+Cutpoint lite leaves out, and `cutpoint setup`. It uses telemetry in GoPro HERO 9-13 files (accelerometer, gyro, GPS) to
 score moments by what happened: speed, airtime, carving, crashes. Lifts and stops are masked
 even with friends in view. The style name is `ski`, but the signals apply to any riding or
 action footage that carries telemetry.

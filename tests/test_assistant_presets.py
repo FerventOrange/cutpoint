@@ -21,7 +21,7 @@ from cutpoint import config
 from cutpoint.assistant import keys, providers
 from cutpoint.config import AssistantSettings
 from test_assistant import _Resp
-from test_assistant_byo import KEY, OTHER, Wire, oa_reply
+from test_assistant_byo import KEY, OTHER, NoRing, Wire, oa_reply
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -34,7 +34,7 @@ def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """No real key variable, keyring or cached model list reaches a test."""
     for name in keys.ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(keys, "_keyring", lambda: None)
+    monkeypatch.setattr(keys, "_keyring", NoRing)
     monkeypatch.setattr(keys, "_SEEN", set())
     monkeypatch.setattr(keys, "_CAPTURED", {})
     monkeypatch.setattr(providers, "_MODELS", {})
@@ -197,9 +197,8 @@ PORT = 8765
 
 
 def _ui():
-    pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
-    from cutpoint import ui  # noqa: PLC0415  # the ui extra
+    from cutpoint import ui  # noqa: PLC0415
 
     return ui
 

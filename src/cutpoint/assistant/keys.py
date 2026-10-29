@@ -4,10 +4,9 @@ A key belongs to a provider *and the host it is sent to*. It is read, in order, 
 ``CUTPOINT_ASSISTANT_API_KEY``, the provider's own variable (``ANTHROPIC_API_KEY``,
 ``OPENAI_API_KEY``, ``XAI_API_KEY``; only for the provider's official host,
 :data:`OFFICIAL_HOST`, so an OpenAI key never goes to OpenRouter or a LAN server, nor an xAI key
-anywhere but ``api.x.ai``) and the system keyring (the optional ``keyring`` extra; service
-``cutpoint``, user ``openai`` / ``anthropic`` / ``xai`` for the official host, else
-``<provider>@<host>``). ``cutpoint ui`` saves a key there from Settings only when the extra is
-installed.
+anywhere but ``api.x.ai``) and the system keyring (service ``cutpoint``, user ``openai`` /
+``anthropic`` / ``xai`` for the official host, else ``<provider>@<host>``). ``cutpoint ui``
+saves a key there from Settings.
 
 A key is never written to ``config.json`` or project files, never sent to the page (only where
 it comes from: :func:`status`) and never put in a job's arguments. ``cutpoint ui`` moves the
@@ -47,20 +46,14 @@ _LOCK = threading.Lock()
 
 
 class KeyringError(RuntimeError):
-    """The keyring is not installed or refused; the message is for the user (never the key)."""
+    """The keyring refused (or has no backend); the message is for the user (never the key)."""
 
 
 def _keyring() -> Any:
-    """The ``keyring`` module, or None when the extra is not installed."""
-    try:
-        import keyring  # noqa: PLC0415  # optional extra
-    except ImportError:
-        return None
+    """The ``keyring`` module (a core dependency, imported when first needed)."""
+    import keyring  # noqa: PLC0415
+
     return keyring
-
-
-def keyring_available() -> bool:
-    return _keyring() is not None
 
 
 def _remember(key: str) -> None:
@@ -111,11 +104,8 @@ def lookup(provider: str, host: str, *, shared: bool = True) -> tuple[str | None
         if name and (value := _env(name)):
             _remember(value)
             return value, "env"
-    ring = _keyring()
-    if ring is None:
-        return None, None
     try:
-        value = (ring.get_password(SERVICE, ring_user(provider, host)) or "").strip()
+        value = (_keyring().get_password(SERVICE, ring_user(provider, host)) or "").strip()
     except Exception as err:  # noqa: BLE001 - no backend, a locked store: as if no key
         logger.debug("keyring: could not read the %s key (%s)", provider, type(err).__name__)
         return None, None
@@ -134,13 +124,7 @@ def status(provider: str, host: str) -> str | None:
 def _check(provider: str) -> Any:
     if provider not in KEYED:
         raise ValueError(f"provider must be one of {', '.join(KEYED)}")
-    ring = _keyring()
-    if ring is None:
-        raise KeyringError(
-            "saving a key needs the keyring extra; or set "
-            f"{PROVIDER_ENV[provider]} (or {ENV_KEY}) before starting cutpoint ui"
-        )
-    return ring
+    return _keyring()
 
 
 def save(provider: str, key: str, host: str) -> None:
@@ -148,7 +132,7 @@ def save(provider: str, key: str, host: str) -> None:
 
     Raises:
         ValueError: An unknown provider, or a key that is empty, too long or has spaces.
-        KeyringError: The extra is missing or the keyring refused.
+        KeyringError: The keyring refused (or has no backend).
     """
     ring = _check(provider)
     key = key.strip() if isinstance(key, str) else ""
@@ -158,7 +142,10 @@ def save(provider: str, key: str, host: str) -> None:
     try:
         ring.set_password(SERVICE, ring_user(provider, host), key)
     except Exception as err:  # noqa: BLE001 - any backend error, named without the key
-        raise KeyringError(f"the keyring did not save the key ({type(err).__name__})") from None
+        raise KeyringError(
+            f"the keyring did not save the key ({type(err).__name__}); or set "
+            f"{PROVIDER_ENV[provider]} (or {ENV_KEY}) before starting cutpoint ui"
+        ) from None
 
 
 def clear(provider: str, host: str) -> None:
@@ -166,7 +153,7 @@ def clear(provider: str, host: str) -> None:
 
     Raises:
         ValueError: An unknown provider.
-        KeyringError: The extra is missing or the keyring refused.
+        KeyringError: The keyring refused (or has no backend).
     """
     ring = _check(provider)
     user = ring_user(provider, host)

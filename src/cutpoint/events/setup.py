@@ -7,10 +7,10 @@ Usage::
 
 The Python packages (torch, torchvision, panns-inference, ...) are not installed
 here: they are the ``events`` extra of the package, so their versions live in
-one place (``pyproject.toml``). Install them with
-``uv sync --extra events`` (or ``uv pip install -e ".[events]"`` /
-``pip install -e ".[events]"``); torch then comes from the PyTorch CUDA 12.6
-index on Windows and Linux.
+one place (``pyproject.toml``). Cutpoint lite leaves them out. A clone's
+``uv sync`` installs them (unless ``--no-group full``), a tool install gets them
+from the installer when it is not lite; torch then comes from the PyTorch CUDA
+12.6 index on Windows and Linux when there is an NVIDIA GPU.
 
 Components (models and tools go to CUTPOINT_HOME, see ``cutpoint paths``):
     pip      check that the ``events`` extra is installed; print the install
@@ -62,7 +62,7 @@ from pathlib import Path
 
 from cutpoint import paths as cutpoint_paths
 from cutpoint.events import paths
-from cutpoint.extras import install_hint
+from cutpoint.extras import LITE, install_hint
 
 logger = logging.getLogger(__name__)
 
@@ -228,8 +228,10 @@ def check_python_packages() -> None:
         logger.info("events extra installed (%s)", ", ".join(EVENTS_MODULES))
         return
     logger.warning(
-        "Missing Python packages for cutpoint events: %s. Install the events extra: %s",
+        "Missing Python packages for cutpoint events: %s; cutpoint events is %s. To add "
+        "the events extra: %s",
         ", ".join(missing),
+        LITE,
         install_hint("events"),
     )
 
@@ -645,7 +647,7 @@ def install_visual() -> None:
     download(paths.AESTHETIC_URL, paths.aesthetic_head(), AESTHETIC_SIZE, AESTHETIC_SHA256)
     for m in ("torch", "open_clip"):
         if importlib.util.find_spec(m) is None:
-            # The CLI turns this into "<m> is not installed; it comes with the 'events' extra"
+            # The CLI turns this into "<m> is not installed: ... not available in Cutpoint lite"
             raise ModuleNotFoundError(f"No module named {m!r}", name=m)
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
 

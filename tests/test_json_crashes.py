@@ -184,7 +184,7 @@ def test_crashes_json_without_clip_is_missing_extra(ski, monkeypatch, capsys):
     assert code == 1 and doc["ok"] is False and doc["command"] == "crashes"
     assert doc["error"]["code"] == "missing_extra"
     assert doc["error"]["message"].startswith(
-        "open_clip is not installed; it comes with the 'events'"
+        "open_clip is not installed: this feature is not available in Cutpoint lite"
     )
 
 

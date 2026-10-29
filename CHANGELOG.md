@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `clips` and `edit --color auto|underwater` log one INFO line per clip not graded, naming the
+  clip and its skip code (`not_underwater` adds that `--color auto` may suit it, `log` that
+  `--lut` fits it). They replace the lines that listed the 360 and log/flat clips; the summary
+  count is unchanged.
+
+### Fixed
+
+- `clips/manifest.json`: the header's `smart_tail.enabled` and `speech_aware.enabled` are now
+  `false` when no clip got them, as for a `--segments` export whose every segment turned them
+  off; they used to show the run's setting. `extend` does the same for `speech_aware`.
+
+## [0.4.0] - 2026-10-29
+
 ### Added
 
 - `install.sh`: one-step Linux installer (`curl -LsSf .../install.sh | sh`). It installs uv and
@@ -110,8 +125,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projects and for projects analyzed with options `edit` cannot repeat.
 - `cutpoint ui`: the trim rail shows a filmstrip of stills (keyframes; exact ones when zoomed in)
   behind the clip markers, and the project's still cache keeps up to 1500 stills (#261).
+- Editions: Cutpoint is full (every feature) or lite (no torch: no `events` or `gpu` extra).
+  `cutpoint capabilities` prints the edition first, and its `--json` has the new key `edition`
+  (`"full"` or `"lite"`; the schema stays 1) (#502).
 
 ### Changed
+
+- A feature that needs a missing extra now says it is "not available in Cutpoint lite" and how
+  to add it: for a tool install, the installer again without `--lite` / `-Lite` and with
+  `CUTPOINT_LITE` unset (`curl -LsSf
+  https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh` or `irm
+  https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`); in a clone,
+  `uv sync` without `--no-group full`. A tool installed from git or a local path gets both
+  commands with its source (`... | sh -s -- --source git@main`, `$env:CUTPOINT_SOURCE =
+  'git@main'; irm ... | iex`); one from a fork or a wheel or sdist URL gets `uv tool install
+  "cutpoint[...] @ <url>" --torch-backend cpu|cu126 --python 3.12 --reinstall --no-sources`,
+  since the installers only install from PyPI, github.com/FerventOrange/cutpoint or a local
+  path. The CUDA torch fix in `capabilities` says the
+  same. The hints no longer print a `uv tool install` command without `--torch-backend`, which
+  can pull CUDA torch on a machine without an NVIDIA GPU. Help, messages and
+  docs no longer call `ui`, `keyring` and `ski` optional extras (#502).
 
 - `--color underwater` grades only clips that look underwater (mean red below 0.77 of green
   and 0.85 of blue, green above 0.79 of blue); the others are skipped as `not_underwater`, and
@@ -121,10 +154,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to 3 % of the frame, no longer counts toward its clipping veto. `--color underwater` on
   `gaming` footage logs a stronger WARNING (it still grades). Cached measurements are redone
   (color version 3); `extend` keeps re-applying older records as they were (#494).
-- `clips` and `edit --color auto|underwater` log one INFO line per clip not graded, naming the
-  clip and its skip code (`not_underwater` adds that `--color auto` may suit it, `log` that
-  `--lut` fits it). They replace the lines that listed the 360 and log/flat clips; the summary
-  count is unchanged.
 
 - Packaging: the `ui`, `keyring` and `ski` packages (fastapi, uvicorn, keyring, telemetry-parser)
   are core dependencies, so a plain `uv tool install cutpoint` or `pip install cutpoint` runs
@@ -188,9 +217,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `clips/manifest.json`: the header's `smart_tail.enabled` and `speech_aware.enabled` are now
-  `false` when no clip got them, as for a `--segments` export whose every segment turned them
-  off; they used to show the run's setting. `extend` does the same for `speech_aware`.
+- `cutpoint ui` AI Chat: the assistant no longer sends a temperature, so newer Claude models that
+  reject one ("Anthropic answered 400: `temperature` is deprecated for this model") work. Every
+  provider (Ollama, OpenAI-compatible, xAI, Anthropic) uses its own default.
 - `cutpoint ui`: Extend export is disabled, with the reason in its tooltip, while Extend start
   and Extend end are blank or 0 and Speech-aware cuts is off. Before, it ran
   `extend --no-speech-aware` with nothing to do, which failed.
