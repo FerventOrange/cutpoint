@@ -276,7 +276,11 @@
           <span id="dLoudnorm" class="vh">Evens the final video to a standard streaming loudness (-14 LUFS).</span>
           <label class="check" title="Keeps the audio transition matched to the video transition: Cut with Cut, Crossfade with Fade."><input type="checkbox" id="optLink" aria-describedby="dLink" checked> Link Transitions</label>
           <span id="dLink" class="vh">Keeps the audio transition matched to the video transition: Cut with Cut, Crossfade with Fade.</span>
+          <span id="dTimelineOnly" class="vh">Not used with a Final Cut or OpenTimelineIO output: a timeline export has no audio processing or burned-in captions.</span>
           <div class="opt-grid">
+            <label for="optFormat" title="What Assemble writes (assemble --format): the final video, or a timeline for Final Cut Pro or DaVinci Resolve (fcpxml) or OpenTimelineIO tools (otio) that uses the exported clips as they are, with the transitions, in about a second. Keep the clips folder for a timeline.">Output format</label>
+            <select id="optFormat" aria-describedby="dFormat"><option value="mp4">Video (mp4)</option><option value="fcpxml">Final Cut (fcpxml)</option><option value="otio">OpenTimelineIO (otio)</option></select>
+            <span id="dFormat" class="vh">What Assemble writes (assemble --format): the final video, or a timeline for Final Cut Pro or DaVinci Resolve (fcpxml) or OpenTimelineIO tools (otio) that uses the exported clips as they are, with the transitions, in about a second. Keep the clips folder for a timeline.</span>
             <label for="optTransition" title="How the picture changes from one clip to the next: a hard cut or a short fade.">Video transition</label>
             <select id="optTransition" aria-describedby="dTransition"><option value="cut">Cut</option><option value="fade">Fade</option></select>
             <span id="dTransition" class="vh">How the picture changes from one clip to the next: a hard cut or a short fade.</span>

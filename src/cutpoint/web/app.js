@@ -43,6 +43,7 @@ const OPT_DEFAULTS = {
   vertical: false, captions: false, speech_aware: true, smart_tail: true, loudnorm: true, link: true,
   transition: 'cut', audio_transition: 'cut', compress_peaks: 'light',
   picks: 'sequence', order: '', event_tails: 'auto', kind: 'highlights', crop_mode: '', caption_model: '',
+  format: 'mp4',
 };
 // The Export tab's number and text fields, by the option they send; blank sends nothing (the CLI's default)
 const OPT_FIELDS = {
@@ -54,7 +55,7 @@ const OPT_FIELDS = {
 };
 const TEXT_FIELDS = new Set(['crop', 'size']); // OPT_FIELDS sent as typed, not as numbers
 // The Export tab's selects that keep their choice, by their storage key; '' (Default) sends nothing
-const OPT_SELECTS = { order: '#optOrder', crop_mode: '#optCrop', caption_model: '#optCaptionModel' };
+const OPT_SELECTS = { order: '#optOrder', crop_mode: '#optCrop', caption_model: '#optCaptionModel', format: '#optFormat' };
 const PEAK_STOPS = ['off', 'light', 'strong']; // the Compress Audio Peaks slider's stops, left to right
 const PEAK_NAMES = { off: 'None', light: 'Light', strong: 'Max' };
 const COLOR_STOPS = ['off', 'auto', 'underwater']; // the Color slider's stops, left to right (--color)
@@ -2855,7 +2856,7 @@ function renderBusy() {
  * line), theirs. Null while nothing has been exported.
  */
 function exportsFolder(p) {
-  const final = p?.outputs?.some((o) => /\.mp4$/i.test(o.name));
+  const final = p?.outputs?.some((o) => /\.(mp4|fcpxml|otio)$/i.test(o.name)); // a video or a timeline-only export
   if (p?.clips) return final && p.final_current ? 'outputs' : 'clips';
   return p?.outputs?.length ? 'outputs' : null;
 }
@@ -3027,7 +3028,8 @@ function renderOutputs() {
   const outs = S.project?.outputs ?? [];
   const final = outs.find((o) => /\.mp4$/i.test(o.name)); // the latest export's, else the newest
   $('#outputs').hidden = !outs.length;
-  const current = S.project?.final_current ?? true; // false: the current export is not assembled yet
+  // false: the current export is not assembled yet, or its latest assembly is a timeline without a video
+  const current = (S.project?.final_current ?? true) && final === outs[0];
   $('#outTitle').textContent = !final ? 'Outputs' : current ? 'Final video' : 'Earlier final';
   const fv = $('#finalVideo');
   fv.hidden = !final;
@@ -3158,11 +3160,13 @@ function assembleOptions() {
   return {
     transition: $('#optTransition').value,
     audio_transition: $('#optAudioTransition').value,
-    loudnorm: $('#optLoudnorm').checked,
+    format: $('#optFormat').value,
+    // off with a timeline format (syncTiming), which the server refuses them with
+    loudnorm: $('#optLoudnorm').checked && !$('#optLoudnorm').disabled,
     compress_peaks: peaks(),
-    captions: $('#optCaptions').checked,
+    captions: $('#optCaptions').checked && !$('#optCaptions').disabled,
     ...rest,
-    ...(audioFade === undefined ? {} : { audio_fade: audioFade }),
+    ...(audioFade === undefined || $('#optFinalAudioFade').disabled ? {} : { audio_fade: audioFade }),
     ...(model.value && !model.disabled ? { caption_model: model.value } : {}),
   };
 }
@@ -4637,8 +4641,10 @@ function initExportOptions() {
  * cuts, the tail lengths with Smart tails. The sequence's moments keep their exact ends with Smart
  * tails off, which turns event tails off too, so Event tails is not sent then. The fields the CLI
  * would not use are off too: Output size with Vertical 9:16, Fade length under a video Cut,
- * Assembly audio fade with the Crossfade audio transition, Captions model without captions. The
- * crop box shows with Crop Custom.
+ * Assembly audio fade with the Crossfade audio transition, Captions model without captions. A
+ * timeline Output format (fcpxml, otio) joins and encodes nothing, so Normalize loudness, Burn in
+ * captions, Captions model and Assembly audio fade are off with it, and say why. The crop box
+ * shows with Crop Custom.
  */
 function syncTiming() {
   const auto = picks() === 'auto';
@@ -4667,9 +4673,26 @@ function syncTiming() {
   document.querySelector('label[for=optCropBox]').hidden = !custom;
   able('#optSize', !$('#optVertical').checked && !pano);
   able('#optFadeDur', $('#optTransition').value === 'fade');
-  able('#optFinalAudioFade', $('#optAudioTransition').value !== 'crossfade');
-  able('#optCaptionModel', $('#optCaptions').checked);
+  const video = $('#optFormat').value === 'mp4';
+  for (const id of ['#optLoudnorm', '#optCaptions']) {
+    const el = $(id);
+    el.disabled = !video;
+    el.closest('label').classList.toggle('off', !video);
+  }
+  able('#optFinalAudioFade', video && $('#optAudioTransition').value !== 'crossfade');
+  able('#optCaptionModel', video && $('#optCaptions').checked);
+  for (const id of ['#optLoudnorm', '#optCaptions', '#optCaptionModel', '#optFinalAudioFade']) timelineNote($(id), !video);
   renderAdvInUse();
+}
+
+/** Add to or take from ``el``'s tooltip and description the reason a timeline Output format turns it off. */
+function timelineNote(el, on) {
+  const label = el.closest('label') ?? document.querySelector(`label[for=${el.id}]`);
+  label.dataset.title ??= label.title;
+  const note = $('#dTimelineOnly').textContent;
+  label.title = on ? `${label.dataset.title} ${note}` : label.dataset.title;
+  const ids = (el.getAttribute('aria-describedby') ?? '').split(' ').filter((d) => d && d !== 'dTimelineOnly');
+  el.setAttribute('aria-describedby', [...ids, ...(on ? ['dTimelineOnly'] : [])].join(' '));
 }
 
 /** Put the audio transition in line with Link Transitions and the video transition. */

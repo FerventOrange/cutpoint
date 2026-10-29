@@ -87,7 +87,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths, progress
-from cutpoint.assemble import AUDIO_TRANSITIONS, default_audio_transition
+from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
@@ -169,9 +169,10 @@ SAFE_NAME = re.compile(r"\w[\w.-]*")  # a name inside the project: no ".", ".." 
 # What ``assemble`` writes next to ``<stem>.mp4`` (.ass: the --captions subtitles it burns in).
 FINAL_EXTS = (".mp4", ".fcpxml", ".otio", ".srt", ".ass")
 # A final in the project folder: ``assemble``'s final.mp4 / final_<x>.mp4 (UI exports included)
-# and ``edit``'s <name>-final.mp4 / <name>-final_vertical.mp4. Partial and staging files start
-# with "." and never match.
-FINAL_VIDEO = re.compile(r"(?:[^.].*-)?final(?:_.*)?\.mp4")
+# and ``edit``'s <name>-final.mp4 / <name>-final_vertical.mp4, or the .fcpxml / .otio timeline
+# that ``--format`` writes instead. Partial and staging files, ``assemble <project>``'s
+# .assemble-tmp-<id> folders and their lock files start with "." and never match.
+FINAL_FILE = re.compile(r"(?:[^.].*-)?final(?:_.*)?\.(?:mp4|fcpxml|otio)")
 # A step update the CLI writes when CUTPOINT_PROGRESS=1 (``spawn`` sets it), bare or after a
 # ``HH:MM:SS LEVEL`` log prefix: ``PROGRESS {"step": ..., "index": ..., "state": ...}``.
 PROGRESS_LINE = re.compile(r"(?:\d{1,2}:\d{2}:\d{2}\s+[A-Z]+\s+)?PROGRESS\s+(\{.*\})")
@@ -2865,7 +2866,10 @@ def _final_names(p: Path) -> list[str]:
     found: list[tuple[int, str]] = []
     with contextlib.suppress(OSError), os.scandir(p) as it:
         for e in it:
-            if FINAL_VIDEO.fullmatch(e.name):
+            # a timeline next to its video is listed with it, not as a final of its own
+            if FINAL_FILE.fullmatch(e.name) and (
+                e.name.endswith(".mp4") or not (p / f"{Path(e.name).stem}.mp4").is_file()
+            ):
                 with contextlib.suppress(OSError):
                     found.append((e.stat().st_mtime_ns, e.name))
     found.sort(reverse=True)
@@ -2874,7 +2878,8 @@ def _final_names(p: Path) -> list[str]:
 
 
 def output_names(p: Path) -> list[str]:
-    """Files of the finals (each video, then its timelines and subtitles) inside the project."""
+    """Files of the finals inside the project: each video or timeline-only export (``assemble
+    --format fcpxml|otio``), then the timelines and subtitles of the same name."""
     out: list[str] = []
     for final in _final_names(p):
         stem = Path(final).stem
@@ -2886,7 +2891,8 @@ def output_names(p: Path) -> list[str]:
                 if (p / f"{stem}{e}").is_file() and _inside(p, f"{stem}{e}")
             ),
         ]
-    return out
+    # a timeline-only final is also its own timeline; a .fcpxml and .otio of one stem share their .srt
+    return list(dict.fromkeys(out))
 
 
 def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
@@ -4237,6 +4243,15 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"caption_model must be one of {', '.join(TRANSCRIPT_MODELS)}")
             if model is not None and not captions:
                 raise bad("caption_model needs captions")
+            fmt = body.get("format", "mp4")
+            if not isinstance(fmt, str) or fmt not in OUTPUT_FORMATS:
+                raise bad(f"format must be one of {', '.join(OUTPUT_FORMATS)}")
+            loudnorm = _flag(body, "loudnorm")
+            if fmt != "mp4" and (loudnorm or captions):  # as the CLI refuses them (exit 2)
+                raise bad(
+                    f"an {fmt} timeline has no audio processing or burned-in captions; "
+                    "turn off Normalize loudness and Burn in captions, or choose mp4"
+                )
             exp_dir = exp["dir"]
             stem = fresh_name(
                 p,
@@ -4247,7 +4262,9 @@ def create_app(port: int) -> FastAPI:
                 "assemble",
                 str(p / exp_dir),
                 "--out",
-                str(p / f"{stem}.mp4"),
+                str(p / f"{stem}.{fmt}"),
+                "--format",
+                fmt,
                 "--transition",
                 transition,
                 "--audio-transition",
@@ -4256,7 +4273,7 @@ def create_app(port: int) -> FastAPI:
                 *_opt("--fade-dur", fade_dur),
                 *_opt("--audio-fade", _seconds(body, "audio_fade", MAX_FADE_S)),
             )
-            if _flag(body, "loudnorm"):
+            if loudnorm:
                 args.append("--loudnorm")
             if captions:
                 args.append("--captions")
@@ -4264,12 +4281,14 @@ def create_app(port: int) -> FastAPI:
                 args += ["--model", model]
 
             def on_success() -> None:
-                if not (p / f"{stem}.mp4").is_file():
-                    raise RuntimeError("assemble finished without a final video")
+                # a timeline export joins and encodes nothing: its timeline is the result
+                if not (p / f"{stem}.{fmt}").is_file():
+                    what = "a final video" if fmt == "mp4" else f"its {fmt} timeline"
+                    raise RuntimeError(f"assemble finished without {what}")
                 items = load_exports(p)
                 for e in items:
                     if e["dir"] == exp_dir:
-                        e["final"] = f"{stem}.mp4"
+                        e["final"] = f"{stem}.{fmt}"
                 cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
         else:

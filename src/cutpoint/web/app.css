@@ -723,6 +723,7 @@ body.tips-off .flag-tip { display: none; }
 /* Export & Assembly Options: the checkboxes, then the transitions with their names on the left */
 .opts { gap: var(--space-1); }
 .opts .check { min-height: 30px; }
+.opts .check.off { opacity: 0.6; } /* a box the Output format does not use (syncTiming) */
 .opt-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 12px; margin: 6px 0 4px; }
 .opt-grid label { color: var(--text); }
 .opt-grid select { width: 100%; }
