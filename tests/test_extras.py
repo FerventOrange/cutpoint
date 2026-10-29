@@ -13,9 +13,9 @@ from cutpoint import cli, extras
 
 
 def test_missing_module_message():
-    msg = extras.missing_module_message("telemetry_parser")
-    assert msg is not None and msg.startswith("telemetry_parser is not installed")
-    assert "'ski' extra" in msg
+    # core dependencies since the ui, keyring and ski extras became empty aliases
+    for core in ("telemetry_parser", "fastapi", "uvicorn", "keyring"):
+        assert extras.missing_module_message(core) is None
     msg = extras.missing_module_message("torch.nn.functional")  # top-level package decides
     assert msg is not None and msg.startswith("torch is not installed")
     assert "'events' extra" in msg

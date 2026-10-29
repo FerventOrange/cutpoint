@@ -71,13 +71,13 @@ export const positionCompare = (a, b) =>
 
 /**
  * The moments list's quick filters (Sort and filter) with nothing filtered: ``seq`` 'all', 'in'
- * (in the sequence) or 'out'; ``ready``: only moments whose preview plays; ``must``: only must
- * include moments; ``source``: one source path, '' for every file.
+ * (in the sequence) or 'out'; ``ready``: only moments whose preview plays; ``source``: one
+ * source path, '' for every file.
  */
-export const NO_FILTERS = Object.freeze({ seq: 'all', ready: false, must: false, source: '' });
+export const NO_FILTERS = Object.freeze({ seq: 'all', ready: false, source: '' });
 
 /** Any quick filter of ``f`` filters (the search text is not one). */
-export const filtersOn = (f) => f.seq !== 'all' || !!f.ready || !!f.must || !!f.source;
+export const filtersOn = (f) => f.seq !== 'all' || !!f.ready || !!f.source;
 
 /**
  * A moment shows in the list: it holds the search text ``q`` (in its label, CLI id such as h001,
@@ -88,6 +88,43 @@ export function momentMatches(m, q, f) {
   const text = String(q ?? '').trim().toLowerCase();
   if (text && !`${m.label ?? ''} ${m.cli_id ?? ''} ${m.transcript ?? ''} ${baseName(m.source)}`.toLowerCase().includes(text)) return false;
   if ((f.seq === 'in' && !m.picked) || (f.seq === 'out' && m.picked)) return false;
-  if ((f.ready && !m.ready) || (f.must && !m.must_include)) return false;
+  if (f.ready && !m.ready) return false;
   return !f.source || m.source === f.source;
+}
+
+// Why a clip got no grade, in plain words: ``color.skip`` in clips/manifest.json (cutpoint.color's
+// skip reasons). A count follows a reason shared by several ("already looked good: 2").
+const COLOR_SKIPS = {
+  good: 'already looked good',
+  log: 'log footage',
+  360: '360 footage',
+  no_frames: 'frames could not be read',
+  veto_clipped: 'too much highlight clipping',
+  veto_cast: 'would add a color cast',
+  veto_m3: 'would oversaturate',
+  veto_m3_drop: 'would wash out the color',
+  not_underwater: 'did not look underwater',
+  veto_faded: 'would wash out the color',
+};
+
+/**
+ * The Export state's Color sentence for an export's clips (manifest entries), starting with a space:
+ * how many clips the grade changed and why the others were left as is, so a grade every clip
+ * skipped is not silent. '' when the export had no Color (a LUT grade has no ``method``) or only at
+ * Strength 0%.
+ */
+export function colorNote(clips) {
+  const asked = (clips ?? []).filter((c) => c?.color?.method);
+  if (!asked.some((c) => (c.color.strength ?? 1) > 0)) return ''; // Strength 0%: no grade asked for
+  const why = new Map();
+  for (const c of asked) {
+    const skip = c.color.skip ? (COLOR_SKIPS[c.color.skip] ?? c.color.skip) : (c.color.strength ?? 1) > 0 ? '' : 'strength 0%';
+    if (skip) why.set(skip, (why.get(skip) ?? 0) + 1);
+  }
+  const left = [...why.values()].reduce((a, b) => a + b, 0);
+  const done = asked.length - left;
+  if (!left) return asked.length === 1 ? ' Color: 1 clip graded.' : ` Color: all ${asked.length} clips graded.`;
+  const reasons = why.size === 1 ? [...why.keys()][0] : [...why].map(([text, n]) => `${text}: ${n}`).join(', ');
+  if (!done) return ` Color: no clips graded (${reasons}).`;
+  return ` Color: ${done} of ${asked.length} clips graded; ${left} left as is (${reasons}).`;
 }

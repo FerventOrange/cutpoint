@@ -12,7 +12,13 @@ Providers, all over ``requests``:
 * :class:`OllamaProvider`: Ollama's ``/api/chat`` (the default).
 * :class:`OpenAIProvider`: ``/v1/chat/completions`` of OpenAI or any server that speaks it
   (LM Studio, vLLM, llama-server), at the configured base URL.
+* :class:`XAIProvider`: the same API at xAI (Grok), whose own key variable is ``XAI_API_KEY``.
 * :class:`AnthropicProvider`: Anthropic's Messages API.
+
+Settings offers each as a preset (:data:`PRESETS`): the provider with its official base URL, so
+users choose "Claude" or "Grok" instead of typing a URL. A configured ``url`` that is not the
+preset's (:func:`is_preset`) still works and is shown as custom. :func:`model_list` lists the
+models a provider offers for the Model field, cached for :data:`MODELS_TTL_S`.
 
 A provider is ``local`` when its URL's host is this machine (``localhost``, a loopback address);
 any other host is hosted, and the page asks the user once per :func:`consent_key` before project
@@ -27,6 +33,8 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -52,6 +60,7 @@ TEMPERATURE = 0.2
 LOCAL_CONTEXT_TOKENS = 8192  # assistant.context_tokens unset: a model on this machine
 HOSTED_CONTEXT_TOKENS = 32768  # assistant.context_tokens unset: a hosted model
 OPENAI_URL = "https://api.openai.com/v1"
+XAI_URL = "https://api.x.ai/v1"
 ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
@@ -59,8 +68,40 @@ ANTHROPIC_MODELS = (DEFAULT_ANTHROPIC_MODEL, "claude-opus-5-5")
 AUTO_SERVER_MODEL = "server's default model"  # an OpenAI-compatible model not resolved yet
 MAX_TOKENS = 4096  # an Anthropic reply's cap (required); a proposal is far shorter
 MAX_ERROR = 300  # characters of a server's error text in a message
-TITLES = {"ollama": "Ollama", "openai": "OpenAI-compatible", "anthropic": "Anthropic"}
-OFFICIAL_TITLES = {"openai": "OpenAI", "anthropic": "Anthropic"}  # at keys.OFFICIAL_HOST
+TITLES = {
+    "ollama": "Ollama",
+    "openai": "OpenAI-compatible",
+    "anthropic": "Anthropic",
+    "xai": "xAI-compatible",
+}
+OFFICIAL_TITLES = {"openai": "OpenAI", "anthropic": "Anthropic", "xai": "xAI"}  # official host
+# Settings' Provider choices, in order: provider name -> title. Each uses its official base URL
+# (Ollama: the configured one, cutpoint.backends.ollama_url), so no URL is typed.
+PRESETS = {
+    "ollama": "None (local Ollama)",
+    "anthropic": "Claude (Anthropic)",
+    "openai": "Codex (OpenAI)",
+    "xai": "Grok (xAI)",
+}
+MODELS_TTL_S = 600.0  # a provider's model list is asked again after this (or on Refresh)
+MAX_MODEL_PAGES = 10  # Anthropic's /v1/models pages read at most
+# Ids of OpenAI-compatible models this provider cannot chat with, left out of the Model list:
+# those starting with a NON_CHAT_PREFIXES entry or containing a NON_CHAT_PARTS one (speech,
+# images, video, embeddings, moderation, legacy completions; *-codex needs the Responses API,
+# which this provider does not use). Every other id stays.
+NON_CHAT_PREFIXES = (
+    "text-embedding-",
+    "tts-",
+    "whisper-",
+    "dall-e-",
+    "omni-moderation-",
+    "text-moderation-",
+    "gpt-image-",
+    "sora-",
+    "davinci-",
+    "babbage-",
+)
+NON_CHAT_PARTS = ("-tts", "-transcribe", "-realtime", "-audio", "-image", "imagine", "codex")
 # Words of a server's refusal of tools (Ollama, vLLM, llama-server without --jinja).
 _NO_TOOLS = ("support", "requires", "jinja", "enable")
 
@@ -105,7 +146,7 @@ class Reply:
 
 
 class Provider(Protocol):
-    name: str  # "ollama", "openai", "anthropic"
+    name: str  # "ollama", "openai", "anthropic", "xai"
     model: str
     local: bool  # runs on this machine: nothing leaves it
     host: str  # the host of its URL ("" when it has none)
@@ -262,6 +303,19 @@ def _http_url(url: str) -> str:
     return url if "://" in url else f"http://{url}"
 
 
+def _chats(model_id: str) -> bool:
+    """Whether an OpenAI-compatible model id may chat (not a :data:`NON_CHAT_PREFIXES` or
+    :data:`NON_CHAT_PARTS` one)."""
+    low = model_id.lower()
+    return not low.startswith(NON_CHAT_PREFIXES) and not any(p in low for p in NON_CHAT_PARTS)
+
+
+def _openai_base(url: str) -> str:
+    """The base URL an OpenAI-compatible provider uses: as given with a path, else ``/v1``."""
+    base = _http_url(url)
+    return base + "/v1" if urlsplit(base).path in ("", "/") else base
+
+
 _USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
 
 
@@ -315,22 +369,34 @@ class OllamaProvider:
         """The model to ask. Auto: :data:`DEFAULT_OLLAMA_MODEL` when ``/api/tags`` lists it,
         else the vision model (:func:`cutpoint.vision.default_model`); asked once."""
         if not self._model:
-            try:
-                resp = requests.get(
-                    f"{self.url}/api/tags", timeout=SHOW_TIMEOUT_S, allow_redirects=False
-                )
-                if moved := _redirect("Ollama", resp, "URL"):
-                    raise moved
-                data = resp.json() if resp.status_code < 400 else None
-            except requests.RequestException as err:
-                why = public(f"Ollama is not reachable at {self.url} ({err})")
-                raise ProviderError(why) from err
-            except ValueError:  # not JSON
-                data = None
-            models = data.get("models") if isinstance(data, dict) else None
-            names = {m.get("name") for m in models or [] if isinstance(m, dict)}
+            names = set(self._tags())
             self._model = DEFAULT_OLLAMA_MODEL if DEFAULT_OLLAMA_MODEL in names else vision_model()
         return self._model
+
+    def _tags(self) -> list[str]:
+        """The names of the pulled models (``/api/tags``); [] for an error answer."""
+        try:
+            resp = requests.get(
+                f"{self.url}/api/tags", timeout=SHOW_TIMEOUT_S, allow_redirects=False
+            )
+            if moved := _redirect("Ollama", resp, "URL"):
+                raise moved
+            data = resp.json() if resp.status_code < 400 else None
+        except requests.RequestException as err:
+            why = public(f"Ollama is not reachable at {self.url} ({err})")
+            raise ProviderError(why) from err
+        except ValueError:  # not JSON
+            data = None
+        models = data.get("models") if isinstance(data, dict) else None
+        return [
+            m["name"]
+            for m in models or []
+            if isinstance(m, dict) and isinstance(m.get("name"), str)
+        ]
+
+    def list_models(self) -> list[dict[str, str]]:
+        """The pulled models, ``{id, name}``, for the Model field."""
+        return [{"id": n, "name": n} for n in self._tags()]
 
     def _post(
         self, endpoint: str, payload: dict[str, Any], timeout: float, **kw: Any
@@ -602,12 +668,10 @@ class OpenAIProvider(_HttpProvider):
     """
 
     name = "openai"
+    default_url = OPENAI_URL
 
     def __init__(self, url: str, model: str, context_tokens: int, key: str | None) -> None:
-        base = _http_url(url or OPENAI_URL)
-        if urlsplit(base).path in ("", "/"):
-            base += "/v1"
-        super().__init__(base, model, context_tokens, key)
+        super().__init__(_openai_base(url or self.default_url), model, context_tokens, key)
         self._temperature = True  # some models (OpenAI's reasoning ones) take only the default
 
     @property
@@ -627,6 +691,14 @@ class OpenAIProvider(_HttpProvider):
             raise self._fail(resp)
         rows = self._read(resp).get("data")
         return [r["id"] for r in rows or [] if isinstance(r, dict) and isinstance(r.get("id"), str)]
+
+    def list_models(self) -> list[dict[str, str]]:
+        """The chat models, ``{id, name}`` (the API gives no display name): every id but those
+        starting with one of :data:`NON_CHAT_PREFIXES` or containing one of
+        :data:`NON_CHAT_PARTS`."""
+        self._need_key()
+        ids = [i for i in self._models() if _chats(i)]
+        return [{"id": i, "name": i} for i in sorted(ids)]
 
     def resolve_model(self) -> str:
         if not self._model:
@@ -725,6 +797,18 @@ class OpenAIProvider(_HttpProvider):
         return {"role": "tool", "tool_call_id": call.id, "content": content}
 
 
+class XAIProvider(OpenAIProvider):
+    """xAI's (Grok's) OpenAI-compatible API at :data:`XAI_URL`, with its own key
+    (``XAI_API_KEY`` or the keyring's ``xai`` entry, only for ``api.x.ai``)."""
+
+    name = "xai"
+    default_url = XAI_URL
+
+    @property
+    def title(self) -> str:
+        return "xAI" if keys.official(self.name, self.host) else f"xAI-compatible {self.host}"
+
+
 class AnthropicProvider(_HttpProvider):
     """Anthropic's Messages API (``/v1/messages``) with tool use.
 
@@ -758,6 +842,34 @@ class AnthropicProvider(_HttpProvider):
                 raise self._fail(resp)
             self._caps = Capabilities(True, False)
         return self._caps
+
+    def list_models(self) -> list[dict[str, str]]:
+        """The models, ``{id, name}`` (``display_name``), from ``/v1/models``: every page
+        (``has_more``, ``after_id``), at most :data:`MAX_MODEL_PAGES`."""
+        self._need_key()
+        out: list[dict[str, str]] = []
+        after = ""
+        for _ in range(MAX_MODEL_PAGES):
+            url = f"{self.url}/v1/models?limit=1000"
+            if after:
+                url += f"&after_id={quote(after, safe='')}"
+            resp = self._send("GET", url, None, CHECK_TIMEOUT_S)
+            if resp.status_code >= 400:
+                raise self._fail(resp)
+            data = self._read(resp)
+            rows = [
+                r
+                for r in data.get("data") or []
+                if isinstance(r, dict) and isinstance(r.get("id"), str)
+            ]
+            for r in rows:
+                name = r.get("display_name")
+                out.append({"id": r["id"], "name": name if isinstance(name, str) else r["id"]})
+            last = data.get("last_id")
+            if data.get("has_more") is not True or not rows:
+                break
+            after = last if isinstance(last, str) and last else rows[-1]["id"]
+        return out
 
     def chat(
         self,
@@ -861,7 +973,7 @@ def _ollama(settings: AssistantSettings) -> Provider:
     )
 
 
-DEFAULT_URLS = {"openai": OPENAI_URL, "anthropic": ANTHROPIC_URL}
+DEFAULT_URLS = {"openai": OPENAI_URL, "anthropic": ANTHROPIC_URL, "xai": XAI_URL}
 
 
 def key_host(name: str, url: str) -> str:
@@ -870,9 +982,32 @@ def key_host(name: str, url: str) -> str:
     return host_of(_http_url(url or DEFAULT_URLS.get(name, "")))
 
 
+def is_preset(name: str, url: str) -> bool:
+    """Whether base URL ``url`` of provider ``name`` is its preset's (:data:`PRESETS`): "" or
+    the official base URL itself (Ollama: the configured Ollama URL). Any other is custom."""
+    if not url:
+        return True
+    if name == "ollama":
+        try:
+            default = ollama_url()
+        except (ValueError, TypeError):  # a bad OLLAMA_HOST or config.json
+            return False
+        return _http_url(url).lower() == _http_url(default).lower()
+    default = DEFAULT_URLS.get(name)
+    if not default:
+        return False
+    norm = _http_url if name == "anthropic" else _openai_base
+    return norm(url).lower() == default.lower()
+
+
 def _openai(settings: AssistantSettings) -> Provider:
     key = keys.lookup("openai", key_host("openai", settings.url))[0]
     return OpenAIProvider(settings.url, settings.model, settings.context_tokens, key)
+
+
+def _xai(settings: AssistantSettings) -> Provider:
+    key = keys.lookup("xai", key_host("xai", settings.url))[0]
+    return XAIProvider(settings.url, settings.model, settings.context_tokens, key)
 
 
 def _anthropic(settings: AssistantSettings) -> Provider:
@@ -885,7 +1020,25 @@ PROVIDERS: dict[str, Callable[[AssistantSettings], Provider]] = {
     "ollama": _ollama,
     "openai": _openai,
     "anthropic": _anthropic,
+    "xai": _xai,
 }
+
+
+_PRESET_CLASSES: dict[str, type[_HttpProvider]] = {
+    "anthropic": AnthropicProvider,
+    "openai": OpenAIProvider,
+    "xai": XAIProvider,
+}
+
+
+def preset(name: str, context_tokens: int = 0) -> Provider:
+    """Preset ``name`` (:data:`PRESETS`) at its official base URL, chosen in Settings but not
+    saved: its key is only its own (its variable or keyring entry for the official host), never
+    :data:`keys.ENV_KEY`, which may be meant for the saved provider's host."""
+    if name == "ollama":
+        return _ollama(AssistantSettings("ollama", context_tokens=context_tokens))
+    key = keys.lookup(name, key_host(name, ""), shared=False)[0]
+    return _PRESET_CLASSES[name]("", "", context_tokens, key)  # type: ignore[return-value]
 
 
 def make(settings: AssistantSettings | None = None) -> Provider:
@@ -896,3 +1049,49 @@ def make(settings: AssistantSettings | None = None) -> Provider:
     """
     settings = settings or assistant_settings()
     return PROVIDERS[settings.provider](settings)
+
+
+# (provider name, base URL) -> (when it was read, its models); successes only
+_MODELS: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
+_MODELS_LOCK = threading.Lock()
+_clock = time.monotonic  # replaced by tests
+
+
+def model_list(
+    provider: Provider, consent: tuple[str, ...], *, refresh: bool = False
+) -> dict[str, Any]:
+    """The models ``provider`` offers, for Settings' Model field: ``{state, models, message}``.
+
+    ``state`` is ``"ok"`` (``models``: ``{id, name}``), ``"key_needed"`` or ``"consent_needed"``
+    (a hosted provider is asked only with its key and once the user agreed to it, ``consent``
+    of ``config.json``; nothing is sent otherwise), ``"unsupported"`` or ``"error"``
+    (``message`` says why, keys redacted): the field then takes any typed name. A list is kept
+    for :data:`MODELS_TTL_S` per provider and base URL; ``refresh`` asks again.
+    """
+    lister = getattr(provider, "list_models", None)
+    if lister is None:
+        return {"state": "unsupported", "models": [], "message": None}
+    if missing := missing_key(provider):
+        return {"state": "key_needed", "models": [], "message": missing}
+    if (want := consent_key(provider)) is not None and want not in consent:
+        return {
+            "state": "consent_needed",
+            "models": [],
+            "message": (
+                f"The model list loads once this provider is saved and you agree in AI Chat to "
+                f"use {provider.host}."
+            ),
+        }
+    cache_key = (provider.name, str(getattr(provider, "url", "")))
+    now = _clock()
+    with _MODELS_LOCK:
+        hit = _MODELS.get(cache_key)
+    if hit is not None and not refresh and now - hit[0] < MODELS_TTL_S:
+        return {"state": "ok", "models": list(hit[1]), "message": None}
+    try:
+        models = lister()
+    except ProviderError as err:
+        return {"state": "error", "models": [], "message": keys.redact(public(str(err)))}
+    with _MODELS_LOCK:
+        _MODELS[cache_key] = (now, models)
+    return {"state": "ok", "models": list(models), "message": None}

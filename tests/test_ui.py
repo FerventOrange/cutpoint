@@ -23,7 +23,6 @@ from typing import ClassVar
 import numpy as np
 import pytest
 
-pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -1859,7 +1858,8 @@ def test_ui_on_a_taken_port_fails_cleanly_without_printing_a_url(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    uvicorn = pytest.importorskip("uvicorn")
+    import uvicorn  # noqa: PLC0415
+
     monkeypatch.setattr(uvicorn.Server, "run", lambda *_a, **_k: pytest.fail("server started"))
     with socket.socket() as held:
         held.bind(("127.0.0.1", 0))
@@ -5795,13 +5795,13 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
 
 def test_export_tab_says_sequence_and_max_video_length() -> None:
     """Contract pin (mock2): the first Clips to Export choice is "Sequence" (was "The sequence
-    (hand-picked)") and --max-total is "Max video length (s)" (was "Max total (s)"), the cap on
-    all clips together; its title and description say so."""
+    (hand-picked)") and --max-total is "Max video length" (was "Max total (s)"; no "(s)", the
+    title says seconds), the cap on all clips together; its title and description say so."""
     html = _web("index.html")
     assert re.search(r'id="optPicksSeq"[^>]*> Sequence</label>', html)
     assert "hand-picked" not in html and "Max total" not in html
     label = re.search(r'<label for="optMaxTotal" title="([^"]*)">([^<]*)</label>', html)
-    assert label and label[2] == "Max video length (s)"
+    assert label and label[2] == "Max video length"
     described = re.search(r'<span id="dMaxTotal" class="vh">([^<]*)</span>', html)[1]
     for text in (label[1], described):
         assert text.startswith("Caps the video's length: the clips' total in seconds")
@@ -5888,6 +5888,35 @@ def test_hidden_advanced_export_fields_still_send_their_values() -> None:
     valid = re.search(r"function validOptions\(body\) \{\n(.*?)\n\}", js, re.S)[1]
     assert "if (bad?.classList.contains('adv')) showAdvExport(true);" in valid
     assert valid.index("showAdvExport(true)") < valid.index("bad?.reportValidity();")
+
+
+def test_extend_export_is_off_with_nothing_to_extend() -> None:
+    """Extend export with blank (or 0) Extend start and end and Speech-aware cuts off would run
+    ``extend --no-speech-aware`` with no padding, which the CLI refuses ("Nothing to do"): the
+    button is disabled with the reason in its title (the tooltip) and follows the fields as they
+    are typed. Its aria-describedby hides the title from screen readers, so the same reason is
+    also in the hidden #extendWhy it names (written only when it changes)."""
+    js = _web("app.js")
+    html = _web("index.html")
+    btn = re.search(r'<button type="button" id="extendBtn"[^>]*>', html)[0]
+    assert 'aria-describedby="dExtendBtn extendWhy"' in btn
+    assert '<span id="extendWhy" class="vh"></span>' in html
+    busy = _js_function(js, "renderBusy")
+    assert "const extendSay = $('#extendWhy');" in busy
+    assert (
+        "if (extendSay.textContent !== $('#extendBtn').title) "
+        "extendSay.textContent = $('#extendBtn').title;"
+    ) in busy
+    assert busy.index("set('#extendBtn'") < busy.index("extendSay.textContent =")
+    assert "const ext = extendOptions();" in busy
+    assert "!ext.speech_aware && !(ext.extend_start > 0) && !(ext.extend_end > 0)" in busy
+    assert "set('#extendBtn', !p || busy || !p.clips || idle, extendWhy);" in busy
+    assert "'Set Extend start or Extend end above 0, or turn Speech-aware cuts on.'" in busy
+    assert "!p?.clips ? 'Export clips first.'" in busy  # the earlier reasons still come first
+    assert (
+        "for (const id of ['#optExtendStart', '#optExtendEnd', '#optSpeech']) "
+        "$(id).addEventListener('input', renderBusy);"
+    ) in js
 
 
 def test_slider_tick_labels_sit_centred_under_their_stops() -> None:
@@ -6653,6 +6682,24 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
         )
 
 
+def test_play_sequence_sits_under_undo_redo_at_a_fixed_width() -> None:
+    """Contract pin: Undo, Redo and Play sequence share one group in that order; Play spans both
+    columns, and a hidden ::after with its longer label keeps "Stop" from shrinking or moving it."""
+    html = _web("index.html")
+    css = _web("app.css")
+    js = _web("app.js")
+    group = re.search(r'<div class="seq-head-acts">(.*?)</div>', html, re.S)[1]
+    assert re.findall(r'id="(\w+)"', group) == ["undoBtn", "redoBtn", "seqPlayBtn"]
+    assert ".seq-head-acts { display: grid; grid-template-columns: 1fr 1fr;" in css
+    play = re.search(r"#seqPlayBtn \{([^}]*)\}", css)[1]
+    assert "grid-column: 1 / -1;" in play and "white-space: nowrap;" in play
+    reserve = re.search(r"#seqPlayBtn::after \{([^}]*)\}", css)[1]
+    # the reserved label is the button's longer one, hidden from sight and the accessible name
+    assert 'content: "Play sequence" / "";' in reserve and "visibility: hidden;" in reserve
+    label = "b.textContent = S.seqPlay ? 'Stop' : 'Play sequence';"
+    assert label in _js_function(js, "renderSeqPlay")
+
+
 # --- Moments list order (#469) ---
 
 
@@ -6754,7 +6801,7 @@ def test_filter_row_is_one_search_and_a_funnel_disclosure() -> None:
     seq = re.findall(r'name="filterSeq" value="(\w+)"(?: checked)?> ([^<]+)</label>', row)
     assert seq == [("all", "All"), ("in", "In sequence"), ("out", "Not in sequence")]
     assert '<input type="checkbox" id="filterReady"> Ready only</label>' in row
-    assert '<input type="checkbox" id="filterMust"> Must include</label>' in row
+    assert "filterMust" not in row and "filterMust" not in js  # Must include was removed
     assert re.search(
         r'<label class="field" id="filterSourceWrap" hidden>Source file\s*<select id="filterSource">',
         row,
@@ -6777,15 +6824,16 @@ def test_filter_row_is_one_search_and_a_funnel_disclosure() -> None:
 
 
 def test_moment_filters_are_remembered_safely_and_the_source_per_project() -> None:
-    """Sort and filter: Sequence, Ready only and Must include are stored per browser (guarded,
-    removed when none is on); the source file is a path of one project, so it is never stored and
-    is dropped when the workspace resets."""
+    """Sort and filter: Sequence and Ready only are stored per browser (guarded, removed when
+    none is on); the source file is a path of one project, so it is never stored and is dropped
+    when the workspace resets. A stored ``must`` from before Must include was removed is not read."""
     js = _web("app.js")
     init = _js_function(js, "initMomentFilters")
     assert "const FILTERS_KEY = 'cutpoint.momentFilters';" in js
     assert re.search(r"try \{[^}]*JSON\.parse\(localStorage\.getItem\(FILTERS_KEY\)\)", init, re.S)
     assert "localStorage.removeItem(FILTERS_KEY)" in init
-    assert "localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready, must }))" in init
+    assert "localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready }))" in init
+    assert "must" not in init
     assert "source" not in init[init.index("const changed") : init.index("renderMoments();")]
     assert "S.filters.source = '';" in _js_function(js, "resetWorkspace")
     assert "filters: { ...NO_FILTERS }," in js
@@ -6865,9 +6913,7 @@ def _filter_moments(tmp: Path, moments: list[dict], q: str, f: dict) -> list[str
         capture_output=True, text=True, check=True, timeout=30,
     )  # fmt: skip
     ids, on = json.loads(out.stdout)
-    assert on == any(
-        f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "must", "source")
-    )
+    assert on == any(f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "source"))
     return ids
 
 
@@ -6888,9 +6934,10 @@ def test_moment_filters_combine_with_the_search_text(tmp_path: Path) -> None:
     assert run("NICE", {}) == ["a"] and run("b.mp4", {}) == ["b", "c"]
     assert run("H001", {}) == ["a"]  # the CLI id on the card (#487)
     assert run("", {"seq": "in"}) == ["a"] and run("", {"seq": "out"}) == ["b", "c"]
-    assert run("", {"ready": True}) == ["a", "b"] and run("", {"must": True}) == ["a", "c"]
+    assert run("", {"ready": True}) == ["a", "b"]
+    assert run("", {"must": True}) == ["a", "b", "c"]  # Must include was removed: not a filter
     assert run("", {"source": "/v/b.mp4"}) == ["b", "c"]
-    assert run("jump", {"seq": "out", "must": True}) == ["c"]
+    assert run("jump", {"seq": "out"}) == ["c"]
     assert run("jump", {"ready": True, "source": "/v/b.mp4"}) == []
 
 
@@ -7088,3 +7135,103 @@ def test_color_starts_from_config_json_but_never_on_for_gaming() -> None:
     assert "if (COLOR_STOPS.includes(st.color)) S.colorDefault = st.color;" in js
     adopt = re.search(r"function adopt\(p, switched\) \{\n(.*?)\n\}", js, re.S)[1]
     assert "if (switched) startColor();" in adopt
+
+
+def _color_note(tmp: Path, clips: list[dict]) -> str:
+    """Run util.js's colorNote under node on manifest ``clips`` (see ``_sort_positions``)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    mod = tmp / "util.mjs"
+    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
+    script = (
+        f"import {{ colorNote }} from {json.dumps(mod.resolve().as_uri())};"
+        "console.log(JSON.stringify(colorNote(JSON.parse(process.argv[1]))));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, json.dumps(clips)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )  # fmt: skip
+    return json.loads(out.stdout)
+
+
+def _graded(method: str, skip: str | None) -> dict:
+    return {"file": "001_a.mp4", "color": {"method": method, "strength": 1.0, "skip": skip}}
+
+
+def test_color_note_counts_the_clips_graded_and_why_the_others_were_not(tmp_path: Path) -> None:
+    """A dive exported with Color on had every clip vetoed and the page said nothing (#461
+    follow-up): Export now says how many clips the grade changed and why it left the others
+    as is, grouping the reasons, in a sentence that starts with a space."""
+    vetoed = [_graded("underwater", "veto_clipped") for _ in range(4)]
+    assert _color_note(tmp_path, vetoed) == " Color: no clips graded (too much highlight clipping)."
+    good = [_graded("auto", s) for s in (None, "good", None, None)]
+    assert _color_note(tmp_path, good) == (
+        " Color: 3 of 4 clips graded; 1 left as is (already looked good)."
+    )
+    skips = ("veto_m3_drop", "veto_clipped", "veto_m3_drop", None)
+    assert _color_note(tmp_path, [_graded("underwater", s) for s in skips]) == (
+        " Color: 1 of 4 clips graded; 3 left as is"
+        " (would wash out the color: 2, too much highlight clipping: 1)."
+    )
+    other = ("360", "log", "no_frames", "veto_cast", "veto_m3", "veto_new", "not_underwater")
+    assert _color_note(tmp_path, [_graded("auto", s) for s in (*other, "veto_faded", "good")]) == (
+        " Color: no clips graded (360 footage: 1, log footage: 1, frames could not be read: 1,"
+        " would add a color cast: 1, would oversaturate: 1, veto_new: 1,"
+        " did not look underwater: 1, would wash out the color: 1, already looked good: 1)."
+    )
+    # PR #495's veto_faded reads as veto_m3_drop does, so the two group together
+    faded = [_graded("auto", s) for s in ("veto_faded", "veto_m3_drop", None)]
+    assert _color_note(tmp_path, faded) == (
+        " Color: 1 of 3 clips graded; 2 left as is (would wash out the color)."
+    )
+    assert _color_note(tmp_path, [_graded("auto", None)] * 2) == " Color: all 2 clips graded."
+    assert _color_note(tmp_path, [_graded("auto", None)]) == " Color: 1 clip graded."
+    # Color Off, an export from before --color, or a LUT grade (no ``method``): no sentence
+    assert _color_note(tmp_path, [{"file": "a.mp4", "color": None}, {"file": "b.mp4"}]) == ""
+    assert _color_note(tmp_path, [{"file": "a.mp4", "lut": {"file": "x.cube"}}]) == ""
+    assert _color_note(tmp_path, []) == ""
+
+
+def test_color_note_counts_a_clip_at_strength_0_as_not_graded(tmp_path: Path) -> None:
+    """Strength 0% applies no grade with no skip reason: such a clip is not counted as graded,
+    and an export whose every clip had Strength 0% gets no sentence."""
+
+    def at(strength: float, skip: str | None = None) -> dict:
+        return {"file": "a.mp4", "color": {"method": "auto", "strength": strength, "skip": skip}}
+
+    assert _color_note(tmp_path, [at(0.0), at(0.0)]) == ""
+    assert _color_note(tmp_path, [at(0.5), at(0.0)]) == (
+        " Color: 1 of 2 clips graded; 1 left as is (strength 0%)."
+    )
+    assert _color_note(tmp_path, [at(0.5, "good"), at(0.0), at(0.0)]) == (
+        " Color: no clips graded (already looked good: 1, strength 0%: 2)."
+    )
+    # an entry without ``strength`` is at full strength
+    assert _color_note(tmp_path, [{"file": "a.mp4", "color": {"method": "auto"}}]) == (
+        " Color: 1 clip graded."
+    )
+
+
+def test_export_state_shows_the_color_note_from_the_manifest(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Contract pin: the project view passes each clip's manifest ``color`` entry to the page,
+    and every "Latest export" sentence of the Export state carries colorNote's sentence."""
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    (p / "clips_ui_1").mkdir()
+    entry = {"method": "auto", "strength": 1.0, "skip": "veto_clipped"}
+    clip = {"file": "001_a.mp4", "color": entry}
+    cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": [clip]})
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    view = client.get(f"/api/projects/{pid}").json()
+    assert view["clips"]["clips"][0]["color"] == entry
+    js = _web("app.js")
+    assert re.search(r"import \{[^}]*\bcolorNote\b[^}]*\} from './util.js';", js)
+    body = re.search(r"function renderExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "+ colorNote(clips?.clips);" in body
+    # always shown (say, not the advanced latest()), in each of the three exported branches
+    for shown in ("say(`${note} Automatic picks", "say(note)",
+                  "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
+        assert body.count(shown) == 1, shown

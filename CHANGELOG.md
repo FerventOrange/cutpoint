@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a WARNING, and Export says "Exported from the 360 preview (not stitched)". The new
   `pano.auto_stitch` key (default `true`) turns it off; the command-line `clips` is unchanged.
 - Docs: how to install Ollama and the models for `--vision` and AI Chat.
+- `cutpoint ui` Settings > AI assistant: choose a Provider preset instead of typing a base URL:
+  None (local Ollama, with a model name), Claude (Anthropic), Codex (OpenAI) or Grok (xAI, the new
+  `assistant.provider` `xai` at `https://api.x.ai/v1`). Grok's key comes from the new
+  `XAI_API_KEY`, used only for `api.x.ai`, kept from jobs and redacted from logs like the others.
+  The Model field lists the provider's models (Ollama's pulled ones; Anthropic, OpenAI and xAI
+  only with a key and after consent; non-chat and `*-codex` models left out), cached 10 minutes, with
+  Refresh list; any name can still be typed. A `url` in `config.json` that no preset has shows as
+  "Custom (from config.json)" and keeps working; its model can still be changed.
 - `cutpoint ui` AI Chat: bring your own AI. `assistant.provider` can be `openai` (OpenAI, or
   LM Studio, vLLM and llama-server at `assistant.url`) or `anthropic` (default model
   `claude-sonnet-5-5`, `claude-opus-5-5` selectable), chosen in Settings with the model and base
@@ -72,8 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that Candidate ids in the Export tab and `clips --ids` take, and the moments filter matches it
   (#487).
 - `cutpoint ui`: the Moments list's search field has a funnel button beside it that opens Sort and
-  filter: the sort order and quick filters (In sequence, Not in sequence or All; Ready only; Must
-  include; a source file when the project has several). They combine with the search text, a dot
+  filter: the sort order and quick filters (In sequence, Not in sequence or All; Ready only; a
+  source file when the project has several). They combine with the search text, a dot
   on the button shows while a filter or a sort other than Score is on, and with nothing left the
   list reads "No moments match these filters." The sort and filters are remembered per browser,
   the source file only while the project is open.
@@ -99,8 +107,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to 3 % of the frame, no longer counts toward its clipping veto. `--color underwater` on
   `gaming` footage logs a stronger WARNING (it still grades). Cached measurements are redone
   (color version 3); `extend` keeps re-applying older records as they were (#494).
+
+- Packaging: the `ui`, `keyring` and `ski` packages (fastapi, uvicorn, keyring, telemetry-parser)
+  are core dependencies, so a plain `uv tool install cutpoint` or `pip install cutpoint` runs
+  `cutpoint ui` and the 360 and telemetry commands. The extras `ui`, `keyring` and `ski` stay as
+  empty aliases; `all` is now `events` and `gpu`. `gpu` and `events` are unchanged (torch is still
+  opt-in for installs from PyPI). In a clone, `uv sync` installs everything through the new default
+  dependency group `full`; `uv sync --no-group full` gives the lite environment. CI and the
+  Dockerfile skip the group. `uv run` also syncs `full`, so an existing clone downloads torch and
+  CUDA (about 7 GB or more) on its next `uv run`; use `--no-group full` or `UV_NO_GROUP=full` to
+  stay lite.
+
 - `cutpoint ui` Export tab: "The sequence (hand-picked)" reads "Sequence" and "Max total (s)"
-  reads "Max video length (s)" (still `--max-total`, the cap on all clips together). Top
+  reads "Max video length" (still `--max-total`, the cap on all clips together). Top
   moments, Candidate ids, the Cut Timing fields other than Event tails, the "Latest export ..." facts
   (not its warnings) and Extend export are hidden unless the new Settings > "Show advanced export options" (off by
   default, kept in the browser) is ticked; hidden fields keep their values and are still sent,
@@ -151,12 +170,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: Extend export is disabled, with the reason in its tooltip, while Extend start
+  and Extend end are blank or 0 and Speech-aware cuts is off. Before, it ran
+  `extend --no-speech-aware` with nothing to do, which failed.
+- `cutpoint ui`: the Play sequence button sits under Undo and Redo, as wide as the pair, and
+  keeps its size and place when it turns into Stop. It used to shrink and jump up beside Redo.
 - `cutpoint ui`: the Sequence, AI Chat and Export tabs share the sequence column's full width
   evenly at any width the column is dragged to; a label too long for a narrow tab ends in an
   ellipsis. Before, they kept their labels' widths at the left of the column.
 - `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
   instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
   there are none.
+- `cutpoint ui` Export tab: after an export with Color on, the export state says how many clips
+  the grade changed and why it left the others as is, from `color.skip` in `manifest.json` (for
+  example "Color: no clips graded (too much highlight clipping)."). An export whose clips the
+  safety checks all skipped looked as if Color had done nothing, with no reason given. The note
+  shows with the advanced export options hidden too.
 - `cutpoint ui`: the final video in the Export tab no longer plays on under Play sequence. It
   kept playing while its tab was hidden, so its audio ran over every sequence clip. Starting
   the preview or leaving the Export tab now pauses it, and playing it stops Play sequence. Play sequence also no longer

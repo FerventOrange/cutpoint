@@ -196,7 +196,7 @@ def _paths_raising(monkeypatch, err: BaseException) -> None:
         (FFmpegNotFoundError("ffmpeg not found. Install it"), "ffmpeg_missing", 1, None),
         (FileExistsError("clips is not empty; use --force"), "output_not_empty", 1, None),
         (RuntimeError("encoder failed"), "error", 1, None),
-        (ModuleNotFoundError("x", name="telemetry_parser"), "missing_extra", 1, "'ski' extra"),
+        (ModuleNotFoundError("x", name="torch"), "missing_extra", 1, "'events' extra"),
         (KeyboardInterrupt(), "interrupted", 130, "interrupted"),
     ],
 )
