@@ -397,8 +397,8 @@ def test_color_grades_name_each_skipped_clip_with_its_code(tmp_path, monkeypatch
     clips._color_grades([plan(i, tmp_path) for i in range(3)], "underwater", 1.0, FMT, False)
     lines = [r.getMessage() for r in caplog.records if r.name == "cutpoint.clips"]
     assert lines[1:] == [
-        "Color: 000_c.mp4 not graded (not_underwater): it does not look underwater; "
-        "--color auto may suit it",
+        "Color: 000_c.mp4 not graded (not_underwater): it does not look like murky or "
+        "color-cast underwater footage; --color auto may suit it",
         "Color: 001_c.mp4 not graded (veto_clipped)",
         "Color underwater: 1 of 3 clips graded; not graded: not_underwater 1, veto_clipped 1",
     ]

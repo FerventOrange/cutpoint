@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 import cutpoint
-from conftest import media_info
+from conftest import media_info, write
 from cutpoint import boundaries, clips, extend, planning
 from cutpoint.encode import OutputFormat
 from cutpoint.events.tails import EventTailSettings
@@ -523,3 +523,39 @@ def test_manifest_header_says_whether_smart_tail_and_speech_were_applied(
         "speech_aware" in extra_a,
         "speech_aware" in extra_b,
     )
+
+
+@pytest.mark.parametrize(
+    ("extra", "on", "clause"),
+    [
+        ({}, True, "smart tail on (min 1.5s, max 5.0s)"),
+        ({}, False, "smart tail off"),  # the run turned it off
+        ({"smart_tail": False}, True, "smart tail off"),
+        ({"tail": 2.0}, True, "smart tail off"),
+    ],
+)
+def test_export_line_says_smart_tail_off_when_no_clip_gets_one(
+    home, monkeypatch, caplog, extra, on, clause
+):
+    """The ``Exporting ...`` line matches the manifest header: ``smart tail off`` when every
+    segment turned it off, the bounds only when a clip gets one."""
+    caplog.set_level(logging.INFO)
+    project = home / "projects" / "p"
+    src = write(project / "src.mp4")
+    seg = write(
+        project / "seg.json",
+        json.dumps([{"source": str(src), "start": 0.0, "end": 2.0, "label": "a", **extra}]),
+    )
+    monkeypatch.setattr(clips, "probe", media_info)
+
+    def export(src, info, start, end, out, *_a, **_kw):
+        out.write_bytes(b"n")
+
+    monkeypatch.setattr(clips, "export_clip_checked", export)
+    monkeypatch.setattr(clips.sources, "source_words", lambda _src, _lang=None: None)
+    monkeypatch.setattr(clips.sources, "audio_window", lambda *a: None)
+    clips.export_clips(
+        project, segments=seg, smart_tail_on=on, tail_min=1.5, tail_max=5.0, speech_aware=False
+    )
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Exporting 1")]
+    assert line.endswith(f"(segments order); {clause}")

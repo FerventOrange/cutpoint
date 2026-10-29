@@ -952,6 +952,14 @@ def _entry(
     }
 
 
+def _smart_tail_used(tail: TailSettings, moments: list[dict[str, Any]]) -> bool:
+    """Whether any of ``moments`` gets a smart tail: the run's setting is on and at least one
+    moment did not turn it off (``"smart_tail": false`` or a fixed ``"tail"``)."""
+    return tail.enabled and any(
+        m.get("smart_tail") is not False and "tail" not in m for m in moments
+    )
+
+
 def write_manifest(
     out_dir: Path,
     project: Path,
@@ -1000,9 +1008,7 @@ def write_manifest(
     padding = padding or Padding()
     # The header says what was applied: off when every clip turned it off ("smart_tail": false
     # or a fixed "tail"; "speech_aware": false), as a sequence's segments can.
-    tails_on = tail.enabled and any(
-        p.entry.get("smart_tail") is not False and "tail" not in p.entry for p in plans
-    )
+    tails_on = _smart_tail_used(tail, [p.entry for p in plans])
     speech_on = speech.enabled and any(p.entry.get("speech_aware") is not False for p in plans)
     cache.save_json(
         out_dir / "manifest.json",
@@ -1206,7 +1212,9 @@ def _color_mode(
 # Plain words after the skip code of a clip :func:`_color_grades` does not grade.
 _SKIP_HINTS = {
     SKIP_LOG: "looks like log/flat footage; use --lut with the camera's LUT",
-    SKIP_NOT_UNDERWATER: "it does not look underwater; --color auto may suit it",
+    SKIP_NOT_UNDERWATER: (
+        "it does not look like murky or color-cast underwater footage; --color auto may suit it"
+    ),
 }
 
 
@@ -1468,15 +1476,15 @@ def export_clips(
             fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
             pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
         logger.info(
-            "Exporting %d clips at %dx%d@%d (%s order); smart tail %s (min %.1fs, max %.1fs)",
+            "Exporting %d clips at %dx%d@%d (%s order); smart tail %s",
             len(ordered),
             fmt.width,
             fmt.height,
             fmt.fps,
             order,
-            "on" if base_tail.enabled else "off",
-            base_tail.tail_min,
-            base_tail.tail_max,
+            f"on (min {base_tail.tail_min:.1f}s, max {base_tail.tail_max:.1f}s)"
+            if _smart_tail_used(base_tail, ordered)
+            else "off",
         )
         if lut is not None:
             logger.info("Grading every clip with %s (strength %g)", lut.path, lut.strength)

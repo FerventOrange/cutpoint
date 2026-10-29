@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clips/manifest.json`: the header's `smart_tail.enabled` and `speech_aware.enabled` are now
   `false` when no clip got them, as for a `--segments` export whose every segment turned them
   off; they used to show the run's setting. `extend` does the same for `speech_aware`.
+- `clips`: the `Exporting ...` INFO line says `smart tail off` when no clip gets a smart tail
+  (every segment has `"smart_tail": false` or a fixed `"tail"`), as the manifest header does;
+  it used to say `on` with the run's setting.
 
 ## [0.4.0] - 2026-10-29
 
