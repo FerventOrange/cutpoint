@@ -224,7 +224,9 @@ possible, such as Docker). After analysis, "Show folder" stays available next to
 in the column header. "Analyze again" asks for confirmation first. The Export tab has one "Show Exports
 Folder" button: it opens the latest export's `clips_ui_*` folder, or the project folder (final
 videos and `.srt`, and a `.fcpxml` or `.otio` timeline only when assembled with `--format
-fcpxml|otio`) once that export is assembled.
+fcpxml|otio`, the Output format) once that export is assembled. A timeline assembled without a
+video is listed and downloadable as that export's final; the `.assemble-tmp-<id>` folders of
+`assemble <project>` are never listed.
 
 After analysis, the Moments list has a search field (label, words spoken, file name or candidate id such as `h001`) and a
 funnel button beside it that opens Sort and filter. Sort by is Score (the default; rank #1
@@ -259,10 +261,11 @@ browser:
 | Option | Effect | Default |
 |---|---|---|
 | Vertical 9:16 | Exports and assembles vertical clips | off |
-| Burn in captions | `assemble --captions` | off |
+| Burn in captions | `assemble --captions`; off with a timeline Output format | off |
 | Speech-aware cuts | `--speech-aware` | on |
 | Smart tails | `--smart-tail` | on |
-| Normalize loudness | `--loudnorm` | on |
+| Normalize loudness | `--loudnorm`; off with a timeline Output format | on |
+| Output format | What Assemble writes (`assemble --format`): Video (mp4), Final Cut (fcpxml) or OpenTimelineIO (otio). A timeline uses the current export's clips in their reviewed order and is written in about a second, with no audio processing or burned-in captions: Normalize loudness, Burn in captions, Captions model and Assembly audio fade are off with it (the server refuses the first two) | Video (mp4) |
 | Link Transitions | On: the audio transition follows the video (Cut gives Cut, Fade gives Crossfade) and the audio select is disabled | on |
 | Video transition | Cut or Fade (`--transition`) | Cut |
 | Audio transition | Cut or Crossfade (`--audio-transition`); Crossfade is unavailable under a video Cut | follows the video |
@@ -373,9 +376,9 @@ cleared when another project opens. In a text field the keys edit the text inste
 Jobs run one at a time with logs and cancellation. Results remain the usual Cutpoint files;
 review choices live under `<project>/ui/`. Exports use fresh `clips_ui_*` folders and finals use
 fresh `final_ui_*` names, so earlier exports are not overwritten (a final name is also skipped
-when its `.srt` exists). The outputs panel lists every final video in the project folder, newest
-first with the export's own final first; until a new export is assembled, the preview of an
-earlier final is titled "Earlier final". A cancelled job shows "stopping" (status `cancelling`
+when its `.srt` exists). The outputs panel lists every final video, or timeline assembled without a
+video, in the project folder, newest first with the export's own final first; until a new
+export is assembled as a video, the preview of an earlier final is titled "Earlier final". A cancelled job shows "stopping" (status `cancelling`
 in `/api/jobs`) until its process exits; Cancel is disabled meanwhile. Cancel returns at once;
 the job has about 12 s to remove its partial files before its process tree is ended (preview
 proxies: 5 s). Assembly uses the latest successful UI export, not any subsequent unexported sequence changes. Failed/cancelled exports

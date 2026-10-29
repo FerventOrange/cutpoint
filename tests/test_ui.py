@@ -2087,6 +2087,66 @@ def test_assemble_ignores_a_hidden_part_file_left_by_a_killed_export(
 
 @pytest.mark.slow
 @needs_ffmpeg
+def test_a_timeline_only_assembly_succeeds_without_a_video_and_is_listed(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """#519: Assemble with an fcpxml format writes only the timeline, so the job completes
+    without a final video and the timeline is listed as the export's own final."""
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    record_export(p, None)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=d=2:s=320x240:r=25",
+         "-f", "lavfi", "-i", "sine=d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-shortest", str(p / "clips_ui_1" / "001_a.mp4")],
+        check=True,
+    )  # fmt: skip
+    body = {"action": "assemble", "format": "fcpxml", "loudnorm": False}
+    res = client.post(f"/api/projects/{pid}/jobs", json=body)
+    assert res.status_code == 200, res.text
+    job = wait_job(client)
+    assert job["status"] == "completed", job
+    got = client.get(f"/api/projects/{pid}").json()
+    assert [o["name"] for o in got["outputs"]] == ["final_ui_1.fcpxml"]
+    assert got["final_current"] is True
+    assert not list(p.glob("*.mp4"))
+
+
+@pytest.mark.parametrize("body", [{"loudnorm": True}, {"captions": True}])
+@pytest.mark.parametrize("fmt", ["fcpxml", "otio"])
+def test_assemble_job_refuses_audio_processing_and_captions_with_a_timeline_format(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict, fmt: str
+) -> None:
+    """#519: as the CLI does (exit 2), a timeline format refuses Normalize loudness and Burn in
+    captions instead of starting a job that would fail."""
+    body = {"action": "assemble", "format": fmt, "loudnorm": False, **body}
+    res, captured = peaks_job(client, monkeypatch, tmp_path, body)
+    assert res.status_code == 400, res.text
+    assert not captured
+
+
+def test_a_timeline_only_final_is_listed_on_its_own_and_a_timeline_beside_its_video_is_not(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """#519: a timeline assembled without a video (``--format fcpxml``) is a final of its own,
+    newest first; a timeline next to its .mp4 is listed after that video, not as another final."""
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    for d in ("clips_ui_1", "clips_ui_2"):
+        (p / d).mkdir()
+        cache.save_json(p / d / "manifest.json", {"clips": []})
+    exports = [{"dir": "clips_ui_1", "final": "final_ui_1.fcpxml"}, {"dir": "clips_ui_2"}]
+    cache.save_json(p / "ui" / "exports.json", {"exports": exports})  # clips_ui_2: not assembled
+    touch(p / "final.mp4", 300)
+    touch(p / "final_ui_1.fcpxml", 100)
+    touch(p / "final.fcpxml", 10)  # newest, but it belongs to final.mp4
+    got = client.get(f"/api/projects/{pid}").json()
+    assert [o["name"] for o in got["outputs"]] == ["final_ui_1.fcpxml", "final.mp4", "final.fcpxml"]
+    assert got["final_current"] is False
+
+
+@pytest.mark.slow
+@needs_ffmpeg
 def test_export_keeps_saved_order_and_each_assembly_is_kept(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -6627,7 +6687,7 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
                   "optEventTails", "optEventWindow", "optExtendStart",
                   "optExtendEnd", "optColor", "optColorStrength", "optFadeDur",
                   "optFinalAudioFade", "optCaptionModel", "optCrop", "optCropBox", "optSize",
-                  "optAudioFade"}  # fmt: skip
+                  "optAudioFade", "optFormat"}  # fmt: skip
     seen = set()
     for control in controls:
         cid = re.search(r'id="(\w+)"', control)[1]

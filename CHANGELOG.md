@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `temporary_clips` warning, or `temporary_clips_left` for a folder that could not be removed.
 - `edit --no-keep-clips`: the same for `edit`, which still keeps its clips by default. Refused
   with `--kind clips`, a timeline `--format` or `--force`.
+- `cutpoint ui`: Output format in the Export tab (#519): Assemble writes the final video, or only
+  a Final Cut (`fcpxml`) or OpenTimelineIO (`otio`) timeline of the current export's clips in
+  their reviewed order (`assemble <clips_dir> --format`). Normalize loudness, Burn in captions,
+  Captions model and Assembly audio fade are off with a timeline, and the server refuses
+  loudness and captions with one; the timeline is listed as the export's final without a video.
 
 - 360 preview API (#517): `candidates.preview_path(project, source, start, end, vertical=)`
   gives the path to preview a moment with: the one `360 analyze` cached (`cached`), one planned
