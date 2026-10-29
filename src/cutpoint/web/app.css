@@ -901,8 +901,8 @@ dialog form { display: grid; gap: 14px; }
   .side { order: 3; border-left: 0; border-top: 1px solid var(--line); }
   .splitter { display: none; }
   .jobs { position: sticky; bottom: 0; }
-  .chat-form, .prop-bar, .side-tabs, #panelSequence > .col-head, #panelAssistant > .chat-head { position: static; }
-  .seq-batch { top: 0; } /* sticks to the window top: the bars above are static here */ /* the page scrolls here; the sticky Jobs bar holds the bottom */
+  .chat-form, .prop-bar, .side-tabs, #panelSequence > .col-head, #panelAssistant > .chat-head { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
+  .seq-batch { top: 0; } /* sticks to the window top: the bars above are static here */
   .top { flex-wrap: wrap; }
   .proj-pick select { max-width: 60vw; }
   .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: none; }
