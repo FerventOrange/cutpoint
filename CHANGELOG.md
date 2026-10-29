@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clips`: the `Exporting ...` INFO line says `smart tail off` when no clip gets a smart tail
   (every segment has `"smart_tail": false` or a fixed `"tail"`), as the manifest header does;
   it used to say `on` with the run's setting.
+- `assemble --loudnorm` (and every `edit` kind that normalises) applies one linear gain to
+  -14 LUFS before the true-peak limiter. ffmpeg's loudnorm used to switch silently to its
+  dynamic mode whenever the peaks did not fit, which re-levelled the clips, shrank the loudness
+  range and undid `--compress-peaks` (#523). Peaky finals can now end below -14 LUFS; a WARNING
+  (`loudness_below_target` with `--json`) names the level when it is more than 1 LU below.
 
 ## [0.4.0] - 2026-10-29
 
