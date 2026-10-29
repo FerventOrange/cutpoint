@@ -163,9 +163,12 @@
           <h2 id="seqTitle" tabindex="-1">Sequence</h2>
           <span id="seqTotal" class="tc muted"></span>
           <span class="spacer"></span>
-          <button type="button" id="undoBtn" class="btn small" aria-keyshortcuts="Control+Z" title="Undo (Ctrl+Z)" disabled>Undo</button>
-          <button type="button" id="redoBtn" class="btn small" aria-keyshortcuts="Control+Y Control+Shift+Z" title="Redo (Ctrl+Y)" disabled>Redo</button>
-          <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
+          <!-- Undo and Redo side by side, Play sequence under them at the pair's width -->
+          <div class="seq-head-acts">
+            <button type="button" id="undoBtn" class="btn small" aria-keyshortcuts="Control+Z" title="Undo (Ctrl+Z)" disabled>Undo</button>
+            <button type="button" id="redoBtn" class="btn small" aria-keyshortcuts="Control+Y Control+Shift+Z" title="Redo (Ctrl+Y)" disabled>Redo</button>
+            <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
+          </div>
         </div>
         <!-- An AI Chat proposal (#346), previewed in place of the sequence until Apply or Discard -->
         <section id="propPanel" class="proposal" aria-labelledby="propTitle" hidden>

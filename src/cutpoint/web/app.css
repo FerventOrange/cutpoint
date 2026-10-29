@@ -261,6 +261,12 @@ select { max-width: 100%; }
 /* the title stays for screen readers and as a focus target; the tab shows it */
 .side .col-head { position: relative; }
 .side .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Sequence header: the total lines up with Undo and Redo; Play sequence spans the pair below them.
+   The hidden ::after keeps the longer label's width, so "Stop" never shrinks or moves the button */
+#panelSequence .col-head { align-items: baseline; }
+.seq-head-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; flex: none; }
+#seqPlayBtn { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; white-space: nowrap; }
+#seqPlayBtn::after { content: "Play sequence" / ""; height: 0; overflow: hidden; visibility: hidden; }
 /* moments header band: count centred; "Analyze again" and "Show folder" on the right, or below it when there is no room; the title is visually hidden */
 .moments { container: moments / inline-size; }
 .moments .col-head {
