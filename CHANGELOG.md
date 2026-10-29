@@ -126,6 +126,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boxes, the wearer's too. `--json` adds `edge_gap`, `causes`, `rendered_only` and a
   `qa_clips_unmatched`, `qa_source_mismatch` or `qa_fps_mismatch` warning. It runs no QA and
   loads no models.
+- `360 qa --compare` splits the `other` cause (#11): each `other` frame of `edge_gap.json` gets
+  an `other_detail` saying why the paths QA did not count the matching projected box as cut
+  (`paths_top_edge`, `paths_inside_margin`, `rendered_box_larger`, `paths_inside`,
+  `paths_below_size`, `paths_self`, `paths_below_area`, `paths_not_subject` or
+  `unexplained`), counted per clip and for the edit (`other_detail`, `other_detail_share`);
+  `causes` and `cause_share` are unchanged. Every rendered-only frame adds an `evidence` block:
+  the cut box and its edge, the matching projected box, its height, area and distance to the
+  edge. `edge_gap.json` is version 2; `--json` adds `other_detail`.
 
 ### Changed
 
@@ -198,6 +206,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from its start, scan included (#11). Keys of an earlier run no longer linger (`--views-only`
   keeps an earlier analysis's, see Fixed), and `total_s` is written with `--no-events` too;
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
+- `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
+  (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
 
 ### Fixed
 

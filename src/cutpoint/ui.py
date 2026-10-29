@@ -3020,11 +3020,17 @@ def inputs_problem(srcs: list[Path], exclude: list[str], recursive: bool) -> str
 
 def _typed_path(x: object) -> object:
     """A source as typed or pasted: without surrounding blanks (a CRLF line's ``\\r`` too) and
-    one pair of surrounding double quotes (Windows' Copy as path)."""
+    one pair of surrounding double quotes (Windows' Copy as path), then a leading ``~`` as
+    :func:`os.path.expanduser` reads it on this OS (left as typed when it cannot)."""
     if isinstance(x, str):
         x = x.strip()
         if len(x) > 1 and x[0] == x[-1] == '"':
             x = x[1:-1]
+        if x.startswith("~"):
+            # a NUL or an unencodable ~user is the callers' error; unlike Path's, a missing
+            # home folder leaves the path as typed
+            with contextlib.suppress(ValueError):
+                x = os.path.expanduser(x)  # noqa: PTH111
     return x
 
 
