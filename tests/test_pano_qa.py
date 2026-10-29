@@ -7,6 +7,7 @@ synthetic; :func:`run_qa` runs with its decoder and models monkeypatched.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -589,3 +590,147 @@ def test_load_path_accepts_a_bom(tmp_path):
     p.write_text('{"keys": []}', encoding="utf-8-sig")  # PowerShell 5.1 writes a BOM
     assert qa.load_path(str(p)) == {"keys": []}
     assert qa.load_path(None) is None
+
+
+# --------------------------------------------------------------------------- wearer cone
+def _cone_item(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> tuple[dict, float]:
+    """A still, IMU-levelled clip whose view looks 60 deg of yaw right of the wearer; returns the
+    QA item and the frame x of the wearer axis (left part of the frame)."""
+    from cutpoint.pano import views as VW  # noqa: PLC0415
+    from cutpoint.pano.render import stabilised_r_vw  # noqa: PLC0415
+    from pano_helpers import make_views  # noqa: PLC0415
+
+    orient = _rolling(np.zeros(900))
+    r_vw = stabilised_r_vw(orient, np.array([60]), 0.7, 0.5)[0]
+    wy, wp = (float(v) for v in G.ray_yaw_pitch(r_vw.T @ G.WEARER_V))
+    keys = [
+        {"t": float(t), "yaw": wy + 60.0, "pitch": wp, "fov": 86.0, "target": "friend"}
+        for t in np.arange(0.0, 10.01, 0.5)
+    ]
+    src = str(tmp_path / f"{name}.lrv")
+    path = {"keys": keys, "cuts": [], "segment": {"start": 1.0, "end": 9.0}, "source": src}
+    monkeypatch.setattr(G, "load_orientation", lambda s: orient if str(s) == src else None)
+    pv = make_views({}, source=src)  # too few boxes: the default wearer axis
+    monkeypatch.setattr(VW, "load_views", lambda s, params=None: pv if str(s) == src else None)
+    item = {
+        "file": f"{name}.mp4",
+        "video": tmp_path / f"{name}.mp4",
+        "offset": 2.0,
+        "kind": None,
+        "path": path,
+        "path_missing": False,
+        "mode": "dfisheye",
+        "imu_levelled": True,
+        "commands": None,
+    }
+    rot = qa.render_rotations(item, orient, np.array([2.0]))[0]
+    d = rot.T @ G.WEARER_V
+    x = (d[0] / d[2] / math.tan(math.radians(43.0)) + 1) / 2
+    return item, float(x)
+
+
+def test_wearer_cone_tags_the_wearer_at_the_edge_as_self(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item, wx = _cone_item(tmp_path, monkeypatch, "cone")
+    assert 0.0 < wx < 0.2  # the wearer axis lands near the left edge
+    wearer = [0, 1, 0.99, 0.0, 0.25, wx + 0.06, 0.85]  # head / goggles there
+    friend = [1, 1, 0.99, 0.88, 0.25, 1.0, 0.85]  # ~80 deg from the wearer, at the right edge
+    det = np.array([wearer, friend], float)
+    is_self = qa.cone_self(item, det, np.array([2.0, 2.5]))
+    assert is_self.tolist() == [True, False]
+
+    def flags(sel: np.ndarray) -> list[list[str]]:
+        recs = qa.frame_flags(
+            det,
+            sel,
+            2,
+            gray_std=np.full(2, 0.2),
+            occl_zs=np.zeros(2),
+            lowinfo_zs=np.zeros(2),
+            targets=["friend"] * 2,
+            roll=None,
+            th=TH,
+        )
+        return [r["flags"] for r in recs]
+
+    assert flags(is_self) == [[], ["edge_cut"]]  # the wearer is no edge cut ...
+    assert flags(np.zeros(2, bool)) == [["edge_cut"], ["edge_cut"]]  # ... untagged it is
+
+
+class _Stub:
+    """Fake models for :func:`qa.qa_clip`: ``det`` on every call, CLIP self calls counted."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, det: np.ndarray, n: int) -> None:
+        self.clip_calls = 0
+        ts = np.arange(n) / 2.0
+        frames = np.full((n, 36, 64, 3), 128, np.uint8)
+        frames[:, :, ::2] = 0
+
+        def self_boxes(data, rules=None):
+            self.clip_calls += 1
+            return np.zeros(len(data.det), bool)
+
+        monkeypatch.setattr(qa, "decode", lambda video, fps, size: (ts, frames))
+        monkeypatch.setattr(
+            V,
+            "visual_data_from_frames",
+            lambda m, t, f: VisualData(t=t, emb=np.zeros((n, 3, 768), np.float16), det=det),
+        )
+        monkeypatch.setattr(V, "self_boxes", self_boxes)
+        monkeypatch.setattr(V, "prompt_score", lambda emb, pos, neg, models=None: np.zeros((n, 3)))
+        monkeypatch.setattr(V, "frame_scores", lambda data, models=None: {})
+        monkeypatch.setattr(V, "beauty_score", lambda sc: np.full(n, 0.4))
+        monkeypatch.setattr(F, "probe", lambda p: SimpleNamespace(duration=n / 2.0))
+
+
+def test_qa_clip_uses_the_cone_with_a_path_and_records_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item, wx = _cone_item(tmp_path, monkeypatch, "rec")
+    det = np.array([[i, 1, 0.99, 0.0, 0.25, wx + 0.06, 0.85] for i in range(4)])
+    stub = _Stub(monkeypatch, det, 4)
+    c = qa.qa_clip(item, Models(), 2.0, (64, 36), TH)
+    assert c["self_method"] == "cone+clip"  # CLIP still runs; a box either tags is self
+    assert stub.clip_calls == 1
+    assert c["self_tags"] == {"cone": 4, "clip": 0}
+    assert c["share"]["edge_cut"] == 0.0
+    assert (c["offset"], c["segment"]) == (2.0, [1.0, 9.0])
+
+
+@pytest.mark.parametrize("why", ["no_path", "no_source", "flowstate", "no_views"])
+def test_qa_clip_falls_back_to_clip_without_a_usable_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    from cutpoint.pano import views as VW  # noqa: PLC0415
+
+    item, wx = _cone_item(tmp_path, monkeypatch, f"fb_{why}")
+    if why == "no_path":
+        item["path"] = None
+    elif why == "no_source":
+        item["path"] = {**item["path"], "source": ""}
+    elif why == "flowstate":
+        item["imu_levelled"] = False
+    else:
+        monkeypatch.setattr(VW, "load_views", lambda s, params=None: None)
+    det = np.array([[i, 1, 0.99, 0.0, 0.25, wx + 0.06, 0.85] for i in range(4)])
+    stub = _Stub(monkeypatch, det, 4)
+    c = qa.qa_clip(item, Models(), 2.0, (64, 36), TH)
+    assert c["self_method"] == "clip"
+    assert stub.clip_calls == 1
+    assert c["self_tags"] == {"cone": None, "clip": 0}
+    assert c["share"]["edge_cut"] == 1.0  # the CLIP stub calls nobody self
+
+
+def test_clip_self_tags_still_count_with_the_cone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cone | clip: a box only CLIP calls self (here the friend at the right edge) stays
+    self next to the cone's wearer."""
+    item, wx = _cone_item(tmp_path, monkeypatch, "union")
+    det = np.array([[0, 1, 0.99, 0.0, 0.25, wx + 0.06, 0.85], [1, 1, 0.99, 0.88, 0.25, 1.0, 0.85]])
+    _Stub(monkeypatch, det, 2)
+    monkeypatch.setattr(V, "self_boxes", lambda data, rules=None: np.array([False, True]))
+    c = qa.qa_clip(item, Models(), 2.0, (64, 36), TH)
+    assert c["self_tags"] == {"cone": 1, "clip": 1}
+    assert c["share"]["edge_cut"] == 0.0

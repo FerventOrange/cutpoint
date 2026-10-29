@@ -19,8 +19,13 @@ and overlapping ones suppressed (``NMS_IOU``), as the detector on a rendered
 frame would; a dropped box that still covers ``edge_min_area`` at the left /
 right edge (a close person's head or shoulder) flags ``edge_cut``
 (:func:`sliver_edge_frames`), the wearer's too unless it is allowed in frame
-(:func:`qa.wearer_allowed`: small, or coming in from the bottom only). What
-needs pixels is not checked:
+(:func:`qa.wearer_allowed`: small, or coming in from the bottom only). A dropped
+non-wearer box that would be the subject (the largest kept person, at least
+``size_min_h`` tall) and touches an edge flags ``edge_cut`` at any area, as the
+rendered QA's subject does (:func:`sliver_subject_frames`). Each frame records
+``view_dt``, the seconds to the view frame its boxes come from (None: none within
+``HOLD_S``) and ``slivers``, the confident boxes dropped as mostly outside the view
+(``[x1, y1, x2, y2, is_self]``), for ``360 qa --compare``. What needs pixels is not checked:
 ``low_info`` and the occluder prompts (gloves, sleeves) are never flagged.
 Pans and the horizon come from the path and the IMU as in the rendered QA.
 
@@ -155,6 +160,50 @@ def sliver_edge_frames(slivers: np.ndarray, th: Q.QAThresholds) -> set[int]:
     return {int(i) for i in slivers[hit, 0]}
 
 
+def sliver_subject_frames(
+    slivers: np.ndarray, det: np.ndarray, is_self: np.ndarray, th: Q.QAThresholds
+) -> set[int]:
+    """Frames where a non-wearer sliver would be the rendered QA's subject and is cut.
+
+    :func:`qa.frame_flags` counts the subject (the largest kept person, if at least
+    ``size_min_h`` tall) as an edge cut at any area. On a rendered frame a stranger
+    mostly outside the view is detected there and, being the largest person, becomes
+    that subject; here the same box is a sliver (``MIN_VISIBLE``). It counts when it
+    is larger than every kept box of ``det`` (``is_self`` per row) in its frame, at
+    least ``size_min_h`` tall, touches the left / right edge (or the top, by
+    :func:`qa.frame_flags`' rule) and is not the wearer detected twice
+    (``edge_self_overlap`` with a self box).
+    """
+    if not len(slivers):
+        return set()
+    x1, y1, x2, y2 = (slivers[:, c] for c in (3, 4, 5, 6))
+    h = y2 - y1
+    area = (x2 - x1) * h
+    ok = (slivers[:, 7] == 0) & (slivers[:, 2] >= th.person_min_score) & (h >= th.subject_min_h)
+    m = th.edge_margin
+    out: set[int] = set()
+    for i in np.unique(slivers[ok, 0]).astype(int):
+        cand = np.flatnonzero(ok & (slivers[:, 0] == i))
+        k = int(cand[np.argmax(area[cand])])
+        if h[k] < th.size_min_h:
+            continue
+        here = det[:, 0].astype(int) == i if len(det) else np.zeros(0, bool)
+        rows, sel = det[here], is_self[here]
+        good = rows[:, 2] >= th.person_min_score
+        rh = rows[:, 6] - rows[:, 4]
+        kept = good & ~sel & (rh >= th.subject_min_h)
+        if kept.any() and ((rows[kept, 5] - rows[kept, 3]) * rh[kept]).max() >= area[k]:
+            continue
+        selfb = good & sel
+        box = slivers[k : k + 1, 3:7]
+        if selfb.any() and Q._overlap(box, rows[selfb, 3:7]).max() >= th.edge_self_overlap:
+            continue
+        top = y1[k] <= m and h[k] > th.edge_top_h and y2[k] < th.edge_top_max_y2
+        if x1[k] <= m or x2[k] >= 1 - m or top:
+            out.add(i)
+    return out
+
+
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
     ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -205,12 +254,16 @@ def geo_frames(
         roll=roll,
         th=th,
     )
-    for i in sliver_edge_frames(slivers, th):
+    for i in sliver_edge_frames(slivers, th) | sliver_subject_frames(slivers, det, is_self, th):
         fl = recs[i]["flags"]
         if "edge_cut" not in fl:  # in frame_flags' order: after occluded / too_close
             fl.insert(sum(f in ("occluded", "too_close") for f in fl), "edge_cut")
-    for r in recs:  # not measured without pixels
-        r["occl_zs"] = r["lowinfo_zs"] = r["gray_std"] = None
+    pv_t = np.asarray(pv.t, float)
+    for i, (r, j, t) in enumerate(zip(recs, frame_idx, src_times, strict=True)):
+        r["occl_zs"] = r["lowinfo_zs"] = r["gray_std"] = None  # not measured without pixels
+        r["view_dt"] = round(abs(float(pv_t[j]) - float(t)), 2) if j >= 0 else None
+        mine = slivers[(slivers[:, 0] == i) & (slivers[:, 2] >= th.person_min_score)]
+        r["slivers"] = [[*(round(float(v), 4) for v in sv[3:7]), bool(sv[7])] for sv in mine]
     return recs
 
 
@@ -328,7 +381,7 @@ def qa_path_clip(item: dict[str, Any], pv: Any, fps: float, th: Q.QAThresholds) 
     hor = Q.horizon_summary(
         Q.horizon(item, off + np.arange(0.0, dur, 1 / 30.0)), Q.horizon_source(item)
     )
-    return Q.clip_record(item, dur, recs, fps, pan, hor, th)
+    return Q.clip_record(item, dur, recs, fps, pan, hor, th, self_method="cone")
 
 
 def run_paths_qa(
