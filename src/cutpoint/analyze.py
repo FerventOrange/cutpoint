@@ -1491,6 +1491,7 @@ def analyze(
     recover: bool = False,
     layers: bool = False,
     skip: Collection[str] = (),
+    earlier_total_s: float | None = None,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -1531,6 +1532,9 @@ def analyze(
             (``CUTPOINT_PROGRESS``); False (``reanalyze``, ``360 analyze``): reuse
             events.json as it is.
         skip: Steps of :data:`cutpoint.progress.SKIPPABLE` left out.
+        earlier_total_s: ``timings.total_s`` of the analysis this run re-ranks
+            (:func:`reanalyze`): kept as ``total_s``, and this run's own time is recorded as
+            ``timings.rerank_s``. None: this run's time is ``total_s``.
 
     Returns:
         Path of the written highlights.json.
@@ -1554,6 +1558,7 @@ def analyze(
             recover=recover,
             layers=layers,
             skip=skip,
+            earlier_total_s=earlier_total_s,
         )
 
 
@@ -1576,6 +1581,7 @@ def _analyze(
     recover: bool,
     layers: bool,
     skip: Collection[str],
+    earlier_total_s: float | None,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -1897,7 +1903,12 @@ def _analyze(
         hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
         hl["suggested_top"] = suggested
         hl["created"] = datetime.now().isoformat(timespec="seconds")
-        timings["total_s"] = round(time.perf_counter() - t_start, 2)
+        took = round(time.perf_counter() - t_start, 2)
+        if earlier_total_s is None:
+            timings["total_s"] = took
+        else:  # a re-rank: the analysis itself took what it took the first time
+            timings["total_s"] = earlier_total_s
+            timings["rerank_s"] = took
         # Text mode's line endings, as a plain write_text gave them; highlights.json last, so
         # the commit renames it last.
         cache.save_bytes(
@@ -1908,7 +1919,7 @@ def _analyze(
         if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
             cache.remove(out_dir / "highlights.pre-events.json")
         held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
-        logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, timings["total_s"])
+        logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, took)
         report_highlights(out_dir, out)
         return out
 
@@ -1933,7 +1944,8 @@ def reanalyze(project: Path) -> Path:
 
     Everything expensive is cached (audio, transcript, telemetry), so this is
     quick. ``cutpoint events`` calls it for ski projects, whose events feed the
-    feature grid itself rather than a score boost.
+    feature grid itself rather than a score boost. ``timings.total_s`` stays the earlier
+    analysis's; the re-rank's own time is ``timings.rerank_s``.
 
     Raises:
         FileNotFoundError: If the project has no highlights.json.
@@ -1958,6 +1970,7 @@ def reanalyze(project: Path) -> Path:
     style = get_style(hl["style"])
     if st.get("must_include_crash") is not None:  # an `analyze --must-include-crash`
         style = replace(style, must_include_crash=float(st["must_include_crash"]))
+    total = (hl.get("timings") or {}).get("total_s")
     return analyze(
         [Path(p) for p in inputs],
         style,
@@ -1974,6 +1987,8 @@ def reanalyze(project: Path) -> Path:
         exclude=st.get("exclude") or [],
         recursive=bool(st.get("recursive")),
         recover=bool(st.get("recover")),
+        # the analysis time stays the first run's; this re-rank's is timings.rerank_s
+        earlier_total_s=float(total) if isinstance(total, int | float) else None,
     )
 
 

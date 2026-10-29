@@ -927,10 +927,13 @@ def fit_weights(
     Returns:
         The fit report (also written into the preset JSON).
     """
+    from cutpoint import features as registry  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     datasets = project if isinstance(project, list) else [load_fit_data(project, result)]
     base_style = get_style(base)
+    if features is not None:  # registry names; an older name is read as its new one
+        features = list(registry.ski_names(dict.fromkeys(features, 0.0)))
     keys_w = [k for k in (features or list(base_style.weights)) if taste or k != "taste"]
     if taste and "taste" not in keys_w:
         keys_w.append("taste")
@@ -1101,7 +1104,7 @@ ABLATION_SETS = {
     "old + beauty": ["beauty"],
     "old + people": ["people"],
     "old + group": ["group"],
-    "old + laughter": ["laughter"],
+    "old + voice_laughter": ["voice_laughter"],
     "old + voice": ["voice"],
     "old + taste": ["taste"],
     "all": "all",
@@ -1121,7 +1124,8 @@ def ablate(
     VLM tags enter through ``vlm`` / ``scenic``; "no_vlm" drops those
     features. ``thresholds`` are ``mask_friends`` modes, as for :func:`fit_weights`.
     """
-    from cutpoint.ski import FEATURES, NEW_FEATURES  # noqa: PLC0415
+    from cutpoint.features import SKI_FEATURES as FEATURES  # noqa: PLC0415
+    from cutpoint.ski import NEW_FEATURES  # noqa: PLC0415
 
     old = [f for f in FEATURES if f not in NEW_FEATURES]
     rows = []

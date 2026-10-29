@@ -282,14 +282,14 @@ STYLES: dict[str, Style] = {
         kind="ski",
         # Feature weights (cutpoint.ski): telemetry, VLM tags, audio events,
         # and the voice / visual layers (beauty replaces the VLM scenic tag,
-        # wind-gated laughter takes half of the PANNs-event social weight).
+        # wind-gated voice_laughter takes half of the PANNs-event social weight).
         weights={
             "airtime": 0.25,
             "crash": 0.20,
             "vlm": 0.20,
             "speed": 0.15,
             "social": 0.05,
-            "laughter": 0.05,
+            "voice_laughter": 0.05,
             "carve": 0.05,
             "scenic": 0.0,
             "beauty": 0.05,
@@ -389,7 +389,10 @@ def load_learned(path: Path) -> Style:
     base = STYLES.get(data.get("base", ""))
     if base is None:
         raise ValueError(f"{path}: unknown base style {data.get('base')!r}")
-    weights = {**base.weights, **{k: float(v) for k, v in data.get("weights", {}).items()}}
+    own = {k: float(v) for k, v in data.get("weights", {}).items()}
+    if base.kind == "ski":  # an older preset's "laughter" is voice_laughter (features.SKI_ALIASES)
+        own = features.ski_names(own, str(path))
+    weights = {**base.weights, **own}
     bad = unknown_weights(weights)
     if bad:  # kept, so the score is as before: counted in the divisor, nothing on the grid
         _warn_unknown(str(path), tuple(bad))

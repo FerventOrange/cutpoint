@@ -20,15 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui`: the Moments header shows "Analyzed X of video in Y" under Analyze again and
   Show folder (#459), from the sources and `timings.total_s` that `highlights.json` already
   records (360 projects: the scan and analyze times in `pano_timings.json`); hidden when they
-  are not recorded. Known limit: on ski projects, an `events` or `crashes --reanalyze` re-rank
-  replaces the time shown with the re-rank's.
+  are not recorded. On ski projects an `events`, `360 analyze` or `crashes --reanalyze` re-rank
+  keeps the analysis time (see `timings.rerank_s` below).
 - Feature registry (#514 phase 1a): every scoring signal is a named feature with a
   description, the layer it comes from and the extra it needs. Each built-in style's weights
   name registered features; a learned style with a name that is not one logs a WARNING that
   names it and its file, and scores as before. A candidate's `score` is divided by the weights
   of the features this install can compute, so a feature of a missing extra no longer lowers
   it, and the built-in generic styles (gaming, action, sport, funny, commentary) score the same
-  on lite and full installs. Ski styles still divide by all their weights until #514 phase 1b.
+  on lite and full installs. Ski styles do the same since #514 phase 1b (below).
   `highlights.json` records the features it could compute in
   `settings.features_available`. The `events.json` rescore is now the scorer's bonus stage,
   with the same points.
@@ -76,6 +76,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ski styles score on the feature registry (#514 phase 1b). On a full install every ski score,
+  pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
+  of the features lite can compute, as the generic styles do since phase 1a. The `events`
+  features are left out: `vlm`, `social`, `voice_laughter` and `beauty` (0.20, 0.05, 0.05 and
+  0.05 in the built-in `ski` style), and `scenic`, `people`, `group`, `voice` and `taste`
+  (0 there). The divisor goes from 1.02 to 0.67, so a built-in `ski` score on lite is about 52%
+  higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
+  among themselves they keep the analysis order (source by source). Lite scores above about 65.7
+  before become 100. Must-include crash scores (the crash's confidence) do not change. A learned
+  ski preset shifts by its own weights. Any score renormalised this way is capped at 100: on lite,
+  `social` still carries the transcript's laughter, so a peak can pass the smaller divisor.
+  Full-install scores are never capped.
+- The ski feature `laughter` (laughter heard over the wind noise, from the voice layer) is now
+  `voice_laughter`, its name in the feature registry; `laughter` is the transcript feature of
+  the generic styles. Scripts that read ski results see the new name: the `signals` key of each
+  ski candidate in `highlights.json`, the candidate's `kind` (and the clip's `kind` in
+  `clips/manifest.json`) when voice laughter dominates (the label stays `laugh`),
+  `settings.weights`, the `f_voice_laughter` grid of `ski_features/*.npz`, and the weights and
+  `features_fitted` that `refmatch` and `fit` write. Older learned presets and `ski_features`
+  files that say `laughter` still load, read as `voice_laughter` (a DEBUG line names the file)
+  and score as before. The 360 director treats a `voice_laughter` moment as a `laughter` one.
+- `highlights.json` `timings`: a re-rank of an earlier analysis (`events` on ski projects,
+  `360 analyze`, `crashes --reanalyze`) keeps the analysis's `total_s` and records its own time
+  as `rerank_s`. It used to replace `total_s` with the re-rank's few seconds.
 - `cutpoint ui` Settings > AI assistant: Model is a dropdown of the provider's models (#521)
   instead of a text box with suggestions. "Other model…" shows a Model id field for an id the
   list lacks; a saved model the list lacks stays chosen, marked "(not in the provider's list)",

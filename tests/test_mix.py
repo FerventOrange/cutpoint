@@ -111,7 +111,9 @@ def test_crash_rule_keeps_weak_but_corroborated_crashes() -> None:
 
 def test_part_candidates_in_source_time_and_one_lift_per_ride() -> None:
     n = 2000  # 200 s part starting at 100 s in the source
-    f = {k: np.zeros(n) for k in ("carve", "people", "stopped", "airtime", "laughter", "voice")}
+    f = {
+        k: np.zeros(n) for k in ("carve", "people", "stopped", "airtime", "voice_laughter", "voice")
+    }
     f["beauty"] = np.full(n, 0.3)
     f["carve"][500:700] = 1.0
     mask = np.zeros(n)
