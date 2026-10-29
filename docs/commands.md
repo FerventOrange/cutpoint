@@ -312,7 +312,9 @@ The sequence panel shows a thumbnail per clip and supports inline rename (pencil
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
-remembered per browser. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
+remembered per browser. A second splitter between the Moments column and the preview works the same
+way (Shift for bigger steps); its width is remembered per browser too, stays between 260 and 640 px
+and at most half the window, and never leaves the preview narrower than 360 px. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
 pass another `--port`.
 
 Undo and Redo in the Sequence header (Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z) step back and forward

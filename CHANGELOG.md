@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
+  splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
+  double-click to reset. The width is remembered per browser. Both splitters share one helper, and
+  the preview keeps at least 360 px, so at the narrowest three-column window (961 px) neither it
+  nor a column collapses.
 - `install.ps1`: offers to install Ollama when it is missing (full mode only; default No), with
   `winget install --id Ollama.Ollama -e` or the download link when winget is missing or fails; it
   waits for the server (starting `ollama serve` hidden only if the Ollama app has not), then offers

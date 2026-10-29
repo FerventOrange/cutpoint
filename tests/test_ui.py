@@ -5741,6 +5741,63 @@ def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
     assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
 
 
+@pytest.mark.parametrize(
+    ("bar", "col", "prop", "key", "limits", "track"),
+    [
+        ("sideSplit", "side", "--side-w", "SIDE_KEY", ("SIDE_MIN", "SIDE_MAX", -1), 3),
+        ("momSplit", "moments", "--mom-w", "MOM_KEY", ("MOM_MIN", "MOM_MAX", 1), 1),
+    ],
+)
+def test_column_splitters_resize_by_pointer_keys_and_reset_and_keep_the_stage(
+    bar: str, col: str, prop: str, key: str, limits: tuple[str, str, int], track: int
+) -> None:
+    """Contract pin (#516): the moments and sequence columns each have a focusable separator
+    beside them, driven by one shared helper with the column's own storage key, limits and drag
+    direction; the width is a CSS track of #workspace, and the stage track keeps STAGE_MIN.
+
+    Check in a browser (no browser in the test suite): drag, arrows (Shift for four steps),
+    Home/End and double-click resize each column; the width survives a reload; at a 961 px window
+    the preview stays 360 px and neither column shrinks below its minimum."""
+    html, css, js = _web("index.html"), _web("app.css"), _web("app.js")
+    tag = re.search(rf'<div id="{bar}"[^>]*>', html)[0]
+    for attr in ('class="splitter"', 'role="separator"', 'tabindex="0"',
+                 'aria-orientation="vertical"', f'aria-controls="{col}"',
+                 'title="Drag to resize, double-click to reset"'):  # fmt: skip
+        assert attr in tag, attr
+    assert re.search(rf'<section class="col {col}" id="{col}"', html)
+    lo, hi, direction = limits
+    assert re.search(
+        rf"splitter\(\{{ bar: \$\('#{bar}'\), col: \w+, other: \w+, prop: '{prop}', key: {key},"
+        rf"\s+min: {lo}, maxW: {hi}, dir: {direction} \}}\)",
+        js,
+    )
+    # one helper for both: a single drag, key and reset handler, no copy per column
+    helper = re.search(r"function initSplitters\(\) \{.*?\n\}\n", js, re.S)[0]
+    for listener in ("'pointerdown'", "'keydown'", "'dblclick'"):
+        assert helper.count(f"bar.addEventListener({listener}") == 1, listener
+    for attr in ("aria-valuemin", "aria-valuemax", "aria-valuenow"):
+        assert f"bar.setAttribute('{attr}'" in helper
+    assert "requestAnimationFrame(flush)" in helper  # at most one resize per frame
+    assert "Math.floor(innerWidth / 2)" in helper and "- STAGE_MIN" in helper
+    assert "addEventListener('resize'" in helper
+    assert re.search(r"try \{\s+pref = Number\(localStorage\.getItem\(key\)\)", helper)
+    assert re.search(r"try \{\s+if \(pref == null\) localStorage\.removeItem\(key\);", helper)
+    assert f'@property {prop} {{ syntax: "*"; inherits: false; }}' in css
+    cols = re.search(r"^#workspace \{[^}]*grid-template-columns: ([^;]+);", css, re.M)[1]
+    tracks = re.findall(r"var\([^()]*\([^)]*\)\)|minmax\([^)]*\)", cols)
+    assert tracks[track - 1].startswith(f"var({prop}, minmax(")
+    stage_min = re.search(r"^const STAGE_MIN = (\d+);", js, re.M)[1]
+    assert tracks[1] == f"minmax({stage_min}px, 1fr)"
+    # the narrowest window with three columns fits both minimums beside the stage's
+    narrow = int(re.search(r"@media \(max-width: (\d+)px\) \{\n  body", css)[1]) + 1
+    mins = [int(re.search(rf"^const {name} = (\d+);", js, re.M)[1]) for name in
+            ("MOM_MIN", "SIDE_MIN")]  # fmt: skip
+    assert sum(mins) + int(stage_min) <= narrow
+    # the handle sits at the left edge of the track right of the bar, in its own cell
+    edge = re.search(r"^\.splitter \{[^}]*grid-area: 1 / 3;", css, re.M)
+    assert edge if bar == "sideSplit" else "#momSplit { grid-area: 1 / 2; }" in css
+
+
 def test_export_panel_has_the_options_and_actions_and_no_single_padding_field() -> None:
     """Contract pin (#462): the Export tab holds every export and assembly option and the
     actions; the old single padding field (``#optExtend``) stays gone: padding is a start and an

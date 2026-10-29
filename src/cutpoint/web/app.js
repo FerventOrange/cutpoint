@@ -19,8 +19,11 @@ const live = (status) => status === 'running' || status === 'cancelling'; // the
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
 const SIDE_MIN = 290; // pixels; the column's CSS default is 290-380
 const SIDE_MAX = 640;
-const STAGE_MIN = 360; // pixels the preview keeps when the sequence column widens
-const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
+const MOM_KEY = 'cutpoint.momentsWidth'; // localStorage: the moments column width the user dragged to
+const MOM_MIN = 260; // pixels; the column's CSS default is 260-340
+const MOM_MAX = 640;
+const STAGE_MIN = 360; // pixels the preview keeps when either column widens (app.css: the stage track)
+const SPLIT_STEP = 16; // pixels per arrow key on a column splitter; Shift moves four steps
 const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for every preview video
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
 const ADV_KEY = 'cutpoint.advancedExport'; // localStorage: "1" while Show advanced export options is on (off by default)
@@ -3865,91 +3868,108 @@ function renderAll(seekToStart) {
 }
 
 /**
- * The separator on the sequence column's left edge: drag, arrow keys (Home/End for the limits) or
- * double-click to reset. The width is remembered per browser; without storage it lasts the session.
+ * The separators beside the moments column and the sequence column: drag, arrow keys (Home/End for
+ * the limits) or double-click to reset. Each width is remembered per browser; without storage it
+ * lasts the session. A column never widens past half the window, nor so far that the preview and
+ * the other column together get less than STAGE_MIN.
  */
-function initSplitter() {
-  const bar = $('#sideSplit');
+function initSplitters() {
   const ws = $('#workspace');
-  const side = $('#side');
-  let pref = null; // dragged width in pixels, or null for the CSS default
-  try {
-    pref = Number(localStorage.getItem(SIDE_KEY)) || null;
-  } catch {
-    // storage blocked: start from the default
-  }
-  const store = () => {
+  const applies = [];
+  // Each column's limit depends on the other's width: apply ``first``, then the other (its limit
+  // and its CSS default follow), then ``first`` once more, as its limit follows the other's width.
+  const refresh = (first) => [first, ...applies.filter((a) => a !== first), first].forEach((a) => a());
+  const splitter = ({ bar, col, other, prop, key, min, maxW, dir }) => {
+    let pref = null; // dragged width in pixels, or null for the CSS default
     try {
-      if (pref == null) localStorage.removeItem(SIDE_KEY);
-      else localStorage.setItem(SIDE_KEY, String(pref));
+      pref = Number(localStorage.getItem(key)) || null;
     } catch {
-      // storage blocked or full: the width still applies until reload
+      // storage blocked: start from the default
     }
-  };
-  const max = () => Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.floor(innerWidth / 2),
-    ws.clientWidth - $('.moments').offsetWidth - STAGE_MIN));
-  const clamp = (w, hi = max()) => Math.round(Math.min(Math.max(w, SIDE_MIN), hi));
-  // pref stays as chosen; only what is applied is clamped, so a wider window gets it back.
-  // Layout is read once, before the write: reading it after would force a synchronous relayout.
-  const apply = () => {
-    const hi = max();
-    const w = pref == null ? null : clamp(pref, hi);
-    if (w == null) ws.style.removeProperty('--side-w');
-    else ws.style.setProperty('--side-w', `${w}px`);
-    bar.setAttribute('aria-valuemin', SIDE_MIN);
-    bar.setAttribute('aria-valuemax', hi);
-    bar.setAttribute('aria-valuenow', w ?? side.offsetWidth);
-  };
-  const set = (w) => {
-    pref = w == null ? null : clamp(w);
-    apply();
-  };
+    const store = () => {
+      try {
+        if (pref == null) localStorage.removeItem(key);
+        else localStorage.setItem(key, String(pref));
+      } catch {
+        // storage blocked or full: the width still applies until reload
+      }
+    };
+    const max = () => Math.max(min, Math.min(maxW, Math.floor(innerWidth / 2),
+      ws.clientWidth - other.offsetWidth - STAGE_MIN));
+    const clamp = (w, hi = max()) => Math.round(Math.min(Math.max(w, min), hi));
+    // pref stays as chosen; only what is applied is clamped, so a wider window gets it back.
+    // Each apply reads layout before its own write; refresh() chains three, so a change costs up to
+    // two forced relayouts (at most one change per frame while dragging).
+    const apply = () => {
+      const hi = max();
+      const w = pref == null ? null : clamp(pref, hi);
+      if (w == null) ws.style.removeProperty(prop);
+      else ws.style.setProperty(prop, `${w}px`);
+      bar.setAttribute('aria-valuemin', min);
+      bar.setAttribute('aria-valuemax', hi);
+      bar.setAttribute('aria-valuenow', w ?? col.offsetWidth);
+    };
+    const set = (w) => {
+      pref = w == null ? null : clamp(w);
+      refresh(apply);
+    };
 
-  bar.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    bar.setPointerCapture(e.pointerId);
-    bar.classList.add('dragging');
-    const x0 = e.clientX;
-    const w0 = side.offsetWidth;
-    // At most one resize per frame, however fast the pointer reports.
-    let next = null;
-    let frame = 0;
-    const flush = () => {
-      frame = 0;
-      if (next != null) set(next);
-      next = null;
-    };
-    const move = (ev) => {
-      next = w0 + x0 - ev.clientX; // dragging left widens the column
-      if (!frame) frame = requestAnimationFrame(flush);
-    };
-    const end = () => {
-      cancelAnimationFrame(frame);
-      flush();
-      bar.classList.remove('dragging');
-      bar.removeEventListener('pointermove', move);
-      bar.removeEventListener('lostpointercapture', end);
+    bar.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      bar.setPointerCapture(e.pointerId);
+      bar.classList.add('dragging');
+      const x0 = e.clientX;
+      const w0 = col.offsetWidth;
+      // At most one resize per frame, however fast the pointer reports.
+      let next = null;
+      let frame = 0;
+      const flush = () => {
+        frame = 0;
+        if (next != null) set(next);
+        next = null;
+      };
+      const move = (ev) => {
+        next = w0 + dir * (ev.clientX - x0); // dragging away from the column widens it
+        if (!frame) frame = requestAnimationFrame(flush);
+      };
+      const end = () => {
+        cancelAnimationFrame(frame);
+        flush();
+        bar.classList.remove('dragging');
+        bar.removeEventListener('pointermove', move);
+        bar.removeEventListener('lostpointercapture', end);
+        store();
+      };
+      bar.addEventListener('pointermove', move);
+      bar.addEventListener('lostpointercapture', end);
+    });
+    bar.addEventListener('keydown', (e) => {
+      const step = (e.shiftKey ? SPLIT_STEP * 4 : SPLIT_STEP) * dir;
+      const w = col.offsetWidth;
+      const next = { ArrowLeft: w - step, ArrowRight: w + step, Home: min, End: max() }[e.key];
+      if (next == null) return;
+      e.preventDefault();
+      set(next);
       store();
-    };
-    bar.addEventListener('pointermove', move);
-    bar.addEventListener('lostpointercapture', end);
-  });
-  bar.addEventListener('keydown', (e) => {
-    const step = e.shiftKey ? SIDE_STEP * 4 : SIDE_STEP;
-    const w = side.offsetWidth;
-    const next = { ArrowLeft: w + step, ArrowRight: w - step, Home: SIDE_MIN, End: max() }[e.key];
-    if (next == null) return;
-    e.preventDefault();
-    set(next);
-    store();
-  });
-  bar.addEventListener('dblclick', () => {
-    set(null);
-    store();
-  });
-  addEventListener('resize', apply);
-  apply();
+    });
+    bar.addEventListener('dblclick', () => {
+      set(null);
+      store();
+    });
+    return apply;
+  };
+  const side = $('#side');
+  const moments = $('.moments');
+  // dir: +1 when the column is left of its bar (dragging right widens it), -1 when right of it
+  applies.push(
+    splitter({ bar: $('#sideSplit'), col: side, other: moments, prop: '--side-w', key: SIDE_KEY,
+      min: SIDE_MIN, maxW: SIDE_MAX, dir: -1 }),
+    splitter({ bar: $('#momSplit'), col: moments, other: side, prop: '--mom-w', key: MOM_KEY,
+      min: MOM_MIN, maxW: MOM_MAX, dir: 1 }),
+  );
+  addEventListener('resize', () => refresh(applies[0]));
+  refresh(applies[0]);
 }
 
 /**
@@ -4361,7 +4381,7 @@ function startColor() {
 }
 
 function bind() {
-  initSplitter();
+  initSplitters();
   const toggleMute = initVolume();
   bindSettings();
   initNerdStats();
@@ -4463,7 +4483,7 @@ function bind() {
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    // text fields, the column splitter (its own arrow keys) and any dialog or popover keep their keys
+    // text fields, the column splitters (their own arrow keys) and any dialog or popover keep their keys
     if (e.target.closest('input:not([type=range]),textarea,select,[role=separator],dialog,[popover]')) return;
     if (e.key === '[' || e.key === ']') {
       e.preventDefault();
