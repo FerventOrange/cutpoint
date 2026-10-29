@@ -163,6 +163,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clip and its skip code (`not_underwater` adds that `--color auto` may suit it, `log` that
   `--lut` fits it). They replace the lines that listed the 360 and log/flat clips; the summary
   count is unchanged.
+- `cutpoint ui` names its 360 director previews by the library's `preview_key`, so each 360
+  moment's preview renders once more on its next request; older previews are pruned as before.
 
 ### Fixed
 
