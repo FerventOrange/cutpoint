@@ -432,11 +432,14 @@
         <div class="field">
           <label for="setAiModel">Model</label>
           <span class="row wrap">
-            <input id="setAiModel" list="setAiModels" autocomplete="off" spellcheck="false" aria-describedby="setAiModelHint setAiModelsStatus">
+            <select id="setAiModel" aria-describedby="setAiModelHint setAiModelsStatus"></select>
             <button type="button" class="btn" id="setAiModelsRefresh">Refresh list</button>
           </span>
         </div>
-        <datalist id="setAiModels"></datalist>
+        <!-- Shown only for "Other model…" (#521): an id the provider's list lacks -->
+        <label class="field" id="setAiModelOtherField" hidden>Model id
+          <input id="setAiModelOther" autocomplete="off" spellcheck="false" aria-describedby="setAiModelHint">
+        </label>
         <p id="setAiModelHint" class="hint"></p>
         <p id="setAiModelsStatus" class="hint" role="status"></p>
         <!-- Shown only for a custom base URL from config.json (no preset has it): read-only -->
