@@ -41,17 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
   diagnostics for previews (#517).
 
-### Fixed
-
-- `cutpoint ui` AI assistant: `CUTPOINT_ASSISTANT_API_KEY` no longer wins over a provider's own
-  key and is never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai` (it is for custom
-  base URLs only); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` or the keyring key is
-  used. Saving a provider in Settings contacts no host that is not this machine (with or without
-  a key) before you agree to it in AI Chat (#504).
-- `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
-  slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
-  the keyboard and screen readers (#518).
-
 ### Changed
 
 - `cutpoint ui` Settings > AI assistant: Model is a dropdown of the provider's models (#521)
@@ -59,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list lacks; a saved model the list lacks stays chosen, marked "(not in the provider's list)",
   and without a list (no key, offline, Ollama not running) the dropdown offers the preset's own
   models and the saved model.
+- `cutpoint ui` Settings > AI assistant: Codex (OpenAI) and Grok (xAI) offer their current models
+  when the provider's list cannot be loaded, as Claude does (`gpt-6-astra` first, the only OpenAI
+  one with tool calls over Chat Completions until #536); the Model still has to be chosen.
 - `clips` and `edit --color auto|underwater` log one INFO line per clip not graded, naming the
   clip and its skip code (`not_underwater` adds that `--color auto` may suit it, `log` that
   `--lut` fits it). They replace the lines that listed the 360 and log/flat clips; the summary
@@ -66,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` AI assistant: `CUTPOINT_ASSISTANT_API_KEY` no longer wins over a provider's own
+  key and is never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai` (it is for custom
+  base URLs only); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` or the keyring key is
+  used. Saving a provider in Settings contacts no host that is not this machine (with or without
+  a key) before you agree to it in AI Chat (#504).
 - `cutpoint ui` Export: switching Color between Off, Auto and Underwater no longer moves the Color
   slider. The Strength row keeps its room below it while Color is Off, hidden from the mouse,
   the keyboard and screen readers (#518).

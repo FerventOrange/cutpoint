@@ -270,8 +270,11 @@ def test_settings_offer_the_presets_with_their_model_fields(client: TestClient) 
     assert offers["ollama"]["placeholder"] == "qwen3.5:9b" and not offers["ollama"]["key_env"]
     assert offers["anthropic"]["placeholder"] == "claude-sonnet-5-5"
     assert offers["anthropic"]["models"] == ["claude-sonnet-5-5", "claude-opus-5-5"]
-    for name, env in (("openai", "OPENAI_API_KEY"), ("xai", "XAI_API_KEY")):
-        assert offers[name]["model_required"] is True and offers[name]["models"] == []
+    for name, env, own in (
+        ("openai", "OPENAI_API_KEY", providers.OPENAI_MODELS),
+        ("xai", "XAI_API_KEY", providers.XAI_MODELS),
+    ):  # offered when no list came; still no default, so "Choose a model" comes first
+        assert offers[name]["model_required"] is True and offers[name]["models"] == list(own)
         assert offers[name]["key_env"] == [env]  # the shared key is not for it (#504)
     assert not offers["ollama"]["model_required"] and not offers["anthropic"]["model_required"]
     assert got["key_hosts"]["xai"] == "api.x.ai"

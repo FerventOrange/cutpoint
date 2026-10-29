@@ -64,6 +64,10 @@ ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
 ANTHROPIC_MODELS = (DEFAULT_ANTHROPIC_MODEL, "claude-opus-5-5")
+# Settings' OpenAI and xAI models when no list came. OpenAI's Astra first: the only one with tool
+# calls over Chat Completions today; the others need the Responses API (#536)
+OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
+XAI_MODELS = ("grok-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1")
 AUTO_SERVER_MODEL = "server's default model"  # an OpenAI-compatible model not resolved yet
 MAX_TOKENS = 4096  # an Anthropic reply's cap (required); a proposal is far shorter
 MAX_ERROR = 300  # characters of a server's error text in a message
