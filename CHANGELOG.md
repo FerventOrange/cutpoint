@@ -150,6 +150,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and dual fisheye sources mixed, or an equirect rendered without the IMU levelling
   (FlowState, no sidecar, Studio export). It lists the clips and suggests
   `--pano-source dfisheye`; `--json` adds a `pano_mixed_sources` warning.
+- `360 qa --json` adds `by_mode` and `by_self_method` to the outputs (#11): the `qa.json`
+  edit's `edge_cut` breakdowns, and with `--compare` those of `edge_gap.json`.
 
 ### Changed
 
@@ -227,6 +229,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `360 analyze --json` after a failure no longer names an earlier run's `pano_timings.json` as
+  this run's (#11): once `highlights.json` changed, `outputs.timings` is `null`, whether the
+  file was removed or could not be (then a `stale_timings_kept` warning names it).
 - `360 analyze` no longer leaves an earlier run's `pano_timings.json` behind when it fails
   (Ctrl+C included) once `highlights.json` has changed: the stale file, which described
   another analysis, is removed (a file that cannot be removed, such as one held open on

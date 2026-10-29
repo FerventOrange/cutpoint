@@ -162,6 +162,9 @@ def test_360_qa_compare_json(home, capsys) -> None:
     assert out["other_detail"] == {**dict.fromkeys(QC.OTHER_DETAILS, 0), "paths_inside": 1}
     assert out["clips"][0]["other_detail"]["paths_inside"] == 1
     assert out["clips"][0]["file"] == str(d / "001_a.mp4")
+    # the reports record no render mode or self method: all unknown
+    counts = {"clips": 1, "frames": 13, "rendered_edge": 7, "paths_edge": 2, "rendered_only": 6}
+    assert out["by_mode"] == out["by_self_method"] == {"unknown": counts}
     assert warning_codes(doc) == ["qa_clips_unmatched"]
     # --paths with --compare: a bad option, nothing written
     (a.parent / "edge_gap.json").unlink()

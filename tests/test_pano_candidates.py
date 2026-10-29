@@ -506,6 +506,38 @@ def test_360_analyze_locked_stale_timings_keep_the_runs_own_error(
     assert timings == STALE_TIMINGS
 
 
+@pytest.mark.parametrize("locked", [False, True], ids=["removed", "kept"])
+def test_360_analyze_failure_json_does_not_name_stale_timings(
+    monkeypatch, tmp_path: Path, locked: bool
+) -> None:
+    """#11: once a failure dropped the earlier run's pano_timings.json, or could not (held
+    open), the failure envelope's outputs.timings is null; a kept file is named by a
+    stale_timings_kept warning."""
+    from cutpoint import ffmpeg_utils  # noqa: PLC0415
+
+    _timing_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda s: None)  # retry_locked's backoff
+
+    def locked_unlink(self, missing_ok=False):
+        raise PermissionError(13, "in use", str(self))
+
+    def fail(*a, **k):
+        if locked:
+            monkeypatch.setattr(Path, "unlink", locked_unlink)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pipeline, "run_events", fail)
+    with pytest.raises(RuntimeError), jsonout.run("360 analyze") as res:
+        _run_analyze()
+    monkeypatch.undo()
+    assert "timings" in res.outputs and res.outputs["timings"] is None
+    assert res.outputs["views"] == {"cached": None, "computed": 1}  # earlier outputs stay
+    timings = tmp_path / "pano_timings.json"
+    assert timings.exists() is locked
+    warned = [(w["code"], w["files"]) for w in res.warnings]
+    assert warned == ([(cli.STALE_TIMINGS_KEPT, [str(timings)])] if locked else [])
+
+
 @pytest.mark.parametrize("scan", [None, ["cam"]], ids=["no_scan", "scan"])
 def test_360_analyze_views_only_keeps_the_analysis_timings(
     monkeypatch, tmp_path: Path, scan: list[str] | None

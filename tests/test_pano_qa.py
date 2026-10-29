@@ -827,3 +827,28 @@ def test_clip_self_tags_still_count_with_the_cone(
     c = qa.qa_clip(item, Models(), 2.0, (64, 36), TH)
     assert c["self_tags"] == {"cone": 1, "clip": 1}
     assert c["share"]["edge_cut"] == 0.0
+
+
+def test_360_qa_json_has_the_edge_cut_breakdowns(home, monkeypatch, capsys) -> None:
+    """#11: --json outputs carry the edit's by_mode and by_self_method ({} without clips)."""
+    from conftest import run_json  # noqa: PLC0415
+
+    qa_dir = home / "projects" / "trip" / "clips"
+    qa_dir.mkdir(parents=True)
+    by_mode = {"sdk": {"clips": 1, "frames": 4, "duration": 2.0, "edge_cut": 0.25}}
+    by_self = {"clip": by_mode["sdk"]}
+    edit = {"score": 80.0, "by_mode": by_mode, "by_self_method": by_self}
+    clip = {"file": "001_a.mp4", "score": 80.0, "pass": True, "fails": []}
+
+    def run_qa(d: Path, fps: float, size, json_only: bool) -> dict:
+        out = {"mode": "rendered", "out_dir": str(d.with_name("clips_qa")), "sheets": []}
+        return {**out, "clips": [clip] if edit else [], "skipped": [], "edit": edit}
+
+    monkeypatch.setattr(qa, "run_qa", run_qa)
+    monkeypatch.setattr(qa, "log_report", lambda report: None)
+    code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips", "--json-only"])
+    assert code == 0
+    assert (doc["outputs"]["by_mode"], doc["outputs"]["by_self_method"]) == (by_mode, by_self)
+    edit = {}  # no clip checked: aggregate_edit has no breakdowns
+    code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips", "--json-only"])
+    assert (doc["outputs"]["by_mode"], doc["outputs"]["by_self_method"]) == ({}, {})
