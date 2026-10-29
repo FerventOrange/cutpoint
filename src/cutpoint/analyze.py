@@ -6,8 +6,9 @@ Signals per source (all on a 0.1 s grid, each normalised to 0-1):
     laughter  - laughter tokens in the transcript
     scene     - density of PySceneDetect cuts (from a small, low-fps proxy)
     continuity- fraction of the surrounding ~10 s covered by speech (commentary)
-The weighted sum is peak-picked into windows, merged, snapped to scene cuts and
-word boundaries, optionally re-scored by a vision model, and written to
+Each is a feature of :mod:`cutpoint.features`; their weighted sum (:mod:`cutpoint.scorer`) is
+peak-picked into windows, merged, snapped to scene cuts and word boundaries, scored 0-100 over
+the available features, optionally re-scored by a vision model, and written to
 ``highlights.json``.
 """
 
@@ -32,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, jsonout, progress
+from cutpoint import cache, features, jsonout, progress, scorer
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.events import paths as event_paths
@@ -947,15 +948,15 @@ def pick_candidates(
             max_candidates = max(
                 30, int(3 * style.target_total / ((style.min_len + style.max_len) / 2))
             )
-        combined = sum(style.weights.get(k, 0.0) * v for k, v in sig.items())
+        # Picked on the raw weighted sum: the cut-offs do not depend on what is available.
+        combined = scorer.combined(sig, style)
         cands = _merge(_pick_windows(src, combined, sig, style, span, max_candidates), style)
         for c in cands:
             _snap(c, ps.cuts, segments, span, style)
         cands = _resolve_overlaps(cands, style)
-    wsum = sum(style.weights.values()) or 1.0
+    avail = scorer.available_for(style)
     for c in cands:
-        # A must-include crash scores its confidence (0-100), so it also ranks first.
-        c.score = round(100 * (c.peak if c.must_include else c.peak / wsum), 1)
+        c.score = scorer.score(c.peak, style, avail, c.must_include)
         inside = [(t, w, p) for t, w, p in kw_hits + laugh_hits if c.start <= t <= c.end]
         c.keywords = [p for _, _, p in sorted(inside, key=lambda h: -h[1])]
         c.keywords = list(dict.fromkeys(c.keywords))[:5]
@@ -1744,6 +1745,8 @@ def _analyze(
                 "ollama_model": ollama_model,
                 "target_total": style.target_total,
                 "weights": style.weights,
+                # The features this install can compute; scores divide by their weights.
+                "features_available": sorted(features.available()),
                 # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
                 # Absolute (not resolved: keeps drive letters, symlinks and the user's spelling)
                 # so later commands find them from any working directory.
