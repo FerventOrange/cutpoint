@@ -1061,7 +1061,7 @@ def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
         "--ollama-url",
         help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
-    p.add_argument("--ollama-model", help="default: qwen3-vl:8b")
+    p.add_argument("--ollama-model", help="default: qwen3.5:9b")
 
 
 def _add_source_filter_arguments(p: argparse.ArgumentParser) -> None:

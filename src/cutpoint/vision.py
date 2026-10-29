@@ -1,4 +1,4 @@
-"""Optional frame rating with a local Ollama vision model (e.g. qwen3-vl:8b)."""
+"""Optional frame rating with a local Ollama vision model (e.g. qwen3.5:9b)."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ import json
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import requests
 
 from cutpoint import cache, paths
@@ -19,11 +21,11 @@ from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_MODEL = "qwen3-vl:8b"
+FALLBACK_MODEL = "qwen3.5:9b"
 
 
 def default_model() -> str:
-    """Vision model: ``CUTPOINT_VISION_MODEL`` or qwen3-vl:8b."""
+    """Vision model: ``CUTPOINT_VISION_MODEL`` or qwen3.5:9b."""
     return paths.env("VISION_MODEL") or FALLBACK_MODEL
 
 
@@ -67,12 +69,39 @@ _DEFAULT_PROMPTS = (_PROMPT, _RETRY_PROMPT)
 _ATTEMPTS = ((8192, 3072), (12288, 6144))
 _TEMPERATURES = (0.2, 0.4)  # sampling temperature per attempt
 FRAME_WIDTH = 640  # px of each frame sent to the model
+
+
+@dataclass(frozen=True)
+class RatingProfile:
+    """How a model family is asked for a rating where it differs from the default
+    (rate()'s n_frames, each frame a separate image, the reply's score as given)."""
+
+    n_frames: int  # frames per rating, in place of rate()'s n_frames
+    cols: int  # the frames go as one contact sheet, this many per row, in reading order
+    expected: bool  # score = expected value of the score digit over its top logprobs
+
+
+# Per model family: a model whose name starts with the key (case-insensitive). With the default
+# input (separate frames, the score as given) qwen3.5:9b ranks moments clearly worse than
+# qwen3-vl:8b against hand labels and gives most moments the same score; six frames on one 3x2
+# sheet of 640 px tiles (about 1500 prompt tokens) plus the expected score over the digit's
+# logprobs closes most of the gap at about 1.3 s per rating, against 12 s for qwen3-vl (#475).
+_PROFILES = {"qwen3.5": RatingProfile(n_frames=6, cols=3, expected=True)}
+_TOP_LOGPROBS = 10  # alternatives Ollama returns per token for RatingProfile.expected
+SHEET_QUALITY = 90  # JPEG quality of a contact sheet
 # Ratings cached per source (cache.source_dir), one entry per rating input (rating_key),
 # stamped with the model's digest (VisionRater._lookup says how the digest is matched).
 RATINGS_FILE = "vision-ratings.json"
 # Bump when the rating input or the reply parsing changes outside what rating_key hashes
-# (the prompts, attempt options and temperatures, frame width, model, style and frame times).
+# (the prompts, attempt options and temperatures, frame width, rating profile, model, style
+# and frame times).
 RATING_VERSION = 1
+
+
+def rating_profile(model: str) -> RatingProfile | None:
+    """The model's :class:`RatingProfile`, or None for the default input."""
+    name = model.lower()
+    return next((p for key, p in _PROFILES.items() if name.startswith(key)), None)
 
 
 @dataclass
@@ -180,9 +209,10 @@ class VisionRater:
         Ratings are cached per source (``RATINGS_FILE`` in :func:`cutpoint.cache.source_dir`)
         under :func:`rating_key`, each written as soon as the model gives it, so a rerun asks
         the model only about new frames. A failed grab or request is not cached. With
-        ``cache_only`` a miss gives None (counted in ``missed``) and nothing is sent.
+        ``cache_only`` a miss gives None (counted in ``missed``) and nothing is sent. The
+        model's :func:`rating_profile` sets the number of frames in place of ``n_frames``.
         """
-        times = _frame_times(start, end, n_frames)
+        times = _frame_times(start, end, self._n_frames(n_frames))
         store = self._store(src)
         key = rating_key(self.model, style, times)
         if (hit := self._lookup(store, key)) is not None:
@@ -205,8 +235,13 @@ class VisionRater:
         self, src: Path, start: float, end: float, style: str, n_frames: int = 3
     ) -> VisionResult | None:
         """The rating :meth:`rate` would take from the cache, or None; counts nothing."""
-        key = rating_key(self.model, style, _frame_times(start, end, n_frames))
+        key = rating_key(self.model, style, _frame_times(start, end, self._n_frames(n_frames)))
         return self._lookup(self._store(src), key)
+
+    def _n_frames(self, n_frames: int) -> int:
+        """Frames per rating: the model's profile's, else ``n_frames``."""
+        profile = rating_profile(self.model)
+        return profile.n_frames if profile else n_frames
 
     def _lookup(self, store: tuple[Path, dict[str, Any]] | None, key: str) -> VisionResult | None:
         """The cached rating under ``key``, or None.
@@ -245,17 +280,18 @@ class VisionRater:
     def _rate_frames(self, src: Path, times: list[float], style: str) -> VisionResult | None:
         """Grab the frames at ``times`` and ask the model for a rating (no cache)."""
         n_frames = len(times)
+        profile = rating_profile(self.model)
         try:
-            images = [
-                base64.b64encode(grab_frame_jpeg(src, t, width=FRAME_WIDTH)).decode("ascii")
-                for t in times
-            ]
-        except FFmpegError as err:
+            frames = [grab_frame_jpeg(src, t, width=FRAME_WIDTH) for t in times]
+            if profile:
+                frames = [contact_sheet(frames, profile.cols)]
+        except (FFmpegError, ValueError) as err:  # ValueError: a frame cv2 cannot decode
             logger.warning("Vision frame grab failed: %s", err)
             return None
+        images = [base64.b64encode(b).decode("ascii") for b in frames]
         self.asked += 1
         content = ""
-        steps = zip(_PROMPTS.get(style, _DEFAULT_PROMPTS), _ATTEMPTS, _TEMPERATURES, strict=True)
+        steps = zip(_prompts(style, profile), _ATTEMPTS, _TEMPERATURES, strict=True)
         for attempt, (prompt, (num_ctx, num_predict), temperature) in enumerate(steps, 1):
             payload = {
                 "model": self.model,
@@ -275,6 +311,8 @@ class VisionRater:
                     "num_predict": num_predict,
                 },
             }
+            if profile and profile.expected:
+                payload |= {"logprobs": True, "top_logprobs": _TOP_LOGPROBS}
             self.used = True
             try:
                 resp = requests.post(f"{self.url}/api/chat", json=payload, timeout=300)
@@ -285,6 +323,10 @@ class VisionRater:
                 logger.warning("Vision request failed: %s", err)
                 return None
             result = _parse(content)
+            if result is not None and profile and profile.expected:
+                ev = _expected_score(body.get("logprobs"))
+                if ev is not None:  # None: no logprobs (an older Ollama): the score as given
+                    result = VisionResult(score=round(ev, 2), label=result.label)
             if result is not None:
                 if attempt > 1:
                     logger.info("Vision retry %d succeeded", attempt)
@@ -325,12 +367,14 @@ def _frame_times(start: float, end: float, n_frames: int) -> list[float]:
 def rating_key(model: str, style: str, times: list[float]) -> str:
     """Cache key of one rating: a hash of everything sent to the model except the frames
     (``RATING_VERSION``, model, style, both prompts, attempt options and temperatures, frame
-    width), then the frame times to the millisecond (the precision of the grab's seek). The
-    Ollama URL is not part of it: the same model on another server rates the same. The
-    model's digest is stored in the entry instead of hashed (:meth:`VisionRater._lookup`),
-    so a rating can still be found when Ollama is down and the digest cannot be fetched."""
-    prompts = _PROMPTS.get(style, _DEFAULT_PROMPTS)
-    params = {
+    width and the model's :class:`RatingProfile` if it has one), then the frame times to the
+    millisecond (the precision of the grab's seek). The Ollama URL is not part of it: the
+    same model on another server rates the same. The model's digest is stored in the entry
+    instead of hashed (:meth:`VisionRater._lookup`), so a rating can still be found when
+    Ollama is down and the digest cannot be fetched."""
+    profile = rating_profile(model)
+    prompts = _prompts(style, profile)
+    params: dict[str, Any] = {
         "version": RATING_VERSION,
         "model": model,
         "style": style,
@@ -339,7 +383,113 @@ def rating_key(model: str, style: str, times: list[float]) -> str:
         "temperatures": list(_TEMPERATURES),
         "width": FRAME_WIDTH,
     }
+    if profile:  # only then, so the keys of the other models stay as they were
+        params["profile"] = asdict(profile)
     return f"{cache.params_hash(params)}@" + ",".join(f"{t:.3f}" for t in times)
+
+
+def _prompts(style: str, profile: RatingProfile | None) -> tuple[str, str]:
+    """(first prompt, retry prompt) of ``style``, worded for one contact sheet when the
+    profile sends one."""
+    first, retry = _PROMPTS.get(style, _DEFAULT_PROMPTS)
+    if not profile:
+        return first, retry
+    sheet = "This image is a grid of {n} frames, in reading order (left to right, top to bottom),"
+    return (
+        first.replace("These are {n} frames, in order,", sheet),
+        retry.replace("{n} frames from", "A grid of {n} frames, in reading order, from", 1),
+    )
+
+
+def contact_sheet(frames: list[bytes], cols: int) -> bytes:
+    """The JPEG ``frames`` on one JPEG, ``cols`` per row in reading order, each at the first
+    frame's size (black where the last row is short). ValueError if one cannot be decoded."""
+    tiles = []
+    for data in frames:
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("a frame could not be decoded")
+        tiles.append(img)
+    h, w = tiles[0].shape[:2]
+    tiles = [t if t.shape[:2] == (h, w) else cv2.resize(t, (w, h)) for t in tiles]
+    tiles += [np.zeros_like(tiles[0])] * (-len(tiles) % cols)
+    rows = [np.hstack(tiles[i : i + cols]) for i in range(0, len(tiles), cols)]
+    ok, buf = cv2.imencode(".jpg", np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, SHEET_QUALITY])
+    if not ok:
+        raise ValueError("the contact sheet could not be encoded")
+    return buf.tobytes()
+
+
+def _expected_score(logprobs: object) -> float | None:
+    """Expected score over the top logprobs of the token that starts the reply's score
+    value; None if the reply has no logprobs, no digit there or nothing usable.
+
+    Qwen writes a number digit by digit, so an alternative "1" may start "10": it counts as
+    10 when the alternatives put more probability on 6-9 than on 0 and 2-5, else as 1 (from
+    the probabilities, not the sampled digit, so a rerun scores the same). When "1" is the
+    chosen token, it counts as 1 plus 9 times the chance that the next token is "0" (that
+    token's "0" alternative, else 1 if the next token is "0")."""
+    if not isinstance(logprobs, list):
+        return None
+    text = ""
+    for i, tok in enumerate(logprobs):
+        token = tok.get("token", "") if isinstance(tok, dict) else ""
+        before, text = text, text + token
+        if '"score"' not in before or ":" not in before.rsplit('"score"', 1)[-1]:
+            continue
+        if not token.strip():
+            continue
+        chosen, alts = token.strip(), tok.get("top_logprobs")
+        if not _is_digit(chosen) or not isinstance(alts, list):
+            return None
+        digits = []
+        for alt in alts:
+            digit, lp = _token(alt), alt.get("logprob") if isinstance(alt, dict) else None
+            if _is_digit(digit) and _usable_logprob(lp):
+                digits.append((digit, math.exp(lp)))
+        if chosen == "1":
+            nxt = logprobs[i + 1] if i + 1 < len(logprobs) else None
+            one = 1.0 + 9.0 * _zero_next(nxt)  # the exact chance of "10"
+        else:
+            high = sum(p for d, p in digits if d in "6789")
+            low = sum(p for d, p in digits if d in "02345")
+            one = 10.0 if high > low else 1.0
+        total = sum(p for _, p in digits)
+        weighted = sum(p * (one if d == "1" else float(d)) for d, p in digits)
+        score = weighted / total if total else None
+        return score if score is not None and math.isfinite(score) else None
+    return None
+
+
+def _is_digit(token: str) -> bool:
+    return len(token) == 1 and token in "0123456789"
+
+
+def _usable_logprob(lp: object) -> bool:
+    """A real log probability: a finite number at most 0 (not a bool)."""
+    if isinstance(lp, bool) or not isinstance(lp, (int, float)):
+        return False
+    return math.isfinite(lp) and lp <= 0
+
+
+def _zero_next(entry: object) -> float:
+    """Chance that the token after a chosen "1" is "0": its "0" alternative, else 1 if it is
+    "0" and 0 if not."""
+    alts = entry.get("top_logprobs") if isinstance(entry, dict) else None
+    if isinstance(alts, list):
+        for alt in alts:
+            lp = alt.get("logprob") if isinstance(alt, dict) else None
+            if _token(alt) == "0" and _usable_logprob(lp):
+                return math.exp(lp)
+        if alts:
+            return 0.0
+    return 1.0 if _token(entry) == "0" else 0.0
+
+
+def _token(entry: object) -> str:
+    """A logprobs entry's token, stripped ("" if it has none)."""
+    token = entry.get("token") if isinstance(entry, dict) else None
+    return token.strip() if isinstance(token, str) else ""
 
 
 def _cached(entry: object) -> VisionResult | None:

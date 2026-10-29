@@ -349,7 +349,7 @@ jobs:
             $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') $noOl $fw; Expect-Rc $r 0 '-Ollama'
             Expect $r $wingetOl
             Expect $r '+ ollama serve'
-            Expect $r 'Pull qwen3-vl:8b with Ollama (about 6 GB)?'
+            Expect $r 'Pull qwen3.5:9b with Ollama (about 6.6 GB)?'
             # Without winget the dry run, like a real run, points to the download link.
             $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') $noOl; Expect-Rc $r 0 '-Ollama without winget'
             Expect $r 'download Ollama from https://ollama.com/download'

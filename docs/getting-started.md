@@ -293,7 +293,7 @@ install Ollama in full mode (default No): `--ollama` / `-Ollama` installs withou
 `--no-ollama` / `-NoOllama` never asks, `CUTPOINT_OLLAMA=1|0` does the same, and `--yes` / `-Yes`
 answers yes. They install it with the official script (with sudo) on Linux, `brew` on macOS and
 `winget install --id Ollama.Ollama -e` on Windows (with the download link when winget is missing
-or fails), make sure the server is running and then offer the `qwen3-vl:8b` pull. Lite mode
+or fails), make sure the server is running and then offer the `qwen3.5:9b` pull. Lite mode
 (`--lite` / `-Lite`) has no Ollama: it skips this step, and `--lite --ollama` / `-Lite -Ollama`
 prints a warning and installs nothing. To do it by hand:
 
@@ -309,15 +309,15 @@ models. Opening `http://127.0.0.1:11434` (the default port) answers "Ollama is r
 the installer sets up a service; on Windows and macOS the app runs it in the background; `ollama
 serve` starts it by hand.
 
-**Pull the models.**
+**Pull the model.**
 
 ```powershell
-ollama pull qwen3-vl:8b        # vision model for --vision, about 6 GB
-ollama pull qwen3.5:9b         # AI Chat model, about 6.6 GB
+ollama pull qwen3.5:9b         # vision model for --vision and the AI Chat model, about 6.6 GB
 ```
 
-`qwen3-vl:8b` is the default vision model. The AI Chat uses `qwen3.5:9b` when it is pulled and
-otherwise the vision model, so the first download is enough to start. Models of this size want
+`qwen3.5:9b` is the default vision model and the AI Chat's model, so one download is enough.
+`qwen3-vl:8b` (about 6 GB), the default vision model before, still works: pull it and pass
+`analyze --ollama-model qwen3-vl:8b` or set `CUTPOINT_VISION_MODEL`. Models of this size want
 about 8 GB of GPU memory to run fast; on the CPU they work but reply slowly. For another model,
 set `CUTPOINT_VISION_MODEL` or pass `analyze --ollama-model`, and choose the chat model under
 Settings > AI assistant ([`assistant.model`](configuration.md#assistant)).
