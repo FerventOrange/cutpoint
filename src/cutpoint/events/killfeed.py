@@ -97,7 +97,8 @@ class OcrParams:
 # FeedParser._icon_line) and other rows as notices; icon kill events keep their most complete
 # names and are dropped on menu frames
 # 13: menu frames are recorded as stats["menu_spans"] (#440)
-GENERIC_VERSION = 13
+# 14: gaps up to MENU_FILL_S between box- or text-rule menu frames are menus too (#409)
+GENERIC_VERSION = 14
 
 
 # --------------------------------------------------------------------------- text utils
@@ -1712,6 +1713,19 @@ TEXT_STAY_S = 6.0
 TEXT_STAY_MAX_S = 60.0
 TEXT_MIN_S = 3.0
 
+# Gaps between menu screens (rule "fill", #409): loading, matchmaking and "processing" screens
+# between a lobby and the next screen show no text the box or text rules see, and an animated
+# hangar holds no still run, so a lobby-heavy source kept them as gameplay. Frames that no rule
+# flags between two frames of the box or text rules (``cover``, ``jump``, ``list``, ``text``) at
+# most MENU_FILL_S apart, with no feed activity between them, are menus too. A static frame is
+# no end of a gap: still gameplay can pass the static rule, and a gap filled from it would grow
+# into the gameplay next to it. Measured on War Thunder and R6 footage (hand-labelled menu time),
+# recall rose from 0.75 to 0.89 and 0.54 to 0.64 with no new gameplay frame flagged; 15 s spans
+# their loading screens, and longer gaps added none. Like the static rule it runs only with
+# ``feed_times``.
+MENU_FILL_S = 15.0
+FILL_ENDS = ("cover", "jump", "list", "text")
+
 
 def _thumb_bgr(frame: np.ndarray) -> np.ndarray:
     """The :data:`STATIC_THUMB` BGR thumbnail (uint8) of a decoded BGR frame, as the raw
@@ -1927,7 +1941,8 @@ def menu_times(
     when they cover the screen centre (``menu_cover``) or at least
     :data:`LIST_MENU_COVER` of it (a 1- or 2-column list or scoreboard).
     With ``feed_times`` (the times of feed sightings and kills), frames with a
-    ``still`` run id that hold still are menus too (:func:`static_frames`).
+    ``still`` run id that hold still are menus too (:func:`static_frames`), and so
+    are short gaps between menu screens (:func:`_fill_menu_gaps`).
     """
     rules, _ = menu_rules(frames, params, feed_times)
     return {f["t"] for f in frames if rules[f["id"]] != "none"}
@@ -1942,7 +1957,9 @@ def menu_rules(
     max_gap: float = STATIC_MAX_GAP_S,
 ) -> tuple[dict[Any, str], dict[str, float]]:
     """The :func:`menu_times` decision per frame id: the rule that made it a menu
-    (``cover``, ``jump``, ``list``, ``static`` or ``text``) or ``none``, and the
+    (``cover``, ``jump``, ``list``, ``static``, ``text`` or ``fill``, a gap between
+    menu screens, :func:`_fill_menu_gaps`, which runs only with ``feed_times``) or
+    ``none``, and the
     source's numbers (``median`` box count, ``min_boxes``, the ``cover``, ``list`` and
     ``jump`` thresholds, inf when off, the ``static_s`` (with new menu text,
     ``text_spans``), ``static_bare_s`` (without) and ``static_diff`` of the static
@@ -1974,6 +1991,8 @@ def menu_rules(
             rules[f["id"]] = "text"
         else:
             rules[f["id"]] = "none"
+    if feed_times is not None:
+        _fill_menu_gaps(frames, rules, feed_times)
     info = {
         "median": median,
         "min_boxes": params.menu_min_boxes,
@@ -1986,6 +2005,27 @@ def menu_rules(
         "text_lines": TEXT_LINES if on else float("inf"),
     }
     return rules, info
+
+
+def _fill_menu_gaps(
+    frames: list[dict[str, Any]], rules: dict[Any, str], feed_times: set[float]
+) -> None:
+    """Mark ``fill`` in ``rules`` the frames of ``frames`` (in time order) that no rule made
+    a menu between two :data:`FILL_ENDS` frames at most :data:`MENU_FILL_S` apart, when no
+    time of ``feed_times`` lies between them (see :data:`MENU_FILL_S`)."""
+    busy = sorted(feed_times)
+    last = None  # index of the last FILL_ENDS frame
+    for i, f in enumerate(frames):
+        if rules[f["id"]] not in FILL_ENDS:
+            continue
+        if last is not None and 0 < f["t"] - frames[last]["t"] <= MENU_FILL_S:
+            a, b = frames[last]["t"], f["t"]
+            j = bisect.bisect_right(busy, a)
+            if not (j < len(busy) and busy[j] < b):
+                for g in frames[last + 1 : i]:
+                    if rules[g["id"]] == "none":
+                        rules[g["id"]] = "fill"
+        last = i
 
 
 def _log_menu_frames(

@@ -703,6 +703,28 @@ def test_text_screen_needs_lines_read_together() -> None:
     ]
 
 
+def test_gap_between_menu_screens_is_a_menu() -> None:
+    """#409: a loading screen between two menu screens (no text the rules see, no still run)
+    was kept as gameplay, so lobby-heavy sources let lobby time reach the candidates."""
+    times = [n / 3 for n in range(120)]  # 40 s of moving frames
+    records = _moving_records(times)
+
+    def fill(second: float | None, feed: set[float], frames=records) -> list[float]:
+        spans = [(4.0, 10.0)] * 5  # a text screen
+        spans += [(second, second + 6)] * 5 if second is not None else []  # and another
+        rules = menu_rules(frames, feed_times=feed, text_spans=spans)[0]
+        return [f["t"] for f in frames if rules[f["id"]] == "fill"]
+
+    assert fill(18.0, set()) == [t for t in times if 10.0 < t < 18.0]  # 8 s apart
+    assert fill(18.0, {14.0}) == []  # a feed sighting between them: gameplay
+    assert fill(26.0, set()) == []  # 16 s apart (> MENU_FILL_S)
+    # still gameplay at 14-30 s (the static rule) next to one text screen: no gap end
+    still = [f | {"still": -1} if 14.0 <= f["t"] <= 30.0 else f for f in records]
+    rules = menu_rules(still, feed_times=set(), text_spans=[(4.0, 10.0)] * 5)[0]
+    assert {rules[f["id"]] for f in still if 14.0 <= f["t"] <= 30.0} == {"static"}
+    assert fill(None, set(), still) == []
+
+
 def _lobby(t: float) -> list[tuple[str, float, float]]:
     """Gameplay, and at 20-32 s a lobby of 6 lines of its own, one per row (no box
     rule sees 6 boxes); a notice flashes at 40-41 s."""
