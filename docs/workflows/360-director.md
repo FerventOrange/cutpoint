@@ -51,6 +51,14 @@ in the spirit of Pano2Vid and AutoCam.
 Override tuning values with `pano.director` in `config.json` or `cutpoint 360 director --param
 KEY=VALUE`.
 
+`360 analyze` already plans each candidate's path with the settings `clips` uses and caches it
+in `<project>/pano_candidates/` (`candidates.py`). The cache key is the source, the exact span,
+16:9 or 9:16, the moment kind, the resulting settings, the path version, a hash of the source
+of the modules that plan and score the path (`candidates.CODE_MODULES`: director, views,
+geometry, the QA, voice, visual scoring) and the identity (name, size, modification time) of
+the view, voice and orientation caches the director reads, so a path `clips` reuses is the one
+it would plan. A changed span, setting, layer or planning code plans it anew.
+
 ## Renderer
 
 `render.py` uses the ffmpeg `v360` filter driven by a `sendcmd` file. Runtime rotation commands
@@ -65,3 +73,10 @@ occluded views, people too close, subjects cut by the frame edge, low-informatio
 frames, and horizon tilt, then measures pans and cuts from the path. A clip passes when each
 flag stays under its limit; the limits are defaults in `pano.qa.QAThresholds`. `repair.py`
 (`cutpoint 360 repair`) turns the flags into exclusions for the next `mix`.
+
+Each cached candidate path also gets `diagnostics` (`candidates.py`; fields and flags in
+[360 video](360.md#camera-paths-of-the-candidates)) from the path, its geometric QA, the
+director's score grid and the IMU: time at the sky or above the horizon, peak pan rate, hard
+cuts per minute, time with the wearer in frame and how often the view misses a clearly better
+direction. A sky view is one where the horizon sits at or below the lower third line of the
+frame, so the threshold follows the field of view. The flag thresholds are provisional.

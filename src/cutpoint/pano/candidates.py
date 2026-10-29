@@ -1,0 +1,590 @@
+"""Director paths of the analysis candidates: cache, diagnostics and read API (#517).
+
+At the end of ``cutpoint 360 analyze``, :func:`cache_candidate_paths` plans the director
+path of every 360 candidate in ``highlights.json`` (16:9, the settings ``clips`` uses: the
+moment-kind tweaks, then ``pano.director`` of config.json) from the cached view layer, so
+the UI can preview a moment through the virtual camera and flag poor paths before export.
+No video is decoded: the view layer, the voice layer and the IMU orientation are read from
+their caches.
+
+Cache: one JSON per candidate in ``<project>/pano_candidates/`` (:data:`CACHE_DIR`), named
+after the candidate's slot (clip, source, start, end, 16:9 / 9:16;
+:func:`slot_name`), holding::
+
+    {"version": 1, "key": {...}, "candidate": {"id", "source", "start", "end", "kind",
+     "label"}, "diagnostics": {...}, "path": {... the director path ...}}
+
+It is a folder of its own, not ``pano_paths/<name>/``: those names are the user's (clips
+folders, ``360 director --out-name``) and their path files may be hand-edited for
+``extend``, so a cache there could collide with them and could not be pruned safely.
+Cutpoint owns this folder: each analysis removes the files of candidates it no longer has.
+
+``key`` (:func:`path_key`) is everything the path depends on: the source, the exact span,
+16:9 / 9:16, the kind, the effective :class:`~cutpoint.pano.director.DirectorParams`,
+:data:`~cutpoint.pano.director.PATH_VERSION`, :data:`CACHE_VERSION`, the Cutpoint
+version, the code identity (:func:`code_id`: a hash of the source of the modules that plan
+and score the path, so a code change without a version bump plans anew), the clip's
+duration / fps / frames and the identity (name, size, modification time) of the cached view
+layer, voice layer and orientation track it reads.
+``clips`` (:class:`~cutpoint.pano.render.PanoExporter`) reuses a cached path only when the
+key it would plan with is equal (:func:`reusable_path`); any difference (a span moved by
+tails, padding or the speech pass, other settings, a recomputed view layer) plans it anew,
+as before. A reused path is the very dict the director returned, so the render is the same.
+
+Diagnostics (:func:`diagnostics`; shares of the segment, sampled at :data:`DIAG_FPS`)::
+
+    seconds          segment length
+    quality          score / pass / fails of the path's geometric QA (qa_paths.path_quality)
+    above_horizon    view centre above the horizon (pitch > ABOVE_HORIZON_DEG)
+    sky              horizon below the frame's lower third line (SKY_HORIZON_LINE):
+                     more than two thirds of the picture is above the horizon
+    peak_yaw_rate    fastest yaw change within a shot (deg/s, at RATE_FPS; cuts excluded)
+    cuts, cuts_per_min   hard cuts inside the segment (flagged from CUTS_MIN cuts on)
+    wearer_in_view   the wearer's axis (path wearer_axis) inside the frame; samples whose
+                     nearest key is a selfie shot count as not in view
+    off_target       steps whose view misses a yaw bin that scores clearly better
+                     (OFF_TARGET_MARGIN) than the one it looks at; selfie steps excluded
+    flags            stable codes, see FLAGS
+
+Angles are the director's display frame (horizon-levelled from the IMU, see
+:mod:`cutpoint.pano.director`). Flag thresholds are **provisional** (set from first
+principles; to be tuned on a project with known-bad director cuts); :func:`path_flags`
+applies the current ones, so the read API reflects a change without re-planning. The flag
+codes are a stable API: :data:`FLAGS`.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import functools
+import hashlib
+import importlib.util
+import json
+import logging
+import time
+from collections import Counter
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from cutpoint import cache, state
+from cutpoint.pano import director as D
+from cutpoint.pano import geometry as G
+
+logger = logging.getLogger(__name__)
+
+CACHE_DIR = "pano_candidates"
+CACHE_VERSION = 1  # bump when the file layout, the key or the diagnostics change
+DIAG_FPS = 10.0  # path samples per second for the shares
+RATE_FPS = 30.0  # ... for the yaw rate (as qa.pan_metrics)
+
+# Provisional thresholds (to be tuned on footage with known-bad director cuts).
+ABOVE_HORIZON_DEG = 0.0  # view centre pitch above this: above the horizon
+SKY_HORIZON_LINE = 1 / 3  # horizon this share of the half height below the centre (the
+# frame's lower third line) or lower: more than two thirds of the picture is sky
+SKY_MAX_SHARE = 0.2  # flag ``sky`` above this share of the segment
+WHIP_DEG_S = 55.0  # flag ``whip`` above this peak yaw rate (the QA's max_pan_max)
+CUTS_MAX_PER_MIN = 6.0  # flag ``cuts`` above this many hard cuts per minute ...
+CUTS_MIN = 2  # ... and from this many cuts on (one cut in a short span is no cut-heavy path)
+WEARER_MAX_SHARE = 0.25  # flag ``wearer`` above this share with the wearer in frame
+OFF_TARGET_MARGIN = 0.25  # a bin scoring this much more (about the full forward bias,
+# w_forward) than the one looked at, outside the frame, is a missed target
+OFF_TARGET_MAX_SHARE = 0.4  # flag ``off_target`` above this share of the steps
+
+# Stable flag codes (the UI shows a "camera path looks poor" badge with the reason).
+FLAGS = {
+    "sky": "looks at the sky",
+    "whip": "whip pans",
+    "cuts": "many hard cuts",
+    "wearer": "shows the wearer",
+    "off_target": "misses the best view",
+    "qa_fail": "fails the geometric direction QA",
+}
+
+
+# Modules whose code plans or scores a director path (compute_path, its scores, voice and
+# orientation inputs and the QA it records); their source is hashed into the key.
+CODE_MODULES = (
+    "cutpoint.pano.director",
+    "cutpoint.pano.geometry",
+    "cutpoint.pano.views",
+    "cutpoint.pano.qa",
+    "cutpoint.pano.qa_paths",
+    "cutpoint.pano.x3",
+    "cutpoint.events.voice",
+    "cutpoint.events.visual",
+    "cutpoint.events.common",
+)
+
+
+# --------------------------------------------------------------------------- key
+@state.register_cache
+@functools.cache
+def code_id() -> str:
+    """Identity of the path-planning code: sha1 of the source of :data:`CODE_MODULES` (12 hex
+    characters; computed once per process). ``__version__`` alone stays the same across
+    installs from git, so a code change would otherwise reuse paths planned by older code."""
+    h = hashlib.sha1()
+    for name in CODE_MODULES:
+        spec = importlib.util.find_spec(name)
+        h.update(name.encode("utf-8"))
+        if spec is not None and spec.origin:
+            with contextlib.suppress(OSError):
+                h.update(Path(spec.origin).read_bytes())
+    return h.hexdigest()[:12]
+
+
+def _file_id(path: Path) -> list[Any] | None:
+    """``[name, size, mtime_ns]`` of a cache file, or None when it does not exist."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return [path.name, st.st_size, st.st_mtime_ns]
+
+
+def _inputs(src: Path) -> dict[str, Any]:
+    """Identity of the cached layers a path of ``src`` reads.
+
+    Raises:
+        OSError: If the source is not reachable (its cache folder needs its size and mtime).
+    """
+    from cutpoint.events import voice as VO  # noqa: PLC0415
+    from cutpoint.pano import views as VW  # noqa: PLC0415
+
+    views = VW.cache_path(src)
+    return {
+        "dir": views.parent.name,  # the source's cache folder: path, size and mtime
+        "views": _file_id(views),
+        "voice": _file_id(VO.cache_path(src, VO.VoiceParams())),
+        "orient": _file_id(G._orient_path(src)),
+    }
+
+
+def effective_params(kind: str | None, overrides: dict[str, Any] | None) -> D.DirectorParams:
+    """The settings :func:`director.compute_path` plans ``kind`` with (no base params)."""
+    p = D.params_for(kind)
+    return D.with_params(p, overrides) if overrides else p
+
+
+def path_key(
+    clip: Any,
+    start: float,
+    end: float,
+    kind: str | None,
+    overrides: dict[str, Any] | None,
+    vertical: bool = False,
+) -> dict[str, Any]:
+    """Everything the director path of ``[start, end]`` depends on (JSON-normalised).
+
+    Raises:
+        OSError: If the source is not reachable.
+        ValueError: On bad ``overrides``.
+    """
+    from cutpoint import __version__  # noqa: PLC0415
+
+    key = {
+        "v": CACHE_VERSION,
+        "path_version": D.PATH_VERSION,
+        "cutpoint": __version__,
+        "code": code_id(),
+        "source": str(clip.source),
+        "clip": [clip.clip_id, clip.duration, clip.fps, clip.frames],
+        "start": float(start),
+        "end": float(end),
+        "vertical": bool(vertical),
+        "kind": kind,
+        "params": asdict(effective_params(kind, overrides)),
+        "inputs": _inputs(Path(clip.source)),
+    }
+    return json.loads(json.dumps(key))
+
+
+def slot_name(clip: Any, start: float, end: float, vertical: bool = False) -> str:
+    """File name of a candidate's cache entry (one per clip, span and aspect)."""
+    slot = json.dumps([str(clip.source), float(start), float(end), bool(vertical)])
+    return f"{clip.clip_id}_{hashlib.sha1(slot.encode('utf-8')).hexdigest()[:12]}.json"
+
+
+def _entry(folder: Path, name: str) -> dict[str, Any] | None:
+    entry = cache.load_json(folder / name)
+    if not isinstance(entry, dict) or entry.get("version") != CACHE_VERSION:
+        return None
+    if not isinstance(entry.get("path"), dict) or not isinstance(entry.get("key"), dict):
+        return None
+    return entry
+
+
+def reusable_path(
+    project: Path,
+    clip: Any,
+    start: float,
+    end: float,
+    kind: str | None,
+    overrides: dict[str, Any] | None,
+    vertical: bool = False,
+) -> dict[str, Any] | None:
+    """The cached path of ``[start, end]`` when it was planned with exactly what
+    :func:`director.compute_path` would use now (:func:`path_key`), else None."""
+    folder = project / CACHE_DIR
+    if not folder.is_dir():
+        return None
+    entry = _entry(folder, slot_name(clip, start, end, vertical))
+    if entry is None:
+        return None
+    try:
+        key = path_key(clip, start, end, kind, overrides, vertical)
+    except (OSError, ValueError):
+        return None
+    return entry["path"] if entry["key"] == key else None
+
+
+# --------------------------------------------------------------------------- diagnostics
+def _share(x: np.ndarray) -> float | None:
+    return round(float(np.mean(x)), 3) if len(x) else None
+
+
+def _sky(pitch: np.ndarray, fov: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Per sample: the horizon at or below the frame's lower third line (pitch + = up)."""
+    half_v = np.arctan(np.tan(np.radians(fov) / 2) * size[1] / size[0])
+    p = np.radians(np.clip(pitch, -89.9, 89.9))
+    return np.tan(p) > np.tan(half_v) * SKY_HORIZON_LINE
+
+
+def _in_frame(
+    d: np.ndarray, yaw: np.ndarray, pitch: np.ndarray, fov: np.ndarray, size: tuple[int, int]
+) -> np.ndarray:
+    """Per sample: display ray ``d[i]`` inside the view ``(yaw, pitch, fov)[i]``."""
+    out = np.zeros(len(d), bool)
+    th = np.tan(np.radians(fov) / 2)
+    tv = th * size[1] / size[0]
+    for i in range(len(d)):
+        o = G.view_matrix(float(yaw[i]), float(pitch[i])).T @ d[i]  # x right, y down, z fwd
+        if o[2] > 1e-6:
+            out[i] = abs(o[0] / o[2]) <= th[i] and abs(o[1] / o[2]) <= tv[i]
+    return out
+
+
+def _selfie(path: dict[str, Any], times: np.ndarray) -> np.ndarray:
+    """Per sample: the nearest key of the path is a (deliberate) selfie shot."""
+    keys = path["keys"]
+    selfie = np.array([k.get("target") == "selfie" for k in keys], bool)
+    if not selfie.any():
+        return np.zeros(len(times), bool)
+    kt = np.array([k["t"] for k in keys], float)
+    return selfie[np.abs(times[:, None] - kt[None, :]).argmin(1)]
+
+
+def _off_target(
+    path: dict[str, Any], grid: dict[str, Any], start: float, end: float
+) -> float | None:
+    """Share of the segment's steps whose view misses a clearly better yaw bin."""
+    times, cen, ys = grid.get("times"), grid.get("centres"), grid.get("yaw_score")
+    if times is None or cen is None or ys is None or not len(times):
+        return None
+    keys = path["keys"]
+    hits = []
+    for i, t in enumerate(times):
+        if not start - 1e-6 <= t <= end + 1e-6 or i >= len(keys):
+            continue
+        k = keys[i]
+        if k.get("target") == "selfie":
+            continue
+        best = int(np.argmax(ys[i]))
+        mine = int(np.argmin(np.abs(G.wrap_deg(cen - k["yaw"]))))
+        out = abs(float(G.wrap_deg(cen[best] - k["yaw"]))) > k["fov"] / 2
+        hits.append(out and ys[i, best] - ys[i, mine] > OFF_TARGET_MARGIN)
+    return _share(np.asarray(hits, bool))
+
+
+def diagnostics(
+    path: dict[str, Any],
+    start: float,
+    end: float,
+    *,
+    grid: dict[str, Any] | None = None,
+    orient: G.Orientation | None = None,
+) -> dict[str, Any]:
+    """Compact quality record of a path's ``[start, end]`` (see the module docstring).
+
+    ``grid``: the director's score grid (``compute_path(grid=)``; without it
+    ``off_target`` is None); ``orient``: the clip's orientation track (without it
+    ``wearer_in_view`` is None).
+    """
+    dur = max(end - start, 0.0)
+    size = (1080, 1920) if path.get("vertical") else (1920, 1080)
+    times = start + np.arange(0.0, dur, 1.0 / DIAG_FPS) if dur > 0 else np.array([start])
+    yaw, pitch, fov = D.evaluate(path, times)
+    wearer = None
+    axis = path.get("wearer_axis")
+    if orient is not None and axis is not None:
+        a = np.asarray(axis, float)
+        d = np.stack([orient.r_vw(float(t)).T @ a for t in times])
+        d /= np.linalg.norm(d, axis=1, keepdims=True) + 1e-12
+        wearer = _share(_in_frame(d, yaw, pitch, fov, size) & ~_selfie(path, times))
+    rt = start + np.arange(0.0, max(dur, 1.0 / RATE_FPS), 1.0 / RATE_FPS)
+    ry, _, _ = D.evaluate(path, rt)
+    seg = D.shot_index(path, rt)
+    rate = np.abs(np.diff(ry))[seg[1:] == seg[:-1]] * RATE_FPS
+    cuts = [c for c in path.get("cuts", []) if start < c < end]
+    q = path.get("quality")
+    diag = {
+        "seconds": round(dur, 3),
+        "quality": {k: q.get(k) for k in ("score", "pass", "fails")} if q else None,
+        "above_horizon": _share(pitch > ABOVE_HORIZON_DEG),
+        "sky": _share(_sky(pitch, fov, size)),
+        "peak_yaw_rate": round(float(rate.max()), 1) if len(rate) else 0.0,
+        "cuts": len(cuts),
+        "cuts_per_min": round(len(cuts) / max(dur / 60.0, 1e-6), 2),
+        "wearer_in_view": wearer,
+        "off_target": _off_target(path, grid, start, end) if grid else None,
+    }
+    diag["flags"] = path_flags(diag)
+    return diag
+
+
+def path_flags(diag: dict[str, Any]) -> list[str]:
+    """:data:`FLAGS` codes a diagnostics record exceeds (current thresholds; a missing
+    measure never flags)."""
+
+    def over(name: str, limit: float) -> bool:
+        v = diag.get(name)
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and v > limit
+
+    out = []
+    if over("sky", SKY_MAX_SHARE):
+        out.append("sky")
+    if over("peak_yaw_rate", WHIP_DEG_S):
+        out.append("whip")
+    if over("cuts_per_min", CUTS_MAX_PER_MIN) and over("cuts", CUTS_MIN - 1):
+        out.append("cuts")
+    if over("wearer_in_view", WEARER_MAX_SHARE):
+        out.append("wearer")
+    if over("off_target", OFF_TARGET_MAX_SHARE):
+        out.append("off_target")
+    if (diag.get("quality") or {}).get("pass") is False:
+        out.append("qa_fail")
+    return out
+
+
+# --------------------------------------------------------------------------- 360 analyze
+def _candidates(project: Path) -> list[dict[str, Any]]:
+    hl = cache.load_json(project / "highlights.json")
+    cands = hl.get("candidates") if isinstance(hl, dict) else None
+    return [c for c in cands or [] if isinstance(c, dict)]
+
+
+def cache_candidate_paths(project: Path) -> dict[str, Any]:
+    """Plan and cache the 16:9 director path of every 360 candidate of ``highlights.json``.
+
+    A candidate whose cached entry has the current key is kept as is. Candidates of clips
+    without a view layer (footage offline too) are skipped, keeping their entry; a candidate
+    whose path fails (or whose clip's orientation cannot be loaded) logs a WARNING and is
+    skipped. Never raises for a path; files of candidates no longer listed are removed (and
+    the folder, once empty).
+
+    Returns:
+        Stats: ``candidates`` (360 ones), ``computed``, ``cached``, ``skipped``,
+        ``failed``, ``seconds``, ``flags`` (code -> candidates) and ``dir`` (or None).
+    """
+    from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
+    from cutpoint.pano.views import load_views  # noqa: PLC0415
+    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+
+    t0 = time.perf_counter()
+    folder = project / CACHE_DIR
+    stats: dict[str, Any] = {
+        "candidates": 0,
+        "computed": 0,
+        "cached": 0,
+        "skipped": 0,
+        "failed": 0,
+        "flags": {},
+        "dir": None,
+        "seconds": 0.0,
+    }
+    clips = load(project)
+    todo = [(c, clip) for c in _candidates(project) if (clip := clip_for(clips, c["source"]))]
+    stats["candidates"] = len(todo)
+    try:
+        overrides = D.config_overrides() or None
+    except ValueError as err:
+        logger.warning("Director paths not planned: %s", err)
+        stats["skipped"] = len(todo)
+        return stats
+    layers: dict[str, tuple[Any, Any] | None] = {}
+    keep: set[str] = set()
+    flags: Counter[str] = Counter()
+    for c, clip in todo:
+        # as clips passes them (the path records them rounded, so 4 and 4.0 would differ)
+        cid, start, end, kind = c.get("id"), c.get("start"), c.get("end"), c.get("kind")
+        try:
+            name = slot_name(clip, start, end)
+            keep.add(name)  # an entry kept while its clip is offline is still checked by clips
+            if clip.source not in layers:
+                layers[clip.source] = None  # a failed load is reported once per clip
+                src = Path(clip.source)
+                pv = load_views(src)
+                if pv is None:
+                    logger.info("clip %s: no 360 view layer; paths not planned", clip.clip_id)
+                else:
+                    orient = G.orientation(src, imu_source(src), clip.fps, max(clip.frames, 1))
+                    layers[clip.source] = (pv, orient)
+            if layers[clip.source] is None:
+                stats["skipped"] += 1
+                continue
+            pv, orient = layers[clip.source]
+            key = path_key(clip, start, end, kind, overrides)
+            entry = _entry(folder, name) if folder.is_dir() else None
+            if entry is not None and entry["key"] == key:
+                stats["cached"] += 1
+            else:
+                grid: dict[str, Any] = {}
+                path = D.compute_path(
+                    clip,
+                    start,
+                    end,
+                    kind=kind,
+                    overrides=overrides,
+                    orient=orient,
+                    pv=pv,
+                    grid=grid,
+                )
+                entry = {
+                    "version": CACHE_VERSION,
+                    "key": key,
+                    "candidate": {
+                        "id": cid,
+                        "source": c["source"],
+                        "start": start,
+                        "end": end,
+                        "kind": kind,
+                        "label": c.get("label"),
+                    },
+                    "diagnostics": diagnostics(path, start, end, grid=grid, orient=orient),
+                    "path": path,
+                }
+                folder.mkdir(exist_ok=True)
+                cache.save_json(folder / name, entry, indent=1)
+                stats["computed"] += 1
+            flags.update(path_flags(entry["diagnostics"]))
+        except Exception as err:  # noqa: BLE001 - a path never fails the analysis
+            stats["failed"] += 1
+            logger.warning("%s: director path not planned (%s: %s)", cid, type(err).__name__, err)
+    _prune(folder, keep)
+    stats["flags"] = dict(sorted(flags.items()))
+    stats["dir"] = folder if folder.is_dir() else None
+    stats["seconds"] = round(time.perf_counter() - t0, 1)
+    if todo:
+        logger.info(
+            "Director paths: %d candidate(s), %d planned, %d cached, %d skipped, %d failed "
+            "in %.1fs%s",
+            len(todo),
+            stats["computed"],
+            stats["cached"],
+            stats["skipped"],
+            stats["failed"],
+            stats["seconds"],
+            "; flagged: " + ", ".join(f"{k} {v}" for k, v in stats["flags"].items())
+            if flags
+            else "",
+        )
+    return stats
+
+
+def _prune(folder: Path, keep: set[str]) -> None:
+    """Remove the cache files not in ``keep`` (and ``folder`` once empty)."""
+    if not folder.is_dir():
+        return
+    for f in folder.glob("*.json"):
+        if f.name not in keep:
+            try:
+                f.unlink()
+            except OSError as err:
+                logger.warning("could not remove stale %s: %s", f, err)
+    with contextlib.suppress(OSError):  # only when empty
+        folder.rmdir()
+
+
+# --------------------------------------------------------------------------- read API
+def _current(entry: dict[str, Any], clip: Any, overrides: Any) -> bool | None:
+    """Whether ``entry`` was planned with today's inputs (None: cannot be checked)."""
+    cand = entry.get("candidate") or {}
+    try:
+        key = path_key(
+            clip,
+            entry["key"]["start"],
+            entry["key"]["end"],
+            cand.get("kind"),
+            overrides,
+            bool(entry["key"].get("vertical")),
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return key == entry["key"]
+
+
+def candidate_path(project: Path, cid: str) -> dict[str, Any] | None:
+    """The cached director path of candidate ``cid`` of ``highlights.json`` (16:9).
+
+    The candidate is looked up by id in the current ``highlights.json`` and its entry by
+    its source and span, so a re-ranked analysis (new ids) still finds it.
+
+    Returns:
+        None when the candidate, its 360 clip or its cache entry is missing; else
+        ``id``, ``file`` (the cache file), ``path`` (render it with
+        :func:`cutpoint.pano.render.render_segment`), ``diagnostics`` (``flags`` by the
+        current thresholds, with ``reasons``: code -> text) and ``current`` (True: planned
+        with today's settings and layers, what ``clips`` would reuse; False: stale, ``clips``
+        plans it anew; None: cannot be checked, e.g. footage offline).
+    """
+    from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
+
+    cand = next((c for c in _candidates(project) if c.get("id") == cid), None)
+    if cand is None:
+        return None
+    clip = clip_for(load(project), cand["source"])
+    if clip is None:
+        return None
+    folder = project / CACHE_DIR
+    file = folder / slot_name(clip, float(cand["start"]), float(cand["end"]))
+    entry = _entry(folder, file.name)
+    if entry is None:
+        return None
+    try:
+        overrides = D.config_overrides() or None
+    except ValueError:
+        overrides = None
+        current = None
+    else:
+        current = _current(entry, clip, overrides)
+    diag = dict(entry.get("diagnostics") or {})
+    diag["flags"] = path_flags(diag)
+    diag["reasons"] = {f: FLAGS[f] for f in diag["flags"]}
+    return {"id": cid, "file": file, "path": entry["path"], "diagnostics": diag, "current": current}
+
+
+def candidate_flags(project: Path) -> dict[str, dict[str, Any]]:
+    """Per candidate id with a cache entry: ``file`` and ``flags`` (current thresholds), for
+    badges on every moment at once (no freshness check: see :func:`candidate_path`)."""
+    from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
+
+    folder = project / CACHE_DIR
+    if not folder.is_dir():
+        return {}
+    clips = load(project)
+    out: dict[str, dict[str, Any]] = {}
+    for c in _candidates(project):
+        clip = clip_for(clips, c["source"])
+        if clip is None:
+            continue
+        name = slot_name(clip, float(c["start"]), float(c["end"]))
+        entry = _entry(folder, name)
+        if entry is not None:
+            out[str(c.get("id"))] = {
+                "file": folder / name,
+                "flags": path_flags(entry.get("diagnostics") or {}),
+            }
+    return out
