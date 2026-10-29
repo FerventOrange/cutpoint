@@ -134,6 +134,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `causes` and `cause_share` are unchanged. Every rendered-only frame adds an `evidence` block:
   the cut box and its edge, the matching projected box, its height, area and distance to the
   edge. `edge_gap.json` is version 2; `--json` adds `other_detail`.
+- `360 qa` records how each clip was rendered, so preview and final-clip runs can be compared
+  (#11): every `qa.json` clip adds `mode` (`sdk`, `studio`, `dfisheye`, or `proxy` for director
+  previews from the `.lrv`), `imu_levelled`, `levelled`, `flowstate` (`null` when unknown),
+  `input` (the render input's file name) and `cmd_every`, and the edit summary adds `by_mode`
+  and `by_self_method` (`clips`, `frames`, `duration` and the `edge_cut` share of each).
+  Clips' camera paths record the moment picked before tails and padding as `selected` (kept
+  in `qa.json`); `360 qa --compare` takes it for `outside_segment`, so a clip's tails count
+  there. `edge_gap.json` (version 3) adds per-clip `mode` and `self_method`, `by_mode` and
+  `by_self_method` frame counts and the `other_detail` `position_mismatch`: a dropped sliver
+  about as wide as the cut box (within 25 %) but more than 5 % of the frame width to the side,
+  which was `rendered_box_larger`. Older `qa.json` files still load (`unknown` in the
+  breakdowns). The manifest's `pano` record adds `levelled` and `flowstate`.
+- `clips` logs one WARNING when its 360 clips are not rendered like-for-like (#11): stitched
+  and dual fisheye sources mixed, or an equirect rendered without the IMU levelling
+  (FlowState, no sidecar, Studio export). It lists the clips and suggests
+  `--pano-source dfisheye`; `--json` adds a `pano_mixed_sources` warning.
 
 ### Changed
 

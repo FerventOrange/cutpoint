@@ -9,8 +9,10 @@ only the rendered QA flags to one cause, checked in this order:
 ``unpaired``
     the geometric QA has no frame at that time (other ``--fps``, or a shorter clip);
 ``outside_segment``
-    the frame's source time lies outside the path's planned segment (a clip's
-    tails or padding, which the director's safe-area pass never fixed);
+    the frame's source time lies outside the selected moment: the path's ``selected``
+    span (``cutpoint clips``: the pick before tails and padding), else its planned
+    ``segment`` (director previews, older clip paths); a clip's tails and padding are
+    not part of the moment the preview checked;
 ``wearer_overlap``
     a cut box of the rendered frame shares ``edge_self_overlap`` of the smaller
     box with a self box the geometric QA projected there, also one it dropped as
@@ -37,6 +39,12 @@ only the rendered QA flags to one cause, checked in this order:
         sliver at the top: the sliver rule counts the side edges only);
     ``paths_inside_margin``
         the projected box misses the edge margin by less than :data:`NEAR_EDGE`;
+    ``position_mismatch``
+        it lies farther inside, the cut box has :data:`LARGER_AREA` times its area or
+        more, and it is a sliver of about the same width (within
+        :data:`SLIVER_WIDTH_TOL`) whose centre is more than :data:`POSITION_DX` of the
+        frame width away (cut at the bottom of the view, so smaller, but the same
+        person shifted sideways);
     ``rendered_box_larger``
         it lies farther inside and the cut box has :data:`LARGER_AREA` times its
         area or more (a detection or size mismatch);
@@ -64,7 +72,9 @@ Projected boxes include those the geometric QA dropped as mostly outside the vie
 (``slivers`` of its frames). Each rendered-only frame records ``evidence``: the cut box
 and the edge it touches, the projected box it matches and that box's distance to the
 edge (:func:`explain`).
-Writes ``edge_gap.json`` next to the rendered ``qa.json``.
+Writes ``edge_gap.json`` next to the rendered ``qa.json``; its edit summary also counts
+the frames by the rendered clips' render ``mode`` and ``self_method`` (``by_mode``,
+``by_self_method``; ``unknown`` for older reports).
 """
 
 from __future__ import annotations
@@ -81,7 +91,7 @@ from cutpoint.pano import qa as Q
 
 logger = logging.getLogger(__name__)
 
-GAP_VERSION = 2  # 2: other_detail and evidence
+GAP_VERSION = 3  # 2: other_detail and evidence; 3: position_mismatch, by_mode, by_self_method
 GAP_FILE = "edge_gap.json"
 CAUSES = (
     "unpaired",
@@ -95,6 +105,7 @@ CAUSES = (
 OTHER_DETAILS = (
     "paths_top_edge",
     "paths_inside_margin",
+    "position_mismatch",
     "rendered_box_larger",
     "paths_inside",
     "paths_below_size",
@@ -110,6 +121,9 @@ MIN_PAIRS = 5  # fewer matched pairs: no median offset
 MIN_DX = 0.01  # a smaller median offset explains nothing
 NEAR_EDGE = 0.03  # a projected box this close to the cut edge just missed the margin
 LARGER_AREA = 2.0  # a rendered box this many times the projected one's area: a size mismatch
+SLIVER_WIDTH_TOL = 0.25  # a sliver this close in width (share of the wider) is the same person
+POSITION_DX = 0.05  # ... and a centre this far off (share of the frame width) a position mismatch
+BREAKDOWN_KEYS = ("frames", "rendered_edge", "paths_edge", "rendered_only")
 
 
 def load_report(path: Path) -> dict[str, Any]:
@@ -234,6 +248,14 @@ def edge_gap(box: Any, edge: str | None) -> float | None:
     return round(float({"left": box[0], "right": 1 - box[2], "top": box[1]}[edge]), 4)
 
 
+def same_width_offset(cut: Any, match: Any) -> bool:
+    """Whether ``match`` is as wide as ``cut`` (within :data:`SLIVER_WIDTH_TOL` of the
+    wider) with its centre more than :data:`POSITION_DX` of the frame width away."""
+    wc, wm = float(cut[2] - cut[0]), float(match[2] - match[0])
+    dx = abs(float(cut[0] + cut[2]) - float(match[0] + match[2])) / 2
+    return abs(wc - wm) <= SLIVER_WIDTH_TOL * max(wc, wm, 1e-9) and dx > POSITION_DX
+
+
 def other_detail_of(
     cut: Any, match: Any, sliver: bool, p: dict[str, Any], th: Q.QAThresholds
 ) -> str:
@@ -255,6 +277,8 @@ def other_detail_of(
         if gap is not None and gap < NEAR_EDGE:
             return "paths_inside_margin"
         if _area(cut) >= LARGER_AREA * max(area, 1e-9):
+            if sliver and same_width_offset(cut, match):
+                return "position_mismatch"
             return "rendered_box_larger"
         return "paths_inside"
     if h < th.subject_min_h:
@@ -391,7 +415,8 @@ def compare_clip(
     pairs = join_frames(rc["frames"], pc["frames"], fps)
     dx = median_dx(pairs, th)
     offset = rc.get("offset", pc.get("offset"))
-    segment = rc.get("segment") or pc.get("segment")
+    # the selected moment (clips), else the planned segment (previews, older reports)
+    segment = rc.get("selected") or pc.get("selected") or rc.get("segment") or pc.get("segment")
     counts = dict.fromkeys(COUNT_KEYS, 0)
     causes = dict.fromkeys(CAUSES, 0)
     detail = dict.fromkeys(OTHER_DETAILS, 0)
@@ -415,12 +440,29 @@ def compare_clip(
         only.append({"t": r["t"], **got})
     return {
         "file": rc["file"],
+        "mode": rc.get("mode"),
+        "self_method": rc.get("self_method"),
         **counts,
         "median_dx": dx,
         "causes": causes,
         "other_detail": detail,
         "rendered_only_frames": only,
     }
+
+
+def counts_by(clips: list[dict[str, Any]], key: str) -> dict[str, dict[str, int]]:
+    """:data:`BREAKDOWN_KEYS` (plus ``clips``) of :func:`compare_clip` results summed by
+    their rendered clip's ``key`` (``mode`` or ``self_method``; ``unknown`` when the
+    report did not record it)."""
+    out: dict[str, dict[str, int]] = {}
+    for c in clips:
+        g = out.setdefault(
+            str(c.get(key) or "unknown"), dict.fromkeys(("clips", *BREAKDOWN_KEYS), 0)
+        )
+        g["clips"] += 1
+        for k in BREAKDOWN_KEYS:
+            g[k] += c[k]
+    return dict(sorted(out.items()))
 
 
 def run_compare(qa_dir: Path, a: Path, b: Path) -> dict[str, Any]:
@@ -472,6 +514,8 @@ def run_compare(qa_dir: Path, a: Path, b: Path) -> dict[str, Any]:
     edit["other_detail_share"] = {
         k: round(v / n, 3) if n else 0.0 for k, v in edit["other_detail"].items()
     }
+    edit["by_mode"] = counts_by(clips, "mode")
+    edit["by_self_method"] = counts_by(clips, "self_method")
     mismatch = [
         str(rep["source_dir"])
         for rep in (rendered, paths)

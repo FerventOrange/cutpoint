@@ -79,7 +79,14 @@ from cutpoint.ffmpeg_utils import (
 )
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
-from cutpoint.pano.project import RenderSource, clip_for, load, pano_config, resolve_source
+from cutpoint.pano.project import (
+    RenderSource,
+    clip_for,
+    load,
+    pano_config,
+    resolve_source,
+    source_flowstate,
+)
 from cutpoint.pano.x3 import X3Clip, imu_source
 
 logger = logging.getLogger(__name__)
@@ -407,8 +414,10 @@ def render_segment(
     again; the render goes on. None: no progress file, the ffmpeg command is unchanged.
 
     Returns:
-        A record: ``mode``, ``inputs``, ``preview``, ``seconds``, ``commands``,
-        ``read_error`` (or None).
+        A record: ``mode``, ``inputs``, ``levelled`` (the path angles used on the input as
+        is, :class:`~cutpoint.pano.project.RenderSource`), ``flowstate``
+        (:func:`~cutpoint.pano.project.source_flowstate`), ``preview``, ``seconds``,
+        ``commands``, ``read_error`` (or None).
 
     Raises:
         FFmpegError: If ffmpeg fails with and without GPU decoding.
@@ -567,6 +576,8 @@ def render_segment(
     return {
         "mode": src.mode,
         "inputs": list(src.inputs),
+        "levelled": src.levelled,
+        "flowstate": source_flowstate(src.mode, src.inputs),
         "preview": src.preview,
         "note": src.note,
         "seconds": round(el, 1),
@@ -669,6 +680,7 @@ class PanoExporter:
         end: float,
         kind: str | None,
         reuse: Path | None = None,
+        selected: tuple[float, float] | None = None,
     ) -> tuple[dict[str, Any], Path]:
         """Load ``reuse`` (an earlier, possibly hand-edited path) if it covers the range
         and is not older than :data:`director.MIN_REUSE_VERSION`, else take the path
@@ -681,10 +693,14 @@ class PanoExporter:
         then ``<file>.1.bak``, ``<file>.2.bak``, ...); earlier backups are never
         overwritten.
 
+        ``selected``: the moment picked for the clip, before tails, padding and the speech
+        pass (source s), saved as the path's ``selected`` ``{"start", "end"}`` (``segment``
+        stays the rendered span); without it, a re-planned ``reuse`` keeps its ``selected``.
+
         On failure ``paths_dir`` (and ``pano_paths``) is removed again if this call
         created it and it is still empty (see :func:`~cutpoint.ffmpeg_utils.output_dir`)."""
         with output_dir(self.paths_dir):
-            return self._path_for(clip, name, start, end, kind, reuse)
+            return self._path_for(clip, name, start, end, kind, reuse, selected)
 
     def _path_for(
         self,
@@ -694,11 +710,16 @@ class PanoExporter:
         end: float,
         kind: str | None,
         reuse: Path | None,
+        selected: tuple[float, float] | None = None,
     ) -> tuple[dict[str, Any], Path]:
         """:meth:`path_for` inside the existing ``paths_dir``."""
         out = self.paths_dir / (Path(name).stem + ".json")
+        sel = None
+        if selected is not None:
+            sel = {"start": round(float(selected[0]), 3), "end": round(float(selected[1]), 3)}
         if reuse is not None and reuse.is_file():
             path = cache.load_json(reuse) or {}
+            sel = sel or path.get("selected")
             pl = path.get("planned", {})
             if path.get("version", 1) < D.MIN_REUSE_VERSION:
                 logger.warning(
@@ -708,7 +729,10 @@ class PanoExporter:
                 )
             elif pl.get("start", 1e9) <= start + 0.5 and pl.get("end", -1e9) >= end - 0.5:
                 self._check_reused(path, reuse, kind)
-                if reuse.resolve() != out.resolve():
+                changed = sel is not None and path.get("selected") != sel
+                if changed:
+                    path["selected"] = sel
+                if changed or reuse.resolve() != out.resolve():
                     cache.save_json(out, path, indent=1)
                 return path, out
             else:
@@ -724,6 +748,8 @@ class PanoExporter:
         path, cached, why = plan_path(
             self.project, clip, start, end, kind, self.overrides, self.vertical
         )
+        if sel is not None:
+            path["selected"] = sel
         if cached:
             logger.info("  %s: director path planned by 360 analyze", name)
         elif why is not None:
@@ -827,8 +853,11 @@ class PanoExporter:
         reuse_path: Path | None = None,
         source_mode: str | None = None,
         grade: Grade | None = None,
+        selected: tuple[float, float] | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         """Render one clip. Returns ``(read_error record or None, manifest pano record)``.
+
+        ``selected``: the clip's picked moment, recorded in its path file (:meth:`path_for`).
 
         ``source_mode`` (the mode recorded for this clip by an earlier run)
         replaces the exporter's ``source_mode``; if it is no longer available
@@ -845,7 +874,7 @@ class PanoExporter:
                 "(SDK) or Insta360 Studio equirect exports for final quality."
             )
             self._warned = True
-        path, pfile = self.path_for(clip, out.name, start, end, kind, reuse_path)
+        path, pfile = self.path_for(clip, out.name, start, end, kind, reuse_path, selected)
         rec = render_segment(
             clip,
             path,
@@ -876,6 +905,37 @@ class PanoExporter:
             }
         )
         return read_err, rec
+
+
+MIXED_SOURCES = "pano_mixed_sources"  # --json warning code of :func:`source_mix_warning`
+
+
+def source_mix_warning(records: list[tuple[str, dict[str, Any]]]) -> str | None:
+    """The WARNING message for the 360 clips of one run, ``(file, manifest pano record)``
+    each, when their renders are not like-for-like: stitched (``sdk``, ``studio``) and dual
+    fisheye sources mixed, or an equirect rendered without our IMU levelling (``levelled``:
+    FlowState, no sidecar or a Studio export). None when every clip renders the same way."""
+    stitched = [f for f, r in records if r.get("mode") in ("sdk", "studio")]
+    fisheye = [f for f, r in records if r.get("mode") == "dfisheye"]
+    levelled = [f for f, r in records if r.get("levelled")]
+    parts = []
+    if stitched and fisheye:
+        parts.append(
+            f"stitched sources ({', '.join(stitched)}) mixed with the dual fisheye "
+            f"({', '.join(fisheye)})"
+        )
+    if levelled:
+        parts.append(
+            f"equirects rendered without our IMU levelling (FlowState, no sidecar or a Studio "
+            f"export: {', '.join(levelled)})"
+        )
+    if not parts:
+        return None
+    return (
+        f"360 clips not rendered like-for-like: {'; '.join(parts)}. Their 360 qa does not "
+        "compare like-for-like with each other or with the director previews (the .lrv dual "
+        "fisheye); export with --pano-source dfisheye for a like-for-like comparison"
+    )
 
 
 def exporter_for(

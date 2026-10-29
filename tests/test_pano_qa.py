@@ -556,6 +556,99 @@ def test_run_qa_skips_failing_clip_resolves_dot_and_clears_sheets(
     assert rep["source_dir"] == str(d)
 
 
+# --------------------------------------------------------------------------- render info (#11)
+def full_rec(t: float, flags: list[str]) -> dict:
+    """A frame record with every :data:`qa.FRAME_KEYS` key."""
+    extra = {"self": [], "boxes": [], "occl_zs": 0.0, "lowinfo_zs": 0.0, "gray_std": 0.2}
+    return {**rec(t, flags), **extra, "roll": None}
+
+
+def test_find_inputs_records_how_each_clip_was_rendered(tmp_path: Path) -> None:
+    pf = tmp_path / "p.json"
+    pf.write_text(json.dumps({**make_path(), "selected": {"start": 4.0, "end": 9.0}}))
+    eq = "D:\\stitched\\VID_001.equirect.mp4"  # recorded on Windows
+    sdk = {"path_file": str(pf), "mode": "sdk", "inputs": [eq], "cmd_every": 2}
+    d = tmp_path / "clips"
+    write_manifest(d, {**sdk, "levelled": True, "flowstate": None})
+    item = qa.find_inputs(d)[0]
+    got = {k: item[k] for k in qa.RENDER_KEYS}
+    assert got == {
+        "mode": "sdk",
+        "imu_levelled": False,
+        "levelled": True,
+        "flowstate": None,
+        "input": "VID_001.equirect.mp4",
+        "cmd_every": 2,
+    }
+    r = qa.clip_record(item, 1.0, [full_rec(0.0, []), full_rec(0.5, [])], 2.0, None, None, TH)
+    assert {k: r[k] for k in qa.RENDER_KEYS} == got
+    assert (r["segment"], r["selected"]) == (None, [4.0, 9.0])
+    # an older manifest (no levelled / flowstate): derived from the mode
+    old = {"path_file": str(pf), "mode": "dfisheye", "inputs": ["/x/VID_00_001.insv"]}
+    write_manifest(d, old)
+    item = qa.find_inputs(d)[0]
+    assert (item["mode"], item["imu_levelled"], item["levelled"], item["flowstate"]) == (
+        "dfisheye",
+        True,
+        False,
+        False,
+    )
+    assert (item["input"], item["cmd_every"]) == ("VID_00_001.insv", None)
+    write_manifest(d, {"path_file": str(pf), "mode": "sdk", "inputs": [str(tmp_path / "e.mp4")]})
+    item = qa.find_inputs(d)[0]  # no sidecar: assumed FlowState, so not IMU-levelled
+    assert (item["imu_levelled"], item["levelled"], item["flowstate"]) == (False, True, None)
+
+
+@pytest.mark.parametrize(
+    ("source", "mode", "name"),
+    [
+        ("C:\\x3\\LRV_20240824_101500_11_001.lrv", "proxy", "LRV_20240824_101500_11_001.lrv"),
+        ("/x3/VID_20240824_101500_00_001.insv", "dfisheye", "VID_20240824_101500_00_001.insv"),
+    ],
+)
+def test_previews_record_the_proxy_they_render(tmp_path: Path, source, mode, name) -> None:
+    d = tmp_path / "director"
+    d.mkdir()
+    (d / "001_a.mp4").write_bytes(b"")
+    (d / "001_a.json").write_text(
+        json.dumps({**make_path(), "source": source, "segment": {"start": 1.0, "end": 9.0}})
+    )
+    item = qa.find_inputs(d)[0]
+    assert {k: item[k] for k in qa.RENDER_KEYS} == {
+        "mode": mode,
+        "imu_levelled": True,
+        "levelled": False,
+        "flowstate": False,
+        "input": name,
+        "cmd_every": 1,
+    }
+    r = qa.clip_record(item, 1.0, [full_rec(0.0, [])], 2.0, None, None, TH)
+    assert (r["mode"], r["segment"], r["selected"]) == (mode, [1.0, 9.0], None)
+
+
+def test_aggregate_edit_breaks_edge_cut_down_by_mode_and_self_method() -> None:
+    def clip(mode, method, edge: list[bool]) -> dict:
+        item = {"file": "x.mp4", "kind": None, "offset": 0.0, "path": None, "mode": mode}
+        recs = [full_rec(k / 2, ["edge_cut"] if e else []) for k, e in enumerate(edge)]
+        return qa.clip_record(item, len(edge) / 2, recs, 2.0, None, None, TH, None, method)
+
+    clips = [
+        clip("proxy", "cone+clip", [True, False, False, False]),
+        clip("sdk", "clip", [True, True, False, False]),
+        clip("sdk", "clip", [False, False, False, False]),
+    ]
+    old = {k: v for k, v in clip(None, None, [True, True]).items() if k not in qa.RENDER_KEYS}
+    e = qa.aggregate_edit([*clips, old])
+    assert e["by_mode"] == {
+        "proxy": {"clips": 1, "frames": 4, "duration": 2.0, "edge_cut": 0.25},
+        "sdk": {"clips": 2, "frames": 8, "duration": 4.0, "edge_cut": 0.25},
+        "unknown": {"clips": 1, "frames": 2, "duration": 1.0, "edge_cut": 1.0},  # older qa.json
+    }
+    assert e["by_self_method"]["clip"] == e["by_mode"]["sdk"]
+    assert e["by_self_method"]["cone+clip"]["edge_cut"] == 0.25
+    assert e["share"]["edge_cut"] == pytest.approx((0.5 + 1.0 + 1.0) / 7, abs=1e-3)
+
+
 def test_visual_data_from_frames_assembles_batches() -> None:
     calls = []
 

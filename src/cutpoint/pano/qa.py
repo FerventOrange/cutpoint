@@ -60,7 +60,11 @@ Inputs: a clips folder (``manifest.json`` entries with ``pano.path_file`` and
 ``start``) or a director preview folder (``NNN_x.mp4`` + ``NNN_x.json``; the
 offset is the path's ``segment.start``). Outputs go to ``<dir>_qa/``:
 ``qa.json``, ``flagged_NN.jpg`` (one tile per flagged span; subject box green,
-self boxes red) and ``overview_NN.jpg`` (one frame per 2 s per clip).
+self boxes red) and ``overview_NN.jpg`` (one frame per 2 s per clip). Each ``qa.json``
+clip records how it was rendered (:data:`RENDER_KEYS`: source ``mode``, ``proxy`` for
+the previews, levelling, FlowState, input file name, ``cmd_every``) and the edit summary
+breaks ``edge_cut`` down by ``mode`` and ``self_method`` (:func:`edge_cut_by`), so preview
+and final-clip runs can be compared.
 """
 
 from __future__ import annotations
@@ -68,6 +72,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -651,8 +656,31 @@ def aggregate_clip(
     }
 
 
+def edge_cut_by(clips: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:
+    """``{value: {"clips", "frames", "duration", "edge_cut"}}`` of the clips grouped by
+    their record's ``key`` (``mode`` or ``self_method``; ``unknown`` when not recorded, as
+    in older ``qa.json`` files): ``edge_cut`` is the duration-weighted share, as in the
+    edit's ``share``."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for c in clips:
+        groups.setdefault(str(c.get(key) or "unknown"), []).append(c)
+    out = {}
+    for name, cs in sorted(groups.items()):
+        vals = [(c["share"].get("edge_cut"), float(c["duration"])) for c in cs]
+        vals = [(v, d) for v, d in vals if v is not None]
+        w = sum(d for _, d in vals)
+        out[name] = {
+            "clips": len(cs),
+            "frames": sum(len(c.get("frames") or []) for c in cs),
+            "duration": round(sum(float(c["duration"]) for c in cs), 2),
+            "edge_cut": round(sum(v * d for v, d in vals) / w, 3) if w > 0 else None,
+        }
+    return out
+
+
 def aggregate_edit(clips: list[dict[str, Any]]) -> dict[str, Any]:
-    """Duration-weighted edit summary of per-clip results."""
+    """Duration-weighted edit summary of per-clip results (with the ``edge_cut`` share by
+    render ``mode`` and ``self_method``, :func:`edge_cut_by`)."""
     dur = np.array([c["duration"] for c in clips], float)
     total = float(dur.sum())
     if not clips or total <= 0:
@@ -687,6 +715,8 @@ def aggregate_edit(clips: list[dict[str, Any]]) -> dict[str, Any]:
         "horizon_max": max((h["max"] for h in hor), default=None),
         "vl_checked": len(vls),
         "vl_bad": sum(v["bad"] for v in vls),
+        "by_mode": edge_cut_by(clips, "mode"),
+        "by_self_method": edge_cut_by(clips, "self_method"),
     }
 
 
@@ -704,24 +734,79 @@ def load_path(ref: str | None) -> dict[str, Any] | None:
 
 def imu_levelled(pano: dict[str, Any]) -> bool:
     """True when the renderer levelled the clip with our IMU track (dual fisheye, or
-    an SDK stitch whose sidecar says no FlowState), so the horizon can be checked."""
+    an SDK stitch whose sidecar says no FlowState), so the horizon can be checked; as the
+    render recorded it (``levelled`` False), else from the mode and the sidecar now."""
     from cutpoint.pano.project import equirect_flowstate  # noqa: PLC0415
 
     mode = pano.get("mode")
-    if mode == "dfisheye":
+    if mode in ("dfisheye", "proxy"):
         return True
+    if isinstance(pano.get("levelled"), bool):
+        return mode in ("sdk", "studio") and not pano["levelled"]
     inputs = pano.get("inputs") or []
     return mode == "sdk" and bool(inputs) and equirect_flowstate(Path(inputs[0])) is False
+
+
+# how a clip was rendered (:func:`render_info`), kept in its ``qa.json`` record
+RENDER_KEYS = ("mode", "imu_levelled", "levelled", "flowstate", "input", "cmd_every")
+
+
+def _basename(f: str | None) -> str | None:
+    """The file name of a recorded path (either slash: it may come from another OS)."""
+    return re.split(r"[\\/]", f)[-1] if f else None
+
+
+def render_info(pano: dict[str, Any]) -> dict[str, Any]:
+    """:data:`RENDER_KEYS` of a clips-folder clip, from its manifest ``pano`` record.
+
+    ``mode`` is the render source (``sdk``, ``studio`` or ``dfisheye``), ``levelled`` and
+    ``flowstate`` as recorded by the render (older manifests: derived from the mode and the
+    SDK sidecar, :func:`~cutpoint.pano.project.source_flowstate`), ``input`` the file name of
+    the first render input and ``cmd_every`` the frames between ``v360`` updates; None
+    where unknown."""
+    from cutpoint.pano.project import source_flowstate  # noqa: PLC0415
+
+    mode = pano.get("mode")
+    inputs = [str(f) for f in pano.get("inputs") or []]
+    imu = imu_levelled(pano)
+    levelled = pano.get("levelled")
+    if levelled is None and mode is not None:
+        levelled = not imu
+    flowstate = pano["flowstate"] if "flowstate" in pano else source_flowstate(mode, inputs)
+    return {
+        "mode": mode,
+        "imu_levelled": imu,
+        "levelled": levelled,
+        "flowstate": flowstate,
+        "input": _basename(inputs[0]) if inputs else None,
+        "cmd_every": pano.get("cmd_every"),
+    }
+
+
+def preview_render_info(path: dict[str, Any]) -> dict[str, Any]:
+    """:data:`RENDER_KEYS` of a director preview (``360 director --preview``): the
+    ``.lrv`` proxy (``proxy``; ``dfisheye``, the ``.insv``, for a clip without one) at one
+    command per frame, levelled with our IMU track."""
+    src = str(path.get("source") or "")
+    return {
+        "mode": "proxy" if src.lower().endswith(".lrv") else "dfisheye",
+        "imu_levelled": True,
+        "levelled": False,
+        "flowstate": False,
+        "input": _basename(src),
+        "cmd_every": 1,
+    }
 
 
 def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
     """Rendered clips of a clips folder or director preview folder.
 
     Returns:
-        ``{"file", "video", "offset", "kind", "path", "path_missing", "mode",
-        "imu_levelled", "commands"}`` per clip (``path`` is the director path dict
-        or None; ``path_missing`` when the manifest names a path file that is gone;
-        ``commands`` the parsed ``.cmd`` file of an IMU-levelled clip, or None).
+        ``{"file", "video", "offset", "kind", "path", "path_missing", "commands"}`` plus
+        :data:`RENDER_KEYS` per clip (``path`` is the director path dict or None;
+        ``path_missing`` when the manifest names a path file that is gone; ``commands``
+        the parsed ``.cmd`` file of an IMU-levelled clip, or None; :func:`render_info`,
+        :func:`preview_render_info`).
     """
     files = clip_files(qa_dir)
     manifest = cache.load_json(qa_dir / "manifest.json")
@@ -735,7 +820,8 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
             pano = e.get("pano") or {}
             path = load_path(pano.get("path_file"))
             missing = bool(pano.get("path_file")) and path is None
-            levelled = imu_levelled(pano)
+            info = render_info(pano)
+            levelled = info["imu_levelled"]
             cmd = None
             if levelled and path is not None and pano.get("cmd_file"):
                 cmd = _sibling(pano["path_file"], pano["cmd_file"])
@@ -753,8 +839,7 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
                     "kind": e.get("kind"),
                     "path": path,
                     "path_missing": missing,
-                    "mode": pano.get("mode"),
-                    "imu_levelled": levelled,
+                    **info,
                     "commands": load_commands(f.name, cmd) if levelled and path else None,
                 }
             )
@@ -772,8 +857,7 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
                 "kind": path.get("kind"),
                 "path": path,
                 "path_missing": False,
-                "mode": "dfisheye",  # director previews render the .lrv proxy
-                "imu_levelled": True,
+                **preview_render_info(path),
                 "commands": load_commands(f.name, f.with_suffix(".cmd")),
             }
         )
@@ -967,6 +1051,13 @@ def vl_summary(path: dict[str, Any] | None, offset: float, dur: float) -> dict[s
     return {"model": vl.get("model"), "frames": vl["frames"], "bad": len(flags), "flags": flags}
 
 
+def _span(seg: Any) -> list[float] | None:
+    """``[start, end]`` of a path's ``{"start", "end"}`` record, or None."""
+    if not isinstance(seg, dict) or "start" not in seg or "end" not in seg:
+        return None
+    return [round(float(seg["start"]), 3), round(float(seg["end"]), 3)]
+
+
 def clip_record(
     item: dict[str, Any],
     dur: float,
@@ -982,22 +1073,24 @@ def clip_record(
     """The ``qa.json`` record of one clip (rendered or geometric QA).
 
     ``offset`` is the clip's source start, ``segment`` the path's planned
-    ``[start, end]`` (None without a path), ``self_method`` how self boxes were
+    ``[start, end]`` (None without a path), ``selected`` the path's ``selected`` span
+    (``cutpoint clips``: the moment picked, before tails and padding; None for previews
+    and older paths), :data:`RENDER_KEYS` how the clip was rendered (:func:`find_inputs`;
+    None where the item has none), ``self_method`` how self boxes were
     tagged (``cone+clip`` or ``clip``, :func:`qa_clip`; ``cone`` for the geometric QA) and
     ``self_tags`` the boxes each method tagged. Frames keep :data:`FRAME_KEYS`
     plus :data:`EXTRA_FRAME_KEYS` where the QA recorded them."""
     vl = vl_summary(item.get("path"), float(item["offset"]), dur)
     agg = aggregate_clip(recs, fps, pan, hor, th, vl)
-    seg = (item.get("path") or {}).get("segment") or {}
-    segment = None
-    if "start" in seg and "end" in seg:
-        segment = [round(float(seg["start"]), 3), round(float(seg["end"]), 3)]
+    path = item.get("path") or {}
     return {
         "file": item["file"],
         "kind": item["kind"],
         "path_missing": bool(item.get("path_missing")),
         "offset": round(float(item["offset"]), 3),
-        "segment": segment,
+        "segment": _span(path.get("segment")),
+        "selected": _span(path.get("selected")),
+        **{k: item.get(k) for k in RENDER_KEYS},
         "self_method": self_method,
         "self_tags": self_tags,
         "duration": round(dur, 2),
