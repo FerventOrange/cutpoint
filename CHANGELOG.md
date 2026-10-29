@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Feature registry (#514 phase 1a): every scoring signal is a named feature with a
+  description, the layer it comes from and the extra it needs. Each built-in style's weights
+  name registered features; a learned style with a name that is not one logs a WARNING that
+  names it and its file, and scores as before. A candidate's `score` is divided by the weights
+  of the features this install can compute, so a feature of a missing extra no longer lowers
+  it, and the built-in generic styles (gaming, action, sport, funny, commentary) score the same
+  on lite and full installs. Ski styles still divide by all their weights until #514 phase 1b.
+  `highlights.json` records the features it could compute in
+  `settings.features_available`. The `events.json` rescore is now the scorer's bonus stage,
+  with the same points.
+
 - `install.sh`: one-step Linux installer (`curl -LsSf .../install.sh | sh`). It installs uv and
   ffmpeg when missing, picks CUDA torch (`cutpoint[all]`, `--torch-backend cu126`) with an NVIDIA
   GPU or CPU torch (`cutpoint[events,ui,keyring,ski]`) without, and `--lite` installs

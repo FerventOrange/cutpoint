@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, remap, set_config, write
-from cutpoint import analyze, config
+from cutpoint import analyze, config, extras, features, reset_state
 from cutpoint.styles import get_style
 
 
@@ -167,6 +167,20 @@ def test_analyze_records_relative_input_as_absolute(home, tmp_path, monkeypatch)
     analyze.analyze(Path("a.mp4"), get_style("funny"), proj, vision=False, use_scenes=False)
     hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["settings"]["inputs"] == [expected]
+
+
+@pytest.mark.parametrize("edition", ["full", "lite"])
+def test_analyze_records_the_available_features(home, tmp_path, monkeypatch, edition):
+    write(tmp_path / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    monkeypatch.setattr(extras, "edition", lambda: edition)
+    reset_state()
+    proj = tmp_path / "proj"
+    analyze.analyze(tmp_path / "a.mp4", get_style("funny"), proj, vision=False, use_scenes=False)
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    expected = sorted(features.available(("events",) if edition == "full" else ()))
+    assert hl["settings"]["features_available"] == expected
+    assert ("vlm" in expected) is (edition == "full")
 
 
 @pytest.mark.parametrize("folder", [False, True], ids=["file", "folder"])
