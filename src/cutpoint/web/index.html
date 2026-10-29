@@ -283,6 +283,15 @@
             <label for="optAudioTransition" title="How the sound changes from one clip to the next: a hard cut or a short crossfade, which needs the Fade video transition.">Audio transition</label>
             <select id="optAudioTransition" aria-describedby="dAudioTransition"><option value="cut">Cut</option><option value="crossfade">Crossfade</option></select>
             <span id="dAudioTransition" class="vh">How the sound changes from one clip to the next: a hard cut or a short crossfade, which needs the Fade video transition.</span>
+            <label for="optFadeDur" class="adv" title="Seconds each Fade between two clips lasts, in Assemble (assemble --fade-dur). Needs the Fade video transition. Blank: 0.25.">Fade length (s)</label>
+            <input type="number" id="optFadeDur" class="adv" min="0.01" max="10" step="any" inputmode="decimal" placeholder="0.25" aria-describedby="dFadeDur">
+            <span id="dFadeDur" class="vh">Seconds each Fade between two clips lasts, in Assemble (assemble --fade-dur). Needs the Fade video transition. Blank: 0.25.</span>
+            <label for="optFinalAudioFade" class="adv" title="Seconds of audio fade in and out Assemble adds to clips exported without one, such as with Clip audio fade 0 (assemble --audio-fade; 0 = off). Not used with the Crossfade audio transition. Blank: 0.25.">Assembly audio fade (s)</label>
+            <input type="number" id="optFinalAudioFade" class="adv" min="0" max="10" step="any" inputmode="decimal" placeholder="0.25" aria-describedby="dFinalAudioFade">
+            <span id="dFinalAudioFade" class="vh">Seconds of audio fade in and out Assemble adds to clips exported without one, such as with Clip audio fade 0 (assemble --audio-fade; 0 = off). Not used with the Crossfade audio transition. Blank: 0.25.</span>
+            <label for="optCaptionModel" class="adv" title="The Whisper model that transcribes Burn in captions (assemble --model). Default: medium with an NVIDIA GPU, small on the CPU; large-v3 is the most accurate and the slowest.">Captions model</label>
+            <select id="optCaptionModel" class="adv" aria-describedby="dCaptionModel"><option value="">Default</option><option value="large-v3">large-v3</option><option value="medium">medium</option><option value="small">small</option></select>
+            <span id="dCaptionModel" class="vh">The Whisper model that transcribes Burn in captions (assemble --model). Default: medium with an NVIDIA GPU, small on the CPU; large-v3 is the most accurate and the slowest.</span>
           </div>
           <fieldset class="panel timing">
             <legend>Cut Timing</legend>
@@ -311,6 +320,24 @@
               <label for="optExtendEnd" class="adv" title="Seconds of padding added after every clip, in Export clips (--extend-end) and Extend export (--end). Blank: none.">Extend end (s)</label>
               <input type="number" id="optExtendEnd" class="adv" min="0" max="30" step="any" inputmode="decimal" placeholder="0" aria-describedby="dExtendEnd">
               <span id="dExtendEnd" class="vh">Seconds of padding added after every clip, in Export clips (--extend-end) and Extend export (--end). Blank: none.</span>
+            </div>
+          </fieldset>
+          <!-- Picture and audio of each exported clip: clips --crop, --size and --audio-fade (#485) -->
+          <fieldset class="panel picture">
+            <legend>Clip Picture &amp; Audio</legend>
+            <div class="opt-grid">
+              <label for="optCrop" title="Crops each clip's picture before scaling, in Export clips (clips --crop). Default: the project's per-source crop, else none. Auto finds black borders per source; Custom takes a box in pixels.">Crop</label>
+              <select id="optCrop" aria-describedby="dCrop"><option value="">Default</option><option value="auto">Auto</option><option value="none">None</option><option value="custom">Custom</option></select>
+              <span id="dCrop" class="vh">Crops each clip's picture before scaling, in Export clips (clips --crop). Default: the project's per-source crop, else none. Auto finds black borders per source; Custom takes a box in pixels.</span>
+              <label for="optCropBox" title="The crop box in source pixels: width:height:x:y from the top-left corner, such as 1920:800:0:140 (clips --crop W:H:X:Y)." hidden>Crop box</label>
+              <input type="text" id="optCropBox" pattern="[1-9][0-9]{0,4}:[1-9][0-9]{0,4}:[0-9]{1,5}:[0-9]{1,5}" required placeholder="W:H:X:Y" autocomplete="off" spellcheck="false" aria-describedby="dCropBox" hidden>
+              <span id="dCropBox" class="vh">The crop box in source pixels: width:height:x:y from the top-left corner, such as 1920:800:0:140 (clips --crop W:H:X:Y).</span>
+              <label for="optSize" class="adv" title="Each clip's resolution in even pixels, width x height, such as 1280x720, in Export clips (clips --size). Not used with Vertical 9:16. Blank: the largest source's, at most 1080p.">Output size</label>
+              <input type="text" id="optSize" class="adv" pattern="([1-9][0-9]{0,3}[02468]|[2468])x([1-9][0-9]{0,3}[02468]|[2468])" placeholder="Source" autocomplete="off" spellcheck="false" aria-describedby="dSize">
+              <span id="dSize" class="vh">Each clip's resolution in even pixels, width x height, such as 1280x720, in Export clips (clips --size). Not used with Vertical 9:16. Blank: the largest source's, at most 1080p.</span>
+              <label for="optAudioFade" class="adv" title="Seconds of audio fade in and out baked into every clip, in Export clips (clips --audio-fade; 0 = off). Blank: 0.25.">Clip audio fade (s)</label>
+              <input type="number" id="optAudioFade" class="adv" min="0" max="10" step="any" inputmode="decimal" placeholder="0.25" aria-describedby="dAudioFade">
+              <span id="dAudioFade" class="vh">Seconds of audio fade in and out baked into every clip, in Export clips (clips --audio-fade; 0 = off). Blank: 0.25.</span>
             </div>
           </fieldset>
           <fieldset class="panel peaks">
@@ -482,7 +509,7 @@
       <fieldset class="panel">
         <legend>Export</legend>
         <label class="check"><input type="checkbox" id="setAdvExport" aria-describedby="setAdvExportHint"> Show advanced export options</label>
-        <p id="setAdvExportHint" class="hint">Shows Top moments, Candidate ids, the Cut Timing fields other than Event tails, the latest export's status and Extend export in the Export tab. Off by default; hidden options keep their values and are still used. Shows at once; Save keeps it, in this browser.</p>
+        <p id="setAdvExportHint" class="hint">Shows Top moments, Candidate ids, the Cut Timing fields other than Event tails, Fade length, Assembly audio fade, Captions model, Output size, Clip audio fade, the latest export's status and Extend export in the Export tab. Off by default; hidden options keep their values and are still used. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
       <fieldset class="panel">
         <legend>Appearance</legend>

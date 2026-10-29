@@ -125,6 +125,7 @@ from cutpoint.pano import project as pano_project
 from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
+from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import Style, get_style, learned_styles, style_names
 from cutpoint.utils import (
     PANO_EXTS,
@@ -151,6 +152,10 @@ MAX_TIMING_S = 60.0  # speech caps, tail lengths and the event window the page m
 MAX_TOTAL_S = 36000.0  # clips --max-total
 CLIP_ORDERS = ("story", "score", "chronological")  # clips --order without --mix
 EVENT_TAILS = {"auto": [], "on": ["--event-tails"], "off": ["--no-event-tails"]}
+MAX_FADE_S = 10.0  # clips / assemble --audio-fade and assemble --fade-dur the page may send
+CROP_BOX = re.compile(r"[1-9]\d{0,4}:[1-9]\d{0,4}:\d{1,5}:\d{1,5}")  # clips --crop W:H:X:Y
+EVEN_PX = r"(?:[1-9]\d{0,3}[02468]|[2468])"  # H.264 needs even sizes
+CLIP_SIZE = re.compile(rf"{EVEN_PX}x{EVEN_PX}")  # clips --size WxH
 REVERT = "revert-"  # proposal id prefix: put back the "before" of an applied assistant change
 # A stopped job gets this long before the hard kill: its own soft stop waits SOFT_STOP_S for
 # ffmpeg, then kills it and waits SOFT_STOP_S again, and only then removes the partial file;
@@ -3297,6 +3302,22 @@ def _opt(flag: str, v: float | None) -> list[str]:
     return [] if v is None else [flag, f"{v:g}"]
 
 
+def _picture_args(body: dict[str, Any]) -> list[str]:
+    """``clips --crop`` and ``--size`` as the page sent them; not sent: the CLI's defaults (the
+    project's per-source crop, else none; the largest source's size, capped at 1080p)."""
+    args = []
+    crop, size = body.get("crop"), body.get("size")
+    if crop is not None:
+        if not isinstance(crop, str) or not (crop in ("auto", "none") or CROP_BOX.fullmatch(crop)):
+            raise bad("crop must be 'auto', 'none' or W:H:X:Y in pixels")
+        args += ["--crop", crop]
+    if size is not None:
+        if not isinstance(size, str) or not CLIP_SIZE.fullmatch(size):
+            raise bad("size must be WxH in even pixels, such as 1920x1080")
+        args += ["--size", size]
+    return args
+
+
 def _speech_args(body: dict[str, Any]) -> list[str]:
     """``--speech-max-extend`` / ``--speech-max-lead`` when the page sent them."""
     return _opt("--speech-max-extend", _seconds(body, "speech_max_extend", MAX_TIMING_S)) + _opt(
@@ -4027,6 +4048,9 @@ def create_app(port: int) -> FastAPI:
                 )
             )
             peaks = _compress_peaks(body) + _color_args(body)
+            picture = _picture_args(body) + _opt(
+                "--audio-fade", _seconds(body, "audio_fade", MAX_FADE_S)
+            )
             out_name = fresh_name(p, f"clips_ui_{stamp}")
             seg_file = _own(p, f"{UI_DIR}/segments-{out_name[len('clips_ui_') :]}.json")
             _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the export
@@ -4061,7 +4085,7 @@ def create_app(port: int) -> FastAPI:
             if extend:
                 args += ["--extend", f"{float(extend):g}"]
             args += _opt("--extend-start", extend_start) + _opt("--extend-end", extend_end)
-            args += peaks
+            args += picture + peaks
             if meta.get("kind") == "360":  # stitch the recordings first (pano.auto_stitch)
                 chosen = {k: body.get(k) for k in ("top", "ids", "max_total")}
 
@@ -4115,6 +4139,15 @@ def create_app(port: int) -> FastAPI:
                 raise bad("audio_transition must be 'cut' or 'crossfade'")
             if transition == "cut" and audio_transition == "crossfade":
                 raise bad("an audio crossfade needs the fade video transition")
+            fade_dur = _seconds(body, "fade_dur", MAX_FADE_S, positive=True)
+            if fade_dur is not None and transition == "cut":
+                raise bad("fade_dur needs the fade video transition")
+            captions = _flag(body, "captions")
+            model = body.get("caption_model")
+            if model is not None and (not isinstance(model, str) or model not in TRANSCRIPT_MODELS):
+                raise bad(f"caption_model must be one of {', '.join(TRANSCRIPT_MODELS)}")
+            if model is not None and not captions:
+                raise bad("caption_model needs captions")
             exp_dir = exp["dir"]
             stem = fresh_name(
                 p,
@@ -4131,11 +4164,15 @@ def create_app(port: int) -> FastAPI:
                 "--audio-transition",
                 audio_transition,
                 *_compress_peaks(body),
+                *_opt("--fade-dur", fade_dur),
+                *_opt("--audio-fade", _seconds(body, "audio_fade", MAX_FADE_S)),
             )
             if _flag(body, "loudnorm"):
                 args.append("--loudnorm")
-            if _flag(body, "captions"):
+            if captions:
                 args.append("--captions")
+            if model is not None:
+                args += ["--model", model]
 
             def on_success() -> None:
                 if not (p / f"{stem}.mp4").is_file():

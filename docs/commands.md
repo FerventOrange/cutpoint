@@ -297,6 +297,18 @@ export from the ranked moments instead:
 | Event window (advanced) | `--event-window` |
 | Extend start / Extend end (advanced) | `--extend-start` / `--extend-end` |
 
+**Clip Picture & Audio** (Export clips) and the assembly fields under the transitions
+(Assemble). Default or a blank field sends no flag, so the CLI's default applies:
+
+| Control | CLI flag |
+|---|---|
+| Crop (off for 360 projects): Default, Auto, None or Custom (a Crop box `W:H:X:Y` in source pixels) | `clips --crop` (Default: no flag) |
+| Output size (advanced; off with Vertical 9:16 and for 360 projects): `WxH` in even pixels, such as `1280x720` | `clips --size` |
+| Clip audio fade (advanced; 0-10 s, 0 = off) | `clips --audio-fade` |
+| Fade length (advanced; with the Fade video transition) | `assemble --fade-dur` |
+| Assembly audio fade (advanced; off with the Crossfade audio transition): for clips exported without a fade | `assemble --audio-fade` |
+| Captions model (advanced; with Burn in captions): Default, `large-v3`, `medium` or `small` | `assemble --model` |
+
 The "Latest export ..." facts under the options are advanced too; warnings and guidance there
 (such as "Exported from the 360 preview (not stitched)") always show.
 
@@ -335,7 +347,9 @@ keeps a recorded `--recover` the same way. `highlights.json` does not record `--
 keeps it in `ui/analysis.json` for that analysis only; after a command-line re-run it starts
 unticked. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
 
-API: the clips job accepts the new fields, `POST /api/projects/<id>/jobs` takes the new `extend` and `edit` actions,
+API: the clips job accepts the new fields (also `crop`, `size` and `audio_fade`), the assemble
+job `fade_dur`, `audio_fade` and `caption_model` (`fade_dur` is refused with the Cut transition
+and `caption_model` without `captions`), `POST /api/projects/<id>/jobs` takes the new `extend` and `edit` actions,
 and the project view reports `preset_problem` (why the presets are off) and `preset_taken` (the
 earlier clips a second Make would replace). The analyze job takes `model`, `language`,
 `max_candidates`, `must_include_crash`, `no_scenes`, `recover` and `skip` (a list); a field it

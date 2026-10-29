@@ -47,11 +47,13 @@ the manifest work as for any other source; the manifest entry gets a
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -90,6 +92,9 @@ CMD_LEAD_S = 0.005  # commands go out this long before the frame they are meant 
 # ``yaw``, ``pitch`` and ``roll``, the seek ``start`` and the source ``fps`` (for ``360 qa``)
 CMD_HEADER = "# cutpoint-v360"
 MAX_FOLLOW_DEG = 30.0  # default ``pano.max_follow_deg``
+PROGRESS_POLL_S = 0.1  # ``render_segment(progress=)``: ffmpeg's progress file is read this often
+PROGRESS_MIN_S = 0.1  # ... and the callback called at most once per this many seconds
+UPRIGHT = "upright"  # path ``level``: no IMU, level for the nominal mount (sky lens up)
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,126 @@ def stabilised_r_vw(
     f /= np.linalg.norm(f, axis=1, keepdims=True)
     disp = np.stack([np.cross(y, f), y, f], 2)  # columns: display axes in world
     return np.einsum("kji,kjl->kil", rw[rel], disp)
+
+
+def clip_orientation(clip: X3Clip) -> G.Orientation:
+    """The IMU orientation track :func:`render_segment` levels ``clip`` with (cached; with
+    ``pano.imu_offset_s``).
+
+    Raises:
+        OSError: If the source is not reachable.
+        Exception: Any IMU read error when the track is not cached yet (no ``_00_.insv``,
+            no IMU samples, an unreadable trailer).
+    """
+    src = Path(clip.source)
+    return G.orientation(
+        src,
+        imu_source(src),
+        clip.fps,
+        max(clip.frames, 1),
+        q_offset_s=float(pano_config().get("imu_offset_s", 0.0)),
+    )
+
+
+def upright_orientation(fps: float, n_frames: int) -> G.Orientation:
+    """A still camera in the nominal mount (sky lens up, ``up`` = camera ``-z``) for
+    ``n_frames`` frames: the horizon of a clip without IMU data (path ``level``
+    :data:`UPRIGHT`). Fused by :func:`~cutpoint.pano.geometry.fuse` from a synthetic
+    resting IMU, so its axes and quaternion follow the same conventions as a real track."""
+    t = np.arange(0.0, 1.0, 1e-3)
+    acc = np.tile(G.M_IMU_TO_V @ np.array([0.0, 0.0, -G.G]), (len(t), 1))  # gravity: rest
+    one = G.fuse(t, acc, np.zeros((len(t), 3)), fps, 1)
+    n = max(int(n_frames), 1)
+    return G.Orientation(
+        t=np.arange(n) / fps,
+        up=np.tile(one.up[0], (n, 1)),
+        heading=np.zeros(n),
+        heading_smooth=np.zeros(n),
+        meta=one.meta | {"level": UPRIGHT},
+        q=np.tile(one.q[0], (n, 1)),
+    )
+
+
+class _Progress:
+    """Forwards the ``-progress`` output of :func:`render_segment`'s ffmpeg runs to a callback.
+
+    Each ffmpeg run writes its own temp file (:meth:`attempt`), read by a helper thread every
+    :data:`PROGRESS_POLL_S`. Values are ``out_time / dur``, capped below 1.0, sent only when
+    they rise (a GPU failure redone on the CPU starts over: the fraction holds until it passes
+    the earlier one) and at most once per :data:`PROGRESS_MIN_S`; :meth:`done` sends the one
+    1.0. Calls never overlap (a lock). The first exception of the callback is logged at DEBUG
+    and the callback is dropped.
+    """
+
+    def __init__(self, fn: Callable[[float], object], total: float, name: str) -> None:
+        self.fn: Callable[[float], object] | None = fn
+        self.total = total
+        self.name = name
+        self.last = 0.0
+        self.sent = -math.inf
+        self.lock = threading.Lock()
+
+    def emit(self, frac: float, final: bool = False) -> None:
+        with self.lock:
+            if self.fn is None:
+                return
+            if not final:
+                frac = min(max(frac, 0.0), 0.999)
+                now = time.monotonic()
+                if frac <= self.last or now - self.sent < PROGRESS_MIN_S:
+                    return
+                self.sent = now
+            self.last = frac
+            try:
+                self.fn(frac)
+            except Exception:  # a progress callback never breaks the render
+                logger.debug(
+                    "%s: progress callback failed; not called again", self.name, exc_info=True
+                )
+                self.fn = None
+
+    def done(self) -> None:
+        self.emit(1.0, final=True)
+
+    def _tail(self, file: Path, stop: threading.Event) -> None:
+        buf = ""
+        try:
+            with file.open(encoding="utf-8", errors="replace") as fh:
+                while True:
+                    stopped = stop.wait(PROGRESS_POLL_S)
+                    buf += fh.read()
+                    *lines, buf = buf.split("\n")
+                    for line in lines:
+                        if not line.startswith("out_time_us=") or self.total <= 0:
+                            continue
+                        with contextlib.suppress(ValueError):  # "N/A" before the first frame
+                            self.emit(int(line.split("=", 1)[1]) / 1e6 / self.total)
+                    if stopped:
+                        return
+        except OSError as err:
+            logger.debug("%s: progress not read (%s)", self.name, err)
+
+    @contextlib.contextmanager
+    def attempt(self) -> Any:
+        """A fresh progress file for one ffmpeg run (yielded), read while the run lasts;
+        the reader is joined and the file removed on exit."""
+        fd, name = tempfile.mkstemp(prefix="cutpoint-progress-", suffix=".txt")
+        os.close(fd)
+        file = Path(name)
+        stop = threading.Event()
+        reader = threading.Thread(
+            target=self._tail, args=(file, stop), name="pano-render-progress", daemon=True
+        )
+        reader.start()
+        try:
+            yield file
+        finally:
+            stop.set()
+            reader.join()
+            try:  # never fails the render (or hides a Ctrl+C): a scanner may hold it on Windows
+                file.unlink(missing_ok=True)
+            except OSError as err:
+                logger.debug("%s: progress file %s not removed (%s)", self.name, file, err)
 
 
 def command_lines(
@@ -264,9 +389,22 @@ def render_segment(
     cmd_every: int | None = None,
     work_dir: Path | None = None,
     grade: Grade | None = None,
+    progress: Callable[[float], object] | None = None,
 ) -> dict[str, Any]:
     """Render ``[start, end]`` of ``clip`` along ``path`` into ``out``; ``grade`` grades it
     after the BT.709 conversion, as in a flat export.
+
+    Unlevelled sources are levelled with :func:`clip_orientation`, or with
+    :func:`upright_orientation` when the path's ``level`` is :data:`UPRIGHT` (a
+    ``level_forward`` preview of a clip without IMU data,
+    :func:`cutpoint.pano.candidates.preview_path`).
+
+    ``progress``: called with the rendered fraction (0.0 to 1.0) from ffmpeg's ``-progress``
+    output: rising values below 1.0 at most about 10 times per second (from a helper
+    thread; calls never overlap, so keep it quick), then exactly one 1.0 from the calling
+    thread once ``out`` is complete (a failed render sends no 1.0). Never called after this
+    function returns or raises. If it raises, that is logged once at DEBUG and it is not called
+    again; the render goes on. None: no progress file, the ffmpeg command is unchanged.
 
     Returns:
         A record: ``mode``, ``inputs``, ``preview``, ``seconds``, ``commands``,
@@ -285,13 +423,10 @@ def render_segment(
     dur = end - start
     orient = None
     if not src.levelled:
-        orient = G.orientation(
-            Path(clip.source),
-            imu_source(Path(clip.source)),
-            clip.fps,
-            max(clip.frames, 1),
-            q_offset_s=float(pano_config().get("imu_offset_s", 0.0)),
-        )
+        if path.get("level") == UPRIGHT:
+            orient = upright_orientation(fps, max(clip.frames, math.ceil(end * fps) + 2))
+        else:
+            orient = clip_orientation(clip)
     lines, init = command_lines(clip, path, src, start, dur, fmt, cmd_every, orient)
     work = work_dir or out.parent
     work.mkdir(parents=True, exist_ok=True)
@@ -344,8 +479,12 @@ def render_segment(
             return "[0:v][1:v]hstack=inputs=2,"
         return f"[0:v]{dl}[d0];[1:v]{dl}[d1];[d0][d1]hstack=inputs=2,"
 
-    def args_for(enc: VideoEncoder, dec: HwDecoder | None, dst: Path) -> list[str]:
+    def args_for(
+        enc: VideoEncoder, dec: HwDecoder | None, dst: Path, prog: Path | None = None
+    ) -> list[str]:
         args = ["ffmpeg", "-y", "-v", "error"]
+        if prog is not None:
+            args += ["-progress", str(prog), "-nostats"]
         # Read moved footage through source_remap; the record keeps the original inputs.
         for inp in src.inputs:
             args += (dec.input_args() if dec else []) + seek + ["-i", str(remap_source(inp))]
@@ -385,12 +524,19 @@ def render_segment(
     # only 8-bit H.264 (see decoder_for) is decoded on a VAAPI GPU.
     decs = {decoder_for(remap_source(inp)) for inp in src.inputs}
     hw: list[HwDecoder | None] = [decs.pop() if len(decs) == 1 else None]
+    prog = _Progress(progress, dur, out.name) if progress is not None else None
+
+    def run_one(enc: VideoEncoder, dec: HwDecoder | None, dst: Path) -> str:
+        if prog is None:
+            return run(args_for(enc, dec, dst), cwd=work)
+        with prog.attempt() as pfile:
+            return run(args_for(enc, dec, dst, pfile), cwd=work)
 
     def encode(enc: VideoEncoder, dst: Path) -> str:
         """Render into ``dst`` with ``enc``: GPU decoding first, then CPU decoding."""
         if hw[0] is not None:
             try:
-                return run(args_for(enc, hw[0], dst), cwd=work)
+                return run_one(enc, hw[0], dst)
             except FFmpegError as err:
                 logger.warning(
                     "  %s: %s render failed, retrying on the CPU (%s)",
@@ -399,7 +545,7 @@ def render_segment(
                     str(err).splitlines()[-1][:200],
                 )
                 hw[0] = None  # the CPU-encoder retry decodes on the CPU too
-        return run(args_for(enc, None, dst), cwd=work)
+        return run_one(enc, None, dst)
 
     t0 = time.perf_counter()
     # A failed auto GPU encode is redone with libx264; out only appears once complete.
@@ -416,6 +562,8 @@ def render_segment(
             "end": round(start + got, 3),
         }
         logger.warning("READ ERROR rendering %s: got %.2f of %.2f s", out.name, got, dur)
+    if prog is not None:
+        prog.done()
     return {
         "mode": src.mode,
         "inputs": list(src.inputs),
@@ -571,17 +719,15 @@ class PanoExporter:
                     start,
                     end,
                 )
-        from cutpoint.pano.candidates import cached_path  # noqa: PLC0415
+        from cutpoint.pano.candidates import plan_path  # noqa: PLC0415
 
-        path, why = cached_path(self.project, clip, start, end, kind, self.overrides, self.vertical)
-        if path is not None:
+        path, cached, why = plan_path(
+            self.project, clip, start, end, kind, self.overrides, self.vertical
+        )
+        if cached:
             logger.info("  %s: director path planned by 360 analyze", name)
-        else:
-            if why is not None:
-                logger.info("  %s: director path re-planned (%s)", name, why)
-            path = D.compute_path(
-                clip, start, end, vertical=self.vertical, kind=kind, overrides=self.overrides
-            )
+        elif why is not None:
+            logger.info("  %s: director path re-planned (%s)", name, why)
         if reuse is not None and reuse.is_file() and reuse.resolve() == out.resolve():
             bak = backup_path_file(out)
             logger.warning("  %s: re-planned; the previous path is kept as %s", name, bak)
