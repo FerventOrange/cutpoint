@@ -726,7 +726,6 @@ def test_messages_never_show_the_password_of_a_url(monkeypatch) -> None:
 
 
 def test_jobs_and_dialogs_start_without_the_key_variables(monkeypatch) -> None:
-    pytest.importorskip("fastapi")
     from cutpoint import ui  # noqa: PLC0415
 
     for name in keys.ENV_VARS:

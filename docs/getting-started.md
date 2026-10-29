@@ -32,7 +32,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 . "$HOME/.local/bin/env"
 ```
 
-Get the code and install the core package:
+Get the code and install it:
 
 ```powershell
 git clone https://github.com/FerventOrange/cutpoint.git
@@ -41,12 +41,15 @@ uv sync
 uv run cutpoint --help
 ```
 
-The core install is enough for `analyze`, `clips`, `extend`, `assemble` and `stage`.
+In a clone, `uv sync` installs everything, including the `events` and `gpu` extras (the `full`
+dependency group, about 7 GB or more with torch). For a lite environment without them, use
+`uv sync --no-group full` (and `uv run --no-group full ...`, or set `UV_NO_GROUP=full`). The lite
+install is enough for `analyze`, `clips`, `extend`, `assemble`, `stage` and `cutpoint ui`.
 
 ### Browser workspace
 
 ```bash
-uv run --extra ui cutpoint ui
+uv run cutpoint ui
 ```
 
 Open the complete URL printed in the terminal, including `#t=…`. Create a project from a local
@@ -64,7 +67,7 @@ CLI does; the UI does not run `cutpoint setup`. Selecting a browser-incompatible
 a cached preview conversion, which may take time and extra disk space.
 
 Use `--port 8766` if the default port is occupied. Stop the server with Ctrl+C; this also stops
-its running jobs. Keep every other extra you use in the `uv run`/`uv sync` command.
+its running jobs. In a lite environment, keep `--no-group full` and every extra you use in the command.
 
 The startup URL grants access to local footage: keep it private. The token is stored only in the
 current browser tab's session storage. After restarting the server, open its newly printed URL.
@@ -73,29 +76,27 @@ current browser tab's session storage. After restarting the server, open its new
 
 | Extra | Adds |
 |---|---|
-| `ui` | Local browser editing workspace (`cutpoint ui`); no Node installation required. |
-| `ski` | Action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU). Also used by the 360 module. |
+| `ui`, `ski`, `keyring` | Aliases that add nothing: the browser workspace (`cutpoint ui`), action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU, the 360 module) and saving an AI Chat API key in the system keyring are part of the core install. The names stay so `cutpoint[ui]` and `--extra ski` keep working. |
 | `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
-| `keyring` | Save an AI Chat API key in the system keyring from Settings in `cutpoint ui` (Windows Credential Manager, macOS Keychain, Secret Service on Linux). About 170 KB; on Linux it adds SecretStorage, about 5 MB. Without it, set the key in an environment variable ([keys](configuration.md#assistant)). |
 | `dev` | pytest, ruff, pre-commit. |
-| `all` | `ski`, `events`, `gpu`, `ui` and `keyring`. |
+| `all` | `events` and `gpu`. |
 
-`uv sync` makes the environment match exactly the extras you name, so it removes the
-packages of any extra you leave out. List every extra you use each time:
+With `--no-group full`, `uv sync` makes the environment match exactly the extras you name, so it
+removes the packages of any extra you leave out. List every extra you use each time:
 
 ```powershell
-uv sync --extra ski --extra events --extra gpu
+uv sync --no-group full --extra events --extra gpu
 ```
 
-The easy way to keep everything is `uv sync --extra all` (`ski`, `events`, `gpu`, `ui` and `keyring`; the
-`dev` tools come by default). It includes the large torch download of `events`.
+A plain `uv sync` keeps everything (`events` and `gpu` through the `full` group, plus the `dev`
+tools). It includes the large torch download of `events`.
 
-With an NVIDIA GPU, `uv sync --extra gpu` is the minimum for GPU Whisper.
+With an NVIDIA GPU, `uv sync --no-group full --extra gpu` is the minimum for GPU Whisper.
 
 The same rule applies when you add a missing extra later: use the install form that matches how
-you installed Cutpoint, and list every extra you use. In a clone that is `uv sync --extra X`
-plus your other extras, or `uv sync --extra all`. For a tool install it is
+you installed Cutpoint, and list every extra you use. In a clone a plain `uv sync` already has every
+extra; in a lite environment use `uv sync --no-group full --extra X` plus your other extras. For a tool install it is
 `uv tool install "cutpoint[X]" --reinstall` plus your other extras; for a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add
 the PyTorch index flags shown under [Install as a tool](#install-as-a-tool-optional).
 
@@ -113,7 +114,7 @@ Or install from a clone of the repository:
 uv tool install .
 ```
 
-Add extras with `uv tool install "cutpoint[ski,events,gpu]"` (or `".[ski,events,gpu]"` from a
+Add extras with `uv tool install "cutpoint[events,gpu]"` (or `".[events,gpu]"` from a
 clone); with pip, `pip install "cutpoint[gpu]"`. This path is not exercised by the project's tests; if it fails, use `uv sync` and
 `uv run`.
 
@@ -123,7 +124,7 @@ A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on W
 (`uv pip` keeps an already-installed CPU-only torch unless you add `--reinstall-package torch
 --reinstall-package torchvision`); these need no index flags. `pip` and PyPI or wheel installs do
 not apply it. For a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add the PyTorch
-index (`all` is `ski`, `events`, `gpu` and `ui`):
+index (`all` is `events` and `gpu`):
 
 ```powershell
 uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match

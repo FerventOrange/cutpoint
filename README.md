@@ -48,7 +48,7 @@ adds a Claude Code skill so it finds Cutpoint without being pointed at it.
 For standard video, you can review and edit highlights without an agent:
 
 ```bash
-uv run --extra ui cutpoint ui
+uv run cutpoint ui
 ```
 
 Open the complete URL printed in the terminal (including its session token). Pick a source
@@ -58,7 +58,7 @@ computer; each export gets a new folder so previous exports are retained. The UI
 360 projects from Insta360 X3 footage ([360 video](docs/workflows/360.md#in-the-ui)) but does not
 expose the action-cam workflows.
 
-For a tool install, use `uv tool install "cutpoint[ui]" --reinstall`, then `cutpoint ui`.
+For a tool install, use `uv tool install cutpoint --reinstall`, then `cutpoint ui`.
 See the [command reference](docs/commands.md#ui) for details.
 
 ## Requirements
@@ -83,6 +83,10 @@ uv sync
 uv run cutpoint paths
 ```
 
+In a clone, `uv sync` installs everything, including torch and CUDA (about 7 GB or more). For a
+lite environment use `uv sync --no-group full` and `uv run --no-group full ...` (or set
+`UV_NO_GROUP=full`).
+
 To get a global `cutpoint` command instead, run `uv tool install cutpoint` (from PyPI) after
 installing ffmpeg and uv.
 
@@ -98,8 +102,11 @@ uv sync
 uv run cutpoint paths
 ```
 
-With an NVIDIA GPU, run `uv sync --extra gpu` (or `uv tool install "cutpoint[gpu]"`) for GPU
-Whisper; the base install transcribes on the CPU. The optional extras and model downloads are explained in
+The same applies on Linux: a clone's `uv sync` installs everything (about 7 GB or more with torch
+and CUDA); `uv sync --no-group full` (or `UV_NO_GROUP=full`) gives the lite environment.
+
+A clone already includes the `gpu` extra, so Whisper uses an NVIDIA GPU there. A tool install
+transcribes on the CPU unless you add it: `uv tool install "cutpoint[gpu]"`. The optional extras and model downloads are explained in
 [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
 
 AMD video encoding uses VAAPI on Linux or AMF on supported FFmpeg/driver installations.

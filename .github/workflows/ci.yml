@@ -127,8 +127,9 @@ jobs:
           ffmpeg -version
           ffprobe -version
       # The tests are CPU-only; the dev group plus ocr-test (rapidocr + onnxruntime, for the discovery
-      # e2e test) are synced (no gpu/events extras, no torch).
-      - run: uv sync --locked --group ocr-test
+      # e2e test) are synced (no gpu/events extras, no torch). `--no-group full` skips the default
+      # `full` group (events + gpu, so torch); `uv run --no-sync` below does not sync anything.
+      - run: uv sync --locked --no-group full --group ocr-test
       - run: uv run --no-sync pytest -q -rs
 
   docker:
