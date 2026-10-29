@@ -503,8 +503,42 @@
     <form method="dialog">
       <h2 id="analyzeTitle">Analyze again?</h2>
       <p id="analyzeText" class="muted">The project's footage is analyzed again and its moments are ranked anew.</p>
+      <!-- Analyze options (#483): each maps 1:1 to an analyze flag; blank or unticked sends none
+           (the CLI's default). Filled with what the project's analysis used. Not for 360 projects. -->
+      <details id="analyzeOpts" class="analyze-opts">
+        <summary>Analysis options</summary>
+        <div class="analyze-opts-body">
+        <div class="opt-grid">
+          <label for="anModel" title="The whisper model that transcribes the audio (--model): larger is more accurate and slower. Blank: medium with a CUDA GPU, else small.">Transcription model</label>
+          <input id="anModel" list="anModelList" autocomplete="off" spellcheck="false" placeholder="Default" aria-describedby="dAnModel">
+          <datalist id="anModelList"><option value="tiny"><option value="base"><option value="small"><option value="medium"><option value="large-v3"><option value="turbo"><option value="distil-large-v3"></datalist>
+          <span id="dAnModel" class="vh">The whisper model that transcribes the audio (--model): larger is more accurate and slower. Blank: medium with a CUDA GPU, else small.</span>
+          <label for="anLanguage" title="Transcribes in this language instead of detecting it, as a code such as en or de (--language). Blank: detected.">Language</label>
+          <input id="anLanguage" autocomplete="off" spellcheck="false" placeholder="Detect" aria-describedby="dAnLanguage">
+          <span id="dAnLanguage" class="vh">Transcribes in this language instead of detecting it, as a code such as en or de (--language). Blank: detected.</span>
+          <label for="anMaxCandidates" title="The most moments found per video before they are merged (--max-candidates). Blank: automatic, by length.">Max candidates</label>
+          <input type="number" id="anMaxCandidates" min="1" step="1" inputmode="numeric" placeholder="Auto" aria-describedby="dAnMaxCandidates">
+          <span id="dAnMaxCandidates" class="vh">The most moments found per video before they are merged (--max-candidates). Blank: automatic, by length.</span>
+          <label for="anCrash" id="anCrashLabel" title="Always clips crashes in crashes.json with at least this confidence, 0 to 1; 0 turns it off (--must-include-crash). Blank: the style's.">Must-include crash</label>
+          <input type="number" id="anCrash" min="0" max="1" step="any" inputmode="decimal" aria-describedby="dAnCrash">
+          <span id="dAnCrash" class="vh">Always clips crashes in crashes.json with at least this confidence, 0 to 1; 0 turns it off (--must-include-crash). Blank: the style's.</span>
+        </div>
+        <label class="check" title="Leaves out scene detection (--no-scenes): cuts in the video no longer add to a moment's score, and the analysis takes less time."><input type="checkbox" id="anNoScenes" aria-describedby="dAnNoScenes"> Skip scene detection</label>
+        <span id="dAnNoScenes" class="vh">Leaves out scene detection (--no-scenes): cuts in the video no longer add to a moment's score, and the analysis takes less time.</span>
+        <label class="check" title="If a video has a read error, analysis resumes after the bad part instead of stopping there (--recover). The video is not copied or changed."><input type="checkbox" id="anRecover" aria-describedby="dAnRecover"> Recover after read errors</label>
+        <span id="dAnRecover" class="vh">If a video has a read error, analysis resumes after the bad part instead of stopping there (--recover). The video is not copied or changed.</span>
+        <fieldset class="analyze-skip" aria-describedby="anSkipHint">
+          <legend>Skip steps</legend>
+          <label class="check"><input type="checkbox" name="anSkip" value="reactions"> Reactions (laughter and other sounds)</label>
+          <label class="check"><input type="checkbox" name="anSkip" value="keyframes"> Keyframes (game HUD text, camera view)</label>
+          <label class="check"><input type="checkbox" name="anSkip" value="crashes"> Crashes (action-cam footage)</label>
+        </fieldset>
+        <p id="anSkipHint" class="hint">Leaves these steps out (--skip). None ticked: analysis.skip in config.json, else none.</p>
+        <p id="anPresetNote" class="hint">One-Click Edit repeats Skip steps; the other options turn it off for this project, as cutpoint edit does not take them.</p>
+        </div>
+      </details>
       <div class="dialog-actions">
-        <button type="submit" value="cancel" class="btn" id="againCancel">Cancel</button>
+        <button type="submit" value="cancel" class="btn" id="againCancel" formnovalidate>Cancel</button>
         <button type="submit" value="ok" class="btn primary" id="againOk">Analyze</button>
       </div>
     </form>

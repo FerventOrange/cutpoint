@@ -306,14 +306,36 @@ Peaks choices and the vision choice from Settings. Clips go to `clips` and the v
 copy next to it; that export becomes the current one. If earlier clips exist,
 a second run asks before replacing them and passes `--force` only when you confirm. The presets
 are off, with the reason shown, for 360 projects and for projects analyzed with `--exclude` or
-`--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`
-or `--recover`.
+`--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`,
+`--must-include-crash` or `--recover`. A Skip steps choice is passed on as `edit --skip`.
 
-"Analyze again" keeps a recorded `--recover`.
+**Analysis options** are in the "Analyze again" dialog, and in the dialog that "Analysis
+options…" opens before the first analysis ("Analyze footage" alone uses none of them). Each one
+is one [`analyze`](#analyze) flag; a blank field or unticked box passes none, so the CLI default
+applies:
+
+| Control | CLI flag |
+|---|---|
+| Transcription model | `--model` |
+| Language | `--language` |
+| Max candidates | `--max-candidates` |
+| Must-include crash (ski styles only) | `--must-include-crash` |
+| Skip scene detection | `--no-scenes` |
+| Recover after read errors | `--recover` |
+| Skip steps: Reactions, Keyframes, Crashes | `--skip reactions keyframes crashes` |
+
+The dialog starts with what the project's analysis used, as `highlights.json` records it (the
+model only when it is not the default), so "Analyze again" repeats it unless you change it. It
+keeps a recorded `--recover` the same way. `highlights.json` does not record `--skip`, so the UI
+keeps it in `ui/analysis.json` for that analysis only; after a command-line re-run it starts
+unticked. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
 
 API: the clips job accepts the new fields, `POST /api/projects/<id>/jobs` takes the new `extend` and `edit` actions,
 and the project view reports `preset_problem` (why the presets are off) and `preset_taken` (the
-earlier clips a second Make would replace).
+earlier clips a second Make would replace). The analyze job takes `model`, `language`,
+`max_candidates`, `must_include_crash`, `no_scenes`, `recover` and `skip` (a list); a field it
+does not send keeps what the analysis used, which the project view reports as `analyze_options`
+(with `must_include_crash_default`, the style's value, `null` for styles other than ski).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as

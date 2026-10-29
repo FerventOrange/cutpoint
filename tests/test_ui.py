@@ -348,6 +348,10 @@ def test_360_analyze_job_runs_the_360_command_with_a_plan(
     want = ["cutpoint", "360", "analyze", str(p), "--scan", str(folder), "--style", "ski"]
     assert seen == [want + (["--only", only] if only else [])]
     assert "--vision" not in seen[0] and "--no-vision" not in seen[0]
+    # the Analyze options are analyze flags 360 analyze does not take: refused, not dropped
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze", "no_scenes": True})
+    assert res.status_code == 400 and "not available for 360 projects" in res.json()["detail"]
+    assert len(seen) == 1
 
 
 def test_360_analyze_job_view_carries_the_step_plan(
@@ -1217,6 +1221,172 @@ def test_reanalyze_keeps_a_recorded_recover(
     assert res.status_code == 200, res.text
     assert ("--recover" in captured[0]) is passed
     cli.build_parser().parse_args(captured[0][3:])
+
+
+ANALYZE_DEFAULTS = {
+    "model": None,
+    "language": None,
+    "max_candidates": None,
+    "no_scenes": False,
+    "skip": None,
+    "must_include_crash": None,
+    "recover": False,
+}
+RECORDED = {  # an analysis run with every Analyze option but --skip (not recorded)
+    "whisper_model": "large-v3",
+    "whisper_device": "cpu",
+    "language": "de",
+    "max_candidates": 30,
+    "scenes": False,
+    "recover": True,
+}
+
+
+@pytest.mark.parametrize(
+    ("settings", "body", "parsed"),
+    [
+        (
+            {},
+            {
+                "model": " turbo ",
+                "language": "en",
+                "max_candidates": 12,
+                "no_scenes": True,
+                "skip": ["crashes", "reactions"],
+                "must_include_crash": 0.25,
+                "recover": True,
+            },
+            {
+                "model": "turbo",
+                "language": "en",
+                "max_candidates": 12,
+                "no_scenes": True,
+                "skip": ["reactions", "crashes"],
+                "must_include_crash": 0.25,
+                "recover": True,
+            },
+        ),
+        # Analyze again from a request without them: what the analysis recorded
+        (
+            RECORDED,
+            {},
+            {
+                "model": "large-v3",
+                "language": "de",
+                "max_candidates": 30,
+                "no_scenes": True,
+                "recover": True,
+            },
+        ),
+        # the page cleared them: the CLI defaults (a recorded --recover is dropped too)
+        (
+            RECORDED,
+            {
+                "model": "",
+                "language": None,
+                "max_candidates": None,
+                "no_scenes": False,
+                "recover": False,
+                "skip": [],
+            },
+            {},
+        ),
+        # each refused, nothing started
+        ({}, [{"skip": ["vision"]}, {"model": "../x"}], None),
+    ],
+    ids=["set", "recorded", "cleared", "invalid"],
+)
+def test_analyze_options_reach_the_analyze_command_line_unchanged(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    settings: dict,
+    body: dict | list[dict],
+    parsed: dict | None,
+) -> None:
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "funny"
+    hl["settings"].update(settings)
+    cache.save_json(p / "highlights.json", hl)
+    if settings:  # the page shows what the analysis used
+        assert client.get("/api/projects/cli").json()["analyze_options"] == {
+            **ANALYZE_DEFAULTS, "model": "large-v3", "language": "de", "max_candidates": 30,
+            "no_scenes": True, "recover": True, "skip": [],
+        }  # fmt: skip
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    if isinstance(body, list):
+        for bad_body, message in zip(
+            body, ("skip must be a list of", "model must be a whisper"), strict=True
+        ):
+            res = client.post("/api/projects/cli/jobs", json={"action": "analyze", **bad_body})
+            assert res.status_code == 400 and message in res.json()["detail"]
+        assert not captured
+        return
+    res = client.post("/api/projects/cli/jobs", json={"action": "analyze", **body})
+    assert res.status_code == 200, res.text
+    a = cli.build_parser().parse_args(_cli_args(captured[0]))
+    assert {k: getattr(a, k) for k in ANALYZE_DEFAULTS} == {**ANALYZE_DEFAULTS, **parsed}
+
+
+def test_the_analyze_skip_is_kept_for_analyze_again_and_one_click_edit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """highlights.json does not record --skip: the UI keeps it for that analysis only, so
+    edit (which analyzes again) leaves the same steps out, and a command-line re-run drops it."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl.update(style="funny", created="2026-10-01T10:00:00")
+    cache.save_json(p / "highlights.json", hl)
+    captured: list[list[str]] = []
+    done: list[Callable[[], None] | None] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest):
+        captured.append(args)
+        done.append(on_success)
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    body = {"action": "analyze", "skip": ["crashes", "keyframes"]}
+    assert client.post("/api/projects/cli/jobs", json=body).status_code == 200
+    assert _cli_args(captured[0])[-3:] == ["--skip", "keyframes", "crashes"]
+    hl["created"] = "2026-10-01T11:00:00"  # what that analysis wrote
+    cache.save_json(p / "highlights.json", hl)
+    done[0]()
+    view = client.get("/api/projects/cli").json()
+    assert view["analyze_options"]["skip"] == ["keyframes", "crashes"]
+    assert view["preset_problem"] is None  # edit takes --skip
+    assert (
+        client.post("/api/projects/cli/jobs", json={"action": "edit", "kind": "clips"}).status_code
+        == 200
+    )
+    assert _cli_args(captured[1])[-3:] == ["--skip", "keyframes", "crashes"]
+
+    hl["created"] = "2026-10-02T09:00:00"  # analyzed again on the command line
+    cache.save_json(p / "highlights.json", hl)
+    assert client.get("/api/projects/cli").json()["analyze_options"]["skip"] == []
+    assert client.post("/api/projects/cli/jobs", json={"action": "analyze"}).status_code == 200
+    assert "--skip" not in captured[2]
+
+
+def test_a_ski_analysis_without_no_scenes_keeps_presets_and_scene_detection_on(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: ski never detects scenes, so its analysis records "scenes": false without
+    --no-scenes; that turned the presets off with the --no-scenes reason."""
+    meta = {"style": "ski", "source": str(tmp_path / "clip.mp4")}
+    settings = {"scenes": False, "must_include_crash": 0.6}  # the ski style's own
+    res, captured, _, _ = preset_job(
+        client, monkeypatch, tmp_path, {"kind": "clips"}, settings=settings, meta=meta
+    )
+    assert res.status_code == 200, res.text
+    _cli_args(captured[0])
+    view = client.get("/api/projects/cli").json()
+    assert view["preset_problem"] is None and view["must_include_crash_default"] == 0.6
+    opts = view["analyze_options"]
+    assert (opts["no_scenes"], opts["must_include_crash"]) == (False, None)
 
 
 @pytest.mark.parametrize(
@@ -6673,6 +6843,7 @@ def test_a_preset_refuses_bad_values(
         ({"recover": True}, None, "--recover"),
         ({"language": "en"}, None, "--language"),
         ({"max_candidates": 40}, None, "--max-candidates"),
+        ({"must_include_crash": 0.3}, {"style": "ski", "source": "x"}, "--must-include-crash"),
     ],
 )
 def test_presets_are_off_with_the_reason_where_edit_cannot_remake_the_analysis(
