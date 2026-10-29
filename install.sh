@@ -243,7 +243,13 @@ choose_backend() {
   BACKEND=none
   BACKEND_WHY=""
   if [ "$LITE" = 1 ]; then
-    [ -z "$TORCH" ] || warn "CUTPOINT_TORCH is ignored in lite mode (lite has no torch)."
+    if [ -n "$TORCH" ]; then
+      if [ -n "$FLAG_TORCH" ]; then
+        warn "--$FLAG_TORCH is ignored in lite mode (lite has no torch)."
+      else
+        warn "CUTPOINT_TORCH is ignored in lite mode (lite has no torch)."
+      fi
+    fi
     BACKEND_WHY="lite mode"
     return 0
   fi
@@ -279,6 +285,18 @@ choose_backend() {
 
 # ---------------------------------------------------------------- bin dir and PATH
 
+# Drop "name/.." pairs textually so string comparisons with PATH entries work (the directories
+# need not exist yet, so no cd).
+norm_dir() {
+  nd=$1
+  while :; do
+    nd_next=$(printf '%s' "$nd" | sed 's|/[^/][^/]*/\.\./|/|; s|/[^/][^/]*/\.\.$||')
+    [ "$nd_next" != "$nd" ] || break
+    nd=$nd_next
+  done
+  printf '%s' "$nd"
+}
+
 # Same order as uv: UV_TOOL_BIN_DIR, XDG_BIN_HOME, $XDG_DATA_HOME/../bin, ~/.local/bin.
 default_bin_dir() {
   if [ -n "${UV_TOOL_BIN_DIR:-}" ]; then
@@ -291,6 +309,7 @@ default_bin_dir() {
     [ -n "${HOME:-}" ] || die "HOME is not set."
     BIN_DIR=$HOME/.local/bin
   fi
+  BIN_DIR=$(norm_dir "$BIN_DIR")
 }
 
 # Put BIN_DIR first on PATH; BIN_ON_PATH records whether the user's own PATH had it.
@@ -318,6 +337,7 @@ setup_path() {
 sync_bin_dir() {
   [ "$DRY_RUN" = 1 ] && return 0
   uvbin=$(uv tool dir --bin 2>/dev/null) || return 0
+  [ -z "$uvbin" ] || uvbin=$(norm_dir "$uvbin")
   if [ -n "$uvbin" ] && [ "$uvbin" != "$BIN_DIR" ]; then
     BIN_DIR=$uvbin
     use_bin_dir

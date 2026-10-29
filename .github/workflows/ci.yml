@@ -185,6 +185,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/on-path"
           out=$(PATH="$RUNNER_TEMP/on-path:$PATH" UV_TOOL_BIN_DIR="$RUNNER_TEMP/on-path" sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
           if printf '%s\n' "$out" | grep -q 'update-shell'; then echo "::error::update-shell planned although the bin dir is on PATH"; exit 1; fi
+          # XDG_DATA_HOME/../bin is normalized, so a PATH entry for the same directory counts.
+          mkdir -p "$RUNNER_TEMP/xdg/share" "$RUNNER_TEMP/xdg/bin"
+          out=$(PATH="$RUNNER_TEMP/xdg/bin:$PATH" XDG_DATA_HOME="$RUNNER_TEMP/xdg/share" UV_TOOL_BIN_DIR= XDG_BIN_HOME= sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
+          if printf '%s\n' "$out" | grep -q 'update-shell'; then echo "::error::XDG_DATA_HOME/../bin not matched to PATH"; exit 1; fi
           # Contradictory or malformed flags exit 2; a missing source path fails even in a dry run.
           rc=0; sh install.sh --dry-run --cpu --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--cpu --cuda must exit 2, got $rc"; exit 1; }
           rc=0; sh install.sh --dry-run --lite --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--lite --cuda must exit 2, got $rc"; exit 1; }
