@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `install.sh`: one-step Linux installer (`curl -LsSf .../install.sh | sh`). It installs uv and
+  ffmpeg when missing, picks CUDA torch (`cutpoint[all]`, `--torch-backend cu126`) with an NVIDIA
+  GPU or CPU torch (`cutpoint[events,ui,keyring,ski]`) without, and `--lite` installs
+  `cutpoint[ui,keyring,ski]` (no torch). Flags:
+  `--yes --dry-run --cpu --cuda --source pypi|git[@ref]|PATH --no-ffmpeg`; full mode can ask to
+  run `cutpoint setup` and pull the Ollama model. Running it again upgrades or switches mode. CI
+  lints it and checks the planned commands.
 - `cutpoint ui`: "Export clips" of a 360 project first stitches the recordings it needs with the
   Insta360 Media SDK when the SDK runs (`360 stitch`, skipping recordings already stitched), then
   renders from the stitched equirects. The job log shows the disk estimate (about 54 GB per hour
