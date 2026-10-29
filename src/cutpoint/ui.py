@@ -2697,11 +2697,15 @@ def _secs(v: Any) -> float | None:
 def analysis_took(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> float | None:
     """Wall-clock seconds of the last analysis. ``timings.total_s`` covers the flat analysis
     only (a re-rank keeps it and adds ``timings.rerank_s``), not the scan, events and camera
-    paths of ``360 analyze``, so a 360 project's time is the scan and analyze totals in
-    ``pano_timings.json``; None when one is missing."""
+    paths of ``360 analyze``, so a 360 project's time is ``total_s`` in
+    ``pano_timings.json`` (every analyze run since #564; a ``--views-only`` run, which leaves
+    ``highlights.json`` alone, does not count), or for an older file without it the scan and
+    analyze totals; None when they are missing."""
     if meta.get("kind") == "360":
         pano = _load(p, "pano_timings.json")
         pano = pano if isinstance(pano, dict) else {}
+        if _secs(pano.get("analyze_s")) is not None and (whole := _secs(pano.get("total_s"))):
+            return whole
         scan, total = _secs(pano.get("scan_s")), _secs(pano.get("analyze_total_s"))
         return None if scan is None or total is None else round(scan + total, 2)
     timings = (hl or {}).get("timings")

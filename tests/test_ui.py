@@ -6102,16 +6102,25 @@ def test_project_reports_the_video_length_and_time_of_the_last_analysis(
     assert analysis == {"video_s": 900.5, "took_s": 75.25}
     cache.save_json(ui.project_dir(pid) / "highlights.json", {**hl, "timings": {}})
     assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
-    # 360: total_s is the flat analysis alone, so the time is pano_timings.json's scan + analyze
+    # 360: total_s is the flat analysis alone, so the time is pano_timings.json's total_s
     p = ui.project_dir(pid)
     cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), "kind": "360"})
     cache.save_json(p / "highlights.json", hl)
     assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
-    cache.save_json(
-        p / "pano_timings.json", {"scan_s": 12.5, "analyze_s": 90.0, "analyze_total_s": 300.0}
-    )
+    pano = {"scan_s": 12.5, "analyze_s": 90.0, "analyze_total_s": 300.0, "total_s": 320.5}
+    cache.save_json(p / "pano_timings.json", pano)
     analysis = client.get(f"/api/projects/{pid}").json()["analysis"]
-    assert analysis == {"video_s": 900.5, "took_s": 312.5}
+    assert analysis == {"video_s": 900.5, "took_s": 320.5}
+    # --no-events: total_s without the deprecated analyze_total_s
+    cache.save_json(p / "pano_timings.json", {"analyze_s": 90.0, "total_s": 95.0})
+    assert client.get(f"/api/projects/{pid}").json()["analysis"]["took_s"] == 95.0
+    # --views-only times the views alone and leaves highlights.json as it was: no time
+    cache.save_json(p / "pano_timings.json", {"views": {"033": 4.0}, "total_s": 40.0})
+    assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
+    # a pano_timings.json from before total_s: its scan + analyze totals
+    del pano["total_s"]
+    cache.save_json(p / "pano_timings.json", pano)
+    assert client.get(f"/api/projects/{pid}").json()["analysis"]["took_s"] == 312.5
 
 
 @pytest.mark.parametrize(

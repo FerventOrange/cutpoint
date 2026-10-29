@@ -57,7 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flag, and a changed `pano.imu_offset_s` or preview format renders a fresh preview.
 - `cutpoint ui`: the Moments header shows "Analyzed X of video in Y" under Analyze again and
   Show folder (#459), from the sources and `timings.total_s` that `highlights.json` already
-  records (360 projects: the scan and analyze times in `pano_timings.json`); hidden when they
+  records (360 projects: `total_s` in `pano_timings.json`, also after `--no-events`; older
+  files without it: their scan and analyze times); hidden when they
   are not recorded. On ski projects an `events`, `360 analyze` or `crashes --reanalyze` re-rank
   keeps the analysis time (see `timings.rerank_s` below).
 - Feature registry (#514 phase 1a): every scoring signal is a named feature with a
@@ -193,8 +194,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `analyze_s`, `events_s`, `paths_s`, `scan_s` (with `--scan`) and `total_s`, the whole run
   from its start, scan included (#11). Keys of an earlier run no longer linger, and `total_s`
   is written with `--no-events` and `--views-only` too. `analyze_total_s` (full runs only,
-  the scan left out) is still written for `cutpoint ui`, which adds it to `scan_s`; it is
-  deprecated in favour of `total_s`. `360 scan` on its own still adds `scan_s` to the file.
+  the scan left out) is still written but deprecated in favour of `total_s`, which `cutpoint ui`
+  now reads (it falls back to `scan_s` plus `analyze_total_s` for older files). `360 scan` on
+  its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
 
