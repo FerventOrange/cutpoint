@@ -580,7 +580,11 @@ def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
     )
     overlay = re.search(r"^\.nerd-stats \{([^}]*)\}", css, re.M)
     assert overlay and "position: absolute;" in overlay[1] and "pointer-events: none;" in overlay[1]
-    assert "max-width: calc(100% - 16px);" in overlay[1] and "monospace" in overlay[1]
+    # 8px from the panel's edges on every side: --space-2 is 8px
+    assert re.search(r"^:root \{[^}]*--space-2: 8px;", css, re.M)
+    assert "top: var(--space-2); left: var(--space-2);" in overlay[1]
+    assert "max-width: calc(100% - 2 * var(--space-2));" in overlay[1]
+    assert "monospace" in overlay[1]
     assert "const NERD_KEY = 'cutpoint.nerdStats';" in js
     assert "nerdStats: false," in js  # off unless the browser stored "1"
 
