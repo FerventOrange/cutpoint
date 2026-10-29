@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--yes --dry-run --cpu --cuda --source pypi|git[@ref]|PATH --no-ffmpeg`; full mode can ask to
   run `cutpoint setup` and pull the Ollama model. Running it again upgrades or switches mode. CI
   lints it and checks the planned commands.
+- `install.ps1`: the same one-step installer for Windows (`irm .../install.ps1 | iex`; Windows
+  PowerShell 5.1 and PowerShell 7). It installs uv and, with winget, ffmpeg when missing, then
+  Cutpoint with the same extras and torch choice as `install.sh` (CUDA torch with an NVIDIA GPU,
+  CPU torch without, `-Lite` for no torch). Parameters:
+  `-Yes -DryRun -Cpu -Cuda -Source pypi|git[@ref]|PATH -NoFfmpeg`, each also a `CUTPOINT_*`
+  environment variable for `irm | iex`. CI lints it, checks the planned commands under both
+  PowerShells and runs a real lite install on Windows.
 - `cutpoint ui`: "Export clips" of a 360 project first stitches the recordings it needs with the
   Insta360 Media SDK when the SDK runs (`360 stitch`, skipping recordings already stitched), then
   renders from the stitched equirects. The job log shows the disk estimate (about 54 GB per hour

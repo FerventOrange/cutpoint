@@ -132,13 +132,13 @@ jobs:
       - run: uv sync --locked --no-group full --group ocr-test
       - run: uv run --no-sync pytest -q -rs
 
-  # install.sh (Linux one-step installer). The OS axis is for install.ps1 on windows-latest later.
+  # install.sh (Linux one-step installer) and install.ps1 (Windows one-step installer).
   installer:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
@@ -212,6 +212,109 @@ jobs:
           sh install.sh --lite --yes --no-ffmpeg --source . < /dev/null
           export PATH="$(uv tool dir --bin):$PATH"
           cutpoint --version | grep -F cutpoint
+      - name: Lint install.ps1 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Parse check under PowerShell 7 and Windows PowerShell 5.1.
+          $check = '$e=$null;$t=$null;[void][System.Management.Automation.Language.Parser]::ParseFile("install.ps1",[ref]$t,[ref]$e);if($e.Count){$e|ForEach-Object{"$_"};exit 1}'
+          pwsh -NoProfile -Command $check
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 does not parse in pwsh" }
+          powershell -NoProfile -Command $check
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 does not parse in Windows PowerShell" }
+          # PSScriptAnalyzer: errors fail the job, warnings are listed.
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $found = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error, Warning -ExcludeRule PSUseApprovedVerbs, PSAvoidUsingWriteHost, PSAvoidGlobalVars, PSUseShouldProcessForStateChangingFunctions, PSUseSingularNouns
+          $found | Format-Table -AutoSize | Out-String -Width 200
+          if (@($found | Where-Object Severity -eq 'Error').Count) { throw "PSScriptAnalyzer errors" }
+      # Dry runs print every command and change nothing; assert the planned uv command lines under
+      # both PowerShells.
+      - name: Dry runs (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          function Invoke-Installer([string]$Shell, [string[]]$Words, [hashtable]$EnvVars = @{}, [string]$Path = '') {
+            $saved = @{}
+            foreach ($k in $EnvVars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $EnvVars[$k]) }
+            $oldPath = $env:PATH
+            if ($Path) { $env:PATH = "$Path;$env:PATH" }
+            try {
+              $out = (& $Shell -NoProfile -File install.ps1 @Words 2>&1 | ForEach-Object { "$_" }) -join "`n"
+              return @{ Out = $out; Rc = $LASTEXITCODE }
+            } finally {
+              $env:PATH = $oldPath
+              foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+            }
+          }
+          function Expect($r, [string]$Text) {
+            if (-not $r.Out.Contains($Text)) { Write-Host "::error::missing in dry run: $Text"; Write-Host $r.Out; throw "missing: $Text" }
+          }
+          function Refuse($r, [string]$Text) {
+            if ($r.Out.Contains($Text)) { Write-Host "::error::unexpected in dry run: $Text"; Write-Host $r.Out; throw "unexpected: $Text" }
+          }
+          function Expect-Rc($r, [int]$Code, [string]$What) {
+            if ($r.Rc -ne $Code) { Write-Host $r.Out; throw "$What must exit $Code, got $($r.Rc)" }
+          }
+          $tmp = $env:RUNNER_TEMP
+          New-Item -ItemType Directory -Force "$tmp\fake-nvidia", "$tmp\fake-nvml", "$tmp\on-path" | Out-Null
+          Set-Content "$tmp\fake-nvidia\nvidia-smi.cmd" "@echo GPU 0: NVIDIA Test GPU (UUID: GPU-0)" -Encoding ascii
+          Set-Content "$tmp\fake-nvml\nvidia-smi.cmd" "@echo Failed to initialize NVML: GPU access blocked by the operating system`r`n@exit /b 255" -Encoding ascii
+          foreach ($sh in 'pwsh', 'powershell') {
+            Write-Host "=== $sh"
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Cpu'); Expect-Rc $r 0 'dry run'
+            Expect $r 'uv tool install "cutpoint[events,ui,keyring,ski]=='
+            Expect $r '--torch-backend cpu'
+            Expect $r '--python 3.12 --reinstall'
+            $r = Invoke-Installer $sh @('-DryRun', '-Lite', '-NoFfmpeg')
+            Expect $r 'uv tool install "cutpoint[ui,keyring,ski]=='
+            Refuse $r '--torch-backend'
+            $r = Invoke-Installer $sh @('-DryRun', '-Cuda', '-NoFfmpeg')
+            Expect $r 'uv tool install "cutpoint[all]=='
+            Expect $r '--torch-backend cu126'
+            # A fake nvidia-smi on PATH selects the CUDA build; an NVML error stays on CPU torch.
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg') -Path "$tmp\fake-nvidia"
+            Expect $r '--torch-backend cu126'
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg') -Path "$tmp\fake-nvml"
+            Expect $r '--torch-backend cpu'
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Lite', '-Source', 'git@main')
+            Expect $r 'git+https://github.com/FerventOrange/cutpoint.git@main'
+            Expect $r '--no-sources'
+            # update-shell is planned when the bin dir is not on the user's PATH, and not when it is.
+            $r = Invoke-Installer $sh @('-DryRun', '-Lite', '-NoFfmpeg') @{ UV_TOOL_BIN_DIR = "$tmp\not-on-path" }
+            Expect $r 'uv tool update-shell'
+            $r = Invoke-Installer $sh @('-DryRun', '-Lite', '-NoFfmpeg') @{ UV_TOOL_BIN_DIR = "$tmp\on-path" } "$tmp\on-path"
+            Refuse $r 'update-shell'
+            # Contradictory flags exit 2; a missing source path fails even in a dry run.
+            $r = Invoke-Installer $sh @('-DryRun', '-Cpu', '-Cuda'); Expect-Rc $r 2 '-Cpu -Cuda'
+            $r = Invoke-Installer $sh @('-DryRun', '-Lite', '-Cuda'); Expect-Rc $r 2 '-Lite -Cuda'
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Source', 'C:\does\not\exist'); Expect-Rc $r 1 'missing -Source path'
+            # The environment variables do what the flags do.
+            $r = Invoke-Installer $sh @() @{ CUTPOINT_DRY_RUN = '1'; CUTPOINT_LITE = '1'; CUTPOINT_NO_FFMPEG = '1' }
+            Expect $r 'uv tool install "cutpoint[ui,keyring,ski]=='
+            # irm | iex: the script text is evaluated with no parameters and no file.
+            $saved = @{ D = $env:CUTPOINT_DRY_RUN; L = $env:CUTPOINT_LITE; F = $env:CUTPOINT_NO_FFMPEG }
+            $env:CUTPOINT_DRY_RUN = '1'; $env:CUTPOINT_LITE = '1'; $env:CUTPOINT_NO_FFMPEG = '1'
+            $out = (& $sh -NoProfile -Command 'Get-Content install.ps1 -Raw | iex' 2>&1 | ForEach-Object { "$_" }) -join "`n"
+            $rc = $LASTEXITCODE
+            $env:CUTPOINT_DRY_RUN = $saved.D; $env:CUTPOINT_LITE = $saved.L; $env:CUTPOINT_NO_FFMPEG = $saved.F
+            Expect @{ Out = $out } 'uv tool install "cutpoint[ui,keyring,ski]=='
+            if ($rc -ne 0) { Write-Host $out; throw "iex run must exit 0, got $rc" }
+            # A failed install under irm | iex must exit nonzero too.
+            $env:CUTPOINT_DRY_RUN = '1'; $env:CUTPOINT_LITE = '1'; $env:CUTPOINT_NO_FFMPEG = '1'; $env:CUTPOINT_SOURCE = 'C:\does\not\exist'
+            $null = (& $sh -NoProfile -Command 'Get-Content install.ps1 -Raw | iex' 2>&1)
+            $rc = $LASTEXITCODE
+            $env:CUTPOINT_DRY_RUN = $saved.D; $env:CUTPOINT_LITE = $saved.L; $env:CUTPOINT_NO_FFMPEG = $saved.F; $env:CUTPOINT_SOURCE = $null
+            if ($rc -eq 0) { throw "a failed iex run must exit nonzero" }
+          }
+      # Real lite install of this checkout into the runner (no torch, no models), no prompts.
+      - name: Install (lite, from this checkout) (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\install.ps1 -Lite -Yes -NoFfmpeg -Source .
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed" }
+          $bin = (uv tool dir --bin)
+          if (-not (& "$bin\cutpoint.exe" --version | Select-String -SimpleMatch -Quiet cutpoint)) { throw "cutpoint --version did not print cutpoint" }
 
   docker:
     runs-on: ubuntu-latest
