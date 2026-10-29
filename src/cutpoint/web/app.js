@@ -3790,7 +3790,7 @@ async function saveSettings() {
   err.textContent = note.textContent = '';
   const body = {};
   if (!input.readOnly) {
-    if (!value) return (err.textContent = 'Enter the full path of a folder.');
+    if (!value) return (err.textContent = 'Enter the full path of a folder (~ is your home folder).');
     if (value !== input.dataset.saved) body.projects_dir = value;
   }
   if (String(box.checked) !== box.dataset.saved) body.vision = box.checked;

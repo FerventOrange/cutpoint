@@ -186,7 +186,8 @@ path (the one the analysis cached when it is current), with badges for poor path
 the action-cam commands or the other `360` commands.
 
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
-that you type or paste; it always accepts them. They are the project's `analyze` inputs, as on the
+that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
+running `cutpoint ui` (`~/Videos`), here and in the Settings projects folder. They are the project's `analyze` inputs, as on the
 command line. "Include sub-folders" adds `--recursive` and "Skip files matching" takes `--exclude`
 patterns, one per line (matched against each file's name or full path, such as `*DVR*` or
 `*/Captures/*`); "Analyze again" keeps them. The project is refused when no video is left to
