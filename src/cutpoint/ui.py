@@ -622,8 +622,7 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
     def key_env(p: str) -> list[str]:
         if p not in ai_keys.KEYED:
             return []
-        own = [ai_keys.PROVIDER_ENV[p]] if ai_keys.official(p, hosts[p]) else []
-        return [ai_keys.ENV_KEY, *own]
+        return ai_keys.env_names(p, hosts[p])
 
     name = name if name in ASSISTANT_PROVIDERS else "ollama"
     return {
@@ -2796,7 +2795,9 @@ def create_app(port: int) -> FastAPI:
         """Change the projects folder, the vision default and/or the assistant's provider, model
         and base URL in ``config.json``. Existing projects stay where they are. A changed
         assistant is checked at once (reachable, key accepted, tool calls or JSON output):
-        ``assistant_check`` is why it cannot answer, or None."""
+        ``assistant_check`` is why it cannot answer, or None. Nothing (a key least of all) is
+        sent to a hosted provider the user has not agreed to in AI Chat (#504): its check waits
+        for the consent, and ``assistant_note`` says so."""
         if not {"projects_dir", "vision", "assistant"} & set(body):
             raise bad("send projects_dir, vision and/or assistant")
         updates: dict[str, Any] = {}
@@ -2840,6 +2841,13 @@ def create_app(port: int) -> FastAPI:
             out["assistant_note"] = None
             try:
                 provider = ai_providers.make()
+                if consent_view(provider)["needed"]:
+                    # nothing goes to a host not agreed to yet, a key least of all (#504);
+                    # a missing key is known without asking
+                    out["assistant_check"] = ai_providers.missing_key(provider)
+                    if out["assistant_check"] is None:
+                        out["assistant_note"] = ai_providers.consent_note(provider)
+                    return out
                 out["assistant_check"] = ai_providers.check(provider)
                 if out["assistant_check"] is None:  # reached; maybe without using the key
                     out["assistant_note"] = ai_providers.check_note(provider)
@@ -2920,17 +2928,6 @@ def create_app(port: int) -> FastAPI:
                 p = ai_providers.make(settings)
             elif provider in ai_providers.PRESETS:
                 p = ai_providers.preset(provider, settings.context_tokens)
-                host = ai_providers.key_host(provider, "")
-                if ai_providers.missing_key(p) and ai_keys.lookup(provider, host)[1] == "env":
-                    # only the shared variable is set, which Settings shows as "set (env)"
-                    return {
-                        "state": "key_needed",
-                        "models": [],
-                        "message": (
-                            "The model list loads once this provider is saved: "
-                            f"{ai_keys.ENV_KEY} is used only for the saved provider."
-                        ),
-                    }
             else:
                 raise bad(f"provider must be custom or one of {', '.join(ai_providers.PRESETS)}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json

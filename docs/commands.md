@@ -419,7 +419,7 @@ lists its pulled models (`/api/tags`); Anthropic, OpenAI and xAI list theirs (`/
 the key) only once the key is set and you agreed to that provider and host in the AI Chat tab
 (see below); until then nothing is asked and the field says why. A preset other than the saved
 provider uses only its own key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` or its
-keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which may be meant for the saved host.
+keyring entry), never `CUTPOINT_ASSISTANT_API_KEY`, which is only for custom base URLs.
 Models that do not chat here are left out by name: ids starting with `text-embedding-`, `tts-`,
 `whisper-`, `dall-e-`, `omni-moderation-`, `text-moderation-`, `gpt-image-`, `sora-`,
 `davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
@@ -430,14 +430,18 @@ and "Other model…" shows a Model id field to type any other id.
 
 Saving there checks that the provider answers (reachable, a model chosen and, at
 `api.openai.com`, `api.x.ai` and `api.anthropic.com`, the key accepted) and says why when it
-cannot. Another
+cannot. A provider whose host is not this machine is not contacted before you agree to it in
+the AI Chat tab, with or without a key: until then Save sends nothing, says only whether a key
+is missing, and notes that the check waits; the check
+runs when you save again after agreeing, and the first message checks it too. Another
 host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
-send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-`XAI_API_KEY` or `CUTPOINT_ASSISTANT_API_KEY` when `cutpoint ui` starts, else from the system
-keyring: Settings has Save key and Clear key. `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`, `api.openai.com` and
-`api.x.ai`; a key for another host (OpenRouter, a LAN
-server) comes from `CUTPOINT_ASSISTANT_API_KEY` or is saved for that base URL, and goes only over
+send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+`XAI_API_KEY` when `cutpoint ui` starts, then from the system keyring (Settings has Save key and
+Clear key), then, only for a custom base URL, from `CUTPOINT_ASSISTANT_API_KEY`.
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`,
+`api.openai.com` and `api.x.ai`, and `CUTPOINT_ASSISTANT_API_KEY` never goes to any of those
+three; a key for another host (OpenRouter, a LAN
+server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, and goes only over
 `https://` ([keys](configuration.md#assistant)). Settings only says "set (env)", "set
 (keyring)" or "not set"; the page never receives a key. To install Ollama and its models, see
 [getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).

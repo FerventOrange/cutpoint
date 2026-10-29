@@ -392,9 +392,10 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     claude = got["providers"][1]
     assert claude["default_model"] == "claude-sonnet-5-5"
     assert claude["models"] == ["claude-sonnet-5-5", "claude-opus-5-5"]
-    assert claude["key_env"] == ["CUTPOINT_ASSISTANT_API_KEY", "ANTHROPIC_API_KEY"]
+    assert claude["key_env"] == ["ANTHROPIC_API_KEY"]
 
-    set_config(home, assistant={"consent": ["x@y"]})
+    want = "anthropic@api.anthropic.com"
+    set_config(home, assistant={"consent": ["x@y", want]})
     asked: list[dict] = []
 
     def get(url, **kw):
@@ -412,7 +413,7 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     assert asked[0]["headers"]["x-api-key"] == SECRET  # only ever in a header
     text = (home / "config.json").read_text("utf-8")
     assert json.loads(text)["assistant"] == {
-        "consent": ["x@y"],
+        "consent": ["x@y", want],
         "provider": "anthropic",
         "model": "claude-opus-5-5",
         "url": "",
@@ -420,7 +421,7 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     assert SECRET not in text and SECRET not in res.text
     view = client.get("/api/projects/cli/assistant")
     assert view.json()["provider"]["label"] == "Anthropic · claude-opus-5-5 · api.anthropic.com"
-    assert view.json()["consent"]["needed"] is True and SECRET not in view.text
+    assert view.json()["consent"]["needed"] is False and SECRET not in view.text
 
     # saved even when it cannot answer yet; the check says why
     res = client.put("/api/settings", json={"assistant": {"provider": "openai", "model": "m"}})
@@ -547,11 +548,53 @@ def test_a_saved_key_for_another_host_is_not_called_checked(
 ) -> None:
     """OpenRouter lists its models without a key: passing the check proves nothing about it."""
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", SECRET)
+    set_config(home, assistant={"consent": ["openai@openrouter.ai"]})
     monkeypatch.setattr(providers.requests, "get", lambda url, **kw: _Resp({"data": []}))
     body = {"provider": "openai", "model": "m", "url": "https://openrouter.ai/api/v1"}
     out = client.put("/api/settings", json={"assistant": body}).json()
     assert out["assistant_check"] is None
     assert out["assistant_note"] == providers.KEY_CHECKED_LATER
+
+
+@pytest.mark.parametrize(
+    ("env", "body", "host"),
+    [
+        ("ANTHROPIC_API_KEY", {"provider": "anthropic", "model": "m"}, "api.anthropic.com"),
+        ("XAI_API_KEY", {"provider": "xai", "model": "m"}, "api.x.ai"),
+        (
+            "CUTPOINT_ASSISTANT_API_KEY",
+            {"provider": "openai", "model": "m", "url": "https://openrouter.ai/api/v1"},
+            "openrouter.ai",
+        ),
+        (None, {"provider": "ollama", "model": "m", "url": "http://10.0.0.2:11434"}, "10.0.0.2"),
+    ],
+)
+def test_the_save_check_contacts_no_unconsented_host(
+    client: TestClient, monkeypatch, home: Path, env, body, host
+) -> None:
+    """#504: saving a provider in Settings never contacts a host the user has not agreed to
+    in AI Chat, with a key or without one (a remote Ollama); once agreed, Save checks it, with
+    the key if it has one."""
+    if env:
+        monkeypatch.setenv(env, SECRET)
+    sent: list[dict] = []
+
+    def get(url, **kw):
+        sent.append({"url": url, **kw})
+        return _Resp({"data": [], "id": "m"})
+
+    monkeypatch.setattr(providers.requests, "get", get)
+    monkeypatch.setattr(providers.requests, "post", get)
+    out = client.put("/api/settings", json={"assistant": body}).json()
+    assert sent == []  # nothing at all went to the host
+    assert out["assistant_check"] is None and host in out["assistant_note"]
+    assert "AI Chat" in out["assistant_note"] and SECRET not in json.dumps(out)
+    set_config(home, assistant={**body, "consent": [f"{body['provider']}@{host}"]})
+    out = client.put("/api/settings", json={"assistant": body}).json()
+    assert sent and all(host in s["url"] for s in sent)  # agreed: now it is checked
+    if env:
+        assert out["assistant_check"] is None, out
+        assert len(sent) == 1 and SECRET in json.dumps(sent[0]["headers"])
 
 
 def test_a_missing_key_comes_before_the_consent_box(
@@ -561,7 +604,7 @@ def test_a_missing_key_comes_before_the_consent_box(
     got = client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["needed"] is True and got["key"] == "anthropic@api.anthropic.com"
     assert "No API key for Anthropic" in got["missing_key"]
-    assert "CUTPOINT_ASSISTANT_API_KEY" in got["missing_key"] and "Settings" in got["missing_key"]
+    assert "ANTHROPIC_API_KEY" in got["missing_key"] and "Settings" in got["missing_key"]
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     got = client.get("/api/projects/cli/assistant")
     assert got.json()["consent"]["missing_key"] is None and SECRET not in got.text
