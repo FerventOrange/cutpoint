@@ -148,6 +148,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui`: a 360 project with no moments yet reads "360 footage: 5 recordings found"
   instead of "5 360 clips found", which looked like 5,360, and "No 360 recordings found" when
   there are none.
+- `cutpoint ui` Export tab: after an export with Color on, the export state says how many clips
+  the grade changed and why it left the others as is, from `color.skip` in `manifest.json` (for
+  example "Color: no clips graded (too much highlight clipping)."). An export whose clips the
+  safety checks all skipped looked as if Color had done nothing, with no reason given. The note
+  shows with the advanced export options hidden too.
 - `cutpoint ui`: the final video in the Export tab no longer plays on under Play sequence. It
   kept playing while its tab was hidden, so its audio ran over every sequence clip. Starting
   the preview or leaving the Export tab now pauses it, and playing it stops Play sequence. Play sequence also no longer

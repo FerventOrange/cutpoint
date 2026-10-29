@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, baseName, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
+import { $, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -2511,11 +2511,13 @@ function renderExport() {
   const clips = p?.clips;
   const st = $('#exportState');
   // A 360 clip rendered from the dual-fisheye preview: no SDK, pano.auto_stitch off or the stitch skipped.
-  const note = clips?.clips?.some((c) => c.pano?.preview) ? ' Exported from the 360 preview (not stitched).' : '';
+  // Color names the clips the grade left as is: a grade every clip skipped is not silent.
+  const note = (clips?.clips?.some((c) => c.pano?.preview) ? ' Exported from the 360 preview (not stitched).' : '')
+    + colorNote(clips?.clips);
   // The "Latest export ..." facts are advanced (.adv); warnings and guidance always show
   const latest = (rest) => h('span', { class: 'adv', text: `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips${rest}` });
   const say = (text) => (text ? h('span', { text }) : null);
-  const show = (...parts) => st.replaceChildren(...parts.filter(Boolean)); // no 360 note: say() gives null
+  const show = (...parts) => st.replaceChildren(...parts.filter(Boolean)); // no 360 or Color note: say() gives null
   if (!p) show();
   else if (picks() === 'auto') {
     if (!p.highlights?.candidates?.length) show(say('Analyze the footage to export automatic picks.'));
