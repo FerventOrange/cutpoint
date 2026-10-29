@@ -3484,6 +3484,10 @@ async function saveSettings() {
   }
   if (String(box.checked) !== box.dataset.saved) body.vision = box.checked;
   const ai = aiChanges();
+  if (ai && !ai.model && !aiCustom() && aiOffer()?.model_required) {
+    err.textContent = `Enter a model name for ${aiOffer().title}.`;
+    return $('#setAiModel').focus();
+  }
   if (ai) body.assistant = ai;
   if (!Object.keys(body).length) return $('#settingsDialog').close();
   if (body.projects_dir && dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
@@ -3531,71 +3535,138 @@ async function saveSettings() {
   }
 }
 
-// The AI assistant's provider (#346). The page never gets an API key: only where each comes from.
+// The AI assistant's provider (#346): a preset per provider, so no base URL is typed. The page
+// never gets an API key: only where each comes from.
 const KEY_WHERE = { env: 'set (env)', keyring: 'set (keyring)' };
+const AI_CUSTOM = 'custom'; // a base URL from config.json that no preset has: shown and kept (URL read-only)
 const AI_HINTS = {
-  ollama: 'Runs with Ollama (the default). On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
-  openai: 'OpenAI, or a server that speaks its API (LM Studio, vLLM, llama-server). A server on this machine needs no key; a hosted one asks once before it gets project data.',
-  anthropic: "Claude through Anthropic's API, with your API key. It asks once before it gets project data.",
+  ollama: 'Runs with Ollama (the default), at OLLAMA_HOST or the Ollama URL in config.json. On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
+  anthropic: "Claude through Anthropic's API (api.anthropic.com), with your API key. It asks once before it gets project data.",
+  openai: "OpenAI's API (api.openai.com), with your API key. It asks once before it gets project data.",
+  xai: "Grok through xAI's API (api.x.ai), with your API key. It asks once before it gets project data.",
+  custom: 'The provider and base URL set in config.json, which no preset has. It keeps working, and its model can be changed here; choose a preset and save to use that instead.',
 };
 const AI_MODEL_HINTS = {
-  ollama: 'Empty: qwen3.5:9b when Ollama has it, else the vision model.',
-  openai: "Empty: the server's model, when it serves only one. OpenAI needs a model name.",
+  ollama: 'The name of a model Ollama has pulled. Empty: qwen3.5:9b when Ollama has it, else the vision model.',
   anthropic: 'Empty: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
+  openai: 'Needed: the name of an OpenAI chat model your key can use. *-codex models are not supported (chat models only).',
+  xai: 'Needed: the name of an xAI model your key can use.',
+  custom: "The model of the custom provider, saved in config.json. Empty: the server's model, when it serves only one.",
+};
+const AI_LIST_STATES = {
+  key_needed: 'The model list loads once there is an API key; you can type a name.',
+  consent_needed: 'You can type a name.',
+  unsupported: 'You can type a name.',
 };
 
 /** Fill the AI assistant fields from the settings' assistant view. */
 function fillAiSettings(a) {
   if (!a) return;
   S.ai = a;
+  S.aiModels = {}; // preset -> the models its provider listed
   const sel = $('#setAiProvider');
-  sel.replaceChildren(...a.providers.map((p) => h('option', { value: p.name, text: p.title })));
-  sel.value = sel.dataset.saved = a.provider;
+  const options = a.providers.map((p) => h('option', { value: p.name, text: p.title }));
+  if (a.custom) options.push(h('option', { value: AI_CUSTOM, text: 'Custom (from config.json)' }));
+  sel.replaceChildren(...options);
+  sel.value = sel.dataset.saved = a.custom ? AI_CUSTOM : a.provider;
   $('#setAiModel').value = $('#setAiModel').dataset.saved = a.model;
-  $('#setAiUrl').value = $('#setAiUrl').dataset.saved = a.url;
+  $('#setAiUrl').value = a.url;
   $('#setAiKeyInput').value = '';
   renderAiFields();
+  loadAiModels(false);
 }
 
-const aiOffer = () => S.ai?.providers.find((p) => p.name === $('#setAiProvider').value);
+const aiCustom = () => $('#setAiProvider').value === AI_CUSTOM;
+/** The offer of the chosen preset; for Custom, of the configured provider. */
+const aiOffer = () => {
+  const name = aiCustom() ? S.ai?.provider : $('#setAiProvider').value;
+  return S.ai?.providers.find((p) => p.name === name);
+};
 
-/** The hints, defaults and key status of the provider chosen in the select. */
+/** The hints, model field, base URL (Custom only) and key status of the provider chosen. */
 function renderAiFields() {
   const p = aiOffer();
   if (!p) return;
-  $('#setAiProviderHint').textContent = AI_HINTS[p.name] ?? '';
-  $('#setAiModel').placeholder = p.default_model;
-  $('#setAiModels').replaceChildren(...p.models.map((m) => h('option', { value: m })));
-  $('#setAiModelHint').textContent = AI_MODEL_HINTS[p.name] ?? '';
-  $('#setAiUrl').placeholder = p.default_url;
-  $('#setAiUrlHint').textContent = `Empty: ${p.default_url || 'the default'}.${p.name === 'openai' ? ' A bare host gets /v1.' : ''}`;
+  const custom = aiCustom();
+  const model = $('#setAiModel');
+  $('#setAiProviderHint').textContent = AI_HINTS[custom ? AI_CUSTOM : p.name] ?? '';
+  model.placeholder = custom ? '' : p.placeholder;
+  model.setAttribute('aria-required', String(!custom && p.model_required));
+  renderAiModelList();
+  $('#setAiModelHint').textContent = AI_MODEL_HINTS[custom ? AI_CUSTOM : p.name] ?? '';
+  $('#setAiUrlField').hidden = $('#setAiUrlHint').hidden = !custom;
+  $('#setAiUrlHint').textContent = custom ? 'Set in config.json (assistant.url); edit that file to change it.' : '';
   const keyed = p.key_env.length > 0;
   $('#setAiKey').hidden = !keyed;
   if (!keyed) return;
   const where = S.ai.keys[p.name];
   const host = S.ai.key_hosts?.[p.name] ?? '';
-  // The key and its status are for the saved provider and base URL: save those first.
-  const ai = aiChanges();
-  const unsaved = !!ai && (ai.provider !== $('#setAiProvider').dataset.saved || ai.url !== $('#setAiUrl').dataset.saved);
+  // The key is for the saved base URL's host: a preset of the provider a custom URL is saved for
+  // has another host, so save that first. Every other choice's key is for its official host.
+  const unsaved = !custom && S.ai.custom && p.name === S.ai.provider;
   $('#setAiKeyStatus').textContent = unsaved
-    ? 'API key: save the settings first to see or set the key for this base URL.'
+    ? 'API key: save the settings first to see or set the key for this provider.'
     : `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
   $('#setAiKeyRow').hidden = !S.ai.keyring;
   $('#setAiKeySave').disabled = $('#setAiKeyClear').disabled = unsaved;
   $('#setAiKeyHint').textContent = unsaved
     ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
-    : `Read from ${p.key_env.join(' or ')} when cutpoint ui starts, else from the system keyring${S.ai.keyring ? '' : ' (install the keyring extra to save a key here)'}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.${where === 'env' && !unsaved ? ' The environment variable is used before a saved key.' : ''}`;
+    : `Read from ${p.key_env.join(' or ')} when cutpoint ui starts, else from the system keyring${S.ai.keyring ? '' : ' (install the keyring extra to save a key here)'}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.${where === 'env' ? ' The environment variable is used before a saved key.' : ''}`;
 }
 
-/** The provider, model and base URL when any differs from what config.json has, else null. */
+/** The Model field's suggestions: the models the provider listed, else the preset's defaults. */
+function renderAiModelList() {
+  const p = aiOffer();
+  if (!p) return;
+  const listed = S.aiModels?.[$('#setAiProvider').value];
+  const defaults = aiCustom() ? [] : p.models; // the defaults when no list came
+  const options = listed?.length
+    ? listed.map((m) => h('option', { value: m.id, label: m.name !== m.id ? m.name : null }))
+    : defaults.map((m) => h('option', { value: m }));
+  $('#setAiModels').replaceChildren(...options);
+}
+
+/** Ask the server for the models the chosen preset's provider offers (cached there; `refresh`
+ * asks the provider again) and offer them in the Model list. Typing any name still works. */
+async function loadAiModels(refresh) {
+  const sel = $('#setAiProvider');
+  const status = $('#setAiModelsStatus');
+  const choice = sel.value;
+  const seq = (S.aiModelsSeq = (S.aiModelsSeq ?? 0) + 1);
+  status.textContent = '';
+  if (!S.ai) return;
+  status.textContent = 'Loading the model list…';
+  let r;
+  try {
+    r = await api(`/api/assistant/models?provider=${encodeURIComponent(choice)}${refresh ? '&refresh=1' : ''}`);
+  } catch (e) {
+    r = { state: 'error', models: [], message: e.message };
+  }
+  if (seq !== S.aiModelsSeq || sel.value !== choice) return; // another choice since
+  S.aiModels[choice] = r.models ?? [];
+  renderAiModelList(); // only the list: the key status (a keyring confirmation) stays
+  const n = S.aiModels[choice].length;
+  if (r.state === 'ok') {
+    status.textContent = n
+      ? `${n} model${n === 1 ? '' : 's'} listed by the provider; you can type another name.`
+      : 'The provider listed no models; type a name.';
+  } else if (r.state === 'error') {
+    status.textContent = `Could not load the model list: ${String(r.message ?? '').replace(/\.?$/, '.')} You can type a name.`;
+  } else {
+    status.textContent = [r.message, AI_LIST_STATES[r.state]].filter(Boolean).join(' ');
+  }
+}
+
+/** The preset and model when either differs from what config.json has, else null. A preset
+ * always sends an empty base URL (its own); Custom sends only a changed model, so its provider
+ * and base URL stay as config.json has them. */
 function aiChanges() {
   if (!S.ai) return null;
   const sel = $('#setAiProvider');
   const model = $('#setAiModel');
-  const url = $('#setAiUrl');
-  const now = { provider: sel.value, model: model.value.trim(), url: url.value.trim() };
-  const was = { provider: sel.dataset.saved, model: model.dataset.saved, url: url.dataset.saved };
-  return Object.keys(now).some((k) => now[k] !== was[k]) ? now : null;
+  if (aiCustom()) return model.value.trim() !== model.dataset.saved ? { model: model.value.trim() } : null;
+  const now = { provider: sel.value, model: model.value.trim(), url: '' };
+  return now.provider !== sel.dataset.saved || now.model !== model.dataset.saved ? now : null;
 }
 
 /** Save the typed key in the system keyring, or remove the saved one; the field is emptied either way. */
@@ -3624,6 +3695,7 @@ async function saveAiKey(clear) {
   $('#setAiKeyStatus').textContent += clear
     ? '. Removed from the keyring.'
     : '. Saved in the system keyring; it is checked when you send the first message.';
+  if (!clear) loadAiModels(false); // the list may load now that there is a key
   if (S.id) loadAssistant();
 }
 
@@ -3744,13 +3816,13 @@ function bindSettings() {
   });
   d.addEventListener('close', () => { $('#setAiKeyInput').value = ''; });
   $('#setAiProvider').addEventListener('change', (e) => {
-    // model names and base URLs belong to one provider: back to the saved ones, else the defaults
+    // model names belong to one provider: back to the saved one, else the default
     const back = e.target.value === e.target.dataset.saved;
     $('#setAiModel').value = back ? $('#setAiModel').dataset.saved : '';
-    $('#setAiUrl').value = back ? $('#setAiUrl').dataset.saved : '';
     renderAiFields();
+    loadAiModels(false);
   });
-  $('#setAiUrl').addEventListener('input', renderAiFields); // the key is for the saved base URL's host
+  $('#setAiModelsRefresh').addEventListener('click', () => loadAiModels(true));
   $('#setAiKeySave').addEventListener('click', () => saveAiKey(false));
   $('#setAiKeyClear').addEventListener('click', () => saveAiKey(true));
   $('#setAiKeyInput').addEventListener('keydown', (e) => {

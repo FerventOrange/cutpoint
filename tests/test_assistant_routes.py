@@ -387,9 +387,10 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     got = res.json()["assistant"]
     assert SECRET not in res.text
     assert got["provider"] == "ollama" and got["model"] == "" and got["url"] == ""
-    assert got["keys"] == {"anthropic": "env", "openai": None} and got["keyring"] is False
-    assert [p["name"] for p in got["providers"]] == ["ollama", "openai", "anthropic"]
-    claude = got["providers"][2]
+    assert got["keys"] == {"anthropic": "env", "openai": None, "xai": None}
+    assert got["keyring"] is False and got["custom"] is False
+    assert [p["name"] for p in got["providers"]] == ["ollama", "anthropic", "openai", "xai"]
+    claude = got["providers"][1]
     assert claude["default_model"] == "claude-sonnet-5-5"
     assert claude["models"] == ["claude-sonnet-5-5", "claude-opus-5-5"]
     assert claude["key_env"] == ["CUTPOINT_ASSISTANT_API_KEY", "ANTHROPIC_API_KEY"]
@@ -450,8 +451,9 @@ def test_a_key_is_saved_in_the_keyring_and_never_sent_back(
     monkeypatch.setattr(keys, "_keyring", lambda: ring)
     res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
     assert res.status_code == 200, res.text
-    official = {"anthropic": "api.anthropic.com", "openai": "api.openai.com"}
-    assert res.json() == {"keys": {"anthropic": None, "openai": "keyring"}, "key_hosts": official}
+    official = {"anthropic": "api.anthropic.com", "openai": "api.openai.com", "xai": "api.x.ai"}
+    got_keys = {"anthropic": None, "openai": "keyring", "xai": None}
+    assert res.json() == {"keys": got_keys, "key_hosts": official}
     assert ring.saved == {("cutpoint", "openai"): SECRET}
     settings = client.get("/api/settings")
     assert settings.json()["assistant"]["keys"]["openai"] == "keyring"
@@ -459,7 +461,8 @@ def test_a_key_is_saved_in_the_keyring_and_never_sent_back(
     assert SECRET not in settings.text
     assert not (home / "config.json").exists()  # a key is never written there
     res = client.post("/api/assistant/key/clear", json={"provider": "openai"})
-    assert res.json() == {"keys": {"anthropic": None, "openai": None}, "key_hosts": official}
+    no_keys = {"anthropic": None, "openai": None, "xai": None}
+    assert res.json() == {"keys": no_keys, "key_hosts": official}
     assert ring.saved == {}
     res = client.post("/api/assistant/key", json={"provider": "ollama", "key": "k"})
     assert res.status_code == 400
