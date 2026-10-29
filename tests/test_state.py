@@ -101,6 +101,9 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.ffmpeg_utils.ffmpeg_filters": _fill_filters,
     "cutpoint.events.visual._aesthetic_layers": _fill_aesthetic,
     "cutpoint.events.paths._TORCH_HOME_SET": _fill_torch_home,
+    "cutpoint.pano.candidates.code_id": lambda t, m: importlib.import_module(
+        "cutpoint.pano.candidates"
+    ).code_id(),
 }
 
 
