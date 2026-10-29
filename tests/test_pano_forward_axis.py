@@ -14,7 +14,6 @@ import pytest
 
 from cutpoint import cache
 from cutpoint.pano import cli as PC
-from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano import render
 from cutpoint.pano import views as VW
@@ -239,61 +238,27 @@ def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
     assert PC._plan_key("002", *seg[1:]) not in found  # planned upright, now default: re-plan
 
 
-# --------------------------------------------------------------------------- wearer prior
-def _still(up: list[float], n: int = 90) -> G.Orientation:
-    return G.Orientation(
-        t=np.arange(n) / FPS,
-        up=np.tile(up, (n, 1)),
-        heading=np.zeros(n),
-        heading_smooth=np.zeros(n),
-        meta={"fps": FPS},
-    )
+# --------------------------------------------------------------------------- yaw 0 and meta
+def test_upright_yaw_0_follows_the_10_lens() -> None:
+    """Upright, still or turning: display yaw 0 is the ``_10_`` lens (camera +z), the
+    ``_00_`` lens (-z) is behind."""
+    for o in (_fuse(UPRIGHT, sway_deg=8.0), _fuse(UPRIGHT, turn_dps=30.0, sway_deg=5.0)):
+        for t in IDX[::40] / FPS:
+            r = o.r_vw(float(t))
+            front, _ = G.ray_yaw_pitch(r.T @ np.array([0.0, 0.0, 1.0]))
+            back, _ = G.ray_yaw_pitch(r.T @ np.array([0.0, 0.0, -1.0]))
+            assert abs(front) < 10.0 and abs(abs(back) - 180.0) < 10.0
 
 
-def test_helmet_wearer_is_unchanged() -> None:
-    assert G.wearer_v(G.FORWARD_V) is G.WEARER_V
-    assert _still([0.0, 0.0, -1.0]).wearer is G.WEARER_V
-    pv = VW.PanoViews(np.zeros(1), np.zeros((1, 9, 4)), np.zeros((0, 11)), np.zeros(0), np.zeros(0))
-    pv.meta = {"source": "helmet-wearer.lrv"}
-    assert VW.wearer_axis(pv) is G.WEARER_V
-
-
-def test_upright_wearer_is_the_nadir(caplog) -> None:
-    w = _still([0.0, -1.0, 0.0]).wearer
-    assert np.array_equal(w, -G.UPRIGHT_UP_V) and w.tolist() == [0.0, 1.0, 0.0]
-    pv = VW.PanoViews(np.zeros(1), np.zeros((1, 9, 4)), np.zeros((0, 11)), np.zeros(0), np.zeros(0))
-    pv.meta = {"source": "upright-wearer.lrv", "forward_axis": "+z"}
-    with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
-        assert np.array_equal(VW.wearer_axis(pv), w)  # too few boxes: the mount's default
-        VW.wearer_axis(pv)
-    assert sum("0 large person boxes" in r.message for r in caplog.records) == 1
-
-
-def _box(o: G.Orientation, yaw: float, pitch: float) -> np.ndarray:
-    """One confident person row at display ``yaw`` / ``pitch`` (camera ray in 8:11)."""
-    box = np.zeros((1, 11))
-    ray = o.r_vw(0.5) @ G.yaw_pitch_ray(yaw, pitch)
-    box[0, 1], box[0, 2], box[0, 6], box[0, 8:11] = 1, 0.9, 40.0, ray
-    return box
-
-
-def test_director_wearer_rule_follows_an_upright_mount() -> None:
-    """Upright clip: the nadir prior blanks no direction more than another, takes the pole
-    below for the wearer and spares people seated behind; the helmet prior would have
-    blanked the view ahead and missed the pole."""
-    o = _still([0.0, -1.0, 0.0])
-    p = D.DirectorParams()
-    centres = np.array([0.0, 90.0, 180.0])
-    times = np.array([0.5, 1.5])
-    got = D.wearer_in_view(o, o.wearer, times, centres, p)
-    assert (got == got[:, :1]).all()
-    assert (
-        D.wearer_in_view(o, G.WEARER_V, times, centres, p)[:, [0, 2]].tolist() == [[1.0, 0.0]] * 2
-    )
-    seated, pole = _box(o, 180.0, -20.0), _box(o, 180.0, -70.0)
-    assert VW.is_wearer(seated, max_height_deg=np.inf, axis=o.wearer).tolist() == [False]
-    assert VW.is_wearer(pole, max_height_deg=np.inf, axis=o.wearer).tolist() == [True]
-    assert VW.is_wearer(pole, max_height_deg=np.inf).tolist() == [False]  # helmet prior
+def test_upright_wearer_prior_is_the_helmet_one() -> None:
+    """The wearer prior does not depend on the mount (the upright one is left to #573): too
+    few large person boxes give ``WEARER_V`` on a helmet and an upright clip alike."""
+    for name, meta in (("helmet-wearer.lrv", {}), ("upright-wearer.lrv", {"forward_axis": "+z"})):
+        pv = VW.PanoViews(
+            np.zeros(1), np.zeros((1, 9, 4)), np.zeros((0, 11)), np.zeros(0), np.zeros(0)
+        )
+        pv.meta = {"source": name} | meta
+        assert VW.wearer_axis(pv) is G.WEARER_V
 
 
 def test_a_stale_axis_in_the_meta_is_replaced() -> None:
@@ -302,30 +267,3 @@ def test_a_stale_axis_in_the_meta_is_replaced() -> None:
         heading_smooth=np.zeros(3), meta={"fps": FPS, "forward_axis": "-z"},
     )  # fmt: skip
     assert o.meta["forward_axis"] == "+z"
-
-
-def _upright_views(source: str, rays: list[list[float]]) -> VW.PanoViews:
-    det = np.zeros((len(rays), 11))
-    if rays:
-        det[:, 1], det[:, 2], det[:, 6], det[:, 8:11] = 1, 0.9, 60.0, rays
-    n = 20
-    return VW.PanoViews(
-        t=np.arange(n) * 0.5, emb=np.zeros((n, 9, 4)), det=det, box_emb=np.zeros(0),
-        box_idx=np.zeros(0), meta={"source": source, "forward_axis": "+z"},
-    )  # fmt: skip
-
-
-def test_the_nadir_wearer_has_no_yaw(monkeypatch) -> None:
-    """A swaying upright clip with too few wearer boxes: the travel direction is yaw 0 (not
-    where the camera tips) and no horizon view is damped; a measured wearer axis still
-    gives its own yaw."""
-    o = _fuse(UPRIGHT, sway_deg=8.0)
-    monkeypatch.setattr(G, "load_orientation", lambda src: o)
-    pv = _upright_views("nadir.lrv", [])
-    assert VW.forward_yaw(pv) == 0.0 and VW.wearer_view_mask(pv) is None
-    side = _upright_views("side.lrv", [[1.0, 0.3, 0.0]] * 15)  # the wearer to the right
-    fy = VW.forward_yaw(side)
-    assert abs(fy) > 45.0 and VW.wearer_view_mask(side) is not None
-    wy = G.wearer_yaw(o, side.t[:: max(1, len(side.t) // 200)].astype(float), VW.wearer_axis(side))
-    a = np.radians(wy + 180.0)
-    assert fy == pytest.approx(float(np.degrees(np.arctan2(np.sin(a).mean(), np.cos(a).mean()))))
