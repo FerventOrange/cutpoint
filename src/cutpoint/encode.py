@@ -184,12 +184,20 @@ def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
     # HDR10: -21 % with hable and with libplacebo peak_detect=0, a dynamic-peak gap).
     # desat>0 greys bright colours. CPU cost: about 30 fps at 1080p (8 threads), so HDR sources export slower;
     # SDR sources never run it.
+    # HLG agamma=0 (#454): zscale's default approximate gamma applies the HLG OOTF (gamma 1.2)
+    # to R, G and B one by one instead of to luminance (BT.2100), which made HLG 16-19 % more
+    # saturated (HSV) than the bt.2390 reference (Xiaomi, Swan->HLG). With agamma=0 zimg
+    # scales by luminance: Xiaomi +1.3 %, and HLG and PQ copies of one clip now agree (Swan
+    # 0.198/0.201, Eclipse 0.374/0.375). It halves the HLG chain's speed (about 45 to 25 fps
+    # at 1080p); PQ keeps the default, its decode has no OOTF.
     if kind == "HLG":
-        npl, tone = 203, f"mobius:param=0.5:peak={HLG_PEAK_NITS / 203:.3f}:desat=0"
+        npl, exact = 203, ":agamma=0"
+        tone = f"mobius:param=0.5:peak={HLG_PEAK_NITS / npl:.3f}:desat=0"
     else:
-        npl, tone = 100, "hable:desat=0"
+        npl, exact, tone = 100, "", "hable:desat=0"
     return (
-        f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl={npl}:p=bt709,"
+        f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl={npl}:p=bt709"
+        f"{exact},"
         f"format=gbrpf32le,tonemap=tonemap={tone},"
         "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
     )

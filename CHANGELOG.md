@@ -145,6 +145,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audio up to a second short that runs ahead of the video. Audio that starts after the video is
   no longer moved forward at the start of a clip; sources without gaps or delay are unchanged
   (#476).
+- HLG exports, UI previews and stills are no longer about 18 % more saturated than a bt.2390
+  reference: zscale now applies the HLG OOTF to luminance (`agamma=0`), as BT.2100 specifies,
+  not to R, G and B one by one. HLG exports take longer (about 25 instead of 45 fps at 1080p);
+  PQ is unchanged (#454).
 
 ## [0.4.0] - 2026-10-29
 

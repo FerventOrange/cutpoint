@@ -79,7 +79,7 @@ def test_hlg_source_is_tone_mapped_with_mobius_at_diffuse_white():
     """#449: hable at npl=100 was 16 % darker than the bt.2390 reference on real HLG."""
     vf = encode.sdr_filter(media_info(pix_fmt="yuv420p10le", **HLG), BOTH)
     assert vf == (
-        "zscale=tin=arib-std-b67:pin=bt2020:min=bt2020nc:t=linear:npl=203:p=bt709,"
+        "zscale=tin=arib-std-b67:pin=bt2020:min=bt2020nc:t=linear:npl=203:p=bt709:agamma=0,"
         "format=gbrpf32le,tonemap=tonemap=mobius:param=0.5:peak=4.926:desat=0,"
         "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
     )
@@ -478,11 +478,12 @@ def test_failed_log_grab_skips_the_check(monkeypatch, caplog):
 
 
 def _hlg_source(path: Path) -> None:
-    """1 s, 320x180 colour bars as tagged 10-bit HLG / BT.2020 (FFV1, so any build has it)."""
+    """1 s, 320x180 colour bars as tagged 10-bit HLG / BT.2020 (FFV1, so any build has it);
+    agamma=0 applies the BT.2100 inverse OOTF to luminance, as a camera does (#454)."""
     to_hlg = (
         "format=yuv444p,zscale=tin=bt709:pin=bt709:min=bt709:rin=pc:t=linear:npl=203:p=bt709,"
         "format=gbrpf32le,zscale=tin=linear:pin=bt709:t=linear:p=bt2020,"
-        "zscale=tin=linear:pin=bt2020:p=bt2020:t=arib-std-b67:m=bt2020nc:r=tv:npl=203,"
+        "zscale=tin=linear:pin=bt2020:p=bt2020:t=arib-std-b67:m=bt2020nc:r=tv:npl=203:agamma=0,"
         "format=yuv420p10le"
     )
     ffmpeg_utils.run(
@@ -521,6 +522,35 @@ def test_real_hlg_export_is_tone_mapped_and_tagged_bt709(tmp_path, monkeypatch):
     )  # fmt: skip
     # Read as SDR, the HLG source looks washed out; the converted clip keeps the bars' colour.
     assert _saturation(out) > _saturation(src) + 0.1
+
+
+@needs_ffmpeg
+def test_real_hlg_export_keeps_the_saturation_of_its_sdr_original(tmp_path, monkeypatch):
+    """#454: zscale's default approximate gamma applied the HLG OOTF per channel, not to
+    luminance (BT.2100), so HLG exports were 16-19 % more saturated (0.82 here, not 0.67)."""
+    if not {"zscale", "tonemap"} <= ffmpeg_utils.ffmpeg_filters():
+        pytest.skip("this ffmpeg has no zscale/tonemap")
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    blue = ("-f", "lavfi", "-i", "color=c=0x3C78B4:s=320x180:d=1:r=30,format=yuv444p")
+    sdr, src, out = tmp_path / "sdr.mkv", tmp_path / "hlg.mkv", tmp_path / "001.mp4"
+    ffmpeg_utils.run(["ffmpeg", "-y", "-v", "error", *blue, "-c:v", "ffv1", str(sdr)])
+    # The exact BT.2100 conversion (agamma=0) to HLG, 1000-nit display.
+    to_hlg = (
+        "zscale=tin=bt709:pin=bt709:min=smpte170m:rin=tv:t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv:"
+        "npl=1000:agamma=0,format=yuv420p10le"
+    )
+    ffmpeg_utils.run(
+        [
+            *("ffmpeg", "-y", "-v", "error", *blue, "-vf", to_hlg, "-c:v", "ffv1"),
+            *("-color_primaries", "bt2020", "-color_trc", "arib-std-b67"),
+            *("-colorspace", "bt2020nc", str(src)),
+        ]
+    )
+    info = ffmpeg_utils.probe(src)
+
+    encode.export_clip(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
+
+    assert _saturation(out) == pytest.approx(_saturation(sdr), abs=0.03)
 
 
 def _bars(path: Path, size: str, tag: str | None, data: str = "bt601", dur: float = 1.0) -> None:
