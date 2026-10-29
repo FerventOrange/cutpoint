@@ -59,6 +59,7 @@ PATH_VERSION = 4  # 2: keys may carry "subj" (the framed person); 3: close peopl
 # frame edge are intruders; 4: wider framing, the wearer allowed in frame (same keys;
 # evaluate reads all versions)
 MIN_REUSE_VERSION = 4  # older paths (tighter framing) are re-directed, not reused
+PATH_MARGIN_S = 10.0  # a path is planned this much beyond its segment on both sides
 
 
 @dataclass(frozen=True)
@@ -1073,6 +1074,16 @@ def _safe_area_pass(
     return out
 
 
+def planned_span(
+    clip: Any, start: float, end: float, margin: float = PATH_MARGIN_S
+) -> tuple[float, float]:
+    """``[start, end]`` widened by ``margin`` s on both sides, within the clip: the range a
+    path of that segment is planned over (its ``planned`` span)."""
+    t0 = max(0.0, start - margin)
+    t1 = min(clip.duration, end + margin) if clip.duration else end + margin
+    return t0, t1
+
+
 def compute_path(
     clip: Any,
     start: float,
@@ -1084,7 +1095,7 @@ def compute_path(
     overrides: dict[str, Any] | None = None,
     orient: G.Orientation | None = None,
     pv: Any = None,
-    margin: float = 10.0,
+    margin: float = PATH_MARGIN_S,
     suspects: bool = False,
     grid: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1118,8 +1129,7 @@ def compute_path(
         orient = G.orientation(src, imu_source(src), clip.fps, max(clip.frames, 1))
     if pv is None:
         pv = load_views(src)
-    t0 = max(0.0, start - margin)
-    t1 = min(clip.duration, end + margin) if clip.duration else end + margin
+    t0, t1 = planned_span(clip, start, end, margin)
     from cutpoint.pano.views import wearer_axis  # noqa: PLC0415
 
     axis = wearer_axis(pv) if pv is not None else G.WEARER_V

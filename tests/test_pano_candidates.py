@@ -584,7 +584,7 @@ def test_preview_falls_back_to_a_levelled_forward_view(project, monkeypatch) -> 
     path = got["path"]
     p = D.params_for("people")
     assert path["level"] == "imu" and path["forward_yaw"] == 30.0 and path["cuts"] == []
-    assert [k["t"] for k in path["keys"]] == [4.0, 12.5]
+    assert [k["t"] for k in path["keys"]] == [0.0, 22.5]  # with the director's margin
     assert {(k["yaw"], k["pitch"], k["fov"]) for k in path["keys"]} == {
         (30.0, p.pitch_default, p.fov_wide)
     }

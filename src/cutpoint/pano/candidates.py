@@ -67,6 +67,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import os
 import threading
 import time
 from collections import Counter
@@ -119,6 +120,10 @@ FLAGS = {
     "qa_fail": "fails the geometric direction QA",
 }
 
+
+PREVIEW_VERSION = 1  # preview_key: bump when previews render differently
+# The pano settings (config.json) a preview's pixels depend on besides its path (preview_key).
+PREVIEW_SETTINGS = ("imu_offset_s", "level_strength", "tilt_follow_s", "max_follow_deg")
 
 # Modules whose code plans or scores a director path (compute_path, its scores, voice and
 # orientation inputs and the QA it records); their source is hashed into the key.
@@ -690,6 +695,40 @@ def path_id(path: dict[str, Any]) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
+def preview_key(path: dict[str, Any], *, vertical: bool, fmt: Any, settings: dict[str, Any]) -> str:
+    """Stable identity of a preview render, to name its file: 16 hex characters of the sha1
+    of the canonical JSON (sorted keys) of everything that changes its pixels. Equal inputs
+    give equal keys on every run and OS.
+
+    It covers:
+
+    - :func:`path_id` of ``path`` (the views, its ``level``, ``vertical`` and span);
+    - ``vertical`` (9:16 or 16:9);
+    - ``fmt`` (a :class:`~cutpoint.pano.render.Format360`): ``width``, ``height``, ``fps``;
+    - of ``settings`` (the ``pano`` section of config.json,
+      :func:`~cutpoint.pano.project.pano_config`), :data:`PREVIEW_SETTINGS`: ``imu_offset_s``
+      (the IMU orientation track, :func:`~cutpoint.pano.render.clip_orientation`) and
+      ``level_strength``, ``tilt_follow_s``, ``max_follow_deg`` (the horizon levelling,
+      :func:`~cutpoint.pano.render.stabilised_r_vw`), as given (an absent key and its
+      default value give different keys; the render is the same);
+    - :data:`PREVIEW_VERSION`.
+
+    Not covered, as a preview does not depend on them: any other setting, such as
+    ``pano.director`` (it changes the path, so :func:`path_id`), ``pano.cmd_every`` (previews
+    render with ``cmd_every=1``) and ``pano.equirect_yaw_offset`` (it turns levelled, stitched
+    sources only; previews render from the unlevelled ``.lrv``).
+    """
+    blob = {
+        "version": PREVIEW_VERSION,
+        "path": path_id(path),
+        "vertical": bool(vertical),
+        "format": [int(fmt.width), int(fmt.height), int(fmt.fps)],
+        "settings": {k: settings.get(k) for k in PREVIEW_SETTINGS},
+    }
+    text = json.dumps(blob, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
 def candidate_flags(project: Path) -> dict[str, dict[str, Any]]:
     """Per candidate id with a cache entry, for badges on every moment at once (no freshness
     check: see :func:`candidate_path`):
@@ -768,7 +807,9 @@ def _level_forward(
     """A constant forward view: yaw at the travel direction (:func:`views.forward_yaw`,
     0 without a view layer), the director's default pitch and wide FOV, levelled by the IMU
     as any render (``level`` ``imu``) or, without an orientation track, for the nominal
-    mount (``level`` :data:`~cutpoint.pano.render.UPRIGHT`)."""
+    mount (``level`` :data:`~cutpoint.pano.render.UPRIGHT`). Planned over the span with
+    :data:`~cutpoint.pano.director.PATH_MARGIN_S` on both sides, as a director path
+    (:func:`~cutpoint.pano.director.planned_span`)."""
     from cutpoint.pano import render as R  # noqa: PLC0415
     from cutpoint.pano.views import forward_yaw, load_views  # noqa: PLC0415
 
@@ -789,24 +830,25 @@ def _level_forward(
             pv = load_views(Path(clip.source))
             yaw = forward_yaw(pv) if pv is not None else 0.0
     fov = p.vertical_fov_wide if vertical else p.fov_wide
+    t0, t1 = D.planned_span(clip, start, end)
     keys = [
         {"t": round(t, 3), "yaw": round(yaw, 2), "pitch": p.pitch_default, "fov": fov}
         | {"target": "forward"}
-        for t in (start, end)
+        for t in (t0, t1)
     ]
     path = {
         "version": D.PATH_VERSION,
         "clip": clip.clip_id,
         "source": str(clip.source),
         "segment": {"start": round(start, 3), "end": round(end, 3)},
-        "planned": {"start": round(start, 3), "end": round(end, 3)},
+        "planned": {"start": round(t0, 3), "end": round(t1, 3)},
         "vertical": vertical,
         "kind": kind,
         "forward_yaw": round(yaw, 1),
         "level": level,
         "params": asdict(p),
         "cuts": [],
-        "seconds_by_target": {"forward": round(end - start, 1)},
+        "seconds_by_target": {"forward": round(t1 - t0, 1)},
         "keys": keys,
     }
     return {"path": path, "kind": "level_forward", "reason": why}
@@ -834,15 +876,49 @@ def _no_imu(clip: Any) -> bool:
         return False
 
 
+def _err_path(err: OSError) -> Path | None:
+    """The path an OSError names (its ``filename``), or None when it names none (or a file
+    descriptor, such as ``os.stat(9)``)."""
+    try:
+        return Path(os.fsdecode(err.filename)) if err.filename is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_source(clip: Any, err: OSError) -> bool:
+    """``err`` names the clip's source, as given or through ``source_remap``."""
+    from cutpoint.config import remap_source  # noqa: PLC0415
+
+    got = _err_path(err)
+    if got is None:
+        return False
+    try:
+        return got in (Path(clip.source), remap_source(clip.source))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _failure(clip: Any, err: Exception) -> str:
-    """Why the director could not plan ``clip`` (``err``), for ``preview_path``'s reason."""
+    """Why the director could not plan ``clip`` (``err``), for ``preview_path``'s reason:
+    ``footage offline`` only when the source itself cannot be stat-ed or opened; another
+    missing file (a model, a layer) is ``missing file: <name>``, any other OSError its class
+    and message."""
     if not _reachable(clip):
         what = err.strerror if isinstance(err, OSError) else None
         return f"footage offline ({what or 'source not reachable'})"
     if _no_imu(clip):
         return "no IMU (no _00_.insv next to the clip)"
     if isinstance(err, OSError):
-        return f"footage offline ({err.strerror or type(err).__name__})"
+        if _is_source(clip, err):
+            return f"footage offline ({err.strerror or type(err).__name__})"
+        got = _err_path(err)
+        name = got.name if got is not None else None
+        if isinstance(err, FileNotFoundError) and name:
+            return f"missing file: {name}"
+        what = err.strerror or str(err) or "no message"
+        if name:
+            what += f", {name}"
+        return f"director could not plan ({type(err).__name__}: {what})"
     return f"director could not plan ({type(err).__name__}: {err})"
 
 
