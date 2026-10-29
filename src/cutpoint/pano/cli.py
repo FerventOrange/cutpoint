@@ -857,13 +857,19 @@ def _compare_qa(qa_dir: Path, files: list[str]) -> None:
     jsonout.output(
         "clips",
         [
-            {"file": qa_dir / c["file"], "rendered_only": c["rendered_only"], "causes": c["causes"]}
+            {
+                "file": qa_dir / c["file"],
+                "rendered_only": c["rendered_only"],
+                "causes": c["causes"],
+                "other_detail": c["other_detail"],
+            }
             for c in rep["clips"]
         ],
     )
     jsonout.output("count", len(rep["clips"]))
     jsonout.output("rendered_only", rep["edit"]["rendered_only"])
     jsonout.output("causes", rep["edit"]["causes"])
+    jsonout.output("other_detail", rep["edit"]["other_detail"])
     unmatched = [f for files_ in rep["unmatched"].values() for f in files_]
     if unmatched:
         jsonout.warn(
