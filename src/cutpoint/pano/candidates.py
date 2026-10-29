@@ -209,12 +209,70 @@ def slot_name(clip: Any, start: float, end: float, vertical: bool = False) -> st
 
 
 def _entry(folder: Path, name: str) -> dict[str, Any] | None:
-    entry = cache.load_json(folder / name)
+    return _valid(cache.load_json(folder / name))
+
+
+def _valid(entry: Any) -> dict[str, Any] | None:
+    """``entry`` (a loaded cache file) if it is a current, well-formed entry, else None."""
     if not isinstance(entry, dict) or entry.get("version") != CACHE_VERSION:
         return None
     if not isinstance(entry.get("path"), dict) or not isinstance(entry.get("key"), dict):
         return None
     return entry
+
+
+#: Reasons :func:`cached_path` gives for a key mismatch, in this order: key fields to reason.
+_MISS_REASONS = (
+    (("kind", "params"), "settings changed"),
+    (("clip", "inputs"), "layers changed"),
+    (("v", "path_version", "cutpoint", "code"), "planning code changed"),
+    (("source", "start", "end"), "span differs from 360 analyze"),
+)
+
+
+def _miss_reason(cached: dict[str, Any], key: dict[str, Any]) -> str:
+    """Why the cached key ``cached`` differs from ``key`` (reasons joined by ``, ``)."""
+    out = [r for fields, r in _MISS_REASONS if any(cached.get(f) != key.get(f) for f in fields)]
+    return ", ".join(out) or "key changed"
+
+
+def cached_path(
+    project: Path,
+    clip: Any,
+    start: float,
+    end: float,
+    kind: str | None,
+    overrides: dict[str, Any] | None,
+    vertical: bool = False,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """:func:`reusable_path` with the reason a cached path is not reused.
+
+    Returns ``(path, None)`` on a hit, ``(None, None)`` when ``360 analyze`` cached no
+    paths in ``project`` and ``(None, reason)`` otherwise: ``span differs from 360 analyze``
+    (no entry for this exact span, such as one moved by a tail or padding), ``9:16 not
+    planned by 360 analyze`` (``vertical``: ``360 analyze`` plans 16:9 only), ``settings
+    changed``, ``layers changed``, ``planning code changed`` (see :data:`_MISS_REASONS`),
+    ``older cache`` or ``source not reachable``. Reads no more than :func:`reusable_path`.
+    """
+    folder = project / CACHE_DIR
+    if not folder.is_dir():
+        return None, None
+    data = cache.load_json(folder / slot_name(clip, start, end, vertical))
+    if data is None:  # no entry for this span (or an unreadable one)
+        reason = "9:16 not planned by 360 analyze" if vertical else "span differs from 360 analyze"
+        return None, reason
+    entry = _valid(data)
+    if entry is None:
+        return None, "older cache"
+    try:
+        key = path_key(clip, start, end, kind, overrides, vertical)
+    except OSError:
+        return None, "source not reachable"
+    except ValueError:
+        return None, "settings changed"
+    if entry["key"] == key:
+        return entry["path"], None
+    return None, _miss_reason(entry["key"], key)
 
 
 def reusable_path(
@@ -228,17 +286,7 @@ def reusable_path(
 ) -> dict[str, Any] | None:
     """The cached path of ``[start, end]`` when it was planned with exactly what
     :func:`director.compute_path` would use now (:func:`path_key`), else None."""
-    folder = project / CACHE_DIR
-    if not folder.is_dir():
-        return None
-    entry = _entry(folder, slot_name(clip, start, end, vertical))
-    if entry is None:
-        return None
-    try:
-        key = path_key(clip, start, end, kind, overrides, vertical)
-    except (OSError, ValueError):
-        return None
-    return entry["path"] if entry["key"] == key else None
+    return cached_path(project, clip, start, end, kind, overrides, vertical)[0]
 
 
 # --------------------------------------------------------------------------- diagnostics

@@ -147,6 +147,54 @@ def test_clips_recomputes_on_any_mismatch(project, home, monkeypatch) -> None:
     assert calls == [(4.0, 12.5)]
 
 
+def test_clips_logs_why_it_re_plans(project, home, monkeypatch, caplog) -> None:
+    proj, clip = project
+    ex = R.PanoExporter(proj, proj / "clips")
+    with caplog.at_level(logging.INFO):
+        ex.path_for(clip, "001_a.mp4", 4.0, 12.5, "people")  # no analysis cache: silent
+    assert "re-planned" not in caplog.text
+    C.cache_candidate_paths(proj)
+
+    def lines(*args, overrides=None) -> list[str]:
+        caplog.clear()
+        ex.overrides = overrides
+        with caplog.at_level(logging.INFO):
+            ex.path_for(clip, *args)
+        return [r.getMessage() for r in caplog.records if "director path" in r.getMessage()]
+
+    assert lines("001_a.mp4", 4.0, 12.5, "people") == [
+        "  001_a.mp4: director path planned by 360 analyze"
+    ]
+    assert lines("001_b.mp4", 4.0, 13.1, "people") == [  # a smart tail moved the end
+        "  001_b.mp4: director path re-planned (span differs from 360 analyze)"
+    ]
+    assert lines("001_c.mp4", 4.0, 12.5, "speed") == [
+        "  001_c.mp4: director path re-planned (settings changed)"
+    ]
+    assert lines("001_d.mp4", 4.0, 12.5, "people", overrides={"max_speed": 30}) == [
+        "  001_d.mp4: director path re-planned (settings changed)"
+    ]
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        R.PanoExporter(proj, proj / "clips", vertical=True).path_for(
+            clip, "001_v.mp4", 4.0, 12.5, "people"
+        )
+    assert [r.getMessage() for r in caplog.records if "director path" in r.getMessage()] == [
+        "  001_v.mp4: director path re-planned (9:16 not planned by 360 analyze)"
+    ]
+    views = VW.cache_path(Path(clip.lrv))
+    st = views.stat()
+    os.utime(views, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # 360 analyze --force-views
+    assert lines("001_e.mp4", 4.0, 12.5, "people") == [
+        "  001_e.mp4: director path re-planned (layers changed)"
+    ]
+    monkeypatch.setattr(C, "code_id", lambda: "0123456789ab")
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None) == (
+        None,
+        "layers changed, planning code changed",
+    )
+
+
 def test_changed_views_layer_invalidates(project, monkeypatch) -> None:
     proj, clip = project
     C.cache_candidate_paths(proj)

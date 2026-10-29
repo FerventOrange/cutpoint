@@ -525,7 +525,8 @@ class PanoExporter:
         """Load ``reuse`` (an earlier, possibly hand-edited path) if it covers the range
         and is not older than :data:`director.MIN_REUSE_VERSION`, else take the path
         ``360 analyze`` planned for exactly this span and these settings
-        (:func:`cutpoint.pano.candidates.reusable_path`), else run the director
+        (:func:`cutpoint.pano.candidates.cached_path`; an INFO line names why it is not
+        reused), else run the director
         (with the ``pano.director`` overrides of config.json, like ``cutpoint 360
         director``); the path is saved under ``pano_paths``. A re-planned ``reuse``
         file is overwritten after a copy to the first free backup name (``<file>.bak``,
@@ -570,12 +571,14 @@ class PanoExporter:
                     start,
                     end,
                 )
-        from cutpoint.pano.candidates import reusable_path  # noqa: PLC0415
+        from cutpoint.pano.candidates import cached_path  # noqa: PLC0415
 
-        path = reusable_path(self.project, clip, start, end, kind, self.overrides, self.vertical)
+        path, why = cached_path(self.project, clip, start, end, kind, self.overrides, self.vertical)
         if path is not None:
             logger.info("  %s: director path planned by 360 analyze", name)
         else:
+            if why is not None:
+                logger.info("  %s: director path re-planned (%s)", name, why)
             path = D.compute_path(
                 clip, start, end, vertical=self.vertical, kind=kind, overrides=self.overrides
             )
