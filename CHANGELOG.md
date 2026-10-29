@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dynamic mode whenever the peaks did not fit, which re-levelled the clips, shrank the loudness
   range and undid `--compress-peaks` (#523). Peaky finals can now end below -14 LUFS; a WARNING
   (`loudness_below_target` with `--json`) names the level when it is more than 1 LU below.
+- `clips` and `assemble`: gaps in a source's audio timestamps (game captures such as
+  Battlefield 6) are filled with silence, so clips and the final video no longer come out with
+  audio up to a second short that runs ahead of the video. Audio that starts after the video is
+  no longer moved forward at the start of a clip; sources without gaps or delay are unchanged
+  (#476).
 
 ## [0.4.0] - 2026-10-29
 

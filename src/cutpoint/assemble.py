@@ -170,7 +170,7 @@ def _audio_chain(
     label = i if label is None else label
     if info.audio_streams:
         return (
-            f"[{i}:a:0]{A_FMT},asetpts=PTS-STARTPTS{peaks}"
+            f"[{i}:a:0]asetpts=PTS-STARTPTS,{A_FMT}{peaks}"
             f"{audio_fade_filter(info.duration, fade, info.audio_duration)}"
             f"{'' if end is None else f',apad,atrim=end={end:.6f}'}[a{label}]"
         )
