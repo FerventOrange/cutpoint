@@ -36,8 +36,8 @@ Installs uv and ffmpeg when missing, then Cutpoint as a uv tool (run again to up
 
 Modes:
   (default)         Full: every feature. With an NVIDIA GPU: CUDA torch and GPU libraries
-                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events]").
-  --lite            Lite: no torch, no events/GPU extras (plain "cutpoint"). Analyze, clips,
+                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring,ski]").
+  --lite            Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring,ski]"). Analyze, clips,
                     assemble and edit work on the CPU; Ollama features work if you have Ollama.
 
 Options:
@@ -146,33 +146,48 @@ ask() {
 
 # ---------------------------------------------------------------- arguments
 
+# Wrong command line: usage and the message on stderr, exit 2.
+bad_usage() {
+  usage >&2
+  printf 'ERROR: %s\n' "$1" >&2
+  exit 2
+}
+
 parse_args() {
   LITE=0
   ASSUME_YES=0
   DRY_RUN=0
   NO_FFMPEG=0
   TORCH=""
+  FLAG_TORCH=""
+  LITE_FLAG=0
   SOURCE=""
   is_on "${CUTPOINT_LITE:-}" && LITE=1
   is_on "${CUTPOINT_YES:-}" && ASSUME_YES=1
   is_on "${CUTPOINT_DRY_RUN:-}" && DRY_RUN=1
   is_on "${CUTPOINT_NO_FFMPEG:-}" && NO_FFMPEG=1
-  case "${CUTPOINT_TORCH:-}" in
-    '') ;;
-    cpu | cuda) TORCH=${CUTPOINT_TORCH} ;;
-    *) die "CUTPOINT_TORCH must be cpu or cuda, got: $CUTPOINT_TORCH" ;;
-  esac
   SOURCE=${CUTPOINT_SOURCE:-}
   while [ $# -gt 0 ]; do
     case "$1" in
-      --lite) LITE=1 ;;
+      --lite)
+        LITE=1
+        LITE_FLAG=1
+        ;;
       --yes | -y) ASSUME_YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
       --no-ffmpeg) NO_FFMPEG=1 ;;
-      --cpu) TORCH=cpu ;;
-      --cuda) TORCH=cuda ;;
+      --cpu | --cuda)
+        want=${1#--}
+        if [ -n "$FLAG_TORCH" ] && [ "$FLAG_TORCH" != "$want" ]; then
+          bad_usage "--cpu and --cuda contradict each other"
+        fi
+        FLAG_TORCH=$want
+        TORCH=$want
+        ;;
       --source)
-        [ $# -ge 2 ] || die "--source needs a value (pypi, git[@ref] or a path)"
+        case "${2:-}" in
+          '' | -*) bad_usage "missing value for --source (pypi, git[@ref] or a path)" ;;
+        esac
         SOURCE=$2
         shift
         ;;
@@ -182,13 +197,21 @@ parse_args() {
         exit 0
         ;;
       *)
-        usage >&2
-        printf 'ERROR: unknown option: %s\n' "$1" >&2
-        exit 2
+        bad_usage "unknown option: $1"
         ;;
     esac
     shift
   done
+  if [ "$LITE_FLAG" = 1 ] && [ -n "$FLAG_TORCH" ]; then
+    bad_usage "--lite has no torch, so it cannot be combined with --$FLAG_TORCH"
+  fi
+  if [ -z "$TORCH" ]; then
+    case "${CUTPOINT_TORCH:-}" in
+      '') ;;
+      cpu | cuda) TORCH=${CUTPOINT_TORCH} ;;
+      *) die "CUTPOINT_TORCH must be cpu or cuda, got: $CUTPOINT_TORCH" ;;
+    esac
+  fi
   [ -n "$SOURCE" ] || SOURCE=pypi
   CUTPOINT_VERSION=${CUTPOINT_VERSION:-$CUTPOINT_VERSION_DEFAULT}
 }
@@ -208,7 +231,7 @@ nvidia_found() {
   [ "$OS" = Linux ] || return 1
   for smi in nvidia-smi /usr/lib/wsl/lib/nvidia-smi; do
     if have "$smi" || [ -x "$smi" ]; then
-      if "$smi" -L 2>/dev/null | grep -q 'GPU'; then
+      if "$smi" -L 2>/dev/null | grep -q '^GPU [0-9]'; then
         return 0
       fi
     fi
@@ -220,7 +243,7 @@ choose_backend() {
   BACKEND=none
   BACKEND_WHY=""
   if [ "$LITE" = 1 ]; then
-    [ -z "$TORCH" ] || warn "--cpu/--cuda are ignored in lite mode (lite has no torch)."
+    [ -z "$TORCH" ] || warn "CUTPOINT_TORCH is ignored in lite mode (lite has no torch)."
     BACKEND_WHY="lite mode"
     return 0
   fi
@@ -256,23 +279,49 @@ choose_backend() {
 
 # ---------------------------------------------------------------- bin dir and PATH
 
-setup_path() {
+# Same order as uv: UV_TOOL_BIN_DIR, XDG_BIN_HOME, $XDG_DATA_HOME/../bin, ~/.local/bin.
+default_bin_dir() {
   if [ -n "${UV_TOOL_BIN_DIR:-}" ]; then
     BIN_DIR=$UV_TOOL_BIN_DIR
   elif [ -n "${XDG_BIN_HOME:-}" ]; then
     BIN_DIR=$XDG_BIN_HOME
+  elif [ -n "${XDG_DATA_HOME:-}" ]; then
+    BIN_DIR=$XDG_DATA_HOME/../bin
   else
     [ -n "${HOME:-}" ] || die "HOME is not set."
     BIN_DIR=$HOME/.local/bin
   fi
-  case ":$PATH:" in
+}
+
+# Put BIN_DIR first on PATH; BIN_ON_PATH records whether the user's own PATH had it.
+use_bin_dir() {
+  case ":$ORIG_PATH:" in
     *":$BIN_DIR:"*) BIN_ON_PATH=1 ;;
+    *) BIN_ON_PATH=0 ;;
+  esac
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
     *)
-      BIN_ON_PATH=0
       PATH="$BIN_DIR:$PATH"
       export PATH
       ;;
   esac
+}
+
+setup_path() {
+  ORIG_PATH=$PATH
+  default_bin_dir
+  use_bin_dir
+}
+
+# Once uv is there, take the directory from uv itself.
+sync_bin_dir() {
+  [ "$DRY_RUN" = 1 ] && return 0
+  uvbin=$(uv tool dir --bin 2>/dev/null) || return 0
+  if [ -n "$uvbin" ] && [ "$uvbin" != "$BIN_DIR" ]; then
+    BIN_DIR=$uvbin
+    use_bin_dir
+  fi
 }
 
 # ---------------------------------------------------------------- ffmpeg
@@ -353,7 +402,7 @@ uv_version_ok() {
 install_uv() {
   url="https://astral.sh/uv/$UV_VERSION/install.sh"
   if [ "$DRY_RUN" = 1 ]; then
-    say "+ curl -LsSf $url | UV_NO_MODIFY_PATH=1 sh"
+    say "+ curl -LsSf $url | UV_INSTALL_DIR=$BIN_DIR UV_NO_MODIFY_PATH=1 sh"
     return 0
   fi
   tmp=$(mktemp "${TMPDIR:-/tmp}/uv-install.XXXXXX") || die "Could not create a temporary file."
@@ -372,7 +421,7 @@ install_uv() {
     die "Neither curl nor wget found: install one of them (or uv from https://docs.astral.sh/uv/) and run again."
   fi
   say "+ sh <uv installer $UV_VERSION>"
-  if ! UV_NO_MODIFY_PATH=1 sh "$tmp"; then
+  if ! UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh "$tmp"; then
     rm -f "$tmp"
     die "The uv installer failed. Install uv yourself (https://docs.astral.sh/uv/) and run again."
   fi
@@ -404,9 +453,10 @@ ensure_uv() {
 
 # Sets REQ (the requirement) and NO_SOURCES.
 resolve_source() {
-  # ui, keyring and ski are extras before the packaging change and empty aliases after it, so
-  # spelling them out is correct on both layouts. Drop them once the minimum supported release
-  # is past that change. ("all" already includes them on both layouts.)
+  # ui and ski are extras before the packaging change and empty aliases after it, so spelling
+  # them out is correct on both layouts. keyring is an extra only in releases after 0.3.0
+  # (0.3.0 has none: uv warns and skips it), so stamp a release that has it. Drop these extras
+  # once the minimum supported release is past the packaging change. ("all" includes them.)
   if [ "$BACKEND" = none ]; then
     extra="[ui,keyring,ski]"
   elif [ "$BACKEND" = cpu ]; then
@@ -426,12 +476,12 @@ resolve_source() {
       NO_SOURCES=1
       ;;
     *)
-      if [ "$DRY_RUN" != 1 ] && [ ! -e "$SOURCE" ]; then
+      if [ ! -e "$SOURCE" ]; then
         die "--source path does not exist: $SOURCE"
       fi
       dir=$(dirname -- "$SOURCE")
       base=$(basename -- "$SOURCE")
-      if abs=$(cd "$dir" 2>/dev/null && pwd); then
+      if abs=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd); then
         case "$abs" in
           /) abs_path="/$base" ;;
           *) abs_path="$abs/$base" ;;
@@ -440,7 +490,7 @@ resolve_source() {
         abs_path=$SOURCE
       fi
       [ "$base" != . ] || abs_path=$abs
-      enc=$(printf '%s' "$abs_path" | sed 's/ /%20/g')
+      enc=$(printf '%s' "$abs_path" | sed 's/%/%25/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g')
       REQ="cutpoint${extra} @ file://$enc"
       # The checkout's own [tool.uv.sources] pins torch to the cu126 index and would beat
       # --torch-backend; a PyPI wheel has no such table, so ignore it to match a release.
@@ -462,7 +512,7 @@ install_cutpoint() {
     if [ "$BACKEND" = "$CUDA_BACKEND" ]; then
       say "Downloading Cutpoint with CUDA torch and GPU libraries (several GB); this can take a while."
     else
-      say "Downloading Cutpoint with CPU torch (about 1 GB); this can take a while."
+      say "Downloading Cutpoint with CPU torch (about 600 MB to download, about 2 GB on disk); this can take a while."
     fi
   fi
   run "$@" || die "uv tool install failed. Fix the error above and run again."
@@ -475,7 +525,25 @@ update_shell() {
   if [ "$BIN_ON_PATH" = 1 ]; then
     return 0
   fi
-  run uv tool update-shell || warn "uv tool update-shell failed; add $BIN_DIR to PATH yourself."
+  # uv skips the rc files when the bin dir is on PATH, and setup_path put it there: ask uv with
+  # the PATH the user had.
+  show_cmd uv tool update-shell
+  if [ "$DRY_RUN" = 1 ]; then
+    return 0
+  fi
+  # uv picks the rc files from $SHELL; some bare environments (containers, env -i) lack it.
+  # It exits 2 with "already up-to-date" on a re-run, which is fine.
+  if shell_out=$(env PATH="$ORIG_PATH" SHELL="${SHELL:-/bin/bash}" "$(command -v uv)" tool update-shell 2>&1); then
+    say "$shell_out"
+    return 0
+  fi
+  case "$shell_out" in
+    *"already up-to-date"*) say "Shell configuration is already up to date." ;;
+    *)
+      printf '%s\n' "$shell_out" >&2
+      warn "uv tool update-shell failed; add $BIN_DIR to PATH yourself."
+      ;;
+  esac
 }
 
 verify() {
@@ -584,6 +652,7 @@ main() {
 
   install_ffmpeg
   ensure_uv
+  sync_bin_dir
   install_cutpoint
   update_shell
   verify

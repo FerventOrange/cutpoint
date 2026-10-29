@@ -170,9 +170,26 @@ jobs:
           chmod +x "$RUNNER_TEMP/fake-nvidia/nvidia-smi"
           out=$(PATH="$RUNNER_TEMP/fake-nvidia:$PATH" sh install.sh --dry-run --no-ffmpeg < /dev/null)
           expect "$out" '--torch-backend cu126'
+          # nvidia-smi's NVML error mentions "GPU" but lists none: stay on CPU torch.
+          mkdir -p "$RUNNER_TEMP/fake-nvml"
+          printf '#!/bin/sh\necho "Failed to initialize NVML: GPU access blocked by the operating system"\nexit 255\n' > "$RUNNER_TEMP/fake-nvml/nvidia-smi"
+          chmod +x "$RUNNER_TEMP/fake-nvml/nvidia-smi"
+          out=$(PATH="$RUNNER_TEMP/fake-nvml:$PATH" sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" '--torch-backend cpu'
           out=$(sh install.sh --dry-run --no-ffmpeg --source git@main < /dev/null)
           expect "$out" 'git+https://github.com/FerventOrange/cutpoint.git@main'
           expect "$out" '--no-sources'
+          # update-shell is planned when the bin dir is not on the user's PATH, and not when it is.
+          out=$(UV_TOOL_BIN_DIR="$RUNNER_TEMP/not-on-path" sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
+          expect "$out" 'uv tool update-shell'
+          mkdir -p "$RUNNER_TEMP/on-path"
+          out=$(PATH="$RUNNER_TEMP/on-path:$PATH" UV_TOOL_BIN_DIR="$RUNNER_TEMP/on-path" sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
+          if printf '%s\n' "$out" | grep -q 'update-shell'; then echo "::error::update-shell planned although the bin dir is on PATH"; exit 1; fi
+          # Contradictory or malformed flags exit 2; a missing source path fails even in a dry run.
+          rc=0; sh install.sh --dry-run --cpu --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--cpu --cuda must exit 2, got $rc"; exit 1; }
+          rc=0; sh install.sh --dry-run --lite --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--lite --cuda must exit 2, got $rc"; exit 1; }
+          rc=0; sh install.sh --source --dry-run > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--source --dry-run must exit 2, got $rc"; exit 1; }
+          rc=0; sh install.sh --dry-run --no-ffmpeg --source /does/not/exist > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] || { echo "::error::missing --source path must exit 1, got $rc"; exit 1; }
           # curl | sh: the script is read from stdin.
           cat install.sh | sh -s -- --dry-run --lite --no-ffmpeg | grep -F 'uv tool install'
       # Package-manager ffmpeg commands on other distributions (dry run only, nothing installed).
