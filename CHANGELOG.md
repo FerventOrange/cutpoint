@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `install.ps1`: offers to install Ollama when it is missing (full mode only; default No), with
+  `winget install --id Ollama.Ollama -e` or the download link when winget is missing or fails; it
+  waits for the server (starting `ollama serve` hidden only if the Ollama app has not), then offers
+  the `qwen3-vl:8b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
+  `-Yes` answers the prompt. The summary reports the Ollama result. Lite mode has no Ollama: it
+  skips the step, and `-Lite -Ollama` prints a warning and installs nothing.
+
 ## [0.4.0] - 2026-10-29
 
 ### Added

@@ -237,6 +237,9 @@ jobs:
             $saved = @{}
             foreach ($k in $EnvVars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $EnvVars[$k]) }
             $oldPath = $env:PATH
+            # Hide an ollama.exe on PATH; the Ollama cases also need nothing listening on 127.0.0.1:11434.
+            # winget.exe is hidden too: the cases that plan a winget install put a fake winget.cmd on PATH.
+            $env:PATH = (($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path -LiteralPath ([IO.Path]::Combine($_, 'ollama.exe'))) -and -not (Test-Path -LiteralPath ([IO.Path]::Combine($_, 'winget.exe'))) }) -join ';')
             if ($Path) { $env:PATH = "$Path;$env:PATH" }
             try {
               $out = (& $Shell -NoProfile -File install.ps1 @Words 2>&1 | ForEach-Object { "$_" }) -join "`n"
@@ -291,6 +294,56 @@ jobs:
             # The environment variables do what the flags do.
             $r = Invoke-Installer $sh @() @{ CUTPOINT_DRY_RUN = '1'; CUTPOINT_LITE = '1'; CUTPOINT_NO_FFMPEG = '1' }
             Expect $r 'uv tool install "cutpoint[ui,keyring,ski]=='
+            # Ollama: asked in full mode when missing; the winget install only runs on a yes (prompt, -Ollama,
+            # CUTPOINT_OLLAMA=1 or -Yes). Lite has no Ollama. Nothing is installed in a dry run.
+            $noOl = @{ LOCALAPPDATA = "$tmp\no-localappdata" }
+            $wingetOl = 'winget install --id Ollama.Ollama -e'
+            New-Item -ItemType Directory -Force "$tmp\fake-winget" | Out-Null
+            Set-Content "$tmp\fake-winget\winget.cmd" "@exit /b 0" -Encoding ascii
+            $fw = "$tmp\fake-winget"
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') $noOl $fw; Expect-Rc $r 0 '-Ollama'
+            Expect $r $wingetOl
+            Expect $r '+ ollama serve'
+            Expect $r 'Pull qwen3-vl:8b with Ollama (about 6 GB)?'
+            # Without winget the dry run, like a real run, points to the download link.
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') $noOl; Expect-Rc $r 0 '-Ollama without winget'
+            Expect $r 'download Ollama from https://ollama.com/download'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg') $noOl
+            Expect $r 'Install Ollama (local AI models for vision rating and the AI assistant)?'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Yes') $noOl $fw
+            Expect $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-NoOllama', '-Yes') $noOl
+            Refuse $r 'Install Ollama'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg') (@{ CUTPOINT_OLLAMA = '1' } + $noOl) $fw
+            Expect $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Ollama') (@{ CUTPOINT_OLLAMA = '0' } + $noOl) $fw
+            Expect $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-NoOllama') (@{ CUTPOINT_OLLAMA = '1' } + $noOl)
+            Refuse $r 'Install Ollama'
+            Refuse $r $wingetOl
+            $r = Invoke-Installer $sh @('-DryRun', '-NoFfmpeg', '-Yes') (@{ CUTPOINT_OLLAMA = '0' } + $noOl)
+            Refuse $r 'Install Ollama'
+            Refuse $r $wingetOl
+            # Lite: no prompt, no install, no pull; -Ollama / CUTPOINT_OLLAMA=1 warns once and exits 0.
+            $r = Invoke-Installer $sh @('-DryRun', '-Lite', '-NoFfmpeg', '-Yes') $noOl; Expect-Rc $r 0 'lite -Yes'
+            Refuse $r 'Ollama'
+            Refuse $r 'ollama'
+            $lite = @(
+              @{ Words = @('-DryRun', '-Lite', '-NoFfmpeg', '-Ollama', '-Yes'); Env = $noOl },
+              @{ Words = @('-DryRun', '-Lite', '-NoFfmpeg', '-Yes'); Env = (@{ CUTPOINT_OLLAMA = '1' } + $noOl) }
+            )
+            foreach ($c in $lite) {
+              $r = Invoke-Installer $sh $c.Words $c.Env; Expect-Rc $r 0 'lite with Ollama'
+              Expect $r 'Ollama is not part of lite'
+              if (([regex]::Matches($r.Out, 'Ollama is not part of lite')).Count -ne 1) { Write-Host $r.Out; throw 'lite Ollama warning must print once' }
+              Refuse $r $wingetOl
+              Refuse $r 'ollama pull'
+              Refuse $r 'ollama serve'
+            }
+            $r = Invoke-Installer $sh @('-DryRun', '-Ollama', '-NoOllama'); Expect-Rc $r 2 '-Ollama -NoOllama'
             # irm | iex: the script text is evaluated with no parameters and no file.
             $saved = @{ D = $env:CUTPOINT_DRY_RUN; L = $env:CUTPOINT_LITE; F = $env:CUTPOINT_NO_FFMPEG }
             $env:CUTPOINT_DRY_RUN = '1'; $env:CUTPOINT_LITE = '1'; $env:CUTPOINT_NO_FFMPEG = '1'

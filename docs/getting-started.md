@@ -286,6 +286,12 @@ The `events` model layer does not use Ollama. It runs llama.cpp, which `cutpoint
 
 **Install Ollama.**
 
+On Windows the one-step installer (`install.ps1`) asks whether to install Ollama (default No;
+`-Ollama` installs without asking, `-NoOllama` never asks; also `CUTPOINT_OLLAMA=1|0`) with
+`winget install --id Ollama.Ollama -e`, makes sure the server is running and then offers the
+`qwen3-vl:8b` pull. Lite mode (`-Lite`) has no Ollama: it skips this step, and `-Lite -Ollama`
+prints a warning and installs nothing. To do it by hand:
+
 | System | Install |
 |---|---|
 | Windows | The installer from <https://ollama.com/download>, or `winget install Ollama.Ollama` |
