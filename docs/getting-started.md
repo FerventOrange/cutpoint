@@ -45,6 +45,7 @@ In a clone, `uv sync` installs everything, including the `events` and `gpu` extr
 dependency group, about 7 GB or more with torch). For a lite environment without them, use
 `uv sync --no-group full` (and `uv run --no-group full ...`, or set `UV_NO_GROUP=full`). The lite
 install is enough for `analyze`, `clips`, `extend`, `assemble`, `stage` and `cutpoint ui`.
+The lite installer does not offer Ollama; the UI assistant can use a third-party provider instead.
 
 ### Browser workspace
 
@@ -285,6 +286,11 @@ The `events` model layer does not use Ollama. It runs llama.cpp, which `cutpoint
 (see [Download models](#download-models-only-for-cutpoint-events)).
 
 **Install Ollama.**
+
+The one-step installer (`install.sh` on Linux and macOS) asks whether to install Ollama (default No;
+`--ollama` installs without asking, `--no-ollama` never asks), makes sure the server is running and
+then offers the `qwen3-vl:8b` pull. Lite mode (`--lite`) has no Ollama: it skips this step, and
+`--lite --ollama` prints a warning and installs nothing. To do it by hand:
 
 | System | Install |
 |---|---|
