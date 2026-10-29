@@ -13,6 +13,9 @@ Trust boundaries:
   carry it as ``?t=`` because ``<video>`` cannot send headers.
 * Source stills (``.../sources/<id>/frame?at=<seconds>``) are media URLs too; they are cached in
   the project's ``ui/frames`` folder under a name built from the source's content key.
+* Director previews of 360 moments (``.../sources/<id>/director/<name>``) are media URLs too:
+  renders in the project's ``ui/pano`` folder, made from a clip's ``.lrv`` in ``pano.json`` along
+  the camera path ``360 analyze`` cached (``POST .../director/<candidate>`` asks for one).
 * A project id is a direct child folder of the projects folder. A project's media are its
   recorded source files, and only those under the source the user picked for it (or, for projects
   made on the command line, the inputs of its analysis); ``highlights.json`` alone never
@@ -107,11 +110,14 @@ from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
+    ChildScope,
     EncoderUnavailableError,
     FFmpegError,
     VideoEncoder,
     audio_mix_filter,
+    child_scope,
     grab_images,
+    part_path,
     probe,
     video_encoder,
 )
@@ -134,7 +140,7 @@ from cutpoint.vision import default_model
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
-UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/
+UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/, pano/
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MAX_SEGMENTS = ai_ops.MAX_SEGMENTS
 MAX_LOG_LINES = 300
@@ -1916,6 +1922,420 @@ class Media:
             kill_tree(proc, SOFT_STOP_S)  # a bare ffmpeg: no soft stop of its own to wait for
 
 
+# --------------------------------------------------------------------------- 360 director previews
+# A 360 moment previews through the camera path ``360 analyze`` cached for it (#517, see
+# cutpoint.pano.candidates): a small flat render of the .lrv along that path, as
+# ``360 director --preview`` makes, in ui/pano/<candidate id>-<hash>.mp4. The hash covers the
+# path itself (which its cache key decides) and the render settings, so a re-planned path or a
+# changed render is never served from an older file. The render spans what the path was planned
+# for: the moment and up to 10 s on either side.
+PANO_PREVIEW_W, PANO_PREVIEW_H = 640, 360
+PANO_PREVIEW_VERSION = 1  # bump when previews render differently
+PANO_PREVIEW_NAME = re.compile(r"[A-Za-z0-9_]{1,40}-[0-9a-f]{16}")
+# a preview, its temporary (ffmpeg_utils.part_path) or the sendcmd file render_segment leaves
+PANO_PREVIEW_FILE = re.compile(r"\.?([A-Za-z0-9_]{1,40}-[0-9a-f]{16})(?:\.part)?\.(?:mp4|cmd)")
+PANO_STALE = "the camera path is out of date (settings, layers or code changed): analyze again"
+PANO_UNCHECKED = "the camera path could not be checked (is the footage offline?)"
+
+
+def _pano_name(cid: str, path: dict[str, Any]) -> str:
+    """File stem of the director preview of candidate ``cid`` along ``path``."""
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", cid)[:40] or "c"
+    blob = json.dumps(
+        [PANO_PREVIEW_VERSION, PANO_PREVIEW_W, PANO_PREVIEW_H, path], sort_keys=True, default=str
+    )
+    return f"{safe}-{hashlib.sha1(blob.encode()).hexdigest()[:16]}"
+
+
+def _pano_span(path: dict[str, Any], clip: Any) -> tuple[float, float] | None:
+    """The source range a preview of ``path`` covers: its planned span, starting on a frame as
+    ``render_segment`` does (so the file's 0 is ``lo``) and ending with the clip at the latest."""
+    planned = path.get("planned") or path.get("segment") or {}
+    try:
+        lo, hi = float(planned["start"]), float(planned["end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    fps = clip.fps or 30000 / 1001
+    lo = math.ceil(max(0.0, lo) * fps - 1e-6) / fps
+    if clip.duration > 0:
+        hi = min(hi, float(clip.duration))
+    return (round(lo, 6), round(hi, 6)) if hi - lo >= 0.1 else None
+
+
+def _pano_reasons(flags: list[str], diag: dict[str, Any]) -> list[dict[str, str]]:
+    """Each flag with its reason (``candidates.FLAGS``) and the measure behind it."""
+    from cutpoint.pano.candidates import FLAGS  # noqa: PLC0415
+
+    def num(key: str) -> float | None:
+        v = diag.get(key)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    def share(key: str) -> str:
+        v = num(key)
+        return f" ({round(v * 100)}% of the moment)" if v is not None else ""
+
+    out = []
+    for f in flags:
+        text = FLAGS.get(f, f)
+        if f == "sky":
+            text += share("sky")
+        elif f == "wearer":
+            text += share("wearer_in_view")
+        elif f == "off_target":
+            text += share("off_target")
+        elif f == "whip" and (rate := num("peak_yaw_rate")) is not None:
+            text += f" (up to {rate:g} deg/s)"
+        elif f == "cuts" and (n := num("cuts")) is not None:
+            text += f" ({n:g} in the moment)"
+        elif f == "qa_fail":
+            fails = (diag.get("quality") or {}).get("fails")
+            if isinstance(fails, list) and fails:
+                text += ": " + ", ".join(str(x) for x in fails[:4])
+        out.append({"flag": f, "text": text})
+    return out
+
+
+def _file_ident(f: Path) -> tuple[str, int, int] | None:
+    try:
+        st = f.stat()
+    except OSError:
+        return None
+    return f.name, st.st_size, st.st_mtime_ns
+
+
+class PanoPreview:
+    """One queued or running director preview render."""
+
+    def __init__(
+        self,
+        project: Path,
+        cid: str,
+        name: str,
+        path: dict[str, Any],
+        clip: Any,
+        lo: float,
+        hi: float,
+    ) -> None:
+        self.project, self.cid, self.name, self.path, self.clip = project, cid, name, path, clip
+        self.lo, self.hi = lo, hi
+        self.scope = ChildScope()  # kill() stops its ffmpeg; the render removes its .part
+        self.cancelled = False  # superseded, cancelled or shutting down (under PanoPreviews.lock)
+        self.started: float | None = None
+
+    @property
+    def key(self) -> tuple[Path, str]:
+        return self.project, self.cid
+
+
+class PanoPreviews:
+    """Director previews of 360 moments (#517): flags of the cached camera paths for the
+    listing, and on request a render along the path in one background lane. A new request
+    supersedes the queued ones and stops a running render of another moment (as window proxies
+    do); a stopped render leaves no partial file."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.wake = threading.Condition(self.lock)
+        self.queue: deque[PanoPreview] = deque()
+        self.running: PanoPreview | None = None
+        self.lane: threading.Thread | None = None
+        self.closing = False
+        # (project, cid) -> {"state": failed | cancelled | stale | unchecked, "reason", "name"}
+        self.outcomes: dict[tuple[Path, str], dict[str, Any]] = {}
+        # (project, cid) -> preview name whose path was checked current this run: only those
+        # are listed ready (a file of a path that went stale since is not)
+        self.checked: dict[tuple[Path, str], str] = {}
+        # project -> (signature of its candidate cache, {cid: entry info})
+        self.memo: dict[Path, tuple[Any, dict[str, dict[str, Any]]]] = {}
+        self.pruned: set[Path] = set()
+
+    # -- the listing ------------------------------------------------------------------
+    @staticmethod
+    def _signature(project: Path) -> Any:
+        from cutpoint.pano.candidates import CACHE_DIR  # noqa: PLC0415
+
+        files = [i for f in (project / CACHE_DIR).glob("*.json") if (i := _file_ident(f))]
+        return (
+            _file_ident(project / "highlights.json"),
+            _file_ident(project / pano_project.PANO_FILE),
+            tuple(sorted(files)),
+        )
+
+    def entries(self, project: Path) -> dict[str, dict[str, Any]]:
+        """``{cid: {flags, reasons, name, span, clip}}`` of the candidates with a cached camera
+        path (``candidates.candidate_flags``); rebuilt only when ``highlights.json``,
+        ``pano.json`` or a cache file changed. No freshness check (see :meth:`request`)."""
+        from cutpoint.pano import candidates as PC  # noqa: PLC0415
+
+        sig = self._signature(project)
+        with self.lock:
+            hit = self.memo.get(project)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+        out: dict[str, dict[str, Any]] = {}
+        if sig[2]:
+            try:
+                flagged = PC.candidate_flags(project)
+                clips = pano_project.load(project)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+                logger.warning("camera paths of %s unreadable: %s", project.name, err)
+                flagged, clips = {}, {}
+            hl = cache.load_json(project / "highlights.json")
+            cands = {
+                str(c.get("id")): c
+                for c in (hl.get("candidates") or [] if isinstance(hl, dict) else [])
+                if isinstance(c, dict)
+            }
+            for cid, info in flagged.items():
+                entry = cache.load_json(info["file"])
+                entry = entry if isinstance(entry, dict) else {}
+                path = entry.get("path") if isinstance(entry.get("path"), dict) else None
+                diag = (
+                    entry.get("diagnostics") if isinstance(entry.get("diagnostics"), dict) else {}
+                )
+                cand = cands.get(cid)
+                clip = pano_project.clip_for(clips, cand["source"]) if cand else None
+                usable = path is not None and clip is not None and bool(clip.lrv)
+                out[cid] = {
+                    "flags": list(info["flags"]),
+                    "reasons": _pano_reasons(info["flags"], diag),
+                    "name": _pano_name(cid, path) if usable else None,
+                    "span": _pano_span(path, clip) if usable else None,
+                    "clip": clip,
+                }
+        with self.lock:
+            self.memo[project] = (sig, out)
+        return out
+
+    def listing(self, project: Path) -> dict[str, dict[str, Any]]:
+        """Per candidate id with a cached camera path: ``flags``, ``reasons`` and ``preview``
+        (None until asked for; else ``state`` ready (``name``, ``lo``, ``hi``) | rendering
+        (``elapsed``, ``seconds``) | queued | failed | cancelled | stale | unchecked, with a
+        ``reason`` for the last four)."""
+        return {
+            cid: {
+                "flags": info["flags"],
+                "reasons": info["reasons"],
+                "preview": self._state(project, cid, info),
+            }
+            for cid, info in self.entries(project).items()
+        }
+
+    def _state(self, project: Path, cid: str, info: dict[str, Any]) -> dict[str, Any] | None:
+        key, name, span = (project, cid), info["name"], info["span"]
+        if name is None or span is None:
+            return {"state": "failed", "reason": "no .lrv proxy to render this camera path from"}
+        seconds = round(span[1] - span[0], 1)
+        with self.lock:
+            run = self.running
+            if run is not None and run.key == key and not run.cancelled:
+                elapsed = round(time.time() - run.started, 1) if run.started else 0.0
+                return {"state": "rendering", "elapsed": elapsed, "seconds": seconds}
+            if any(j.key == key and not j.cancelled for j in self.queue):
+                return {"state": "queued", "seconds": seconds}
+            done = self.outcomes.get(key)
+            checked = self.checked.get(key)
+        if done is not None and done.get("name") == name:
+            return {"state": done["state"], "reason": done["reason"]}
+        if checked == name and self.file(project, name, mark=False) is not None:
+            return {"state": "ready", "name": name, "lo": span[0], "hi": span[1]}
+        return None
+
+    def file(self, project: Path, name: str, *, mark: bool = True) -> Path | None:
+        """The rendered preview ``name`` of ``project``, else None; ``mark``: it is being served."""
+        if not PANO_PREVIEW_NAME.fullmatch(name):
+            return None
+        rel = f"{UI_DIR}/pano/{name}.mp4"
+        f = project / rel
+        if not f.is_file() or not _inside(project, rel):
+            return None
+        if mark:
+            _mark_used(f)
+        return f
+
+    # -- requests ---------------------------------------------------------------------
+    def request(self, project: Path, cid: str) -> dict[str, Any] | None:
+        """The page shows candidate ``cid``: check its cached path is current
+        (``candidates.candidate_path``) and queue its render unless one is ready or running.
+        A stale or unchecked path is recorded (the page plays the raw preview). Returns the
+        candidate's listing entry, or None when it has no cached path."""
+        from cutpoint.pano import candidates as PC  # noqa: PLC0415
+
+        info = self.entries(project).get(cid)
+        if info is None:
+            return None
+        key = (project, cid)
+        cp = PC.candidate_path(project, cid)
+        if cp is None:  # the cache changed since the listing
+            with self.lock:
+                self.memo.pop(project, None)
+            return self.listing(project).get(cid)
+        name = _pano_name(cid, cp["path"])
+        if name != info["name"] and info["name"] is not None:  # rewritten meanwhile
+            with self.lock:
+                self.memo.pop(project, None)
+            info = self.entries(project).get(cid) or info
+        if cp["current"] is not True:
+            with self.lock:
+                self.checked.pop(key, None)
+                self.outcomes[key] = {
+                    "state": "stale" if cp["current"] is False else "unchecked",
+                    "reason": PANO_STALE if cp["current"] is False else PANO_UNCHECKED,
+                    "name": info["name"],
+                }
+            return self.listing(project).get(cid)
+        span = info["span"]
+        if info["name"] is not None and span is not None:
+            with self.lock:
+                self.checked[key] = info["name"]
+                self.outcomes.pop(key, None)
+            if self.file(project, info["name"]) is None:
+                self._queue(
+                    PanoPreview(project, cid, info["name"], cp["path"], info["clip"], *span)
+                )
+        return self.listing(project).get(cid)
+
+    def _queue(self, job: PanoPreview) -> None:
+        _own(job.project, f"{UI_DIR}/pano/{job.name}.mp4")  # never rendered through a link
+        stop = None
+        with self.lock:
+            if self.closing:
+                return
+            run = self.running
+            if (
+                run is not None
+                and run.key == job.key
+                and run.name == job.name
+                and not run.cancelled
+            ):
+                return  # already rendering
+            for queued in self.queue:
+                queued.cancelled = True  # superseded: the user moved on (no outcome to show)
+            self.queue.clear()
+            self.queue.append(job)
+            if run is not None and not run.cancelled:
+                run.cancelled = True
+                stop = run.scope
+            if self.lane is None:
+                self.lane = threading.Thread(target=self._lane, name="cutpoint-pano", daemon=True)
+                self.lane.start()
+            self.wake.notify()
+        if stop is not None:
+            stop.kill()
+
+    def cancel(self, project: Path, cid: str) -> bool:
+        """Stop the queued or running render of ``cid`` (its partial file goes); False if none."""
+        key, stop, name = (project, cid), None, None
+        with self.lock:
+            for job in [j for j in self.queue if j.key == key]:
+                job.cancelled = True
+                self.queue.remove(job)
+                name = job.name
+            run = self.running
+            if run is not None and run.key == key and not run.cancelled:
+                run.cancelled = True
+                stop, name = run.scope, run.name
+            if name is not None:
+                self.outcomes[key] = {"state": "cancelled", "reason": "", "name": name}
+        if stop is not None:
+            stop.kill()
+        return name is not None
+
+    def _lane(self) -> None:
+        while True:
+            with self.lock:
+                while not self.queue and not self.closing:
+                    self.wake.wait()
+                if self.closing:
+                    return
+                job = self.running = self.queue.popleft()
+                job.started = time.time()
+            try:
+                self._render(job)
+            finally:
+                with self.lock:
+                    self.running = None
+
+    def _render(self, job: PanoPreview) -> None:
+        """Render ``job`` from the clip's .lrv (``render_segment``, as ``360 director
+        --preview``); on failure or a stop no file is left but the reason (unless stopped)."""
+        from cutpoint.pano import render as pano_render  # noqa: PLC0415
+
+        p = job.project
+        out = p / UI_DIR / "pano" / f"{job.name}.mp4"
+        what = f"{job.cid} ({job.lo:.2f}-{job.hi:.2f} s)"
+        failed = None
+        try:
+            _ui_folder(p, "pano")  # ui or ui/pano a file: a clear refusal, not a traceback
+            _own(p, f"{UI_DIR}/pano/{part_path(out).name}")  # a link made while it was queued
+            src = pano_project.RenderSource(
+                "proxy", (job.clip.lrv,), "dfisheye", False, True, "lrv proxy"
+            )
+            t0 = time.perf_counter()
+            with child_scope(job.scope):
+                job.scope.check()  # cancelled before it started
+                pano_render.render_segment(
+                    job.clip, job.path, job.lo, job.hi, out,
+                    fmt=pano_render.Format360(PANO_PREVIEW_W, PANO_PREVIEW_H),
+                    src=src, cmd_every=1, work_dir=out.parent,
+                )  # fmt: skip
+            logger.info("director preview of %s in %.1fs", what, time.perf_counter() - t0)
+        except KeyboardInterrupt:  # its scope was stopped: cancelled, superseded or shutdown
+            if not job.cancelled and not self.closing:
+                failed = "stopped"
+        except HTTPException as err:
+            failed = str(err.detail)
+        except Exception as err:  # a failed preview never stops the lane
+            lines = str(err).strip().splitlines()
+            failed = (lines[-1] if lines else type(err).__name__)[:200]
+            if not isinstance(err, (FFmpegError, OSError, ValueError)):
+                logger.exception("director preview of %s failed", what)
+        finally:
+            for f in (part_path(out), out.with_suffix(".cmd")):  # .cmd: only `360 qa` reads it
+                with contextlib.suppress(OSError):
+                    f.unlink(missing_ok=True)
+        if failed is not None:
+            logger.warning("director preview of %s failed: %s", what, failed)
+            with self.lock:
+                if not job.cancelled:
+                    self.outcomes[job.key] = {"state": "failed", "reason": failed, "name": job.name}
+
+    # -- housekeeping -----------------------------------------------------------------
+    def prune(self, project: Path) -> None:
+        """Once per run and project: delete previews of paths no candidate has any more and
+        leftovers of stopped renders, unless written or used in the last PROXY_PRUNE_GRACE_S
+        (another run may be rendering or serving one)."""
+        with self.lock:
+            if project in self.pruned:
+                return
+            self.pruned.add(project)
+        folder = project / UI_DIR / "pano"
+        if not folder.is_dir() or not _inside(project, f"{UI_DIR}/pano"):
+            return  # never delete in a folder a link takes outside the project
+        keep = {i["name"] for i in self.entries(project).values() if i["name"]}
+        with self.lock:
+            busy = {j.name for j in (self.running, *self.queue) if j is not None}
+        cutoff = time.time_ns() - int(PROXY_PRUNE_GRACE_S * 1e9)
+        drop = []
+        for f in folder.iterdir():
+            m = PANO_PREVIEW_FILE.fullmatch(f.name)
+            if m is None or m[1] in busy:
+                continue
+            if (f.name != f"{m[1]}.mp4" or m[1] not in keep) and _idle(f, cutoff):
+                drop.append(f)
+        Media._delete(drop)
+
+    def shutdown(self) -> None:
+        with self.lock:
+            self.closing = True
+            jobs = [j for j in (self.running, *self.queue) if j is not None]
+            self.queue.clear()
+            self.wake.notify_all()
+        for job in jobs:
+            job.cancelled = True
+            job.scope.kill()
+
+
 # --------------------------------------------------------------------------- projects
 def _loopback_url(value: str, port: int, *, origin: bool) -> bool:
     try:
@@ -2700,6 +3120,7 @@ def stitch_first(
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
+    previews = PanoPreviews()
     ai_keys.redact_logs()  # an assistant API key never reaches a log line
 
     @asynccontextmanager
@@ -2708,6 +3129,7 @@ def create_app(port: int) -> FastAPI:
         yield
         jobs.shutdown()
         media.shutdown()
+        previews.shutdown()
         picker.shutdown()
         app.state.assistant.shutdown()
 
@@ -2717,6 +3139,7 @@ def create_app(port: int) -> FastAPI:
 
     app.state.token, app.state.jobs, app.state.media = token, jobs, media
     app.state.picker, app.state.sources = picker, sources
+    app.state.previews = previews
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -2764,6 +3187,31 @@ def create_app(port: int) -> FastAPI:
 
     def window_url(pid: str, sid: str, lo: int, hi: int) -> str:
         return url(pid, "sources", sid).replace("?", f"/window/{lo}-{hi}?", 1)
+
+    def director_url(pid: str, sid: str, name: str) -> str:
+        return url(pid, "sources", sid).replace("?", f"/director/{name}?", 1)
+
+    def pano_views(
+        pid: str, p: Path, listing: list[dict[str, Any]], only: str | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """The camera path flags and director preview of each 360 candidate (by CLI id) with a
+        cached path, a ready preview with its url (under the source the page plays it as)."""
+        previews.prune(p)
+        views = previews.listing(p)
+        if only is not None:
+            views = {only: views[only]} if only in views else {}
+        hl = _highlights(p) or {}
+        where = {str(c.get("id")): c.get("source") for c in hl.get("candidates") or []}
+        sids = {s["path"]: s["id"] for s in listing}
+        for cid, view in views.items():
+            pv = view["preview"]
+            if pv is not None and pv["state"] == "ready":
+                sid = sids.get(where.get(cid))
+                if sid is None:  # not one of the project's sources: nothing may serve it
+                    view["preview"] = None
+                else:
+                    pv["url"] = director_url(pid, sid, pv.pop("name"))
+        return views
 
     @secure.get("/session")
     def session():
@@ -3029,6 +3477,13 @@ def create_app(port: int) -> FastAPI:
                     ],
                 }
             )
+        highlights = moments_view(hl)
+        if highlights is not None and meta.get("kind") == "360":
+            # #517: flags of each moment's cached camera path and its director preview (null:
+            # no cached path, the page plays the raw preview and says so)
+            views = pano_views(pid, p, listing)
+            for c in highlights["candidates"]:
+                c["pano"] = views.get(str(c.get("cli_id")))
         return {
             "id": pid,
             "name": meta.get("name") or pid,
@@ -3037,7 +3492,7 @@ def create_app(port: int) -> FastAPI:
             "gaming": _gaming_style(meta.get("style") or (hl or {}).get("style")),
             "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
-            "highlights": moments_view(hl),
+            "highlights": highlights,
             "review": review if isinstance(review, dict) else None,
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp
@@ -3485,6 +3940,40 @@ def create_app(port: int) -> FastAPI:
         if p not in media.proxies_pruned:
             media.prune_proxies(p, [s["path"] for s in sources.entries(p)])
         return {"status": media.prepare(p, entry["path"], window, queue=queue)}
+
+    @served.api_route("/projects/{pid}/sources/{sid}/director/{name}", methods=["GET", "HEAD"])
+    def source_director(pid: str, sid: str, name: str, request: Request):
+        """A rendered director preview of a 360 moment of this source (#517)."""
+        p, _ = find_source(pid, sid)
+        file = previews.file(p, name)
+        if file is None:
+            raise bad("director preview is not ready", 404)
+        return send(file, request, proxy=True)
+
+    def pano_project_dir(pid: str) -> Path:
+        p = project_dir(pid)
+        if read_meta(p).get("kind") != "360":
+            raise bad("not a 360 project", 404)
+        return p
+
+    @owned.post("/projects/{pid}/director/{cid}")
+    def prepare_director(pid: str, cid: str):
+        """The page shows 360 candidate ``cid`` (its CLI id): render its director preview in
+        the background if its cached camera path is current. ``{"pano": null}``: it has none
+        (the page plays the raw preview)."""
+        p = pano_project_dir(pid)
+        if media.closing:
+            raise bad("the server is stopping", 503)
+        if previews.request(p, cid) is None:
+            return {"pano": None}
+        return {"pano": pano_views(pid, p, sources.entries(p), cid).get(cid)}
+
+    @owned.post("/projects/{pid}/director/{cid}/cancel")
+    def cancel_director(pid: str, cid: str):
+        """Stop the director preview render of ``cid``; the page plays the raw preview."""
+        p = pano_project_dir(pid)
+        previews.cancel(p, cid)
+        return {"pano": pano_views(pid, p, sources.entries(p), cid).get(cid)}
 
     @served.api_route("/projects/{pid}/outputs/{name}", methods=["GET", "HEAD"])
     def output_file(pid: str, name: str, request: Request):

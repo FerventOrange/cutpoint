@@ -57,6 +57,8 @@ const COLOR_NAMES = { off: 'Off', auto: 'Auto', underwater: 'Underwater' };
 const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the audio transition of each video one
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
+// The camera path flags of a 360 moment (#517, cutpoint.pano.candidates.FLAGS) as short badge words
+const PANO_FLAGS = { sky: 'Sky', whip: 'Whip pans', cuts: 'Many cuts', wearer: 'Wearer', off_target: 'Off target', qa_fail: 'QA fail' };
 
 const S = {
   styles: [],
@@ -150,11 +152,23 @@ const covers = (w, t, dur) => t >= w.lo && (t < w.hi - FRAME || (!!dur && w.hi >
  * its 0 (``offset``) and the source range it covers. The whole source once it plays (as is or
  * from its proxy); before that a ready window proxy covering ``t`` (#323), else null.
  */
-function playable(src, t) {
+function playable(src, t, raw = false) {
+  const d = !raw && directed(src, t);
+  if (d) return d;
   const dur = sourceDur(src.path) ?? (v.dataset.url === src.url && Number.isFinite(v.duration) ? v.duration : null);
   if (src.status === 'ready') return { url: src.url, offset: 0, lo: 0, hi: dur };
   const w = (src.windows ?? []).filter((x) => t != null && covers(x, t, dur)).sort((a, b) => b.hi - a.hi)[0];
   return w ? { url: w.url, offset: w.lo, lo: w.lo, hi: w.hi } : null;
+}
+/**
+ * The director preview of the focused 360 moment (#517) when it is rendered and plays source time
+ * ``t``: a flat view along the camera path 360 analysis planned, in place of the raw fisheye, played
+ * like a window proxy. Not during "Play sequence", which plays the raw preview.
+ */
+function directed(src, t, c = current()) {
+  const d = c?.cand?.pano?.preview;
+  if (S.seqPlay || d?.state !== 'ready' || !src || t == null || c.cand.source !== src.path) return null;
+  return covers(d, t, sourceDur(src.path)) ? { url: d.url, offset: d.lo, lo: d.lo, hi: d.hi, director: c.id } : null;
 }
 /** The window ``w`` plays all of ``seg`` ({start, end}); one ending with the source covers an end past its centisecond-floored ``hi``. */
 const coversSeg = (w, seg, dur) =>
@@ -165,7 +179,7 @@ const coversSeg = (w, seg, dur) =>
  */
 function fileFor(src, seg) {
   const r = loaded();
-  if (r && ofSource(src)) {
+  if (r && ofSource(src) && !v.dataset.director) { // a director preview never plays a sequence
     const dur = sourceDur(src.path);
     if (r.hi == null ? v.dataset.url === src.url : coversSeg(r, seg, dur))
       return { url: v.dataset.url, offset: r.lo, lo: r.lo, hi: r.hi ?? dur };
@@ -181,14 +195,23 @@ function readyFor(src, seg) {
 }
 const durOf = (c) => {
   const src = srcOf(c.source);
-  return src?.status === 'ready' ? playable(src, 0).hi : sourceDur(c.source);
+  return src?.status === 'ready' ? playable(src, 0, true).hi : sourceDur(c.source);
 };
 /** The source time at the stage player's 0: a window proxy starts later in its source. */
 const offsetOf = () => Number(v.dataset.offset) || 0;
 /** The source range the stage player's file covers; ``hi`` null: to the end of the source. Null when nothing is loaded. */
 const loaded = () => (v.dataset.url ? { lo: offsetOf(), hi: v.dataset.hi ? Number(v.dataset.hi) : null } : null);
-/** The stage player holds a file of ``src``: its original or whole proxy, or one of its window proxies. */
-const ofSource = (src) => !!v.dataset.url && (v.dataset.url === src.url || v.dataset.url.startsWith(`${src.url.split('?')[0]}/window/`));
+/**
+ * The stage player holds a file of ``src``: its original or whole proxy, one of its window proxies,
+ * or the director preview of the focused moment (#517; not during "Play sequence").
+ */
+const ofSource = (src) => {
+  const u = v.dataset.url;
+  if (!u) return false;
+  const base = src.url.split('?')[0];
+  if (v.dataset.director) return !S.seqPlay && v.dataset.director === S.focus && u.startsWith(`${base}/director/`);
+  return u === src.url || u.startsWith(`${base}/window/`);
+};
 /** The stage player's file plays all of clip ``c`` ({source, start, end}): a file of its source, whole or a window covering it. */
 const holdsClip = (c) => {
   const r = loaded();
@@ -250,6 +273,7 @@ whenExpired((e) => {
   clearTimeout(S.jobTimer);
   clearTimeout(S.seqTimer);
   clearTimeout(S.chatTimer);
+  clearTimeout(S.panoTimer);
   clearInterval(S.stepTimer);
   S.stepTimer = null;
   seqStop('');
@@ -423,8 +447,9 @@ function renderMoments() {
         const seg = segOf(c);
         const picked = !!seg;
         const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
+        const tip = c.pano?.flags?.length ? `tip-${c.id}` : null;
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
-          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', onclick: () => focusMoment(c.id) },
+          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
               h('span', { class: 'cand-title', text: c.label || c.cli_id || c.id }),
@@ -436,6 +461,7 @@ function renderMoments() {
               h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }),
               `${(c.end - c.start).toFixed(1)} s`),
             multi ? h('span', { class: 'cand-src' }, h('span', { class: 'vh', text: 'in ' }), baseName(c.source)) : null,
+            flagBadges(c.pano),
             sourceStrip(c),
             c.transcript || badge
               ? h('span', { class: 'cand-foot' }, c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null, badge)
@@ -445,6 +471,8 @@ function renderMoments() {
             'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.cli_id || c.id} ${picked ? 'from' : 'to'} sequence`,
             onclick: () => (picked ? removeSeg(c.id) : addSeg(c.id)),
           }, picked ? 'Remove' : 'Add'),
+          // the reasons of the camera path badges (#517): shown on hover and keyboard focus, read as the card's description
+          tip ? h('span', { class: 'flag-tip', role: 'tooltip', id: tip, text: `Camera path looks poor: ${c.pano.reasons.map((r) => r.text).join('; ')}.` }) : null,
         );
       }),
     );
@@ -507,6 +535,18 @@ function prepBadge(src, seg) {
   const [name, word] = PREP[state];
   return h('span', { class: 'prep', 'data-state': state, title: `Preview ${word.toLowerCase()}` },
     icon(name), h('span', { class: 'vh', text: 'Preview ' }), word);
+}
+
+/**
+ * The camera path flags of a 360 moment (#517) as small badges (words, never colour alone), or null.
+ * Their reasons are the card's tooltip and description (``flag-tip``) and the preview's note.
+ */
+function flagBadges(pano) {
+  if (!pano?.flags?.length) return null;
+  return h('span', { class: 'cand-flags' },
+    h('span', { class: 'vh', text: 'Camera path looks poor: ' }),
+    ...pano.flags.map((f, i) => h('span', { class: 'flag', 'data-flag': f, text: PANO_FLAGS[f] ?? f },
+      i < pano.flags.length - 1 ? h('span', { class: 'vh', text: ', ' }) : null)));
 }
 
 /** Folder with level bars, flanked by sound waves; decorative. Fixed 158:80 box so CSS cannot distort it. */
@@ -689,6 +729,7 @@ function renderStage(seekToStart, keepVideo = false) {
   $('#stageMeta').textContent = c ? `${c.label} from ${baseName(c.source)}` : '';
   renderFullPrep(c);
   renderNerdStats(c);
+  renderPanoNote(c);
   if (!S.project)
     setEmpty($('#stageEmpty'),
       h('p', {}, 'No project is open.'),
@@ -729,6 +770,95 @@ function renderNerdStats(c = current()) {
     bits.length ? `Signals: ${bits.join(', ')}` : '',
     sig?.keywords?.length ? `Keywords: ${sig.keywords.join(', ')}` : '',
   ].filter(Boolean).join('\n');
+}
+
+// ---------- 360 director previews (#517) ----------
+
+let panoAsked = null; // "<project>:<candidate>" whose director preview the page last asked for
+
+/** Ask the server once for the director preview of 360 moment ``c``: it checks the cached camera path and renders it in the background. */
+function askDirector(c) {
+  const cand = c?.cand;
+  if (S.project?.kind !== '360' || !cand?.pano || cand.pano.preview || S.seqPlay) return;
+  const k = `${S.id}:${cand.cli_id}`;
+  if (panoAsked === k) return;
+  panoAsked = k;
+  postDirector(cand.cli_id);
+}
+
+/** Ask for (or with ``cancel``, stop) the director preview of candidate ``cid`` (its CLI id). */
+async function postDirector(cid, cancel = false) {
+  try {
+    await api(`/api/projects/${encodeURIComponent(S.id)}/director/${encodeURIComponent(cid)}${cancel ? '/cancel' : ''}`, { method: 'POST' });
+    refreshProject();
+  } catch (e) {
+    fail(e);
+  }
+}
+
+/** The render's elapsed time beside its state; not announced, as it changes on every poll. */
+const panoTime = (pv) => (pv?.state === 'rendering' ? ` ${Math.round(pv.elapsed)} s (about ${Math.round(pv.seconds)} s of video)` : '');
+
+/**
+ * Under the preview of a 360 moment: what it shows (the director view, or the raw fisheye and why),
+ * a render's state with Cancel or a retry, and the camera path's flags with their reasons as text.
+ * Rebuilt only when that changes, so the status is not announced again on every poll.
+ */
+function renderPanoNote(c) {
+  const el = $('#panoNote');
+  clearTimeout(S.panoTimer);
+  const cand = S.project?.kind === '360' ? c?.cand : null;
+  if (!cand) {
+    el.hidden = true;
+    el.replaceChildren();
+    delete el.dataset.key;
+    return;
+  }
+  const pano = cand.pano;
+  const pv = pano?.preview;
+  const state = pv?.state ?? (pano ? 'asking' : 'none');
+  // a render is followed until it is done (the request's own answer refreshes after 'asking')
+  if (!S.expired && (state === 'rendering' || state === 'queued')) S.panoTimer = setTimeout(refreshProject, 1000);
+  const on = v.dataset.director === c.id;
+  let text;
+  let act = null; // [label, cancel]
+  if (S.seqPlay) text = 'Play sequence shows the raw 360 preview.';
+  else if (state === 'none') text = 'Raw 360 preview: no camera path is cached for this moment. Analyze again to plan one.';
+  else if (state === 'asking') text = 'Raw 360 preview: checking the camera path…';
+  else if (state === 'ready')
+    text = on ? `Director view: the camera path the analysis planned, ${fmt(pv.lo)} to ${fmt(pv.hi)}.`
+      : `Raw 360 preview here: the director view covers ${fmt(pv.lo)} to ${fmt(pv.hi)}.`;
+  else if (state === 'rendering' || state === 'queued') {
+    text = `${state === 'queued' ? 'Director view queued' : 'Rendering the director view'}; the raw 360 preview plays meanwhile.`;
+    act = ['Cancel', true];
+  } else if (state === 'cancelled') {
+    text = 'Raw 360 preview: the director view was cancelled.';
+    act = ['Render director view', false];
+  } else if (state === 'failed') {
+    text = `Raw 360 preview: the director view could not be rendered (${pv.reason}).`;
+    act = ['Retry director view', false];
+  } else text = `Raw 360 preview: ${pv.reason}.`; // stale, unchecked
+  const reasons = pano?.reasons ?? [];
+  const keyNow = JSON.stringify([c.id, text, act, reasons]);
+  if (el.dataset.key === keyNow) {
+    const timer = el.querySelector('.pano-time');
+    if (timer) timer.textContent = panoTime(pv);
+    return;
+  }
+  el.dataset.key = keyNow;
+  const cid = cand.cli_id;
+  const hadFocus = el.contains(document.activeElement);
+  el.replaceChildren(
+    h('p', { class: 'pano-state' },
+      h('span', { role: 'status', text }),
+      h('span', { class: 'pano-time', 'aria-hidden': 'true', text: panoTime(pv) }),
+      act ? h('button', { type: 'button', class: 'btn small', onclick: () => postDirector(cid, act[1]), text: act[0] }) : null),
+    ...(reasons.length ? [h('div', { class: 'pano-flags' },
+      h('span', { class: 'pano-flags-title', text: 'Camera path looks poor:' }),
+      h('ul', {}, ...reasons.map((r) => h('li', {}, h('span', { class: 'flag', 'data-flag': r.flag, text: PANO_FLAGS[r.flag] ?? r.flag }), ` ${r.text}`))))] : []),
+  );
+  el.hidden = false;
+  if (hadFocus) (el.querySelector('button') ?? $('#playBtn')).focus(); // Cancel became Render director view
 }
 
 /** "Full preview 42%" beside the moment while its source's whole proxy builds; window proxies play meanwhile. */
@@ -1138,6 +1268,8 @@ function loadFile(src, p, t) {
   v.dataset.offset = p.offset;
   if (p.url === src.url) delete v.dataset.hi;
   else v.dataset.hi = p.hi;
+  if (p.director) v.dataset.director = p.director;
+  else delete v.dataset.director;
   seekWant = null;
   pendingSeek = t;
   screenMsg('Loading video…');
@@ -1145,6 +1277,7 @@ function loadFile(src, p, t) {
   waitFor = null;
   if (resumeAt && src.path !== resumeAt.source) resumeAt = null; // another source: no resume
   showPlaying(!!resumeAt); // a new src stops playback without a pause event; a resume plays on
+  renderPanoNote(current()); // director view or raw 360 preview (#517)
 }
 
 /** Nothing ready covers source time ``t``: hold the playhead there, paused, until a window proxy around [lo, hi] is built. */
@@ -1182,6 +1315,19 @@ function stageVideo(seekC) {
   };
   if (!src) {
     wait('This source file is not part of the project, so it cannot be previewed. You can still trim by timecode.');
+    return;
+  }
+  askDirector(c);
+  // A 360 moment's rendered director preview (#517) plays in place of the raw fisheye; a raw file
+  // playing on switches at the next pause (as to a whole proxy)
+  const dAt = want ?? (ofSource(src) ? playhead(c) : c.start);
+  const d = directed(src, dAt, c);
+  if (d) {
+    // the raw preview is still prepared, for the source outside the director preview's span
+    if (src.status !== 'ready' && !prepareRequested.has(`${S.id}:${src.path}`)) prepareSource(src);
+    const rawOn = ofSource(src) && !v.paused && !v.error && inLoaded(dAt, durOf(c));
+    if (v.dataset.url !== d.url && !rawOn) loadFile(src, d, dAt);
+    else if (seekC) seekTo(seekC.start);
     return;
   }
   if (src.status === 'unknown') {
@@ -1281,6 +1427,7 @@ function unload(el) {
   delete el.dataset.url;
   delete el.dataset.offset;
   delete el.dataset.hi;
+  delete el.dataset.director;
   el.load();
 }
 
@@ -1347,6 +1494,18 @@ function seekTo(t, fast = false) {
  */
 function stays(c, t, dur) {
   const src = srcOf(c.source);
+  const d = src && directed(src, t, c);
+  if (d) {
+    if (v.dataset.url === d.url) return true;
+    loadFile(src, d, t); // back on the moment's director preview (#517)
+    return false;
+  }
+  if (src && v.dataset.director) { // off the director preview's span: the raw preview there
+    const p = playable(src, t);
+    if (p) loadFile(src, p, t);
+    else awaitPart(src, t, 300);
+    return false;
+  }
   if (!src || !['ready', 'needs-proxy', 'preparing'].includes(src.status)) return true;
   if (!v.dataset.url && src.status === 'ready') return true; // ensureVideo is loading it
   if (v.dataset.url && inLoaded(t, dur) && (src.status !== 'ready' || !v.dataset.hi)) return true;
@@ -1520,8 +1679,11 @@ onStage('play', () => {
 onStage('pause', () => {
   showPlaying(!!resumeAt); // waiting at a window's end to play on
   updatePlayhead();
-  const src = current() && srcOf(current().source);
-  if (v.dataset.hi && src?.status === 'ready' && !S.seqPlay) ensureVideo(null); // the whole proxy is built: switch to it now
+  const c = current();
+  const src = c && srcOf(c.source);
+  const d = src && directed(src, playhead(c), c);
+  if (S.seqPlay) return;
+  if ((v.dataset.hi && src?.status === 'ready') || (d && d.url !== v.dataset.url)) ensureVideo(null); // the whole proxy or a director preview is ready: switch to it now
 });
 onStage('seeked', () => {
   const w = seekWant;
@@ -2389,6 +2551,7 @@ function cueNext() {
     o.preload = 'auto'; // buffer it, not only its metadata
     o.dataset.url = url;
     o.dataset.offset = offset;
+    delete o.dataset.director; // "Play sequence" plays raw previews
     if (url === src.url) delete o.dataset.hi;
     else o.dataset.hi = p.hi; // a window proxy: the stage reads its range after the swap
     o.src = url; // seeks to cued.vt on loadedmetadata
@@ -4485,6 +4648,19 @@ function bind() {
     renderJobs();
   });
 
+  // Escape hides the camera path tooltip of a moment card (#517) until focus or the pointer moves on
+  let tipsOff = null; // the card whose tooltip Escape hid
+  const tipsOn = () => {
+    tipsOff = null;
+    document.body.classList.remove('tips-off');
+  };
+  addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    tipsOff = document.querySelector('.cand:hover') ?? document.activeElement?.closest?.('.cand') ?? null;
+    if (tipsOff) document.body.classList.add('tips-off');
+  }, true);
+  addEventListener('focusin', (e) => tipsOff && e.target.closest?.('.cand') !== tipsOff && tipsOn());
+  addEventListener('pointerover', (e) => tipsOff && e.target.closest?.('.cand') !== tipsOff && tipsOn());
   addEventListener('keydown', (e) => {
     if (e.defaultPrevented || $('#newDialog').open || $('#confirmDialog').open || $('#analyzeDialog').open || $('#settingsDialog').open || popOpen()) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
