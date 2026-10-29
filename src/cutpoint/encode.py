@@ -41,8 +41,17 @@ SAFE_END_MARGIN_S = 0.3  # trimmed re-encode stops this far before the failure
 # (#463). One per end costs about 5% in clip size; longer fades use the clips' own keyframes.
 EDGE_KEYFRAMES_S = (0.5,)
 
-# Common audio of clips and assembled videos: 48 kHz stereo, AAC 192k.
-A_FMT = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+# Common audio of clips and assembled videos: 48 kHz stereo, AAC 192k. ``async=1`` makes the
+# samples follow the timestamps from ``first_pts=0`` on: game captures (ShadowPlay) have gaps in
+# their audio timestamps (Battlefield 6: 22.77 s of timestamps, 21.70 s of samples), which
+# are filled with silence once they add up to ``min_hard_comp`` (one AAC frame), so clips and
+# finals no longer come out short with the audio running ahead of the video (#476). Audio that
+# starts after the video is no longer moved forward at the start of a clip; sources without gaps
+# or delay (GoPro) give the same samples as before.
+A_FMT = (
+    "aresample=48000:async=1:min_hard_comp=0.02:first_pts=0,"
+    "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+)
 AUDIO_OUT = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 SILENCE = "anullsrc=r=48000:cl=stereo"
 # Audio this much shorter than its clip still covers it: below one AAC frame (21 ms at 48 kHz),
@@ -175,12 +184,20 @@ def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:
     # HDR10: -21 % with hable and with libplacebo peak_detect=0, a dynamic-peak gap).
     # desat>0 greys bright colours. CPU cost: about 30 fps at 1080p (8 threads), so HDR sources export slower;
     # SDR sources never run it.
+    # HLG agamma=0 (#454): zscale's default approximate gamma applies the HLG OOTF (gamma 1.2)
+    # to R, G and B one by one instead of to luminance (BT.2100), which made HLG 16-19 % more
+    # saturated (HSV) than the bt.2390 reference (Xiaomi, Swan->HLG). With agamma=0 zimg
+    # scales by luminance: Xiaomi +1.3 %, and HLG and PQ copies of one clip now agree (Swan
+    # 0.198/0.201, Eclipse 0.374/0.375). It halves the HLG chain's speed (about 45 to 25 fps
+    # at 1080p); PQ keeps the default, its decode has no OOTF.
     if kind == "HLG":
-        npl, tone = 203, f"mobius:param=0.5:peak={HLG_PEAK_NITS / 203:.3f}:desat=0"
+        npl, exact = 203, ":agamma=0"
+        tone = f"mobius:param=0.5:peak={HLG_PEAK_NITS / npl:.3f}:desat=0"
     else:
-        npl, tone = 100, "hable:desat=0"
+        npl, exact, tone = 100, "", "hable:desat=0"
     return (
-        f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl={npl}:p=bt709,"
+        f"zscale=tin={info.color_transfer}:pin={pin}:min={min_}:t=linear:npl={npl}:p=bt709"
+        f"{exact},"
         f"format=gbrpf32le,tonemap=tonemap={tone},"
         "zscale=tin=linear:pin=bt709:t=bt709:p=bt709:m=bt709:r=tv"
     )

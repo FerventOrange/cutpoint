@@ -404,22 +404,22 @@ _VIDEO = (
     "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,format=yuv420p,"
     "settb=AVTB,setpts=PTS-STARTPTS"
 )
-_A_IN = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+_A_IN = encode.A_FMT
 # Captured from crossfade() before _crossfade_chains was split out of it (#463).
 _OLD_GRAPHS = {
     "crossfade": (
-        f"[0:v:0]{_VIDEO}[v0];[0:a:0]{_A_IN},asetpts=PTS-STARTPTS,acompressor[a0];"
-        f"[1:v:0]{_VIDEO}[v1];[1:a:0]{_A_IN},asetpts=PTS-STARTPTS[a1];"
+        f"[0:v:0]{_VIDEO}[v0];[0:a:0]asetpts=PTS-STARTPTS,{_A_IN},acompressor[a0];"
+        f"[1:v:0]{_VIDEO}[v1];[1:a:0]asetpts=PTS-STARTPTS,{_A_IN}[a1];"
         "[a0]apad,atrim=end=5.000000,asetpts=PTS-STARTPTS[at0];"
         "[a1]apad,atrim=end=5.000000,asetpts=PTS-STARTPTS[at1];"
         "[v0][v1]xfade=transition=fade:duration=1.000000:offset=3.983333[v];"
         "[at0][at1]acrossfade=d=1.000000[a]"
     ),
     "cut": (
-        f"[0:v:0]{_VIDEO}[v0];[0:a:0]{_A_IN},asetpts=PTS-STARTPTS,acompressor,"
+        f"[0:v:0]{_VIDEO}[v0];[0:a:0]asetpts=PTS-STARTPTS,{_A_IN},acompressor,"
         "asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.250:curve=qsin,"
         "afade=t=out:st=4.750:d=0.250:curve=qsin[a0];"
-        f"[1:v:0]{_VIDEO}[v1];[1:a:0]{_A_IN},asetpts=PTS-STARTPTS[a1];"
+        f"[1:v:0]{_VIDEO}[v1];[1:a:0]asetpts=PTS-STARTPTS,{_A_IN}[a1];"
         "[a0]apad,atrim=start=0.000000:end=4.500000,asetpts=PTS-STARTPTS,"
         "afade=t=out:st=4.480000:d=0.020000[at0];"
         "[a1]apad,atrim=start=0.500000:end=5.000000,asetpts=PTS-STARTPTS,"

@@ -57,6 +57,8 @@ const COLOR_NAMES = { off: 'Off', auto: 'Auto', underwater: 'Underwater' };
 const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the audio transition of each video one
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
+// The camera path flags of a 360 moment (#517, cutpoint.pano.candidates.FLAGS) as short badge words
+const PANO_FLAGS = { sky: 'Sky', whip: 'Whip pans', cuts: 'Many cuts', wearer: 'Wearer', off_target: 'Off target', qa_fail: 'QA fail' };
 
 const S = {
   styles: [],
@@ -150,11 +152,25 @@ const covers = (w, t, dur) => t >= w.lo && (t < w.hi - FRAME || (!!dur && w.hi >
  * its 0 (``offset``) and the source range it covers. The whole source once it plays (as is or
  * from its proxy); before that a ready window proxy covering ``t`` (#323), else null.
  */
-function playable(src, t) {
+function playable(src, t, raw = false) {
+  const d = !raw && directed(src, t);
+  if (d) return d;
   const dur = sourceDur(src.path) ?? (v.dataset.url === src.url && Number.isFinite(v.duration) ? v.duration : null);
   if (src.status === 'ready') return { url: src.url, offset: 0, lo: 0, hi: dur };
   const w = (src.windows ?? []).filter((x) => t != null && covers(x, t, dur)).sort((a, b) => b.hi - a.hi)[0];
   return w ? { url: w.url, offset: w.lo, lo: w.lo, hi: w.hi } : null;
+}
+/**
+ * The director preview of the focused 360 moment (#517) when it is rendered and plays source time
+ * ``t``: a flat view along the camera path 360 analysis planned, in place of the raw fisheye, played
+ * like a window proxy. Not during "Play sequence", which plays the raw preview.
+ */
+/** Director preview urls the browser could not play (a 404 after a re-plan): never tried again. */
+const directorBad = new Set();
+function directed(src, t, c = current()) {
+  const d = c?.cand?.pano?.preview;
+  if (S.seqPlay || d?.state !== 'ready' || directorBad.has(d.url) || !src || t == null || c.cand.source !== src.path) return null;
+  return covers(d, t, sourceDur(src.path)) ? { url: d.url, offset: d.lo, lo: d.lo, hi: d.hi, director: c.id } : null;
 }
 /** The window ``w`` plays all of ``seg`` ({start, end}); one ending with the source covers an end past its centisecond-floored ``hi``. */
 const coversSeg = (w, seg, dur) =>
@@ -165,7 +181,7 @@ const coversSeg = (w, seg, dur) =>
  */
 function fileFor(src, seg) {
   const r = loaded();
-  if (r && ofSource(src)) {
+  if (r && ofSource(src) && !v.dataset.director) { // a director preview never plays a sequence
     const dur = sourceDur(src.path);
     if (r.hi == null ? v.dataset.url === src.url : coversSeg(r, seg, dur))
       return { url: v.dataset.url, offset: r.lo, lo: r.lo, hi: r.hi ?? dur };
@@ -181,14 +197,23 @@ function readyFor(src, seg) {
 }
 const durOf = (c) => {
   const src = srcOf(c.source);
-  return src?.status === 'ready' ? playable(src, 0).hi : sourceDur(c.source);
+  return src?.status === 'ready' ? playable(src, 0, true).hi : sourceDur(c.source);
 };
 /** The source time at the stage player's 0: a window proxy starts later in its source. */
 const offsetOf = () => Number(v.dataset.offset) || 0;
 /** The source range the stage player's file covers; ``hi`` null: to the end of the source. Null when nothing is loaded. */
 const loaded = () => (v.dataset.url ? { lo: offsetOf(), hi: v.dataset.hi ? Number(v.dataset.hi) : null } : null);
-/** The stage player holds a file of ``src``: its original or whole proxy, or one of its window proxies. */
-const ofSource = (src) => !!v.dataset.url && (v.dataset.url === src.url || v.dataset.url.startsWith(`${src.url.split('?')[0]}/window/`));
+/**
+ * The stage player holds a file of ``src``: its original or whole proxy, one of its window proxies,
+ * or the director preview of the focused moment (#517; not during "Play sequence").
+ */
+const ofSource = (src) => {
+  const u = v.dataset.url;
+  if (!u) return false;
+  const base = src.url.split('?')[0];
+  if (v.dataset.director) return !S.seqPlay && v.dataset.director === S.focus && u.startsWith(`${base}/director/`);
+  return u === src.url || u.startsWith(`${base}/window/`);
+};
 /** The stage player's file plays all of clip ``c`` ({source, start, end}): a file of its source, whole or a window covering it. */
 const holdsClip = (c) => {
   const r = loaded();
@@ -250,6 +275,7 @@ whenExpired((e) => {
   clearTimeout(S.jobTimer);
   clearTimeout(S.seqTimer);
   clearTimeout(S.chatTimer);
+  clearTimeout(S.panoTimer);
   clearInterval(S.stepTimer);
   S.stepTimer = null;
   seqStop('');
@@ -426,8 +452,9 @@ function renderMoments() {
         const seg = segOf(c);
         const picked = !!seg;
         const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
+        const tip = c.pano?.flags?.length ? `tip-${c.id}` : null;
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
-          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', onclick: () => focusMoment(c.id) },
+          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
               h('span', { class: 'cand-title', text: c.label || c.cli_id || c.id }),
@@ -439,6 +466,7 @@ function renderMoments() {
               h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }),
               `${(c.end - c.start).toFixed(1)} s`),
             multi ? h('span', { class: 'cand-src' }, h('span', { class: 'vh', text: 'in ' }), baseName(c.source)) : null,
+            flagBadges(c.pano),
             sourceStrip(c),
             c.transcript || badge
               ? h('span', { class: 'cand-foot' }, c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null, badge)
@@ -448,6 +476,8 @@ function renderMoments() {
             'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.cli_id || c.id} ${picked ? 'from' : 'to'} sequence`,
             onclick: () => (picked ? removeSeg(c.id) : addSeg(c.id)),
           }, picked ? 'Remove' : 'Add'),
+          // the reasons of the camera path badges (#517): shown on hover and keyboard focus, read as the card's description
+          tip ? h('span', { class: 'flag-tip', role: 'tooltip', id: tip, text: `Camera path looks poor: ${c.pano.reasons.map((r) => r.text).join('; ')}.` }) : null,
         );
       }),
     );
@@ -512,6 +542,18 @@ function prepBadge(src, seg) {
     icon(name), h('span', { class: 'vh', text: 'Preview ' }), word);
 }
 
+/**
+ * The camera path flags of a 360 moment (#517) as small badges (words, never colour alone), or null.
+ * Their reasons are the card's tooltip and description (``flag-tip``) and the preview's note.
+ */
+function flagBadges(pano) {
+  if (!pano?.flags?.length) return null;
+  return h('span', { class: 'cand-flags' },
+    h('span', { class: 'vh', text: 'Camera path looks poor: ' }),
+    ...pano.flags.map((f, i) => h('span', { class: 'flag', 'data-flag': f, text: PANO_FLAGS[f] ?? f },
+      i < pano.flags.length - 1 ? h('span', { class: 'vh', text: ', ' }) : null)));
+}
+
 /** Folder with level bars, flanked by sound waves; decorative. Fixed 158:80 box so CSS cannot distort it. */
 function folderArt() {
   const line = (x, len) => ['line', { class: 'wave', x1: x, x2: x, y1: 42 - len / 2, y2: 42 + len / 2 }];
@@ -534,6 +576,18 @@ function folderArt() {
 const sourceErrorText = (p) =>
   `The source folder cannot be found or read (${p.source_error}). Reconnect the drive, or set a source remap in Settings.`;
 
+/**
+ * Keep focus in the empty state ``el`` while the analysis it starts disables its buttons (focus
+ * would drop to the body), only until the user moves on: their next click or focus change ends it.
+ */
+function keepEmptyFocus(el) {
+  el.dataset.refocus = '1';
+  const stop = new AbortController();
+  const drop = () => { delete el.dataset.refocus; stop.abort(); };
+  document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
+  document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
+}
+
 /** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its recordings). */
 function renderUnanalyzed(el, n, error, pano) {
   const state = `${n}|${error}|${pano}`;
@@ -546,7 +600,7 @@ function renderUnanalyzed(el, n, error, pano) {
       : h('p', { class: `fresh-count${n ? '' : ' none'}` },
         pano
           ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
-          : (n ? `${n} video${n === 1 ? '' : 's'} found in directory` : 'No videos found in directory')),
+          : (n ? `${n} video${n === 1 ? '' : 's'} found in the sources` : 'No videos found in the sources')),
     h('h3', { text: 'No moments analyzed yet' }),
     h('p', {
       text: pano
@@ -557,16 +611,16 @@ function renderUnanalyzed(el, n, error, pano) {
       type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
       onclick: async (e) => {
         e.currentTarget.disabled = true; // no second start while the request is in flight
-        el.dataset.refocus = '1';
-        // only until the user moves on: their next click or focus change ends it
-        const stop = new AbortController();
-        const drop = () => { delete el.dataset.refocus; stop.abort(); };
-        document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
-        document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
+        keepEmptyFocus(el);
         await startJob('analyze'); // vision: the server applies the Settings value
         if (![...S.tracked.values()].some(live)) renderBusy(); // it failed: enable again
       },
     }, 'Analyze footage'),
+    // the Analyze options (#483) for the first analysis; Analyze footage alone uses none
+    h('button', {
+      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano,
+      onclick: () => analyzeAgain(true),
+    }, 'Analysis options…'),
     h('button', {
       type: 'button', id: 'revealBtn', class: 'btn outline', hidden: !S.canReveal,
       onclick: (e) => revealFolder(e.currentTarget),
@@ -692,6 +746,7 @@ function renderStage(seekToStart, keepVideo = false) {
   $('#stageMeta').textContent = c ? `${c.label} from ${baseName(c.source)}` : '';
   renderFullPrep(c);
   renderNerdStats(c);
+  renderPanoNote(c);
   if (!S.project)
     setEmpty($('#stageEmpty'),
       h('p', {}, 'No project is open.'),
@@ -732,6 +787,106 @@ function renderNerdStats(c = current()) {
     bits.length ? `Signals: ${bits.join(', ')}` : '',
     sig?.keywords?.length ? `Keywords: ${sig.keywords.join(', ')}` : '',
   ].filter(Boolean).join('\n');
+}
+
+// ---------- 360 director previews (#517) ----------
+
+let panoAsked = null; // "<project>:<candidate>:<path>" whose director preview the page last asked for
+
+/** Ask the server once for the director preview of 360 moment ``c``: it checks the cached camera path and renders it in the background. */
+function askDirector(c) {
+  const cand = c?.cand;
+  if (S.project?.kind !== '360' || !cand?.pano || cand.pano.preview || S.seqPlay) return;
+  const k = `${S.id}:${cand.cli_id}:${cand.pano.path}`; // a new plan (Analyze again) is asked for again
+  if (panoAsked === k) return;
+  panoAsked = k;
+  postDirector(cand.cli_id);
+}
+
+/** Ask for (or with ``cancel``, stop) the director preview of candidate ``cid`` (its CLI id). */
+async function postDirector(cid, cancel = false) {
+  try {
+    await api(`/api/projects/${encodeURIComponent(S.id)}/director/${encodeURIComponent(cid)}${cancel ? '/cancel' : ''}`, { method: 'POST' });
+    refreshProject();
+  } catch (e) {
+    fail(e);
+  }
+}
+
+/** The render's elapsed time beside its state; not announced, as it changes on every poll. */
+const panoTime = (pv) => (pv?.state === 'rendering' ? ` ${Math.round(pv.elapsed)} s (about ${Math.round(pv.seconds)} s of video)` : '');
+
+/**
+ * Under the preview of a 360 moment: what it shows (the director view, or the raw fisheye and why),
+ * a render's state with Cancel or a retry, and the camera path's flags with their reasons as text.
+ * The one status region keeps its node and changes text only when the status does; the button and
+ * the flag list are rebuilt only when they change.
+ */
+function renderPanoNote(c) {
+  const el = $('#panoNote');
+  clearTimeout(S.panoTimer);
+  const cand = S.project?.kind === '360' ? c?.cand : null;
+  const status = el.querySelector('.pano-status');
+  const actEl = el.querySelector('.pano-act');
+  const flagsEl = el.querySelector('.pano-flags');
+  if (!cand) {
+    el.hidden = true;
+    status.textContent = '';
+    delete status.dataset.want;
+    actEl.replaceChildren();
+    flagsEl.replaceChildren();
+    flagsEl.hidden = true;
+    delete el.dataset.key;
+    return;
+  }
+  const pano = cand.pano;
+  const pv = pano?.preview;
+  const state = pv?.state ?? (pano ? 'asking' : 'none');
+  // a render is followed until it is done (the request's own answer refreshes after 'asking')
+  if (!S.expired && (state === 'rendering' || state === 'queued')) S.panoTimer = setTimeout(refreshProject, 1000);
+  const on = v.dataset.director === c.id;
+  let text;
+  let act = null; // [label, cancel]
+  if (S.seqPlay) text = 'Play sequence shows the raw 360 preview.';
+  else if (state === 'none') text = 'Raw 360 preview: no camera path is cached for this moment. Analyze again to plan one.';
+  else if (state === 'asking') text = 'Raw 360 preview: checking the camera path…';
+  else if (state === 'ready' && directorBad.has(pv.url))
+    text = 'Raw 360 preview: the browser could not play the director view.';
+  else if (state === 'ready')
+    text = on ? `Director view: the camera path the analysis planned, ${fmt(pv.lo)} to ${fmt(pv.hi)}.`
+      : `Raw 360 preview here: the director view covers ${fmt(pv.lo)} to ${fmt(pv.hi)}.`;
+  else if (state === 'rendering' || state === 'queued') {
+    text = `${state === 'queued' ? 'Director view queued' : 'Rendering the director view'}; the raw 360 preview plays meanwhile.`;
+    act = ['Cancel', true];
+  } else if (state === 'cancelled') {
+    text = 'Raw 360 preview: the director view was cancelled.';
+    act = ['Render director view', false];
+  } else if (state === 'failed') {
+    text = `Raw 360 preview: the director view could not be rendered (${pv.reason}).`;
+    act = ['Retry director view', false];
+  } else text = `Raw 360 preview: ${pv.reason}.`; // stale, unchecked
+  const reasons = pano?.reasons ?? [];
+  // shown before its status changes, so the first status is announced too (on the next frame)
+  const wasHidden = el.hidden;
+  el.hidden = false;
+  status.dataset.want = text;
+  const put = () => {
+    if (status.dataset.want === text && status.textContent !== text) status.textContent = text;
+  };
+  if (wasHidden) requestAnimationFrame(put);
+  else put();
+  el.querySelector('.pano-time').textContent = panoTime(pv);
+  const keyNow = JSON.stringify([c.id, act, reasons]);
+  if (el.dataset.key === keyNow) return;
+  el.dataset.key = keyNow;
+  const cid = cand.cli_id;
+  const hadFocus = el.contains(document.activeElement);
+  actEl.replaceChildren(...(act ? [h('button', { type: 'button', class: 'btn small', onclick: () => postDirector(cid, act[1]), text: act[0] })] : []));
+  flagsEl.replaceChildren(...(reasons.length ? [
+    h('span', { class: 'pano-flags-title', text: 'Camera path looks poor:' }),
+    h('ul', {}, ...reasons.map((r) => h('li', {}, h('span', { class: 'flag', 'data-flag': r.flag, text: PANO_FLAGS[r.flag] ?? r.flag }), ` ${r.text}`)))] : []));
+  flagsEl.hidden = !reasons.length;
+  if (hadFocus) (el.querySelector('button') ?? $('#playBtn')).focus(); // Cancel became Render director view
 }
 
 /** "Full preview 42%" beside the moment while its source's whole proxy builds; window proxies play meanwhile. */
@@ -1141,6 +1296,8 @@ function loadFile(src, p, t) {
   v.dataset.offset = p.offset;
   if (p.url === src.url) delete v.dataset.hi;
   else v.dataset.hi = p.hi;
+  if (p.director) v.dataset.director = p.director;
+  else delete v.dataset.director;
   seekWant = null;
   pendingSeek = t;
   screenMsg('Loading video…');
@@ -1148,6 +1305,7 @@ function loadFile(src, p, t) {
   waitFor = null;
   if (resumeAt && src.path !== resumeAt.source) resumeAt = null; // another source: no resume
   showPlaying(!!resumeAt); // a new src stops playback without a pause event; a resume plays on
+  renderPanoNote(current()); // director view or raw 360 preview (#517)
 }
 
 /** Nothing ready covers source time ``t``: hold the playhead there, paused, until a window proxy around [lo, hi] is built. */
@@ -1185,6 +1343,19 @@ function stageVideo(seekC) {
   };
   if (!src) {
     wait('This source file is not part of the project, so it cannot be previewed. You can still trim by timecode.');
+    return;
+  }
+  askDirector(c);
+  // A 360 moment's rendered director preview (#517) plays in place of the raw fisheye; a raw file
+  // playing on switches at the next pause (as to a whole proxy)
+  const dAt = want ?? (ofSource(src) ? playhead(c) : c.start);
+  const d = directed(src, dAt, c);
+  if (d) {
+    // the raw preview is still prepared, for the source outside the director preview's span
+    if (src.status !== 'ready' && !prepareRequested.has(`${S.id}:${src.path}`)) prepareSource(src);
+    const rawOn = ofSource(src) && !v.paused && !v.error && inLoaded(dAt, durOf(c));
+    if (v.dataset.url !== d.url && !rawOn) loadFile(src, d, dAt);
+    else if (seekC) seekTo(seekC.start);
     return;
   }
   if (src.status === 'unknown') {
@@ -1284,6 +1455,7 @@ function unload(el) {
   delete el.dataset.url;
   delete el.dataset.offset;
   delete el.dataset.hi;
+  delete el.dataset.director;
   el.load();
 }
 
@@ -1350,6 +1522,18 @@ function seekTo(t, fast = false) {
  */
 function stays(c, t, dur) {
   const src = srcOf(c.source);
+  const d = src && directed(src, t, c);
+  if (d) {
+    if (v.dataset.url === d.url) return true;
+    loadFile(src, d, t); // back on the moment's director preview (#517)
+    return false;
+  }
+  if (src && v.dataset.director) { // off the director preview's span: the raw preview there
+    const p = playable(src, t);
+    if (p) loadFile(src, p, t);
+    else awaitPart(src, t, 300);
+    return false;
+  }
   if (!src || !['ready', 'needs-proxy', 'preparing'].includes(src.status)) return true;
   if (!v.dataset.url && src.status === 'ready') return true; // ensureVideo is loading it
   if (v.dataset.url && inLoaded(t, dur) && (src.status !== 'ready' || !v.dataset.hi)) return true;
@@ -1484,6 +1668,18 @@ onStage('ended', () => {
 onStage('error', () => {
   seekWant = null;
   if (!v.dataset.url) return;
+  if (v.dataset.director) {
+    // A director preview that fails (its path was re-planned since the listing) plays raw meanwhile;
+    // one refresh per url picks up the new preview, and a url that failed is not tried again.
+    const bad = v.dataset.url;
+    const first = !directorBad.has(bad);
+    directorBad.add(bad);
+    delete v.dataset.director;
+    delete v.dataset.url;
+    ensureVideo(); // Retry shows if the raw preview fails too
+    if (first) refreshProject();
+    return;
+  }
   const url = v.dataset.url;
   const msg = `The browser could not play this video${v.error?.message ? `: ${v.error.message}` : ''}.`;
   // The element hides the status; one API call tells an expired token (banner only) from a bad
@@ -1523,8 +1719,11 @@ onStage('play', () => {
 onStage('pause', () => {
   showPlaying(!!resumeAt); // waiting at a window's end to play on
   updatePlayhead();
-  const src = current() && srcOf(current().source);
-  if (v.dataset.hi && src?.status === 'ready' && !S.seqPlay) ensureVideo(null); // the whole proxy is built: switch to it now
+  const c = current();
+  const src = c && srcOf(c.source);
+  const d = src && directed(src, playhead(c), c);
+  if (S.seqPlay) return;
+  if ((v.dataset.hi && src?.status === 'ready') || (d && d.url !== v.dataset.url)) ensureVideo(null); // the whole proxy or a director preview is ready: switch to it now
 });
 onStage('seeked', () => {
   const w = seekWant;
@@ -1971,16 +2170,65 @@ function confirmAction(title, text, ok = 'Remove') {
   });
 }
 
-/** "Analyze again": confirm in a dialog; vision follows Settings, as for a first analysis. */
-function analyzeAgain() {
+/**
+ * Analyze options (#483): filled with what the project's analysis used (``analyze_options``), so
+ * Analyze again repeats it unless changed; the disclosure starts open when one is set. Hidden
+ * for 360 projects; Must-include crash only for ski styles (``must_include_crash_default``).
+ */
+function fillAnalyzeOptions(p) {
+  const o = p.analyze_options ?? {};
+  const crashDefault = p.must_include_crash_default;
+  $('#analyzeOpts').hidden = p.kind === '360';
+  $('#anModel').value = o.model ?? '';
+  $('#anLanguage').value = o.language ?? '';
+  $('#anMaxCandidates').value = o.max_candidates ?? '';
+  $('#anCrash').value = o.must_include_crash ?? '';
+  $('#anCrash').placeholder = crashDefault == null ? '' : `Style (${crashDefault})`;
+  for (const el of [$('#anCrashLabel'), $('#anCrash')]) el.hidden = crashDefault == null;
+  $('#anNoScenes').checked = !!o.no_scenes;
+  $('#anRecover').checked = !!o.recover;
+  for (const box of document.querySelectorAll('input[name=anSkip]')) box.checked = !!o.skip?.includes(box.value);
+  $('#analyzeOpts').open = Object.values(analyzeOptions()).some((v) => (Array.isArray(v) ? v.length > 0 : v != null && v !== false));
+}
+
+/** The Analyze options as the analyze job takes them: every key, blank as null (no flag). */
+function analyzeOptions() {
+  const text = (id) => $(id).value.trim() || null;
+  const num = (id) => ($(id).value.trim() && !$(id).hidden ? Number($(id).value) : null);
+  return {
+    model: text('#anModel'),
+    language: text('#anLanguage'),
+    max_candidates: num('#anMaxCandidates'),
+    must_include_crash: num('#anCrash'),
+    no_scenes: $('#anNoScenes').checked,
+    recover: $('#anRecover').checked,
+    skip: [...document.querySelectorAll('input[name=anSkip]:checked')].map((box) => box.value),
+  };
+}
+
+/**
+ * "Analyze again" (``fresh``: the first analysis, from the empty state's Analysis options):
+ * confirm in a dialog with the Analyze options; vision follows Settings, as for a first analysis.
+ */
+function analyzeAgain(fresh = false) {
+  const p = S.project;
+  if (!p) return;
   const d = $('#analyzeDialog');
   const back = document.activeElement;
+  $('#analyzeTitle').textContent = fresh ? 'Analyze footage' : 'Analyze again?';
+  $('#analyzeText').textContent = fresh
+    ? 'Analyze footage to transcribe audio and rank the strongest moments.'
+    : "The project's footage is analyzed again and its moments are ranked anew.";
+  fillAnalyzeOptions(p);
+  if (fresh) $('#analyzeOpts').open = true;
   d.returnValue = '';
   d.showModal();
   $('#againCancel').focus();
   d.addEventListener('close', () => {
     if (back?.isConnected) back.focus();
-    if (d.returnValue === 'ok') startJob('analyze');
+    if (fresh && d.returnValue === 'ok') keepEmptyFocus($('#momentsEmpty')); // after focus is back, or it ends at once
+    // 360 projects have no Analyze options (360 analyze takes none of them)
+    if (d.returnValue === 'ok') startJob('analyze', p.kind === '360' ? {} : analyzeOptions());
   }, { once: true });
 }
 
@@ -2392,6 +2640,7 @@ function cueNext() {
     o.preload = 'auto'; // buffer it, not only its metadata
     o.dataset.url = url;
     o.dataset.offset = offset;
+    delete o.dataset.director; // "Play sequence" plays raw previews
     if (url === src.url) delete o.dataset.hi;
     else o.dataset.hi = p.hi; // a window proxy: the stage reads its range after the swap
     o.src = url; // seeks to cued.vt on loadedmetadata
@@ -2553,6 +2802,7 @@ function renderBusy() {
     const reason = own ? (steps ? 'Analyzing… each step is listed below.' : 'Analyzing… progress is in Jobs.') : busy ? why
       : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
     set('#analyzeBig', !p || busy || !p.sources?.length, reason);
+    set('#analyzeOptsBtn', !p || busy || !p.sources?.length, reason);
     const label = own ? 'Analyzing…' : 'Analyze footage';
     if (big.textContent !== label) big.textContent = label;
     const out = $('#analyzeWhy');
@@ -4466,7 +4716,11 @@ function bind() {
     renderBatch();
     focusRow(0, 'select');
   });
-  $('#analyzeBtn').addEventListener('click', analyzeAgain);
+  $('#analyzeBtn').addEventListener('click', () => analyzeAgain());
+  // an out-of-range Analyze option blocks Analyze: open the options so the browser can point at it
+  $('#againOk').addEventListener('click', () => {
+    if (!$('#analyzeDialog form').checkValidity()) $('#analyzeOpts').open = true;
+  });
   $('#revealHeadBtn').prepend(icon('folder'));
   $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
   $('#revealExportBtn').prepend(icon('folder'));
@@ -4498,6 +4752,19 @@ function bind() {
     renderJobs();
   });
 
+  // Escape hides the camera path tooltip of a moment card (#517) until focus or the pointer moves on
+  let tipsOff = null; // the card whose tooltip Escape hid
+  const tipsOn = () => {
+    tipsOff = null;
+    document.body.classList.remove('tips-off');
+  };
+  addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    tipsOff = document.querySelector('.cand:hover') ?? document.activeElement?.closest?.('.cand') ?? null;
+    if (tipsOff) document.body.classList.add('tips-off');
+  }, true);
+  addEventListener('focusin', (e) => tipsOff && e.target.closest?.('.cand') !== tipsOff && tipsOn());
+  addEventListener('pointerover', (e) => tipsOff && e.target.closest?.('.cand') !== tipsOff && tipsOn());
   addEventListener('keydown', (e) => {
     if (e.defaultPrevented || $('#newDialog').open || $('#confirmDialog').open || $('#analyzeDialog').open || $('#settingsDialog').open || popOpen()) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {

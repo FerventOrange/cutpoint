@@ -30,7 +30,9 @@ from fastapi.testclient import TestClient
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
 from cutpoint import cache, capabilities, cli, config, edit, encode, ffmpeg_utils, ui
 from cutpoint.assistant import session as ai_session
+from cutpoint.pano import candidates as pano_candidates
 from cutpoint.pano import project as pano_project
+from cutpoint.pano import render as pano_render
 from cutpoint.utils import find_videos
 from pano_helpers import x3clip
 
@@ -162,6 +164,146 @@ def test_create_project_refuses_a_ski_style_on_flat_footage(
     assert client.get("/api/projects").json() == {"projects": []}
 
 
+def test_create_project_from_several_inputs_lists_and_analyzes_them_all(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#484: several files and folders are the project's analyze inputs, in the order given."""
+    one, two = tmp_path / "one", tmp_path / "two"
+    for folder in (one, two):
+        folder.mkdir()
+    for f in (one / "a.mp4", one / "other.mp4", two / "b.mp4", two / "c.mkv"):
+        f.write_bytes(b"x")
+    inputs = [str(one / "a.mp4"), str(two)]
+    res = client.post("/api/projects", json={"name": "Two", "sources": inputs, "style": "funny"})
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    meta = ui.read_meta(ui.project_dir(pid))
+    assert (meta["source"], meta["inputs"]) == (inputs[0], inputs)
+    assert "recursive" not in meta and "exclude" not in meta
+    view = client.get(f"/api/projects/{pid}").json()
+    # other.mp4 sits next to a picked file: not an input, so never listed or served
+    assert [s["name"] for s in view["sources"]] == ["a.mp4", "b.mp4", "c.mkv"]
+    assert view["preset_problem"] is None  # edit takes several inputs too
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    ns = cli.build_parser().parse_args(captured[0][3:])
+    assert (ns.inputs, ns.exclude, ns.recursive) == (inputs, None, False)
+
+
+def test_create_project_from_a_folder_passes_recursive_and_exclude_to_analyze(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#484: Include sub-folders and Skip files matching are analyze --recursive and --exclude;
+    the sources listed before analysis are the ones analyze would find."""
+    footage = tmp_path / "footage"
+    (footage / "sub").mkdir(parents=True)
+    (footage / "Captures").mkdir()
+    for rel in ("keep.mp4", "DVR_skip.mp4", "sub/nested.mp4", "sub/DVR_x.mp4", "Captures/c.mp4"):
+        (footage / rel).write_bytes(b"x")
+    exclude = ["*DVR*", "*/Captures/*"]
+    body = {"name": "F", "sources": [str(footage)], "recursive": True, "exclude": exclude}
+    res = client.post("/api/projects", json=body)
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    meta = ui.read_meta(ui.project_dir(pid))
+    assert (meta["source"], meta["recursive"], meta["exclude"]) == (str(footage), True, exclude)
+    assert "inputs" not in meta  # one input: source alone, as before
+    view = client.get(f"/api/projects/{pid}").json()
+    assert {s["name"] for s in view["sources"]} == {"keep.mp4", "nested.mp4"}
+    assert set(map(Path, (s["path"] for s in view["sources"]))) == set(
+        find_videos(footage, exclude=exclude, recursive=True)
+    )
+    assert "--recursive" in view["preset_problem"]  # edit takes neither option
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert [a for a in captured[0] if a.startswith("--exclude")] == [
+        "--exclude=*DVR*",
+        "--exclude=*/Captures/*",
+    ]
+    ns = cli.build_parser().parse_args(captured[0][3:])
+    assert (ns.inputs, ns.exclude, ns.recursive) == ([str(footage)], exclude, True)
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "edit", "kind": "montage"})
+    assert res.status_code == 400 and "--exclude or --recursive" in res.json()["detail"]
+
+
+def test_analyze_again_keeps_options_a_command_line_reanalysis_of_a_ui_project_added(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    footage = tmp_path / "footage"
+    footage.mkdir()
+    (footage / "a.mp4").write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "F", "sources": [str(footage)]})
+    pid = res.json()["id"]
+    settings = {"inputs": [str(footage)], "exclude": ["*DVR*"], "recursive": True}
+    hl = {"style": "funny", "settings": settings, "sources": []}
+    cache.save_json(ui.project_dir(pid) / "highlights.json", hl)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    assert client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"}).status_code == 200
+    ns = cli.build_parser().parse_args(captured[0][3:])
+    assert (ns.exclude, ns.recursive) == (["*DVR*"], True)
+
+
+def test_a_folder_with_videos_only_in_sub_folders_needs_recursive(
+    client: TestClient, tmp_path: Path
+) -> None:
+    footage = tmp_path / "footage"
+    (footage / "day1").mkdir(parents=True)
+    (footage / "day1" / "a.mp4").write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "F", "sources": [str(footage)]})
+    assert res.status_code == 400
+    body = {"name": "F", "sources": [str(footage)], "recursive": True}
+    res = client.post("/api/projects", json=body)
+    assert res.status_code == 200, res.text
+    names = [s["name"] for s in client.get(f"/api/projects/{res.json()['id']}").json()["sources"]]
+    assert names == ["a.mp4"]
+
+
+@pytest.mark.parametrize(
+    ("body", "expect"),
+    [
+        ({"sources": ["relative/clip.mp4"]}, "absolute path"),
+        ({"sources": ["{footage}/a.mp4\x00.txt"]}, "absolute path"),
+        ({"sources": ["{footage}", "{footage}"]}, "once"),
+        ({"sources": ["{footage}", "{pano}"]}, "360 footage"),
+        ({"sources": ["{mixed}"], "exclude": ["*.mp4"]}, "mixes 360 footage"),
+        ({"sources": ["{footage}"], "exclude": ["*.mp4"]}, "no videos found that the exclude"),
+    ],
+    ids=["relative", "nul", "twice", "360-with-flat", "mixed-folder", "all-excluded"],
+)
+def test_create_project_refuses_bad_inputs_and_options(
+    client: TestClient, tmp_path: Path, body: dict, expect: str
+) -> None:
+    """#484: every input is an absolute path to a video or folder, each once; nothing is made
+    when one is refused."""
+    footage, pano, mixed = tmp_path / "footage", tmp_path / "pano", tmp_path / "mixed"
+    for folder in (footage, pano, mixed):
+        folder.mkdir()
+    (footage / "a.mp4").write_bytes(b"x")
+    for name in X3_CLIPS:
+        (pano / name).write_bytes(b"")
+        (mixed / name).write_bytes(b"")
+    (mixed / "a.mp4").write_bytes(b"x")
+
+    def fill(v: object) -> object:
+        if isinstance(v, list):
+            return [fill(x) for x in v]
+        if isinstance(v, str) and v.startswith("{"):
+            return str(Path(v.format(footage=footage, pano=pano, mixed=mixed)))
+        return v
+
+    res = client.post("/api/projects", json={"name": "T", **{k: fill(v) for k, v in body.items()}})
+    assert res.status_code == 400, res.text
+    assert expect in res.json()["detail"]
+    assert client.get("/api/projects").json() == {"projects": []}
+
+
 def test_360_project_lists_one_lrv_per_usable_clip_before_analysis(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -208,6 +350,10 @@ def test_360_analyze_job_runs_the_360_command_with_a_plan(
     want = ["cutpoint", "360", "analyze", str(p), "--scan", str(folder), "--style", "ski"]
     assert seen == [want + (["--only", only] if only else [])]
     assert "--vision" not in seen[0] and "--no-vision" not in seen[0]
+    # the Analyze options are analyze flags 360 analyze does not take: refused, not dropped
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze", "no_scenes": True})
+    assert res.status_code == 400 and "not available for 360 projects" in res.json()["detail"]
+    assert len(seen) == 1
 
 
 def test_360_analyze_job_view_carries_the_step_plan(
@@ -480,6 +626,313 @@ def test_create_project_skips_unreadable_folder_entries(
     monkeypatch.setattr(Path, "is_file", is_file)
     res = client.post("/api/projects", json={"name": "Trip", "source": str(folder)})
     assert res.status_code == 200, res.text
+
+
+class DirectorPreviews:
+    """A UI 360 project whose analysis cached camera paths (#517): ``h001`` current and flagged
+    (sky, whip pans, failed QA), ``h002`` stale (planned with other settings), ``h003`` none.
+
+    The cache entries are written in ``cutpoint.pano.candidates``' own layout and key, so its
+    read API (``candidate_flags``, ``candidate_path``) runs for real. Only the render is faked
+    (``pano.render.render_segment``): it writes through ``atomic_output`` as the real one does
+    and, with ``hold``, blocks like ffmpeg until its child scope is stopped.
+    """
+
+    PLANNED = (0.0, 15.0)
+
+    def __init__(self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        PC = pano_candidates
+        folder = tmp_path / "footage"
+        folder.mkdir()
+        for name in X3_CLIPS:
+            (folder / name).write_bytes(b"")
+        res = client.post("/api/projects", json={"name": "T", "source": str(folder)})
+        self.client, self.pid = client, res.json()["id"]
+        self.p = ui.project_dir(self.pid)
+        self.lrv = str(folder / X3_LRV)
+        clip = x3clip(
+            lrv=self.lrv, insv=[str(folder / X3_00), str(folder / X3_10)], fps=30.0, duration=60
+        )
+        self.clip = clip
+        pano_project.save(self.p, [clip], [folder])
+        spans = {"h001": (5.0, 10.0), "h002": (20.0, 25.0), "h003": (40.0, 45.0)}
+        cands = [
+            {"id": c, "source": self.lrv, "start": a, "end": b, "score": 50, "label": c}
+            for c, (a, b) in spans.items()
+        ]
+        hl = {"sources": [{"path": self.lrv, "duration": 60.0}], "candidates": cands}
+        cache.save_json(self.p / "highlights.json", {**hl, "style": "ski"})
+        folder_c = self.p / PC.CACHE_DIR
+        folder_c.mkdir()
+        diag = {
+            "seconds": 5.0,
+            "quality": {"score": 40.0, "pass": False, "fails": ["edge_cut 27%"]},
+            "sky": 0.5,
+            "peak_yaw_rate": 80.0,
+            "cuts": 0,
+            "cuts_per_min": 0.0,
+        }
+        for cid in ("h001", "h002"):
+            a, b = spans[cid]
+            key = PC.path_key(clip, a, b, None, None)
+            if cid == "h002":
+                key["params"] = {**key["params"], "w_forward": -1.0}  # other settings: stale
+            path = {
+                "clip": "001",
+                "source": self.lrv,
+                "segment": {"start": a, "end": b},
+                "planned": {"start": self.PLANNED[0] + a - 5.0, "end": self.PLANNED[1] + a - 5.0},
+                "vertical": False,
+                "keys": [{"t": a, "yaw": 0.0, "pitch": 0.0, "fov": 90.0, "target": "forward"}],
+            }
+            cache.save_json(
+                folder_c / PC.slot_name(clip, a, b),
+                {
+                    "version": PC.CACHE_VERSION,
+                    "key": key,
+                    "candidate": {"id": cid, "source": self.lrv, "start": a, "end": b},
+                    "diagnostics": diag if cid == "h001" else {"seconds": 5.0},
+                    "path": path,
+                },
+            )
+        self.renders: list[dict] = []
+        self.hold: threading.Event | None = None
+        self.started = threading.Event()
+        self.fail: Exception | None = None
+
+        def render_segment(clip, path, start, end, out, **kw):
+            self.renders.append(
+                {"clip": clip, "path": path, "start": start, "end": end, "out": out}
+            )
+            self.renders[-1].update(kw)
+            (kw["work_dir"] / f"{out.stem}.cmd").write_text("# cmd\n", encoding="utf-8")
+            with ffmpeg_utils.atomic_output(out) as part:
+                part.write_bytes(b"partial")
+                self.started.set()
+                scope = ffmpeg_utils._SCOPE.current
+                while self.hold is not None and not self.hold.is_set():
+                    if scope.wait_cancelled(0.02):  # what run() does once its ffmpeg is killed
+                        raise KeyboardInterrupt
+                if self.fail is not None:
+                    raise self.fail
+                part.write_bytes(b"director view")
+            return {"mode": "proxy", "seconds": 0.0}
+
+        monkeypatch.setattr(pano_render, "render_segment", render_segment)
+
+    def candidate(self, cid: str) -> dict:
+        res = self.client.get(f"/api/projects/{self.pid}")
+        assert res.status_code == 200, res.text
+        return next(c for c in res.json()["highlights"]["candidates"] if c["cli_id"] == cid)
+
+    def ask(self, cid: str, cancel: bool = False):
+        return self.client.post(
+            f"/api/projects/{self.pid}/director/{cid}" + ("/cancel" if cancel else "")
+        )
+
+    def wait(self, cid: str, *states: str) -> dict:
+        """The candidate's preview once its state is one of ``states``."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            pv = self.candidate(cid)["pano"]["preview"]
+            if pv is not None and pv["state"] in states:
+                return pv
+            time.sleep(0.02)
+        pytest.fail(f"{cid} never reached {states}: {pv}")
+
+    def folder(self) -> list[str]:
+        d = self.p / ui.UI_DIR / "pano"
+        return sorted(f.name for f in d.iterdir()) if d.is_dir() else []
+
+
+def test_360_moments_carry_camera_path_flags_and_reasons(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#517: each 360 moment lists the flags of its cached camera path, each with the reason
+    and its measure; one without a cached path has ``pano: null`` (the page says so)."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    pano = run.candidate("h001")["pano"]
+    assert pano["flags"] == ["sky", "whip", "qa_fail"]
+    assert [r["text"] for r in pano["reasons"]] == [
+        "looks at the sky (50% of the moment)",
+        "whip pans (up to 80 deg/s)",
+        "fails the geometric direction QA: edge_cut 27%",
+    ]
+    assert pano["preview"] is None  # nothing is rendered before the page asks
+    h002 = run.candidate("h002")["pano"]
+    assert {**h002, "path": None} == {"flags": [], "reasons": [], "path": None, "preview": None}
+    assert run.candidate("h003")["pano"] is None
+    assert run.renders == []
+
+
+def test_a_non_360_project_has_no_camera_path_data_or_director_route(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    cand = {"id": "h001", "source": str(folder / "a.mp4"), "start": 1.0, "end": 2.0, "score": 1}
+    cache.save_json(ui.project_dir(pid) / "highlights.json", {"candidates": [cand]})
+    got = client.get(f"/api/projects/{pid}").json()["highlights"]["candidates"][0]
+    assert "pano" not in got
+    assert client.post(f"/api/projects/{pid}/director/h001").status_code == 404
+
+
+def test_a_director_preview_renders_in_the_background_and_is_reused(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A current path renders once (640x360 from the .lrv, its planned span) into ui/pano and is
+    served from there; asking again, or after a restart, renders nothing."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    res = run.ask("h001")
+    assert res.status_code == 200, res.text
+    assert res.json()["pano"]["preview"]["state"] in ("queued", "rendering", "ready")
+    pv = run.wait("h001", "ready")
+    assert (pv["lo"], pv["hi"]) == run.PLANNED
+    assert len(run.renders) == 1
+    r = run.renders[0]
+    assert (r["start"], r["end"]) == run.PLANNED and r["clip"] == run.clip
+    assert (r["fmt"].width, r["fmt"].height) == (640, 360) and r["cmd_every"] == 1
+    assert r["src"].inputs == (run.lrv,) and r["src"].projection == "dfisheye"
+    assert r["out"].parent == run.p / ui.UI_DIR / "pano"
+    assert run.folder() == [r["out"].name]  # no partial, no sendcmd file left
+    sid = run.client.get(f"/api/projects/{run.pid}").json()["sources"][0]["id"]
+    assert f"/sources/{sid}/director/" in pv["url"]
+    media = run.client.get(pv["url"].replace("http://127.0.0.1", ""))
+    assert media.status_code == 200 and media.content == b"director view"
+    assert run.ask("h001").json()["pano"]["preview"]["state"] == "ready"
+    assert len(run.renders) == 1
+
+    app = ui.create_app(PORT)  # a restart: the file on disk is reused once the path checks out
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c2:
+        c2.headers["X-Cutpoint-Token"] = app.state.token
+        listed = c2.get(f"/api/projects/{run.pid}").json()["highlights"]["candidates"][0]
+        assert listed["pano"]["preview"] is None  # not checked current yet this run
+        got = c2.post(f"/api/projects/{run.pid}/director/h001").json()["pano"]["preview"]
+        assert got["state"] == "ready"
+    assert len(run.renders) == 1
+
+
+def test_a_stale_or_missing_camera_path_falls_back_to_the_raw_preview(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    pv = run.ask("h002").json()["pano"]["preview"]
+    assert pv == {"state": "stale", "reason": ui.PANO_STALE}
+    assert run.candidate("h002")["pano"]["preview"] == pv  # the listing says so too
+    assert run.ask("h003").json() == {"pano": None}
+    assert run.ask("nope").json() == {"pano": None}
+    assert run.renders == [] and run.folder() == []
+
+
+def test_cancelling_a_director_preview_removes_its_partial_render(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    run.hold = threading.Event()
+    run.ask("h001")
+    assert run.started.wait(10)
+    assert run.wait("h001", "rendering")["seconds"] == 15.0
+    assert any(n.endswith(".part.mp4") for n in run.folder())
+    pv = run.ask("h001", cancel=True).json()["pano"]["preview"]
+    assert pv == {"state": "cancelled", "reason": ""}
+    deadline = time.monotonic() + 10
+    while run.folder() and time.monotonic() < deadline:  # the render thread cleans up
+        time.sleep(0.02)
+    assert run.folder() == []  # no .part, no .mp4, no .cmd
+    assert run.candidate("h001")["pano"]["preview"]["state"] == "cancelled"  # no auto re-render
+    run.hold = None
+    run.started.clear()
+    run.ask("h001")  # "Render director view"
+    assert run.wait("h001", "ready")
+    assert len(run.renders) == 2
+
+
+def test_a_failed_director_preview_reports_why_and_leaves_no_file(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    run.fail = ffmpeg_utils.FFmpegError("ffmpeg failed (exit 1):\nInvalid data found")
+    run.ask("h001")
+    pv = run.wait("h001", "failed")
+    assert pv == {"state": "failed", "reason": "Invalid data found"}
+    assert run.folder() == []
+
+
+def test_leftover_director_previews_of_old_paths_are_pruned(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    folder = run.p / ui.UI_DIR / "pano"
+    folder.mkdir(parents=True)
+    old = time.time() - ui.PROXY_PRUNE_GRACE_S - 60
+    names = ["h001-0123456789abcdef.mp4", ".h001-0123456789abcdef.part.mp4", "notes.txt"]
+    for name in names:
+        (folder / name).write_bytes(b"x")
+        os.utime(folder / name, (old, old))
+    (folder / "h009-fedcba9876543210.mp4").write_bytes(b"x")  # recent: another run may serve it
+    run.candidate("h001")
+    assert run.folder() == ["h009-fedcba9876543210.mp4", "notes.txt"]
+
+
+def test_a_replanned_camera_path_has_a_new_identity(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review F1: the page asks again per path identity, so "Analyze again" (a new plan in the
+    cache) must change ``path``; the old ready preview no longer counts."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    before = run.candidate("h001")["pano"]["path"]
+    assert isinstance(before, str) and before.startswith("h001-")
+    run.ask("h001")
+    run.wait("h001", "ready")
+    slot = run.p / pano_candidates.CACHE_DIR / pano_candidates.slot_name(run.clip, 5.0, 10.0)
+    entry = cache.load_json(slot)
+    entry["path"]["keys"][0]["yaw"] = 30.0  # re-planned
+    cache.save_json(slot, entry)
+    later = time.time() + 5
+    os.utime(slot, (later, later))
+    pano = run.candidate("h001")["pano"]
+    assert pano["path"] != before and pano["path"].startswith("h001-")
+    assert pano["preview"] is None  # the page asks for the new path's preview
+    assert run.ask("h001").json()["pano"]["preview"]["state"] in ("queued", "rendering", "ready")
+    run.wait("h001", "ready")
+    assert len(run.renders) == 2
+
+
+def test_a_director_preview_is_only_for_a_project_source(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review F4: a candidate whose source is not one of the project's gets ``{"pano": null}``
+    and renders nothing; the media route serves only the listed preview of that source."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    run.ask("h001")
+    pv = run.wait("h001", "ready")
+    stray = run.p / ui.UI_DIR / "pano" / "h002-0123456789abcdef.mp4"
+    stray.write_bytes(b"x")  # a preview-like file no listed candidate names
+    url = pv["url"].replace("http://127.0.0.1", "")
+    head, tail = url.split("/director/")
+    assert run.client.get(url).status_code == 200
+    stray_url = f"{head}/director/{stray.stem}?{tail.split('?')[1]}"
+    assert run.client.get(stray_url).status_code == 404
+    hl = cache.load_json(run.p / "highlights.json")
+    hl["candidates"][0]["source"] = str(tmp_path / "elsewhere" / X3_LRV)
+    cache.save_json(run.p / "highlights.json", hl)
+    assert run.ask("h001").json() == {"pano": None}
+    assert len(run.renders) == 1
+
+
+def test_the_page_describes_camera_path_flags_accessibly() -> None:
+    """Accessibility contract (#517): card badges' reasons are a tooltip that is also the card's
+    description, shown on keyboard focus and hidden by Escape; the note has its own region."""
+    js = _web("app.js")
+    render = _js_function(js, "renderMoments")
+    assert "'aria-describedby': tip" in render and "role: 'tooltip'" in render
+    html = _web("index.html")
+    assert "tips-off" in js and 'id="panoNote"' in html
+    # one permanent status region: its text changes, the node is never replaced
+    assert 'role="status" class="pano-status"' in html
+    assert "el.replaceChildren(" not in _js_function(js, "renderPanoNote")
+    css = _web("app.css")
+    assert ".cand:has(.cand-main:focus-visible) .flag-tip" in css
+    assert "body.tips-off .flag-tip { display: none; }" in css
 
 
 def test_find_videos_never_returns_raw_360_files(tmp_path: Path) -> None:
@@ -1077,6 +1530,172 @@ def test_reanalyze_keeps_a_recorded_recover(
     assert res.status_code == 200, res.text
     assert ("--recover" in captured[0]) is passed
     cli.build_parser().parse_args(captured[0][3:])
+
+
+ANALYZE_DEFAULTS = {
+    "model": None,
+    "language": None,
+    "max_candidates": None,
+    "no_scenes": False,
+    "skip": None,
+    "must_include_crash": None,
+    "recover": False,
+}
+RECORDED = {  # an analysis run with every Analyze option but --skip (not recorded)
+    "whisper_model": "large-v3",
+    "whisper_device": "cpu",
+    "language": "de",
+    "max_candidates": 30,
+    "scenes": False,
+    "recover": True,
+}
+
+
+@pytest.mark.parametrize(
+    ("settings", "body", "parsed"),
+    [
+        (
+            {},
+            {
+                "model": " turbo ",
+                "language": "en",
+                "max_candidates": 12,
+                "no_scenes": True,
+                "skip": ["crashes", "reactions"],
+                "must_include_crash": 0.25,
+                "recover": True,
+            },
+            {
+                "model": "turbo",
+                "language": "en",
+                "max_candidates": 12,
+                "no_scenes": True,
+                "skip": ["reactions", "crashes"],
+                "must_include_crash": 0.25,
+                "recover": True,
+            },
+        ),
+        # Analyze again from a request without them: what the analysis recorded
+        (
+            RECORDED,
+            {},
+            {
+                "model": "large-v3",
+                "language": "de",
+                "max_candidates": 30,
+                "no_scenes": True,
+                "recover": True,
+            },
+        ),
+        # the page cleared them: the CLI defaults (a recorded --recover is dropped too)
+        (
+            RECORDED,
+            {
+                "model": "",
+                "language": None,
+                "max_candidates": None,
+                "no_scenes": False,
+                "recover": False,
+                "skip": [],
+            },
+            {},
+        ),
+        # each refused, nothing started
+        ({}, [{"skip": ["vision"]}, {"model": "../x"}], None),
+    ],
+    ids=["set", "recorded", "cleared", "invalid"],
+)
+def test_analyze_options_reach_the_analyze_command_line_unchanged(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    settings: dict,
+    body: dict | list[dict],
+    parsed: dict | None,
+) -> None:
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "funny"
+    hl["settings"].update(settings)
+    cache.save_json(p / "highlights.json", hl)
+    if settings:  # the page shows what the analysis used
+        assert client.get("/api/projects/cli").json()["analyze_options"] == {
+            **ANALYZE_DEFAULTS, "model": "large-v3", "language": "de", "max_candidates": 30,
+            "no_scenes": True, "recover": True, "skip": [],
+        }  # fmt: skip
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    if isinstance(body, list):
+        for bad_body, message in zip(
+            body, ("skip must be a list of", "model must be a whisper"), strict=True
+        ):
+            res = client.post("/api/projects/cli/jobs", json={"action": "analyze", **bad_body})
+            assert res.status_code == 400 and message in res.json()["detail"]
+        assert not captured
+        return
+    res = client.post("/api/projects/cli/jobs", json={"action": "analyze", **body})
+    assert res.status_code == 200, res.text
+    a = cli.build_parser().parse_args(_cli_args(captured[0]))
+    assert {k: getattr(a, k) for k in ANALYZE_DEFAULTS} == {**ANALYZE_DEFAULTS, **parsed}
+
+
+def test_the_analyze_skip_is_kept_for_analyze_again_and_one_click_edit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """highlights.json does not record --skip: the UI keeps it for that analysis only, so
+    edit (which analyzes again) leaves the same steps out, and a command-line re-run drops it."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl.update(style="funny", created="2026-10-01T10:00:00")
+    cache.save_json(p / "highlights.json", hl)
+    captured: list[list[str]] = []
+    done: list[Callable[[], None] | None] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest):
+        captured.append(args)
+        done.append(on_success)
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    body = {"action": "analyze", "skip": ["crashes", "keyframes"]}
+    assert client.post("/api/projects/cli/jobs", json=body).status_code == 200
+    assert _cli_args(captured[0])[-3:] == ["--skip", "keyframes", "crashes"]
+    hl["created"] = "2026-10-01T11:00:00"  # what that analysis wrote
+    cache.save_json(p / "highlights.json", hl)
+    done[0]()
+    view = client.get("/api/projects/cli").json()
+    assert view["analyze_options"]["skip"] == ["keyframes", "crashes"]
+    assert view["preset_problem"] is None  # edit takes --skip
+    assert (
+        client.post("/api/projects/cli/jobs", json={"action": "edit", "kind": "clips"}).status_code
+        == 200
+    )
+    assert _cli_args(captured[1])[-3:] == ["--skip", "keyframes", "crashes"]
+
+    hl["created"] = "2026-10-02T09:00:00"  # analyzed again on the command line
+    cache.save_json(p / "highlights.json", hl)
+    assert client.get("/api/projects/cli").json()["analyze_options"]["skip"] == []
+    assert client.post("/api/projects/cli/jobs", json={"action": "analyze"}).status_code == 200
+    assert "--skip" not in captured[2]
+
+
+def test_a_ski_analysis_without_no_scenes_keeps_presets_and_scene_detection_on(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: ski never detects scenes, so its analysis records "scenes": false without
+    --no-scenes; that turned the presets off with the --no-scenes reason."""
+    meta = {"style": "ski", "source": str(tmp_path / "clip.mp4")}
+    settings = {"scenes": False, "must_include_crash": 0.6}  # the ski style's own
+    res, captured, _, _ = preset_job(
+        client, monkeypatch, tmp_path, {"kind": "clips"}, settings=settings, meta=meta
+    )
+    assert res.status_code == 200, res.text
+    _cli_args(captured[0])
+    view = client.get("/api/projects/cli").json()
+    assert view["preset_problem"] is None and view["must_include_crash_default"] == 0.6
+    opts = view["analyze_options"]
+    assert (opts["no_scenes"], opts["must_include_crash"]) == (False, None)
 
 
 @pytest.mark.parametrize(
@@ -6533,6 +7152,7 @@ def test_a_preset_refuses_bad_values(
         ({"recover": True}, None, "--recover"),
         ({"language": "en"}, None, "--language"),
         ({"max_candidates": 40}, None, "--max-candidates"),
+        ({"must_include_crash": 0.3}, {"style": "ski", "source": "x"}, "--must-include-crash"),
     ],
 )
 def test_presets_are_off_with_the_reason_where_edit_cannot_remake_the_analysis(
