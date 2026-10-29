@@ -709,6 +709,12 @@ body.tips-off .flag-tip { display: none; }
 .seq-pop h2 { font-size: 14px; }
 .seq-pop p { font-size: 13px; overflow-wrap: anywhere; }
 .confirm form { gap: 10px; }
+/* Analyze options (#483) in the Analyze dialog: a disclosure, closed unless one is set */
+.analyze-opts summary { cursor: pointer; font-weight: 650; font-size: 13px; line-height: var(--control-h-sm); }
+.analyze-opts-body { display: grid; gap: var(--space-1); padding-top: var(--space-1); }
+.analyze-opts .opt-grid { margin: 0 0 var(--space-1); }
+.analyze-skip { border: 0; display: grid; gap: 0; margin-top: var(--space-1); }
+.analyze-skip legend { font-size: 13px; font-weight: 650; padding: 0; margin-bottom: var(--space-0); }
 .panel { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px 12px; display: grid; gap: 10px; min-width: 0; }
 .panel legend, .panel > h3 { padding: 0 6px; font-weight: 650; font-size: 13px; }
 .panel > h3 { padding: 0; }

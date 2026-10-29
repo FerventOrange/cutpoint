@@ -576,6 +576,18 @@ function folderArt() {
 const sourceErrorText = (p) =>
   `The source folder cannot be found or read (${p.source_error}). Reconnect the drive, or set a source remap in Settings.`;
 
+/**
+ * Keep focus in the empty state ``el`` while the analysis it starts disables its buttons (focus
+ * would drop to the body), only until the user moves on: their next click or focus change ends it.
+ */
+function keepEmptyFocus(el) {
+  el.dataset.refocus = '1';
+  const stop = new AbortController();
+  const drop = () => { delete el.dataset.refocus; stop.abort(); };
+  document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
+  document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
+}
+
 /** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its recordings). */
 function renderUnanalyzed(el, n, error, pano) {
   const state = `${n}|${error}|${pano}`;
@@ -599,16 +611,16 @@ function renderUnanalyzed(el, n, error, pano) {
       type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
       onclick: async (e) => {
         e.currentTarget.disabled = true; // no second start while the request is in flight
-        el.dataset.refocus = '1';
-        // only until the user moves on: their next click or focus change ends it
-        const stop = new AbortController();
-        const drop = () => { delete el.dataset.refocus; stop.abort(); };
-        document.addEventListener('pointerdown', drop, { capture: true, signal: stop.signal });
-        document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
+        keepEmptyFocus(el);
         await startJob('analyze'); // vision: the server applies the Settings value
         if (![...S.tracked.values()].some(live)) renderBusy(); // it failed: enable again
       },
     }, 'Analyze footage'),
+    // the Analyze options (#483) for the first analysis; Analyze footage alone uses none
+    h('button', {
+      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano,
+      onclick: () => analyzeAgain(true),
+    }, 'Analysis options…'),
     h('button', {
       type: 'button', id: 'revealBtn', class: 'btn outline', hidden: !S.canReveal,
       onclick: (e) => revealFolder(e.currentTarget),
@@ -2158,16 +2170,65 @@ function confirmAction(title, text, ok = 'Remove') {
   });
 }
 
-/** "Analyze again": confirm in a dialog; vision follows Settings, as for a first analysis. */
-function analyzeAgain() {
+/**
+ * Analyze options (#483): filled with what the project's analysis used (``analyze_options``), so
+ * Analyze again repeats it unless changed; the disclosure starts open when one is set. Hidden
+ * for 360 projects; Must-include crash only for ski styles (``must_include_crash_default``).
+ */
+function fillAnalyzeOptions(p) {
+  const o = p.analyze_options ?? {};
+  const crashDefault = p.must_include_crash_default;
+  $('#analyzeOpts').hidden = p.kind === '360';
+  $('#anModel').value = o.model ?? '';
+  $('#anLanguage').value = o.language ?? '';
+  $('#anMaxCandidates').value = o.max_candidates ?? '';
+  $('#anCrash').value = o.must_include_crash ?? '';
+  $('#anCrash').placeholder = crashDefault == null ? '' : `Style (${crashDefault})`;
+  for (const el of [$('#anCrashLabel'), $('#anCrash')]) el.hidden = crashDefault == null;
+  $('#anNoScenes').checked = !!o.no_scenes;
+  $('#anRecover').checked = !!o.recover;
+  for (const box of document.querySelectorAll('input[name=anSkip]')) box.checked = !!o.skip?.includes(box.value);
+  $('#analyzeOpts').open = Object.values(analyzeOptions()).some((v) => (Array.isArray(v) ? v.length > 0 : v != null && v !== false));
+}
+
+/** The Analyze options as the analyze job takes them: every key, blank as null (no flag). */
+function analyzeOptions() {
+  const text = (id) => $(id).value.trim() || null;
+  const num = (id) => ($(id).value.trim() && !$(id).hidden ? Number($(id).value) : null);
+  return {
+    model: text('#anModel'),
+    language: text('#anLanguage'),
+    max_candidates: num('#anMaxCandidates'),
+    must_include_crash: num('#anCrash'),
+    no_scenes: $('#anNoScenes').checked,
+    recover: $('#anRecover').checked,
+    skip: [...document.querySelectorAll('input[name=anSkip]:checked')].map((box) => box.value),
+  };
+}
+
+/**
+ * "Analyze again" (``fresh``: the first analysis, from the empty state's Analysis options):
+ * confirm in a dialog with the Analyze options; vision follows Settings, as for a first analysis.
+ */
+function analyzeAgain(fresh = false) {
+  const p = S.project;
+  if (!p) return;
   const d = $('#analyzeDialog');
   const back = document.activeElement;
+  $('#analyzeTitle').textContent = fresh ? 'Analyze footage' : 'Analyze again?';
+  $('#analyzeText').textContent = fresh
+    ? 'Analyze footage to transcribe audio and rank the strongest moments.'
+    : "The project's footage is analyzed again and its moments are ranked anew.";
+  fillAnalyzeOptions(p);
+  if (fresh) $('#analyzeOpts').open = true;
   d.returnValue = '';
   d.showModal();
   $('#againCancel').focus();
   d.addEventListener('close', () => {
     if (back?.isConnected) back.focus();
-    if (d.returnValue === 'ok') startJob('analyze');
+    if (fresh && d.returnValue === 'ok') keepEmptyFocus($('#momentsEmpty')); // after focus is back, or it ends at once
+    // 360 projects have no Analyze options (360 analyze takes none of them)
+    if (d.returnValue === 'ok') startJob('analyze', p.kind === '360' ? {} : analyzeOptions());
   }, { once: true });
 }
 
@@ -2741,6 +2802,7 @@ function renderBusy() {
     const reason = own ? (steps ? 'Analyzing… each step is listed below.' : 'Analyzing… progress is in Jobs.') : busy ? why
       : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
     set('#analyzeBig', !p || busy || !p.sources?.length, reason);
+    set('#analyzeOptsBtn', !p || busy || !p.sources?.length, reason);
     const label = own ? 'Analyzing…' : 'Analyze footage';
     if (big.textContent !== label) big.textContent = label;
     const out = $('#analyzeWhy');
@@ -4654,7 +4716,11 @@ function bind() {
     renderBatch();
     focusRow(0, 'select');
   });
-  $('#analyzeBtn').addEventListener('click', analyzeAgain);
+  $('#analyzeBtn').addEventListener('click', () => analyzeAgain());
+  // an out-of-range Analyze option blocks Analyze: open the options so the browser can point at it
+  $('#againOk').addEventListener('click', () => {
+    if (!$('#analyzeDialog form').checkValidity()) $('#analyzeOpts').open = true;
+  });
   $('#revealHeadBtn').prepend(icon('folder'));
   $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
   $('#revealExportBtn').prepend(icon('folder'));

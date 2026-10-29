@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui`: New project takes several videos and folders, one path per line, with "Include
   sub-folders" (`analyze --recursive`) and "Skip files matching" (`--exclude` patterns) (#484).
   "Analyze again" keeps them; 360 footage still makes a project of its own.
+- `cutpoint ui` Analysis options (#483), in the "Analyze again" dialog and, before the first
+  analysis, behind "Analysis options…": Transcription model, Language, Max candidates,
+  Must-include crash (ski styles), Skip scene detection, Recover after read errors and Skip steps
+  pass `analyze --model`, `--language`, `--max-candidates`, `--must-include-crash`,
+  `--no-scenes`, `--recover` and `--skip`. They start with what the project's analysis used, so
+  Analyze again repeats it; One-Click Edit passes Skip steps on as `edit --skip` and stays off
+  for the others, now including `--must-include-crash`.
 - `cutpoint ui`: the Moments column is resizable like the Sequence column (#516): drag the
   splitter at the preview's left edge, use the arrow keys (Shift for bigger steps), Home/End, or
   double-click to reset. The width is remembered per browser. Both splitters share one helper, and
@@ -88,6 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna` and `*-codex` models make tool calls instead of
   failing or falling back to JSON mode; OpenAI-compatible base URLs still use Chat Completions
   (#536).
+- `cutpoint ui` One-Click Edit: a ski-style analysis no longer turns the presets off as if it
+  had used `--no-scenes` (ski never detects scenes, so it records none without the flag).
 - `cutpoint ui` AI assistant: `CUTPOINT_ASSISTANT_API_KEY` no longer wins over a provider's own
   key and is never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai` (it is for custom
   base URLs only); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` or the keyring key is

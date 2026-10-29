@@ -125,7 +125,7 @@ from cutpoint.pano import project as pano_project
 from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
-from cutpoint.styles import get_style, learned_styles, style_names
+from cutpoint.styles import Style, get_style, learned_styles, style_names
 from cutpoint.utils import (
     PANO_EXTS,
     VIDEO_EXTS,
@@ -3082,6 +3082,139 @@ def _vision_args(st: dict[str, Any]) -> list[str]:
     return args
 
 
+# The Analyze options (#483), each one analyze flag: the request's key and its flag.
+ANALYZE_TEXT = {"model": "--model", "language": "--language"}
+ANALYZE_TEXT_FORMS = {  # what the page may send for them: a model name, a language code
+    "model": (
+        re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"),
+        "a whisper model name such as small or large-v3",
+    ),
+    "language": (re.compile(r"[A-Za-z]{2,3}"), "a language code such as en"),
+}
+ANALYZE_FLAGS = {"no_scenes": "--no-scenes", "recover": "--recover"}
+ANALYZE_KEYS = ("model", "language", "max_candidates", "no_scenes", "skip", "must_include_crash",
+                "recover")  # fmt: skip
+ANALYSIS_FILE = f"{UI_DIR}/analysis.json"  # the --skip of the project's analysis (not recorded)
+
+
+def _default_model(st: dict[str, Any]) -> str:
+    """The whisper model ``analyze`` picks without ``--model`` on the device the analysis ran on
+    (Transcriber's default)."""
+    return "medium" if st.get("whisper_device") == "cuda" else "small"
+
+
+def _style(name: object) -> Style | None:
+    try:
+        return get_style(str(name)) if name else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _style_crash(style: object) -> float | None:
+    """The ``must_include_crash`` of a ski ``style`` (what ``--must-include-crash`` overrides),
+    else None: the flag only changes ski analysis."""
+    s = _style(style)
+    return s.must_include_crash if s is not None and s.kind == "ski" else None
+
+
+def _no_scenes(st: dict[str, Any], style: object) -> bool:
+    """The analysis ran with ``--no-scenes``: it recorded no scene detection although its style
+    detects scenes (ski never does, so it records none without the flag)."""
+    s = _style(style)
+    return st.get("scenes") is False and (s is None or s.use_scenes)
+
+
+def _saved_skip(p: Path, hl: dict[str, Any] | None) -> list[str]:
+    """The ``--skip`` steps the UI ran the project's current analysis with; none when that file
+    belongs to an earlier analysis (``created`` differs), as after a command-line re-run."""
+    saved = _load(p, ANALYSIS_FILE)
+    if not isinstance(saved, dict) or not hl or saved.get("created") != hl.get("created"):
+        return []
+    skip = saved.get("skip")
+    return [s for s in progress.SKIPPABLE if isinstance(skip, list) and s in skip]
+
+
+def save_analysis_skip(p: Path, skip: list[str]) -> None:
+    """Remember the ``--skip`` of the analysis just written, with its ``created`` stamp."""
+    hl = _highlights(p) or {}
+    cache.save_json(_own(p, ANALYSIS_FILE), {"skip": skip, "created": hl.get("created")})
+
+
+def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any]:
+    """The Analyze options the project's analysis used, as the page sends them: what
+    ``highlights.json`` recorded (a model only when not the default) and the saved ``--skip``."""
+    st = (hl or {}).get("settings") or {}
+    model = st.get("whisper_model")
+    mc = st.get("max_candidates")
+    crash = st.get("must_include_crash")
+    style = _analysis_inputs(meta, hl)[1]
+    default_crash = _style_crash(style)
+    return {
+        "model": model
+        if isinstance(model, str) and model and model != _default_model(st)
+        else None,
+        "language": st["language"]
+        if isinstance(st.get("language"), str) and st["language"]
+        else None,
+        "max_candidates": mc
+        if isinstance(mc, int) and not isinstance(mc, bool) and mc > 0
+        else None,
+        "no_scenes": _no_scenes(st, style),
+        "skip": _saved_skip(p, hl),
+        "must_include_crash": float(crash)
+        if default_crash is not None
+        and isinstance(crash, (int, float))
+        and not isinstance(crash, bool)
+        and 0 <= crash <= 1
+        and crash != default_crash
+        else None,
+        "recover": st.get("recover") is True,
+    }
+
+
+def _analyze_args(body: dict[str, Any], recorded: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The Analyze options' flags and the ``--skip`` steps: each from the request, else (a key it
+    does not send) what the project's analysis used, so Analyze again repeats it."""
+    opts = {k: body.get(k, v) for k, v in recorded.items()}
+    args = []
+    for key, flag in ANALYZE_TEXT.items():
+        v = opts[key]
+        if v is not None and not isinstance(v, str):
+            raise bad(f"{key} must be text")
+        v = (v or "").strip()
+        if not v:
+            continue
+        pattern, what = ANALYZE_TEXT_FORMS[key]
+        if not pattern.fullmatch(v):
+            raise bad(f"{key} must be {what}")
+        args.append(f"{flag}={v}")
+    mc = opts["max_candidates"]
+    if mc is not None:
+        if isinstance(mc, bool) or not isinstance(mc, int) or mc < 1:
+            raise bad("max_candidates must be a whole number above 0")
+        args.append(f"--max-candidates={mc}")
+    crash = opts["must_include_crash"]
+    if crash is not None:
+        if (
+            isinstance(crash, bool)
+            or not isinstance(crash, (int, float))
+            or not 0 <= crash <= 1  # NaN fails this too
+        ):
+            raise bad("must_include_crash must be a number from 0 to 1")
+        args.append(f"--must-include-crash={float(crash):g}")
+    for key, flag in ANALYZE_FLAGS.items():
+        if _flag(opts, key):
+            args.append(flag)
+    skip = opts["skip"]
+    if skip is None:
+        skip = []
+    if not isinstance(skip, list) or any(
+        not isinstance(s, str) or s not in progress.SKIPPABLE for s in skip
+    ):
+        raise bad(f"skip must be a list of {', '.join(progress.SKIPPABLE)}")
+    return args, [s for s in progress.SKIPPABLE if s in skip]
+
+
 def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | None:
     """Why ``cutpoint edit`` cannot remake this project's analysis (None when it can)."""
     if meta.get("kind") == "360":
@@ -3102,7 +3235,8 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
             f"Presets are not available here: this project was transcribed with the {model} "
             "model (analyze --model), which cutpoint edit does not take."
         )
-    if st.get("scenes") is False:
+    inputs, style = _analysis_inputs(meta, hl)
+    if _no_scenes(st, style):
         return (
             "Presets are not available here: this project's analysis used --no-scenes, which "
             "cutpoint edit does not take."
@@ -3119,7 +3253,13 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
                 f"Presets are not available here: this project's analysis used {opt}, which "
                 "cutpoint edit does not take."
             )
-    inputs, style = _analysis_inputs(meta, hl)
+    # nor --must-include-crash: edit would analyze with the style's own confidence
+    crash, default_crash = st.get("must_include_crash"), _style_crash(style)
+    if default_crash is not None and crash is not None and crash != default_crash:
+        return (
+            "Presets are not available here: this project's analysis used --must-include-crash, "
+            "which cutpoint edit does not take."
+        )
     if not inputs or not style:
         return "Presets need a recorded source to analyze."
     return None
@@ -3667,6 +3807,12 @@ def create_app(port: int) -> FastAPI:
             # One-click presets (edit --kind): why they are off, else null; the folders whose
             # earlier clips a run would replace (the page asks first).
             "preset_problem": preset_problem(meta, hl),
+            # Analyze options (#483): what the analysis used, which the page shows; the style's
+            # --must-include-crash default, null when the style is not ski (no such option)
+            "analyze_options": analyze_options(p, meta, hl),
+            "must_include_crash_default": _style_crash(
+                meta.get("style") or (hl or {}).get("style")
+            ),
             "preset_taken": preset_taken(p),
             "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
             "sources": found,
@@ -3733,6 +3879,10 @@ def create_app(port: int) -> FastAPI:
             style = meta.get("style")
             if not meta.get("source") or not style:
                 raise bad("project has no recorded source to analyze")
+            if any(
+                body.get(k) not in (None, "", []) and body[k] is not False for k in ANALYZE_KEYS
+            ):
+                raise bad("Analyze options are not available for 360 projects")
             _own(p, "highlights.json")  # the analysis rewrites it
             _own(p, "pano.json")  # and the scan this
             args = cutpoint_cmd(
@@ -3761,9 +3911,21 @@ def create_app(port: int) -> FastAPI:
             args += [f"--exclude={g}" for g in exclude]
             if recursive:
                 args.append("--recursive")
-            if st.get("recover") is True:  # or the parts past a read error drop out
-                args.append("--recover")
-            args += _vision_args(st)
+            # The Analyze options; a recorded --recover is kept unless the page turns it off, or
+            # the parts past a read error drop out.
+            opts, skip = _analyze_args(body, analyze_options(p, meta, hl))
+            args += opts + _vision_args(st)
+            if skip:  # last: its steps follow it. Saved (an older file never matches the new
+                # analysis's created stamp, so without --skip there is nothing to save)
+                args += ["--skip", *skip]
+                _own(p, ANALYSIS_FILE)  # refuse now, not after the analysis
+
+                def prepare() -> None:
+                    _ui_folder(p)  # a command-line project has no ui folder yet
+
+                def on_success() -> None:
+                    save_analysis_skip(p, skip)
+
         elif action == "edit":
             # A one-click preset: analyze (cached), clips and assemble as `edit --kind` says, in
             # the project's own style so its analysis and moments stay as they are.
@@ -3796,6 +3958,10 @@ def create_app(port: int) -> FastAPI:
                 + _color_args(body)
                 + _vision_args((hl or {}).get("settings") or {})
             )
+            # edit analyzes again: with the Analyze options' --skip, or it would run those steps
+            if skip := _saved_skip(p, hl):
+                args += ["--skip", *skip]
+                _own(p, ANALYSIS_FILE)
 
             def prepare() -> None:
                 _ui_folder(p)  # a command-line project has no ui folder for exports.json yet
@@ -3806,6 +3972,8 @@ def create_app(port: int) -> FastAPI:
                     or not (p / final_name).is_file()
                 ):
                     raise RuntimeError("edit finished without its clips and final video")
+                if skip:  # the analysis edit rewrote ran with it too
+                    save_analysis_skip(p, skip)
                 items = [e for e in load_exports(p) if e["dir"] != clips_name]  # replaced
                 items.append(
                     {"dir": clips_name, "created": stamp, "vertical": vertical, "final": final_name}
