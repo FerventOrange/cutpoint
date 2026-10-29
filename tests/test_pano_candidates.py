@@ -280,7 +280,7 @@ def test_plan_paths_never_fails_the_analysis(tmp_path, monkeypatch, caplog) -> N
 
     monkeypatch.setattr(C, "cache_candidate_paths", boom)
     with caplog.at_level(logging.WARNING):
-        cli._plan_paths(tmp_path)
+        cli._plan_paths(tmp_path, {})
     assert "Director paths not planned: OSError" in caplog.text
 
 
@@ -323,6 +323,80 @@ def test_360_analyze_plans_paths_into_the_envelope_and_timings(
     assert res.outputs["candidate_paths"] == stats
     timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
     assert timings["paths_s"] == 1.5
+
+
+TIMING_RUNS = {
+    "scan": (
+        {"scan": ["cam"]},
+        {"scan_s", "views", "analyze_s", "events_s", "paths_s", "analyze_total_s"},
+    ),
+    "no_scan": ({}, {"views", "analyze_s", "events_s", "paths_s", "analyze_total_s"}),
+    "no_events": ({"no_events": True}, {"views", "analyze_s", "paths_s"}),
+    "views_only": ({"views_only": True}, {"views"}),
+    "views_only_scan": ({"views_only": True, "scan": ["cam"]}, {"views", "scan_s"}),
+}
+
+
+@pytest.mark.parametrize(("over", "keys"), list(TIMING_RUNS.values()), ids=list(TIMING_RUNS))
+def test_360_analyze_timings_hold_this_run_only(
+    monkeypatch, tmp_path: Path, over: dict, keys: set[str]
+) -> None:
+    """pano_timings.json is one dict per run, saved once on every return path: no keys of an
+    earlier run (#11); total_s times the whole run, scan included."""
+    clock = iter(range(0, 1000, 5))  # every perf_counter call: 5 s later
+    monkeypatch.setattr(cli.time, "perf_counter", lambda: float(next(clock)))
+    monkeypatch.setattr(cli, "_project", lambda arg: tmp_path)
+    monkeypatch.setattr(cli, "_clips", lambda project: [argparse.Namespace(lrv="a.lrv")])
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: None)
+    monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda sources: False)
+    monkeypatch.setattr(VW, "run_layer", lambda clips, force=False, handoff=None: {"computed": 1})
+    monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: None)
+    monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda project: None)
+    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "ski")
+    monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
+    monkeypatch.setattr(C, "cache_candidate_paths", lambda project: {"seconds": 1.5})
+    scanned: list[dict | None] = []
+
+    def scan(project, folders, force=False, only=None, allow_empty=True, timings=None):
+        scanned.append(timings)
+        timings["scan_s"] = 2.0
+        return 1
+
+    monkeypatch.setattr(cli, "_scan", scan)
+    stale = {"scan_s": 99.0, "events_s": 99.0, "analyze_total_s": 99.0, "views": {"old": 1}}
+    cache.save_json(tmp_path / "pano_timings.json", stale)
+    base = {"project": "p", "only": None, "scan": None, "no_events": False}
+    base |= {"views_only": False, "force_views": False, "style": None, "model": "m"}
+    cli.cmd_analyze(argparse.Namespace(**{**base, "language": None, **over}))
+    timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
+    assert set(timings) == keys | {"total_s"}
+    assert set(timings["views"]) == {"computed", "total_s"}  # not the earlier run's "old"
+    assert timings["views"]["total_s"] > 0
+    assert timings.get("scan_s", 2.0) == 2.0
+    assert timings.get("paths_s", 1.5) == 1.5
+    # total_s: from the run's start (before the scan) to the save
+    skip = ("total_s", "paths_s", "analyze_total_s")
+    parts = [v for k, v in timings.items() if k.endswith("_s") and k not in skip]
+    assert timings["total_s"] > sum(parts) + timings["views"]["total_s"] - 1e-9
+    if "analyze_total_s" in timings:  # deprecated, for the UI: from the views on, no scan
+        assert timings["analyze_total_s"] < timings["total_s"]
+        assert timings["analyze_total_s"] >= timings["views"]["total_s"] + timings["analyze_s"]
+    assert len(scanned) == ("scan_s" in keys)
+
+
+def test_standalone_360_scan_merges_scan_s(monkeypatch, tmp_path: Path) -> None:
+    from cutpoint.pano import x3  # noqa: PLC0415
+
+    monkeypatch.setattr(x3, "scan", lambda folder: [helpers.x3clip()])
+    monkeypatch.setattr(x3, "imu_source", lambda source: None)
+    cache.save_json(tmp_path / "pano_timings.json", {"views": {"computed": 1}, "total_s": 9.0})
+    cli._scan(tmp_path, [str(tmp_path)])
+    timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
+    assert set(timings) == {"views", "total_s", "scan_s"}
+    got: dict = {}
+    cli._scan(tmp_path, [str(tmp_path)], timings=got)  # 360 analyze --scan: the run's dict
+    assert set(got) == {"scan_s"}
 
 
 # --------------------------------------------------------------------------- diagnostics

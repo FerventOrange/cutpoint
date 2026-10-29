@@ -93,11 +93,24 @@ def _set_folder_project(folder: Path) -> None:
     _set_clips_project(folder)
 
 
+TIMINGS_FILE = "pano_timings.json"
+
+
 def _timing(project: Path, key: str, value: Any) -> None:
-    path = project / "pano_timings.json"
+    """Merge one key into ``pano_timings.json`` (standalone ``360 scan``)."""
+    path = project / TIMINGS_FILE
     data = cache.load_json(path) or {}
     data[key] = value
     cache.save_json(path, data)
+
+
+def _save_timings(project: Path, timings: dict[str, Any], t_start: float) -> None:
+    """Write this ``360 analyze`` run's ``pano_timings.json`` (no keys of an earlier run):
+    ``views``, ``analyze_s``, ``events_s``, ``paths_s``, ``scan_s`` (with ``--scan``) as
+    far as the run got, ``analyze_total_s`` (deprecated; full runs only) and ``total_s``,
+    the seconds since the run started."""
+    timings["total_s"] = round(time.perf_counter() - t_start, 1)
+    cache.save_json(project / TIMINGS_FILE, timings)
 
 
 # --------------------------------------------------------------------------- commands
@@ -114,9 +127,11 @@ def _scan(
     force: bool = False,
     only: list[str] | None = None,
     allow_empty: bool = True,
+    timings: dict[str, Any] | None = None,
 ) -> int:
     """:func:`cmd_scan` into ``project``; with ``only``, just those clip numbers (their
-    orientation alone is read). Returns the number of clips.
+    orientation alone is read). Returns the number of clips. ``scan_s`` goes to
+    ``timings`` when given (``360 analyze --scan`` saves it), else into ``pano_timings.json``.
 
     Raises:
         FileNotFoundError: If no clip matches and not ``allow_empty`` (nothing is written).
@@ -147,7 +162,10 @@ def _scan(
         }
     path = P.save(project, clips, dirs)
     el = round(time.perf_counter() - t0, 1)
-    _timing(project, "scan_s", el)
+    if timings is None:
+        _timing(project, "scan_s", el)
+    else:
+        timings["scan_s"] = el
     logger.info(
         "%-4s %-5s %8s %7s %9s %6s  %s",
         "clip",
@@ -171,7 +189,7 @@ def _scan(
         )
     total = sum(c.duration for c in clips)
     jsonout.output("pano", path)
-    jsonout.output("timings", project / "pano_timings.json")
+    jsonout.output("timings", project / TIMINGS_FILE)
     jsonout.output(
         "clips",
         [
@@ -225,6 +243,8 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     from cutpoint.pano import views  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
+    t_start = time.perf_counter()  # total_s: the whole run, scan included
+    timings: dict[str, Any] = {}  # this run's pano_timings.json, saved on each return
     if not a.scan:
         steps.skip("scan", "pano.json from an earlier scan")
     clips = [] if a.scan else _clips(project)
@@ -234,7 +254,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
         preflight(EVENT_LAYERS)
     if a.scan:
         with steps.step("scan"):
-            _scan(project, a.scan, only=a.only, allow_empty=False)
+            _scan(project, a.scan, only=a.only, allow_empty=False, timings=timings)
         clips = _clips(project)
     clips = [c for c in clips if c.lrv]
     if a.only:
@@ -251,12 +271,13 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     t0 = time.perf_counter()
     with steps.step("views"):
         st = views.run_layer(clips, force=a.force_views, handoff=handoff if keep else None)
-    _timing(project, "views", {**st, "total_s": round(time.perf_counter() - t0, 1)})
-    jsonout.output("timings", project / "pano_timings.json")
+    timings["views"] = {**st, "total_s": round(time.perf_counter() - t0, 1)}
+    jsonout.output("timings", project / TIMINGS_FILE)
     jsonout.output("views", {k: st.get(k) for k in ("cached", "computed")})
     if a.views_only:
         for step in ("analyze", "events"):
             steps.skip(step, "--views-only")
+        _save_timings(project, timings, t_start)
         return
     t1 = time.perf_counter()
     from cutpoint.pano.project import default_style  # noqa: PLC0415
@@ -271,10 +292,11 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
             language=a.language,
             use_scenes=False,
         )
-    _timing(project, "analyze_s", round(time.perf_counter() - t1, 1))
+    timings["analyze_s"] = round(time.perf_counter() - t1, 1)
     if a.no_events:
         steps.skip("events", "--no-events")
-        _plan_paths(project)
+        _plan_paths(project, timings)
+        _save_timings(project, timings, t_start)
         return
     from cutpoint.events.pipeline import run_events  # noqa: PLC0415
 
@@ -282,10 +304,13 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     with steps.step("events"):
         run_events(project, layers=EVENT_LAYERS, encoder=kept[0] if kept else None)
         rescored = reanalyze_if_reachable(project)
-    _timing(project, "events_s", round(time.perf_counter() - t2, 1))
+    timings["events_s"] = round(time.perf_counter() - t2, 1)
     jsonout.output("events", project / "events.json")
-    _plan_paths(project)
-    _timing(project, "analyze_total_s", round(time.perf_counter() - t0, 1))
+    _plan_paths(project, timings)
+    # deprecated (total_s): a full run's time from the views on, the scan left out, read
+    # with scan_s by the UI until it reads total_s
+    timings["analyze_total_s"] = round(time.perf_counter() - t0, 1)
+    _save_timings(project, timings, t_start)
     if rescored is None:  # footage went offline: highlights.json lacks the events
         jsonout.warn(
             "events_not_in_highlights",
@@ -306,9 +331,10 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     )
 
 
-def _plan_paths(project: Path) -> None:
+def _plan_paths(project: Path, timings: dict[str, Any]) -> None:
     """Director paths of the candidates, for previews and diagnostics
     (:func:`cutpoint.pano.candidates.cache_candidate_paths`); never fails the analysis.
+    Their seconds go to ``timings["paths_s"]``.
     ``--json``: ``candidate_paths`` (``dir``, counts and ``flags``: code -> candidates)."""
     from cutpoint.pano.candidates import cache_candidate_paths  # noqa: PLC0415
 
@@ -317,7 +343,7 @@ def _plan_paths(project: Path) -> None:
     except Exception as err:  # noqa: BLE001 - a path never fails the analysis
         logger.warning("Director paths not planned: %s: %s", type(err).__name__, err)
         return
-    _timing(project, "paths_s", st["seconds"])
+    timings["paths_s"] = st["seconds"]
     jsonout.output("candidate_paths", st)
 
 
@@ -800,6 +826,11 @@ def cmd_qa(a: argparse.Namespace) -> None:
 
     qa_dir = _folder(a.dir)
     _set_folder_project(qa_dir)
+    if a.compare:
+        if a.paths:
+            raise jsonout.ArgumentError("--compare takes the two qa.json files; drop --paths")
+        _compare_qa(qa_dir, a.compare)
+        return
     if a.paths:
         from cutpoint.pano.qa_paths import run_paths_qa  # noqa: PLC0415
 
@@ -809,6 +840,48 @@ def cmd_qa(a: argparse.Namespace) -> None:
     log_report(report)
     if jsonout.active():
         _report_qa(qa_dir, report)
+
+
+def _compare_qa(qa_dir: Path, files: list[str]) -> None:
+    """``360 qa <dir> --compare A B``: edge_gap.json of a rendered and a --paths qa.json."""
+    from cutpoint.config import resolve_project_path  # noqa: PLC0415
+    from cutpoint.pano.qa_compare import log_compare, run_compare  # noqa: PLC0415
+
+    a, b = (resolve_project_path(f, bare_names=False) for f in files)
+    rep = run_compare(Path(os.path.abspath(qa_dir)), a, b)  # noqa: PTH100
+    log_compare(rep)
+    jsonout.output("edge_gap", Path(rep["out_file"]))
+    jsonout.output("mode", "compare")
+    jsonout.output("rendered", Path(rep["rendered"]))
+    jsonout.output("paths", Path(rep["paths"]))
+    jsonout.output(
+        "clips",
+        [
+            {"file": qa_dir / c["file"], "rendered_only": c["rendered_only"], "causes": c["causes"]}
+            for c in rep["clips"]
+        ],
+    )
+    jsonout.output("count", len(rep["clips"]))
+    jsonout.output("rendered_only", rep["edit"]["rendered_only"])
+    jsonout.output("causes", rep["edit"]["causes"])
+    unmatched = [f for files_ in rep["unmatched"].values() for f in files_]
+    if unmatched:
+        jsonout.warn(
+            "qa_clips_unmatched",
+            f"{len(unmatched)} clip(s) in only one of the two reports: " + ", ".join(unmatched),
+            [qa_dir / f for f in unmatched],
+        )
+    if rep["source_mismatch"]:
+        msg = f"report(s) of another folder than {qa_dir}: " + ", ".join(rep["source_mismatch"])
+        logger.warning("%s", msg)
+        jsonout.warn("qa_source_mismatch", msg, [Path(rep["rendered"]), Path(rep["paths"])])
+    if rep["fps_mismatch"]:
+        jsonout.warn(
+            "qa_fps_mismatch",
+            f"the reports were checked at {rep['fps']:g} and {rep['fps_paths']:g} fps; "
+            "run both at the same --fps",
+            [Path(rep["rendered"]), Path(rep["paths"])],
+        )
 
 
 def _report_qa(qa_dir: Path, report: dict[str, Any]) -> None:
@@ -1020,6 +1093,14 @@ def add_parser(sub: Any) -> None:
     )
     qa.add_argument("--size", type=parse_size, default="640x360", help="decode size WIDTHxHEIGHT")
     qa.add_argument("--json-only", action="store_true", help="skip the contact sheets")
+    qa.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("QA_JSON", "QA_JSON"),
+        help="instead of a QA run: join the rendered and the --paths qa.json of <dir> (either "
+        "order) per clip and frame, attribute each edge cut only the rendered QA flags to a "
+        "cause and write edge_gap.json next to the rendered qa.json",
+    )
     _add_json_argument(qa)
     qa.set_defaults(func=cmd_qa)
 

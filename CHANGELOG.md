@@ -116,6 +116,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag).
   `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
   diagnostics for previews (#517).
+- `360 qa <dir> --compare RENDERED PATHS` (#11): joins the rendered and the `--paths` `qa.json`
+  of `<dir>` (either order) per clip and frame and writes `edge_gap.json` next to the rendered
+  one: the frames each QA flags `edge_cut`, and a cause for every frame only the rendered QA
+  flags (`unpaired`, `outside_segment`, `wearer_overlap`, `yaw_offset`, `stale_view`,
+  `no_projected_box` or `other`), per clip and for the edit. Cut boxes follow `360 qa`'s own
+  edge-cut rule, and the boxes `--paths` dropped as mostly outside the view count as projected
+  boxes, the wearer's too. `--json` adds `edge_gap`, `causes`, `rendered_only` and a
+  `qa_clips_unmatched`, `qa_source_mismatch` or `qa_fps_mismatch` warning. It runs no QA and
+  loads no models.
 
 ### Changed
 
@@ -165,6 +174,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   count is unchanged.
 - `cutpoint ui` names its 360 director previews by the library's `preview_key`, so each 360
   moment's preview renders once more on its next request; older previews are pruned as before.
+- `360 qa` on rendered clips tags the wearer by the wearer cone when the clip's director path,
+  IMU orientation and 360 view layer are cached and the render was levelled with the IMU (dual
+  fisheye, or an SDK stitch without FlowState) (#11): a person box whose centre, seen through
+  the clip's emitted `v360` rotation, lies within 50 deg of the wearer axis is the wearer, as
+  in `360 qa --paths` and the director. The own-body CLIP classifier, which missed the wearer's
+  head, goggles and gloves at the frame edge (about 28 % of the rendered edge cuts), still runs:
+  a box either one tags is self (`cone+clip`), and CLIP alone is the fallback (`clip`). Each
+  clip in `qa.json` gets `self_method`, `self_tags` (boxes tagged by `cone` and by `clip`),
+  `offset` and `segment`; `--paths` frames get `view_dt` (seconds to the view frame used) and
+  `slivers` (the boxes dropped as mostly outside the view). Rendered `edge_cut` and `occluded`
+  shares change for those clips.
+- `360 qa --paths` and the `quality` block of director paths count a person mostly outside the
+  view as an edge cut, at any size, when it would be the largest person in the frame and at
+  least `size_min_h` tall, as the rendered QA counts its subject (#11). Their `edge_cut` share
+  can rise, and with it the `qa_fail` candidate flag of newly planned paths.
+- `360 analyze` writes `pano_timings.json` once per run, with only this run's keys: `views`,
+  `analyze_s`, `events_s`, `paths_s`, `scan_s` (with `--scan`) and `total_s`, the whole run
+  from its start, scan included (#11). Keys of an earlier run no longer linger, and `total_s`
+  is written with `--no-events` and `--views-only` too. `analyze_total_s` (full runs only,
+  the scan left out) is still written for `cutpoint ui`, which adds it to `scan_s`; it is
+  deprecated in favour of `total_s`. `360 scan` on its own still adds `scan_s` to the file.
 
 ### Fixed
 

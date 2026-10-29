@@ -288,3 +288,19 @@ def test_level_camera_through_a_still_view_shows_no_roll(tmp_path) -> None:
     # an output ray turned by roll +9 (+x toward +y) shows the horizon rolled by -9
     tilted = dataclasses.replace(c, init=c.init @ H.turn("roll", 9.0))
     assert H.emitted_roll(tilted, orient, np.array([0.5])) == pytest.approx([-9.0], abs=0.01)
+
+
+def test_render_rotations_from_the_commands_match_the_renderer_model(rendered) -> None:
+    """The wearer cone of the rendered QA (#11) sees the picture through the emitted
+    commands; they agree with the renderer's own R_VW @ view."""
+    item = rendered()
+    assert item["commands"] is not None
+    t = item["offset"] + np.arange(0.2, 3.8, 0.5)
+    orient = G.load_orientation(LRV)
+    measured = qa.render_rotations(item, orient, t)
+    model = qa.render_rotations({**item, "commands": None}, orient, t)
+    ang = [
+        np.degrees(np.arccos(np.clip((np.trace(a.T @ b) - 1) / 2, -1, 1)))
+        for a, b in zip(measured, model, strict=True)
+    ]
+    assert max(ang) < 0.5

@@ -37,6 +37,16 @@ R-CNN persons, person-crop CLIP) and each frame gets flags:
     back to the renderer's own stabilisation model (:func:`horizon_roll`), which only
     shows the tilt the render intends; ``qa.json`` names the ``source`` of the horizon.
 
+Self boxes: when the clip's director path, IMU orientation and 360 view layer are at
+hand and the render was levelled with that IMU (dual fisheye, or an SDK stitch without
+FlowState), a person box is the wearer when its centre, seen through the rotation the
+clip was rendered with, lies in the wearer cone (:func:`cone_self`: the cone the
+geometric QA and the director use, ``WEARER_CONE_DEG`` around the clip's wearer axis).
+The own-body CLIP classifier (:func:`cutpoint.events.visual.self_boxes`) misses the
+wearer's head, goggles and gloves at the frame edge; it still runs, and a box either one
+tags is self (``self_method`` ``cone+clip``), or alone when the cone is unavailable
+(``clip``). ``self_tags`` counts the boxes each one tagged (``cone`` None without it).
+
 Pan metrics come from the director path (30 fps samples of
 :func:`cutpoint.pano.director.evaluate`, hard cuts excluded). Per clip:
 flag shares, longest runs, flagged spans, a 0-100 score and a pass/fail by
@@ -217,6 +227,45 @@ def _overlap(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return inter / np.maximum(np.minimum(aa[:, None], ab[None, :]), 1e-9)
 
 
+def edge_candidates(
+    rows: np.ndarray, sel: np.ndarray, th: QAThresholds, person_label: int = 1
+) -> np.ndarray:
+    """Per box of one frame (``rows`` in :func:`frame_flags` layout, ``sel`` its self
+    flags): a candidate for an edge cut. Kept (confident, not self, at least
+    ``subject_min_h`` tall) boxes of area >= ``edge_min_area``, and the subject (the
+    largest kept box) when at least ``size_min_h`` tall; a box sharing
+    ``edge_self_overlap`` with a self box is the wearer detected twice and is left out.
+
+    Shared by :func:`frame_flags` and ``360 qa --compare``
+    (:func:`cutpoint.pano.qa_compare.cut_boxes`)."""
+    if not len(rows):
+        return np.zeros(0, bool)
+    person = (rows[:, 1].astype(int) == person_label) & (rows[:, 2] >= th.person_min_score)
+    h = rows[:, 6] - rows[:, 4]
+    area = (rows[:, 5] - rows[:, 3]) * h
+    kept = person & ~sel & (h >= th.subject_min_h)
+    selfb = person & sel
+    cand = kept & (area >= th.edge_min_area)
+    if kept.any():
+        k = int(np.flatnonzero(kept)[np.argmax(area[kept])])
+        if h[k] >= th.size_min_h:
+            cand[k] = True
+    if cand.any() and selfb.any():  # the wearer detected twice is not a cut
+        cand &= _overlap(rows[:, 3:7], rows[selfb, 3:7]).max(1) < th.edge_self_overlap
+    return cand
+
+
+def edge_hit(rows: np.ndarray, th: QAThresholds) -> np.ndarray:
+    """Per box: touches the left / right edge, or the top while taller than
+    ``edge_top_h`` and ending above ``edge_top_max_y2``."""
+    if not len(rows):
+        return np.zeros(0, bool)
+    x1, y1, x2, y2 = (rows[:, c] for c in (3, 4, 5, 6))
+    m = th.edge_margin
+    top = (y1 <= m) & (y2 - y1 > th.edge_top_h) & (y2 < th.edge_top_max_y2)
+    return (x1 <= m) | (x2 >= 1 - m) | top
+
+
 def frame_flags(
     det: np.ndarray,
     is_self: np.ndarray,
@@ -270,18 +319,8 @@ def frame_flags(
         close = (area > th.close_area) | ((h >= th.close_h) & (w >= th.close_w))
         if (person & ~ok_self & close).any():
             flags.append("too_close")
-        cand = kept & (area >= th.edge_min_area)
-        if subj is not None and h[k] >= th.size_min_h:
-            cand[k] = True
-        if cand.any() and selfb.any():  # the wearer detected twice is not a cut
-            cand &= _overlap(rows[:, 3:7], rows[selfb, 3:7]).max(1) < th.edge_self_overlap
-        if cand.any():
-            x1, y1, x2, y2 = (rows[cand, c] for c in (3, 4, 5, 6))
-            m = th.edge_margin
-            top = (y1 <= m) & (h[cand] > th.edge_top_h) & (y2 < th.edge_top_max_y2)
-            hit = (x1 <= m) | (x2 >= 1 - m) | top
-            if hit.any():
-                flags.append("edge_cut")
+        if (edge_candidates(rows, sel, th, person_label) & edge_hit(rows, th)).any():
+            flags.append("edge_cut")
         lz = float(lowinfo_zs[i])
         if (gray_std[i] < th.lowinfo_std and lz > th.lowinfo_zs) or lz > th.lowinfo_zs_alone:
             flags.append("low_info")
@@ -422,6 +461,96 @@ def horizon_roll(orient: Any, path: dict[str, Any], times: np.ndarray) -> np.nda
         u = r.T @ up[i]
         out[i] = math.degrees(math.atan2(u[0], -u[1]))
     return out
+
+
+RENDER_ASPECT = (1920, 1080)  # rendered clip frame (vertical: swapped); only the aspect matters
+
+
+def render_rotations(item: dict[str, Any], orient: Any, src_times: np.ndarray) -> np.ndarray:
+    """Output ray -> camera ray ``(K, 3, 3)`` of an IMU-levelled rendered clip at
+    increasing source ``src_times``.
+
+    From the clip's emitted ``v360`` commands when it has them (as
+    :func:`qa_horizon.emitted_roll` replays them; an SDK equirect input is turned back
+    into camera coordinates), else the renderer's model ``R_VW @ view``
+    (:func:`render.stabilised_r_vw`, as :func:`horizon_roll`).
+    """
+    from cutpoint.pano import geometry as G  # noqa: PLC0415
+
+    t = np.asarray(src_times, float)
+    cmd = item.get("commands")
+    if cmd is not None:
+        first = round(cmd.start * cmd.fps)
+        j = np.clip(np.round(t * cmd.fps).astype(int), first, len(orient.q) - 1)
+        r = cmd.rotation(j / cmd.fps - cmd.start + 1e-6)
+        return G.SDK_EQUIRECT_FROM_CAMERA.T @ r if cmd.projection == "equirect" else r
+    from cutpoint.pano.director import evaluate  # noqa: PLC0415
+    from cutpoint.pano.project import pano_config  # noqa: PLC0415
+    from cutpoint.pano.render import MAX_FOLLOW_DEG, stabilised_r_vw  # noqa: PLC0415
+
+    cfg = pano_config()
+    fps = float(orient.meta.get("fps") or 30000 / 1001)
+    yaw, pitch, _ = evaluate(item["path"], t)
+    idx = np.clip(np.round(t * fps).astype(int), 0, len(orient.q) - 1)
+    r_vw = stabilised_r_vw(
+        orient,
+        idx,
+        float(cfg.get("level_strength", 0.7)),
+        float(cfg.get("tilt_follow_s", 0.5)),
+        float(cfg.get("max_follow_deg", MAX_FOLLOW_DEG)),
+    )
+    return np.stack(
+        [r_vw[i] @ G.view_matrix(float(yaw[i]), float(pitch[i])) for i in range(len(t))]
+    )
+
+
+def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> np.ndarray | None:
+    """Per detection row of a rendered clip: the box centre lies in the wearer cone.
+
+    The geometric QA's wearer test (:func:`qa_paths.person_rows`) in the rendered
+    picture: each box centre ``(cx, cy)`` (``det`` in :func:`frame_flags` layout,
+    frame index into ``src_times``) is the output ray of a rectilinear frame with the
+    path's FOV at that time, turned into camera coordinates with
+    :func:`render_rotations`, and is the wearer within ``WEARER_CONE_DEG`` of the
+    clip's wearer axis (:func:`views.wearer_axis`).
+
+    Returns:
+        The boolean array, or None (use the CLIP classifier) when the clip has no
+        director path or source, was not levelled with the IMU (a FlowState stitch or
+        Studio export: the picture's relation to the camera is unknown), or its IMU
+        orientation or 360 view layer is not cached.
+    """
+    from cutpoint.config import remap_source  # noqa: PLC0415
+    from cutpoint.pano import geometry as G  # noqa: PLC0415
+    from cutpoint.pano.director import evaluate  # noqa: PLC0415
+    from cutpoint.pano.views import load_views, wearer_axis  # noqa: PLC0415
+
+    path = item.get("path")
+    if path is None or not item.get("imu_levelled") or not path.get("source"):
+        return None
+    src = remap_source(path["source"])
+    orient = G.load_orientation(src)
+    if orient is None or orient.q is None:
+        return None
+    pv = load_views(src)
+    if pv is None:
+        return None
+    if not len(det):
+        return np.zeros(0, bool)
+    t = np.asarray(src_times, float)
+    rot = render_rotations(item, orient, t)
+    fov = evaluate(path, t)[2]
+    w, h = (RENDER_ASPECT[1], RENDER_ASPECT[0]) if path.get("vertical") else RENDER_ASPECT
+    fi = np.clip(det[:, 0].astype(int), 0, len(t) - 1)
+    hf = fov[fi].astype(float)
+    tx = np.tan(np.radians(hf) / 2)
+    ty = np.array([math.tan(math.radians(G.flat_fov(float(f), w, h)) / 2) for f in hf])
+    cx, cy = (det[:, 3] + det[:, 5]) / 2, (det[:, 4] + det[:, 6]) / 2
+    d = np.stack([(2 * cx - 1) * tx, (2 * cy - 1) * ty, np.ones(len(det))], 1)
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    cam = np.einsum("kij,kj->ki", rot[fi], d)
+    ang = np.degrees(np.arccos(np.clip(cam @ wearer_axis(pv), -1.0, 1.0)))
+    return ang <= G.WEARER_CONE_DEG
 
 
 # --------------------------------------------------------------------------- aggregation
@@ -746,8 +875,18 @@ def qa_clip(
     emb = data.emb.astype(np.float32)
     occl = V.prompt_score(emb, OCCL_POS, neg, models).max(1)
     low = V.prompt_score(emb, LOWINFO_POS, neg, models).mean(1)
-    is_self = V.self_boxes(data)
     src_t = item["offset"] + ts
+    clip_self = V.self_boxes(data)  # always run: also the fallback
+    cone = cone_self(item, data.det, src_t)
+    if cone is None:
+        is_self, self_method = clip_self, "clip"
+    else:
+        is_self, self_method = cone | clip_self, "cone+clip"
+    self_tags = {
+        "cone": None if cone is None else int(cone.sum()),
+        "clip": int(np.asarray(clip_self, bool).sum()),
+    }
+    logger.debug("%s: self boxes by %s %s", item["file"], self_method, self_tags)
     roll_frames = horizon(item, src_t)
     targets = targets_at(item["path"], src_t)
     recs = frame_flags(
@@ -778,7 +917,7 @@ def qa_clip(
         beauty = round(float(V.beauty_score(V.frame_scores(data, models)).mean()), 3)
     except FileNotFoundError:  # no aesthetic head installed
         beauty = None
-    return clip_record(item, dur, recs, fps, pan, hor, th, beauty)
+    return clip_record(item, dur, recs, fps, pan, hor, th, beauty, self_method, self_tags)
 
 
 def horizon_summary(roll: np.ndarray | None, source: str | None = None) -> dict[str, Any] | None:
@@ -808,6 +947,9 @@ FRAME_KEYS = (
     "gray_std",
     "roll",
 )
+# geometric QA: seconds to the view frame used (None: none), and the boxes dropped as
+# mostly outside the view ([x1, y1, x2, y2, is_self], clipped to the frame)
+EXTRA_FRAME_KEYS = ("view_dt", "slivers")
 
 
 def vl_summary(path: dict[str, Any] | None, offset: float, dur: float) -> dict[str, Any] | None:
@@ -834,14 +976,30 @@ def clip_record(
     hor: dict[str, float] | None,
     th: QAThresholds,
     beauty: float | None = None,
+    self_method: str | None = None,
+    self_tags: dict[str, int | None] | None = None,
 ) -> dict[str, Any]:
-    """The ``qa.json`` record of one clip (rendered or geometric QA)."""
+    """The ``qa.json`` record of one clip (rendered or geometric QA).
+
+    ``offset`` is the clip's source start, ``segment`` the path's planned
+    ``[start, end]`` (None without a path), ``self_method`` how self boxes were
+    tagged (``cone+clip`` or ``clip``, :func:`qa_clip`; ``cone`` for the geometric QA) and
+    ``self_tags`` the boxes each method tagged. Frames keep :data:`FRAME_KEYS`
+    plus :data:`EXTRA_FRAME_KEYS` where the QA recorded them."""
     vl = vl_summary(item.get("path"), float(item["offset"]), dur)
     agg = aggregate_clip(recs, fps, pan, hor, th, vl)
+    seg = (item.get("path") or {}).get("segment") or {}
+    segment = None
+    if "start" in seg and "end" in seg:
+        segment = [round(float(seg["start"]), 3), round(float(seg["end"]), 3)]
     return {
         "file": item["file"],
         "kind": item["kind"],
         "path_missing": bool(item.get("path_missing")),
+        "offset": round(float(item["offset"]), 3),
+        "segment": segment,
+        "self_method": self_method,
+        "self_tags": self_tags,
         "duration": round(dur, 2),
         "share": agg["share"],
         "runs": agg["runs"],
@@ -854,7 +1012,9 @@ def clip_record(
         "pass": agg["pass"],
         "fails": agg["fails"],
         "flags": agg["flags"],
-        "frames": [{k: r[k] for k in FRAME_KEYS} for r in recs],
+        "frames": [
+            {k: r[k] for k in (*FRAME_KEYS, *(x for x in EXTRA_FRAME_KEYS if x in r))} for r in recs
+        ],
     }
 
 

@@ -175,8 +175,45 @@ def test_close_person_mostly_outside_the_frame_is_an_edge_cut() -> None:
     r = flags_of(make_views({2: [close]}, source="k.lrv"), fixed_path())
     assert r["boxes"] == []  # dropped as a sliver (MIN_VISIBLE) ...
     assert r["flags"] == ["edge_cut"]  # ... but still an edge cut
-    far = (0.99, 70.0, -8.0, 60.0, 28.0, FWD_V)  # a thin sliver: nothing
-    assert flags_of(make_views({2: [far]}, source="l.lrv"), fixed_path())["flags"] == []
+    far = (0.99, 70.0, -8.0, 60.0, 28.0, FWD_V)  # a thin sliver beside a larger friend: nothing
+    assert flags_of(make_views({2: [far, FRIEND]}, source="l.lrv"), fixed_path())["flags"] == []
+
+
+def test_sliver_that_would_be_the_subject_is_an_edge_cut_at_any_area() -> None:
+    # alone, the thin sliver is the largest person: the rendered QA's subject, cut at any area
+    far = (0.99, 70.0, -8.0, 60.0, 28.0, FWD_V)
+    pv = make_views({2: [far]}, source="m.lrv")
+    times = np.array([2.4])
+    yaw, pitch, fov = D.evaluate(fixed_path(), times)
+    det, is_self, slivers = QP.project_frames(pv, np.array([2]), yaw, pitch, fov)
+    assert len(det) == 0 and len(slivers) == 1
+    x1, y1, x2, y2 = slivers[0, 3:7]
+    assert (x2 - x1) * (y2 - y1) < TH.edge_min_area  # below the other-people area floor ...
+    assert y2 - y1 >= TH.size_min_h
+    assert QP.sliver_edge_frames(slivers, TH) == set()
+    assert QP.sliver_subject_frames(slivers, det, is_self, TH) == {0}  # ... but the subject
+    assert flags_of(pv, fixed_path())["flags"] == ["edge_cut"]
+    # a short sliver (under size_min_h) or the wearer's is not the subject
+    short = (0.99, 70.0, -8.0, 60.0, 5.0, FWD_V)
+    assert flags_of(make_views({2: [short]}, source="n.lrv"), fixed_path())["flags"] == []
+    wearer = slivers.copy()
+    wearer[:, 7] = 1.0
+    assert QP.sliver_subject_frames(wearer, det, is_self, TH) == set()
+    # a self box it overlaps: the wearer detected twice, not a cut
+    own = np.array([[0, 1, 0.99, *slivers[0, 3:7]]])
+    assert QP.sliver_subject_frames(slivers, own, np.array([True]), TH) == set()
+
+
+def test_slivers_are_recorded_per_frame_with_score_filter_and_is_self() -> None:
+    far = (0.99, 70.0, -8.0, 60.0, 28.0, FWD_V)
+    r = flags_of(make_views({2: [far]}, source="s.lrv"), fixed_path())
+    assert len(r["slivers"]) == 1
+    assert r["slivers"][0][4] is False
+    low = (0.3, *far[1:])
+    assert flags_of(make_views({2: [low]}, source="s2.lrv"), fixed_path())["slivers"] == []
+    wear_sliver = (0.99, 70.0, -8.0, 60.0, 28.0, WEAR_V)
+    r = flags_of(make_views({2: [wear_sliver]}, source="s3.lrv"), fixed_path())
+    assert [s[4] for s in r["slivers"]] == [True]
 
 
 def test_tall_box_outside_the_wearer_cone_is_a_close_friend_not_self() -> None:
