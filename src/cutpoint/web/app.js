@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -19,8 +19,11 @@ const live = (status) => status === 'running' || status === 'cancelling'; // the
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
 const SIDE_MIN = 290; // pixels; the column's CSS default is 290-380
 const SIDE_MAX = 640;
-const STAGE_MIN = 360; // pixels the preview keeps when the sequence column widens
-const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
+const MOM_KEY = 'cutpoint.momentsWidth'; // localStorage: the moments column width the user dragged to
+const MOM_MIN = 260; // pixels; the column's CSS default is 260-340
+const MOM_MAX = 640;
+const STAGE_MIN = 360; // pixels the preview keeps when either column widens (app.css: the stage track)
+const SPLIT_STEP = 16; // pixels per arrow key on a column splitter; Shift moves four steps
 const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for every preview video
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
 const ADV_KEY = 'cutpoint.advancedExport'; // localStorage: "1" while Show advanced export options is on (off by default)
@@ -3492,8 +3495,12 @@ async function saveSettings() {
   }
   if (String(box.checked) !== box.dataset.saved) body.vision = box.checked;
   const ai = aiChanges();
+  if (ai && $('#setAiModel').value === AI_OTHER && !aiModel()) {
+    err.textContent = 'Enter the model id.';
+    return $('#setAiModelOther').focus();
+  }
   if (ai && !ai.model && !aiCustom() && aiOffer()?.model_required) {
-    err.textContent = `Enter a model name for ${aiOffer().title}.`;
+    err.textContent = `Choose a model for ${aiOffer().title}.`;
     return $('#setAiModel').focus();
   }
   if (ai) body.assistant = ai;
@@ -3555,16 +3562,17 @@ const AI_HINTS = {
   custom: 'The provider and base URL set in config.json, which no preset has. It keeps working, and its model can be changed here; choose a preset and save to use that instead.',
 };
 const AI_MODEL_HINTS = {
-  ollama: 'The name of a model Ollama has pulled. Empty: qwen3.5:9b when Ollama has it, else the vision model.',
-  anthropic: 'Empty: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
+  ollama: 'The name of a model Ollama has pulled. Default: qwen3.5:9b when Ollama has it, else the vision model.',
+  anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
   openai: 'Needed: the name of an OpenAI chat model your key can use. *-codex models are not supported (chat models only).',
   xai: 'Needed: the name of an xAI model your key can use.',
-  custom: "The model of the custom provider, saved in config.json. Empty: the server's model, when it serves only one.",
+  custom: "The model of the custom provider, saved in config.json. Default: the server's model, when it serves only one.",
 };
+const AI_TYPE_ID = 'Choose Other model… to enter an id.';
 const AI_LIST_STATES = {
-  key_needed: 'The model list loads once there is an API key; you can type a name.',
-  consent_needed: 'You can type a name.',
-  unsupported: 'You can type a name.',
+  key_needed: `The model list loads once there is an API key. ${AI_TYPE_ID}`,
+  consent_needed: AI_TYPE_ID,
+  unsupported: AI_TYPE_ID,
 };
 
 /** Fill the AI assistant fields from the settings' assistant view. */
@@ -3577,10 +3585,10 @@ function fillAiSettings(a) {
   if (a.custom) options.push(h('option', { value: AI_CUSTOM, text: 'Custom (from config.json)' }));
   sel.replaceChildren(...options);
   sel.value = sel.dataset.saved = a.custom ? AI_CUSTOM : a.provider;
-  $('#setAiModel').value = $('#setAiModel').dataset.saved = a.model;
+  $('#setAiModel').dataset.saved = a.model;
   $('#setAiUrl').value = a.url;
   $('#setAiKeyInput').value = '';
-  renderAiFields();
+  renderAiFields(a.model);
   loadAiModels(false);
 }
 
@@ -3591,16 +3599,19 @@ const aiOffer = () => {
   return S.ai?.providers.find((p) => p.name === name);
 };
 
-/** The hints, model field, base URL (Custom only) and key status of the provider chosen. */
-function renderAiFields() {
+/** The model chosen: the select's, or the id typed under "Other model…"; '' is the default. */
+const aiModel = () =>
+  $('#setAiModel').value === AI_OTHER ? $('#setAiModelOther').value.trim() : $('#setAiModel').value;
+
+/** The hints, model field, base URL (Custom only) and key status of the provider chosen;
+ * `model` shows that model instead of the one chosen (see renderAiModelList). */
+function renderAiFields(model) {
   const p = aiOffer();
   if (!p) return;
   const custom = aiCustom();
-  const model = $('#setAiModel');
   $('#setAiProviderHint').textContent = AI_HINTS[custom ? AI_CUSTOM : p.name] ?? '';
-  model.placeholder = custom ? '' : p.placeholder;
-  model.setAttribute('aria-required', String(!custom && p.model_required));
-  renderAiModelList();
+  $('#setAiModel').setAttribute('aria-required', String(!custom && p.model_required));
+  renderAiModelList(model);
   $('#setAiModelHint').textContent = AI_MODEL_HINTS[custom ? AI_CUSTOM : p.name] ?? '';
   $('#setAiUrlField').hidden = $('#setAiUrlHint').hidden = !custom;
   $('#setAiUrlHint').textContent = custom ? 'Set in config.json (assistant.url); edit that file to change it.' : '';
@@ -3621,20 +3632,29 @@ function renderAiFields() {
     : `Read from ${p.key_env.join(' or ')} when cutpoint ui starts, else from the system keyring. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.${where === 'env' ? ' The environment variable is used before a saved key.' : ''}`;
 }
 
-/** The Model field's suggestions: the models the provider listed, else the preset's defaults. */
-function renderAiModelList() {
+/** The Model select (#521): the default, the models the provider listed, "Other model…" last.
+ * Without `model` the choice made stays, an id typed under Other too; a model the list lacks
+ * stays chosen as an extra option, so opening Settings never changes it. */
+function renderAiModelList(model) {
   const p = aiOffer();
   if (!p) return;
-  const listed = S.aiModels?.[$('#setAiProvider').value];
-  const defaults = aiCustom() ? [] : p.models; // the defaults when no list came
-  const options = listed?.length
-    ? listed.map((m) => h('option', { value: m.id, label: m.name !== m.id ? m.name : null }))
-    : defaults.map((m) => h('option', { value: m }));
-  $('#setAiModels').replaceChildren(...options);
+  const sel = $('#setAiModel');
+  const input = $('#setAiModelOther');
+  const typing = model === undefined && sel.value === AI_OTHER;
+  const current = model ?? aiModel();
+  const custom = aiCustom();
+  const { options, value } = aiModelChoices(current, S.aiModels?.[$('#setAiProvider').value], {
+    typing, required: !custom && p.model_required, placeholder: custom ? '' : p.placeholder,
+    fallback: custom ? [] : p.models, // the preset's models when no list came
+  });
+  sel.replaceChildren(...options.map((o) => h('option', { value: o.value, text: o.text })));
+  sel.value = value;
+  if (!typing) input.value = '';
+  $('#setAiModelOtherField').hidden = value !== AI_OTHER;
 }
 
 /** Ask the server for the models the chosen preset's provider offers (cached there; `refresh`
- * asks the provider again) and offer them in the Model list. Typing any name still works. */
+ * asks the provider again) and offer them in the Model list. Other model… takes any other id. */
 async function loadAiModels(refresh) {
   const sel = $('#setAiProvider');
   const status = $('#setAiModelsStatus');
@@ -3655,12 +3675,13 @@ async function loadAiModels(refresh) {
   const n = S.aiModels[choice].length;
   if (r.state === 'ok') {
     status.textContent = n
-      ? `${n} model${n === 1 ? '' : 's'} listed by the provider; you can type another name.`
-      : 'The provider listed no models; type a name.';
+      ? `${n} model${n === 1 ? '' : 's'} listed by the provider. Choose Other model… to enter another.`
+      : `The provider listed no models. ${AI_TYPE_ID}`;
   } else if (r.state === 'error') {
-    status.textContent = `Could not load the model list: ${String(r.message ?? '').replace(/\.?$/, '.')} You can type a name.`;
+    status.textContent = `Could not load the model list: ${String(r.message ?? '').replace(/\.?$/, '.')} ${AI_TYPE_ID}`;
   } else {
-    status.textContent = [r.message, AI_LIST_STATES[r.state]].filter(Boolean).join(' ');
+    const msg = r.message && String(r.message).replace(/\.?$/, '.');
+    status.textContent = [msg, AI_LIST_STATES[r.state]].filter(Boolean).join(' ');
   }
 }
 
@@ -3670,10 +3691,10 @@ async function loadAiModels(refresh) {
 function aiChanges() {
   if (!S.ai) return null;
   const sel = $('#setAiProvider');
-  const model = $('#setAiModel');
-  if (aiCustom()) return model.value.trim() !== model.dataset.saved ? { model: model.value.trim() } : null;
-  const now = { provider: sel.value, model: model.value.trim(), url: '' };
-  return now.provider !== sel.dataset.saved || now.model !== model.dataset.saved ? now : null;
+  const saved = $('#setAiModel').dataset.saved;
+  if (aiCustom()) return aiModel() !== saved ? { model: aiModel() } : null;
+  const now = { provider: sel.value, model: aiModel(), url: '' };
+  return now.provider !== sel.dataset.saved || now.model !== saved ? now : null;
 }
 
 /** Save the typed key in the system keyring, or remove the saved one; the field is emptied either way. */
@@ -3825,9 +3846,11 @@ function bindSettings() {
   $('#setAiProvider').addEventListener('change', (e) => {
     // model names belong to one provider: back to the saved one, else the default
     const back = e.target.value === e.target.dataset.saved;
-    $('#setAiModel').value = back ? $('#setAiModel').dataset.saved : '';
-    renderAiFields();
+    renderAiFields(back ? $('#setAiModel').dataset.saved : '');
     loadAiModels(false);
+  });
+  $('#setAiModel').addEventListener('change', (e) => {
+    $('#setAiModelOtherField').hidden = e.target.value !== AI_OTHER; // the id field only for Other
   });
   $('#setAiModelsRefresh').addEventListener('click', () => loadAiModels(true));
   $('#setAiKeySave').addEventListener('click', () => saveAiKey(false));
@@ -3865,91 +3888,108 @@ function renderAll(seekToStart) {
 }
 
 /**
- * The separator on the sequence column's left edge: drag, arrow keys (Home/End for the limits) or
- * double-click to reset. The width is remembered per browser; without storage it lasts the session.
+ * The separators beside the moments column and the sequence column: drag, arrow keys (Home/End for
+ * the limits) or double-click to reset. Each width is remembered per browser; without storage it
+ * lasts the session. A column never widens past half the window, nor so far that the preview and
+ * the other column together get less than STAGE_MIN.
  */
-function initSplitter() {
-  const bar = $('#sideSplit');
+function initSplitters() {
   const ws = $('#workspace');
-  const side = $('#side');
-  let pref = null; // dragged width in pixels, or null for the CSS default
-  try {
-    pref = Number(localStorage.getItem(SIDE_KEY)) || null;
-  } catch {
-    // storage blocked: start from the default
-  }
-  const store = () => {
+  const applies = [];
+  // Each column's limit depends on the other's width: apply ``first``, then the other (its limit
+  // and its CSS default follow), then ``first`` once more, as its limit follows the other's width.
+  const refresh = (first) => [first, ...applies.filter((a) => a !== first), first].forEach((a) => a());
+  const splitter = ({ bar, col, other, prop, key, min, maxW, dir }) => {
+    let pref = null; // dragged width in pixels, or null for the CSS default
     try {
-      if (pref == null) localStorage.removeItem(SIDE_KEY);
-      else localStorage.setItem(SIDE_KEY, String(pref));
+      pref = Number(localStorage.getItem(key)) || null;
     } catch {
-      // storage blocked or full: the width still applies until reload
+      // storage blocked: start from the default
     }
-  };
-  const max = () => Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.floor(innerWidth / 2),
-    ws.clientWidth - $('.moments').offsetWidth - STAGE_MIN));
-  const clamp = (w, hi = max()) => Math.round(Math.min(Math.max(w, SIDE_MIN), hi));
-  // pref stays as chosen; only what is applied is clamped, so a wider window gets it back.
-  // Layout is read once, before the write: reading it after would force a synchronous relayout.
-  const apply = () => {
-    const hi = max();
-    const w = pref == null ? null : clamp(pref, hi);
-    if (w == null) ws.style.removeProperty('--side-w');
-    else ws.style.setProperty('--side-w', `${w}px`);
-    bar.setAttribute('aria-valuemin', SIDE_MIN);
-    bar.setAttribute('aria-valuemax', hi);
-    bar.setAttribute('aria-valuenow', w ?? side.offsetWidth);
-  };
-  const set = (w) => {
-    pref = w == null ? null : clamp(w);
-    apply();
-  };
+    const store = () => {
+      try {
+        if (pref == null) localStorage.removeItem(key);
+        else localStorage.setItem(key, String(pref));
+      } catch {
+        // storage blocked or full: the width still applies until reload
+      }
+    };
+    const max = () => Math.max(min, Math.min(maxW, Math.floor(innerWidth / 2),
+      ws.clientWidth - other.offsetWidth - STAGE_MIN));
+    const clamp = (w, hi = max()) => Math.round(Math.min(Math.max(w, min), hi));
+    // pref stays as chosen; only what is applied is clamped, so a wider window gets it back.
+    // Each apply reads layout before its own write; refresh() chains three, so a change costs up to
+    // two forced relayouts (at most one change per frame while dragging).
+    const apply = () => {
+      const hi = max();
+      const w = pref == null ? null : clamp(pref, hi);
+      if (w == null) ws.style.removeProperty(prop);
+      else ws.style.setProperty(prop, `${w}px`);
+      bar.setAttribute('aria-valuemin', min);
+      bar.setAttribute('aria-valuemax', hi);
+      bar.setAttribute('aria-valuenow', w ?? col.offsetWidth);
+    };
+    const set = (w) => {
+      pref = w == null ? null : clamp(w);
+      refresh(apply);
+    };
 
-  bar.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    bar.setPointerCapture(e.pointerId);
-    bar.classList.add('dragging');
-    const x0 = e.clientX;
-    const w0 = side.offsetWidth;
-    // At most one resize per frame, however fast the pointer reports.
-    let next = null;
-    let frame = 0;
-    const flush = () => {
-      frame = 0;
-      if (next != null) set(next);
-      next = null;
-    };
-    const move = (ev) => {
-      next = w0 + x0 - ev.clientX; // dragging left widens the column
-      if (!frame) frame = requestAnimationFrame(flush);
-    };
-    const end = () => {
-      cancelAnimationFrame(frame);
-      flush();
-      bar.classList.remove('dragging');
-      bar.removeEventListener('pointermove', move);
-      bar.removeEventListener('lostpointercapture', end);
+    bar.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      bar.setPointerCapture(e.pointerId);
+      bar.classList.add('dragging');
+      const x0 = e.clientX;
+      const w0 = col.offsetWidth;
+      // At most one resize per frame, however fast the pointer reports.
+      let next = null;
+      let frame = 0;
+      const flush = () => {
+        frame = 0;
+        if (next != null) set(next);
+        next = null;
+      };
+      const move = (ev) => {
+        next = w0 + dir * (ev.clientX - x0); // dragging away from the column widens it
+        if (!frame) frame = requestAnimationFrame(flush);
+      };
+      const end = () => {
+        cancelAnimationFrame(frame);
+        flush();
+        bar.classList.remove('dragging');
+        bar.removeEventListener('pointermove', move);
+        bar.removeEventListener('lostpointercapture', end);
+        store();
+      };
+      bar.addEventListener('pointermove', move);
+      bar.addEventListener('lostpointercapture', end);
+    });
+    bar.addEventListener('keydown', (e) => {
+      const step = (e.shiftKey ? SPLIT_STEP * 4 : SPLIT_STEP) * dir;
+      const w = col.offsetWidth;
+      const next = { ArrowLeft: w - step, ArrowRight: w + step, Home: min, End: max() }[e.key];
+      if (next == null) return;
+      e.preventDefault();
+      set(next);
       store();
-    };
-    bar.addEventListener('pointermove', move);
-    bar.addEventListener('lostpointercapture', end);
-  });
-  bar.addEventListener('keydown', (e) => {
-    const step = e.shiftKey ? SIDE_STEP * 4 : SIDE_STEP;
-    const w = side.offsetWidth;
-    const next = { ArrowLeft: w + step, ArrowRight: w - step, Home: SIDE_MIN, End: max() }[e.key];
-    if (next == null) return;
-    e.preventDefault();
-    set(next);
-    store();
-  });
-  bar.addEventListener('dblclick', () => {
-    set(null);
-    store();
-  });
-  addEventListener('resize', apply);
-  apply();
+    });
+    bar.addEventListener('dblclick', () => {
+      set(null);
+      store();
+    });
+    return apply;
+  };
+  const side = $('#side');
+  const moments = $('.moments');
+  // dir: +1 when the column is left of its bar (dragging right widens it), -1 when right of it
+  applies.push(
+    splitter({ bar: $('#sideSplit'), col: side, other: moments, prop: '--side-w', key: SIDE_KEY,
+      min: SIDE_MIN, maxW: SIDE_MAX, dir: -1 }),
+    splitter({ bar: $('#momSplit'), col: moments, other: side, prop: '--mom-w', key: MOM_KEY,
+      min: MOM_MIN, maxW: MOM_MAX, dir: 1 }),
+  );
+  addEventListener('resize', () => refresh(applies[0]));
+  refresh(applies[0]);
 }
 
 /**
@@ -4361,7 +4401,7 @@ function startColor() {
 }
 
 function bind() {
-  initSplitter();
+  initSplitters();
   const toggleMute = initVolume();
   bindSettings();
   initNerdStats();
@@ -4463,7 +4503,7 @@ function bind() {
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    // text fields, the column splitter (its own arrow keys) and any dialog or popover keep their keys
+    // text fields, the column splitters (their own arrow keys) and any dialog or popover keep their keys
     if (e.target.closest('input:not([type=range]),textarea,select,[role=separator],dialog,[popover]')) return;
     if (e.key === '[' || e.key === ']') {
       e.preventDefault();

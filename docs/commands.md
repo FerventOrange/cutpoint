@@ -312,7 +312,9 @@ The sequence panel shows a thumbnail per clip and supports inline rename (pencil
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
-remembered per browser. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
+remembered per browser. A second splitter between the Moments column and the preview works the same
+way (Shift for bigger steps); its width is remembered per browser too, stays between 260 and 640 px
+and at most half the window, and never leaves the preview narrower than 360 px. If the port is busy, `cutpoint ui` exits 1 with an `ERROR` naming the port;
 pass another `--port`.
 
 Undo and Redo in the Sequence header (Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z) step back and forward
@@ -400,19 +402,19 @@ The AI Chat tab talks to the model set in the [`assistant`](configuration.md#ass
 URL is typed:
 
 - **None (local Ollama)**, the default: the configured Ollama (`OLLAMA_HOST` or `ollama_url`).
-  Type the name of a pulled model; empty uses `qwen3.5:9b`, else the vision model.
+  Choose a pulled model, or Other model… for any id; Default uses `qwen3.5:9b`, else the vision model.
 - **Claude (Anthropic)**: `https://api.anthropic.com`; `claude-sonnet-5-5` (default) or
   `claude-opus-5-5`.
-- **Codex (OpenAI)**: `https://api.openai.com/v1`; type an OpenAI chat model name
+- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI chat model
   (`*-codex` models need OpenAI's Responses API and are not supported).
-- **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); type an xAI model name.
+- **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); choose an xAI model.
 
 A base URL set in `config.json` that no preset has (LM Studio, vLLM, llama-server, OpenRouter, an
 Ollama on another machine) shows as "Custom (from config.json)" and keeps working: its base URL
 is read-only there, and its model can still be changed
 ([`assistant`](configuration.md#assistant)).
 
-The Model field offers the models the provider lists, and any other name can be typed. Ollama
+The Model dropdown offers the models the provider lists. Ollama
 lists its pulled models (`/api/tags`); Anthropic, OpenAI and xAI list theirs (`/v1/models`, with
 the key) only once the key is set and you agreed to that provider and host in the AI Chat tab
 (see below); until then nothing is asked and the field says why. A preset other than the saved
@@ -422,8 +424,9 @@ Models that do not chat here are left out by name: ids starting with `text-embed
 `whisper-`, `dall-e-`, `omni-moderation-`, `text-moderation-`, `gpt-image-`, `sora-`,
 `davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
 `imagine` or `codex` (OpenAI and xAI). A list is
-kept for 10 minutes; Refresh list asks again. When it cannot be loaded, Claude still offers its
-two models and you can type a name.
+kept for 10 minutes; Refresh list asks again. The Model dropdown offers the listed models; when
+the list cannot be loaded it offers the preset's own models (Claude's two, Ollama's `qwen3.5:9b`) and the saved model,
+and "Other model…" shows a Model id field to type any other id.
 
 Saving there checks that the provider answers (reachable, a model chosen and, at
 `api.openai.com`, `api.x.ai` and `api.anthropic.com`, the key accepted) and says why when it

@@ -20,16 +20,18 @@ param(
     [switch]$Cuda,
     [string]$Source = "",
     [switch]$NoFfmpeg,
+    [switch]$Ollama,
+    [switch]$NoOllama,
     [switch]$Help
 )
 
 function Invoke-CutpointInstaller {
     param(
         [bool]$Lite, [bool]$Yes, [bool]$DryRun, [bool]$Cpu, [bool]$Cuda,
-        [string]$Source, [bool]$NoFfmpeg, [bool]$Help, [object[]]$Extra
+        [string]$Source, [bool]$NoFfmpeg, [bool]$Ollama, [bool]$NoOllama, [bool]$Help, [object[]]$Extra
     )
 
-    $CUTPOINT_VERSION_DEFAULT = "0.3.0"
+    $CUTPOINT_VERSION_DEFAULT = "0.4.0"
 
     # uv is installed from this pinned installer when missing (keep in step with install.sh and the Dockerfile pin).
     $UV_VERSION = "0.13.5"
@@ -42,6 +44,8 @@ function Invoke-CutpointInstaller {
     $CUDA_BACKEND = "cu126"
     $OLLAMA_MODEL = "qwen3-vl:8b"
     $OLLAMA_URL = "http://127.0.0.1:11434"
+    $OLLAMA_WINGET_ID = "Ollama.Ollama"
+    $OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
     $FFMPEG_ID = "Gyan.FFmpeg"
 
     # Native commands print their own errors; the script checks $LASTEXITCODE.
@@ -56,6 +60,7 @@ function Invoke-CutpointInstaller {
         Req = ""; NoSources = $false
         FfmpegMissing = $false; InstalledVersion = "?"
         SetupDone = "no"; OllamaDone = "no"
+        OllamaChoice = ""; OllamaStatus = "not checked"; OllamaUp = $false; OllamaHint = ""
         Version = ""
     }
 
@@ -91,10 +96,14 @@ Modes:
   (default)         Full: every feature. With an NVIDIA GPU: CUDA torch and GPU libraries
                     ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring,ski]").
   -Lite             Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring,ski]"). Analyze, clips,
-                    assemble and edit work on the CPU; Ollama features work if you have Ollama.
+                    assemble and edit work on the CPU. Lite has no Ollama: it does not offer, install
+                    or start it (the AI assistant can use a third-party provider instead).
 
 Options:
-  -Yes              Answer yes to the optional downloads (cutpoint setup, Ollama model).
+  -Yes              Answer yes to the optional steps (install Ollama, cutpoint setup, Ollama model).
+  -Ollama           Install Ollama when it is missing, without asking. Full mode only: with -Lite
+                    it prints a warning and is ignored.
+  -NoOllama         Never offer to install Ollama (full mode; lite never offers it).
   -DryRun           Print every command that would run and change nothing.
   -Cpu              Force CPU torch even when an NVIDIA GPU is found.
   -Cuda             Force CUDA torch (cu126) even when no NVIDIA GPU is found.
@@ -109,6 +118,7 @@ except empty or 0 counts as on):
   CUTPOINT_YES=1           same as -Yes
   CUTPOINT_DRY_RUN=1       same as -DryRun
   CUTPOINT_NO_FFMPEG=1     same as -NoFfmpeg
+  CUTPOINT_OLLAMA=1|0      same as -Ollama / -NoOllama
   CUTPOINT_TORCH=cpu|cuda  same as -Cpu / -Cuda
   CUTPOINT_SOURCE=SRC      same as -Source
   CUTPOINT_VERSION=X.Y.Z   release to install for -Source pypi (default: the version in this script)
@@ -116,9 +126,15 @@ except empty or 0 counts as on):
   UV_TOOL_DIR, UV_TOOL_BIN_DIR, XDG_BIN_HOME   where uv puts tools and their commands
                            (default: %APPDATA%\uv\tools and ~\.local\bin)
 
-Optional prompts (full mode, default No): "cutpoint setup" (model weights, about 8 GB) and,
-when Ollama is running, pulling qwen3-vl:8b (about 6 GB). With no interactive console the
-answer is No unless -Yes is given.
+Optional prompts (default No; with no interactive console the answer is No unless -Yes is given):
+  - Install Ollama (full mode only; lite skips this step), when it is not found. Ollama runs the
+    local AI models for --vision rating and the AI assistant. It uses
+    `winget install --id Ollama.Ollama -e`, or prints the download link (https://ollama.com/download)
+    when winget is missing or fails. Afterwards it waits for the server; it starts `ollama serve`
+    (hidden) only when the Ollama app has not. A declined or failed Ollama install never fails the
+    Cutpoint install.
+  - Pull qwen3-vl:8b (about 6 GB), full mode only, when Ollama is running.
+  - "cutpoint setup" (model weights, about 8 GB), full mode only.
 '@
     }
 
@@ -195,6 +211,12 @@ answer is No unless -Yes is given.
         if (Test-On $env:CUTPOINT_YES) { $S.Yes = $true }
         if (Test-On $env:CUTPOINT_DRY_RUN) { $S.DryRun = $true }
         if (Test-On $env:CUTPOINT_NO_FFMPEG) { $S.NoFfmpeg = $true }
+        if ($Ollama -and $NoOllama) { Bad-Usage "-Ollama and -NoOllama contradict each other" }
+        if ($env:CUTPOINT_OLLAMA) {
+            if (Test-On $env:CUTPOINT_OLLAMA) { $S.OllamaChoice = "1" } else { $S.OllamaChoice = "0" }
+        }
+        if ($Ollama) { $S.OllamaChoice = "1" }
+        if ($NoOllama) { $S.OllamaChoice = "0" }
         if (-not $S.Source) { $S.Source = [string]$env:CUTPOINT_SOURCE }
         if (-not $S.Torch) {
             switch ([string]$env:CUTPOINT_TORCH) {
@@ -567,18 +589,131 @@ answer is No unless -Yes is given.
         }
     }
 
-    function Test-Ollama {
-        if (-not (Have "ollama")) { return $false }
+    # ------------------------------------------------------------ ollama
+
+    function Test-OllamaServer {
         try {
             $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "$OLLAMA_URL/api/version"
             return $true
         } catch { return $false }
     }
 
+    # Wait up to about 20 seconds for the server.
+    function Wait-Ollama {
+        for ($n = 0; $n -lt 20; $n++) {
+            if (Test-OllamaServer) { return $true }
+            Start-Sleep -Seconds 1
+        }
+        return (Test-OllamaServer)
+    }
+
+    # True when the ollama command is usable; also finds the per-user install that is not on PATH yet.
+    function Find-Ollama {
+        if (Have "ollama") { return $true }
+        if ($env:LOCALAPPDATA) {
+            $dir = Join-Path $env:LOCALAPPDATA "Programs\Ollama"
+            if (Test-Path -LiteralPath (Join-Path $dir "ollama.exe")) {
+                $env:PATH = "$($env:PATH);$dir"
+                return $true
+            }
+        }
+        return $false
+    }
+
+    # The Ollama app normally starts the server itself; start `ollama serve` (hidden) only when it did not.
+    function Start-OllamaServe {
+        if ($S.DryRun) {
+            Say "+ ollama serve   (hidden; only when the server is not up after 20 s)"
+            return $true
+        }
+        Say "Ollama is not answering at ${OLLAMA_URL}: starting 'ollama serve' in the background."
+        try {
+            Start-Process -FilePath (Get-Command ollama).Source -ArgumentList "serve" -WindowStyle Hidden
+        } catch { return $false }
+        return (Wait-Ollama)
+    }
+
+    # Install Ollama with winget; returns $true when it succeeded (or is only planned).
+    function Install-OllamaPackage {
+        if (-not (Have "winget")) {
+            Warn "Ollama not installed: winget is not available; download Ollama from $OLLAMA_DOWNLOAD_URL"
+            $S.OllamaStatus = "skipped (winget not found; download Ollama from $OLLAMA_DOWNLOAD_URL)"
+            return $false
+        }
+        $ok = Invoke-Run @("winget", "install", "--id", $OLLAMA_WINGET_ID, "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements")
+        if (-not $ok) {
+            Warn "The Ollama install failed; install it later from $OLLAMA_DOWNLOAD_URL (or: winget install --id $OLLAMA_WINGET_ID -e)"
+            $S.OllamaStatus = "failed (install it from $OLLAMA_DOWNLOAD_URL)"
+            return $false
+        }
+        return $true
+    }
+
+    # Offer to install Ollama; sets OllamaStatus and OllamaUp (true when the server is, or in a dry run
+    # would be, up). Never fails the install.
+    function Invoke-OllamaOffer {
+        $S.OllamaUp = $false
+        $S.OllamaHint = ""
+        if (Find-Ollama) {
+            $S.OllamaStatus = "already installed"
+            if (Test-OllamaServer) {
+                $S.OllamaUp = $true
+            } elseif (-not $S.DryRun) {
+                $S.OllamaHint = "Ollama is installed but not running; start it, then: ollama pull $OLLAMA_MODEL"
+            }
+            return
+        }
+        if (Test-OllamaServer) {
+            $S.OllamaStatus = "server running at $OLLAMA_URL (no ollama command; not installed)"
+            return
+        }
+        if ($S.OllamaChoice -eq "0") {
+            $S.OllamaStatus = "skipped (-NoOllama or CUTPOINT_OLLAMA=0)"
+            return
+        }
+        if ($S.OllamaChoice -ne "1" -and -not (Ask "Install Ollama (local AI models for vision rating and the AI assistant)?")) {
+            $S.OllamaStatus = "declined"
+            return
+        }
+        if ($S.OllamaChoice -eq "1") {
+            Say "Installing Ollama (-Ollama or CUTPOINT_OLLAMA=1)."
+        }
+        if (-not (Install-OllamaPackage)) { return }
+        $S.OllamaStatus = "installed"
+        if ($S.DryRun) {
+            Say "+ wait up to 20 s for $OLLAMA_URL/api/version"
+            $null = Start-OllamaServe
+            $S.OllamaUp = $true
+            return
+        }
+        Update-SessionPath
+        if (-not (Find-Ollama)) {
+            Warn "ollama is not on PATH after the install; open a new terminal."
+            $S.OllamaStatus = "installed (not on PATH yet; open a new terminal)"
+            return
+        }
+        if ((Wait-Ollama) -or (Start-OllamaServe)) {
+            $S.OllamaUp = $true
+        } else {
+            Warn "Ollama is installed but the server did not start; run: ollama serve"
+            $S.OllamaStatus = "installed (server not running; start it with: ollama serve)"
+        }
+    }
+
     function Invoke-OptionalDownloads {
         $S.SetupDone = "no"
         $S.OllamaDone = "no"
-        if ($S.Lite) { return }
+        $S.OllamaStatus = "not checked"
+        $S.OllamaUp = $false
+        # Lite has no Ollama (the AI assistant can use a third-party provider); setup is full-only too.
+        if ($S.Lite) {
+            $S.OllamaStatus = "not part of lite"
+            if ($S.OllamaChoice -eq "1") {
+                Warn "Ollama is not part of lite, so -Ollama / CUTPOINT_OLLAMA=1 is ignored (the AI assistant can use a third-party provider)."
+            }
+            return
+        }
+        Invoke-OllamaOffer
         if (Ask "Download models now with 'cutpoint setup' (about 8 GB)?") {
             if (Invoke-Run @("cutpoint", "setup")) {
                 $S.SetupDone = "yes"
@@ -587,7 +722,7 @@ answer is No unless -Yes is given.
                 $S.SetupDone = "failed"
             }
         }
-        if (Test-Ollama) {
+        if ($S.OllamaUp) {
             if (Ask "Pull $OLLAMA_MODEL with Ollama (about 6 GB)?") {
                 if (Invoke-Run @("ollama", "pull", $OLLAMA_MODEL)) {
                     $S.OllamaDone = "yes"
@@ -614,6 +749,7 @@ answer is No unless -Yes is given.
         Say "  Version:   $($S.InstalledVersion)"
         Say "  Source:    $($S.Source)"
         Say "  Installed: $tools\cutpoint (command in $($S.BinDir))"
+        Say "  Ollama:    $($S.OllamaStatus)"
         Say ""
         Say "Next steps:"
         if (-not $S.BinOnPath) {
@@ -621,6 +757,16 @@ answer is No unless -Yes is given.
         }
         if ($S.FfmpegMissing) {
             Say "  - Install ffmpeg and ffprobe (not found): winget install --id $FFMPEG_ID -e"
+        }
+        if ($S.OllamaHint) {
+            Say "  - $($S.OllamaHint)"
+        }
+        if ($S.OllamaUp -and $S.OllamaDone -ne "yes") {
+            if ($S.OllamaDone -eq "failed") {
+                Say "  - The model pull failed; run it again (about 6 GB): ollama pull $OLLAMA_MODEL"
+            } else {
+                Say "  - Pull the vision model (about 6 GB): ollama pull $OLLAMA_MODEL"
+            }
         }
         if ($S.OllamaDone -eq "yes") {
             Say "  - Ollama model pulled: $OLLAMA_MODEL (used by --vision and AI Chat)."
@@ -677,7 +823,7 @@ answer is No unless -Yes is given.
 # Everything is defined above; this is what runs, so a truncated download does nothing.
 $cutpointExit = Invoke-CutpointInstaller -Lite ([bool]$Lite) -Yes ([bool]$Yes) -DryRun ([bool]$DryRun) `
     -Cpu ([bool]$Cpu) -Cuda ([bool]$Cuda) -Source $Source -NoFfmpeg ([bool]$NoFfmpeg) `
-    -Help ([bool]$Help) -Extra $args
+    -Ollama ([bool]$Ollama) -NoOllama ([bool]$NoOllama) -Help ([bool]$Help) -Extra $args
 Remove-Item -Path Function:\Invoke-CutpointInstaller -ErrorAction SilentlyContinue
 if ($PSCommandPath) {
     # Run as a file: report the exit code. (Under `irm | iex` there is no file and exit would close the terminal.)
@@ -685,5 +831,5 @@ if ($PSCommandPath) {
 }
 # Under `irm | iex` the script-level parameters and $cutpointExit live in the caller's scope: remove them.
 $global:LASTEXITCODE = [int]$cutpointExit
-Remove-Variable -Name Lite, Yes, DryRun, Cpu, Cuda, Source, NoFfmpeg, Help, cutpointExit -ErrorAction SilentlyContinue
+Remove-Variable -Name Lite, Yes, DryRun, Cpu, Cuda, Source, NoFfmpeg, Ollama, NoOllama, Help, cutpointExit -ErrorAction SilentlyContinue
 if ($global:LASTEXITCODE -ne 0) { throw "Cutpoint installer failed (exit $global:LASTEXITCODE)." }

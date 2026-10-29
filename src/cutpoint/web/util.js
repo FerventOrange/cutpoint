@@ -128,3 +128,29 @@ export function colorNote(clips) {
   if (!done) return ` Color: no clips graded (${reasons}).`;
   return ` Color: ${done} of ${asked.length} clips graded; ${left} left as is (${reasons}).`;
 }
+
+/** The value of the Model select's last option, "Other model…": no model id has it. */
+export const AI_OTHER = '\u0000other';
+
+/**
+ * The Model select's options ({ value, text }) and the value to select (#521). ``current`` is the
+ * model to show ('' for the provider's default), ``listed`` the provider's models ({ id, name };
+ * empty or missing when the list did not load, when the preset's ``fallback`` ids are offered
+ * instead) and ``typing`` true while an id is entered under "Other model…", which then stays
+ * chosen unless the options have that id. Any other model they lack stays chosen as an extra
+ * option, marked when a list came, so opening Settings never changes the model.
+ */
+export function aiModelChoices(current, listed, { typing = false, required = false, placeholder = '', fallback = [] } = {}) {
+  const first = { value: '', text: required ? 'Choose a model' : placeholder ? `Default (${placeholder})` : 'Default' };
+  const came = listed?.length > 0;
+  const models = came
+    ? listed.map((m) => ({ value: m.id, text: m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id }))
+    : fallback.map((id) => ({ value: id, text: id }));
+  const options = [first, ...models];
+  const known = current === '' && !typing ? true : models.some((o) => o.value === current);
+  let value = current;
+  if (!known && typing) value = AI_OTHER;
+  else if (!known) options.splice(1, 0, { value: current, text: came ? `${current} (not in the provider's list)` : current });
+  options.push({ value: AI_OTHER, text: 'Other model…' });
+  return { options, value };
+}
