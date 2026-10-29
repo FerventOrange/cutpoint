@@ -7162,6 +7162,21 @@ def test_color_is_a_three_stop_slider_like_compress_audio_peaks() -> None:
     assert not re.search(r"\blut\b", html, re.I)  # no LUT option that would disable Color
 
 
+def test_color_strength_keeps_its_room_so_the_color_slider_never_moves() -> None:
+    """Regression (#518): showing Strength moved the Color slider. Hidden (Color Off), the Strength
+    row keeps its box below the slider with ``visibility: hidden``, so no mode changes the layout,
+    and the row cannot be clicked, focused or read; the page's ``[hidden]`` rule does not win."""
+    html = _web("index.html")
+    css = _web("app.css")
+    panel = re.search(r'<fieldset class="panel color">(.*?)</fieldset>', html, re.S)[1]
+    assert panel.index('id="optColor"') < panel.index('id="colorStrengthRow"')  # Strength below
+    rule = re.search(r"\.color-strength\[hidden\] \{([^}]*)\}", css)[1]
+    assert "display: grid !important" in rule and "visibility: hidden" in rule
+    shown = re.search(r"\.color-strength \{([^}]*)\}", css)[1]
+    assert "display: grid" in shown  # the same box hidden or shown
+    assert "[hidden] { display: none !important; }" in css  # overridden by the more specific rule
+
+
 def test_the_page_sends_color_with_clips_and_presets_and_strength_below_100() -> None:
     """Contract pin (#461): Export clips and One-Click Edit send ``color``; ``color_strength``
     only with a grade and below 100% (the CLI's default is 1). Extend export and Assemble send
