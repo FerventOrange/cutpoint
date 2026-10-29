@@ -63,7 +63,7 @@ const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
 // The camera path flags of a 360 moment (#517, cutpoint.pano.candidates.FLAGS) as short badge words
-const PANO_FLAGS = { sky: 'Sky', whip: 'Whip pans', cuts: 'Many cuts', wearer: 'Wearer', off_target: 'Off target', qa_fail: 'QA fail' };
+const PANO_FLAGS = { sky: 'Sky', whip: 'Whip pans', spin: 'Spinning', cuts: 'Many cuts', wearer: 'Wearer', off_target: 'Off target', qa_fail: 'QA fail' };
 
 const S = {
   styles: [],
@@ -167,8 +167,9 @@ function playable(src, t, raw = false) {
 }
 /**
  * The director preview of the focused 360 moment (#517) when it is rendered and plays source time
- * ``t``: a flat view along the camera path 360 analysis planned, in place of the raw fisheye, played
- * like a window proxy. Not during "Play sequence", which plays the raw preview.
+ * ``t``: a flat view along the camera path the server's ``preview_path`` gave (the one 360 analysis
+ * planned, one planned now, or a level forward view), in place of the raw fisheye, played like a
+ * window proxy. Not during "Play sequence", which plays the raw preview.
  */
 /** Director preview urls the browser could not play (a 404 after a re-plan): never tried again. */
 const directorBad = new Set();
@@ -799,7 +800,7 @@ function renderNerdStats(c = current()) {
 
 let panoAsked = null; // "<project>:<candidate>:<path>" whose director preview the page last asked for
 
-/** Ask the server once for the director preview of 360 moment ``c``: it checks the cached camera path and renders it in the background. */
+/** Ask the server once for the director preview of 360 moment ``c``: it plans the camera path (the cached one when current) and renders it in the background. */
 function askDirector(c) {
   const cand = c?.cand;
   if (S.project?.kind !== '360' || !cand?.pano || cand.pano.preview || S.seqPlay) return;
@@ -819,8 +820,15 @@ async function postDirector(cid, cancel = false) {
   }
 }
 
-/** The render's elapsed time beside its state; not announced, as it changes on every poll. */
-const panoTime = (pv) => (pv?.state === 'rendering' ? ` ${Math.round(pv.elapsed)} s (about ${Math.round(pv.seconds)} s of video)` : '');
+/** The render's progress (or, while its path is planned, the elapsed time) beside its state; not announced, as it changes on every poll. */
+function panoTime(pv) {
+  if (pv?.state !== 'rendering') return '';
+  if (pv.progress == null) return ` ${Math.round(pv.elapsed)} s`;
+  return ` ${Math.round(pv.progress * 100)}% (about ${Math.round(pv.seconds)} s of video)`;
+}
+
+// What a ready director view shows: the ``kind`` of the server's ``preview_path`` (with its ``reason``)
+const PANO_KINDS = { cached: 'the camera path the analysis planned', planned: 'a camera path planned now', level_forward: 'a level forward view' };
 
 /**
  * Under the preview of a 360 moment: what it shows (the director view, or the raw fisheye and why),
@@ -854,12 +862,12 @@ function renderPanoNote(c) {
   let text;
   let act = null; // [label, cancel]
   if (S.seqPlay) text = 'Play sequence shows the raw 360 preview.';
-  else if (state === 'none') text = 'Raw 360 preview: no camera path is cached for this moment. Analyze again to plan one.';
+  else if (state === 'none') text = 'Raw 360 preview: this moment is not in a 360 clip of the project.';
   else if (state === 'asking') text = 'Raw 360 preview: checking the camera path…';
   else if (state === 'ready' && directorBad.has(pv.url))
     text = 'Raw 360 preview: the browser could not play the director view.';
   else if (state === 'ready')
-    text = on ? `Director view: the camera path the analysis planned, ${fmt(pv.lo)} to ${fmt(pv.hi)}.`
+    text = on ? `Director view: ${PANO_KINDS[pv.kind] ?? PANO_KINDS.cached}, ${fmt(pv.lo)} to ${fmt(pv.hi)}.${pv.reason ? ` Why: ${pv.reason}.` : ''}`
       : `Raw 360 preview here: the director view covers ${fmt(pv.lo)} to ${fmt(pv.hi)}.`;
   else if (state === 'rendering' || state === 'queued') {
     text = `${state === 'queued' ? 'Director view queued' : 'Rendering the director view'}; the raw 360 preview plays meanwhile.`;
@@ -867,10 +875,10 @@ function renderPanoNote(c) {
   } else if (state === 'cancelled') {
     text = 'Raw 360 preview: the director view was cancelled.';
     act = ['Render director view', false];
-  } else if (state === 'failed') {
-    text = `Raw 360 preview: the director view could not be rendered (${pv.reason}).`;
+  } else {
+    text = `Raw 360 preview: the director view could not be rendered (${pv.reason}).`; // failed
     act = ['Retry director view', false];
-  } else text = `Raw 360 preview: ${pv.reason}.`; // stale, unchecked
+  }
   const reasons = pano?.reasons ?? [];
   // shown before its status changes, so the first status is announced too (on the next frame)
   const wasHidden = el.hidden;
