@@ -198,18 +198,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   view as an edge cut, at any size, when it would be the largest person in the frame and at
   least `size_min_h` tall, as the rendered QA counts its subject (#11). Their `edge_cut` share
   can rise, and with it the `qa_fail` candidate flag of newly planned paths.
+- `360 analyze` no longer writes `analyze_total_s` to `pano_timings.json`: `total_s` replaces
+  it, and `cutpoint ui` reads that. Files from older runs may still have it, and the UI still
+  falls back to it for them.
 - `360 analyze` writes `pano_timings.json` once per run, with only this run's keys: `views`,
   `analyze_s`, `events_s`, `paths_s`, `scan_s` (with `--scan`) and `total_s`, the whole run
-  from its start, scan included (#11). Keys of an earlier run no longer linger, and `total_s`
-  is written with `--no-events` and `--views-only` too. `analyze_total_s` (full runs only,
-  the scan left out) is still written but deprecated in favour of `total_s`, which `cutpoint ui`
-  now reads (it falls back to `scan_s` plus `analyze_total_s` for older files). `360 scan` on
-  its own still adds `scan_s` to the file.
+  from its start, scan included (#11). Keys of an earlier run no longer linger (`--views-only`
+  keeps an earlier analysis's, see Fixed), and `total_s` is written with `--no-events` too;
+  `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
 
 ### Fixed
 
+- `360 analyze` no longer leaves an earlier run's `pano_timings.json` behind when it fails
+  (Ctrl+C included) once `highlights.json` has changed: the stale file, which described
+  another analysis, is removed (a file that cannot be removed, such as one held open on
+  Windows, only warns, and the run's own error still comes through). A failure that leaves
+  `highlights.json` as it was keeps it.
+- `360 analyze --views-only` no longer replaces `pano_timings.json` with its views alone, which
+  left `cutpoint ui` without a time for an analysis that was still current: it keeps the
+  earlier file's keys and writes this run's `views` and `views_only_s`.
 - 360 preview API: `preview_path` reports `footage offline` only when the source video itself
   cannot be stat-ed or opened. Another missing file (such as a model) is `missing file: <name>`,
   any other OSError its class and message; a missing model showed as "footage offline
