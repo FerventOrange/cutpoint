@@ -521,4 +521,6 @@ def test_assemble_fade_with_audio_cut_keeps_audio_as_long_as_the_video(tmp_path,
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(predicted, abs=0.02)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
-    assert "Audio Crossfade" not in final.with_suffix(".fcpxml").read_text(encoding="utf-8")
+    kw = {"transition": "fade", "fade_dur": 0.25, "audio_transition": "cut"}
+    fcpxml = assemble.assemble(clips_dir, final, output_format="fcpxml", **kw)
+    assert "Audio Crossfade" not in fcpxml.read_text(encoding="utf-8")

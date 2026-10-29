@@ -1,10 +1,12 @@
 """``cutpoint edit``: one command from source videos to a finished edit.
 
 Runs ``analyze`` -> (``events``) -> ``clips`` -> ``assemble`` in-process with the
-options of a :data:`KINDS` entry, then copies the final video and its subtitles
-to ``<name>-final.mp4`` / ``.srt`` in the project folder (``<name>``: see
-:func:`edit_name`). With ``CUTPOINT_PROGRESS=1`` it reports the steps of
-:data:`cutpoint.progress.EDIT_STEPS` (analyze's, then clips and assemble).
+options of a :data:`KINDS` entry, then copies the final video (or the timeline of
+``--format fcpxml|otio``) and its subtitles to ``<name>-final.mp4`` / ``.srt`` in the
+project folder (``<name>``: see :func:`edit_name`). The clips are kept in the clips folder
+unless ``--no-keep-clips`` exports them into a temporary folder, removed after the join
+(:func:`cutpoint.assemble.temporary_clips`). With ``CUTPOINT_PROGRESS=1`` it reports the
+steps of :data:`cutpoint.progress.EDIT_STEPS` (analyze's, then clips and assemble).
 """
 
 from __future__ import annotations
@@ -14,11 +16,12 @@ import logging
 import os
 import shutil
 from collections.abc import Collection
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from cutpoint import cache, jsonout, progress
-from cutpoint.assemble import assemble
+from cutpoint.assemble import assemble, temporary_clips
 from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
 from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
@@ -113,6 +116,8 @@ def run_edit(
     lut: Lut | None = None,
     color: str | None = None,
     color_strength: float = 1.0,
+    keep_clips: bool = True,
+    output_format: str = "mp4",
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
@@ -126,15 +131,22 @@ def run_edit(
     as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
     ``--color-strength`` (None: config.json's ``color``); the final keeps the grade.
 
+    ``keep_clips`` False exports the clips into a temporary folder in ``project``, removed
+    after the join (also on a failure or Ctrl+C), and leaves the clips folder alone.
+    ``output_format`` is ``assemble --format``: ``fcpxml`` or ``otio`` writes that timeline
+    instead of the final video; it references the clips, so they must be kept.
+
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
-        ``vertical``), a hard link or copy of the assembled video.
+        ``vertical``; ``.fcpxml`` / ``.otio`` for a timeline format), a hard link or copy of
+        what was assembled.
 
     Raises:
-        FileExistsError: If the clips folder is not empty and ``force`` is False (before
-            any analysis).
+        FileExistsError: If the clips are kept, the clips folder is not empty and ``force``
+            is False (before any analysis).
         ValueError: If the project folder is a source video's folder, or would get a
-            copy over a source video.
+            copy over a source video; if a timeline format is asked for without
+            ``keep_clips``.
         ModuleNotFoundError: With ``events``, if the events extra is missing (before any
             analysis).
     """
@@ -156,6 +168,8 @@ def run_edit(
             lut=lut,
             color=color,
             color_strength=color_strength,
+            keep_clips=keep_clips,
+            output_format=output_format,
         )
 
 
@@ -177,11 +191,17 @@ def _run_edit(
     lut: Lut | None,
     color: str | None,
     color_strength: float,
+    keep_clips: bool,
+    output_format: str,
 ) -> Path:
     """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
 
     steps.start("transcribe")  # the checks below fail the first step
+    if output_format != "mp4" and not keep_clips:
+        raise jsonout.ArgumentError(
+            f"--format {output_format} references the clips; it cannot go with --no-keep-clips"
+        )
     videos = find_videos(inputs)
     if any(file_keys(v.parent) & file_keys(project) for v in videos):
         raise ValueError(
@@ -190,12 +210,12 @@ def _run_edit(
         )
     clips_dir = project / ("clips_vertical" if vertical else "clips")
     final_name = "final_vertical.mp4" if vertical else "final.mp4"
-    named = project / f"{edit_name(inputs[0])}-{final_name}"
+    named = (project / f"{edit_name(inputs[0])}-{final_name}").with_suffix(f".{output_format}")
     named_srt = named.with_suffix(".srt")
     keys = set().union(*(file_keys(v) for v in videos))
     check_not_sources(project, [named.name, named_srt.name], keys)
     # The checks clips makes, before hours of analysis rather than after.
-    if clips_dir.exists() and any(clips_dir.iterdir()) and not force:
+    if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not force:
         raise FileExistsError(f"{clips_dir} is not empty; use --force to replace its clips")
     style = get_style(kind.style)
     if events:
@@ -221,38 +241,43 @@ def _run_edit(
         with steps.step("keyframes", detail="describing moments with the VLM"):
             run_args(_events_namespace(project))
         report_highlights(project, project / "highlights.json")  # events re-ranked it
-    with steps.step("clips"):
-        export_clips(
-            project,
-            top=kind.top,
-            max_total=kind.max_total,
-            order=kind.order,
-            vertical=vertical,
-            force=force,
-            compress_peaks=compress_peaks,
-            lut=lut,
-            color=color,
-            color_strength=color_strength,
-        )
-    steps.start("assemble")
     srt = (project / final_name).with_suffix(".srt")
     before = file_stamp(srt)  # an earlier run's final.srt is not this run's subtitles
-    final = assemble(
-        clips_dir,
-        transition=kind.transition,
-        loudnorm=kind.loudnorm,
-        captions=kind.captions,
-        compress_peaks=compress_peaks,
-    )
+    with temporary_clips(project) if not keep_clips else nullcontext(clips_dir) as work:
+        temporary = {} if keep_clips else {"out_dir": work, "temporary": True}
+        with steps.step("clips"):
+            export_clips(
+                project,
+                top=kind.top,
+                max_total=kind.max_total,
+                order=kind.order,
+                vertical=vertical,
+                force=force,
+                compress_peaks=compress_peaks,
+                lut=lut,
+                color=color,
+                color_strength=color_strength,
+                **temporary,
+            )
+        steps.start("assemble")
+        final = assemble(
+            work,
+            None if keep_clips else project / final_name,
+            transition=kind.transition,
+            loudnorm=kind.loudnorm,
+            captions=kind.captions,
+            compress_peaks=compress_peaks,
+            output_format=output_format,
+        )
     _link_or_copy(final, named)
     written = (now := file_stamp(srt)) is not None and now != before
     if written:
         cache.save_bytes(named_srt, srt.read_bytes())
     elif named_srt.exists():
         logger.warning("%s is from an earlier run and does not match %s", named_srt, named.name)
-    logger.info("Final video: %s", named)
+    logger.info("%s %s", "Final video:" if output_format == "mp4" else "Timeline:   ", named)
     logger.info("Subtitles:   %s", named_srt if written else "none (no transcript)")
-    logger.info("Clips:       %s", clips_dir)
+    logger.info("Clips:       %s", clips_dir if keep_clips else "none (temporary, removed)")
     # analyze, export_clips and assemble added their outputs and warnings to the same result.
     jsonout.output("copy", named)
     jsonout.output("copy_srt", named_srt if written else None)

@@ -35,7 +35,8 @@ Yes. Write a segments file and run `cutpoint clips <project> --segments FILE`
 ([command reference](commands.md#clips)).
 
 **Can I edit the result in DaVinci Resolve?**
-Yes. `assemble` writes `final.fcpxml` and `final.otio` next to `final.mp4`
+Yes. `assemble <clips_dir> --format fcpxml` (or `--format otio`) writes `final.fcpxml` (or
+`final.otio`) referencing the clips, instead of `final.mp4`
 ([Workflows](workflows/README.md#importing-into-davinci-resolve-free)).
 
 **Can it make vertical videos?**

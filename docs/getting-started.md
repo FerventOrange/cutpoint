@@ -354,8 +354,8 @@ On Linux: `uv run cutpoint analyze ~/Videos/ride.mp4 --style action --out my-edi
 2. `clips` exports `clips\001_<label>.mp4`, `002_...` and a `manifest.json`.
 3. Review the clips folder. Delete clips you do not want. Rename to reorder
    (`005_x.mp4` to `001b_x.mp4`, and its `005_x.srt` to `001b_x.srt`).
-4. `assemble` joins what is left, in filename order, into `final.mp4` and writes
-   `final.fcpxml` and `final.otio`.
+4. `assemble` joins what is left, in filename order, into `final.mp4` with `final.srt`
+   subtitles (`--format fcpxml` or `otio` writes that timeline for an editor instead).
 
 Styles are `gaming`, `action`, `sport`, `funny`, `commentary` and `ski`; see
 [Configuration](configuration.md#styles). More recipes: [Workflows](workflows/README.md).

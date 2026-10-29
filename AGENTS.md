@@ -20,6 +20,8 @@ everything into a project folder.
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 | Color grade with a 3D LUT the user supplies: `--lut FILE` and `--lut-strength` on `clips` and `edit` | Color matching between clips |
 | Automatic color correction per clip: `--color auto\|underwater` and `--color-strength` on `clips` and `edit` (not with `--lut`) | |
+| Output format on `assemble` and `edit`: `--format mp4` (default: the final video, no timelines) or `--format fcpxml\|otio` (only that timeline, referencing the kept clips, no encode) | |
+| Final video without keeping clips: `assemble <project>` (with `--top`, `--ids`, `--segments`, `--max-total` and the `clips` export options) and `edit --no-keep-clips` | |
 
 If the user asks for "edit this video and make it a montage" in one step, use
 [One command](#one-command); to choose the moments yourself, use the loop below it.
@@ -86,13 +88,16 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 `--kind` is `highlights` (default; up to 3 min, chronological, crossfades), `montage` (up to
 60 s, best first, crossfades), `clips` (the 10 best; the clips are the deliverable) or
 `funny-moments` (funny style, 8 moments, chronological, burned-in captions). `--style`, `--top`,
-`--max-total`, `--vertical`, `--force` and `--events` override the kind; `--vision` adds the
+`--max-total`, `--vertical`, `--force` and `--events` override the kind; `--no-keep-clips`
+exports the clips into a temporary folder that is removed after the join (not with `--kind
+clips`); `--format fcpxml|otio` writes that timeline instead of the final video (clips kept); `--vision` adds the
 optional Ollama frame rating (off for every style unless `"vision": true` in the user's
 `config.json` turns it on by default; `--no-vision` then skips it), and `--vision-top`, `--ollama-url` and `--ollama-model` work as on `analyze`. It writes the project
 `<projects>\clip` (`--out NAME` to change it) with the clips, `final.mp4` and
 `clip-final.mp4` plus `.srt` subtitles; the last log lines name the final video, its subtitles
-and the clips folder. A non-empty clips folder needs `--force` (ask the user first, as for
-`clips --force`). To change the cut, review and re-assemble as in steps 5-7 below; that
+and the clips folder (`none (temporary, removed)` with `--no-keep-clips`). A non-empty clips
+folder needs `--force` (ask the user first, as for `clips --force`); with `--no-keep-clips` it
+is left alone. To change the cut, review and re-assemble as in steps 5-7 below; that
 updates `final.mp4` and `final.srt`, not the `clip-final` copies.
 
 ## The full edit
@@ -144,8 +149,19 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    uv run cutpoint assemble projects/clip-edit/clips --transition fade --loudnorm
    ```
 
-   Writes `final.mp4`, `final.fcpxml` and `final.otio` in the project folder.
-7. **Report** the paths of `final.mp4` and the clips folder.
+   Writes `final.mp4` and `final.srt` in the project folder, and no timelines. If the user
+   wants to keep editing in DaVinci Resolve or Final Cut Pro, add `--format fcpxml` (or
+   `--format otio`): it writes only `final.fcpxml` (or `final.otio`) and `final.srt`,
+   referencing the clips, without making `final.mp4`. Scripts that expect `final.fcpxml` or
+   `final.otio` must now pass `--format`; `assemble` no longer writes both.
+7. **Report** the paths of `final.mp4` (or the timeline) and the clips folder.
+
+If the user wants only the final video and does not want to review clips, skip steps 4-6:
+`uv run cutpoint assemble clip-edit --top 8 --transition fade --loudnorm` (also `--ids`,
+`--segments`, `--max-total` and the `clips` export options such as `--vertical`) exports the
+moments into a temporary folder, writes `final.mp4` and `final.srt`, and removes the temporary
+clips, also when it fails or is interrupted; an existing `clips` folder is not touched. With
+`--json` a `temporary_clips` warning says the clips were not kept.
 
 Variants:
 
@@ -156,7 +172,7 @@ Variants:
 | "Extra" instruction such as "only funny moments" or "keep the speech intact" | Choose `--style`, filter candidates by `transcript`/`label`, use `--segments`. The CLI does not parse these instructions |
 | The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used). Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |
 | Room to trim in an editor | `clips ... --extend 1.5` or `extend <clips_dir> --seconds 2` |
-| The user asks to fix dull, washed-out or tinted colors | `clips <project> --color auto` (or on `edit`); `--color underwater` only for underwater footage or when an INFO line suggests it. Clips that look good, log footage, 360 clips and clips a safety check vetoes stay as they are; tell the user which clips were not graded and why (`color.skip` of each clip in `clips/manifest.json`: `good`, `log`, `360`, `no_frames`, `not_underwater` (`--color underwater` on a clip that does not look underwater, open blue ocean water included), or a veto: `veto_clipped`, `veto_cast`, `veto_m3` for too much color, `veto_m3_drop` (`auto`) or `veto_faded` (`underwater`) for too little) |
+| The user asks to fix dull, washed-out or tinted colors | `clips <project> --color auto` (or on `edit`); `--color underwater` only for underwater footage or when an INFO line suggests it. Clips that look good, log footage, 360 clips and clips a safety check vetoes stay as they are; tell the user which clips were not graded and why (`color.skip` of each clip in `clips/manifest.json`: `good`, `log`, `360`, `no_frames`, `not_underwater` (`--color underwater` on a clip that does not look underwater, open blue ocean water included), or a veto: `veto_clipped`, `veto_cast`, `veto_m3` for too much color, `veto_m3_drop` (`auto`) or `veto_faded` (`underwater`) for too little). `assemble <project>` (mp4) and `edit --no-keep-clips` keep no manifest: report the clips not graded from the per-clip INFO lines of the run instead |
 | The user gives a LUT for log or flat footage ("use my GoPro Flat LUT") | `clips <project> --lut <file>.cube` (or on `edit`); `--lut-strength 0.5` for half the grade. Only with a LUT the user names; never pick one for them |
 | 360 (Insta360 X3) footage | [docs/workflows/360.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/360.md) |
 | Action-cam with telemetry | [docs/workflows/action-cam.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/action-cam.md) |
@@ -171,8 +187,10 @@ Variants:
 | `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, lut or color, srt |
 | `clips/001_<label>.srt`, ... | `clips`, `extend` | Subtitles of each clip, from the cached transcript |
-| `final.mp4`, `final.fcpxml`, `final.otio`, `final.srt` | `assemble` | Result, timelines and subtitles |
-| `<name>-final.mp4`, `<name>-final.srt` | `edit` | Copy of the final video and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
+| `final.mp4`, `final.srt` | `assemble` (`--format mp4`, the default) | Result and subtitles |
+| `final.fcpxml` or `final.otio`, `final.srt` | `assemble --format fcpxml` or `--format otio` | Timeline referencing the clips (no `final.mp4`) and subtitles |
+| `<name>-final.mp4` (or `.fcpxml` / `.otio`), `<name>-final.srt` | `edit` | Copy of the final video (or timeline) and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
+| `.assemble-tmp-<id>/` | `assemble <project>`, `edit --no-keep-clips` | Temporary clips, removed when the run ends; never edit them |
 | `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands; `crashes.json` also `analyze` (action footage) | See the action-cam page |
 | `activity.json` | `profile`, `crashes` | Activity profile in use: `name`, `source`, `profile` |
 
