@@ -132,6 +132,87 @@ jobs:
       - run: uv sync --locked --no-group full --group ocr-test
       - run: uv run --no-sync pytest -q -rs
 
+  # install.sh (Linux one-step installer). The OS axis is for install.ps1 on windows-latest later.
+  installer:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Lint install.sh
+        if: runner.os == 'Linux'
+        run: |
+          shellcheck -s sh install.sh
+          sh -n install.sh
+      # Dry runs print every command and change nothing; assert the planned uv command lines.
+      - name: Dry runs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          expect() { printf '%s\n' "$1" | grep -Fq -- "$2" || { echo "::error::missing in dry run: $2"; printf '%s\n' "$1"; exit 1; }; }
+          out=$(sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" 'uv tool install "cutpoint[events,ui,keyring,ski]=='
+          expect "$out" '--torch-backend cpu'
+          expect "$out" '--python 3.12 --reinstall'
+          out=$(sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
+          expect "$out" 'uv tool install "cutpoint[ui,keyring,ski]=='
+          if printf '%s\n' "$out" | grep -q -- '--torch-backend'; then echo "::error::lite must not pick a torch backend"; exit 1; fi
+          out=$(sh install.sh --dry-run --cuda --no-ffmpeg < /dev/null)
+          expect "$out" 'uv tool install "cutpoint[all]=='
+          expect "$out" '--torch-backend cu126'
+          # A fake nvidia-smi on PATH selects the CUDA build.
+          mkdir -p "$RUNNER_TEMP/fake-nvidia"
+          printf '#!/bin/sh\necho "GPU 0: NVIDIA Test GPU (UUID: GPU-0)"\n' > "$RUNNER_TEMP/fake-nvidia/nvidia-smi"
+          chmod +x "$RUNNER_TEMP/fake-nvidia/nvidia-smi"
+          out=$(PATH="$RUNNER_TEMP/fake-nvidia:$PATH" sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" '--torch-backend cu126'
+          # nvidia-smi's NVML error mentions "GPU" but lists none: stay on CPU torch.
+          mkdir -p "$RUNNER_TEMP/fake-nvml"
+          printf '#!/bin/sh\necho "Failed to initialize NVML: GPU access blocked by the operating system"\nexit 255\n' > "$RUNNER_TEMP/fake-nvml/nvidia-smi"
+          chmod +x "$RUNNER_TEMP/fake-nvml/nvidia-smi"
+          out=$(PATH="$RUNNER_TEMP/fake-nvml:$PATH" sh install.sh --dry-run --no-ffmpeg < /dev/null)
+          expect "$out" '--torch-backend cpu'
+          out=$(sh install.sh --dry-run --no-ffmpeg --source git@main < /dev/null)
+          expect "$out" 'git+https://github.com/FerventOrange/cutpoint.git@main'
+          expect "$out" '--no-sources'
+          # update-shell is planned when the bin dir is not on the user's PATH, and not when it is.
+          out=$(UV_TOOL_BIN_DIR="$RUNNER_TEMP/not-on-path" sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
+          expect "$out" 'uv tool update-shell'
+          mkdir -p "$RUNNER_TEMP/on-path"
+          out=$(PATH="$RUNNER_TEMP/on-path:$PATH" UV_TOOL_BIN_DIR="$RUNNER_TEMP/on-path" sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
+          if printf '%s\n' "$out" | grep -q 'update-shell'; then echo "::error::update-shell planned although the bin dir is on PATH"; exit 1; fi
+          # XDG_DATA_HOME/../bin is normalized, so a PATH entry for the same directory counts.
+          mkdir -p "$RUNNER_TEMP/xdg/share" "$RUNNER_TEMP/xdg/bin"
+          out=$(PATH="$RUNNER_TEMP/xdg/bin:$PATH" XDG_DATA_HOME="$RUNNER_TEMP/xdg/share" UV_TOOL_BIN_DIR= XDG_BIN_HOME= sh install.sh --dry-run --lite --no-ffmpeg < /dev/null)
+          if printf '%s\n' "$out" | grep -q 'update-shell'; then echo "::error::XDG_DATA_HOME/../bin not matched to PATH"; exit 1; fi
+          # Contradictory or malformed flags exit 2; a missing source path fails even in a dry run.
+          rc=0; sh install.sh --dry-run --cpu --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--cpu --cuda must exit 2, got $rc"; exit 1; }
+          rc=0; sh install.sh --dry-run --lite --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--lite --cuda must exit 2, got $rc"; exit 1; }
+          rc=0; sh install.sh --source --dry-run > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--source --dry-run must exit 2, got $rc"; exit 1; }
+          rc=0; sh install.sh --dry-run --no-ffmpeg --source /does/not/exist > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] || { echo "::error::missing --source path must exit 1, got $rc"; exit 1; }
+          # curl | sh: the script is read from stdin.
+          cat install.sh | sh -s -- --dry-run --lite --no-ffmpeg | grep -F 'uv tool install'
+      # Package-manager ffmpeg commands on other distributions (dry run only, nothing installed).
+      - name: Dry runs in Fedora and Arch containers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          out=$(docker run --rm -v "$PWD/install.sh:/install.sh:ro" fedora:42 sh /install.sh --dry-run --lite)
+          printf '%s\n' "$out" | grep -F 'dnf install -y ffmpeg'
+          out=$(docker run --rm -v "$PWD/install.sh:/install.sh:ro" archlinux:base sh /install.sh --dry-run --lite)
+          printf '%s\n' "$out" | grep -F 'pacman -S --needed --noconfirm ffmpeg'
+      # Real lite install of this checkout into the runner (no torch, no models), stdin closed.
+      - name: Install (lite, from this checkout)
+        if: runner.os == 'Linux'
+        run: |
+          sh install.sh --lite --yes --no-ffmpeg --source . < /dev/null
+          export PATH="$(uv tool dir --bin):$PATH"
+          cutpoint --version | grep -F cutpoint
+
   docker:
     runs-on: ubuntu-latest
     steps:
