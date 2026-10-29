@@ -141,6 +141,38 @@ def test_render_clips_hands_a_360_clip_its_grade(seen, tmp_path):
     assert got["grade"] is g and "lut" not in got
 
 
+def test_render_clips_hands_a_360_clip_its_picked_moment(seen, tmp_path):
+    """#11: the 360 exporter gets the moment as picked (``selected``) while it renders the
+    tail-extended, padded span."""
+    from cutpoint.planning import Padding  # noqa: PLC0415
+
+    got: dict[str, Any] = {}
+
+    class Pano:
+        def handles(self, source):
+            return True
+
+        def export(self, source, start, end, out, **kw):
+            got.update(kw, start=start, end=end)
+            out.write_bytes(b"x")
+            return None, {}
+
+    src = write(tmp_path / "VID_001.lrv")
+    m = {"id": "h001", "source": str(src), "start": 4.0, "end": 9.0, "score": 1, "tail": 1.5}
+    plans = clips.plan_clips(
+        [m], tmp_path, io_paths={str(src): src}, infos={str(src): media_info(duration=60.0)},
+        tail=TailSettings(enabled=False), events=None,
+        event_settings=EventTailSettings(enabled=False), speech=SpeechSettings(enabled=False),
+        padding=Padding(start=1.0, end=2.0), pano=Pano(),
+    )  # fmt: skip
+    assert plans[0].pano
+    clips.render_clips(
+        plans, tmp_path, fmt=FMT, vertical=False, audio_fade=0.0, pano=Pano(), grades=[None],
+    )  # fmt: skip
+    assert got["selected"] == (m["start"], m["end"])
+    assert (got["start"], got["end"]) == (3.0, 12.5)  # 1 s lead-in; 1.5 s tail + 2 s pad
+
+
 def _write_manifest(tmp_path: Path, **kw) -> list[dict]:
     plans = [plan(0, tmp_path), plan(1, tmp_path)]
     results = [RenderResult(tmp_path / p.name, p.end) for p in plans]

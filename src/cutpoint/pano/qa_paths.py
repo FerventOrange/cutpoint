@@ -337,8 +337,7 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
                     "kind": e.get("kind"),
                     "path": path,
                     "path_missing": missing,
-                    "mode": pano.get("mode"),
-                    "imu_levelled": Q.imu_levelled(pano),
+                    **Q.render_info(pano),
                 }
             )
         return out
@@ -359,8 +358,13 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
                 "kind": path.get("kind"),
                 "path": path,
                 "path_missing": False,
-                "mode": "dfisheye",  # previews render the .lrv proxy
-                "imu_levelled": True,
+                # a preview's render; a path without its video (pano_paths): not known, but
+                # checked in the director's IMU-levelled display frame as before
+                **(
+                    Q.preview_render_info(path)
+                    if video.is_file()
+                    else {**dict.fromkeys(Q.RENDER_KEYS), "imu_levelled": True}
+                ),
             }
         )
     return out

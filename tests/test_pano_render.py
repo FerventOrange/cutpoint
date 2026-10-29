@@ -566,3 +566,73 @@ class TestExporterSourceWarnings:
         with caplog.at_level(logging.WARNING):
             assert ex._source(clip, "dfisheye").mode == "dfisheye"
         assert caplog.text == ""
+
+
+# --------------------------------------------------------------------------- render record (#11)
+def test_source_flowstate_by_mode_and_sidecar(tmp_path: Path) -> None:
+    eq = tmp_path / "001.equirect.mp4"
+    assert project.source_flowstate("dfisheye", ["a_00_.insv"]) is False
+    assert project.source_flowstate("proxy", ["a.lrv"]) is False
+    assert project.source_flowstate("sdk", [str(eq)]) is None  # no sidecar: unknown
+    project.equirect_sidecar(eq).write_text(json.dumps({"stitch_args": ["-x"]}), "utf-8")
+    assert project.source_flowstate("sdk", [str(eq)]) is False
+    project.equirect_sidecar(eq).write_text(
+        json.dumps({"stitch_args": ["-enable_flowstate"]}), "utf-8"
+    )
+    assert project.source_flowstate("sdk", [str(eq)]) is True
+    assert project.source_flowstate("studio", ["export.mp4"]) is None  # assumed, not recorded
+
+
+DFISH = {"mode": "dfisheye", "levelled": False}
+PLAIN_SDK = {"mode": "sdk", "levelled": False}
+FLOW_SDK = {"mode": "sdk", "levelled": True}
+
+
+@pytest.mark.parametrize(
+    "recs",
+    [
+        [("001_a.mp4", DFISH), ("002_b.mp4", DFISH)],
+        [("001_a.mp4", PLAIN_SDK), ("002_b.mp4", PLAIN_SDK)],
+        [("001_a.mp4", DFISH)],
+        [],
+    ],
+)
+def test_uniform_360_sources_do_not_warn(recs) -> None:
+    assert render.source_mix_warning(recs) is None
+
+
+def test_mixed_or_unlevelled_360_sources_warn_once_with_the_clips() -> None:
+    msg = render.source_mix_warning([("001_a.mp4", PLAIN_SDK), ("002_b.mp4", DFISH)])
+    assert "stitched sources (001_a.mp4) mixed with the dual fisheye (002_b.mp4)" in msg
+    assert "--pano-source dfisheye" in msg and "IMU levelling" not in msg
+    msg = render.source_mix_warning([("001_a.mp4", FLOW_SDK), ("002_b.mp4", FLOW_SDK)])
+    assert "without our IMU levelling" in msg and "001_a.mp4, 002_b.mp4" in msg
+    assert "mixed" not in msg
+    studio = {"mode": "studio", "levelled": True}
+    msg = render.source_mix_warning([("001_a.mp4", studio), ("002_b.mp4", DFISH)])
+    assert "mixed with the dual fisheye (002_b.mp4)" in msg and "levelling" in msg
+
+
+def test_clips_run_logs_one_pano_mixed_sources_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from cutpoint import clips, jsonout  # noqa: PLC0415
+
+    got = []
+    monkeypatch.setattr(jsonout, "warn", lambda code, msg, files=(): got.append((code, files)))
+    plans = [SimpleNamespace(name=n) for n in ("001_a.mp4", "002_b.mp4", "003_flat.mp4")]
+    results = [
+        clips.RenderResult(tmp_path / "001_a.mp4", 1.0, pano=PLAIN_SDK),
+        clips.RenderResult(tmp_path / "002_b.mp4", 1.0, pano=DFISH),
+        clips.RenderResult(tmp_path / "003_flat.mp4", 1.0),  # not a 360 clip
+    ]
+    with caplog.at_level(logging.WARNING):
+        clips._warn_pano_sources(plans, results, tmp_path)
+    assert len(caplog.records) == 1 and "002_b.mp4" in caplog.text
+    assert got == [(render.MIXED_SOURCES, [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"])]
+    got.clear()
+    caplog.clear()
+    uniform = [clips.RenderResult(tmp_path / "001_a.mp4", 1.0, pano=DFISH)] * 2
+    with caplog.at_level(logging.WARNING):
+        clips._warn_pano_sources(plans[:2], uniform, None)
+    assert got == [] and caplog.text == ""

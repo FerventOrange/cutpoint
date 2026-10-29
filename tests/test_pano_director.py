@@ -507,6 +507,45 @@ def test_path_for_keeps_bak_of_replanned_reused_path(
     assert old.with_name("001_a.json.1.bak").is_file()
 
 
+def test_path_for_records_the_selected_moment_apart_from_the_segment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#11: clips' paths keep the picked moment (before tails and padding) as ``selected``;
+    ``segment`` stays the rendered span, and a re-planned reused path keeps its moment."""
+    from cutpoint.pano import render as R  # noqa: PLC0415
+
+    monkeypatch.setattr(R, "load", lambda project: {})
+    planned = []
+
+    def plan(clip, start, end, **kw):
+        planned.append((start, end))
+        span = {"start": start, "end": end}
+        return {
+            "version": D.PATH_VERSION,
+            "keys": ["new"],
+            "segment": span,
+            "planned": span,
+            "params": asdict(D.params_for(None)),
+        }
+
+    monkeypatch.setattr(D, "compute_path", plan)
+    ex = R.PanoExporter(tmp_path, tmp_path / "clips")
+    clip = SimpleNamespace(clip_id="001")
+    path, out = ex.path_for(clip, "001_a.mp4", 1.0, 9.0, None, selected=(2.0, 6.5))
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert saved["selected"] == path["selected"] == {"start": 2.0, "end": 6.5}
+    assert saved["segment"] == {"start": 1.0, "end": 9.0}
+    # extend: a reused path (covering the range) keeps it; a re-planned one carries it over
+    got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 9.0, None, reuse=out)
+    assert got["selected"] == {"start": 2.0, "end": 6.5} and planned == [(1.0, 9.0)]
+    got, _ = ex.path_for(clip, "001_a.mp4", 0.0, 11.0, None, reuse=out)
+    assert got["keys"] == ["new"] and got["selected"] == {"start": 2.0, "end": 6.5}
+    assert json.loads(out.read_text(encoding="utf-8"))["segment"] == {"start": 0.0, "end": 11.0}
+    # without a moment (director previews, older runs): no key
+    path, _ = ex.path_for(clip, "002_b.mp4", 1.0, 9.0, None)
+    assert "selected" not in path
+
+
 def test_path_for_backup_failing_midway_leaves_no_partial_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

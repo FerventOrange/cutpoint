@@ -95,6 +95,7 @@ def _set_folder_project(folder: Path) -> None:
 
 
 TIMINGS_FILE = "pano_timings.json"
+STALE_TIMINGS_KEPT = "stale_timings_kept"  # --json warning: an earlier run's timings not removed
 
 
 def _timing(project: Path, key: str, value: Any) -> None:
@@ -142,15 +143,19 @@ def _stamp(path: Path) -> tuple[int, int, int] | None:
 
 def _drop_timings(project: Path) -> None:
     """Remove a ``pano_timings.json`` that describes another analysis than the project's.
-    If it cannot be removed (held open on Windows), only warn, so the run's own error is
-    never hidden."""
+    If it cannot be removed (held open on Windows), only warn (``stale_timings_kept`` with
+    ``--json``), so the run's own error is never hidden. Either way ``outputs.timings`` is
+    null: no file of this run is there."""
     from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415
 
     path = project / TIMINGS_FILE
+    jsonout.output("timings", None)
     try:
         retry_locked(partial(path.unlink, missing_ok=True), path, "delete")
     except OSError as err:
-        logger.warning("%s of an earlier analysis not removed: %s", path, err)
+        message = f"{path} of an earlier analysis not removed: {err}"
+        logger.warning("%s", message)
+        jsonout.warn(STALE_TIMINGS_KEPT, message, [path])
 
 
 # --------------------------------------------------------------------------- commands
@@ -914,6 +919,8 @@ def _compare_qa(qa_dir: Path, files: list[str]) -> None:
     jsonout.output("rendered_only", rep["edit"]["rendered_only"])
     jsonout.output("causes", rep["edit"]["causes"])
     jsonout.output("other_detail", rep["edit"]["other_detail"])
+    jsonout.output("by_mode", rep["edit"]["by_mode"])
+    jsonout.output("by_self_method", rep["edit"]["by_self_method"])
     unmatched = [f for files_ in rep["unmatched"].values() for f in files_]
     if unmatched:
         jsonout.warn(
@@ -957,6 +964,9 @@ def _report_qa(qa_dir: Path, report: dict[str, Any]) -> None:
     jsonout.output("count", len(clips))
     jsonout.output("passed", sum(1 for c in clips if c["pass"]))
     jsonout.output("score", report["edit"].get("score"))
+    # edge_cut by render mode and self method (none without a checked clip)
+    jsonout.output("by_mode", report["edit"].get("by_mode", {}))
+    jsonout.output("by_self_method", report["edit"].get("by_self_method", {}))
     if report["skipped"]:
         jsonout.warn(
             "qa_clips_skipped",

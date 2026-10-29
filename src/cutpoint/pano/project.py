@@ -410,6 +410,18 @@ def equirect_flowstate(equirect: Path) -> bool | None:
     return FLOWSTATE_ARG in meta["stitch_args"]
 
 
+def source_flowstate(mode: str | None, inputs: list[str] | tuple[str, ...]) -> bool | None:
+    """Whether a render source of ``mode`` reading ``inputs`` is a FlowState equirect:
+    False for the dual fisheye (``dfisheye``, the ``proxy`` of director previews), an SDK
+    stitch's sidecar (:func:`equirect_flowstate`; None without one) and None for a Studio
+    export (assumed FlowState, not recorded) or an unknown mode."""
+    if mode in ("dfisheye", "proxy"):
+        return False
+    if mode == "sdk" and inputs:
+        return equirect_flowstate(Path(inputs[0]))
+    return None
+
+
 _flowstate_warned: set[str] = state.register_container(__name__, "_flowstate_warned", set())
 
 

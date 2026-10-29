@@ -849,6 +849,7 @@ def render_clips(
                     audio_fade=audio_fade,
                     kind=m.get("kind"),
                     grade=grade,
+                    selected=(plan.keep[0], min(float(m["end"]), plan.keep[1])),
                 )
             else:
                 read_err = pool.result(i) if pool is not None else encode(plan, peak, grade)
@@ -1145,6 +1146,22 @@ def _graded_keys(entry: Any) -> list[str]:
         for k in GRADE_KEYS
         if entry.get(k) and not (k == "color" and isinstance(color, dict) and color.get("skip"))
     ]
+
+
+def _warn_pano_sources(
+    plans: list[ClipPlan], results: list[RenderResult], out_dir: Path | None
+) -> None:
+    """One WARNING (and a ``pano_mixed_sources`` --json warning naming the 360 clips in
+    ``out_dir``; none for a temporary folder, None) when the run's 360 clips are not
+    rendered like-for-like (:func:`~cutpoint.pano.render.source_mix_warning`)."""
+    from cutpoint.pano.render import MIXED_SOURCES, source_mix_warning  # noqa: PLC0415
+
+    recs = [(p.name, r.pano) for p, r in zip(plans, results, strict=True) if r.pano]
+    message = source_mix_warning(recs)
+    if message is not None:
+        logger.warning("%s", message)
+        files = [out_dir / name for name, _ in recs] if out_dir is not None else []
+        jsonout.warn(MIXED_SOURCES, message, files)
 
 
 def _warn_dropped_grade(out_dir: Path) -> None:
@@ -1575,6 +1592,7 @@ def export_clips(
             grades=grades,
             workers=workers,
         )
+        _warn_pano_sources(plans, results, None if temporary else out_dir)
         write_manifest(
             work,
             project,
