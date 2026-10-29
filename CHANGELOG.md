@@ -79,8 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that Candidate ids in the Export tab and `clips --ids` take, and the moments filter matches it
   (#487).
 - `cutpoint ui`: the Moments list's search field has a funnel button beside it that opens Sort and
-  filter: the sort order and quick filters (In sequence, Not in sequence or All; Ready only; Must
-  include; a source file when the project has several). They combine with the search text, a dot
+  filter: the sort order and quick filters (In sequence, Not in sequence or All; Ready only; a
+  source file when the project has several). They combine with the search text, a dot
   on the button shows while a filter or a sort other than Score is on, and with nothing left the
   list reads "No moments match these filters." The sort and filters are remembered per browser,
   the source file only while the project is open.
@@ -99,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `cutpoint ui` Export tab: "The sequence (hand-picked)" reads "Sequence" and "Max total (s)"
-  reads "Max video length (s)" (still `--max-total`, the cap on all clips together). Top
+  reads "Max video length" (still `--max-total`, the cap on all clips together). Top
   moments, Candidate ids, the Cut Timing fields other than Event tails, the "Latest export ..." facts
   (not its warnings) and Extend export are hidden unless the new Settings > "Show advanced export options" (off by
   default, kept in the browser) is ticked; hidden fields keep their values and are still sent,
@@ -150,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: Extend export is disabled, with the reason in its tooltip, while Extend start
+  and Extend end are blank or 0 and Speech-aware cuts is off. Before, it ran
+  `extend --no-speech-aware` with nothing to do, which failed.
 - `cutpoint ui`: the Play sequence button sits under Undo and Redo, as wide as the pair, and
   keeps its size and place when it turns into Stop. It used to shrink and jump up beside Redo.
 - `cutpoint ui`: the Sequence, AI Chat and Export tabs share the sequence column's full width

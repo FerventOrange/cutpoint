@@ -2555,7 +2555,13 @@ function renderBusy() {
   }
   if (picks() === 'auto') set('#clipsBtn', !p || busy || !p.highlights?.candidates?.length, busy ? why : 'Analyze the footage first.');
   else set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
-  set('#extendBtn', !p || busy || !p.clips, busy ? why : 'Export clips first.');
+  // Without Speech-aware cuts and padding, extend has nothing to do (the CLI refuses it)
+  const ext = extendOptions();
+  const idle = !ext.speech_aware && !(ext.extend_start > 0) && !(ext.extend_end > 0);
+  const extendWhy = busy ? why : !p?.clips ? 'Export clips first.' : 'Set Extend start or Extend end above 0, or turn Speech-aware cuts on.';
+  set('#extendBtn', !p || busy || !p.clips || idle, extendWhy);
+  const extendSay = $('#extendWhy'); // its aria-describedby hides the title from screen readers
+  if (extendSay.textContent !== $('#extendBtn').title) extendSay.textContent = $('#extendBtn').title;
   const preset = p?.preset_problem || (p && !p.sources?.length ? 'Add videos to the source folder first.' : '');
   set('#makeBtn', !p || busy || !!preset, busy ? why : preset);
   const presetWhy = $('#presetWhy');
@@ -4091,9 +4097,9 @@ function initMomentOrder() {
 /**
  * Sort and filter: the funnel button beside the search opens the sort order and the quick filters
  * (a disclosure: Escape closes it and returns focus to the button; a click or focus outside closes
- * it). The filters combine with the search text (util.js momentMatches). Sequence, Ready only and
- * Must include are remembered per browser like the order; the source file only while its project
- * stays open (resetWorkspace), as paths differ per project. Without storage they last the session.
+ * it). The filters combine with the search text (util.js momentMatches). Sequence and Ready only
+ * are remembered per browser like the order; the source file only while its project stays open
+ * (resetWorkspace), as paths differ per project. Without storage they last the session.
  */
 function initMomentFilters() {
   const btn = $('#filterBtn');
@@ -4104,7 +4110,6 @@ function initMomentFilters() {
     const saved = JSON.parse(localStorage.getItem(FILTERS_KEY));
     if (['all', 'in', 'out'].includes(saved?.seq)) S.filters.seq = saved.seq;
     S.filters.ready = saved?.ready === true;
-    S.filters.must = saved?.must === true;
   } catch {
     // storage blocked or not JSON: no filters
   }
@@ -4112,7 +4117,6 @@ function initMomentFilters() {
   const showFilters = () => {
     for (const r of seqRadios) r.checked = r.value === S.filters.seq;
     $('#filterReady').checked = S.filters.ready;
-    $('#filterMust').checked = S.filters.must;
   };
   showFilters();
   const open = (on, refocus = false) => {
@@ -4130,9 +4134,9 @@ function initMomentFilters() {
   menu.addEventListener('focusout', (e) => !pop.hidden && e.relatedTarget && !menu.contains(e.relatedTarget) && open(false));
   const changed = () => {
     try {
-      const { seq, ready, must } = S.filters;
-      if (!filtersOn({ seq, ready, must })) localStorage.removeItem(FILTERS_KEY);
-      else localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready, must }));
+      const { seq, ready } = S.filters;
+      if (!filtersOn({ seq, ready })) localStorage.removeItem(FILTERS_KEY);
+      else localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready }));
     } catch {
       // storage blocked or full: the filters still apply until reload
     }
@@ -4148,10 +4152,6 @@ function initMomentFilters() {
     });
   $('#filterReady').addEventListener('change', (e) => {
     S.filters.ready = e.target.checked;
-    changed();
-  });
-  $('#filterMust').addEventListener('change', (e) => {
-    S.filters.must = e.target.checked;
     changed();
   });
   $('#filterSource').addEventListener('change', (e) => {
@@ -4428,6 +4428,7 @@ function bind() {
     const body = extendOptions();
     if (validOptions(body)) startJob('extend', body);
   });
+  for (const id of ['#optExtendStart', '#optExtendEnd', '#optSpeech']) $(id).addEventListener('input', renderBusy); // Extend export's reason
   $('#optIds').addEventListener('input', syncTiming);
   $('#makeBtn').addEventListener('click', makePreset);
   $('#cancelBtn').addEventListener('click', async () => {

@@ -5795,13 +5795,13 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
 
 def test_export_tab_says_sequence_and_max_video_length() -> None:
     """Contract pin (mock2): the first Clips to Export choice is "Sequence" (was "The sequence
-    (hand-picked)") and --max-total is "Max video length (s)" (was "Max total (s)"), the cap on
-    all clips together; its title and description say so."""
+    (hand-picked)") and --max-total is "Max video length" (was "Max total (s)"; no "(s)", the
+    title says seconds), the cap on all clips together; its title and description say so."""
     html = _web("index.html")
     assert re.search(r'id="optPicksSeq"[^>]*> Sequence</label>', html)
     assert "hand-picked" not in html and "Max total" not in html
     label = re.search(r'<label for="optMaxTotal" title="([^"]*)">([^<]*)</label>', html)
-    assert label and label[2] == "Max video length (s)"
+    assert label and label[2] == "Max video length"
     described = re.search(r'<span id="dMaxTotal" class="vh">([^<]*)</span>', html)[1]
     for text in (label[1], described):
         assert text.startswith("Caps the video's length: the clips' total in seconds")
@@ -5888,6 +5888,35 @@ def test_hidden_advanced_export_fields_still_send_their_values() -> None:
     valid = re.search(r"function validOptions\(body\) \{\n(.*?)\n\}", js, re.S)[1]
     assert "if (bad?.classList.contains('adv')) showAdvExport(true);" in valid
     assert valid.index("showAdvExport(true)") < valid.index("bad?.reportValidity();")
+
+
+def test_extend_export_is_off_with_nothing_to_extend() -> None:
+    """Extend export with blank (or 0) Extend start and end and Speech-aware cuts off would run
+    ``extend --no-speech-aware`` with no padding, which the CLI refuses ("Nothing to do"): the
+    button is disabled with the reason in its title (the tooltip) and follows the fields as they
+    are typed. Its aria-describedby hides the title from screen readers, so the same reason is
+    also in the hidden #extendWhy it names (written only when it changes)."""
+    js = _web("app.js")
+    html = _web("index.html")
+    btn = re.search(r'<button type="button" id="extendBtn"[^>]*>', html)[0]
+    assert 'aria-describedby="dExtendBtn extendWhy"' in btn
+    assert '<span id="extendWhy" class="vh"></span>' in html
+    busy = _js_function(js, "renderBusy")
+    assert "const extendSay = $('#extendWhy');" in busy
+    assert (
+        "if (extendSay.textContent !== $('#extendBtn').title) "
+        "extendSay.textContent = $('#extendBtn').title;"
+    ) in busy
+    assert busy.index("set('#extendBtn'") < busy.index("extendSay.textContent =")
+    assert "const ext = extendOptions();" in busy
+    assert "!ext.speech_aware && !(ext.extend_start > 0) && !(ext.extend_end > 0)" in busy
+    assert "set('#extendBtn', !p || busy || !p.clips || idle, extendWhy);" in busy
+    assert "'Set Extend start or Extend end above 0, or turn Speech-aware cuts on.'" in busy
+    assert "!p?.clips ? 'Export clips first.'" in busy  # the earlier reasons still come first
+    assert (
+        "for (const id of ['#optExtendStart', '#optExtendEnd', '#optSpeech']) "
+        "$(id).addEventListener('input', renderBusy);"
+    ) in js
 
 
 def test_slider_tick_labels_sit_centred_under_their_stops() -> None:
@@ -6772,7 +6801,7 @@ def test_filter_row_is_one_search_and_a_funnel_disclosure() -> None:
     seq = re.findall(r'name="filterSeq" value="(\w+)"(?: checked)?> ([^<]+)</label>', row)
     assert seq == [("all", "All"), ("in", "In sequence"), ("out", "Not in sequence")]
     assert '<input type="checkbox" id="filterReady"> Ready only</label>' in row
-    assert '<input type="checkbox" id="filterMust"> Must include</label>' in row
+    assert "filterMust" not in row and "filterMust" not in js  # Must include was removed
     assert re.search(
         r'<label class="field" id="filterSourceWrap" hidden>Source file\s*<select id="filterSource">',
         row,
@@ -6795,15 +6824,16 @@ def test_filter_row_is_one_search_and_a_funnel_disclosure() -> None:
 
 
 def test_moment_filters_are_remembered_safely_and_the_source_per_project() -> None:
-    """Sort and filter: Sequence, Ready only and Must include are stored per browser (guarded,
-    removed when none is on); the source file is a path of one project, so it is never stored and
-    is dropped when the workspace resets."""
+    """Sort and filter: Sequence and Ready only are stored per browser (guarded, removed when
+    none is on); the source file is a path of one project, so it is never stored and is dropped
+    when the workspace resets. A stored ``must`` from before Must include was removed is not read."""
     js = _web("app.js")
     init = _js_function(js, "initMomentFilters")
     assert "const FILTERS_KEY = 'cutpoint.momentFilters';" in js
     assert re.search(r"try \{[^}]*JSON\.parse\(localStorage\.getItem\(FILTERS_KEY\)\)", init, re.S)
     assert "localStorage.removeItem(FILTERS_KEY)" in init
-    assert "localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready, must }))" in init
+    assert "localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready }))" in init
+    assert "must" not in init
     assert "source" not in init[init.index("const changed") : init.index("renderMoments();")]
     assert "S.filters.source = '';" in _js_function(js, "resetWorkspace")
     assert "filters: { ...NO_FILTERS }," in js
@@ -6883,9 +6913,7 @@ def _filter_moments(tmp: Path, moments: list[dict], q: str, f: dict) -> list[str
         capture_output=True, text=True, check=True, timeout=30,
     )  # fmt: skip
     ids, on = json.loads(out.stdout)
-    assert on == any(
-        f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "must", "source")
-    )
+    assert on == any(f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "source"))
     return ids
 
 
@@ -6906,9 +6934,10 @@ def test_moment_filters_combine_with_the_search_text(tmp_path: Path) -> None:
     assert run("NICE", {}) == ["a"] and run("b.mp4", {}) == ["b", "c"]
     assert run("H001", {}) == ["a"]  # the CLI id on the card (#487)
     assert run("", {"seq": "in"}) == ["a"] and run("", {"seq": "out"}) == ["b", "c"]
-    assert run("", {"ready": True}) == ["a", "b"] and run("", {"must": True}) == ["a", "c"]
+    assert run("", {"ready": True}) == ["a", "b"]
+    assert run("", {"must": True}) == ["a", "b", "c"]  # Must include was removed: not a filter
     assert run("", {"source": "/v/b.mp4"}) == ["b", "c"]
-    assert run("jump", {"seq": "out", "must": True}) == ["c"]
+    assert run("jump", {"seq": "out"}) == ["c"]
     assert run("jump", {"ready": True, "source": "/v/b.mp4"}) == []
 
 
