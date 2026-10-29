@@ -305,6 +305,29 @@ def test_create_project_refuses_bad_inputs_and_options(
     assert client.get("/api/projects").json() == {"projects": []}
 
 
+def test_create_project_reads_sources_as_pasted(client: TestClient, tmp_path: Path) -> None:
+    """New project "Source must be an absolute path" bug: a path pasted with the quotes of
+    Windows' Copy as path, a CRLF line's \\r or blanks around it is that path, and blank lines
+    are left out; a relative path is still refused. The projects folder setting reads it so too."""
+    footage = tmp_path / "footage"
+    footage.mkdir()
+    a, b = footage / "a.mp4", footage / "b.mp4"
+    a.write_bytes(b"x")
+    b.write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "T", "sources": [f'"{a}"', f" {b}\t\r", ""]})
+    assert res.status_code == 200, res.text
+    assert ui.read_meta(ui.project_dir(res.json()["id"]))["inputs"] == [str(a), str(b)]
+    res = client.post("/api/projects", json={"name": "T", "source": f'"{a}"'})
+    assert res.status_code == 200, res.text
+    assert ui.read_meta(ui.project_dir(res.json()["id"]))["source"] == str(a)
+    res = client.post("/api/projects", json={"name": "T", "sources": ['"footage/a.mp4"']})
+    assert res.status_code == 400
+    assert len(client.get("/api/projects").json()["projects"]) == 2
+    res = client.put("/api/settings", json={"projects_dir": f'"{tmp_path / "elsewhere"}"'})
+    assert res.status_code == 200, res.text
+    assert res.json()["projects_dir"] == str(tmp_path / "elsewhere")
+
+
 def test_360_project_lists_one_lrv_per_usable_clip_before_analysis(
     client: TestClient, tmp_path: Path
 ) -> None:

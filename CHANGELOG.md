@@ -181,6 +181,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference: zscale now applies the HLG OOTF to luminance (`agamma=0`), as BT.2100 specifies,
   not to R, G and B one by one. HLG exports take longer (about 25 instead of 45 fps at 1080p);
   PQ is unchanged (#454).
+- `cutpoint ui` New project: a path pasted with the double quotes of Windows' Copy as path, or
+  sent to the API with blanks or a CRLF's `\r` around it, is read as that path instead of being
+  refused with "source must be an absolute path"; blank `sources` lines are left out, and with
+  several sources the refusal names the path. Settings' projects folder takes a quoted path too.
+  Relative paths are still refused.
 
 ## [0.4.0] - 2026-10-29
 
