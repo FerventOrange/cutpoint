@@ -90,7 +90,9 @@ of new menu text are on screen at once, each staying 6 to 60 s, at least 3 of th
 within 2 s of each other (a menu opens at once; gameplay labels arrive one by one), for at
 least 3 s. A line on screen for over 60 s, or from within 6 s of the start of the read to within
 6 s of its end for at least half of it (also when a scoreboard hides it for a while), is part of
-the HUD and does not count. These tests run only when the preset's regions span at least a quarter of the frame
+the HUD and does not count. A gap of up to 15 s between two menu or text screens, with no feed
+sighting or kill in between (a loading or matchmaking screen), is menu time too; a still screen
+does not count as an end of such a gap. These tests run only when the preset's regions span at least a quarter of the frame
 (`static_area`), since a few small corner regions see too little of the screen.
 `stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out,
 `static_frames` how many of them held still and `text_frames` how many were text screens;

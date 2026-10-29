@@ -108,6 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- OCR menu detection (#409): loading, matchmaking and "processing" screens of up to 15 s
+  between two menu screens, with no kill feed in between, are menu time too, so less lobby
+  footage reaches the gaming candidates. On hand-labelled War Thunder and R6 recordings the
+  menu time found rose from 75% to 89% and from 54% to 64%, with no more gameplay flagged.
+  Cached OCR results are replayed once.
 - 360: the cached IMU orientation track (`x3-orient-v2.npz`) is written atomically, so a
   render or preview reading it while another job writes it never sees half a file, and a
   damaged one is computed anew instead of failing every 360 render of that clip.
