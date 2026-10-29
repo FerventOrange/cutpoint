@@ -38,10 +38,14 @@ Modes:
   (default)         Full: every feature. With an NVIDIA GPU: CUDA torch and GPU libraries
                     ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring,ski]").
   --lite            Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring,ski]"). Analyze, clips,
-                    assemble and edit work on the CPU; Ollama features work if you have Ollama.
+                    assemble and edit work on the CPU. Lite has no Ollama: it does not offer, install
+                    or start it (the AI assistant can use a third-party provider instead).
 
 Options:
-  --yes, -y         Answer yes to the optional downloads (cutpoint setup, Ollama model).
+  --yes, -y         Answer yes to the optional steps (install Ollama, cutpoint setup, Ollama model).
+  --ollama          Install Ollama when it is missing, without asking. Full mode only: with --lite
+                    it prints a warning and is ignored.
+  --no-ollama       Never offer to install Ollama (full mode; lite never offers it).
   --dry-run         Print every command that would run and change nothing.
   --cpu             Force CPU torch even when an NVIDIA GPU is found.
   --cuda            Force CUDA torch (cu126) even when no NVIDIA GPU is found.
@@ -55,6 +59,7 @@ Environment (a flag wins over its variable; any value except empty or 0 counts a
   CUTPOINT_YES=1           same as --yes
   CUTPOINT_DRY_RUN=1       same as --dry-run
   CUTPOINT_NO_FFMPEG=1     same as --no-ffmpeg
+  CUTPOINT_OLLAMA=1|0      same as --ollama / --no-ollama
   CUTPOINT_TORCH=cpu|cuda  same as --cpu / --cuda
   CUTPOINT_SOURCE=SRC      same as --source
   CUTPOINT_VERSION=X.Y.Z   release to install for --source pypi (default: the version in this script)
@@ -62,9 +67,19 @@ Environment (a flag wins over its variable; any value except empty or 0 counts a
   UV_TOOL_DIR, UV_TOOL_BIN_DIR, XDG_BIN_HOME   where uv puts tools and their commands
                            (default: ~/.local/share/uv/tools and ~/.local/bin)
 
-Optional prompts (full mode, default No): "cutpoint setup" (model weights, about 8 GB) and,
-when Ollama is running, pulling qwen3-vl:8b (about 6 GB). They read from /dev/tty, so they
-also work under `curl | sh`; with no terminal the answer is No unless --yes is given.
+Optional prompts (default No; they read from /dev/tty, so they also work under `curl | sh`;
+with no terminal the answer is No unless --yes is given):
+  - Install Ollama (full mode only; lite skips this step), when it is not found. Ollama runs the
+    local AI models for --vision rating and the AI assistant. Linux: Ollama's official script
+    (curl -fsSL https://ollama.com/install.sh | sh), which needs sudo (without a terminal only
+    when `sudo -n` works or you are root). macOS: `brew install ollama`, or the download link
+    when Homebrew is missing. Afterwards it waits for the server: macOS runs
+    `brew services start ollama`; Linux relies on the ollama.service the official script sets up.
+    Only when no service exists does it start `ollama serve` in the background (log:
+    ~/.local/state/cutpoint/ollama-serve.log). A declined or failed
+    Ollama install never fails the Cutpoint install.
+  - Pull qwen3-vl:8b (about 6 GB), full mode only, when Ollama is running.
+  - "cutpoint setup" (model weights, about 8 GB), full mode only.
 EOF
 }
 
@@ -160,6 +175,8 @@ parse_args() {
   NO_FFMPEG=0
   TORCH=""
   FLAG_TORCH=""
+  OLLAMA_CHOICE=""
+  FLAG_OLLAMA=""
   LITE_FLAG=0
   SOURCE=""
   is_on "${CUTPOINT_LITE:-}" && LITE=1
@@ -167,6 +184,9 @@ parse_args() {
   is_on "${CUTPOINT_DRY_RUN:-}" && DRY_RUN=1
   is_on "${CUTPOINT_NO_FFMPEG:-}" && NO_FFMPEG=1
   SOURCE=${CUTPOINT_SOURCE:-}
+  if [ -n "${CUTPOINT_OLLAMA:-}" ]; then
+    if is_on "$CUTPOINT_OLLAMA"; then OLLAMA_CHOICE=1; else OLLAMA_CHOICE=0; fi
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --lite)
@@ -176,6 +196,17 @@ parse_args() {
       --yes | -y) ASSUME_YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
       --no-ffmpeg) NO_FFMPEG=1 ;;
+      --ollama | --no-ollama)
+        case "$1" in
+          --ollama) want=1 ;;
+          *) want=0 ;;
+        esac
+        if [ -n "$FLAG_OLLAMA" ] && [ "$FLAG_OLLAMA" != "$want" ]; then
+          bad_usage "--ollama and --no-ollama contradict each other"
+        fi
+        FLAG_OLLAMA=$want
+        OLLAMA_CHOICE=$want
+        ;;
       --cpu | --cuda)
         want=${1#--}
         if [ -n "$FLAG_TORCH" ] && [ "$FLAG_TORCH" != "$want" ]; then
@@ -469,6 +500,184 @@ ensure_uv() {
   install_uv
 }
 
+# ---------------------------------------------------------------- ollama
+
+OLLAMA_INSTALL_URL="https://ollama.com/install.sh"
+OLLAMA_DOWNLOAD_URL="https://ollama.com/download"
+
+ollama_up() {
+  if have curl; then
+    curl -fsS -m 2 "$OLLAMA_URL/api/version" >/dev/null 2>&1
+  elif have wget; then
+    wget -q -T 2 -O /dev/null "$OLLAMA_URL/api/version" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+# Wait up to about 20 seconds for the server.
+wait_ollama() {
+  n=0
+  while [ "$n" -lt 20 ]; do
+    ollama_up && return 0
+    sleep 1
+    n=$((n + 1))
+  done
+  ollama_up
+}
+
+# True on Linux when Ollama's official script installed the systemd service (it then owns the server).
+ollama_service() {
+  [ "$OS" != Darwin ] && have systemctl && systemctl cat ollama.service >/dev/null 2>&1
+}
+
+# Start `ollama serve` in the background (macOS, or Linux without the service) and wait for it.
+start_ollama_serve() {
+  olog="${XDG_STATE_HOME:-$HOME/.local/state}/cutpoint/ollama-serve.log"
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ "$OS" = Darwin ]; then
+      say "+ nohup ollama serve > $olog 2>&1 &   (only when 'brew services start ollama' fails)"
+    else
+      say "+ nohup ollama serve > $olog 2>&1 &   (only when the server is not up after 20 s)"
+    fi
+    return 0
+  fi
+  mkdir -p "${olog%/*}" || return 1
+  say "Ollama is not answering at $OLLAMA_URL: starting 'ollama serve' in the background (log: $olog)."
+  nohup ollama serve >"$olog" 2>&1 </dev/null &
+  wait_ollama
+}
+
+# Sets OLLAMA_WHY and returns 1 when Ollama cannot be installed here.
+ollama_can_install() {
+  OLLAMA_WHY=""
+  if [ "$OS" = Darwin ]; then
+    if ! have brew; then
+      OLLAMA_WHY="Homebrew not found; download Ollama from $OLLAMA_DOWNLOAD_URL"
+      return 1
+    fi
+    return 0
+  fi
+  if ! have curl; then
+    OLLAMA_WHY="curl not found; install Ollama yourself: curl -fsSL $OLLAMA_INSTALL_URL | sh"
+    return 1
+  fi
+  [ "$DRY_RUN" = 1 ] && return 0
+  if [ "$(id -u)" != 0 ] && ! has_tty; then
+    if ! { have sudo && sudo -n true 2>/dev/null; }; then
+      OLLAMA_WHY="needs sudo and there is no terminal; run: curl -fsSL $OLLAMA_INSTALL_URL | sh"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Run the install; returns 1 on failure.
+ollama_install() {
+  if [ "$OS" = Darwin ]; then
+    run brew install ollama
+    return
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    say "+ curl -fsSL $OLLAMA_INSTALL_URL | sh"
+    return 0
+  fi
+  otmp=$(mktemp "${TMPDIR:-/tmp}/ollama-install.XXXXXX") || return 1
+  say "+ curl -fsSL $OLLAMA_INSTALL_URL | sh   (sudo may ask for your password)"
+  if curl -fsSL "$OLLAMA_INSTALL_URL" -o "$otmp" && sh "$otmp"; then
+    rm -f "$otmp"
+    return 0
+  fi
+  rm -f "$otmp"
+  return 1
+}
+
+# Offer to install Ollama; sets OLLAMA_STATUS and OLLAMA_UP (1 when the server is, or in a dry
+# run would be, up). Never fails the install.
+offer_ollama() {
+  OLLAMA_UP=0
+  OLLAMA_HINT=""
+  if have ollama; then
+    OLLAMA_STATUS="already installed"
+    if ollama_up; then
+      OLLAMA_UP=1
+    elif [ "$DRY_RUN" != 1 ]; then
+      OLLAMA_HINT="Ollama is installed but not running; start it, then: ollama pull $OLLAMA_MODEL"
+    fi
+    return 0
+  fi
+  if ollama_up; then
+    OLLAMA_STATUS="server running at $OLLAMA_URL (no ollama command; not installed)"
+    return 0
+  fi
+  if [ "$OLLAMA_CHOICE" = 0 ]; then
+    OLLAMA_STATUS="skipped (--no-ollama or CUTPOINT_OLLAMA=0)"
+    return 0
+  fi
+  if [ "$OLLAMA_CHOICE" != 1 ] && ! ask "Install Ollama (local AI models for vision rating and the AI assistant)?"; then
+    OLLAMA_STATUS="declined"
+    return 0
+  fi
+  if ! ollama_can_install; then
+    warn "Ollama not installed: $OLLAMA_WHY"
+    OLLAMA_STATUS="skipped ($OLLAMA_WHY)"
+    return 0
+  fi
+  if [ "$OLLAMA_CHOICE" = 1 ]; then
+    say "Installing Ollama (--ollama or CUTPOINT_OLLAMA=1)."
+  fi
+  if ! ollama_install; then
+    warn "The Ollama install failed; install it later from $OLLAMA_DOWNLOAD_URL"
+    OLLAMA_STATUS="failed (install it from $OLLAMA_DOWNLOAD_URL)"
+    return 0
+  fi
+  OLLAMA_STATUS="installed"
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ "$OS" = Darwin ]; then
+      say "+ brew services start ollama"
+    else
+      say "+ if systemctl cat ollama.service succeeds: only wait for the service (no second server)"
+    fi
+    say "+ wait up to 20 s for $OLLAMA_URL/api/version"
+    start_ollama_serve
+    OLLAMA_UP=1
+    return 0
+  fi
+  if ! have ollama; then
+    warn "ollama is not on PATH after the install; open a new terminal."
+    OLLAMA_STATUS="installed (not on PATH yet; open a new terminal)"
+    return 0
+  fi
+  if [ "$OS" = Darwin ]; then
+    if run brew services start ollama; then
+      if wait_ollama; then
+        OLLAMA_UP=1
+      else
+        warn "The ollama service is not answering; check: brew services info ollama"
+        OLLAMA_STATUS="installed (service not answering: brew services info ollama)"
+      fi
+      return 0
+    fi
+  elif ollama_service; then
+    if wait_ollama; then
+      OLLAMA_UP=1
+    else
+      warn "The ollama service is not answering; check: systemctl status ollama"
+      OLLAMA_STATUS="installed (service not answering: systemctl status ollama)"
+    fi
+    return 0
+  elif wait_ollama; then
+    OLLAMA_UP=1
+    return 0
+  fi
+  if start_ollama_serve && ollama_up; then
+    OLLAMA_UP=1
+  else
+    warn "Ollama is installed but the server did not start; run: ollama serve"
+    OLLAMA_STATUS="installed (server not running; start it with: ollama serve)"
+  fi
+}
+
 # ---------------------------------------------------------------- cutpoint
 
 # Sets REQ (the requirement) and NO_SOURCES.
@@ -592,16 +801,28 @@ verify() {
 optional_downloads() {
   SETUP_DONE="no"
   OLLAMA_DONE="no"
-  [ "$LITE" = 0 ] || return 0
-  if ask "Download models now with 'cutpoint setup' (about 8 GB)?"; then
-    if run cutpoint setup; then
-      SETUP_DONE=yes
-    else
-      warn "cutpoint setup failed; run it again later."
-      SETUP_DONE=failed
+  OLLAMA_STATUS="not checked"
+  OLLAMA_UP=0
+  # Lite has no Ollama (the AI assistant can use a third-party provider); setup is full-only too.
+  if [ "$LITE" = 1 ]; then
+    OLLAMA_STATUS="not part of lite"
+    if [ "$OLLAMA_CHOICE" = 1 ]; then
+      warn "Ollama is not part of lite, so --ollama / CUTPOINT_OLLAMA=1 is ignored (the AI assistant can use a third-party provider)."
+    fi
+  else
+    offer_ollama
+  fi
+  if [ "$LITE" = 0 ]; then
+    if ask "Download models now with 'cutpoint setup' (about 8 GB)?"; then
+      if run cutpoint setup; then
+        SETUP_DONE=yes
+      else
+        warn "cutpoint setup failed; run it again later."
+        SETUP_DONE=failed
+      fi
     fi
   fi
-  if have ollama && curl -fsS -m 2 "$OLLAMA_URL/api/version" >/dev/null 2>&1; then
+  if [ "$OLLAMA_UP" = 1 ]; then
     if ask "Pull $OLLAMA_MODEL with Ollama (about 6 GB)?"; then
       if run ollama pull "$OLLAMA_MODEL"; then
         OLLAMA_DONE=yes
@@ -631,6 +852,7 @@ summary() {
   say "  Version:   $INSTALLED_VERSION"
   say "  Source:    $SOURCE"
   say "  Installed: $tools/cutpoint (command in $BIN_DIR)"
+  say "  Ollama:    $OLLAMA_STATUS"
   say ""
   say "Next steps:"
   if [ "$BIN_ON_PATH" = 0 ]; then
@@ -638,6 +860,16 @@ summary() {
   fi
   if [ "${FFMPEG_MISSING:-0}" = 1 ]; then
     say "  - Install ffmpeg and ffprobe (not found)."
+  fi
+  if [ -n "${OLLAMA_HINT:-}" ]; then
+    say "  - $OLLAMA_HINT"
+  fi
+  if [ "$OLLAMA_UP" = 1 ] && [ "$OLLAMA_DONE" != yes ]; then
+    if [ "$OLLAMA_DONE" = failed ]; then
+      say "  - The model pull failed; run it again (about 6 GB): ollama pull $OLLAMA_MODEL"
+    else
+      say "  - Pull the vision model (about 6 GB): ollama pull $OLLAMA_MODEL"
+    fi
   fi
   if [ "$OLLAMA_DONE" = yes ]; then
     say "  - Ollama model pulled: $OLLAMA_MODEL (used by --vision and AI Chat)."
