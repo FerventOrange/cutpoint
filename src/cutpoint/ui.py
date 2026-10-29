@@ -601,7 +601,13 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
     dm = ai_providers.DEFAULT_OLLAMA_MODEL
     offers = {
         "ollama": (ollama, ai_providers.AUTO_MODEL, [dm], dm, False),
-        "openai": (ai_providers.OPENAI_URL, "", [], "OpenAI model name", True),
+        "openai": (
+            ai_providers.OPENAI_URL,
+            "",
+            list(ai_providers.OPENAI_MODELS),
+            "OpenAI model name",
+            True,
+        ),
         "anthropic": (
             ai_providers.ANTHROPIC_URL,
             ai_providers.DEFAULT_ANTHROPIC_MODEL,
@@ -609,7 +615,7 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
             ai_providers.DEFAULT_ANTHROPIC_MODEL,
             False,
         ),
-        "xai": (ai_providers.XAI_URL, "", [], "xAI model name", True),
+        "xai": (ai_providers.XAI_URL, "", list(ai_providers.XAI_MODELS), "xAI model name", True),
     }
     hosts = key_hosts(data)
 

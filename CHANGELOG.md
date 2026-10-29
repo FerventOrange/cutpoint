@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list lacks; a saved model the list lacks stays chosen, marked "(not in the provider's list)",
   and without a list (no key, offline, Ollama not running) the dropdown offers the preset's own
   models and the saved model.
+- `cutpoint ui` Settings > AI assistant: Codex (OpenAI) and Grok (xAI) offer their current models
+  when the provider's list cannot be loaded, as Claude does (`gpt-6-astra` first, the only OpenAI
+  one with tool calls over Chat Completions until #536); the Model still has to be chosen.
 
 ## [0.4.0] - 2026-10-29
 

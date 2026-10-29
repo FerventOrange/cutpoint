@@ -425,7 +425,7 @@ Models that do not chat here are left out by name: ids starting with `text-embed
 `davinci-` or `babbage-`, or containing `-tts`, `-transcribe`, `-realtime`, `-audio`, `-image`,
 `imagine` or `codex` (OpenAI and xAI). A list is
 kept for 10 minutes; Refresh list asks again. The Model dropdown offers the listed models; when
-the list cannot be loaded it offers the preset's own models (Claude's two, Ollama's `qwen3.5:9b`) and the saved model,
+the list cannot be loaded it offers the preset's own models (Claude's two, OpenAI's four and xAI's five current ones, Ollama's `qwen3.5:9b`) and the saved model,
 and "Other model…" shows a Model id field to type any other id.
 
 Saving there checks that the provider answers (reachable, a model chosen and, at
