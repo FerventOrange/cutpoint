@@ -202,6 +202,11 @@ Theme picks the colours: Blue (the default, today's colours), Light or Dark (bot
 controls and focus outlines at WCAG AA contrast). Dark has lighter panels; Light uses the same
 yellow for buttons and fills as the other themes, with darker amber for text, focus rings, the selected tab, checkboxes and sliders. It recolours the UI at once and, like Stats for
 Nerds, Save keeps it in the browser and Cancel or Escape undoes it.
+"Show advanced export options" (off by default) shows the Export tab's advanced controls (marked
+"advanced" below). Hidden, they keep their values and are still sent with each job, and
+"Advanced options in use: ..." under the options names any that are; a hidden value out of range
+shows them so the browser can point at it. Like Stats for Nerds, it shows at once, Save keeps it
+in the browser, and Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
@@ -210,6 +215,19 @@ possible, such as Docker). After analysis, "Show folder" stays available next to
 in the column header. "Analyze again" asks for confirmation first. The Export tab has one "Show Exports
 Folder" button: it opens the latest export's `clips_ui_*` folder, or the project folder (final
 videos, `.srt`, `.fcpxml`, `.otio`) once that export is assembled.
+
+After analysis, the Moments list has a search field (label, words spoken, file name or candidate id such as `h001`) and a
+funnel button beside it that opens Sort and filter. Sort by is Score (the default; rank #1
+first) or Position in video (by source name in natural order, then start time); each card's
+rank badge keeps its score rank either way. The quick filters are Sequence (All, In sequence,
+Not in sequence), Ready only (the moment's preview plays now), Must include, and Source file when
+the project has several sources. They combine with the search text. A dot on the button shows
+while a filter or a sort other than Score is on, and when nothing passes the list reads "No
+moments match these filters." Escape closes the menu. The sort and filters are remembered per
+browser (local storage); the source file only while the project stays open.
+Each card shows the rank and title with Add or Remove on the right, the candidate id, the times
+and length, the file name when the project has several sources, a strip of the moment's place in its source, the
+transcript, and the preview readiness (Ready, Encoding, Queued) at the bottom right.
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
 Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
@@ -248,28 +266,31 @@ The padding field is gone from the UI; `clips --extend` and [`extend`](#extend) 
 The Export tab has more controls above and below that panel. A blank Cut Timing field keeps the
 CLI default.
 
-**Clips to Export.** By default the export is the sequence, as hand-picked. Automatic picks
+**Clips to Export.** By default the export is the Sequence, as hand-picked. Automatic picks
 export from the ranked moments instead:
 
 | Control | CLI flag |
 |---|---|
-| Top moments | `--top` |
-| Max total | `--max-total` |
-| Candidate ids (replaces Top moments) | `--ids` |
+| Top moments (advanced) | `--top` |
+| Max video length: the cap on all clips together | `--max-total` |
+| Candidate ids (advanced; replaces Top moments): the ids on the moment cards, such as `h001` | `--ids` |
 | Order: Style, Story, Best first or Chronological | `--order` |
 
 **Cut Timing.**
 
 | Control | CLI flag |
 |---|---|
-| Max end move | `--speech-max-extend` |
-| Max start move | `--speech-max-lead` |
-| Tail min / Tail max | `--tail-min` / `--tail-max` |
+| Max end move (advanced) | `--speech-max-extend` |
+| Max start move (advanced) | `--speech-max-lead` |
+| Tail min / Tail max (advanced) | `--tail-min` / `--tail-max` |
 | Event tails: Auto, On or Off | (Auto: no flag) / `--event-tails` / `--no-event-tails` |
-| Event window | `--event-window` |
-| Extend start / Extend end | `--extend-start` / `--extend-end` |
+| Event window (advanced) | `--event-window` |
+| Extend start / Extend end (advanced) | `--extend-start` / `--extend-end` |
 
-**Extend export** runs [`extend`](#extend) on the latest export into a new `clips_ui_<stamp>`
+The "Latest export ..." facts under the options are advanced too; warnings and guidance there
+(such as "Exported from the 360 preview (not stitched)") always show.
+
+**Extend export** (advanced) runs [`extend`](#extend) on the latest export into a new `clips_ui_<stamp>`
 folder. The result becomes the current export.
 
 **One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs

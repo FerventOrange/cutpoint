@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, baseName, fmt, fmtLen, h, parseTime, positionCompare, round2, svg } from './util.js';
+import { $, baseName, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -23,11 +23,14 @@ const STAGE_MIN = 360; // pixels the preview keeps when the sequence column wide
 const SIDE_STEP = 16; // pixels per arrow key; Shift moves four steps
 const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for every preview video
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
+const ADV_KEY = 'cutpoint.advancedExport'; // localStorage: "1" while Show advanced export options is on (off by default)
 const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "dark"; absent for Blue, the default. index.html reads it too
 const THEMES = ['blue', 'light', 'dark'];
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
 const ORDER_KEY = 'cutpoint.momentOrder'; // localStorage: "position" for video order; absent for Score, the default
 const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the moments list's orders (#469)
+// localStorage: the moments list's quick filters the user set ({seq, ready, must}); absent for none. The source file is per project
+const FILTERS_KEY = 'cutpoint.momentFilters';
 // localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults
 const OPTS_KEY = 'cutpoint.exportOptions';
 // Export & Assembly Options for a viewer who changed none; Compress peaks starts from config.json's
@@ -67,6 +70,7 @@ const S = {
   focus: null,
   filter: '',
   order: 'score', // the moments list's order: 'score' (rank #1 first) or 'position' (initMomentOrder)
+  filters: { ...NO_FILTERS }, // the moments list's quick filters (initMomentFilters); util.js momentMatches applies them
   jobs: [],
   active: null, // the running job, if any
   tracked: new Map(), // job id -> last seen status
@@ -75,6 +79,8 @@ const S = {
   selected: new Set(), // sequence ids ticked for batch actions
   nerdStats: false, // Settings > Stats for Nerds: the scoring overlay on the preview
   nerdStatsWas: false, // nerdStats when Settings opened, restored by Cancel or Escape
+  advExport: false, // Settings > Show advanced export options: the Export tab's .adv controls
+  advExportWas: false, // advExport when Settings opened, restored by Cancel or Escape
   themeWas: 'blue', // Settings > Theme when Settings opened, restored by Cancel or Escape
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
@@ -330,6 +336,7 @@ function resetWorkspace(segments) {
   S.proposal = null;
   S.pendingProposal = null;
   S.shown = null;
+  S.filters.source = ''; // a path of the project left
 }
 
 /** Leave the open project (its folder is no longer listed): back to the empty workspace. */
@@ -390,32 +397,49 @@ function renderMoments() {
     delete empty.dataset.refocus;
   }
 
-  const q = S.filter.trim().toLowerCase();
-  const multi = new Set(list.map((c) => c.source)).size > 1;
+  const sources = [...new Set(list.map((c) => c.source))];
+  const multi = sources.length > 1;
+  // Sort and filter: the source file choice only with several sources, and only one of this project's
+  const f = { ...S.filters, source: multi && sources.includes(S.filters.source) ? S.filters.source : '' };
+  syncFilterMenu(sources, f, !!list.length);
+  const segOf = (c) => S.segments.find((s) => s.id === c.id);
   const items = list
     .map((c, i) => ({ c, rank: i + 1 }))
-    .filter(({ c }) => !q || `${c.label} ${c.transcript ?? ''} ${baseName(c.source)}`.toLowerCase().includes(q));
+    .filter(({ c }) => {
+      const seg = segOf(c);
+      return momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
+    });
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
+  const listHadFocus = $('#candList').contains(document.activeElement);
+  // A card: rank, title and Add/Remove on top (the button sits over the main button's top row: no
+  // nested buttons), the times, the file with several sources, the strip, then the transcript with
+  // the preview readiness at the bottom right.
   preserveFocus(() => {
     $('#candList').replaceChildren(
       ...items.map(({ c, rank }) => {
-        const seg = S.segments.find((s) => s.id === c.id);
+        const seg = segOf(c);
         const picked = !!seg;
+        const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
           h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
-              h('span', { class: 'cand-title', text: c.label || c.id }),
-              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
-              prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] })),
+              h('span', { class: 'cand-title', text: c.label || c.cli_id || c.id }),
+              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null),
             h('span', { class: 'cand-time tc' },
-              `${fmt(c.start)} to ${fmt(c.end)}, ${(c.end - c.start).toFixed(1)} s`,
-              multi ? ` in ${baseName(c.source)}` : ''),
+              // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
+              c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
+              `${fmt(c.start)} to ${fmt(c.end)}`,
+              h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }),
+              `${(c.end - c.start).toFixed(1)} s`),
+            multi ? h('span', { class: 'cand-src' }, h('span', { class: 'vh', text: 'in ' }), baseName(c.source)) : null,
             sourceStrip(c),
-            c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null),
+            c.transcript || badge
+              ? h('span', { class: 'cand-foot' }, c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null, badge)
+              : null),
           h('button', {
             type: 'button', class: 'btn small', 'data-act': 'toggle',
-            'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.id} ${picked ? 'from' : 'to'} sequence`,
+            'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.cli_id || c.id} ${picked ? 'from' : 'to'} sequence`,
             onclick: () => (picked ? removeSeg(c.id) : addSeg(c.id)),
           }, picked ? 'Remove' : 'Add'),
         );
@@ -423,7 +447,9 @@ function renderMoments() {
     );
   });
   if (list.length && !items.length)
-    $('#candList').replaceChildren(h('li', { class: 'empty', text: 'No moments match this filter.' }));
+    $('#candList').replaceChildren(h('li', { class: 'empty', text: `No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}.` }));
+  // the focused card left the list (Add with Not in sequence, say) and no card is left to take focus
+  if (listHadFocus && !$('#candList').contains(document.activeElement) && !$('#filterWrap').hidden) $('#filterBtn').focus();
   markMoments();
   if (hadFocus && !empty.contains(document.activeElement))
     ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
@@ -1790,6 +1816,7 @@ const ICONS = {
   grip: [[9, 5], [15, 5], [9, 12], [15, 12], [9, 19], [15, 19]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.9 }]),
   check: [['path', { d: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z' }]],
   hourglass: [['path', { d: 'M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5-4-4V4h8v3.5l-4 4z' }]],
+  funnel: [['path', { d: 'M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A1 1 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z' }]],
   clock: [['path', { d: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z' }]],
 };
 const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);
@@ -2485,15 +2512,19 @@ function renderExport() {
   const st = $('#exportState');
   // A 360 clip rendered from the dual-fisheye preview: no SDK, pano.auto_stitch off or the stitch skipped.
   const note = clips?.clips?.some((c) => c.pano?.preview) ? ' Exported from the 360 preview (not stitched).' : '';
-  if (!p) st.textContent = '';
+  // The "Latest export ..." facts are advanced (.adv); warnings and guidance always show
+  const latest = (rest) => h('span', { class: 'adv', text: `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips${rest}` });
+  const say = (text) => (text ? h('span', { text }) : null);
+  const show = (...parts) => st.replaceChildren(...parts.filter(Boolean)); // no 360 note: say() gives null
+  if (!p) show();
   else if (picks() === 'auto') {
-    st.textContent = !p.highlights?.candidates?.length ? 'Analyze the footage to export automatic picks.'
-      : clips ? `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips.${note} Automatic picks export the best moments of the analysis.`
-        : 'Nothing exported yet. Automatic picks export the best moments of the analysis.';
-  } else if (!S.segments.length) st.textContent = 'Add moments to the sequence to export them.';
-  else if (!clips) st.textContent = 'Nothing exported yet. Exporting saves the sequence first.';
-  else if (exportMatches()) st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and matches this sequence.${note}`;
-  else st.textContent = `Latest export (${clips.dir ?? 'folder'}) has ${clips.clips.length} clips and differs from this sequence.${note} Export again to update it.`;
+    if (!p.highlights?.candidates?.length) show(say('Analyze the footage to export automatic picks.'));
+    else if (clips) show(latest('.'), say(`${note} Automatic picks export the best moments of the analysis.`));
+    else show(say('Nothing exported yet. Automatic picks export the best moments of the analysis.'));
+  } else if (!S.segments.length) show(say('Add moments to the sequence to export them.'));
+  else if (!clips) show(say('Nothing exported yet. Exporting saves the sequence first.'));
+  else if (exportMatches()) show(latest(' and matches this sequence.'), say(note));
+  else show(latest('.'), say(` The latest export differs from this sequence.${note} Export again to update it.`));
   renderBusy();
 }
 
@@ -2783,9 +2814,14 @@ function fields(...keys) {
   return out;
 }
 
-/** False (and the browser shows why) when one of the fields a job sends (``body``) is out of its range. */
+/**
+ * False (and the browser shows why) when one of the fields a job sends (``body``) is out of its
+ * range. A hidden advanced field is shown first (until reload; the setting stays), so the browser
+ * can point at it.
+ */
 function validOptions(body) {
   const bad = Object.keys(body).filter((key) => key in OPT_FIELDS).map((key) => $(OPT_FIELDS[key])).find((el) => !el.checkValidity());
+  if (bad?.classList.contains('adv')) showAdvExport(true);
   bad?.reportValidity();
   return !bad;
 }
@@ -3224,7 +3260,8 @@ function showItem(ev, id, query) {
           S.filter = query;
           $('#filter').value = query;
           renderMoments();
-          $('#chatLive').textContent = `Moments filtered by ${query}`;
+          const n = $('#candList').querySelectorAll('.cand').length;
+          $('#chatLive').textContent = `Moments filtered by ${query}: ${n} shown${filtersOn(S.filters) ? '; Sort and filter is also on' : ''}`;
         },
       }, `Filter list by “${query}”`) : null));
 }
@@ -3425,6 +3462,8 @@ async function openSettings() {
   fillAiSettings(st.assistant);
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
+  $('#setAdvExport').checked = S.advExport;
+  S.advExportWas = S.advExport;
   S.themeWas = $('#setTheme').value = theme();
   d.showModal();
   // a locked folder cannot be edited: start on the first control that can
@@ -3615,6 +3654,53 @@ function initNerdStats() {
   $('#setNerdStats').addEventListener('change', (e) => setNerdStats(e.target.checked));
 }
 
+/** Show or hide the Export tab's advanced controls (.adv) and say which hidden ones are in use. */
+function showAdvExport(on) {
+  $('#panelExport').classList.toggle('show-adv', on);
+  renderAdvInUse();
+}
+
+/**
+ * Hidden advanced fields keep their values and are still sent, so a filled one that a job sends
+ * (enabled: the pick mode and boxes use it) is named under the options instead of acting unseen.
+ */
+function renderAdvInUse() {
+  const out = $('#advInUse');
+  const shown = $('#panelExport').classList.contains('show-adv');
+  const used = shown ? [] : Object.values(OPT_FIELDS).map((id) => $(id))
+    .filter((el) => el.classList.contains('adv') && !el.disabled && el.value.trim())
+    .map((el) => document.querySelector(`label[for=${el.id}]`).textContent.replace(/ \(s\)$/, ''));
+  out.hidden = !used.length;
+  out.textContent = used.length ? `Advanced options in use: ${used.join(', ')}. Settings > Show advanced export options shows them.` : '';
+}
+
+/** Turn Show advanced export options on or off: store it in this browser, show or hide them and tick the box to match. */
+function setAdvExport(on) {
+  S.advExport = on;
+  try {
+    if (on) localStorage.setItem(ADV_KEY, '1');
+    else localStorage.removeItem(ADV_KEY);
+  } catch {
+    // storage blocked or full: the setting still applies until reload
+  }
+  $('#setAdvExport').checked = on;
+  showAdvExport(on);
+}
+
+/**
+ * Show advanced export options (off by default) is a view choice, so like Stats for Nerds it lives
+ * in this browser's storage, previews on change, and Cancel or Escape puts it back.
+ */
+function initAdvExport() {
+  try {
+    S.advExport = localStorage.getItem(ADV_KEY) === '1';
+  } catch {
+    // storage blocked: start from the default (off)
+  }
+  showAdvExport(S.advExport);
+  $('#setAdvExport').addEventListener('change', (e) => setAdvExport(e.target.checked));
+}
+
 /** The theme in use: index.html set data-theme on <html> before first paint; none is Blue. */
 function theme() {
   return document.documentElement.dataset.theme ?? 'blue';
@@ -3643,6 +3729,8 @@ function bindSettings() {
   $('#setTheme').addEventListener('change', (e) => setTheme(e.target.value));
   const undo = () => {
     setNerdStats(S.nerdStatsWas);
+    // a field revealed for an out-of-range value (showAdvExport(true)) stays unless the box changed
+    if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);
     setTheme(S.themeWas);
   };
   $('#settingsCancel').addEventListener('click', () => {
@@ -3897,29 +3985,135 @@ function initSideTabs() {
 }
 
 /**
- * The moments list's order (#469): Score (rank #1 first, the default) or Position in video. The
- * choice is remembered per browser; without storage it lasts the session.
+ * The moments list's order (#469): Score (rank #1 first, the default) or Position in video, the
+ * Sort by radios of Sort and filter. The choice is remembered per browser; without storage it lasts
+ * the session.
  */
 function initMomentOrder() {
-  const sel = $('#momentOrder');
+  const radios = [...document.querySelectorAll('#filterPop input[name=momentOrder]')];
   try {
     const v = localStorage.getItem(ORDER_KEY);
     if (Object.hasOwn(ORDER_NAMES, v)) S.order = v;
   } catch {
     // storage blocked: Score
   }
-  sel.value = S.order;
-  sel.addEventListener('change', () => {
-    S.order = Object.hasOwn(ORDER_NAMES, sel.value) ? sel.value : 'score';
-    try {
-      if (S.order === 'score') localStorage.removeItem(ORDER_KEY);
-      else localStorage.setItem(ORDER_KEY, S.order);
-    } catch {
-      // storage blocked or full: the order still applies until reload
-    }
-    $('#orderLive').textContent = `Moments sorted by ${ORDER_NAMES[S.order]}`;
-    renderMoments();
+  for (const r of radios) {
+    r.checked = r.value === S.order;
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      S.order = Object.hasOwn(ORDER_NAMES, r.value) ? r.value : 'score';
+      try {
+        if (S.order === 'score') localStorage.removeItem(ORDER_KEY);
+        else localStorage.setItem(ORDER_KEY, S.order);
+      } catch {
+        // storage blocked or full: the order still applies until reload
+      }
+      $('#orderLive').textContent = `Moments sorted by ${ORDER_NAMES[S.order]}`;
+      renderMoments();
+    });
+  }
+}
+
+/**
+ * Sort and filter: the funnel button beside the search opens the sort order and the quick filters
+ * (a disclosure: Escape closes it and returns focus to the button; a click or focus outside closes
+ * it). The filters combine with the search text (util.js momentMatches). Sequence, Ready only and
+ * Must include are remembered per browser like the order; the source file only while its project
+ * stays open (resetWorkspace), as paths differ per project. Without storage they last the session.
+ */
+function initMomentFilters() {
+  const btn = $('#filterBtn');
+  const pop = $('#filterPop');
+  const menu = btn.parentElement;
+  btn.prepend(icon('funnel'));
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTERS_KEY));
+    if (['all', 'in', 'out'].includes(saved?.seq)) S.filters.seq = saved.seq;
+    S.filters.ready = saved?.ready === true;
+    S.filters.must = saved?.must === true;
+  } catch {
+    // storage blocked or not JSON: no filters
+  }
+  const seqRadios = [...pop.querySelectorAll('input[name=filterSeq]')];
+  const showFilters = () => {
+    for (const r of seqRadios) r.checked = r.value === S.filters.seq;
+    $('#filterReady').checked = S.filters.ready;
+    $('#filterMust').checked = S.filters.must;
+  };
+  showFilters();
+  const open = (on, refocus = false) => {
+    pop.hidden = !on;
+    btn.setAttribute('aria-expanded', String(on));
+    if (refocus) btn.focus();
+  };
+  btn.addEventListener('click', () => open(pop.hidden));
+  menu.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || pop.hidden) return;
+    e.preventDefault(); // the page's own Escape (stop Play sequence) waits
+    open(false, true);
   });
+  document.addEventListener('pointerdown', (e) => !pop.hidden && !menu.contains(e.target) && open(false));
+  menu.addEventListener('focusout', (e) => !pop.hidden && e.relatedTarget && !menu.contains(e.relatedTarget) && open(false));
+  const changed = () => {
+    try {
+      const { seq, ready, must } = S.filters;
+      if (!filtersOn({ seq, ready, must })) localStorage.removeItem(FILTERS_KEY);
+      else localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready, must }));
+    } catch {
+      // storage blocked or full: the filters still apply until reload
+    }
+    renderMoments();
+    const n = $('#candList').querySelectorAll('.cand').length;
+    $('#orderLive').textContent = `${n} of ${cands().length} moments shown`;
+  };
+  for (const r of seqRadios)
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      S.filters.seq = r.value;
+      changed();
+    });
+  $('#filterReady').addEventListener('change', (e) => {
+    S.filters.ready = e.target.checked;
+    changed();
+  });
+  $('#filterMust').addEventListener('change', (e) => {
+    S.filters.must = e.target.checked;
+    changed();
+  });
+  $('#filterSource').addEventListener('change', (e) => {
+    S.filters.source = e.target.value;
+    changed();
+  });
+  $('#filterClear').addEventListener('click', () => {
+    S.filters = { ...NO_FILTERS };
+    showFilters();
+    changed();
+  });
+}
+
+/**
+ * Bring Sort and filter up to date for the list: the source file choice (only with several
+ * ``sources``; ``f`` holds the one in use), and the funnel's dot and name while any filter or a
+ * sort other than Score is on. Closed while the list has no moments (``shown`` false).
+ */
+function syncFilterMenu(sources, f, shown) {
+  const sel = $('#filterSource');
+  const names = sources.slice().sort((a, b) => naturalCompare(baseName(a), baseName(b)) || naturalCompare(a, b));
+  const tag = JSON.stringify(names);
+  if (sel.dataset.sources !== tag) {
+    sel.dataset.sources = tag;
+    sel.replaceChildren(h('option', { value: '', text: 'All files' }), ...names.map((s) => h('option', { value: s, title: s, text: baseName(s) })));
+  }
+  sel.value = f.source;
+  $('#filterSourceWrap').hidden = sources.length < 2;
+  const on = [filtersOn(f) && 'filters on', S.order !== 'score' && `sorted by ${ORDER_NAMES[S.order]}`].filter(Boolean);
+  const btn = $('#filterBtn');
+  btn.classList.toggle('on', !!on.length);
+  btn.setAttribute('aria-label', ['Sort and filter moments', ...on].join(', '));
+  if (!shown && !$('#filterPop').hidden) {
+    $('#filterPop').hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  }
 }
 
 /**
@@ -4042,6 +4236,7 @@ function syncTiming() {
   able('#optTailMax', tail);
   able('#optEventTails', auto || tail);
   able('#optEventWindow', (auto || tail) && $('#optEventTails').value !== 'off');
+  renderAdvInUse();
 }
 
 /** Put the audio transition in line with Link Transitions and the video transition. */
@@ -4099,8 +4294,10 @@ function bind() {
   initNerdStats();
   showTab = initSideTabs();
   initMomentOrder();
+  initMomentFilters();
   bindAssistant();
   S.savedOpts = initExportOptions();
+  initAdvExport();
   showPlaying(false);
   trimInputs.start = trimField('start', 'Clip Start');
   trimInputs.end = trimField('end', 'Clip End');

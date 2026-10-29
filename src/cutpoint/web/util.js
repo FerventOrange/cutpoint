@@ -68,3 +68,26 @@ export const naturalCompare = (a, b) => NATURAL.compare(a, b) || (a < b ? -1 : a
  */
 export const positionCompare = (a, b) =>
   naturalCompare(baseName(a.source), baseName(b.source)) || naturalCompare(String(a.source), String(b.source)) || a.start - b.start;
+
+/**
+ * The moments list's quick filters (Sort and filter) with nothing filtered: ``seq`` 'all', 'in'
+ * (in the sequence) or 'out'; ``ready``: only moments whose preview plays; ``must``: only must
+ * include moments; ``source``: one source path, '' for every file.
+ */
+export const NO_FILTERS = Object.freeze({ seq: 'all', ready: false, must: false, source: '' });
+
+/** Any quick filter of ``f`` filters (the search text is not one). */
+export const filtersOn = (f) => f.seq !== 'all' || !!f.ready || !!f.must || !!f.source;
+
+/**
+ * A moment shows in the list: it holds the search text ``q`` (in its label, CLI id such as h001,
+ * transcript or file name, case ignored) and passes every quick filter of ``f``. ``m``: the candidate with
+ * ``picked`` (in the sequence) and ``ready`` (its preview plays).
+ */
+export function momentMatches(m, q, f) {
+  const text = String(q ?? '').trim().toLowerCase();
+  if (text && !`${m.label ?? ''} ${m.cli_id ?? ''} ${m.transcript ?? ''} ${baseName(m.source)}`.toLowerCase().includes(text)) return false;
+  if ((f.seq === 'in' && !m.picked) || (f.seq === 'out' && m.picked)) return false;
+  if ((f.ready && !m.ready) || (f.must && !m.must_include)) return false;
+  return !f.source || m.source === f.source;
+}

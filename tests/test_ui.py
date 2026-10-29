@@ -898,6 +898,37 @@ def test_moment_ids_survive_reanalysis_without_relinking_saved_trims(
     assert client.get(f"/api/projects/{pid}").json()["review"]["segments"] == [old]
 
 
+def test_moment_cards_get_the_cli_candidate_id_that_ids_takes(tmp_path: Path) -> None:
+    """#487: the payload keeps the CLI id (h001) next to the internal id, and Candidate ids
+    (``clips --ids``) takes exactly what the cards show."""
+    src = str(tmp_path / "a.mp4")
+    hl = {
+        "candidates": [{"id": f"h00{i}", "source": src, "start": i, "end": i + 5.0} for i in (1, 2)]
+    }
+    view = ui.moments_view(hl)["candidates"]
+    assert [c["cli_id"] for c in view] == ["h001", "h002"]
+    assert all(c["id"] not in ("h001", "h002") for c in view)  # the internal id stays the hash
+    shown = [c["cli_id"] for c in view][::-1]
+    assert ui._auto_picks({"ids": shown}, hl) == ["--ids", "h002", "h001"]
+
+
+def test_moment_cards_show_the_cli_id_as_text_and_filter_by_it() -> None:
+    """#487: the id is real text with a screen-reader prefix, not a tooltip; data-id stays the
+    internal id (markMoments, AI highlights and the sequence use it)."""
+    render = _js_function(_web("app.js"), "renderMoments")
+    assert "h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id)" in render
+    assert "'data-id': c.id" in render
+    # the filter runs through util.js momentMatches (Sort and filter), which matches the id
+    assert "momentMatches({ ...c," in render
+    util = _web("util.js")
+    assert "${m.cli_id ?? ''}" in util[util.index("export function momentMatches(") :]
+    assert (
+        ".cand-id {" in _web("app.css")
+        and "white-space: nowrap" in _web("app.css").split(".cand-id {")[1].split("}")[0]
+    )
+    assert "by the ids on the moment cards" in _web("index.html")
+
+
 def test_media_supports_range_and_only_serves_project_sources(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5684,6 +5715,32 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
 
 
+def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
+    """Contract pin: the tab band spans the whole column (bleeding over its padding) and its tabs
+    are equal grid columns with no gap or side padding, so at any width the splitter sets they
+    fill it evenly; a label too long for its tab ends in an ellipsis (its text, the tab's name for
+    screen readers, stays whole). Before, the tabs were as wide as their labels, at the left.
+
+    Check in a browser (no browser in the test suite): at the narrowest, default and widest
+    column, the three tabs are equally wide within 1 px and together as wide as the band."""
+    css = _web("app.css")
+    band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
+    assert "display: grid;" in band and "grid-auto-flow: column;" in band
+    assert "grid-auto-columns: minmax(0, 1fr);" in band  # equal, for any number of tabs
+    assert "margin: -12px -14px 0;" in band  # the .col padding: edge to edge
+    assert "gap" not in band and "padding" not in band
+    tab = re.search(r"^\.side-tab \{([^}]*)\}", css, re.M)[1]
+    for decl in ("min-width: 0;", "overflow: hidden;", "white-space: nowrap;",
+                 "text-overflow: ellipsis;"):  # fmt: skip
+        assert decl in tab
+    assert "flex" not in tab
+    html = _web("index.html")
+    (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
+    names = re.findall(r'<button\b[^>]*role="tab"[^>]*>([^<]+)</button>', tablist)
+    assert names == ["Sequence", "AI Chat", "Export"]  # the visible text is the accessible name
+    assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
+
+
 def test_export_panel_has_the_options_and_actions_and_no_single_padding_field() -> None:
     """Contract pin (#462): the Export tab holds every export and assembly option and the
     actions; the old single padding field (``#optExtend``) stays gone: padding is a start and an
@@ -5734,6 +5791,143 @@ def test_every_export_option_is_described_for_screen_readers() -> None:
         text = re.search(rf'<span id="{described[1]}"[^>]*>(.+?)</span>', panel, re.S)
         assert text and len(text[1].strip()) > 20, f"{cid}: description missing or empty"
     assert seen == option_ids
+
+
+def test_export_tab_says_sequence_and_max_video_length() -> None:
+    """Contract pin (mock2): the first Clips to Export choice is "Sequence" (was "The sequence
+    (hand-picked)") and --max-total is "Max video length (s)" (was "Max total (s)"), the cap on
+    all clips together; its title and description say so."""
+    html = _web("index.html")
+    assert re.search(r'id="optPicksSeq"[^>]*> Sequence</label>', html)
+    assert "hand-picked" not in html and "Max total" not in html
+    label = re.search(r'<label for="optMaxTotal" title="([^"]*)">([^<]*)</label>', html)
+    assert label and label[2] == "Max video length (s)"
+    described = re.search(r'<span id="dMaxTotal" class="vh">([^<]*)</span>', html)[1]
+    for text in (label[1], described):
+        assert text.startswith("Caps the video's length: the clips' total in seconds")
+        assert "(--max-total)" in text
+
+
+ADVANCED_EXPORT = ("optTop", "optIds", "optSpeechExtend", "optSpeechLead", "optTailMin",
+                   "optTailMax", "optEventWindow", "optExtendStart", "optExtendEnd")  # fmt: skip
+
+
+def test_advanced_export_options_are_hidden_until_a_browser_setting_shows_them() -> None:
+    """Contract pin (mock2): Top moments, Candidate ids, the Cut Timing fields but Event tails,
+    the "Latest export" facts and Extend export carry ``adv`` and are hidden (display: none, so the
+    grids keep no gaps) unless Settings > "Show advanced export options" is ticked. Like Stats for
+    Nerds it is off by default and kept in this browser (``cutpoint.advancedExport`` = "1"); it
+    previews on change, and Cancel or Escape restores it.
+
+    Check in a browser (no browser in the test suite): advanced off, Cut Timing shows Event tails
+    alone and Clips to Export Max video length and Order; ticking the box shows the rest at once."""
+    html = _web("index.html")
+    js = _web("app.js")
+    css = _web("app.css")
+    for cid in ADVANCED_EXPORT:
+        assert re.search(rf'<label for="{cid}" class="adv"', html), cid
+        assert re.search(rf'<input type="\w+" id="{cid}" class="adv"', html), cid
+    for cid in ("optMaxTotal", "optOrder", "optEventTails"):  # stay visible
+        assert not re.search(rf'<label for="{cid}" class="adv"', html), cid
+    # only the "Latest export ..." facts are advanced: the 360 preview note and guidance such as
+    # "Add moments to the sequence" always show, and an empty line takes no room
+    assert '<p id="exportState" class="muted"></p>' in html
+    render = re.search(r"function renderExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "h('span', { class: 'adv', text: `Latest export (" in render
+    assert render.count("latest(") == 3 and "st.textContent" not in render
+    for shown in ("say(`${note} Automatic picks", "say(note)", "say('Add moments to the sequence",
+                  "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
+        assert shown in render, shown
+    # no 360 note makes say() null: every branch drops it, so "null" is never rendered
+    assert "const show = (...parts) => st.replaceChildren(...parts.filter(Boolean));" in render
+    assert render.count("st.replaceChildren(") == 1
+    assert re.search(
+        r"^#panelExport:not\(\.show-adv\) #exportState:not\(:has\(span:not\(\.adv\)\)\), "
+        r"#exportState:empty \{ display: none; \}",
+        css,
+        re.M,
+    )
+    assert re.search(r'<button type="button" id="extendBtn" class="btn outline adv"', html)
+    assert 'id="revealExportBtn" class="btn outline"' in html  # Show Exports Folder stays
+    assert re.search(r"^#panelExport:not\(\.show-adv\) \.adv \{ display: none; \}", css, re.M)
+    settings = re.search(r'<dialog id="settingsDialog".*?</dialog>', html, re.S)[0]
+    assert re.search(
+        r'<label class="check"><input type="checkbox" id="setAdvExport"[^>]*> Show advanced export options</label>',
+        settings,
+    )
+    assert " checked" not in re.search(r'<input type="checkbox" id="setAdvExport"[^>]*>', html)[0]
+    assert "const ADV_KEY = 'cutpoint.advancedExport';" in js
+    assert "advExport: false," in js  # off unless the browser stored "1"
+    init = re.search(r"function initAdvExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "S.advExport = localStorage.getItem(ADV_KEY) === '1';" in init
+    assert "showAdvExport(S.advExport);" in init
+    show = re.search(r"function showAdvExport\(on\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "$('#panelExport').classList.toggle('show-adv', on);" in show
+    assert "S.advExportWas = S.advExport;" in js
+    # Cancel/Escape restore only a changed box: a field revealed for an out-of-range value stays
+    assert "if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);" in js
+    assert "initAdvExport();" in js
+
+
+def test_hidden_advanced_export_fields_still_send_their_values() -> None:
+    """Contract pin (mock2): hiding never changes an export. A job's fields are skipped only when
+    blank or disabled, never because they are hidden; a hidden field that a job sends is named
+    under the options ("Advanced options in use: ..."), and a hidden field out of its range shows
+    the advanced options so the browser can point at it."""
+    js = _web("app.js")
+    html = _web("index.html")
+    fields = re.search(r"function fields\(\.\.\.keys\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "if (el.disabled || !v) continue;" in fields
+    assert "adv" not in fields and "hidden" not in fields and "checkVisibility" not in fields
+    in_use = re.search(r"function renderAdvInUse\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "el.classList.contains('adv') && !el.disabled && el.value.trim()" in in_use
+    assert "Advanced options in use: ${used.join(', ')}" in in_use
+    assert '<p id="advInUse" class="hint" hidden></p>' in html
+    sync = re.search(r"function syncTiming\(\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert sync.rstrip().endswith("renderAdvInUse();")  # after every field and box change
+    valid = re.search(r"function validOptions\(body\) \{\n(.*?)\n\}", js, re.S)[1]
+    assert "if (bad?.classList.contains('adv')) showAdvExport(true);" in valid
+    assert valid.index("showAdvExport(true)") < valid.index("bad?.reportValidity();")
+
+
+def test_slider_tick_labels_sit_centred_under_their_stops() -> None:
+    """Contract pin (mock2): Compress Audio Peaks and Color are centred with equal margins
+    (--inset); their tick labels sit in a box inset by half the native thumb (--thumb) more, so
+    its ends and middle are the thumb's stops, and each label is centred on its stop. Color's
+    Strength slider spans the same width under its name and percentage.
+
+    Check in a browser (no browser in the test suite): Light and Auto are centred under the
+    middle stop within 1 px, None/Off and Max/Underwater under the end stops, in every theme."""
+    css = _web("app.css")
+    assert re.search(
+        r"^\.opts \.peaks, \.opts \.color \{ --inset: 24px; --thumb: 16px; \}", css, re.M
+    )
+    rng = re.search(
+        r"^\.peaks input\[type=range\], \.color input\[type=range\] \{([^}]*)\}", css, re.M
+    )[1]
+    assert "width: calc(100% - 2 * var(--inset));" in rng and "justify-self: center;" in rng
+    assert "margin: 0;" in rng
+    ticks = re.search(r"^\.peaks \.ticks, \.color \.ticks \{([^}]*)\}", css, re.M)[1]
+    assert "position: relative;" in ticks
+    assert "margin-inline: calc(var(--inset) + var(--thumb) / 2);" in ticks
+    assert "space-between" not in ticks
+    span = re.search(r"^\.ticks span \{([^}]*)\}", css, re.M)[1]
+    assert "position: absolute;" in span and "transform: translateX(-50%);" in span
+    for n, left in ((1, "0"), (2, "50%"), (3, "100%")):
+        assert f".ticks span:nth-child({n}) {{ left: {left}; }}" in css
+    strength = re.search(r"^\.color-strength \{([^}]*)\}", css, re.M)[1]
+    assert "margin: 6px var(--inset) 0;" in strength
+    assert re.search(
+        r"^\.color \.color-strength input\[type=range\] \{ grid-row: 2; grid-column: 1 / -1; width: 100%; \}",
+        css,
+        re.M,
+    )
+    html = _web("index.html")
+    for names in (["None", "Light", "Max"], ["Off", "Auto", "Underwater"]):
+        assert (
+            f'<div class="ticks" aria-hidden="true">{"".join(f"<span>{n}</span>" for n in names)}</div>'
+            in html
+        )
 
 
 def test_export_option_defaults_are_smart_edges_loudnorm_link_on_and_light_peaks() -> None:
@@ -6520,18 +6714,184 @@ def test_position_order_is_stable_and_keeps_same_named_files_apart(tmp_path: Pat
 
 
 def test_moment_order_control_is_labelled_with_score_default() -> None:
-    """#469: a labelled select beside the filter offers Score (default) and Position in video;
-    a status region announces the change."""
+    """#469: Sort and filter's "Sort by" group offers Score (default) and Position in video as
+    native radios; a status region announces the change."""
     html = _web("index.html")
-    label = re.search(r'<label class="order">(.*?)</label>', html, re.S)[1]
-    assert '<span class="vh">Sort moments by</span>' in label
-    sel = re.search(r'<select id="momentOrder">(.*?)</select>', label, re.S)[1]
-    assert re.findall(r'<option value="(\w+)">([^<]+)</option>', sel) == [
-        ("score", "Score"),
-        ("position", "Position in video"),
-    ]
+    pop = re.search(r'<div id="filterPop"[^>]*>(.*?)\n          </div>', html, re.S)[1]
+    sort = re.search(r"<fieldset[^>]*>\s*<legend>Sort by</legend>(.*?)</fieldset>", pop, re.S)[1]
+    assert re.findall(r'<input type="radio" name="momentOrder" value="(\w+)"( checked)?> ([^<]+)</label>', sort) == [
+        ("score", " checked", "Score"),
+        ("position", "", "Position in video"),
+    ]  # fmt: skip
     assert re.search(r'<p id="orderLive"[^>]*role="status"', html)
-    assert html.index('id="filter"') < html.index('id="momentOrder"')
+    assert '<select id="momentOrder"' not in html
+
+
+def test_filter_row_is_one_search_and_a_funnel_disclosure() -> None:
+    """Sort and filter (mock1): one full-width labelled search, then a square funnel button that
+    discloses the sort order and quick filters in native radios and checkboxes, each set in a
+    fieldset with a legend; Escape closes it and returns focus to the button."""
+    html = _web("index.html")
+    js = _web("app.js")
+    css = _web("app.css")
+    row = re.search(
+        r'<div class="filter-row" id="filterWrap" hidden>(.*?)<p id="orderLive"', html, re.S
+    )[1]
+    assert '<span class="vh">Search moments by label, words, file or candidate id</span>' in row
+    assert re.search(
+        r'<input id="filter" type="search" placeholder="[^"]+" autocomplete="off">', row
+    )
+    btn = re.search(r'<button type="button" id="filterBtn"([^>]*)>', row)[1]
+    assert 'class="btn icon-btn"' in btn and 'aria-expanded="false"' in btn
+    assert 'aria-controls="filterPop"' in btn and 'aria-label="Sort and filter moments"' in btn
+    assert row.index('id="filter"') < row.index('id="filterBtn"') < row.index('id="filterPop"')
+    assert re.search(
+        r'<div id="filterPop" class="filter-pop" role="group" aria-label="[^"]+" tabindex="-1" hidden>',
+        row,
+    )
+    legends = re.findall(r"<fieldset[^>]*>\s*<legend>([^<]+)</legend>", row)
+    assert legends == ["Sort by", "Sequence", "Show only"]
+    seq = re.findall(r'name="filterSeq" value="(\w+)"(?: checked)?> ([^<]+)</label>', row)
+    assert seq == [("all", "All"), ("in", "In sequence"), ("out", "Not in sequence")]
+    assert '<input type="checkbox" id="filterReady"> Ready only</label>' in row
+    assert '<input type="checkbox" id="filterMust"> Must include</label>' in row
+    assert re.search(
+        r'<label class="field" id="filterSourceWrap" hidden>Source file\s*<select id="filterSource">',
+        row,
+    )
+    # the disclosure: aria-expanded follows it; Escape closes and refocuses; outside closes
+    init = _js_function(js, "initMomentFilters")
+    assert "btn.setAttribute('aria-expanded', String(on));" in init and "pop.hidden = !on;" in init
+    assert "e.key !== 'Escape'" in init and "open(false, true)" in init and "btn.focus()" in init
+    assert "e.preventDefault();" in init  # the page's Escape (stop Play sequence) does not also run
+    assert "'pointerdown'" in init and "'focusout'" in init
+    assert "btn.prepend(icon('funnel'));" in init and "funnel: [['path'" in js
+    # the active dot, and its name says it too
+    sync = _js_function(js, "syncFilterMenu")
+    assert "btn.classList.toggle('on', !!on.length);" in sync and "S.order !== 'score'" in sync
+    assert "btn.setAttribute('aria-label', ['Sort and filter moments', ...on].join(', '));" in sync
+    assert "$('#filterSourceWrap').hidden = sources.length < 2;" in sync
+    assert re.search(r"^#filterBtn\.on \.filter-dot \{ display: block; \}", css, re.M)
+    assert re.search(r"^\.filter-pop \{[^}]*position: absolute;[^}]*right: 0;", css, re.M)
+    assert not re.search(r"^\.order\b", css, re.M)
+
+
+def test_moment_filters_are_remembered_safely_and_the_source_per_project() -> None:
+    """Sort and filter: Sequence, Ready only and Must include are stored per browser (guarded,
+    removed when none is on); the source file is a path of one project, so it is never stored and
+    is dropped when the workspace resets."""
+    js = _web("app.js")
+    init = _js_function(js, "initMomentFilters")
+    assert "const FILTERS_KEY = 'cutpoint.momentFilters';" in js
+    assert re.search(r"try \{[^}]*JSON\.parse\(localStorage\.getItem\(FILTERS_KEY\)\)", init, re.S)
+    assert "localStorage.removeItem(FILTERS_KEY)" in init
+    assert "localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready, must }))" in init
+    assert "source" not in init[init.index("const changed") : init.index("renderMoments();")]
+    assert "S.filters.source = '';" in _js_function(js, "resetWorkspace")
+    assert "filters: { ...NO_FILTERS }," in js
+    assert "$('#orderLive').textContent = `${n} of ${cands().length} moments shown`;" in init
+
+
+def test_render_moments_filters_with_util_and_says_which_filter_matched_nothing() -> None:
+    """Sort and filter: renderMoments keeps the score rank, filters through util.js
+    momentMatches with the search text and the quick filters (picked and ready per card), then
+    sorts; the empty state names the filters when any is on."""
+    js = _web("app.js")
+    render = _js_function(js, "renderMoments")
+    assert "momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
+    assert "source: multi && sources.includes(S.filters.source) ? S.filters.source : ''" in render
+    assert render.index("momentMatches(") < render.index("positionCompare")
+    assert "No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}." in render
+    assert "$('#filterBtn').focus()" in render  # the focused card filtered away with no card left
+    # AI Chat's "Filter list by" says how many show, and that the quick filters still apply
+    assert "${n} shown${filtersOn(S.filters) ? '; Sort and filter is also on' : ''}" in js
+
+
+def test_moment_card_order_matches_the_mockup() -> None:
+    """mock1: the top row holds rank, title and must include (Add/Remove sits over it, top
+    right); then the times "a to b · n s", the file only with several sources, the strip, and
+    the transcript with the preview readiness at the bottom right."""
+    js = _web("app.js")
+    css = _web("app.css")
+    render = _js_function(js, "renderMoments")
+    card = render[render.index("class: 'cand-main'") :]
+    order = [
+        "class: 'cand-top'",
+        "class: 'rank tc'",
+        "class: 'cand-title'",
+        "class: 'tag', text: 'must include'",
+        "class: 'cand-time tc'",
+        "class: 'cand-id'",
+        "multi ? h('span', { class: 'cand-src' }",
+        "sourceStrip(c),",
+        "class: 'cand-foot'",
+        "class: 'cand-text'",
+        "badge)",
+        "'data-act': 'toggle'",
+    ]
+    at = [card.index(s) for s in order]
+    assert at == sorted(at), order
+    top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-time tc'")]
+    assert "prepBadge" not in top and "'data-act': 'toggle'" not in top
+    assert (
+        "h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' })"
+        in card
+    )
+    assert (
+        "'data-act': 'focus'" in render
+        and "'aria-current': c.id === S.focus ? 'true' : null" in render
+    )
+    assert re.search(r"^\.cand > \* \{ grid-area: 1 / 1; \}", css, re.M)
+    assert re.search(r"^\.cand > \.btn \{ justify-self: end;", css, re.M)
+    assert re.search(r"^\.cand-top \{[^}]*padding-right: 5em;", css, re.M)
+
+
+def _filter_moments(tmp: Path, moments: list[dict], q: str, f: dict) -> list[str]:
+    """Run util.js's momentMatches under node (as _sort_positions); ``f`` over NO_FILTERS."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    mod = tmp / "util.mjs"
+    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
+    url = mod.resolve().as_uri()
+    script = (
+        f"import {{ momentMatches, NO_FILTERS, filtersOn }} from {json.dumps(url)};"
+        "const [m, q, f] = JSON.parse(process.argv[1]);"
+        "const all = { ...NO_FILTERS, ...f };"
+        "console.log(JSON.stringify([m.filter((c) => momentMatches(c, q, all)).map((c) => c.id), filtersOn(all)]));"
+    )
+    out = subprocess.run(
+        [node, "--input-type=module", "-e", script, json.dumps([moments, q, f])],
+        capture_output=True, text=True, check=True, timeout=30,
+    )  # fmt: skip
+    ids, on = json.loads(out.stdout)
+    assert on == any(
+        f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "must", "source")
+    )
+    return ids
+
+
+def test_moment_filters_combine_with_the_search_text(tmp_path: Path) -> None:
+    """Sort and filter: every quick filter and the search text must all hold; the search matches
+    label, transcript or file name, case ignored; no filter shows every moment."""
+    ms = [
+        {"id": "a", "cli_id": "h001", "label": "Jump", "transcript": "nice one", "source": "/v/a.mp4", "picked": True, "ready": True, "must_include": True},
+        {"id": "b", "label": "Crash", "transcript": None, "source": "/v/b.mp4", "picked": False, "ready": True},
+        {"id": "c", "label": "jump two", "source": "/v/b.mp4", "picked": False, "ready": False, "must_include": True},
+    ]  # fmt: skip
+
+    def run(q: str, f: dict) -> list[str]:
+        return _filter_moments(tmp_path, ms, q, f)
+
+    assert run("", {}) == ["a", "b", "c"]
+    assert run("  JUMP ", {}) == ["a", "c"]
+    assert run("NICE", {}) == ["a"] and run("b.mp4", {}) == ["b", "c"]
+    assert run("H001", {}) == ["a"]  # the CLI id on the card (#487)
+    assert run("", {"seq": "in"}) == ["a"] and run("", {"seq": "out"}) == ["b", "c"]
+    assert run("", {"ready": True}) == ["a", "b"] and run("", {"must": True}) == ["a", "c"]
+    assert run("", {"source": "/v/b.mp4"}) == ["b", "c"]
+    assert run("jump", {"seq": "out", "must": True}) == ["c"]
+    assert run("jump", {"ready": True, "source": "/v/b.mp4"}) == []
 
 
 def test_moment_order_is_remembered_safely_and_sorts_after_filtering() -> None:
