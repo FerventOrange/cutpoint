@@ -15,7 +15,6 @@ On Windows, paths such as ``D:\\Videos\\360`` and ``projects\\trip-360\\clips`` 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import logging
 import os
@@ -226,10 +225,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     from cutpoint.pano import views  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
-    if a.scan:  # the IMU orientation needs telemetry_parser (ski extra): fail before the scan
-        if importlib.util.find_spec("telemetry_parser") is None:
-            raise ModuleNotFoundError("No module named 'telemetry_parser'", name="telemetry_parser")
-    else:
+    if not a.scan:
         steps.skip("scan", "pano.json from an earlier scan")
     clips = [] if a.scan else _clips(project)
     if not (a.no_events or a.views_only):  # fail on a missing extra / model before the long steps

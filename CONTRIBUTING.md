@@ -14,8 +14,10 @@ uv sync
 ```
 
 The dev tools (pytest, ruff, pre-commit) are a default dependency group, so no flag is needed.
-Add `--extra ski --extra events` when working on those modules. `uv sync` removes the extras
-you leave out; see [Optional extras](docs/getting-started.md#optional-extras).
+A plain `uv sync` also installs the `full` group (events and gpu extras: torch and CUDA, about
+7 GB or more). For a lighter, CI-like environment use `uv sync --no-group full`; add
+`--extra events` when working on that module. CI runs this way. See
+[Optional extras](docs/getting-started.md#optional-extras).
 
 ## Check your change
 
@@ -25,7 +27,8 @@ uvx ruff@0.17.1 check src tests
 uvx ruff@0.17.1 format --check src tests
 ```
 
-`uv run pytest` is the full suite as CI runs it; it deselects only tests marked `hardware`. For a
+`uv run pytest` is the full suite as CI runs it, but it also syncs the `full` group; for a
+CI-like run without torch use `uv run --no-group full pytest` (or set `UV_NO_GROUP=full`). It deselects only tests marked `hardware`. For a
 quicker local run, skip the slow and ffmpeg tests (about a third of the time):
 
 ```powershell

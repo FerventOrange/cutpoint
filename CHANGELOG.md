@@ -98,6 +98,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Packaging: the `ui`, `keyring` and `ski` packages (fastapi, uvicorn, keyring, telemetry-parser)
+  are core dependencies, so a plain `uv tool install cutpoint` or `pip install cutpoint` runs
+  `cutpoint ui` and the 360 and telemetry commands. The extras `ui`, `keyring` and `ski` stay as
+  empty aliases; `all` is now `events` and `gpu`. `gpu` and `events` are unchanged (torch is still
+  opt-in for installs from PyPI). In a clone, `uv sync` installs everything through the new default
+  dependency group `full`; `uv sync --no-group full` gives the lite environment. CI and the
+  Dockerfile skip the group. `uv run` also syncs `full`, so an existing clone downloads torch and
+  CUDA (about 7 GB or more) on its next `uv run`; use `--no-group full` or `UV_NO_GROUP=full` to
+  stay lite.
+
 - `cutpoint ui` Export tab: "The sequence (hand-picked)" reads "Sequence" and "Max total (s)"
   reads "Max video length" (still `--max-total`, the cap on all clips together). Top
   moments, Candidate ids, the Cut Timing fields other than Event tails, the "Latest export ..." facts

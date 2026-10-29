@@ -210,7 +210,6 @@ def test_cmd_analyze_scan_runs_before_views_and_reports_the_four_steps(
 ):
     order = _analyze_stubs(monkeypatch, tmp_path)
     monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
-    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(cli, "_scan", lambda *a, **k: order.append("scan"))
     cli.cmd_analyze(_args(scan=["cam"]))
     assert order == ["preflight", "scan", "views", "analyze", "events"]
@@ -254,7 +253,6 @@ def test_cmd_analyze_scan_only_naming_a_missing_clip_says_so(monkeypatch, tmp_pa
     from pano_helpers import x3clip  # noqa: PLC0415
 
     order = _analyze_stubs(monkeypatch, tmp_path)
-    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(x3, "scan", lambda folder: [x3clip(clip_id="001")])
     monkeypatch.setattr(x3, "imu_source", lambda source: None)
     with pytest.raises(FileNotFoundError, match=r"no Insta360 X3 clip 009 found") as e:
@@ -262,17 +260,6 @@ def test_cmd_analyze_scan_only_naming_a_missing_clip_says_so(monkeypatch, tmp_pa
     assert "scan first" not in str(e.value)
     assert "views" not in order
     assert not (tmp_path / "pano.json").exists()
-
-
-def test_cmd_analyze_scan_without_telemetry_parser_fails_before_the_scan(
-    monkeypatch, tmp_path: Path
-):
-    order = _analyze_stubs(monkeypatch, tmp_path)
-    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: None)
-    monkeypatch.setattr(cli, "_scan", lambda *a, **k: order.append("scan"))
-    with pytest.raises(ModuleNotFoundError, match="telemetry_parser"):
-        cli.cmd_analyze(_args(scan=["cam"]))
-    assert order == []
 
 
 def test_cmd_analyze_footage_gone_before_rescoring_keeps_highlights(

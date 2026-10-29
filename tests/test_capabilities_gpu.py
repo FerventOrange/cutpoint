@@ -198,7 +198,7 @@ def _fake_metadata(monkeypatch, dist, installed):
 
 def test_extras_in_use(monkeypatch):
     dist = _Dist(
-        ["events", "gpu", "win", "all"],
+        ["events", "gpu", "win", "all", "ui"],
         [
             'torch>=2; extra == "events"',
             'numpy; extra == "events"',
@@ -210,7 +210,8 @@ def test_extras_in_use(monkeypatch):
     )
     monkeypatch.setattr(extras.sys, "platform", "linux")
     _fake_metadata(monkeypatch, dist, {"torch", "numpy", "rich"})
-    # gpu is missing a package; win has no requirement on linux; all is never listed
+    # gpu is missing a package; win has no requirement on linux; all is never listed; ui is an
+    # empty alias (no requirements) and is never listed
     assert extras.extras_in_use() == ["events"]
     _fake_metadata(monkeypatch, None, set())
     assert extras.extras_in_use() == []

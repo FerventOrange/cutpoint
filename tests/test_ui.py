@@ -23,7 +23,6 @@ from typing import ClassVar
 import numpy as np
 import pytest
 
-pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -1859,7 +1858,8 @@ def test_ui_on_a_taken_port_fails_cleanly_without_printing_a_url(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    uvicorn = pytest.importorskip("uvicorn")
+    import uvicorn  # noqa: PLC0415
+
     monkeypatch.setattr(uvicorn.Server, "run", lambda *_a, **_k: pytest.fail("server started"))
     with socket.socket() as held:
         held.bind(("127.0.0.1", 0))

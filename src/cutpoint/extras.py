@@ -1,7 +1,7 @@
 """Optional dependency groups (``pyproject.toml`` extras) and how to install them.
 
 Used to turn a missing optional import into an actionable message such as
-"telemetry_parser is not installed; it comes with the 'ski' extra: ...".
+"torch is not installed; it comes with the 'events' extra: ...".
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-# Top-level import name -> extra that provides it.
+# Top-level import name -> extra that provides it. fastapi, uvicorn, keyring and telemetry_parser
+# are core dependencies (the ui, keyring and ski extras are empty aliases), so they are not here.
 MODULE_EXTRA: dict[str, str] = {
-    "telemetry_parser": "ski",
     "torch": "events",
     "torchvision": "events",
     "open_clip": "events",
@@ -30,8 +30,6 @@ MODULE_EXTRA: dict[str, str] = {
     "onnxruntime": "events",
     "scipy": "events",
     "sklearn": "events",
-    "fastapi": "ui",
-    "uvicorn": "ui",
 }
 # Extras that pull in torch (the CUDA build needs the PyTorch index).
 TORCH_EXTRAS = ("events", "all")
@@ -349,7 +347,9 @@ def _installed(name: str) -> bool:
 def extras_in_use() -> list[str]:
     """cutpoint's extras whose requirements for this platform are all installed.
 
-    ``all`` is left out (it is the others together); empty when cutpoint is not installed.
+    ``all`` is left out (it is the others together), as are the empty alias extras (``ui``,
+    ``keyring``, ``ski``: their packages are core dependencies); empty when cutpoint is not
+    installed.
     """
     try:
         dist = importlib.metadata.distribution("cutpoint")

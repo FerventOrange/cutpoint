@@ -21,12 +21,18 @@ dependencies = [
     "OpenTimelineIO>=0.18.1",
     "requests>=2.34.2",
     "urllib3>=1.26",  # already requests'; the assistant parses URLs as requests does
+    "fastapi>=0.116",  # `cutpoint ui`: local browser workspace
+    "uvicorn>=0.30",
+    "keyring>=25",  # `cutpoint ui`: save an AI Chat API key in the system keyring (small; Linux adds SecretStorage)
+    "telemetry-parser>=0.3.0",  # action-cam telemetry (GoPro GPS/IMU) and the 360 (Insta360) module
 ]
 
 [project.optional-dependencies]
-# Optional: action-cam telemetry (GoPro GPMF GPS/IMU) for --style ski and the
-# optional 360-camera (Insta360) module.
-ski = ["telemetry-parser>=0.3.0"]
+# `ui`, `keyring` and `ski` used to be extras; their packages are core dependencies now.
+# The names stay as empty aliases so `cutpoint[ui]`, `--extra ski` etc. keep working.
+ui = []
+keyring = []
+ski = []
 # CUDA 12 runtime libs so faster-whisper / ctranslate2 transcribe on an NVIDIA GPU
 # (cuBLAS + cuDNN 9, about 3.6 GB). Without them whisper runs on the CPU. Linux gets
 # looser floors because the cu126 torch wheels (events extra) pin their own
@@ -53,16 +59,14 @@ events = [
     "scipy>=1.18.1",
     "scikit-learn>=1.9.1",
 ]
-# `cutpoint ui`: local browser workspace for the standard-video highlight workflow.
-ui = ["fastapi>=0.116", "uvicorn>=0.30"]
-# `cutpoint ui`: save an AI Chat API key in the system keyring from Settings (about 170 KB on
-# Windows and macOS; Linux adds SecretStorage, jeepney and cryptography, about 5 MB).
-keyring = ["keyring>=25"]
-all = ["cutpoint[ski,events,gpu,ui,keyring]"]
+all = ["cutpoint[events,gpu]"]
 
 [dependency-groups]
 # Installed by default by `uv sync` / `uv run`; not part of the published wheel.
-dev = ["pytest>=8", "ruff==0.17.1", "pre-commit>=3.7", "cutpoint[ui]", "httpx>=0.27"]
+dev = ["pytest>=8", "ruff==0.17.1", "pre-commit>=3.7", "httpx>=0.27"]
+# Everything optional (events, gpu), so a clone's plain `uv sync` installs it all, torch
+# included. Skip it with `--no-group full` (or UV_NO_GROUP=full) for a lite environment.
+full = ["cutpoint[all]"]
 # Opt-in (`--group ocr-test`): CPU OCR for the slow discovery e2e test; CI syncs it, no torch.
 ocr-test = ["rapidocr-onnxruntime>=1.4.4", "onnxruntime>=1.31.0"]
 
@@ -89,6 +93,9 @@ include = [
     "config.example.json",
     "pyproject.toml",
 ]
+
+[tool.uv]
+default-groups = ["dev", "full"]
 
 # CUDA 12.6 builds of torch / torchvision on Windows and Linux; PyPI elsewhere.
 [tool.uv.sources]
