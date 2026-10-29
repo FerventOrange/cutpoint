@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
+  `vision_assistant` section, same keys, any of Ollama, `claude-code`, `codex`, `antigravity`), each
+  with its own provider, model and, for hosted ones, permission. It replaces the AI assistant and
+  Subscriptions parts of Settings. After a login it lists each account's own models: Claude Code
+  (`/v1/models`), Codex (`/codex/models`, defaulting to `gpt-5.6-sol`) and Antigravity
+  (`fetchAvailableModels`, discovering account entitlements); asking for a subscription's list sends
+  no project data. Providers are named by how they sign in: Anthropic API and OpenAI API (API key) are
+  separate from Claude Code subscription and Codex subscription (login). Save models sits at the bottom
+  of model selection under the Vision role, directly above Connected accounts (which lists login status
+  without model counts). Vision frames go to a subscription provider only after "Allow vision requests"
+  in the tab (`vision_assistant.consent`; custom URLs are rejected for subscription providers). Without
+  a `vision_assistant` section, `vision_backend` behaves as before.
+- `cutpoint login` and `cutpoint logout` for Claude Code, Codex and Antigravity subscriptions, and
+  a Connected accounts section in the Models tab. The login is kept in the system keyring, never in
+  `config.json`. `claude-code`, `codex` and `antigravity` are assistant providers that use it
+  instead of an API key.
+- `vision_backend` in `config.json` (`ollama`, the default, or `assistant`): with `assistant`, the
+  frames of `analyze --vision`, `edit --vision` and `360 director --vl-check` go to the
+  `claude-code` or `codex` subscription login (`assistant.provider`) instead of Ollama, only
+  after you agreed to that provider in the AI Chat. Other providers and a missing login skip
+  vision with an INFO line.
 - `assemble <project>` makes the final video without keeping clips (#519): given a project
   (with `highlights.json`, or `--segments`) instead of a clips folder, it picks the moments as
   `clips` does (`--top`, `--ids`, `--segments`, `--max-total`, `--order`) and exports them with

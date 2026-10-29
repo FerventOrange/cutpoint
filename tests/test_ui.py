@@ -6643,13 +6643,13 @@ def test_play_sequence_keeps_a_window_proxy_only_when_it_covers_the_whole_clip()
 
 
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
-    """Contract pin (#462, #346): the column has a Sequence, an AI Chat and an Export tab, each
-    controlling a labelled tabpanel; only the selected tab is in the tab order (roving
+    """Contract pin (#462, #346): the column has a Sequence, an AI Chat, an Export and a Models
+    tab, each controlling a labelled tabpanel; only the selected tab is in the tab order (roving
     tabindex)."""
     html = _web("index.html")
     (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
     tabs = re.findall(r"<button\b[^>]*>", tablist)
-    assert len(tabs) == 3 and all('role="tab"' in t for t in tabs)
+    assert len(tabs) == 4 and all('role="tab"' in t for t in tabs)
     panels = dict(
         re.findall(r'<div id="(\w+)"[^>]*role="tabpanel"[^>]*aria-labelledby="(\w+)"', html)
     )
@@ -6657,6 +6657,7 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
         "panelSequence": "tabSequence",
         "panelAssistant": "tabAssistant",
         "panelExport": "tabExport",
+        "panelModels": "tabModels",
     }
     for tab in tabs:
         tab_id = re.search(r'id="(\w+)"', tab)[1]
@@ -6665,7 +6666,7 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     assert 'aria-selected="true"' in tabs[0]
     assert all('aria-selected="false"' in t and 'tabindex="-1"' in t for t in tabs[1:])
     assert "tabindex" not in tabs[0]
-    for later in ("panelAssistant", "panelExport"):
+    for later in ("panelAssistant", "panelExport", "panelModels"):
         assert " hidden" in re.search(rf'<div id="{later}"[^>]*>', html)[0]  # Sequence first
     js = _web("app.js")
     assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
@@ -6693,7 +6694,7 @@ def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
     html = _web("index.html")
     (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
     names = re.findall(r'<button\b[^>]*role="tab"[^>]*>([^<]+)</button>', tablist)
-    assert names == ["Sequence", "AI Chat", "Export"]  # the visible text is the accessible name
+    assert names == ["Sequence", "AI Chat", "Export", "Models"]  # the visible text is the name
     assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
 
 
@@ -8340,3 +8341,101 @@ def test_export_state_shows_the_color_note_from_the_manifest(
     for shown in ("say(`${note} Automatic picks", "say(note)",
                   "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
         assert body.count(shown) == 1, shown
+
+
+# --- Subscription logins (Settings > Subscriptions) ---
+
+
+@pytest.fixture
+def logins(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """A fake keyring grant store and OAuth login: no network, no keyring."""
+    grant = ui.ai_grants.Grant(
+        "codex", "ACCESS-SECRET-1234", "REFRESH-SECRET-1234", 4_000_000_000_000, email="a@b.c"
+    )
+    fake = SimpleNamespace(stored={}, release=threading.Event(), fail="", cleared=[])
+
+    def login(provider: str, *, notify, open_browser: bool, **_: object) -> object:
+        assert open_browser is False  # the page opens the URL itself
+        notify(f"https://auth.example/authorize?p={provider}")
+        fake.release.wait(10)
+        if fail := fake.fail:
+            raise ui.ai_oauth.OAuthError(fail)
+        fake.stored[provider] = grant
+        return grant
+
+    monkeypatch.setattr(ui.ai_oauth, "login", login)
+    monkeypatch.setattr(ui.ai_grants, "load", lambda p: fake.stored.get(p))
+    monkeypatch.setattr(
+        ui.ai_grants, "clear", lambda p: (fake.stored.pop(p, None), fake.cleared.append(p))
+    )
+    return fake
+
+
+def login_state(client: TestClient, provider: str) -> dict:
+    return client.get("/api/assistant/login/status", params={"provider": provider}).json()
+
+
+def test_a_subscription_login_starts_polls_conflicts_and_logs_out_without_a_token(
+    client: TestClient, logins: SimpleNamespace
+) -> None:
+    listed = client.get("/api/assistant/logins").json()["logins"]
+    assert [x["provider"] for x in listed] == ["claude-code", "codex", "antigravity"]
+    assert not any(x["logged_in"] for x in listed)
+    assert login_state(client, "codex") == {"state": "idle", "error": ""}
+
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.json() == {"url": "https://auth.example/authorize?p=codex"}
+    assert login_state(client, "codex")["state"] == "pending"
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 409
+    assert client.post("/api/assistant/login", json={"provider": "claude-code"}).status_code == 200
+
+    logins.release.set()
+    deadline = time.time() + 5
+    while login_state(client, "codex")["state"] == "pending" and time.time() < deadline:
+        time.sleep(0.02)
+    assert login_state(client, "codex") == {"state": "done", "error": ""}
+    texts = [
+        client.get("/api/assistant/logins").text,
+        client.get("/api/settings").text,
+        client.post("/api/assistant/logout", json={"provider": "codex"}).text,
+    ]
+    assert logins.cleared == ["codex"]
+    assert not any("SECRET" in t for t in texts)
+    assert (
+        next(
+            x
+            for x in client.get("/api/assistant/logins").json()["logins"]
+            if x["provider"] == "codex"
+        )["logged_in"]
+        is False
+    )
+
+
+def test_a_failed_subscription_login_says_why_and_can_start_again(
+    client: TestClient, logins: SimpleNamespace
+) -> None:
+    logins.fail = "the login state did not match"
+    logins.release.set()
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+    deadline = time.time() + 5
+    while login_state(client, "codex")["state"] == "pending" and time.time() < deadline:
+        time.sleep(0.02)
+    assert login_state(client, "codex") == {"state": "error", "error": logins.fail}
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+    assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
+
+
+def test_the_provider_picker_offers_the_subscriptions_that_have_a_provider(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def names() -> dict[str, bool]:
+        offered = client.get("/api/settings").json()["assistant"]["providers"]
+        return {p["name"]: p["subscription"] for p in offered}
+
+    monkeypatch.delitem(ui.ai_providers.PROVIDERS, "antigravity", raising=False)
+    assert names() == {
+        "ollama": False, "anthropic": False, "openai": False, "xai": False,
+        "claude-code": True, "codex": True,
+    }  # fmt: skip
+    monkeypatch.setitem(ui.ai_providers.PROVIDERS, "antigravity", lambda _s: None)
+    assert names()["antigravity"] is True

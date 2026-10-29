@@ -205,11 +205,20 @@ The gear button in the header opens Settings, which sets the projects folder (sa
 `projects_dir` in `config.json`). The folder must exist, or only its last part may be missing, in
 which case it is created; it must be writable. Existing projects are not moved. The setting is
 read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a job is running.
-Settings also has "Rate frames with a local vision model (Ollama)" (off by default; saved as
-[`vision`](configuration.md#vision) in `config.json`): every analysis the UI starts, a first
-one or "Analyze again", uses it (passed as `--vision` or `--no-vision`; 360 analyses never rate frames), and it is the default of
-`analyze` and `edit` on the command line. The UI has no per-run vision checkbox. "Analyze again"
-keeps the Ollama model, URL and vision-top the last analysis recorded.
+The Models tab (next to AI Chat) sets the model for each role: Chat (the
+[`assistant`](configuration.md#assistant) of AI Chat) and Vision
+([`vision_assistant`](configuration.md#vision_assistant), the model that rates frames), each
+with its own provider and model. Provider names say how they sign in: Anthropic API and OpenAI
+API use an API key; Claude Code subscription, Codex subscription and Antigravity subscription
+use a login ("Connected accounts", the same as `cutpoint login`). After a login the tab lists
+each account's own models (Refresh catalog asks again); Other model… takes any id. The tab
+works without a project, and one Save models saves both roles. "Rate frames with vision model"
+(off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
+every analysis the UI starts, a first one or "Analyze again", uses it (passed as `--vision` or
+`--no-vision`; 360 analyses never rate frames), and it is the default of `analyze` and `edit` on
+the command line. A hosted Vision provider gets frames only after "Allow vision requests" in
+the tab; saving never grants it. The UI has no per-run vision checkbox. "Analyze again" keeps
+the Ollama model, URL and vision-top the last analysis recorded.
 "Stats for Nerds" (off by default) shows the open moment's score, rank, analyzed times, signals
 and keywords over the top-left corner of the preview. It shows as soon as you tick it; Save keeps
 it, in the browser (local storage), not in `config.json`, and Cancel or Escape undoes it.
@@ -327,7 +336,7 @@ are blank or 0 and Speech-aware cuts is off (extend would have nothing to do); t
 
 **One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs
 `cutpoint edit --kind <preset>` in the project's own style, with the Vertical and Compress Audio
-Peaks choices and the vision choice from Settings. Clips go to `clips` and the video to
+Peaks choices and the vision choice from the Models tab. Clips go to `clips` and the video to
 `final.mp4` (`clips_vertical` and `final_vertical.mp4` when vertical), with the `<name>-final`
 copy next to it; that export becomes the current one. If earlier clips exist,
 a second run asks before replacing them and passes `--force` only when you confirm. The presets
@@ -455,19 +464,22 @@ remote access is not supported.
 ### AI Chat
 
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
-`config.json`, chosen under Settings > AI assistant as a Provider preset with a model; no base
+`config.json`, chosen in the Models tab (Chat role) as a Provider with a model; no base
 URL is typed:
 
 - **None (local Ollama)**, the default: the configured Ollama (`OLLAMA_HOST` or `ollama_url`).
   Choose a pulled model, or Other model… for any id; Default uses the first pulled of `qwen3.5:9b`, the vision model and `qwen3-vl:8b`, else `qwen3.5:9b`.
-- **Claude (Anthropic)**: `https://api.anthropic.com`; `claude-sonnet-5-5` (default) or
-  `claude-opus-5-5`.
-- **Codex (OpenAI)**: `https://api.openai.com/v1`; choose an OpenAI model. Cutpoint asks
-  `api.openai.com` through OpenAI's Responses API (`/v1/responses`), so every current model
+- **Anthropic API**: `https://api.anthropic.com`, with an API key; `claude-sonnet-5-5` (default)
+  or `claude-opus-5-5`. Not the Claude Code subscription below.
+- **OpenAI API**: `https://api.openai.com/v1`, with an API key; choose an OpenAI model. Cutpoint
+  asks `api.openai.com` through OpenAI's Responses API (`/v1/responses`), so every current model
   (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`, `*-codex`) makes tool calls. Any
   other base URL (OpenRouter, LM Studio, vLLM, llama-server, Ollama's `/v1`) is asked through
-  `/v1/chat/completions`.
+  `/v1/chat/completions`. Not the Codex subscription below.
 - **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); choose an xAI model.
+- **Claude Code subscription**, **Codex subscription** and **Antigravity subscription**: your
+  login (`cutpoint login NAME`, or Connected accounts in the Models tab), no API key. Each lists
+  the models the account itself offers, once logged in; asking for the list sends no project data.
 
 A base URL set in `config.json` that no preset has (LM Studio, vLLM, llama-server, OpenRouter, an
 Ollama on another machine) shows as "Custom (from config.json)" and keeps working: its base URL
@@ -496,13 +508,13 @@ is missing, and notes that the check waits; the check
 runs when you save again after agreeing, and the first message checks it too. Another
 host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
 send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-`XAI_API_KEY` when `cutpoint ui` starts, then from the system keyring (Settings has Save key and
+`XAI_API_KEY` when `cutpoint ui` starts, then from the system keyring (the Models tab has Save key and
 Clear key), then, only for a custom base URL, from `CUTPOINT_ASSISTANT_API_KEY`.
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`,
 `api.openai.com` and `api.x.ai`, and `CUTPOINT_ASSISTANT_API_KEY` never goes to any of those
 three; a key for another host (OpenRouter, a LAN
 server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, and goes only over
-`https://` ([keys](configuration.md#assistant)). Settings only says "set (env)", "set
+`https://` ([keys](configuration.md#assistant)). The Models tab only says "set (env)", "set
 (keyring)" or "not set"; the page never receives a key. To install Ollama and its models, see
 [getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
 
@@ -644,7 +656,7 @@ an analysed set processes only the new file.
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
 | `--vision` / `--no-vision` | Rate top candidates with a local Ollama vision model, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style, so Ollama is never needed unless you ask; `--no-vision` skips it when `config.json` turns it on. The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep theirs, and the model's label names the clip only from a rating of 7. The model is unloaded from GPU memory right after the rating. Ratings are cached per source (`vision-ratings.json`), so a rerun asks Ollama only about candidates it has not rated and repeats the same scores. The cache also records the Ollama model's digest: a model pulled again under the same tag is rated again, and with Ollama down the cached ratings for the tag are used |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
-| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`) |
+| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With [`vision_backend`](configuration.md#vision_backend) `assistant` or a subscription [`vision_assistant`](configuration.md#vision_assistant) in `config.json`, the frames (here and for `360 director --vl-check`) go to the subscription provider (`claude-code`, `codex`, `antigravity`) instead, once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
@@ -1355,3 +1367,25 @@ version or your own edits) is an error naming the file; `--force` replaces it. T
 and points the agent to `cutpoint guide` for details.
 
 `skill print` prints the skill to stdout, for agents that do not use a skills folder.
+
+## login
+
+```text
+cutpoint login claude-code|codex|antigravity [--no-browser]
+cutpoint logout claude-code|codex|antigravity
+```
+
+`login` signs in to a Claude Code, Codex (ChatGPT) or Antigravity subscription in the browser
+(PKCE; Claude Code and Codex redirect to `localhost`, while Antigravity redirects to `127.0.0.1:51121/oauth-callback`)
+and keeps the login in the system keyring, never in `config.json`. It prints the authorize URL;
+`--no-browser` does not open one. On a terminal you can paste the redirect URL or code instead of waiting
+for the browser. `logout` removes the stored login. Set `assistant.provider` (Chat) or
+`vision_assistant.provider` (Vision) to `claude-code`, `codex` or `antigravity` to use it; the
+Models tab in the UI does the same login and logout under Connected accounts.
+
+Antigravity operates on your existing account quota via Google's backend-managed routing project identifier;
+no user-supplied billable Google Cloud Project is used, and Cutpoint does not auto-provision or accept GCP terms.
+Users must first sign into the official Google Antigravity application or IDE once to initialize their account entitlement.
+
+A Claude Code login expires after about 30 days and needs a fresh `login`. Requests go to the vendor's hosted service
+and need your agreement in the AI Chat first, as for any hosted provider.

@@ -311,3 +311,50 @@ def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):
     assert len(errors) == 1
     assert str(path) in errors[0].getMessage()
     assert "not UTF-8 text" in errors[0].getMessage()
+
+
+def test_vision_assistant_config_independent_parsing(home):
+    set_config(
+        home,
+        assistant={"provider": "anthropic", "model": "claude-opus-5-5"},
+        vision_assistant={
+            "provider": "codex",
+            "model": "gpt-custom",
+            "consent": ["codex@chatgpt.com"],
+        },
+    )
+    cfg = config.get_config()
+    assert cfg.assistant.provider == "anthropic"
+    assert cfg.assistant.model == "claude-opus-5-5"
+    assert cfg.vision_assistant.provider == "codex"
+    assert cfg.vision_assistant.model == "gpt-custom"
+    assert cfg.vision_assistant.consent == ("codex@chatgpt.com",)
+    assert cfg.vision_backend == "assistant"
+
+
+def test_vision_assistant_legacy_fallback_when_unset(home):
+    # Legacy assistant backend fallback derives from assistant settings
+    set_config(
+        home,
+        vision_backend="assistant",
+        assistant={
+            "provider": "claude-code",
+            "model": "sonnet",
+            "consent": ["claude-code@api.anthropic.com"],
+        },
+    )
+    cfg = config.get_config()
+    assert cfg.vision_assistant.provider == "claude-code"
+    assert cfg.vision_assistant.model == "sonnet"
+    assert cfg.vision_assistant.consent == ("claude-code@api.anthropic.com",)
+
+    # Default fallback when vision_backend is ollama
+    set_config(home, vision_backend="ollama", assistant={"provider": "claude-code"})
+    cfg = config.get_config()
+    assert cfg.vision_assistant.provider == "ollama"
+
+
+def test_vision_assistant_rejects_unsupported_provider(home):
+    set_config(home, vision_assistant={"provider": "openai"})
+    with pytest.raises(ValueError, match=r"vision_assistant\.provider"):
+        config.get_config()

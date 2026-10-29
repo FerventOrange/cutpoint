@@ -472,6 +472,60 @@ def test_anthropic_messages_api_with_tool_use(monkeypatch) -> None:
     }
 
 
+def test_claude_subscription_always_sends_its_identity_block(monkeypatch) -> None:
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    wire = Wire(
+        monkeypatch,
+        an_reply({"type": "text", "text": "first"}),
+        an_reply({"type": "text", "text": "second"}),
+    )
+    p = providers.ClaudeCodeProvider("", "", 0)
+    assert p.chat([{"role": "user", "content": "ping"}]).text == "first"
+    assert (
+        p.chat([{"role": "system", "content": "rules"}, {"role": "user", "content": "ping"}]).text
+        == "second"
+    )
+    assert wire.sent[0]["json"]["system"] == [
+        {"type": "text", "text": providers.CLAUDE_CODE_IDENTITY}
+    ]
+    assert wire.sent[1]["json"]["system"] == [
+        {"type": "text", "text": providers.CLAUDE_CODE_IDENTITY},
+        {"type": "text", "text": "rules"},
+    ]
+
+
+def test_codex_reads_utf8_stream_without_content_type(monkeypatch) -> None:
+    """Codex may omit Content-Type; its UTF-8 SSE must still produce a reply."""
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    monkeypatch.setattr(
+        providers.grants, "load", lambda provider: SimpleNamespace(account_id="test-account")
+    )
+    response = requests.Response()
+    response.status_code = 200
+    response._content = (
+        "event: response.completed\ndata: "
+        + json.dumps(
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Café ready"}],
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n\n"
+    ).encode()
+    response._content_consumed = True
+    Wire(monkeypatch, response)
+    p = providers.CodexProvider("", "", 0)
+    assert p.chat([{"role": "user", "content": "ping"}]).text == "Café ready"
+
+
 def test_opus_is_selectable_and_the_key_comes_from_the_environment(home, monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
     set_config(home, assistant={"provider": "anthropic", "model": "claude-opus-5-5"})
@@ -1016,3 +1070,191 @@ def test_a_missing_key_is_named_with_where_to_set_it() -> None:
     assert providers.missing_key(OpenAIProvider("http://127.0.0.1:8080", "m", 0, None)) is None
     assert providers.missing_key(AnthropicProvider("", "m", 0, KEY)) is None
     assert providers.missing_key(OllamaProvider("http://10.0.0.2:11434", "m", 0)) is None
+
+
+def test_codex_list_models_queries_endpoint_and_filters_models(monkeypatch) -> None:
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    monkeypatch.setattr(
+        providers.grants, "load", lambda provider: SimpleNamespace(account_id="acc-123")
+    )
+    response_data = {
+        "models": [
+            {
+                "slug": "gpt-6.1-sol",
+                "display_name": "GPT-6.1 Sol",
+                "visibility": "list",
+                "supported_in_api": True,
+                "context_window": 500000,
+                "input_modalities": ["text", "image"],
+            },
+            {
+                "slug": "gpt-reserve",
+                "display_name": "GPT Reserve",
+                "visibility": "hide",
+                "supported_in_api": True,
+            },
+            {
+                "slug": "gpt-legacy",
+                "display_name": "Legacy",
+                "visibility": "list",
+                "supported_in_api": False,
+            },
+            {
+                "slug": "gpt-5.6-sol",
+                "visibility": "list",
+                "supported_in_api": True,
+            },
+        ]
+    }
+    wire = Wire(monkeypatch, _Resp(response_data))
+    p = providers.CodexProvider("", "", 0)
+    models = p.list_models()
+    assert len(wire.sent) == 1
+    sent = wire.sent[0]
+    assert (
+        sent["url"]
+        == f"https://chatgpt.com/backend-api/codex/models?client_version={providers.CODEX_CLIENT_VERSION}"
+    )
+    assert sent["headers"]["Authorization"] == f"Bearer {KEY}"
+    assert sent["headers"]["chatgpt-account-id"] == "acc-123"
+    assert models == [
+        {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"},
+        {"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"},
+    ]
+
+
+def test_codex_list_models_honest_errors_no_fake_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    monkeypatch.setattr(
+        providers.grants, "load", lambda provider: SimpleNamespace(account_id="acc-123")
+    )
+    Wire(monkeypatch, _Resp({"error": {"message": "Invalid token"}}, 401))
+    p = providers.CodexProvider("", "", 0)
+    with pytest.raises(
+        ProviderError, match="refused the login \\(401\\); run cutpoint login codex again"
+    ):
+        p.list_models()
+
+    monkeypatch.setattr(providers.grants, "load", lambda provider: None)
+    with pytest.raises(ProviderError, match="run cutpoint login codex first"):
+        p.list_models()
+
+
+def test_claude_code_list_models_reuses_anthropic_with_oauth_headers(monkeypatch) -> None:
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    page = {
+        "data": [{"id": "claude-haiku-5-5", "display_name": "Claude Haiku 5.5"}],
+        "has_more": False,
+    }
+    wire = Wire(monkeypatch, _Resp(page))
+    p = providers.ClaudeCodeProvider("", "", 0)
+    models = p.list_models()
+    assert models == [{"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"}]
+    assert len(wire.sent) == 1
+    sent = wire.sent[0]
+    assert sent["headers"]["Authorization"] == f"Bearer {KEY}"
+    assert sent["headers"]["anthropic-version"] == providers.ANTHROPIC_VERSION
+    assert sent["headers"]["anthropic-beta"] == providers.CLAUDE_CODE_BETA
+
+
+def test_model_list_subscription_login_bypasses_project_consent_not_missing_grant_or_https(
+    monkeypatch,
+) -> None:
+    providers.clear_model_cache()
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    monkeypatch.setattr(
+        providers.grants, "load", lambda provider: SimpleNamespace(account_id="acc-123")
+    )
+    Wire(
+        monkeypatch,
+        _Resp(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-6.1-sol",
+                        "display_name": "GPT-6.1 Sol",
+                        "visibility": "list",
+                        "supported_in_api": True,
+                    }
+                ]
+            }
+        ),
+    )
+    codex = providers.CodexProvider("", "", 0)
+    # Subscription provider succeeds with empty consent (metadata only, no project data sent)
+    res = providers.model_list(codex, consent=())
+    assert res["state"] == "ok"
+    assert res["models"] == [{"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"}]
+
+    # Keyed/custom hosted provider still enforces project data consent boundary
+    openai = providers.OpenAIProvider("", "m", 0, KEY)
+    assert providers.model_list(openai, consent=())["state"] == "consent_needed"
+
+    # Missing grant returns key_needed, not bypassed
+    def _expired(_name):
+        raise providers.grants.GrantExpiredError("not logged in to Codex subscription")
+
+    monkeypatch.setattr(providers.grants, "load", lambda _name: None)
+    monkeypatch.setattr(providers.grants, "access_token", _expired)
+    assert providers.model_list(codex, consent=(), refresh=True)["state"] == "key_needed"
+
+    # HTTP URL fails HTTPS boundary check
+    monkeypatch.setattr(
+        providers.grants, "load", lambda provider: SimpleNamespace(account_id="acc-123")
+    )
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    http_codex = providers.CodexProvider("http://chatgpt.com/backend-api/codex", "", 0)
+    res = providers.model_list(http_codex, consent=(), refresh=True)
+    assert res["state"] == "error"
+    assert "https://" in res["message"]
+
+
+def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:
+    providers.clear_model_cache()
+    monkeypatch.setattr(providers.grants, "access_token", lambda provider: KEY)
+    monkeypatch.setattr(
+        providers.grants, "load", lambda provider: SimpleNamespace(account_id="acc-123")
+    )
+    wire = Wire(
+        monkeypatch,
+        _Resp(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-6.1-sol",
+                        "display_name": "GPT-6.1 Sol",
+                        "visibility": "list",
+                        "supported_in_api": True,
+                    }
+                ]
+            }
+        ),
+        _Resp(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-6.1-terra",
+                        "display_name": "GPT-6.1 Terra",
+                        "visibility": "list",
+                        "supported_in_api": True,
+                    }
+                ]
+            }
+        ),
+    )
+    codex = providers.CodexProvider("", "", 0)
+    res1 = providers.model_list(codex, consent=())
+    assert res1["models"][0]["id"] == "gpt-6.1-sol"
+    assert len(wire.sent) == 1
+
+    # Cached: no second request
+    res2 = providers.model_list(codex, consent=())
+    assert res2["models"][0]["id"] == "gpt-6.1-sol"
+    assert len(wire.sent) == 1
+
+    # Invalidate cache for codex
+    providers.clear_model_cache("codex")
+    res3 = providers.model_list(codex, consent=())
+    assert res3["models"][0]["id"] == "gpt-6.1-terra"
+    assert len(wire.sent) == 2
+    providers.clear_model_cache()

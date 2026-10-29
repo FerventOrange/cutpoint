@@ -76,6 +76,7 @@ with `_` are ignored.
   "video_encoder": "auto",
   "export_workers": "auto",
   "vision": false,
+  "vision_backend": "ollama",
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
@@ -144,12 +145,40 @@ see [troubleshooting](troubleshooting/models.md)).
 ### vision
 
 `true` or `false` (default). With `true`, `analyze` and `edit` rate the top candidates with the
-local Ollama vision model
+configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
-Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
+Models tab writes this key ("Rate frames with vision model"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
+
+### vision_backend
+
+`ollama` (default) or `assistant`. Who answers the frame requests of `analyze --vision`, `edit
+--vision`, `360 director --vl-check` and new activity profiles. With `assistant` they go, as
+images with the prompt, to a subscription provider (`claude-code`, `codex` or `antigravity`;
+`cutpoint login NAME`) instead of Ollama: the [`vision_assistant`](#vision_assistant) one, or, when
+there is no such section, the [`assistant`](#assistant) one. Frames leave this machine, so
+nothing is sent until you agreed to that provider (its entry in the `consent` of the section that
+names it, via "Allow vision requests" in the Models tab); without it, another provider or no login,
+vision is skipped with an INFO line, as when Ollama is unreachable. Consent covers subscription
+providers; a remote Ollama server is not gated. Subscription providers are pinned to their official
+hosts (`api.anthropic.com`, `chatgpt.com`, `*.googleapis.com`); a custom `url` for them is rejected.
+`--ollama-url` and `--ollama-model` have no effect when using a subscription provider, and the rating
+has no logprob-based score. Other values are rejected. Saving a subscription Vision provider in
+the UI's Models tab sets it.
+
+### vision_assistant
+
+The model that rates frames, chosen independently of the chat model. The same keys as
+[`assistant`](#assistant) (`provider`, `model`, `url`, `consent`), but `provider` is `ollama`
+(default), `claude-code`, `codex` or `antigravity`. With `ollama`, `model` and `url` are the
+Ollama model and URL (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win).
+Subscription providers use only their official host; a `url` for them is rejected.
+Without this section the frame rater uses Ollama, or the `assistant` provider when
+`vision_backend` is `assistant`, as before. The Models tab of `cutpoint ui` writes it. Frames go
+to a subscription provider only after you allow it there (`consent`, via "Allow vision requests");
+choosing or saving a model never grants it.
 
 ### compress_peaks
 
@@ -188,23 +217,28 @@ Settings for the `cutpoint ui` [AI Chat tab](commands.md#ai-chat), served by the
 (`/api/projects/{id}/assistant`, token header only). It writes `ui/assistant/chat.json` and
 `history.json` in the project. There is no API key setting (see below).
 
-Settings > AI assistant offers a Provider preset, so no base URL is typed: it saves `provider`
-and `model`, with `url` empty (the preset's own):
+The UI's Models tab offers a Provider, so no base URL is typed: it saves `provider`
+and `model`, with `url` empty (the preset's own). API providers and subscription logins are
+separate entries with their own credentials and model lists:
 
 | Preset | `provider` | Base URL | Model |
 |---|---|---|---|
 | None (local Ollama) | `ollama` | `ollama_url` (`OLLAMA_HOST`) | any pulled model; empty: the first pulled of `qwen3.5:9b`, the vision model and `qwen3-vl:8b`, else `qwen3.5:9b` |
-| Claude (Anthropic) | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered |
-| Codex (OpenAI) | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered |
+| Anthropic API | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered; an API key |
+| OpenAI API | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered; an API key |
 | Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name; `grok-4.7`, `grok-4.6`, `grok-4.5`, `grok-4.3` and `grok-build-0.1` offered |
+| Claude Code subscription | `claude-code` | Anthropic's hosted service | the models the login lists (`GET /v1/models`); a login, no API key |
+| Codex subscription | `codex` | ChatGPT's Codex backend | the models the login lists (`/codex/models`); a login, no API key |
+| Antigravity subscription | `antigravity` | Google's Cloud Code | the models the login lists (`fetchAvailableModels`); a login, no API key |
 
 A `url` set in `config.json` that is not the preset's (OpenRouter, LM Studio, a LAN Ollama) keeps
 working and shows as "Custom (from config.json)": its base URL is read-only (edit the file to
 change it), its model can be changed there, and choosing a preset and saving replaces it. The Model dropdown lists the models the provider offers (Refresh
 asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any other id.
 
-- `provider`: `ollama` (default), `openai` (OpenAI or a server that speaks its API: LM Studio,
-  vLLM, llama-server), `anthropic` or `xai` (Grok, OpenAI-compatible). `openai` at
+- `provider`: `ollama` (default), `openai` (OpenAI API, or a server that speaks its API: LM Studio,
+  vLLM, llama-server), `anthropic` (Anthropic API), `xai` (Grok, OpenAI-compatible), or a
+  subscription login: `claude-code`, `codex` or `antigravity`. `openai` at
   `api.openai.com` uses the Responses API (`/v1/responses`) and asks OpenAI not to store the
   chat (`store: false`); any other `url` uses `/v1/chat/completions`.
 - `model`: the model name. Empty (default): for Ollama the first that is pulled of
@@ -234,11 +268,11 @@ host of its base URL. It is taken, in order, from:
 | Source | Used for |
 |---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com` / `api.x.ai`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine, and an xAI key never anywhere but `api.x.ai` (not to the `openai` provider with an `api.x.ai` URL either) |
-| The system keyring (service `cutpoint`) | saved from Settings (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
+| The system keyring (service `cutpoint`) | saved from the Models tab (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
 | `CUTPOINT_ASSISTANT_API_KEY` | custom and self-hosted base URLs only (for example an OpenRouter key, or a key for your own server). Never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai`, not even when no other key is set: those need their own variable or a keyring key |
 
 A preset's key is for its own host, so it can be saved before the settings. For a custom base
-URL, save the settings first, then save the key for it. The key is sent
+URL, save the model settings first, then save the key for it. The key is sent
 only to the host it belongs to, in a request header, and only over `https://` unless the server
 is on this machine (a key with an `http://` base URL on another machine is refused). `cutpoint
 ui` takes these variables out of its own environment when it starts, so jobs, ffmpeg and file

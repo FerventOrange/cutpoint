@@ -7,7 +7,8 @@
     "stage_dir": "Local folder for `cutpoint stage` copies of sources on slow or network storage (NAS, USB, cloud-synced folder). Env CUTPOINT_STAGE_DIR overrides it. Default: <CUTPOINT_HOME>\\stage.",
     "player_tags": "Your in-game name(s) for the optional game-HUD OCR in `cutpoint events` (who killed whom). Fuzzy match, ignores _ . - and spaces. `cutpoint events --player NAME` overrides it per run. Default: none.",
     "ollama_url": "Ollama base URL for `analyze --vision` and the VLM layers of `cutpoint events`. Env OLLAMA_HOST overrides it. Default: http://127.0.0.1:11434.",
-    "vision": "true or false (default). true: `cutpoint analyze` and `cutpoint edit` rate the top candidates with the local Ollama vision model unless --no-vision is given (slower; uses several GB of GPU memory). false: only --vision turns it on for one run. The UI's Settings dialog writes it, and the UI's vision checkboxes start from it.",
+    "vision": "true or false (default). true: `cutpoint analyze` and `cutpoint edit` rate the top candidates with the vision model unless --no-vision is given (slower; uses several GB of GPU memory). false: only --vision turns it on for one run. The UI's Models tab writes it, and the UI's vision checkboxes start from it.",
+    "vision_backend": "ollama (default) or assistant: assistant sends the frames of --vision and 360 director --vl-check to the assistant provider (claude-code or codex, after you agreed to it in the AI Chat) instead of Ollama. When a vision_assistant section is present, that section sets the vision role directly. See docs/configuration.md#vision_backend.",
     "compress_peaks": "off (default), light or strong: peak compression and clip leveling of `cutpoint clips`, `assemble` and `edit` when --compress-peaks is not given (see docs/commands.md#peak-compression).",
     "color": "off (default), auto or underwater: automatic color correction of `cutpoint clips` and `edit` when --color is not given (see docs/commands.md#clips). Never applied to gaming footage (only --color grades it) nor together with --lut.",
     "analysis": "{\"skip\": [...]}: analysis steps `cutpoint analyze` and `cutpoint edit` leave out by default; any of reactions, keyframes and crashes. --skip overrides it per run. Default: none.",
@@ -31,6 +32,7 @@
   "video_encoder": "auto",
   "export_workers": "auto",
   "vision": false,
+  "vision_backend": "ollama",
   "compress_peaks": "off",
   "color": "off",
   "analysis": {

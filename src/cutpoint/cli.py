@@ -834,6 +834,32 @@ def _cmd_skill_print(a: argparse.Namespace) -> None:
     _write_stdout_bytes(skill.skill_bytes())
 
 
+def _cmd_login(a: argparse.Namespace) -> None:
+    from cutpoint.assistant import grants, oauth  # noqa: PLC0415
+
+    # shortcut: the paste prompt only exists on a terminal; a headless run waits for the redirect
+    paste = (
+        (lambda: input("Paste the redirect URL or code (or wait for the browser): "))
+        if (sys.stdin.isatty())
+        else None
+    )
+    grant = oauth.login(
+        a.provider,
+        notify=lambda url: logger.info("open this URL to log in: %s", url),
+        open_browser=not a.no_browser,
+        paste=paste,
+    )
+    who = f" as {grant.email}" if grant.email else ""
+    logger.info("logged in to %s%s", grants.TITLES[a.provider], who)
+
+
+def _cmd_logout(a: argparse.Namespace) -> None:
+    from cutpoint.assistant import grants  # noqa: PLC0415
+
+    grants.clear(a.provider)
+    logger.info("logged out of %s", grants.TITLES[a.provider])
+
+
 def _port(text: str) -> int:
     """argparse type: a TCP port, 1-65535."""
     try:
@@ -1634,6 +1660,22 @@ def build_parser() -> argparse.ArgumentParser:
     si.set_defaults(func=_cmd_skill_install)
     sp = sks.add_parser("print", help="print the skill (SKILL.md) to stdout")
     sp.set_defaults(func=_cmd_skill_print)
+
+    from cutpoint.assistant import grants as login_grants  # noqa: PLC0415
+
+    lg = sub.add_parser(
+        "login",
+        help="log in to a subscription (Claude Code, Codex, Antigravity) in the browser; "
+        "the login is kept in the system keyring, never in config.json",
+    )
+    lg.add_argument("provider", choices=login_grants.PROVIDERS)
+    lg.add_argument(
+        "--no-browser", action="store_true", help="only print the URL; do not open a browser"
+    )
+    lg.set_defaults(func=_cmd_login)
+    lo = sub.add_parser("logout", help="remove a subscription login from the system keyring")
+    lo.add_argument("provider", choices=login_grants.PROVIDERS)
+    lo.set_defaults(func=_cmd_logout)
 
     ui = sub.add_parser(
         "ui",
