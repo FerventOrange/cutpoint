@@ -195,8 +195,8 @@ and `model`, with `url` empty (the preset's own):
 |---|---|---|---|
 | None (local Ollama) | `ollama` | `ollama_url` (`OLLAMA_HOST`) | any pulled model; empty: `qwen3.5:9b`, else the vision model |
 | Claude (Anthropic) | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered |
-| Codex (OpenAI) | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name |
-| Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name |
+| Codex (OpenAI) | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered |
+| Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name; `grok-4.7`, `grok-4.6`, `grok-4.5`, `grok-4.3` and `grok-build-0.1` offered |
 
 A `url` set in `config.json` that is not the preset's (OpenRouter, LM Studio, a LAN Ollama) keeps
 working and shows as "Custom (from config.json)": its base URL is read-only (edit the file to
