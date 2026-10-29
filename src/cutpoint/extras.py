@@ -192,16 +192,21 @@ def _installed_torch_backend() -> str | None:
     return "cu126" if "+cu" in version else "cpu"
 
 
-def _fork_hint(req: dict[str, Any], extra: str, backend: str | None) -> str:
-    """``uv tool install`` from a git repository the installers do not install from (a fork),
-    with an explicit ``--torch-backend`` (``backend``, else that of the installed torch)."""
+def _url_hint(req: dict[str, Any], extra: str, backend: str | None) -> str:
+    """``uv tool install`` from a source the installers do not install from (a fork's git
+    repository, a wheel or sdist URL), with an explicit ``--torch-backend`` (``backend``, else
+    that of the installed torch)."""
     extras = {extra, *(str(e) for e in req.get("extras", []) if isinstance(e, str))}
-    url = _git_url(str(req["git"]), _git_ref(str(req["git"]), req))
+    if req.get("git"):
+        url = _git_url(str(req["git"]), _git_ref(str(req["git"]), req))
+        why = "the installer only installs from github.com/FerventOrange/cutpoint; for this git"
+    else:
+        url = str(req["url"])
+        why = "the installer does not install from a URL; for this URL"
     backend = backend or _installed_torch_backend()
     note = "" if backend else " (cu126 instead of cpu with an NVIDIA GPU)"
     return (
-        "the installer only installs from github.com/FerventOrange/cutpoint; for this git "
-        f'install run: uv tool install "cutpoint[{",".join(sorted(extras))}] @ {url}" '
+        f'{why} install run: uv tool install "cutpoint[{",".join(sorted(extras))}] @ {url}" '
         f"--torch-backend {backend or 'cpu'} --python 3.12 --reinstall --no-sources{note}"
     )
 
@@ -211,7 +216,8 @@ def _installer_hint(
 ) -> str:
     """What a tool install runs: the installer again (not lite in the lite edition), with the
     receipt's git, directory, path or editable source (it installs the PyPI release by
-    default); a fork of the repository gets a ``uv tool install`` command instead.
+    default); a fork of the repository or a wheel or sdist URL gets a ``uv tool install``
+    command instead.
 
     The installer picks the torch backend for this machine; a ``uv tool install`` without
     ``--torch-backend`` would pull CUDA torch on a machine without an NVIDIA GPU.
@@ -225,8 +231,8 @@ def _installer_hint(
             ),
             {},
         )
-        if req.get("git") and not _upstream(str(req["git"])):
-            return _fork_hint(req, extra, backend)
+        if (req.get("git") and not _upstream(str(req["git"]))) or req.get("url"):
+            return _url_hint(req, extra, backend)
         if req.get("git"):
             ref = _git_ref(str(req["git"]), req)
             source: str | None = f"git@{ref}" if ref else "git"
@@ -239,7 +245,9 @@ def _installer_hint(
     sh, ps1 = INSTALL_SH, INSTALL_PS1
     if source is not None:
         sh = f"{INSTALL_SH} -s -- --source {shlex.quote(source)}"
-        ps1 = f'$env:CUTPOINT_SOURCE = "{source}"; {INSTALL_PS1}'
+        # Single quotes: PowerShell expands $ inside double quotes; a ' is doubled in them.
+        quoted = source.replace("'", "''")
+        ps1 = f"$env:CUTPOINT_SOURCE = '{quoted}'; {INSTALL_PS1}"
     lite = " without --lite / -Lite and with CUTPOINT_LITE unset" if edition() == "lite" else ""
     if editable:
         notes = ("the installer does not make an editable install", *notes)

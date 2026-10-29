@@ -136,46 +136,66 @@ def _receipt_with(source: str) -> str:
 
 
 @pytest.mark.parametrize(
-    ("source", "src", "sh_src", "editable"),
+    ("source", "ps_src", "sh_src", "editable"),
     [
         (
             'git = "https://github.com/FerventOrange/cutpoint?rev=main"',
-            "git@main",
+            "'git@main'",
             "git@main",
             False,
         ),
         (
             'git = "https://github.com/FerventOrange/cutpoint.git?tag=v1#subdirectory=pkg"',
-            "git@v1",
+            "'git@v1'",
             "git@v1",
             False,
         ),
         (
             'git = "https://GitHub.com/ferventorange/Cutpoint", branch = "dev"',
-            "git@dev",
+            "'git@dev'",
             "git@dev",
             False,
         ),
-        ('git = "https://github.com/FerventOrange/cutpoint"', "git", "git", False),
-        ('directory = "C:/src/cutpoint"', "C:/src/cutpoint", "C:/src/cutpoint", False),
+        ('git = "https://github.com/FerventOrange/cutpoint"', "'git'", "git", False),
+        ('directory = "C:/src/cutpoint"', "'C:/src/cutpoint'", "C:/src/cutpoint", False),
         (
             'path = "C:/My Downloads/cutpoint-1.0-py3-none-any.whl"',
-            "C:/My Downloads/cutpoint-1.0-py3-none-any.whl",
+            "'C:/My Downloads/cutpoint-1.0-py3-none-any.whl'",
             "'C:/My Downloads/cutpoint-1.0-py3-none-any.whl'",  # quoted for sh
             False,
         ),
-        ('editable = "C:/src/cutpoint"', "C:/src/cutpoint", "C:/src/cutpoint", True),
+        # PowerShell expands $ in double quotes, so the value is single-quoted
+        ('directory = "D:/$dev/cutpoint"', "'D:/$dev/cutpoint'", "'D:/$dev/cutpoint'", False),
+        (
+            'directory = "//nas/share$x/Bob\'s cutpoint"',
+            "'//nas/share$x/Bob''s cutpoint'",  # a ' doubled inside single quotes
+            "'//nas/share$x/Bob'\"'\"'s cutpoint'",
+            False,
+        ),
+        ('editable = "C:/src/cutpoint"', "'C:/src/cutpoint'", "C:/src/cutpoint", True),
     ],
-    ids=["git-rev", "git-tag", "git-branch-key", "git", "directory", "path-space", "editable"],
+    ids=[
+        "git-rev",
+        "git-tag",
+        "git-branch-key",
+        "git",
+        "directory",
+        "path-space",
+        "dollar",
+        "quote",
+        "editable",
+    ],
 )
-def test_installer_hint_keeps_the_tool_source(monkeypatch, tmp_path, source, src, sh_src, editable):
+def test_installer_hint_keeps_the_tool_source(
+    monkeypatch, tmp_path, source, ps_src, sh_src, editable
+):
     # the bare installer installs the PyPI release, which would replace a git or local install;
     # sh takes options after `-s --`, and PowerShell needs $env: (`set` is Set-Variable there)
     _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
     monkeypatch.setattr(extras, "edition", lambda: "full")
     commands = (
         f"{extras.INSTALL_SH} -s -- --source {sh_src} (Linux, macOS) or "
-        f'$env:CUTPOINT_SOURCE = "{src}"; {extras.INSTALL_PS1} (Windows PowerShell)'
+        f"$env:CUTPOINT_SOURCE = {ps_src}; {extras.INSTALL_PS1} (Windows PowerShell)"
     )
     note = "the installer does not make an editable install" if editable else ""
     want = f"re-run the installer: {commands}"
@@ -202,8 +222,12 @@ _FORK = "https://github.com/someone/cutpoint"
             'git = "https://gitlab.com/FerventOrange/cutpoint"',
             "git+https://gitlab.com/FerventOrange/cutpoint",
         ),
+        (
+            'url = "https://example.com/cutpoint-1.0-py3-none-any.whl"',
+            "https://example.com/cutpoint-1.0-py3-none-any.whl",
+        ),
     ],
-    ids=["fork-rev", "fork-subdirectory", "other-host"],
+    ids=["fork-rev", "fork-subdirectory", "other-host", "wheel-url"],
 )
 @pytest.mark.parametrize(
     ("torch", "backend", "note"),
@@ -216,8 +240,8 @@ _FORK = "https://github.com/someone/cutpoint"
 def test_installer_hint_fork_gives_uv_tool_install(
     monkeypatch, tmp_path, source, url, torch, backend, note
 ):
-    # the installers only install from github.com/FerventOrange/cutpoint, so a fork keeps its
-    # source with an explicit --torch-backend
+    # the installers only install from github.com/FerventOrange/cutpoint (or PyPI or a local
+    # path), so a fork or a wheel URL keeps its source with an explicit --torch-backend
     _set_install(monkeypatch, tmp_path, receipt=_receipt_with(source), uv=True)
 
     def from_name(name):
@@ -228,9 +252,13 @@ def test_installer_hint_fork_gives_uv_tool_install(
     monkeypatch.setattr(extras.importlib.metadata.Distribution, "from_name", from_name)
     extras_list = "events,gpu" if "gpu" in source else "events"
     tail = "--python 3.12 --reinstall --no-sources"
+    why = (
+        "the installer does not install from a URL; for this URL"
+        if source.startswith("url")
+        else "the installer only installs from github.com/FerventOrange/cutpoint; for this git"
+    )
     assert extras.install_hint("events") == (
-        "the installer only installs from github.com/FerventOrange/cutpoint; for this git "
-        f'install run: uv tool install "cutpoint[{extras_list}] @ {url}" '
+        f'{why} install run: uv tool install "cutpoint[{extras_list}] @ {url}" '
         f"--torch-backend {backend} {tail}{note}"
     )
     assert f"--torch-backend cu126 {tail}" in extras.torch_cuda_hint()  # its purpose is CUDA

@@ -122,9 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`); in a clone,
   `uv sync` without `--no-group full`. A tool installed from git or a local path gets both
   commands with its source (`... | sh -s -- --source git@main`, `$env:CUTPOINT_SOURCE =
-  "git@main"; irm ... | iex`); one from a fork gets `uv tool install "cutpoint[...] @ git+<url>"
-  --torch-backend cpu|cu126 --python 3.12 --reinstall --no-sources`, since the installers only
-  install from github.com/FerventOrange/cutpoint. The CUDA torch fix in `capabilities` says the
+  'git@main'; irm ... | iex`); one from a fork or a wheel or sdist URL gets `uv tool install
+  "cutpoint[...] @ <url>" --torch-backend cpu|cu126 --python 3.12 --reinstall --no-sources`,
+  since the installers only install from PyPI, github.com/FerventOrange/cutpoint or a local
+  path. The CUDA torch fix in `capabilities` says the
   same. The hints no longer print a `uv tool install` command without `--torch-backend`, which
   can pull CUDA torch on a machine without an NVIDIA GPU. Help, messages and
   docs no longer call `ui`, `keyring` and `ski` optional extras (#502).

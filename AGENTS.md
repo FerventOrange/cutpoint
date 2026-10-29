@@ -200,9 +200,9 @@ command for theirs:
   (Windows PowerShell). A tool installed from git or a local path needs its source again; the
   hint prints both commands with it, for example
   `curl -LsSf .../install.sh | sh -s -- --source git@main` and
-  `$env:CUTPOINT_SOURCE = "git@main"; irm .../install.ps1 | iex`. The installers only install
+  `$env:CUTPOINT_SOURCE = 'git@main'; irm .../install.ps1 | iex`. The installers only install
   from github.com/FerventOrange/cutpoint; for a fork the hint prints a `uv tool install` command
-  with `--torch-backend` instead.
+  with `--torch-backend` instead, as for a wheel or sdist URL.
 - From a clone: `uv sync`. It installs every extra (a large download with torch and CUDA); a
   lite clone was synced with `--no-group full` or `UV_NO_GROUP=full`, so drop those.
 
