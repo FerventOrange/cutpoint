@@ -139,6 +139,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: adding or removing a moment while the list shows only moments in or not in
+  the sequence keeps the Moments column where it was, with focus on the card that took its
+  place (it jumped back to the first card at the top). The Sequence | AI Chat | Export tab bar,
+  and the Sequence and AI Chat headers under it, stay at the top of the column while a long
+  sequence, chat or Export panel scrolls.
 - OCR menu detection (#409): loading, matchmaking and "processing" screens of up to 15 s
   between two menu screens, with no kill feed in between, are menu time too, so less lobby
   footage reaches the gaming candidates. On hand-labelled War Thunder and R6 recordings the

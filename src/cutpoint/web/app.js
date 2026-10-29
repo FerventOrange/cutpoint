@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, spanText, svg } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, spanText, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -294,12 +294,17 @@ whenExpired((e) => {
 
 function preserveFocus(fn) {
   const a = document.activeElement;
-  const id = a?.closest?.('[data-id]')?.dataset.id;
+  const row = a?.closest?.('[data-id]');
+  const id = row?.dataset.id;
   const act = a?.dataset?.act;
   const listId = a?.closest?.('ol')?.id;
+  const at = row ? [...row.parentElement.children].indexOf(row) : -1;
   fn();
   if (!id || !act || !listId) return;
-  const li = $(`#${listId} [data-id="${CSS.escape(id)}"]`);
+  // a row that left the list (Add with Not in sequence, say) hands focus to the row now in its place,
+  // not to the list's first: focusing that scrolled the column back to the top
+  const rows = $(`#${listId}`).children;
+  const li = $(`#${listId} [data-id="${CSS.escape(id)}"]`) ?? rows[rowInPlace(at, rows.length)];
   const btn = li?.querySelector(`[data-act="${act}"]`);
   (btn && !btn.disabled ? btn : (li?.querySelector('button:not(:disabled)') ?? $(`#${listId} button:not(:disabled)`)))?.focus();
 }
@@ -2526,9 +2531,12 @@ function revealRow(li) {
   const col = li.closest('.col');
   if (!col || getComputedStyle(col).overflowY === 'visible') return;
   const r = li.getBoundingClientRect();
+  const cs = getComputedStyle(col);
   const box = col.getBoundingClientRect();
-  if (r.top < box.top) col.scrollTop -= box.top - r.top;
-  else if (r.bottom > box.bottom) col.scrollTop += Math.min(r.bottom - box.bottom, r.top - box.top);
+  const top = box.top + (parseFloat(cs.scrollPaddingTop) || 0); // below the sticky tabs and header
+  const bottom = box.bottom - (parseFloat(cs.scrollPaddingBottom) || 0); // above the sticky chat input
+  if (r.top < top) col.scrollTop -= top - r.top;
+  else if (r.bottom > bottom) col.scrollTop += Math.min(r.bottom - bottom, r.top - top);
 }
 
 /** "Clip 2 of 5 · 0:34 / 2:10": the time played in the sequence, of the clips still in it. */
@@ -4391,6 +4399,18 @@ function initSideTabs() {
   }
   select(tabs.find((t) => t.dataset.tab === saved) ?? tabs[0]);
   for (const t of tabs) t.addEventListener('click', () => select(t));
+  // rows brought into view (focus, revealRow) land between the sticky tab bar and panel header and
+  // the sticky chat input; their heights follow the column's width and the selected tab (a hidden
+  // panel's measure 0). --side-bars: where the Selected clips bar sticks, under the header
+  const bars = [$('#side .side-tabs'), $('#panelSequence .col-head'), $('#panelAssistant .chat-head')];
+  const pad = new ResizeObserver(() => {
+    const side = $('#side');
+    const px = `${bars.reduce((n, el) => n + el.offsetHeight, 0)}px`;
+    side.style.scrollPaddingTop = px;
+    side.style.setProperty('--side-bars', px);
+    side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;
+  });
+  for (const el of [...bars, $('#chatForm')]) pad.observe(el);
   $('#side [role=tablist]').addEventListener('keydown', (e) => {
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;

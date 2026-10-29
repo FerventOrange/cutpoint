@@ -84,6 +84,10 @@ export const positionCompare = (a, b) =>
  */
 export const NO_FILTERS = Object.freeze({ seq: 'all', ready: false, source: '' });
 
+/** The row of ``n`` that takes the place of a row at index ``at`` once it left its list: the one now
+ * at that index, the last one past the end, or -1 with no row left. */
+export const rowInPlace = (at, n) => (n ? Math.min(at, n - 1) : -1);
+
 /** Any quick filter of ``f`` filters (the search text is not one). */
 export const filtersOn = (f) => f.seq !== 'all' || !!f.ready || !!f.source;
 
