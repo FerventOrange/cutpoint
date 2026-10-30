@@ -14,8 +14,9 @@ R-CNN persons, person-crop CLIP) and each frame gets flags:
     ``close_area`` of the frame, or is (nearly) full height and wide.
 ``edge_cut``
     the subject (largest kept person, if at least ``size_min_h`` tall) or any
-    kept person of area >= ``edge_min_area`` touches the left / right edge, or
-    the top edge while taller than ``edge_top_h`` and ending above
+    kept person of area >= ``edge_min_area`` touches the left / right edge (from
+    ``edge_side_min_area`` there when that is lower: the ``--paths`` QA's projected
+    boxes), or the top edge while taller than ``edge_top_h`` and ending above
     ``edge_top_max_y2`` (feet cut at the bottom are fine; a box spanning the
     frame height is a tight framing, reported by ``size_ok``). A box sharing
     ``edge_self_overlap`` of the smaller one's area with a self box is the wearer
@@ -140,6 +141,9 @@ class QAThresholds:
     close_w: float = 0.65
     edge_margin: float = 0.01
     edge_min_area: float = 0.10  # other kept people this big count for edge cuts
+    # ... at the left / right edge from this area when lower (the rendered QA keeps 0.10;
+    # the --paths QA lowers it for its projected boxes: qa_paths.paths_thresholds)
+    edge_side_min_area: float = 0.10
     edge_top_h: float = 0.30
     edge_top_max_y2: float = 0.90  # top contact of a box reaching lower is tight, not cut
     # a box sharing this much of the smaller one's area with a self box is the wearer
@@ -237,7 +241,8 @@ def edge_candidates(
 ) -> np.ndarray:
     """Per box of one frame (``rows`` in :func:`frame_flags` layout, ``sel`` its self
     flags): a candidate for an edge cut. Kept (confident, not self, at least
-    ``subject_min_h`` tall) boxes of area >= ``edge_min_area``, and the subject (the
+    ``subject_min_h`` tall) boxes of area >= ``edge_min_area`` (``edge_side_min_area``
+    when lower for a box touching the left / right edge), and the subject (the
     largest kept box) when at least ``size_min_h`` tall; a box sharing
     ``edge_self_overlap`` with a self box is the wearer detected twice and is left out.
 
@@ -250,7 +255,9 @@ def edge_candidates(
     area = (rows[:, 5] - rows[:, 3]) * h
     kept = person & ~sel & (h >= th.subject_min_h)
     selfb = person & sel
-    cand = kept & (area >= th.edge_min_area)
+    m = th.edge_margin
+    side = (rows[:, 3] <= m) | (rows[:, 5] >= 1 - m)
+    cand = kept & ((area >= th.edge_min_area) | (side & (area >= th.edge_side_min_area)))
     if kept.any():
         k = int(np.flatnonzero(kept)[np.argmax(area[kept])])
         if h[k] >= th.size_min_h:

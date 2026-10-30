@@ -16,7 +16,7 @@ classifier are not used: on 16 rendered clips both labelled close friends
 filling the view as the wearer (``occluded`` on 42 % of the frames of a clean
 clip). Projected boxes mostly outside the frame (``MIN_VISIBLE``) are dropped
 and overlapping ones suppressed (``NMS_IOU``), as the detector on a rendered
-frame would; a dropped box that still covers ``edge_min_area`` at the left /
+frame would; a dropped box that still covers ``edge_side_min_area`` at the left /
 right edge (a close person's head or shoulder) flags ``edge_cut``
 (:func:`sliver_edge_frames`), the wearer's too unless it is allowed in frame
 (:func:`qa.wearer_allowed`: small, or coming in from the bottom only). A dropped
@@ -28,6 +28,10 @@ rendered QA's subject does (:func:`sliver_subject_frames`). Each frame records
 (``[x1, y1, x2, y2, is_self]``), for ``360 qa --compare``. What needs pixels is not checked:
 ``low_info`` and the occluder prompts (gloves, sleeves) are never flagged.
 Pans and the horizon come from the path and the IMU as in the rendered QA.
+Boxes touching the left / right edge count from ``edge_side_min_area``, the rendered
+QA's ``edge_min_area`` over :data:`EDGE_AREA_GROWTH` (:func:`paths_thresholds`; recorded
+in ``qa.json``'s ``thresholds``): the detector sees a person cut by the frame edge
+larger than its projected box.
 
 The director uses :func:`path_quality` for the ``quality`` block of every path.
 """
@@ -37,7 +41,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +60,17 @@ HOLD_S = 1.0  # resampled times farther than this from a view frame have no dete
 MIN_VISIBLE = 0.25  # boxes mostly outside the frame (a sliver of the wearer) are not seen
 # (clipped box area over its projected extent, in frame units: geometry.project_box_visible)
 NMS_IOU = 0.5  # torchvision Faster R-CNN's box_nms_thresh
+# a person at the left / right edge with a projected box of 0.06-0.10 of the frame is
+# detected on the rendered frame 1.34x as large by area (median, aug-24-cruise, #11):
+# such boxes count from edge_min_area / this (0.075)
+EDGE_AREA_GROWTH = 1.34
+
+
+def paths_thresholds(th: Q.QAThresholds) -> Q.QAThresholds:
+    """``th`` with the projected boxes' ``edge_side_min_area``: ``edge_min_area`` over
+    :data:`EDGE_AREA_GROWTH` (3 decimals), unless ``th`` already has a lower one."""
+    side = round(th.edge_min_area / EDGE_AREA_GROWTH, 3)
+    return replace(th, edge_side_min_area=min(th.edge_side_min_area, side))
 
 
 def person_rows(pv: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -178,8 +193,8 @@ def project_frames(
 
 
 def sliver_edge_frames(slivers: np.ndarray, th: Q.QAThresholds) -> set[int]:
-    """Frames where a person mostly outside the view still covers ``edge_min_area`` at
-    its left / right edge (the wearer too, unless :func:`qa.wearer_allowed`).
+    """Frames where a person mostly outside the view still covers ``edge_side_min_area``
+    (``edge_min_area`` when lower) at its left / right edge (the wearer too, unless :func:`qa.wearer_allowed`).
 
     A person inches from the lens has a huge equirect box: at the frame edge only a
     head or shoulder of it is in view, a small share of the box (dropped by
@@ -195,7 +210,8 @@ def sliver_edge_frames(slivers: np.ndarray, th: Q.QAThresholds) -> set[int]:
         return set()
     x1, y1, x2, y2 = (slivers[:, c] for c in (3, 4, 5, 6))
     m = th.edge_margin
-    hit = (slivers[:, 2] >= th.person_min_score) & ((x2 - x1) * (y2 - y1) >= th.edge_min_area)
+    floor = min(th.edge_min_area, th.edge_side_min_area)
+    hit = (slivers[:, 2] >= th.person_min_score) & ((x2 - x1) * (y2 - y1) >= floor)
     hit &= (x1 <= m) | (x2 >= 1 - m)
     hit &= ~((slivers[:, 7] > 0) & Q.wearer_allowed((x1, y1, x2, y2), th))
     return {int(i) for i in slivers[hit, 0]}
@@ -328,8 +344,9 @@ def path_quality(
     th: Q.QAThresholds | None = None,
     fps: float = 2.0,
 ) -> dict[str, Any]:
-    """The path's ``quality`` block: geometric QA shares of ``[start, end]``."""
-    th = th or Q.QAThresholds()
+    """The path's ``quality`` block: geometric QA shares of ``[start, end]``
+    (:func:`paths_thresholds` of ``th``)."""
+    th = paths_thresholds(th or Q.QAThresholds())
     size = (OUT_SIZE[1], OUT_SIZE[0]) if path.get("vertical") else OUT_SIZE
     dur = max(end - start, 0.0)
     times, idx = sample_times(pv.t, start, dur, fps)
@@ -432,12 +449,13 @@ def qa_path_clip(item: dict[str, Any], pv: Any, fps: float, th: Q.QAThresholds) 
 def run_paths_qa(
     qa_dir: Path, fps: float = 2.0, th: Q.QAThresholds | None = None
 ) -> dict[str, Any]:
-    """Geometric QA of every director path in ``qa_dir``; writes ``<qa_dir>_paths_qa/qa.json``."""
+    """Geometric QA of every director path in ``qa_dir`` (:func:`paths_thresholds` of
+    ``th``); writes ``<qa_dir>_paths_qa/qa.json``."""
     from cutpoint.config import remap_source  # noqa: PLC0415
     from cutpoint.pano.views import load_views  # noqa: PLC0415
 
     qa_dir = Path(os.path.abspath(qa_dir))  # noqa: PTH100
-    th = th or Q.QAThresholds()
+    th = paths_thresholds(th or Q.QAThresholds())
     items = find_path_inputs(qa_dir)
     if not items:
         raise FileNotFoundError(f"{qa_dir}: no director paths (manifest.json or *.json paths)")

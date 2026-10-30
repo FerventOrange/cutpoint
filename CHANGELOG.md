@@ -161,7 +161,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The 360 director frames other people whole or keeps them out instead of cutting them at the
   frame edge (#11): where one would be cut, it widens the view or shifts its yaw, whichever
-  costs less, keeps that choice over a stretch, also tries plain widening and keeps whichever
+  costs less, keeps people framed whole `include_margin` (0.06) off the sides, keeps that
+  choice over a stretch (one yaw shift held over it where that fixes as
+  much, so the view does not drift after people who barely move), also tries plain widening and keeps whichever
   leaves fewer edge cuts, and cuts away only where none helps and the cut-away removes at
   least `cut_min_gain_s` (1 s) per cut it adds of frames that QA counts as cut or where the
   subject is out of view; a cut-away starts and ends `cut_min_gap_s` (4 s) or more from
@@ -175,6 +177,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. Paths are version 5 and record the span they fixed as `fixed`; `extend`
   reuses a version 4 path only within its moment and plans a longer range anew with a WARNING.
   `360 director` and planned camera paths change, so cached candidate paths are planned again.
+  `360 qa --paths` and the director's check count people at the left / right edge from 0.075
+  of the frame (`edge_side_min_area`, recorded in the paths `qa.json`'s `thresholds`; the
+  rendered QA keeps 0.10), as the detector sees a person cut there about 1.34 times as large,
+  and `360 qa --compare` replays the paths rule with the paths `qa.json`'s thresholds
+  (`edge_gap.json` version 5).
 - `360 qa --compare` adds `size_ratio` per clip and for the edit (#11): the median width and
   height of rendered boxes over the projected boxes they match. The `outside_segment` cause is
   gone: tails are planned and checked like the moment, so their frames get the full cause

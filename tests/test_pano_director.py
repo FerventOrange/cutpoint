@@ -987,7 +987,7 @@ def test_a_stretch_keeps_one_side() -> None:
     a = np.array([[40.0, -10.0, 12.0, 30.0], [-100.0, -10.0, 12.0, 30.0]])  # A split
     b = np.array([[100.0, -10.0, 12.0, 30.0], [-40.0, -10.0, 12.0, 30.0]])  # then B
     ctx["near"] = [a] * 10 + [b] * 10
-    p = D.DirectorParams()
+    p = D.DirectorParams(include_margin=0.03)  # the hold, not the margin
     chk = D._framing_checks(ctx, (0, n), p)
     free = [D._solve_step(ctx, chk, i, p)[1] for i in (0, 19)]
     assert free[0] > 0 > free[1]  # each alone: shifted towards the person, framed whole
@@ -1199,14 +1199,14 @@ def test_the_tighter_margin_retry_avoids_a_cut(monkeypatch: pytest.MonkeyPatch) 
 
     def run() -> dict:
         ctx = safe_ctx(n, 0.0, 86.0)
-        ctx["persons"] = ctx["near"] = [np.array([[45.0, -10.0, 56.0, 60.0, 0.0, 0.9]])] * n
+        ctx["persons"] = ctx["near"] = [np.array([[40.0, -10.0, 64.0, 60.0, 0.0, 0.9]])] * n
         ctx["yaw_score"][:, 27] = 1.0
         D._safe_area_pass(ctx, [(0, n)], (0, n), p)
         return ctx
 
     ctx = run()  # framed whole at the widest view, closer to the side than include_margin
     assert set(ctx["target"]) == {"friend"} and ctx["fov"].max() > 105.0
-    monkeypatch.setattr(D, "INCLUDE_MARGIN_RETRY", p.include_margin)  # no tighter retry
+    monkeypatch.setattr(D, "INCLUDE_MARGIN_RETRY", 1.0)  # no tighter retry
     assert set(run()["target"]) == {"view"}
 
 
@@ -1357,3 +1357,107 @@ def test_include_exclude_cut_away_only_where_it_helps() -> None:
     shots = D._safe_area_pass(ctx, [(0, n)], (0, 20), p, (0, n))
     c0 = shots[1][0]
     assert c0 <= 13 and ctx["target"][c0] == "view"  # >= min_hold_s of it in the segment
+
+
+def calm_scene(monkeypatch: pytest.MonkeyPatch, seed: int, n: int = 60) -> dict:
+    """A still friend and a near person (22 deg tall) just inside the right edge, jittering
+    by about 0.8 deg: the shift that frames it whole changes a little from step to step."""
+    rng = np.random.default_rng(1000 + seed)
+    monkeypatch.setattr(
+        VW,
+        "view_scores",
+        lambda pv: {
+            "group_zs": rng.uniform(0, 1, (n, 9)).astype(np.float32),
+            "beauty": rng.uniform(0, 0.5, (n, 9)).astype(np.float32),
+        },
+    )
+    monkeypatch.setattr(
+        VW,
+        "occlusion_scores",
+        lambda pv: {"occl_zs": np.zeros((n, 8), np.float32), "selfie_ok": np.ones(n, np.float32)},
+        raising=False,
+    )
+    monkeypatch.setattr(VW, "forward_yaw", lambda pv: 0.0)
+    monkeypatch.setattr(D, "_voice_at", lambda src, times: np.full(len(times), 0.0))
+    boxes, y2 = {}, 74.0
+    for f in range(n):
+        y2 = 74.0 + 0.9 * (y2 + rng.normal(0, 0.8) - 74.0)
+        friend = (0.95, 30.0 + rng.normal(0, 0.3), -10.0, 10.0, 28.0, FWD_V)
+        boxes[f] = [friend, (0.9, float(y2), -10.0, 9.0, 22.0, FWD_V)]
+    return boxes
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_a_jittering_near_person_does_not_make_the_view_drift(
+    monkeypatch: pytest.MonkeyPatch, seed: int
+) -> None:
+    n = 60
+    pv = helpers.make_views(calm_scene(monkeypatch, seed, n), "x.lrv", n=n)
+    clip = SimpleNamespace(source="x.lrv", duration=n * 1.2, clip_id="001")
+    path = D.compute_path(
+        clip,
+        n * 0.36,
+        n * 0.84,
+        params=D.DirectorParams(include_margin=0.03),
+        orient=orientation(n=int(n * 1.2 * 30) + 30),
+        pv=pv,
+        margin=10.0,
+    )
+    yaw = np.array([k["yaw"] for k in path["keys"]])
+    assert np.abs(np.diff(yaw)).sum() < 1.0  # held, not following the jitter (8-14 deg before)
+
+
+def test_a_held_shift_that_fixes_fewer_steps_falls_back_to_the_interpolated_shifts() -> None:
+    n = 20
+    rng = np.random.default_rng(34)
+    ctx = safe_ctx(n, 0.0, 86.0)
+    ys = 36 + np.linspace(0, rng.uniform(4, 20), n)  # one person sweeps across the right edge
+    hs = rng.uniform(8, 20)
+    near = []
+    for y in ys:
+        rows = [[y, -10.0, 12.0, hs + rng.uniform(0, 8)]]
+        if rng.random() < 0.7:  # another is cut by the left edge
+            rows.append([-rng.uniform(36, 50), -10.0, 12.0, 30.0])
+        near.append(np.array(rows))
+    ctx["near"] = near
+    p = D.DirectorParams(include_margin=0.03)
+    chk = D._framing_checks(ctx, (0, n), p)
+    assert chk.n_bad(0, n) == (11, 19)
+    assert D._include_exclude(ctx, chk, 0, n, p)
+    assert chk.n_bad(0, n) == (0, 2)  # the one held shift would leave more bad steps
+    assert np.ptp(ctx["yaw"]) > 1.0  # so the shifts still follow the steps
+
+
+@pytest.mark.parametrize("near_yaw", [-44.0, -49.0])
+def test_a_near_person_at_the_left_edge_keeps_the_default_margin(near_yaw: float) -> None:
+    """The detector sees such a person wider than its projected box: with include_margin
+    0.03 the view left it 0.036 off the edge (cut when rendered), the default 0.06 not."""
+    from cutpoint.pano import geometry as G  # noqa: PLC0415
+
+    n = 20
+    near = np.array([[near_yaw, -33.0, 16.0, 22.0, 0.0, 0.9]])
+    ctx = safe_ctx(n, 0.0, 86.0)
+    ctx["pitch"] = np.full(n, -27.0)
+    ctx["subj"] = np.tile([0.0, -36.5, 21.0, 23.6], (n, 1))
+    ctx["near"] = ctx["persons"] = [near] * n
+    assert D.DirectorParams().include_margin == 0.06
+    D._safe_area_pass(ctx, [(0, n)], (0, n), D.DirectorParams())
+    box = G.project_box_visible(
+        float(ctx["yaw"][10]), float(ctx["pitch"][10]), float(ctx["fov"][10]),
+        1920, 1080, near_yaw, -33.0, 16.0, 22.0,
+    )[0]  # fmt: skip
+    assert box[0] >= 0.06
+
+
+def test_the_framing_check_counts_a_side_cut_from_the_paths_floor() -> None:
+    """A person framed whole but touching the left edge with 0.082 of the frame (under the
+    rendered QA's 0.10) is a cut the --paths QA counts (0.075), so the director avoids it.
+    Margin off: only the QA's edge rule decides."""
+    n = 10
+    ctx = safe_ctx(n, 0.0, 86.0)
+    ctx["pitch"] = np.full(n, -27.0)
+    friend = [0.0, -30.0, 30.0, 34.0, 0.0, 0.9]  # the QA's subject: the larger person
+    ctx["subj"] = np.tile(friend[:4], (n, 1))
+    ctx["near"] = ctx["persons"] = [np.array([friend, [-46.4, -33.0, 16.0, 23.0, 0.0, 0.9]])] * n
+    p = D.DirectorParams(include_margin=0.0)
+    assert D._framing_checks(ctx, (0, n), p).bad(0)

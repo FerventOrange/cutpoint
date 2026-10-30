@@ -126,7 +126,9 @@ class DirectorParams:
     edge_rule: str = "include_exclude"
     w_shift: float = 1.0  # cost of a yaw shift, per half view width
     w_widen: float = 0.8  # cost of widening, per the room left up to the widest FOV
-    include_margin: float = 0.03  # a person framed whole keeps this share off the sides
+    # a person framed whole keeps this share off the sides: the detector sees a close person
+    # near the edge 0.03-0.07 of the frame wider than its projected box (#11)
+    include_margin: float = 0.06
     exclude_clear_deg: float = 3.0  # a person kept out stays this far beyond the edge
     include_max_shift: float = 0.35  # yaw shift of at most this share of half the view
     include_min_subject_h: float = 0.19  # widening keeps the subject this tall (or as is)
@@ -663,7 +665,7 @@ REFRAME_SHARE = 0.35  # its reframing shifts the yaw by up to this share of half
 INCLUDE_TRIES = 6  # include / exclude: the cheapest solutions checked per step before the grid
 GRID_TRIES = 12  # ... and the cheapest grid points checked after them
 STICKY_MISS = 10.0  # ... cost of a step a forced side leaves unsolved
-INCLUDE_MARGIN_RETRY = 0.015  # ... the margin of the last try before a cut-away: inside the QA's
+INCLUDE_MARGIN_RETRY = 0.5  # ... the last try before a cut-away: this share of include_margin
 INCLUDE_ROUNDS = 3  # ... rounds per shot while they reduce the bad steps
 
 
@@ -925,7 +927,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         wearer_allowed,
     )
 
-    th = QAThresholds()
+    th = QP.paths_thresholds(QAThresholds())  # the --paths QA's edge floor
     yaw, pitch, fov = ctx["yaw"], ctx["pitch"], ctx["fov"]
     subj, near, size = ctx["subj"], ctx["near"], ctx["size"]
     target = ctx["target"]
@@ -1518,7 +1520,10 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
     changes are held and eased 2 steps beyond, smoothed, limited (:data:`SAFE_SPEED` x
     the yaw limits, ``fov_rate``), capped where the smoothed widening would take a
     subject below its ``include_min_subject_h`` floor, and kept only when they reduce
-    the bad steps."""
+    the bad steps. When the steps' shifts differ, the largest one held over the whole
+    stretch is tried first and kept when it leaves no more bad steps than the
+    interpolated shifts (each step's least shift chases small box changes: a drifting
+    view on calm footage)."""
     yaw, fov, lo = ctx["yaw"], ctx["fov"], ctx["fov_lo"]
     sm = p.smooth_s / p.dt
     gap = p.include_bridge_s / p.dt - 1e-6
@@ -1548,13 +1553,14 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
             return False
         idx = np.array(sorted(sol))
         j = np.arange(max(a, idx[0] - 2), min(b, idx[-1] + 3))
+        shifts = [sol[k][1] for k in idx]
         dy, df = np.zeros(b - a), np.zeros(b - a)
-        dy[j - a] = np.interp(j, idx, [sol[k][1] for k in idx])  # held beyond the ends
+        dy[j - a] = np.interp(j, idx, shifts)  # held beyond the ends
         df[j - a] = np.interp(j, idx, [sol[k][2] for k in idx])
         base_y, base_f = yaw[a:b].copy(), fov[a:b].copy()
         top = _subject_ceiling(ctx, chk, a, b, p)  # smoothing must not shrink a subject
 
-        def apply() -> None:
+        def apply(dy: np.ndarray = dy) -> None:
             f = _limit(base_f + _gauss(df, sm / 2), p.dt, p.fov_rate, 2 * p.fov_rate)
             fov[a:b] = np.clip(f, lo, top)
             yaw[a:b] = _limit(
@@ -1564,6 +1570,16 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
                 SAFE_SPEED * p.max_accel,
             )
 
+        if max(shifts) - min(shifts) > 1e-6:  # one shift held, not chasing each step's least
+            apply()
+            n_interp = chk.n_bad(a, b + 1)
+            yaw[a:b], fov[a:b] = base_y, base_f
+            held = np.zeros(b - a)
+            held[j - a] = max(shifts, key=abs)
+            if _keep_if_better(ctx, chk, a, b, lambda: apply(held)):
+                if chk.n_bad(a, b + 1) <= n_interp:
+                    return True
+                yaw[a:b], fov[a:b] = base_y, base_f
         return _keep_if_better(ctx, chk, a, b, apply)
 
     kept = False
@@ -1799,8 +1815,8 @@ def _safe_area_pass(
     :func:`_include_exclude` (up to :data:`INCLUDE_ROUNDS` rounds while it helps), then
     :func:`_relimit`. Where a stretch longer than :data:`SAFE_MIN_S` with steps the
     geometric QA counts as cut is left, :func:`_include_exclude` runs once more with
-    ``include_margin`` :data:`INCLUDE_MARGIN_RETRY` (people framed whole may come as
-    close to the sides as the QA's ``edge_margin`` allows), and
+    :data:`INCLUDE_MARGIN_RETRY` x ``include_margin`` (people framed whole may come
+    closer to the sides), and
     :func:`_cut_away` takes what is left by that rule.
     """
     fix = span if fix is None else fix
@@ -1825,7 +1841,7 @@ def _safe_area_pass(
         shot_chk = chk
         gain = max(1, round(p.cut_min_gain_s / p.dt))
         if not legacy and chk.runs(a, b) and chk.n_bad(a, b)[0] >= gain:  # a cut-away may come
-            p0 = replace(p, include_margin=min(p.include_margin, INCLUDE_MARGIN_RETRY))
+            p0 = replace(p, include_margin=p.include_margin * INCLUDE_MARGIN_RETRY)
             shot_chk = _framing_checks(ctx, fix, p0)
             _include_exclude(ctx, shot_chk, a, b, p0)
         out += _cut_away(ctx, shot_chk, a, b, span, p)

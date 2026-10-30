@@ -51,16 +51,19 @@ in the spirit of Pano2Vid and AutoCam.
   view or shifts its yaw, whichever costs less: a shift costs `w_shift` per half view width, at
   most `include_max_shift` of it; widening costs `w_widen` for the whole way to the widest view,
   and keeps the subject at least `include_min_subject_h` of the frame tall (or as tall as it
-  was). The view is never narrowed. A person framed whole keeps `include_margin` of the frame
-  off the sides; one kept out stays `exclude_clear_deg` outside it. A stretch keeps one choice
-  (in, or out to the same side), and stretches closer than `include_bridge_s` are fixed as one.
+  was). The view is never narrowed. A person framed whole keeps `include_margin` (0.06) of the
+  frame off the sides, as the detector on the rendered frame sees a close person near the edge
+  0.03-0.07 of the frame wider than its projected box; one kept out stays `exclude_clear_deg` outside it. A stretch keeps one choice
+  (in, or out to the same side) and holds one yaw shift over it where that fixes as much as
+  following each key's own shift (so the view does not drift after people who barely move), and
+  stretches closer than `include_bridge_s` are fixed as one.
   The check is the one `360 qa --paths` makes (the subject and the largest person count at the
-  edge too) at every 0.5 s key and between keys, and a fix is kept only when it lowers the
+  edge too, and people at the side edge from 0.075 of the frame) at every 0.5 s key and between keys, and a fix is kept only when it lowers the
   edge cuts that check counts (then the other bad steps). Plain widening (as far as the
   subject allows) is tried too, and the one that leaves fewer edge cuts is kept; edge cuts
   left after that are widened away where the subject allows. Where no shift or widening
   frames everyone well, it settles for one without an edge cut the check counts, then tries
-  a tighter side margin, and else cuts away: only where that removes at least
+  half that side margin, and else cuts away: only where that removes at least
   `cut_min_gain_s` (1 s) per cut it adds (two inside a shot, one at its end) of edge cuts
   the check counts or of steps where the subject is out of view, never within
   `cut_min_gap_s` (4 s) of another cut (it joins it instead), and to a view without the

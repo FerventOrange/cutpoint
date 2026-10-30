@@ -342,6 +342,56 @@ def test_a_side_sliver_over_edge_min_area_is_counted_even_over_a_self_box() -> N
     assert (got["cause"], got["other_detail"]) == ("other", "unexplained")
 
 
+def test_each_report_replays_its_own_thresholds() -> None:
+    """A projected box of 0.085 at the left edge is below the rendered floor (0.10) but
+    counts with the paths report's side floor (0.075): then nothing explains the cut."""
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    p = fr(0.0, boxes=[[0.0, 0.3, 0.17, 0.8], BIG_INSIDE])
+    assert QC.explain(r, p, TH, None, None, None)["other_detail"] == "paths_below_area"
+    th_paths = QAThresholds(edge_side_min_area=0.075)
+    got = QC.explain(r, p, TH, None, None, None, th_paths)
+    assert got["other_detail"] == "unexplained"
+
+
+def test_a_side_sliver_replays_with_the_paths_floor() -> None:
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    p = fr(0.0, boxes=[BIG_INSIDE], slivers=[[0.0, 0.3, 0.17, 0.8, False]])  # area 0.085
+    assert QC.explain(r, p, TH, None, None, None)["other_detail"] == "paths_below_area"
+    got = QC.explain(r, p, TH, None, None, None, QAThresholds(edge_side_min_area=0.075))
+    assert got["other_detail"] == "unexplained"
+
+
+def test_run_compare_uses_the_paths_reports_thresholds(tmp_path: Path) -> None:
+    d = tmp_path / "c"
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    p = fr(0.0, boxes=[[0.0, 0.3, 0.17, 0.8], BIG_INSIDE])
+    rend = report("rendered", d, [clip("001_a.mp4", [r])])
+    paths = report("paths", d, [clip("001_a.json", [p])])
+    got = {}
+    for name, side in (("old", None), ("new", 0.075)):
+        th = asdict(TH)
+        if side is None:
+            th.pop("edge_side_min_area")  # a report from before the side floor
+        else:
+            th["edge_side_min_area"] = side
+        a, b = _write(tmp_path, d, rend, {**paths, "thresholds": th})
+        QC.run_compare(d, a, b)
+        saved = json.loads((tmp_path / "edge_gap.json").read_text(encoding="utf-8"))
+        got[name] = saved["edit"]["other_detail"]
+        (tmp_path / "edge_gap.json").unlink()
+    assert got["old"] != got["new"]
+
+
+def test_thresholds_of_an_older_report_use_edge_min_area_at_the_sides() -> None:
+    old = {k: v for k, v in asdict(TH).items() if k != "edge_side_min_area"}
+    old["edge_min_area"] = 0.12
+    assert QC.thresholds({"thresholds": old}).edge_side_min_area == 0.12
+    assert (
+        QC.thresholds({"thresholds": {**old, "edge_side_min_area": 0.075}}).edge_side_min_area
+        == 0.075
+    )
+
+
 def test_the_paths_subject_under_size_min_h_beats_below_area() -> None:
     """F2: the only (largest) projected box, 0.15 tall, against a cut box of 0.125 area."""
     r = fr(0.0, ["edge_cut"], [BIG_LEFT])
@@ -445,5 +495,5 @@ def test_size_ratio_of_matched_boxes(tmp_path: Path) -> None:
     assert one["size_ratio"] == {"width": 1.2, "height": 1.2, "pairs": 6}
     assert two["size_ratio"] == {"width": None, "height": None, "pairs": 1}  # too few
     assert saved["edit"]["size_ratio"] == {"width": 1.2, "height": 1.2, "pairs": 7}
-    assert saved["version"] == QC.GAP_VERSION == 4
+    assert saved["version"] == QC.GAP_VERSION == 5
     (tmp_path / "edge_gap.json").unlink()
