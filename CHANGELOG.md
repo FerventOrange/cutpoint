@@ -39,7 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authenticated encrypted recovery journal with its key only in the OS keyring. Whole-host or
   supervisor loss and failed recovery writes can still leave private files; daemon writes cannot
   be atomic with keyring persistence. POSIX directories/files use `0700`/`0600`; Windows replaces
-  inherited grants with verified protected user-only DACLs. HTTPS authenticates the actual local
+  inherited grants with verified protected user-only DACLs and normalizes legitimate token-default
+  ownership to the current user; foreign owners are rejected. HTTPS authenticates the actual local
   listener before credentials or request bodies are sent, closing the port-handoff impersonation
   gap. TLS identity and local client/management keys rotate on each explicit start; configuration
   and these local secrets remain private files. Prompt cloaking and prompt/error logging are disabled.

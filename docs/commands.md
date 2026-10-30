@@ -1422,7 +1422,9 @@ recovered before older keyring data. An interrupted daemon write cannot be made 
 the OS keyring, and removing a file is not secure erasure of filesystem snapshots or backups.
 Use encrypted OS storage, including swap, for protection against whole-host failure or
 offline access. POSIX directories/files use `0700`/`0600`; Windows uses a verified, protected
-current-user-only DACL instead of inherited grants. Unsupported permissions fail closed.
+current-user-only DACL instead of inherited grants. Existing owners must match the current user
+or the current token's default owner; the latter is normalized to the current user and verified.
+Other owners and unsupported permissions fail closed.
 Configuration, the TLS private key, and separate random local client/management tokens remain
 private files under `<CUTPOINT_HOME>/cliproxy/`, including `keys.json`; these are not
 subscription credentials. Prompt cloaking and prompt/error logging are disabled.

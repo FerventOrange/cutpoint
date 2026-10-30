@@ -32,7 +32,15 @@ def _windows_api():
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.ReOpenFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.ReOpenFile.restype = wintypes.HANDLE
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
     kernel32.OpenProcessToken.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -53,8 +61,6 @@ def _windows_api():
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
     kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel32.LocalFree.restype = ctypes.c_void_p
 
     advapi32.GetTokenInformation.argtypes = [
         wintypes.HANDLE,
@@ -64,6 +70,8 @@ def _windows_api():
         ctypes.POINTER(wintypes.DWORD),
     ]
     advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
     advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
     advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
     advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
@@ -110,27 +118,38 @@ def _windows_api():
     return ctypes, wintypes, kernel32, advapi32
 
 
-def _win_user_sid(ctypes, wintypes, kernel32, advapi32) -> str:
+def _win_token_sids(ctypes, wintypes, kernel32, advapi32) -> tuple[str, str]:
     token = wintypes.HANDLE()
     if not kernel32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
         raise _error("cannot inspect current Windows user")
-    token_buffer = ctypes.create_string_buffer(4096)
-    needed = wintypes.DWORD()
-    sid_text = wintypes.LPWSTR()
     try:
-        if not advapi32.GetTokenInformation(
-            token, 1, token_buffer, len(token_buffer), ctypes.byref(needed)
-        ):
-            raise _error("cannot inspect current Windows user")
-        # TOKEN_USER begins with SID_AND_ATTRIBUTES; its first field is the SID pointer.
-        sid = ctypes.cast(token_buffer, ctypes.POINTER(ctypes.c_void_p))[0]
-        if not sid or not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)):
-            raise _error("cannot identify current Windows user")
-        return sid_text.value
+        sid_texts = []
+        for info_class in (1, 4):  # TokenUser and TokenOwner
+            buffer = ctypes.create_string_buffer(4096)
+            needed = wintypes.DWORD()
+            if not advapi32.GetTokenInformation(
+                token, info_class, buffer, len(buffer), ctypes.byref(needed)
+            ):
+                raise _error("cannot inspect current Windows user")
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+            sid_text = wintypes.LPWSTR()
+            if not sid or not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)):
+                raise _error("cannot identify current Windows user")
+            try:
+                sid_texts.append(sid_text.value)
+            finally:
+                kernel32.LocalFree(ctypes.cast(sid_text, ctypes.c_void_p))
+        return sid_texts[0], sid_texts[1]
     finally:
-        if sid_text:
-            kernel32.LocalFree(ctypes.cast(sid_text, ctypes.c_void_p))
         kernel32.CloseHandle(token)
+
+
+def _win_owner_needs_normalization(owner_sid: str, user_sid: str, token_owner_sid: str) -> bool:
+    if owner_sid == user_sid:
+        return False
+    if owner_sid == token_owner_sid:
+        return True
+    raise _error("private Windows path has a different owner")
 
 
 def _win_verify_dacl(
@@ -285,7 +304,7 @@ def _win_open(path: Path, directory: bool):
             raise _error("unsafe private path type")
         if not directory and info.links != 1:
             raise _error("unsafe private file link count")
-        sid = _win_user_sid(ctypes, wintypes, kernel32, advapi32)
+        sid, token_owner_sid = _win_token_sids(ctypes, wintypes, kernel32, advapi32)
         descriptor = ctypes.c_void_p()
         if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
             f"D:P(A;OICI;FA;;;{sid})" if directory else f"D:P(A;;FA;;;{sid})",
@@ -317,12 +336,58 @@ def _win_open(path: Path, directory: bool):
                 if not advapi32.ConvertSidToStringSidW(current_owner, ctypes.byref(owner_string)):
                     raise _error("cannot inspect private Windows owner")
                 try:
-                    if owner_string.value != sid:
-                        raise _error("private Windows path has a different owner")
+                    normalize_owner = _win_owner_needs_normalization(
+                        owner_string.value, sid, token_owner_sid
+                    )
                 finally:
                     kernel32.LocalFree(ctypes.cast(owner_string, ctypes.c_void_p))
             finally:
                 kernel32.LocalFree(sd)
+
+            if normalize_owner:
+                owner_sid = ctypes.c_void_p()
+                if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(owner_sid)):
+                    raise _error("cannot identify current Windows user")
+                try:
+                    owner_handle = kernel32.ReOpenFile(
+                        handle,
+                        0x00020000 | 0x00040000 | 0x00080000 | 0x00000080,
+                        0x1 | 0x2 | 0x4,
+                        0x02000000 | 0x00200000,
+                    )
+                    if owner_handle == wintypes.HANDLE(-1).value:
+                        raise _error("cannot set private Windows owner")
+                    try:
+                        status = advapi32.SetSecurityInfo(
+                            owner_handle, 1, 0x00000001, owner_sid, None, None, None
+                        )
+                        if status:
+                            raise _error("cannot set private Windows owner")
+                    finally:
+                        kernel32.CloseHandle(owner_handle)
+                finally:
+                    kernel32.LocalFree(owner_sid)
+                final_owner = ctypes.c_void_p()
+                sd = ctypes.c_void_p()
+                status = advapi32.GetSecurityInfo(
+                    handle, 1, 1, ctypes.byref(final_owner), None, None, None, ctypes.byref(sd)
+                )
+                if status:
+                    raise _error("cannot verify private Windows owner")
+                try:
+                    final_owner_string = wintypes.LPWSTR()
+                    if not advapi32.ConvertSidToStringSidW(
+                        final_owner, ctypes.byref(final_owner_string)
+                    ):
+                        raise _error("cannot verify private Windows owner")
+                    try:
+                        if final_owner_string.value != sid:
+                            raise _error("private Windows path has a different owner")
+                    finally:
+                        kernel32.LocalFree(ctypes.cast(final_owner_string, ctypes.c_void_p))
+                finally:
+                    kernel32.LocalFree(sd)
+
             status = advapi32.SetSecurityInfo(
                 handle,
                 1,

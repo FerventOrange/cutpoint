@@ -37,6 +37,22 @@ def test_windows_open_distinguishes_missing_credentials_from_denied_access(
         private_files._win_open(tmp_path / "credential.json", False)
 
 
+@pytest.mark.parametrize(
+    ("owner_sid", "expected"),
+    [("user", False), ("token-owner", True)],
+)
+def test_windows_normalizes_only_token_default_owner(owner_sid: str, expected: bool) -> None:
+    """Only the current token's default owner group may be normalized to TokenUser."""
+    assert (
+        private_files._win_owner_needs_normalization(owner_sid, "user", "token-owner") is expected
+    )
+
+
+def test_windows_rejects_foreign_owner_without_takeover() -> None:
+    with pytest.raises(PermissionError, match="different owner"):
+        private_files._win_owner_needs_normalization("foreign", "user", "token-owner")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_posix_directory_and_file_modes_are_private(tmp_path: Path) -> None:
     root = tmp_path / "private"
@@ -74,7 +90,9 @@ def test_posix_rejects_symlinks_and_hardlinks_before_chmod(tmp_path: Path) -> No
         private_directory(directory_link)
 
 
-def _windows_security(path: Path) -> tuple[str, str, list[tuple[str, int, int]]]:
+def _windows_security(
+    path: Path, *, check_protected: bool = True
+) -> tuple[str, str, str, list[tuple[str, int, int]]]:
     import ctypes  # noqa: PLC0415
     from ctypes import wintypes  # noqa: PLC0415
 
@@ -130,20 +148,24 @@ def _windows_security(path: Path) -> tuple[str, str, list[tuple[str, int, int]]]
     kernel.CreateFileW.restype = wintypes.HANDLE
     token = wintypes.HANDLE()
     assert kernel.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token))
+    token_sids = []
     try:
-        buffer = ctypes.create_string_buffer(4096)
-        needed = wintypes.DWORD()
-        assert advapi.GetTokenInformation(token, 1, buffer, len(buffer), ctypes.byref(needed))
-        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
-        current = wintypes.LPWSTR()
-        assert advapi.ConvertSidToStringSidW(sid, ctypes.byref(current))
-        try:
-            current_sid = current.value
-        finally:
-            kernel.LocalFree(ctypes.cast(current, ctypes.c_void_p))
+        for info_class in (1, 4):
+            buffer = ctypes.create_string_buffer(4096)
+            needed = wintypes.DWORD()
+            assert advapi.GetTokenInformation(
+                token, info_class, buffer, len(buffer), ctypes.byref(needed)
+            )
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+            current = wintypes.LPWSTR()
+            assert advapi.ConvertSidToStringSidW(sid, ctypes.byref(current))
+            try:
+                token_sids.append(current.value)
+            finally:
+                kernel.LocalFree(ctypes.cast(current, ctypes.c_void_p))
+        current_sid, token_owner_sid = token_sids
     finally:
         kernel.CloseHandle(token)
-
     handle = kernel.CreateFileW(str(path), 0x00020000, 0x7, None, 3, 0x02000000 | 0x00200000, None)
     assert handle != wintypes.HANDLE(-1).value
     owner, dacl, descriptor = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
@@ -165,7 +187,8 @@ def _windows_security(path: Path) -> tuple[str, str, list[tuple[str, int, int]]]
         assert advapi.GetSecurityDescriptorControl(
             descriptor, ctypes.byref(control), ctypes.byref(revision)
         )
-        assert control.value & 0x1000
+        if check_protected:
+            assert control.value & 0x1000
         owner_text = wintypes.LPWSTR()
         assert advapi.ConvertSidToStringSidW(owner, ctypes.byref(owner_text))
         try:
@@ -189,7 +212,7 @@ def _windows_security(path: Path) -> tuple[str, str, list[tuple[str, int, int]]]
             finally:
                 kernel.LocalFree(ctypes.cast(ace_sid, ctypes.c_void_p))
             offset += ace_size
-        return current_sid, owner_sid, aces
+        return current_sid, token_owner_sid, owner_sid, aces
     finally:
         if descriptor:
             kernel.LocalFree(descriptor)
@@ -199,24 +222,41 @@ def _windows_security(path: Path) -> tuple[str, str, list[tuple[str, int, int]]]
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows ACLs")
 def test_windows_replaces_broad_dacl_and_children_inherit_user_only(tmp_path: Path) -> None:
     root = tmp_path / "private"
+    root.mkdir()
+    original_owner = _windows_security(root, check_protected=False)[2]
     private_directory(root)
-    child = root / "child"
-    child.mkdir()
-    inherited_file = child / "inherited"
-    inherited_file.write_text("synthetic", encoding="utf-8")
-
-    current_sid, owner_sid, directory_aces = _windows_security(root)
+    current_sid, token_owner_sid, owner_sid, directory_aces = _windows_security(root)
+    assert original_owner in {current_sid, token_owner_sid}
     assert owner_sid == current_sid
     assert directory_aces == [(current_sid, 0x03, 0x1F01FF)]
-    _, child_owner, child_aces = _windows_security(child)
+    child = root / "child"
+    child.mkdir()
+    _, token_owner_sid, child_owner, inherited_child_aces = _windows_security(
+        child, check_protected=False
+    )
+    assert child_owner in {current_sid, token_owner_sid}
+    assert len(inherited_child_aces) == 1
+    assert inherited_child_aces[0][0] == current_sid
+    assert inherited_child_aces[0][1] & 0x10
+
+    private_directory(child)
+    _, _, child_owner, child_aces = _windows_security(child)
     assert child_owner == current_sid
-    assert len(child_aces) == 1 and child_aces[0][0] == current_sid
-    assert child_aces[0][1] & 0x10
-    _, _, file_aces = _windows_security(inherited_file)
-    assert len(file_aces) == 1 and file_aces[0][0] == current_sid
-    assert file_aces[0][1] & 0x10
+    assert child_aces == [(current_sid, 0x03, 0x1F01FF)]
+
+    inherited_file = child / "inherited"
+    inherited_file.write_text("synthetic", encoding="utf-8")
+    _, token_owner_sid, inherited_owner, inherited_file_aces = _windows_security(
+        inherited_file, check_protected=False
+    )
+    assert inherited_owner in {current_sid, token_owner_sid}
+    assert len(inherited_file_aces) == 1
+    assert inherited_file_aces[0][0] == current_sid
+    assert inherited_file_aces[0][1] & 0x10
+
     private_file(inherited_file)
-    _, _, protected_file_aces = _windows_security(inherited_file)
+    _, _, protected_file_owner, protected_file_aces = _windows_security(inherited_file)
+    assert protected_file_owner == current_sid
     assert protected_file_aces == [(current_sid, 0, 0x1F01FF)]
 
 

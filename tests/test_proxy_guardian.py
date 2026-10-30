@@ -247,7 +247,6 @@ def test_foreground_hardkill_closes_guardian_pipe_and_finishes_store(
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
     )
     try:
         _wait_for(foreground_exit, parent)
