@@ -32,13 +32,6 @@ def _windows_api():
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
-    kernel32.ReOpenFile.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.DWORD,
-    ]
-    kernel32.ReOpenFile.restype = wintypes.HANDLE
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
     kernel32.LocalFree.restype = ctypes.c_void_p
     kernel32.OpenProcessToken.argtypes = [
@@ -265,9 +258,10 @@ def _win_check_ancestors(path: Path) -> None:
 
 def _win_open(path: Path, directory: bool):
     ctypes, wintypes, kernel32, advapi32 = _windows_api()
+    # WRITE_OWNER keeps normalization on the same object whose type and owner are verified.
     handle = kernel32.CreateFileW(
         str(path),
-        0x00020000 | 0x00040000 | 0x00000080,
+        0x00020000 | 0x00040000 | 0x00080000 | 0x00000080,
         0x1 | 0x2 | 0x4,
         None,
         3,
@@ -349,22 +343,11 @@ def _win_open(path: Path, directory: bool):
                 if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(owner_sid)):
                     raise _error("cannot identify current Windows user")
                 try:
-                    owner_handle = kernel32.ReOpenFile(
-                        handle,
-                        0x00020000 | 0x00040000 | 0x00080000 | 0x00000080,
-                        0x1 | 0x2 | 0x4,
-                        0x02000000 | 0x00200000,
+                    status = advapi32.SetSecurityInfo(
+                        handle, 1, 0x00000001, owner_sid, None, None, None
                     )
-                    if owner_handle == wintypes.HANDLE(-1).value:
+                    if status:
                         raise _error("cannot set private Windows owner")
-                    try:
-                        status = advapi32.SetSecurityInfo(
-                            owner_handle, 1, 0x00000001, owner_sid, None, None, None
-                        )
-                        if status:
-                            raise _error("cannot set private Windows owner")
-                    finally:
-                        kernel32.CloseHandle(owner_handle)
                 finally:
                     kernel32.LocalFree(owner_sid)
                 final_owner = ctypes.c_void_p()
