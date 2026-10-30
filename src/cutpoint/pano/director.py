@@ -475,10 +475,19 @@ def score_grid(
     }
 
 
-def _viterbi(sg: dict[str, Any], p: DirectorParams, start_state: int | None = None) -> np.ndarray:
-    """Best state per step (``n_bins`` = selfie)."""
+def _viterbi(
+    sg: dict[str, Any], p: DirectorParams, start_state: int | None = None, roll: int = 0
+) -> np.ndarray:
+    """Best state per step (``n_bins`` = selfie).
+
+    ``roll``: solved with bin ``k`` at index ``k - roll``, so exact ties break as in that
+    frame (an upright clip: ``n_bins / 2``, the ties of its views' ``-z`` frame)."""
     ys, sf = sg["yaw_score"], sg["selfie"]
     n, nb = ys.shape
+    if roll:
+        ys = np.roll(ys, -roll, 1)
+        if start_state is not None and start_state < nb:
+            start_state = (start_state - roll) % nb
     s = np.concatenate([ys, sf[:, None]], 1)
     ns = nb + 1
     c = sg["centres"]
@@ -500,6 +509,8 @@ def _viterbi(sg: dict[str, Any], p: DirectorParams, start_state: int | None = No
     path[-1] = int(acc.argmax())
     for i in range(n - 1, 0, -1):
         path[i - 1] = back[i, path[i]]
+    if roll:
+        path = np.where(path < nb, (path + roll) % nb, path)
     return path
 
 
@@ -1135,7 +1146,8 @@ def compute_path(
     axis = wearer_axis(pv) if pv is not None else G.WEARER_V
     sg = score_grid(clip, t0, t1, p, pv, orient=orient, vertical=vertical)
     nb = p.n_bins
-    states = _viterbi(sg, p)
+    # upright: ties break as in the views' -z frame (its bin k is bin k + n_bins / 2 here)
+    states = _viterbi(sg, p, roll=nb // 2 if orient.forward_axis == G.axis_name(G.LENS_V) else 0)
     if grid is not None:
         grid.update(sg, states=states.copy())
     times = sg["times"]
@@ -1265,6 +1277,11 @@ def compute_path(
         "seconds_by_target": summary,
         "keys": keys,
     }
+    if orient.forward_axis != G.axis_name(G.FORWARD_V):  # upright clip: its yaw 0 axis
+        from cutpoint.pano.views import DET_FRAME  # noqa: PLC0415
+
+        path["forward_axis"] = orient.forward_axis
+        path["det_frame"] = DET_FRAME  # planned on views sampled in that frame (cli._plan_key)
     if suspects and subject_mode and pv is not None:
         path["vl_suspect"] = [round(float(times[i]), 2) for i in sorted(sus)]
     if pv is not None and len(pv.t):

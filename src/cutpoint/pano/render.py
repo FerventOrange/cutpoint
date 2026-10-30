@@ -146,8 +146,9 @@ def stabilised_r_vw(
 ) -> np.ndarray:
     """``R_VW`` (display -> camera) ``(K, 3, 3)`` for the increasing frame indices ``idx``.
 
-    The display frame (display -> world) has its yaw 0 at the camera heading
-    low-passed over ``heading_smooth_s`` (as the director's frame) and its up
+    The display frame (display -> world) has its yaw 0 at the heading of the
+    clip's forward axis (``orient.fwd``) low-passed over ``heading_smooth_s``
+    (as the director's frame) and its up
     ``level_strength`` of the way from the camera's own up axis (its mean over
     ``idx``, as the world sees it, low-passed over ``tilt_follow_s``, and pulled
     back along its great circle to at most ``max_follow_deg`` from vertical) to
@@ -159,7 +160,7 @@ def stabilised_r_vw(
     hi = min(len(orient.q), int(idx[-1]) + int(3 * sigma) + 2)
     rel = np.clip(idx - lo, 0, hi - lo - 1)
     rw = orient.cam_to_world(np.arange(lo, hi))  # camera -> world
-    fw = rw @ G.FORWARD_V
+    fw = rw @ orient.fwd
     heading = np.unwrap(np.arctan2(fw[:, 0], fw[:, 2]))
     hs = _gauss(heading, sigma)[rel]
     up_w = np.array([0.0, -1.0, 0.0])
@@ -721,11 +722,21 @@ class PanoExporter:
             path = cache.load_json(reuse) or {}
             sel = sel or path.get("selected")
             pl = path.get("planned", {})
+            axis = G.cached_forward_axis(Path(clip.source))  # None: no track cached, no check
+            from cutpoint.pano.views import DET_FRAME  # noqa: PLC0415
+
             if path.get("version", 1) < D.MIN_REUSE_VERSION:
                 logger.warning(
                     "  %s: version %s director path predates the current framing; re-directing",
                     reuse,
                     path.get("version", 1),
+                )
+            elif axis is not None and (
+                path.get("forward_axis", G.axis_name(G.FORWARD_V)) != axis
+                or (axis == G.axis_name(G.LENS_V) and path.get("det_frame") != DET_FRAME)
+            ):
+                logger.warning(
+                    "  %s: planned for another forward axis (upright clip); re-directing", reuse
                 )
             elif pl.get("start", 1e9) <= start + 0.5 and pl.get("end", -1e9) >= end - 0.5:
                 self._check_reused(path, reuse, kind)

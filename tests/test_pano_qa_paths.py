@@ -410,7 +410,7 @@ def _run_director(
     proj = tmp_path / "proj"
     proj.mkdir(exist_ok=True)
     seen: list = []
-    fake_clip = clip or SimpleNamespace(clip_id="001", lrv="x.lrv")
+    fake_clip = clip or SimpleNamespace(clip_id="001", lrv="x.lrv", source="x.lrv")
     monkeypatch.setattr(cli, "_project", lambda arg: proj)
     monkeypatch.setattr(P, "load", lambda project: {"x.lrv": fake_clip})
     monkeypatch.setattr(P, "clip_for", lambda clips, src: fake_clip)
@@ -551,6 +551,29 @@ def test_cmd_director_renumbered_path_taken_over_by_another_segment_is_not_backe
     assert "re-planned" not in caplog.text
 
 
+@pytest.mark.parametrize(("axis", "replanned"), [(None, False), ("-y", False), ("+z", True)])
+def test_cmd_director_replans_a_path_of_another_forward_axis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, axis, replanned
+) -> None:
+    """A path saved without ``forward_axis`` is reused unless the clip is now upright."""
+    out = tmp_path / "proj" / "pano_paths" / "mix"
+    out.mkdir(parents=True)
+    old = {
+        "version": D.PATH_VERSION,
+        "clip": "001",
+        "segment": {"start": 1.0, "end": 4.0},
+        "kind": None,
+        "vertical": False,
+        "params": asdict(D.params_for(None)),
+        "keys": ["kept"],
+    }
+    (out / "001_laugh.json").write_text(json.dumps(old))
+    monkeypatch.setattr(G, "cached_forward_axis", lambda src: axis)
+    _, seen = _run_director(tmp_path, monkeypatch, out_name="mix", force=False)
+    assert bool(seen) is replanned
+    assert (json.loads((out / "001_laugh.json").read_text())["keys"] == ["kept"]) is not replanned
+
+
 def test_cmd_director_preview_without_lrv_renders_from_insv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -564,7 +587,9 @@ def test_cmd_director_preview_without_lrv_renders_from_insv(
         return {"seconds": 0.0}
 
     monkeypatch.setattr(R, "render_segment", fake_render)
-    clip = SimpleNamespace(clip_id="001", lrv=None, insv=["a_00_.insv", "a_10_.insv"])
+    clip = SimpleNamespace(
+        clip_id="001", lrv=None, source="a_00_.insv", insv=["a_00_.insv", "a_10_.insv"]
+    )
     _run_director(tmp_path, monkeypatch, clip=clip, preview=True)
     assert len(srcs) == 1
     assert srcs[0].inputs == ("a_00_.insv", "a_10_.insv")
