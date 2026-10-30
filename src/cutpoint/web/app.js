@@ -4078,8 +4078,10 @@ async function loadRoleModels(role, refresh) {
   status.textContent = 'Loading the model list…';
   let r;
   try {
+    const isCustomVision = !isChat && Boolean(S.visionAi?.custom && choice === (S.visionAi?.provider || 'ollama'));
+    const queryProvider = isCustomVision ? AI_CUSTOM : choice;
     const roleParam = isChat ? 'assistant' : 'vision';
-    r = await api(`/api/assistant/models?provider=${encodeURIComponent(choice)}&role=${roleParam}${refresh ? '&refresh=1' : ''}`);
+    r = await api(`/api/assistant/models?provider=${encodeURIComponent(queryProvider)}&role=${roleParam}${refresh ? '&refresh=1' : ''}`);
   } catch (e) {
     r = { state: 'error', models: [], message: e.message };
   }
@@ -4217,6 +4219,8 @@ function renderLogins() {
       const org = (l.org ?? '').replace(/[^\s@]+@[^\s@]+/g, maskEmail); // an org may be named after the email
       const who = [emailMasked, org].filter(Boolean).join(' · ');
       detailText = who ? `${who}` : 'Subscription active';
+    } else if (l.error) {
+      detailText = l.error;
     } else {
       detailText = 'Not logged in. Log in to use this subscription without an API key.';
     }
@@ -4277,6 +4281,10 @@ function renderLogins() {
 }
 
 async function subLogin(provider) {
+  if (provider === 'antigravity') {
+    const ok = window.confirm('Antigravity sign-in may provision a free-tier project if your account has none. Continue?');
+    if (!ok) return;
+  }
   subNote();
   let r;
   try {
@@ -4422,10 +4430,11 @@ async function loadModelsSettings() {
     st = await api('/api/settings');
   } catch (e) {
     $('#modelsError').textContent = e.message;
-    return;
+    return false;
   }
   fillChatRoleSettings(st.assistant);
   fillVisionRoleSettings(st.vision_assistant, st.vision, st.vision_model, st.vision_consent);
+  return true;
 }
 
 async function saveModels() {
@@ -4514,9 +4523,22 @@ async function saveModels() {
 }
 
 async function openModelsTab() {
+  if (S.modelsTabLoading) return;
   $('#modelsError').textContent = '';
   $('#modelsSaveStatus').textContent = '';
-  await Promise.all([loadModelsSettings(), loadLogins()]);
+
+  if (!S.modelsTabInitialized) {
+    S.modelsTabLoading = true;
+    try {
+      const ok = await loadModelsSettings();
+      if (ok) S.modelsTabInitialized = true;
+      await loadLogins();
+    } finally {
+      S.modelsTabLoading = false;
+    }
+  } else {
+    await loadLogins();
+  }
 }
 
 function bindModelsTab() {

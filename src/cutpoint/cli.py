@@ -16,7 +16,9 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
+import webbrowser
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from importlib.resources import files
@@ -834,30 +836,86 @@ def _cmd_skill_print(a: argparse.Namespace) -> None:
     _write_stdout_bytes(skill.skill_bytes())
 
 
-def _cmd_login(a: argparse.Namespace) -> None:
-    from cutpoint.assistant import grants, oauth  # noqa: PLC0415
+def _cmd_proxy(a: argparse.Namespace) -> None:
+    from cutpoint.assistant import cliproxy  # noqa: PLC0415
 
-    # shortcut: the paste prompt only exists on a terminal; a headless run waits for the redirect
-    paste = (
-        (lambda: input("Paste the redirect URL or code (or wait for the browser): "))
-        if (sys.stdin.isatty())
-        else None
-    )
-    grant = oauth.login(
-        a.provider,
-        notify=lambda url: logger.info("open this URL to log in: %s", url),
-        open_browser=not a.no_browser,
-        paste=paste,
-    )
-    who = f" as {grant.email}" if grant.email else ""
-    logger.info("logged in to %s%s", grants.TITLES[a.provider], who)
+    try:
+        cliproxy.run(port=a.port)
+    except cliproxy.ProxyError as err:
+        logger.error("proxy failed: %s", err)
+        sys.exit(1)
+
+
+def _cmd_login(a: argparse.Namespace) -> None:
+    from cutpoint.assistant import cliproxy  # noqa: PLC0415
+
+    if a.provider == "antigravity":
+        try:
+            ans = (
+                input(
+                    "Antigravity sign-in may provision a free-tier project if your account has none. Continue? [y/N]: "
+                )
+                .strip()
+                .lower()
+            )
+        except (EOFError, KeyboardInterrupt):
+            ans = "n"
+        if ans not in ("y", "yes"):
+            logger.info("login aborted")
+            sys.exit(1)
+
+    try:
+        res = cliproxy.start_login(a.provider)
+    except cliproxy.ProxyError as err:
+        logger.error("could not start login for %s: %s", a.provider, err)
+        sys.exit(1)
+
+    url = res.get("url")
+    state = res.get("state")
+    if not url or not state:
+        logger.error("invalid login response from proxy for %s", a.provider)
+        sys.exit(1)
+
+    logger.info("open this URL to log in: %s", url)
+    success = False
+    try:
+        if not a.no_browser:
+            with contextlib.suppress(Exception):
+                webbrowser.open(url)
+
+        deadline = time.monotonic() + 300.0
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            poll = cliproxy.poll_login(state)
+            p_state = poll.get("state")
+            if p_state == "done":
+                st = cliproxy.status(a.provider)
+                who = f" as {st.get('email')}" if st.get("email") else ""
+                logger.info("logged in to %s%s", cliproxy.TITLES.get(a.provider, a.provider), who)
+                success = True
+                return
+            if p_state == "error":
+                logger.error("login failed: %s", poll.get("error") or "unknown error")
+                sys.exit(1)
+        logger.error("login timed out")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    finally:
+        if not success:
+            with contextlib.suppress(Exception):
+                cliproxy.cancel_login(state)
 
 
 def _cmd_logout(a: argparse.Namespace) -> None:
-    from cutpoint.assistant import grants  # noqa: PLC0415
+    from cutpoint.assistant import cliproxy  # noqa: PLC0415
 
-    grants.clear(a.provider)
-    logger.info("logged out of %s", grants.TITLES[a.provider])
+    try:
+        cliproxy.logout(a.provider)
+    except cliproxy.ProxyError as err:
+        logger.error("logout failed: %s", err)
+        sys.exit(1)
+    logger.info("logged out of %s", cliproxy.TITLES.get(a.provider, a.provider))
 
 
 def _port(text: str) -> int:
@@ -1661,20 +1719,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sks.add_parser("print", help="print the skill (SKILL.md) to stdout")
     sp.set_defaults(func=_cmd_skill_print)
 
-    from cutpoint.assistant import grants as login_grants  # noqa: PLC0415
+    from cutpoint.assistant import cliproxy as login_cliproxy  # noqa: PLC0415
+
+    pr = sub.add_parser(
+        "proxy",
+        help="run the authenticated CLIProxyAPI daemon in the foreground for subscription logins",
+    )
+    pr.add_argument(
+        "--port",
+        type=_port,
+        default=None,
+        help="port on 127.0.0.1 (default: 8317 or CUTPOINT_CLIPROXY_PORT)",
+    )
+    pr.set_defaults(func=_cmd_proxy)
 
     lg = sub.add_parser(
         "login",
-        help="log in to a subscription (Claude Code, Codex, Antigravity) in the browser; "
-        "the login is kept in the system keyring, never in config.json",
+        help="log in to a subscription (Claude Code, Codex, Antigravity) in the browser via CLIProxyAPI",
     )
-    lg.add_argument("provider", choices=login_grants.PROVIDERS)
+    lg.add_argument("provider", choices=login_cliproxy.PROVIDERS)
     lg.add_argument(
         "--no-browser", action="store_true", help="only print the URL; do not open a browser"
     )
     lg.set_defaults(func=_cmd_login)
-    lo = sub.add_parser("logout", help="remove a subscription login from the system keyring")
-    lo.add_argument("provider", choices=login_grants.PROVIDERS)
+    lo = sub.add_parser("logout", help="remove a subscription login from CLIProxyAPI")
+    lo.add_argument("provider", choices=login_cliproxy.PROVIDERS)
     lo.set_defaults(func=_cmd_logout)
 
     ui = sub.add_parser(

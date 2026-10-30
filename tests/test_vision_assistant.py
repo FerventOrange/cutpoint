@@ -10,7 +10,7 @@ import pytest
 
 from conftest import set_config
 from cutpoint import vision
-from cutpoint.assistant import oauth, providers
+from cutpoint.assistant import providers
 from cutpoint.assistant.providers import Reply
 from cutpoint.pano import vlcheck
 
@@ -94,15 +94,11 @@ def test_image_parts_reach_each_wire_format() -> None:
         "type": "image",
         "source": {"type": "base64", "media_type": "image/jpeg", "data": B64},
     }
-    codex = providers.CodexProvider("", "m", 8192)
-    items = codex._responses_payload(msgs, None, None)["input"]
-    assert items[0]["content"] == [
-        {"type": "input_text", "text": "hi"},
-        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{B64}"},
-    ]
-    # Antigravity wire parts
-    gemini_parts = providers._gemini_parts([part])
-    assert gemini_parts == [{"inlineData": {"mimeType": "image/jpeg", "data": B64}}]
+    formatted = providers._format_openai_message(msgs[0])
+    assert formatted["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/jpeg;base64,{B64}"},
+    }
 
 
 def test_a_bad_backend_is_a_config_error(home) -> None:
@@ -175,12 +171,12 @@ def test_offline_refresh_skips_vision_instead_of_raising(home, monkeypatch) -> N
         },
     )
 
-    codex = providers.CodexProvider("", "gpt-x", 0)
-
-    def _broken_token():
-        raise oauth.OAuthError("network unreachable")
-
-    monkeypatch.setattr(codex, "_token", _broken_token)
+    codex = providers.SubscriptionProvider("codex", "", "gpt-x", 0)
+    monkeypatch.setattr(
+        providers.cliproxy,
+        "status",
+        lambda _name: {"logged_in": False, "error": "network unreachable"},
+    )
     monkeypatch.setattr(providers, "make", lambda _cfg: codex)
 
     ast_vis = vision.AssistantVision()

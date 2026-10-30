@@ -66,6 +66,25 @@ def test_each_hosted_preset_is_its_provider_at_its_official_url(home, name, cls,
     assert providers.is_preset(name, "") and providers.is_preset(name, url)
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "expected_host"),
+    [
+        ("claude-code", "api.anthropic.com"),
+        ("codex", "chatgpt.com"),
+        ("antigravity", "daily-cloudcode-pa.googleapis.com"),
+    ],
+)
+def test_constructing_subscription_providers_from_settings(
+    home, provider_id, expected_host
+) -> None:
+    p = providers.make(AssistantSettings(provider=provider_id))
+    assert isinstance(p, providers.SubscriptionProvider)
+    assert p.name == provider_id
+    assert p.host == expected_host
+    assert p.local is False
+    assert providers.consent_key(p) == f"{provider_id}@{expected_host}"
+
+
 def test_the_none_preset_is_the_configured_ollama(home, monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11999")
     p = providers.make(AssistantSettings("ollama", "llama3"))
@@ -260,14 +279,14 @@ def test_each_preset_round_trips_through_settings(
 def test_settings_offer_the_presets_with_their_model_fields(client: TestClient) -> None:
     got = client.get("/api/settings").json()["assistant"]
     offers = {p["name"]: p for p in got["providers"]}
-    assert [p["title"] for p in got["providers"]] == [
-        "None (local Ollama)",
-        "Anthropic API",
-        "OpenAI API",
-        "Grok (xAI)",
-        "Claude Code subscription",
-        "Codex subscription",
-        "Antigravity",
+    assert [p["name"] for p in got["providers"]] == [
+        "ollama",
+        "anthropic",
+        "openai",
+        "xai",
+        "claude-code",
+        "codex",
+        "antigravity",
     ]
     assert offers["ollama"]["placeholder"] == "qwen3.5:9b" and not offers["ollama"]["key_env"]
     assert offers["anthropic"]["placeholder"] == "claude-sonnet-5-5"

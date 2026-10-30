@@ -60,17 +60,18 @@ documents every key.
 
 ``vision_backend``
     ``ollama`` (default) or ``assistant``: ``assistant`` sends the frames of ``--vision`` and
-    ``360 director --vl-check`` to the subscription ``assistant.provider`` (``claude-code`` or
-    ``codex``) once ``assistant.consent`` lists it, instead of Ollama. When a ``vision_assistant``
-    section is present, that section sets the vision role directly and takes precedence.
+    ``360 director --vl-check`` to the subscription ``assistant.provider`` (``claude-code``,
+    ``codex`` or ``antigravity``) via ``cutpoint proxy`` once ``assistant.consent`` lists it,
+    instead of Ollama. When a ``vision_assistant`` section is present, that section sets the vision
+    role directly and takes precedence.
 
 ``vision_assistant``
     The model that rates frames, set in the Models tab independently of the chat model:
     ``provider`` (``ollama``, ``claude-code``, ``codex`` or ``antigravity``), ``model``,
     ``url`` (empty for official hosts; custom URLs are rejected for subscription providers)
-    and ``consent``. Frames go to a hosted subscription provider only after "Allow vision
-    requests" in the Models tab grants permission.
-
+    and ``consent``. Subscription providers route requests through the local ``cutpoint proxy``
+    daemon. Frames go to a hosted subscription provider only after "Allow vision requests"
+    in the Models tab grants permission.
 ``compress_peaks``
     ``off`` (default), ``light`` or ``strong``: peak compression and clip leveling of
     ``cutpoint clips``, ``assemble`` and ``edit`` when ``--compress-peaks`` is not given
@@ -94,17 +95,19 @@ documents every key.
 ``assistant``
     The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default; ``anthropic`` for
     Claude; ``openai`` for OpenAI or a server that speaks its API; ``xai`` for Grok; or a
-    subscription login: ``claude-code``, ``codex``, ``antigravity``), ``model`` (default: the
-    first pulled of Ollama ``qwen3.5:9b``, the vision model ``CUTPOINT_VISION_MODEL`` and
-    ``qwen3-vl:8b``, else ``qwen3.5:9b``; Anthropic ``claude-sonnet-5-5``; OpenAI-compatible
-    and xAI: the server's only model), ``url`` (the base URL; default, which the Models tab's
+    subscription provider routed via ``cutpoint proxy``: ``claude-code``, ``codex``,
+    ``antigravity``), ``model`` (default: the first pulled of Ollama ``qwen3.5:9b``, the vision
+    model ``CUTPOINT_VISION_MODEL`` and ``qwen3-vl:8b``, else ``qwen3.5:9b``; Anthropic
+    ``claude-sonnet-5-5``; OpenAI-compatible and xAI: the server's only model; subscription: models
+    advertised by ``cutpoint proxy``), ``url`` (the base URL; default, which the Models tab's
     presets use: the Ollama URL above, ``https://api.anthropic.com``,
     ``https://api.openai.com/v1`` or ``https://api.x.ai/v1``; custom URLs are rejected for
     subscription providers; another one is shown as custom), ``context_tokens`` (the model's
     context size; default 8192 on this machine, 32768 hosted) and ``consent``
     (``<provider>@<host>`` of the hosted providers the user agreed to send project text to).
-    API keys are never read from or written to this file (see :mod:`cutpoint.assistant.keys`).
-
+    Direct API keys are kept in the OS keyring and never read from or written to this file
+    (see :mod:`cutpoint.assistant.keys`); subscription credentials and tokens are stored in private
+    files in ``CUTPOINT_HOME/cliproxy`` by the ``cutpoint proxy`` daemon.
 The analysis cache key is canonicalised through the same table (a remapped
 path is keyed as its original), so a remapped source with the same size and
 mtime keeps its cache.

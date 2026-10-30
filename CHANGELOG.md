@@ -12,19 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, any of Ollama, `claude-code`, `codex`, `antigravity`), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant and
-  Subscriptions parts of Settings. After a login it lists each account's own models: Claude Code
-  (`/v1/models`), Codex (`/codex/models`, defaulting to `gpt-5.6-sol`) and Antigravity
-  (`fetchAvailableModels`, discovering account entitlements); asking for a subscription's list sends
-  no project data. Providers are named by how they sign in: Anthropic API and OpenAI API (API key) are
-  separate from Claude Code subscription and Codex subscription (login). Save models sits at the bottom
-  of model selection under the Vision role, directly above Connected accounts (which lists login status
-  without model counts). Vision frames go to a subscription provider only after "Allow vision requests"
-  in the tab (`vision_assistant.consent`; custom URLs are rejected for subscription providers). Without
-  a `vision_assistant` section, `vision_backend` behaves as before.
-- `cutpoint login` and `cutpoint logout` for Claude Code, Codex and Antigravity subscriptions, and
-  a Connected accounts section in the Models tab. The login is kept in the system keyring, never in
-  `config.json`. `claude-code`, `codex` and `antigravity` are assistant providers that use it
-  instead of an API key.
+  Subscriptions parts of Settings. With `cutpoint proxy` running, it lists models advertised by the
+  proxy for each account: Claude Code (`/v1/models`), Codex (`/codex/models`, defaulting to
+  `gpt-5.6-sol`) and Antigravity (`fetchAvailableModels`, discovering account entitlements); asking
+  for a subscription's list sends no project data. Providers are named by how they sign in: Anthropic
+  API and OpenAI API (API key) are separate from Claude Code subscription and Codex subscription (login).
+  Save models sits at the bottom of model selection under the Vision role, directly above Connected
+  accounts (which lists login status without model counts). Vision frames go to a subscription provider
+  only after "Allow vision requests" in the tab (`vision_assistant.consent`; custom URLs are rejected
+  for subscription providers). Without a `vision_assistant` section, `vision_backend` behaves as before.
+- `cutpoint proxy` command runs the authenticated CLIProxyAPI daemon in the foreground for Claude
+  Code, Codex and Antigravity subscriptions. First run lazily downloads the checksum-verified ~24 MB
+  binary (pinned 8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on loopback `127.0.0.1:8317`
+  (customizable with `--port` or `CUTPOINT_CLIPROXY_PORT`, binary with `CUTPOINT_CLIPROXY_BINARY`).
+  Auth tokens and config are stored in private files under `<CUTPOINT_HOME>/cliproxy/` (`0700` dir,
+  `0600` files; auth records in `auths/` stored in plaintext on disk protected by file permissions),
+  not in the system keyring or `config.json`. Direct API keys continue to use the system keyring.
+  Existing keyring grants are not migrated automatically; fresh login is required. Prompt cloaking
+  is disabled and commercial mode is enforced with prompt and error logging disabled. Separate client
+  and management tokens are generated once and persisted in `keys.json`.
+- `cutpoint login` and `cutpoint logout` for Claude Code, Codex and Antigravity subscriptions via
+  `cutpoint proxy` browser-callback flows, and a Connected accounts section in the Models tab.
+  `claude-code`, `codex` and `antigravity` are assistant providers that route through the proxy daemon
+  instead of direct API keys.
 - `vision_backend` in `config.json` (`ollama`, the default, or `assistant`): with `assistant`, the
   frames of `analyze --vision`, `edit --vision` and `360 director --vl-check` go to the
   `claude-code` or `codex` subscription login (`assistant.provider`) instead of Ollama, only
@@ -263,6 +273,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Subscription proxy startup no longer inherits a caller's `.env` or CLIProxyAPI remote-store/Home
+  deployment overrides that could replace its private configuration or credential destination.
+  Inherited `MANAGEMENT_PASSWORD` cannot enable an alternate management key. The daemon runs from
+  a private directory and refuses an unexpected `.env` there.
+- Temporary subscription errors and rate-limit cooldowns no longer appear as logout or prevent
+  requests from reaching the proxy. Enabled, nonexpired credentials remain connected.
+- Failed CLI login polling now cancels pending OAuth authorization on every unsuccessful exit,
+  best-effort if the daemon is unreachable; successful logins are left intact.
+- The Models tab keeps unsaved selections and API-key drafts across tab switches, retries failed
+  initial settings loads, and fetches custom Vision Ollama catalogs from the configured server.
+- On macOS a pipe guardian terminates and reaps the subscription daemon when its Python parent
+  exits or is killed, including escalation if the child ignores termination.
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,

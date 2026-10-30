@@ -695,9 +695,8 @@ def test_subscription_host_pin_rejects_custom_url(client: TestClient) -> None:
     assert res.status_code == 400
     assert "url cannot be customized" in res.json()["detail"]
 
-    p = providers.ClaudeCodeProvider("https://evil.example.com", "claude-3-5-sonnet", 0)
-    with pytest.raises(providers.ProviderError, match=r"host 'evil\.example\.com' is not allowed"):
-        p._send("GET", "https://evil.example.com/models", None, 5.0)
+    with pytest.raises(providers.ProviderError, match="does not accept a custom base URL"):
+        providers.SubscriptionProvider("claude-code", url="https://evil.example.com")
 
 
 def test_legacy_consent_seed_preserves_vision_provider(client: TestClient, home: Path) -> None:

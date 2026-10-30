@@ -8348,26 +8348,67 @@ def test_export_state_shows_the_color_note_from_the_manifest(
 
 @pytest.fixture
 def logins(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """A fake keyring grant store and OAuth login: no network, no keyring."""
-    grant = ui.ai_grants.Grant(
-        "codex", "ACCESS-SECRET-1234", "REFRESH-SECRET-1234", 4_000_000_000_000, email="a@b.c"
+    """A fake CLIProxyAPI and login state: no network, no daemon."""
+    fake = SimpleNamespace(
+        stored={},
+        release=threading.Event(),
+        fail="",
+        cleared=[],
     )
-    fake = SimpleNamespace(stored={}, release=threading.Event(), fail="", cleared=[])
 
-    def login(provider: str, *, notify, open_browser: bool, **_: object) -> object:
-        assert open_browser is False  # the page opens the URL itself
-        notify(f"https://auth.example/authorize?p={provider}")
-        fake.release.wait(10)
+    def start_login(provider: str) -> dict:
+        return {
+            "url": f"https://auth.example/authorize?p={provider}",
+            "state": f"state_{provider}",
+        }
+
+    def poll_login(state: str) -> dict:
+        if not fake.release.is_set():
+            return {"state": "pending", "error": None}
         if fail := fake.fail:
-            raise ui.ai_oauth.OAuthError(fail)
-        fake.stored[provider] = grant
-        return grant
+            return {"state": "error", "error": fail}
+        provider = state.split("_", 1)[1] if "_" in state else "codex"
+        fake.stored[provider] = {
+            "provider": provider,
+            "logged_in": True,
+            "email": "a@b.c",
+            "org": "corp",
+            "expired": False,
+            "expires_ms": None,
+            "error": None,
+        }
+        return {"state": "done", "error": None}
 
-    monkeypatch.setattr(ui.ai_oauth, "login", login)
-    monkeypatch.setattr(ui.ai_grants, "load", lambda p: fake.stored.get(p))
-    monkeypatch.setattr(
-        ui.ai_grants, "clear", lambda p: (fake.stored.pop(p, None), fake.cleared.append(p))
-    )
+    def status(provider: str) -> dict:
+        return fake.stored.get(
+            provider,
+            {
+                "provider": provider,
+                "logged_in": False,
+                "email": None,
+                "org": None,
+                "expired": False,
+                "expires_ms": None,
+                "error": None,
+            },
+        )
+
+    def statuses() -> list[dict]:
+        return [status(p) for p in ui.cliproxy.PROVIDERS]
+
+    def logout(provider: str) -> None:
+        fake.stored.pop(provider, None)
+        fake.cleared.append(provider)
+
+    def cancel_login(state: str) -> None:
+        fake.cancelled = [*getattr(fake, "cancelled", []), state]
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+    monkeypatch.setattr(ui.cliproxy, "poll_login", poll_login)
+    monkeypatch.setattr(ui.cliproxy, "status", status)
+    monkeypatch.setattr(ui.cliproxy, "statuses", statuses)
+    monkeypatch.setattr(ui.cliproxy, "logout", logout)
+    monkeypatch.setattr(ui.cliproxy, "cancel_login", cancel_login)
     return fake
 
 

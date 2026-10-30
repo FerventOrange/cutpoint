@@ -31,13 +31,11 @@ object except in its request headers.
 
 from __future__ import annotations
 
-import contextlib
 import ipaddress
 import json
 import re
 import threading
 import time
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -47,7 +45,7 @@ import requests
 from urllib3.exceptions import LocationParseError
 from urllib3.util import parse_url
 
-from cutpoint.assistant import grants, keys, oauth
+from cutpoint.assistant import cliproxy, keys
 from cutpoint.backends import ollama_url
 from cutpoint.config import AssistantSettings, assistant_settings
 from cutpoint.vision import default_model as vision_model
@@ -620,7 +618,6 @@ class _HttpProvider:
         url: str,
         payload: dict[str, Any] | None,
         timeout: float,
-        stream: bool = False,
     ) -> requests.Response:
         """One request. A key is never sent in clear text to another machine."""
         if self._key and not self.local and urlsplit(url).scheme.lower() != "https":
@@ -637,7 +634,6 @@ class _HttpProvider:
                 headers=self._headers(),
                 timeout=(CONNECT_TIMEOUT_S, timeout),
                 allow_redirects=False,
-                stream=stream,
             )
         except requests.Timeout as err:
             raise ProviderError(f"{self.title} did not answer within {timeout:g} s") from err
@@ -1005,12 +1001,6 @@ class AnthropicProvider(_HttpProvider):
             after = last if isinstance(last, str) and last else rows[-1]["id"]
         return out
 
-    def _messages_url(self) -> str:
-        return f"{self.url}/v1/messages"
-
-    def _system(self, text: str) -> Any:
-        return text
-
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -1026,9 +1016,8 @@ class AnthropicProvider(_HttpProvider):
             "max_tokens": MAX_TOKENS,
             "messages": wire,
         }
-        system_payload = self._system(system)
-        if system_payload:
-            payload["system"] = system_payload
+        if system:
+            payload["system"] = system
         if tools:
             payload["tools"] = [
                 {
@@ -1040,7 +1029,7 @@ class AnthropicProvider(_HttpProvider):
                 if isinstance(fn := t.get("function"), dict)
             ]
         self._stop(cancelled)
-        resp = self._send("POST", self._messages_url(), payload, self.timeout)
+        resp = self._send("POST", f"{self.url}/v1/messages", payload, self.timeout)
         self._stop(cancelled)
         if resp.status_code >= 400:
             raise self._fail(resp)
@@ -1130,220 +1119,136 @@ def _ollama(settings: AssistantSettings) -> Provider:
 
 
 CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
-CLAUDE_CODE_BETA = "oauth-2025-04-20"
-CODEX_URL = "https://chatgpt.com/backend-api/codex"
-CODEX_CLIENT_VERSION = "0.162.1"
 DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 DEFAULT_ANTIGRAVITY_MODEL = "gemini-3.1-pro"
-
-
+DEFAULT_SUBSCRIPTION_MODELS: dict[str, str] = {
+    "claude-code": DEFAULT_ANTHROPIC_MODEL,
+    "codex": DEFAULT_CODEX_MODEL,
+    "antigravity": DEFAULT_ANTIGRAVITY_MODEL,
+}
+SUBSCRIPTION_PROVIDERS = ("claude-code", "codex", "antigravity")
 SUBSCRIPTION_HOSTS = {
     "claude-code": "api.anthropic.com",
     "codex": "chatgpt.com",
+    "antigravity": "daily-cloudcode-pa.googleapis.com",
 }
+
+
+def is_subscription(name: str | Provider) -> bool:
+    if not isinstance(name, str):
+        name = getattr(name, "name", "")
+    return name in SUBSCRIPTION_PROVIDERS
 
 
 def is_subscription_official(provider: str, host: str) -> bool:
     h = (host or "").lower()
     if provider == "antigravity":
-        return h == "googleapis.com" or h.endswith(".googleapis.com")
+        return h == "daily-cloudcode-pa.googleapis.com" or h.endswith(".googleapis.com")
     return SUBSCRIPTION_HOSTS.get(provider) == h
 
 
-class _Subscription:
-    """What the subscription providers share: the login grant (``cutpoint login NAME``) is the
-    bearer token, not an API key."""
+def _format_openai_message(m: dict[str, Any]) -> dict[str, Any]:
+    msg = dict(m)
+    role = msg.get("role")
+    if role == "model":
+        role = "assistant"
+        msg["role"] = "assistant"
+    content = msg.get("content")
+    if isinstance(content, list):
+        converted_parts: list[dict[str, Any]] = []
+        for p in content:
+            if not isinstance(p, dict):
+                continue
+            ptype = p.get("type")
+            if ptype == "text":
+                converted_parts.append({"type": "text", "text": str(p.get("text") or "")})
+            elif ptype == "image":
+                media_type = p.get("media_type") or "image/jpeg"
+                data = p.get("data") or ""
+                converted_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{data}"},
+                    }
+                )
+            else:
+                converted_parts.append(p)
+        msg["content"] = converted_parts
+    return msg
 
-    name = ""
 
-    def _token(self) -> str:
-        try:
-            return grants.access_token(self.name)
-        except (grants.GrantExpiredError, oauth.OAuthError, keys.KeyringError) as err:
-            raise ProviderError(str(err)) from err
+class SubscriptionProvider(OpenAIProvider):
+    """A subscription provider (Claude Code, ChatGPT Codex, or Google Antigravity)
+    routed through the external CLIProxyAPI daemon over loopback.
+    """
 
-    def _need_key(self) -> None:
-        grant = grants.load(self.name)
-        if grant is None:
-            with contextlib.suppress(Exception):
-                if grants.access_token(self.name):
-                    return
-            raise ProviderError(f"{self.title}: run cutpoint login {self.name} first")
-        end = grants.deadline_ms(grant)
-        now_ms = time.time() * 1000
-        if end is not None and now_ms >= end:
-            raise ProviderError(
-                f"{self.title} login expired (30-day limit); run cutpoint login {self.name} again"
-            )
-        expires_ms = getattr(grant, "expires_ms", None)
-        if expires_ms is not None and now_ms >= expires_ms and not getattr(grant, "refresh", ""):
-            raise ProviderError(
-                f"{self.title} login expired and has no refresh token; run cutpoint login {self.name} again"
-            )
-
-    def _send(
+    def __init__(
         self,
-        method: str,
-        url: str,
-        payload: dict[str, Any] | None,
-        timeout: float,
-        stream: bool = False,
-    ) -> requests.Response:
-        dest_host = host_of(url)
-        if not is_subscription_official(self.name, dest_host):
-            raise ProviderError(
-                f"{self.title}: host {dest_host!r} is not allowed for {self.name} subscription"
+        provider: str,
+        url: str = "",
+        model: str = "",
+        context_tokens: int = 0,
+    ) -> None:
+        self.name = provider
+        if url and url.strip():
+            raise AmbiguousURLError(
+                f"{TITLES.get(provider, provider)} does not accept a custom base URL; CLIProxyAPI handles routing"
             )
-        if urlsplit(url).scheme.lower() != "https":
-            raise ProviderError(f"{self.title}: use an https:// base URL to send the login token")
-        return super()._send(method, url, payload, timeout, stream)
-
-    def _fail(self, resp: requests.Response, why: str | None = None) -> ProviderError:
-        if resp.status_code in (401, 403):
-            return ProviderError(
-                f"{self.title} refused the login ({resp.status_code}); "
-                f"run cutpoint login {self.name} again"
-            )
-        return super()._fail(resp, why)
-
-
-class ClaudeCodeProvider(_Subscription, AnthropicProvider):
-    """Claude on a Claude subscription: Messages at ``api.anthropic.com`` with the login's bearer
-    token and the Claude Code identity as the first system block."""
-
-    name = "claude-code"
-
-    def __init__(self, url: str, model: str, context_tokens: int) -> None:
-        super().__init__(url, model, context_tokens, None)
+        super().__init__(OPENAI_URL, model, context_tokens, key=None)
+        self.host = SUBSCRIPTION_HOSTS.get(provider, "hosted")
+        self.local = False
 
     @property
     def title(self) -> str:
-        return "Claude Code subscription"
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._token()}",
-            "anthropic-version": ANTHROPIC_VERSION,
-            "anthropic-beta": CLAUDE_CODE_BETA,
-        }
-
-    def _messages_url(self) -> str:
-        return f"{self.url}/v1/messages?beta=true"
-
-    def _system(self, text: str) -> list[dict[str, str]]:
-        blocks = [{"type": "text", "text": CLAUDE_CODE_IDENTITY}]
-        if text:
-            blocks.append({"type": "text", "text": text})
-        return blocks
-
-    def capabilities(self) -> Capabilities:
-        self._token()
-        return Capabilities(tool_calls=True, json_schema=False)
-
-
-class CodexProvider(_Subscription, OpenAIProvider):
-    """ChatGPT's Codex backend on a ChatGPT subscription: Responses, streamed (the backend takes
-    no other form), with the login's bearer token and account id."""
-
-    name = "codex"
-    default_url = CODEX_URL
-
-    def __init__(self, url: str, model: str, context_tokens: int) -> None:
-        super().__init__(url, model, context_tokens, None)
-        self._session = str(uuid.uuid4())
-
-    @property
-    def title(self) -> str:
-        return "Codex subscription"
+        return TITLES.get(self.name, self.name)
 
     @property
     def model(self) -> str:
-        return self._model or DEFAULT_CODEX_MODEL
+        return self._model or DEFAULT_SUBSCRIPTION_MODELS.get(self.name, "")
 
     @property
     def responses(self) -> bool:
-        return True
+        return False
+
+    @property
+    def has_key(self) -> bool:
+        st = cliproxy.status(self.name)
+        return bool(st.get("logged_in"))
+
+    def status(self) -> dict[str, Any]:
+        return cliproxy.status(self.name)
+
+    def _need_key(self) -> None:
+        st = cliproxy.status(self.name)
+        if not st.get("logged_in"):
+            err = st.get("error") or f"{self.title}: run cutpoint login {self.name} first"
+            raise ProviderError(err)
 
     def resolve_model(self) -> str:
-        return self.model
+        if not self._model:
+            models = self.list_models()
+            if not models:
+                raise ProviderError(f"{self.title}: no models available from proxy")
+            available = [m["id"] for m in models]
+            def_model = DEFAULT_SUBSCRIPTION_MODELS.get(self.name, "")
+            if def_model and def_model in available:
+                self._model = def_model
+            elif self.name == "antigravity":
+                self._model = next((m for m in available if m.startswith("gemini-")), available[0])
+            else:
+                self._model = available[0]
+        return self._model
 
     def list_models(self) -> list[dict[str, str]]:
         self._need_key()
-        grant = grants.load(self.name)
-        if grant is None or not grant.account_id:
-            raise ProviderError(f"{self.title}: run cutpoint login {self.name} first")
-        url = f"{self.url.rstrip('/')}/models?client_version={CODEX_CLIENT_VERSION}"
-        resp = self._send("GET", url, None, CHECK_TIMEOUT_S)
-        if resp.status_code >= 400:
-            raise self._fail(resp)
-        data = self._read(resp)
-        rows = data.get("models")
-        if not isinstance(rows, list):
-            rows = data.get("data")
-        if not isinstance(rows, list):
-            raise ProviderError(f"{self.title}'s model list has no models")
-        out: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            slug = r.get("slug") or r.get("id")
-            if not isinstance(slug, str) or not slug.strip():
-                continue
-            slug = slug.strip()
-            if r.get("supported_in_api") is False:
-                continue
-            visibility = str(r.get("visibility") or "").strip().lower()
-            if visibility in ("hide", "hidden"):
-                continue
-            if slug in seen:
-                continue
-            seen.add(slug)
-            display = r.get("display_name")
-            name = display.strip() if isinstance(display, str) and display.strip() else slug
-            out.append({"id": slug, "name": name})
-        return out
+        try:
+            return cliproxy.list_models(self.name)
+        except cliproxy.ProxyError as err:
+            raise ProviderError(str(err)) from err
 
     def capabilities(self) -> Capabilities:
-        self._token()
-        return Capabilities(tool_calls=True, json_schema=True)
-
-    def _headers(self) -> dict[str, str]:
-        grant = grants.load(self.name)
-        if grant is None or not grant.account_id:
-            raise ProviderError(f"{self.title}: run cutpoint login {self.name} first")
-        return {
-            "Authorization": f"Bearer {self._token()}",
-            "chatgpt-account-id": grant.account_id,
-            "OpenAI-Beta": "responses=experimental",
-            "originator": oauth.ORIGINATOR,
-            "session-id": self._session,
-        }
-
-    def _completed(self, resp: requests.Response) -> dict[str, Any]:
-        """The final response of a streamed answer: its ``response.completed`` event."""
-        resp.encoding = "utf-8"  # SSE is UTF-8 even when the backend omits Content-Type.
-        try:
-            for line in resp.iter_lines(decode_unicode=True):
-                if not (isinstance(line, str) and line.startswith("data:")):
-                    continue
-                try:
-                    event = json.loads(line[5:])
-                except ValueError:
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                kind = event.get("type")
-                if kind == "response.completed" and isinstance(event.get("response"), dict):
-                    return event["response"]
-                if kind in ("response.failed", "error"):
-                    why = event.get("error") or event.get("message") or kind
-                    raise ProviderError(f"{self.title} failed: {keys.redact(str(why))[:MAX_ERROR]}")
-            raise ProviderError(f"{self.title}'s answer ended without a completed response")
-        except requests.RequestException as err:
-            raise ProviderError(f"{self.title} stream error: {keys.redact(str(err))}") from err
-        finally:
-            resp.close()
+        self._need_key()
+        return Capabilities(tool_calls=True, json_schema=False)
 
     def chat(
         self,
@@ -1354,280 +1259,75 @@ class CodexProvider(_Subscription, OpenAIProvider):
         cancelled: Callable[[], bool] | None = None,
     ) -> Reply:
         self._need_key()
-        payload = self._responses_payload(messages, tools, schema)
-        payload.update(stream=True, include=["reasoning.encrypted_content"])
+        formatted_messages = [_format_openai_message(m) for m in messages]
+        if self.name == "claude-code":
+            has_identity = any(
+                m.get("role") == "system" and CLAUDE_CODE_IDENTITY in str(m.get("content") or "")
+                for m in formatted_messages
+            )
+            if not has_identity:
+                formatted_messages.insert(0, {"role": "system", "content": CLAUDE_CODE_IDENTITY})
+        payload: dict[str, Any] = {
+            "model": self.resolve_model(),
+            "messages": formatted_messages,
+        }
+        if tools:
+            payload["tools"] = tools
+        if schema:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "cutpoint_reply", "schema": schema},
+            }
         self._stop(cancelled)
-        resp = self._send("POST", f"{self.url}/responses", payload, self.timeout, stream=True)
-        self._stop(cancelled)
-        if resp.status_code >= 400:
-            why = self._why(resp)
+        try:
+            resp_data = cliproxy.chat(self.name, payload)
+        except cliproxy.ProxyError as err:
+            why = str(err)
             low = why.lower()
             if tools and "tool" in low and any(w in low for w in _NO_TOOLS):
-                raise ToolsUnsupportedError(why)
-            raise self._fail(resp, why)
-        return self._responses_reply(self._completed(resp))
-
-
-def _gemini_parts(content: Any) -> list[dict[str, Any]]:
-    """Gemini parts of a neutral message: a string, or a list of ``text`` and ``image`` parts."""
-    raw = [{"type": "text", "text": content}] if isinstance(content, str) else content
-    parts: list[dict[str, Any]] = []
-    for p in raw if isinstance(raw, list) else []:
-        if not isinstance(p, dict):
-            continue
-        if p.get("type") == "text" and str(p.get("text") or "").strip():
-            parts.append({"text": p["text"]})
-        elif p.get("type") == "image":
-            parts.append({"inlineData": {"mimeType": p["media_type"], "data": p["data"]}})
-    return parts
-
-
-def _gemini_contents(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """``(system, contents)`` for Cloud Code: system text joined, roles ``user``/``model``,
-    consecutive messages of one role merged (the results of one reply's calls go in one turn).
-    A message with ``parts`` is already Gemini's (a :attr:`Reply.message` or a tool result)."""
-    system: list[str] = []
-    out: list[dict[str, Any]] = []
-    for m in messages:
-        role, content = m.get("role"), m.get("content")
-        if role == "system":
-            if isinstance(content, str) and content.strip():
-                system.append(content)
-            continue
-        if role not in ("user", "assistant", "model"):
-            continue
-        parts = m["parts"] if isinstance(m.get("parts"), list) else _gemini_parts(content)
-        if not parts:
-            continue
-        role = "user" if role == "user" else "model"
-        if out and out[-1]["role"] == role:
-            out[-1]["parts"] = [*out[-1]["parts"], *parts]
-        else:
-            out.append({"role": role, "parts": parts})
-    return "\n\n".join(system), out
-
-
-class AntigravityProvider(_Subscription, _HttpProvider):
-    """Antigravity account quota through Cloud Code Assist's streamed Gemini wire protocol."""
-
-    name = "antigravity"
-
-    def __init__(self, url: str, model: str, context_tokens: int) -> None:
-        grant = grants.load(self.name)
-        base = url or (grant.api_endpoint if grant else "") or oauth.CLOUDCODE
-        super().__init__(_http_url(base), model, context_tokens, None)
-        self._agent_id = str(uuid.uuid4())
-        self._trajectory_id = str(uuid.uuid4())
-        self._session_id = f"-{uuid.uuid4().int % (9 * 10**18) + 1}"
-        self._step = 0
-        self._request_count = 0
-
-    @property
-    def title(self) -> str:
-        return "Antigravity (Gemini)"
-
-    @property
-    def model(self) -> str:
-        return self._model or DEFAULT_ANTIGRAVITY_MODEL
-
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._token()}", **oauth.ANTIGRAVITY_HEADERS}
-
-    def list_models(self) -> list[dict[str, str]]:
-        grant = grants.load(self.name)
-        if grant is None or not grant.project_id:
-            raise ProviderError(f"{self.title}: run cutpoint login {self.name} first")
-        resp = self._send(
-            "POST",
-            f"{self.url}/v1internal:fetchAvailableModels",
-            {"project": grant.project_id},
-            CHECK_TIMEOUT_S,
-        )
-        if resp.status_code >= 400:
-            raise self._fail(resp)
-        data = self._read(resp)
-        models = data.get("models")
-        if not isinstance(models, dict):
-            raise ProviderError(f"{self.title}'s model list has no models")
-        image_models = data.get("imageGenerationModelIds") or []
-        return [
-            {"id": name, "name": row.get("displayName") or name}
-            for name, row in models.items()
-            if isinstance(row, dict)
-            and not row.get("disabled")
-            and not row.get("isInternal")
-            and name not in image_models
-            and name not in ("chat_20706", "chat_23310", "gemini-2.5-pro")
-        ]
-
-    def resolve_model(self) -> str:
-        if not self._model:
-            names = [row["id"] for row in self.list_models()]
-            self._model = (
-                DEFAULT_ANTIGRAVITY_MODEL
-                if DEFAULT_ANTIGRAVITY_MODEL in names
-                else next((name for name in names if name.startswith("gemini-")), "")
-            )
-            if not self._model:
-                raise ProviderError(f"{self.title}: this account offers no Gemini chat model")
-        return self.model
-
-    def _stream_response(
-        self, resp: requests.Response, cancelled: Callable[[], bool] | None
-    ) -> dict[str, Any]:
-        parts: list[dict[str, Any]] = []
-        finish = ""
-        try:
-            for line in resp.iter_lines():
-                self._stop(cancelled)
-                if not line.startswith(b"data:"):
-                    continue
-                try:
-                    event = json.loads(line[5:])
-                except ValueError as err:
-                    raise ProviderError(f"{self.title} sent an unreadable stream event") from err
-                if not isinstance(event, dict):
-                    raise ProviderError(f"{self.title} sent an invalid stream event")
-                if event.get("error"):
-                    why = keys.redact(str(event["error"]))[:MAX_ERROR]
-                    raise ProviderError(f"{self.title} failed: {why}")
-                body = event.get("response")
-                candidates = body.get("candidates") if isinstance(body, dict) else None
-                if not isinstance(candidates, list) or not candidates:
-                    continue
-                first = candidates[0]
-                if not isinstance(first, dict):
-                    raise ProviderError(f"{self.title} sent an invalid candidate")
-                content = first.get("content")
-                if isinstance(content, dict) and isinstance(content.get("parts"), list):
-                    parts.extend(content["parts"])
-                finish = first.get("finishReason") or finish
-        except requests.RequestException as err:
-            raise ProviderError(f"{self.title}'s response stream was interrupted") from err
-        finally:
-            resp.close()
-        if not finish:
-            raise ProviderError(f"{self.title}'s answer ended without a completed response")
-        return {"candidates": [{"content": {"parts": parts}, "finishReason": finish}]}
-
-    def capabilities(self) -> Capabilities:
-        self._token()
-        return Capabilities(tool_calls=True, json_schema=False)
-
-    def chat(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        tools: list[dict[str, Any]] | None = None,
-        schema: dict[str, Any] | None = None,  # unused: in JSON mode the rules ask for JSON
-        cancelled: Callable[[], bool] | None = None,
-    ) -> Reply:
-        self._need_key()
-        grant = grants.load(self.name)
-        if grant is None or not grant.project_id:
-            raise ProviderError(f"{self.title}: run cutpoint login {self.name} first")
-        model = self.resolve_model()
-        system, contents = _gemini_contents(messages)
-        request: dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": {"maxOutputTokens": MAX_TOKENS},
-        }
-        if system:
-            request["systemInstruction"] = {"role": "user", "parts": [{"text": system}]}
-        if tools:
-            request["tools"] = [
-                {
-                    "functionDeclarations": [
-                        {
-                            "name": fn["name"],
-                            "description": fn.get("description", ""),
-                            "parameters": fn.get("parameters") or {"type": "object"},
-                        }
-                        for t in tools
-                        if isinstance(fn := t.get("function"), dict)
-                    ]
-                }
-            ]
-        self._step = max(self._step + 1, len(contents))
-        used_claude = str(model.startswith("claude-")).lower()
-        request["sessionId"] = self._session_id
-        request["labels"] = {
-            "cascade_id": self._agent_id,
-            "last_step_index": str(self._step - 1),
-            "request_id": f"{self._trajectory_id}-{self._request_count}",
-            "root_cascade_id": self._agent_id,
-            "trajectory_id": self._trajectory_id,
-            "used_claude": used_claude,
-            "used_claude_conservative": used_claude,
-            "used_non_gemini_model": str(not model.startswith("gemini-")).lower(),
-        }
-        self._request_count += 1
-        payload = {
-            "model": model,
-            "project": grant.project_id,
-            "request": request,
-            "userAgent": "antigravity",
-            "requestId": (
-                f"agent/{self._agent_id}/{int(time.time() * 1000)}/"
-                f"{self._trajectory_id}/{self._step}"
-            ),
-        }
+                raise ToolsUnsupportedError(why) from err
+            raise ProviderError(f"{self.title} failed: {why}") from err
         self._stop(cancelled)
-        resp = self._send(
-            "POST",
-            f"{self.url}/v1internal:streamGenerateContent?alt=sse",
-            payload,
-            self.timeout,
-            stream=True,
-        )
-        self._stop(cancelled)
-        if resp.status_code >= 400:
-            raise self._fail(resp)
-        body = self._stream_response(resp, cancelled)
-        candidates = body.get("candidates") if isinstance(body, dict) else None
-        first = candidates[0] if isinstance(candidates, list) and candidates else None
-        if not isinstance(first, dict):
-            raise ProviderError(f"{self.title} declined this request")
-        if first.get("finishReason") == "MAX_TOKENS":  # a call cut off midway is not one to run
-            raise ProviderError(
-                f"{self.title}'s reply was cut off at {MAX_TOKENS} tokens; try a simpler request"
-            )
-        content = first.get("content")
-        raw_parts = content.get("parts") if isinstance(content, dict) else None
-        if not isinstance(raw_parts, list):
-            raise ProviderError(f"{self.title}'s answer has no content")
-        texts: list[str] = []
-        calls: list[ToolCall] = []
-        kept: list[dict[str, Any]] = []  # sent back as they came (a call's signature included)
-        for part in raw_parts:
-            if not isinstance(part, dict) or part.get("thought") is True:
-                continue
-            call = part.get("functionCall")
-            if isinstance(part.get("text"), str):
-                texts.append(part["text"])
-                kept.append(part)
-            elif isinstance(call, dict) and isinstance(call.get("name"), str):
-                cid = str(call.get("id") or f"call_{len(calls) + 1}")
-                args, error = _arguments(call.get("args"))
-                calls.append(ToolCall(call["name"], args, error, cid))
-                kept.append({**part, "functionCall": {**call, "id": cid}})
-        return Reply("".join(texts), calls, {"role": "model", "parts": kept})
+        return self._reply(resp_data)
 
-    def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
-        reply = {"name": call.name, "id": call.id, "response": {"result": content}}
-        return {"role": "user", "parts": [{"functionResponse": reply}]}
+    def _reply(self, data: dict[str, Any]) -> Reply:
+        choices = data.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices else None
+        if isinstance(first, dict):
+            finish = first.get("finish_reason")
+            if finish == "length":
+                raise ProviderError(f"{self.title}'s reply was cut off; try a simpler request")
+            if finish == "content_filter":
+                raise ProviderError(f"{self.title} declined this request (content filter)")
+        reply = super()._reply(data)
+        if (
+            isinstance(first, dict)
+            and first.get("finish_reason") == "tool_calls"
+            and not reply.tool_calls
+        ):
+            raise ProviderError(f"{self.title}'s answer ended without completed tool calls")
+        msg = first.get("message") if isinstance(first, dict) else None
+        if isinstance(msg, dict) and isinstance(reply.message, dict):
+            for k, v in msg.items():
+                if k not in reply.message:
+                    reply.message[k] = v
+        return reply
 
 
 def _claude_code(settings: AssistantSettings) -> Provider:
-    return ClaudeCodeProvider(settings.url, settings.model, settings.context_tokens)
+    return SubscriptionProvider(
+        "claude-code", settings.url, settings.model, settings.context_tokens
+    )
 
 
 def _antigravity(settings: AssistantSettings) -> Provider:
-    return AntigravityProvider(settings.url, settings.model, settings.context_tokens)
+    return SubscriptionProvider(
+        "antigravity", settings.url, settings.model, settings.context_tokens
+    )
 
 
 def _codex(settings: AssistantSettings) -> Provider:
-    return CodexProvider(settings.url, settings.model, settings.context_tokens)
+    return SubscriptionProvider("codex", settings.url, settings.model, settings.context_tokens)
 
 
 DEFAULT_URLS = {"openai": OPENAI_URL, "anthropic": ANTHROPIC_URL, "xai": XAI_URL}
@@ -1744,9 +1444,9 @@ def model_list(
         return {"state": "unsupported", "models": [], "message": None}
     if missing := missing_key(provider):
         return {"state": "key_needed", "models": [], "message": missing}
-    is_sub_official = isinstance(provider, _Subscription) and is_subscription_official(
-        provider.name, provider.host
-    )
+    is_sub_official = (
+        isinstance(provider, SubscriptionProvider) or is_subscription(provider.name)
+    ) and is_subscription_official(provider.name, provider.host)
     if not is_sub_official and (want := consent_key(provider)) is not None and want not in consent:
         return {
             "state": "consent_needed",

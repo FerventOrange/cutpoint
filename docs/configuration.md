@@ -157,7 +157,7 @@ moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other value
 `ollama` (default) or `assistant`. Who answers the frame requests of `analyze --vision`, `edit
 --vision`, `360 director --vl-check` and new activity profiles. With `assistant` they go, as
 images with the prompt, to a subscription provider (`claude-code`, `codex` or `antigravity`;
-`cutpoint login NAME`) instead of Ollama: the [`vision_assistant`](#vision_assistant) one, or, when
+managed by `cutpoint proxy`) instead of Ollama: the [`vision_assistant`](#vision_assistant) one, or, when
 there is no such section, the [`assistant`](#assistant) one. Frames leave this machine, so
 nothing is sent until you agreed to that provider (its entry in the `consent` of the section that
 names it, via "Allow vision requests" in the Models tab); without it, another provider or no login,
@@ -175,6 +175,7 @@ The model that rates frames, chosen independently of the chat model. The same ke
 (default), `claude-code`, `codex` or `antigravity`. With `ollama`, `model` and `url` are the
 Ollama model and URL (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win).
 Subscription providers use only their official host; a `url` for them is rejected.
+The Models tab fetches the catalog from this configured Ollama URL, including custom servers.
 Without this section the frame rater uses Ollama, or the `assistant` provider when
 `vision_backend` is `assistant`, as before. The Models tab of `cutpoint ui` writes it. Frames go
 to a subscription provider only after you allow it there (`consent`, via "Allow vision requests");
@@ -227,9 +228,9 @@ separate entries with their own credentials and model lists:
 | Anthropic API | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered; an API key |
 | OpenAI API | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered; an API key |
 | Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name; `grok-4.7`, `grok-4.6`, `grok-4.5`, `grok-4.3` and `grok-build-0.1` offered |
-| Claude Code subscription | `claude-code` | Anthropic's hosted service | the models the login lists (`GET /v1/models`); a login, no API key |
-| Codex subscription | `codex` | ChatGPT's Codex backend | the models the login lists (`/codex/models`); a login, no API key |
-| Antigravity subscription | `antigravity` | Google's Cloud Code | the models the login lists (`fetchAvailableModels`); a login, no API key |
+| Claude Code subscription | `claude-code` | Anthropic via `cutpoint proxy` | models advertised by the proxy (`GET /v1/models`); local subscription session, no API key |
+| Codex subscription | `codex` | OpenAI via `cutpoint proxy` | models advertised by the proxy (`/codex/models`); local subscription session, no API key |
+| Antigravity subscription | `antigravity` | Google Cloud via `cutpoint proxy` | models advertised by the proxy (`fetchAvailableModels`); local subscription session, no API key |
 
 A `url` set in `config.json` that is not the preset's (OpenRouter, LM Studio, a LAN Ollama) keeps
 working and shows as "Custom (from config.json)": its base URL is read-only (edit the file to
@@ -278,6 +279,20 @@ is on this machine (a key with an `http://` base URL on another machine is refus
 ui` takes these variables out of its own environment when it starts, so jobs, ffmpeg and file
 dialogs never see them; they are also redacted from log lines and error messages. An
 OpenAI-compatible server on this machine needs no key. Ollama takes none.
+
+Subscription providers (`claude-code`, `codex`, `antigravity`) do not use API keys or the system
+keyring. They authenticate through the local authenticated `cutpoint proxy` daemon (CLIProxyAPI)
+bound to loopback `127.0.0.1:8317`. OAuth tokens and proxy configuration are stored in private
+files in `<CUTPOINT_HOME>/cliproxy/` (directory permission `0700`, configuration/keys `0600`; auth files
+in `auths/` are stored in plaintext on disk protected by file and directory permissions rather than
+at-rest encryption). The proxy operates in commercial mode with prompt/error logging disabled, prompt
+cloaking disabled, and separate random client and management tokens generated once and persisted in
+`keys.json`. Model catalogs are populated from models advertised by the proxy daemon. Existing legacy
+keyring grants are not migrated; fresh authentication via `cutpoint proxy` is required.
+
+Temporary provider errors and rate-limit cooldowns do not remove an enabled, nonexpired login.
+The proxy's remote-store/Home environment overrides and the caller's `.env` cannot replace this
+private configuration; see [`proxy`](commands.md#proxy) for startup isolation and process lifetime.
 
 ### pano
 

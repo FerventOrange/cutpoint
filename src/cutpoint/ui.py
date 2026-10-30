@@ -88,9 +88,8 @@ from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
-from cutpoint.assistant import grants as ai_grants
+from cutpoint.assistant import cliproxy
 from cutpoint.assistant import keys as ai_keys
-from cutpoint.assistant import oauth as ai_oauth
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
 from cutpoint.assistant import session as ai_session
@@ -615,7 +614,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     else:
         vis_consent = ()
     vp = _vision_provider_from_data(data)
-    if vp is not None and vp.name in ai_grants.PROVIDERS:
+    if vp is not None and (vp.name in cliproxy.PROVIDERS or ai_providers.is_subscription(vp.name)):
         v_consent_info = consent_view(vp, consent=vis_consent)
     else:
         v_consent_info = {
@@ -649,7 +648,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
 
 
 MAX_ASSISTANT_TEXT = 500  # characters of the assistant's model or base URL
-LOGIN_START_S = 15.0  # how long a login's start waits for its sign-in URL
+LOGIN_TIMEOUT_S = 300.0  # seconds before a pending login expires
 
 
 def subscription_presets() -> dict[str, str]:
@@ -657,7 +656,7 @@ def subscription_presets() -> dict[str, str]:
     provider is built for (Antigravity only once :data:`~cutpoint.assistant.providers.PROVIDERS`
     has it)."""
     subscriptions = {
-        p: ai_grants.TITLES[p] for p in ai_grants.PROVIDERS if p in ai_providers.PROVIDERS
+        p: cliproxy.TITLES[p] for p in cliproxy.PROVIDERS if p in ai_providers.PROVIDERS
     }
     return {**ai_providers.PRESETS, **subscriptions}
 
@@ -753,7 +752,7 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
                 "placeholder": offers[p][3],
                 "model_required": offers[p][4],
                 "key_env": key_env(p),
-                "subscription": p in ai_grants.PROVIDERS,  # logs in (Settings > Subscriptions)
+                "subscription": p in cliproxy.PROVIDERS,  # logs in (Settings > Subscriptions)
             }
             for p, title in presets_offered.items()
         ],
@@ -809,7 +808,7 @@ def check_assistant(
             raise bad(f"{label}.provider must be one of {', '.join(allowed)}")
     url = out.get("url")
     provider = out.get("provider") or existing_provider or ""
-    if url and provider in ai_grants.PROVIDERS:
+    if url and (provider in cliproxy.PROVIDERS or ai_providers.is_subscription(provider)):
         raise bad(f"{label}.url cannot be customized for subscription providers")
     if url:
         scheme = url.split("://", 1)[0].lower() if "://" in url else "http"
@@ -3974,7 +3973,7 @@ def create_app(port: int) -> FastAPI:
             else:
                 if (
                     provider not in ai_providers.PRESETS
-                    and provider not in ai_grants.PROVIDERS
+                    and provider not in cliproxy.PROVIDERS
                     and provider != "custom"
                 ):
                     raise bad(
@@ -3988,7 +3987,7 @@ def create_app(port: int) -> FastAPI:
                 p = ai_providers.make(settings)
             elif provider in ai_providers.PRESETS:
                 p = ai_providers.preset(provider, settings.context_tokens)
-            elif provider in ai_grants.PROVIDERS:
+            elif provider in cliproxy.PROVIDERS:
                 p = ai_providers.make(
                     AssistantSettings(provider=provider, context_tokens=settings.context_tokens)
                 )
@@ -3997,7 +3996,7 @@ def create_app(port: int) -> FastAPI:
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
         consent = settings.consent
-        if provider in ai_grants.PROVIDERS and ai_providers.is_subscription_official(
+        if provider in cliproxy.PROVIDERS and ai_providers.is_subscription_official(
             provider, p.host
         ):
             want = ai_providers.consent_key(p)
@@ -4005,61 +4004,89 @@ def create_app(port: int) -> FastAPI:
                 consent = (*consent, want)
         return ai_providers.model_list(p, consent, refresh=refresh)
 
-    # -- subscription logins (Claude Code, Codex, Antigravity): grants in the keyring only ----
+    # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
     def login_provider(value: Any) -> str:
-        if value not in ai_grants.PROVIDERS:
-            raise bad(f"provider must be one of {', '.join(ai_grants.PROVIDERS)}")
+        if value not in cliproxy.PROVIDERS:
+            raise bad(f"provider must be one of {', '.join(cliproxy.PROVIDERS)}")
         return value
 
     @secure.get("/assistant/logins")
     def assistant_logins():
-        """Each subscription's login (``grants.status``: never a token) with its title and
+        """Each subscription's login (cliproxy.status: never a token) with its title and
         whether the assistant can use it as a provider."""
-        return {
-            "logins": [
+        st_map = {}
+        with contextlib.suppress(cliproxy.ProxyError, OSError):
+            for s in cliproxy.statuses():
+                if isinstance(s, dict) and "provider" in s:
+                    st_map[s["provider"]] = s
+        out = []
+        for p in cliproxy.PROVIDERS:
+            st = st_map.get(p)
+            if not st:
+                try:
+                    st = cliproxy.status(p)
+                except (cliproxy.ProxyError, OSError) as err:
+                    st = {
+                        "provider": p,
+                        "logged_in": False,
+                        "email": None,
+                        "org": None,
+                        "expired": False,
+                        "expires_ms": None,
+                        "error": str(err),
+                    }
+            out.append(
                 {
-                    **ai_grants.status(p),
-                    "title": ai_grants.TITLES[p],
+                    "provider": p,
+                    **st,
+                    "title": cliproxy.TITLES.get(p, p),
                     "selectable": p in ai_providers.PROVIDERS,
                 }
-                for p in ai_grants.PROVIDERS
-            ]
-        }
+            )
+        return {"logins": out}
 
     @secure.post("/assistant/login")
     def start_login(body: dict[str, Any]):
-        """Start ``provider``'s login in the background and answer with the sign-in ``url`` for
+        """Start ``provider``'s login via CLIProxyAPI and answer with the sign-in ``url`` for
         the page to open; ``GET .../login/status`` tells when it is done. 409 while one waits."""
         name = login_provider(body.get("provider"))
+        now = time.monotonic()
+        old_state_to_cancel = None
         with login_lock:
-            if login_states.get(name, {}).get("state") == "pending":
-                raise bad(f"a {name} login is already waiting for the browser", 409)
-            login_states[name] = {"state": "pending", "error": ""}
-        urls: list[str] = []
-        ready = threading.Event()
-
-        def notify(url: str) -> None:
-            urls.append(url)
-            ready.set()
-
-        def work() -> None:
-            try:
-                ai_oauth.login(name, notify=notify, open_browser=False)
-                ai_providers.clear_model_cache(name)
-                result = {"state": "done", "error": ""}
-            except Exception as err:  # noqa: BLE001 - any failure is shown, tokens redacted
-                result = {"state": "error", "error": ai_keys.redact(str(err)) or type(err).__name__}
+            cur = login_states.get(name)
+            if cur and cur.get("state") == "pending":
+                if now - cur.get("started_at", 0) < LOGIN_TIMEOUT_S:
+                    raise bad(f"a {name} login is already waiting for the browser", 409)
+                old_state_to_cancel = cur.get("proxy_state")
+            login_states[name] = {"state": "pending", "started_at": now, "error": ""}
+        if old_state_to_cancel and hasattr(cliproxy, "cancel_login"):
+            with contextlib.suppress(Exception):
+                cliproxy.cancel_login(old_state_to_cancel)
+        try:
+            res = cliproxy.start_login(name)
+        except (cliproxy.ProxyError, OSError) as err:
             with login_lock:
-                login_states[name] = result
-            ready.set()
+                login_states[name] = {
+                    "state": "error",
+                    "error": ai_keys.redact(str(err)) or type(err).__name__,
+                }
+            raise bad(ai_keys.redact(str(err)) or f"the {name} login did not start", 500) from None
 
-        threading.Thread(target=work, name=f"login-{name}", daemon=True).start()
-        ready.wait(LOGIN_START_S)
-        if not urls:
+        url = res.get("url")
+        proxy_state = res.get("state")
+        if not url or not proxy_state:
             with login_lock:
-                why = login_states[name]["error"]
-            raise bad(why or f"the {name} login did not start", 500)
-        return {"url": urls[0]}
+                login_states[name] = {"state": "error", "error": f"the {name} login did not start"}
+            raise bad(f"the {name} login did not start", 500)
+
+        with login_lock:
+            login_states[name] = {
+                "state": "pending",
+                "proxy_state": proxy_state,
+                "started_at": now,
+                "error": "",
+            }
+        return {"url": url}
 
     @secure.get("/assistant/login/status")
     def login_status(provider: str):
@@ -4067,18 +4094,56 @@ def create_app(port: int) -> FastAPI:
         (``idle`` before any)."""
         name = login_provider(provider)
         with login_lock:
-            return {"error": "", **login_states.get(name, {"state": "idle"})}
+            info = login_states.get(name)
+            if not info:
+                return {"state": "idle", "error": ""}
+            if info.get("state") != "pending":
+                return {"state": info.get("state", "idle"), "error": info.get("error", "")}
+
+            proxy_state = info.get("proxy_state")
+            started_at = info.get("started_at", 0)
+            if time.monotonic() - started_at > LOGIN_TIMEOUT_S:
+                info["state"] = "error"
+                info["error"] = "login timed out"
+                if proxy_state and hasattr(cliproxy, "cancel_login"):
+                    with contextlib.suppress(Exception):
+                        cliproxy.cancel_login(proxy_state)
+                return {"state": "error", "error": "login timed out"}
+        try:
+            poll_res = cliproxy.poll_login(proxy_state)
+        except (cliproxy.ProxyError, OSError) as err:
+            poll_res = {"state": "error", "error": ai_keys.redact(str(err)) or type(err).__name__}
+
+        with login_lock:
+            cur = login_states.get(name)
+            if cur and cur.get("proxy_state") == proxy_state:
+                p_state = poll_res.get("state", "pending")
+                if p_state == "done":
+                    ai_providers.clear_model_cache(name)
+                    cur["state"] = "done"
+                    cur["error"] = ""
+                elif p_state == "error":
+                    cur["state"] = "error"
+                    cur["error"] = poll_res.get("error") or "login failed"
+                elif p_state == "pending":
+                    cur["state"] = "pending"
+                return {"state": cur.get("state", "pending"), "error": cur.get("error", "")}
+            return {
+                "state": (cur or {}).get("state", "idle"),
+                "error": (cur or {}).get("error", ""),
+            }
 
     @secure.post("/assistant/logout")
     def logout(body: dict[str, Any]):
-        """Remove ``provider``'s login from the keyring."""
+        """Remove ``provider``'s login from CLIProxyAPI."""
         name = login_provider(body.get("provider"))
         try:
-            ai_grants.clear(name)
-        except ai_keys.KeyringError as err:
+            cliproxy.logout(name)
+        except (cliproxy.ProxyError, OSError) as err:
             raise bad(str(err), 500) from None
         ai_providers.clear_model_cache(name)
-        return {**ai_grants.status(name), "title": ai_grants.TITLES[name]}
+        st = cliproxy.status(name)
+        return {"provider": name, **st, "title": cliproxy.TITLES.get(name, name)}
 
     @owned.get("/projects")
     def list_projects():

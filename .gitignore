@@ -14,6 +14,8 @@ htmlcov/
 cache/
 models/
 tools/llama.cpp/
+# CLIProxyAPI runtime: subscription credentials, local keys, and downloaded binaries
+cliproxy/
 stage/
 projects/
 # raw OCR cache (OCR text of the footage): normally under cache/, ignored anywhere

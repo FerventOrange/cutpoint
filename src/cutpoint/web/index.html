@@ -483,7 +483,8 @@
         <!-- Connected Accounts / Subscriptions -->
         <fieldset class="panel models-section" id="modelsSubs">
           <legend>Connected accounts</legend>
-          <p class="hint">Log in with a Claude Code subscription, Codex subscription, or Antigravity subscription to use them without API keys. Logins are kept securely in your system keyring.</p>
+          <p class="hint">Subscriptions (Claude Code, ChatGPT Codex, Google Antigravity) are managed by CLIProxyAPI. Run <code>cutpoint proxy</code> in a terminal to authenticate or refresh sessions. Credentials are stored in private on-disk proxy storage; re-login is required if previously authenticated via system keyring.</p>
+          <p class="hint">Antigravity sign-in may provision a free-tier project if your account has none.</p>
           <ul id="modelsSubsList" class="subs-list"></ul>
           <p id="modelsSubsStatus" class="hint" role="status"></p>
         </fieldset>

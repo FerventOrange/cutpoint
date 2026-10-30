@@ -210,15 +210,20 @@ The Models tab (next to AI Chat) sets the model for each role: Chat (the
 ([`vision_assistant`](configuration.md#vision_assistant), the model that rates frames), each
 with its own provider and model. Provider names say how they sign in: Anthropic API and OpenAI
 API use an API key; Claude Code subscription, Codex subscription and Antigravity subscription
-use a login ("Connected accounts", the same as `cutpoint login`). After a login the tab lists
-each account's own models (Refresh catalog asks again); Other model… takes any id. The tab
-works without a project, and one Save models saves both roles. "Rate frames with vision model"
+use a login ("Connected accounts", managed via `cutpoint proxy` and `cutpoint login`). With the
+`cutpoint proxy` daemon running in the foreground, the tab lists each account's advertised models
+(Refresh catalog asks again); Other model… takes any id. The tab works without a project, and
+one Save models saves both roles. "Rate frames with vision model"
 (off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
 every analysis the UI starts, a first one or "Analyze again", uses it (passed as `--vision` or
 `--no-vision`; 360 analyses never rate frames), and it is the default of `analyze` and `edit` on
 the command line. A hosted Vision provider gets frames only after "Allow vision requests" in
 the tab; saving never grants it. The UI has no per-run vision checkbox. "Analyze again" keeps
 the Ollama model, URL and vision-top the last analysis recorded.
+
+Unsaved role selections and API-key drafts survive tab switches; reload the page to discard them
+and read the configuration again. A custom Vision Ollama URL uses that server's model catalog.
+
 "Stats for Nerds" (off by default) shows the open moment's score, rank, analyzed times, signals
 and keywords over the top-left corner of the preview. It shows as soon as you tick it; Save keeps
 it, in the browser (local storage), not in `config.json`, and Cancel or Escape undoes it.
@@ -1368,6 +1373,35 @@ and points the agent to `cutpoint guide` for details.
 
 `skill print` prints the skill to stdout, for agents that do not use a skills folder.
 
+## proxy
+
+```text
+cutpoint proxy [--port PORT]
+```
+
+`proxy` runs the local authenticated [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+daemon in the foreground. Subscriptions (Claude Code, ChatGPT Codex, Google Antigravity) route
+their OAuth authorization, token refresh and inference requests through this loopback service
+(`127.0.0.1`). Keep `cutpoint proxy` running in a dedicated terminal whenever you log in, refresh
+sessions, or run assistant or vision requests with a subscription provider.
+
+On first run, `cutpoint proxy` lazily downloads the checksum-verified ~24 MB binary (pinned version
+8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on port 8317 (`CUTPOINT_CLIPROXY_PORT` or
+`--port` overrides the port; `CUTPOINT_CLIPROXY_BINARY` overrides the executable path). Proxy
+configuration and credentials live in private on-disk files under `<CUTPOINT_HOME>/cliproxy/`
+(directory mode `0700`, files `0600`), separate from the system keyring; auth files are stored as
+plaintext on disk protected by file and directory permissions rather than at-rest encryption.
+Separate client and management tokens are randomly generated on first setup, persisted in
+`keys.json`, and bound to loopback. Prompt cloaking is disabled and commercial mode is set so
+prompt and error logging are disabled.
+
+The child runs from the private `<CUTPOINT_HOME>/cliproxy/run/` directory, not the caller's directory.
+It ignores the caller's `.env` and strips CLIProxyAPI's remote-store, Home, deployment and
+`MANAGEMENT_PASSWORD` overrides, keeping the generated private management key exclusive. Network
+proxy and TLS/CA settings are preserved. Startup refuses an existing `.env` in the private run
+directory rather than loading or deleting it. On macOS, a pipe guardian also stops and reaps the
+daemon if the Python parent is killed.
+
 ## login
 
 ```text
@@ -1375,17 +1409,27 @@ cutpoint login claude-code|codex|antigravity [--no-browser]
 cutpoint logout claude-code|codex|antigravity
 ```
 
-`login` signs in to a Claude Code, Codex (ChatGPT) or Antigravity subscription in the browser
-(PKCE; Claude Code and Codex redirect to `localhost`, while Antigravity redirects to `127.0.0.1:51121/oauth-callback`)
-and keeps the login in the system keyring, never in `config.json`. It prints the authorize URL;
-`--no-browser` does not open one. On a terminal you can paste the redirect URL or code instead of waiting
-for the browser. `logout` removes the stored login. Set `assistant.provider` (Chat) or
-`vision_assistant.provider` (Vision) to `claude-code`, `codex` or `antigravity` to use it; the
-Models tab in the UI does the same login and logout under Connected accounts.
+`login` starts an OAuth sign-in to a Claude Code, Codex (ChatGPT) or Antigravity subscription
+through the running `cutpoint proxy` daemon. It opens the provider's authorization URL in your
+browser and completes via local callback; `--no-browser` logs the URL to stderr without opening
+a browser window. Credentials are saved in `<CUTPOINT_HOME>/cliproxy/auths/` by CLIProxyAPI,
+never in `config.json` or the system keyring. Existing legacy keyring grants are not migrated
+automatically; a fresh sign-in is required.
 
-Antigravity operates on your existing account quota via Google's backend-managed routing project identifier;
-no user-supplied billable Google Cloud Project is used, and Cutpoint does not auto-provision or accept GCP terms.
-Users must first sign into the official Google Antigravity application or IDE once to initialize their account entitlement.
+An unsuccessful login (including polling errors, timeout or Ctrl+C) attempts to cancel the pending
+authorization; cancellation is best-effort if the proxy is unreachable. Successful logins are not
+cancelled.
 
-A Claude Code login expires after about 30 days and needs a fresh `login`. Requests go to the vendor's hosted service
-and need your agreement in the AI Chat first, as for any hosted provider.
+`logout` removes the provider's subscription session from the running proxy.
+
+Set `assistant.provider` (Chat) or `vision_assistant.provider` (Vision) to `claude-code`, `codex`
+or `antigravity` to use a subscription provider; the Models tab in `cutpoint ui` reflects the same
+login status and starts login flows under Connected accounts.
+
+An enabled, nonexpired account remains connected during a temporary provider error or rate-limit
+cooldown. Requests then report the proxy's availability condition instead of requiring fresh login.
+
+Logging in to Antigravity upstream may auto-provision a free-tier companion project if your account
+does not already have one. Cutpoint discloses this during sign-in and in the UI.
+Requests to subscription providers go to the vendor's hosted service and require explicit vendor
+consent in AI Chat or the Models tab, as with any hosted provider.

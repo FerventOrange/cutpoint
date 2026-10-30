@@ -134,7 +134,7 @@ class AssistantVision:
         return self._ready
 
     def _check(self) -> bool:
-        from cutpoint.assistant import grants, keys, oauth, providers  # noqa: PLC0415
+        from cutpoint.assistant import keys, providers  # noqa: PLC0415
 
         p = self.provider
         if p.name not in SUBSCRIPTIONS:
@@ -151,8 +151,6 @@ class AssistantVision:
             p.capabilities()  # the login is there and usable
         except (
             providers.ProviderError,
-            oauth.OAuthError,
-            grants.GrantExpiredError,
             keys.KeyringError,
         ) as err:
             logger.info("%s; skipping vision", keys.redact(str(err)))
@@ -162,7 +160,7 @@ class AssistantVision:
     def ask(self, prompt: str, jpegs: list[bytes]) -> str | None:
         """The provider's reply to ``prompt`` with the JPEG frames; None (logged) when it is not
         :meth:`available` or fails."""
-        from cutpoint.assistant import grants, keys, oauth, providers  # noqa: PLC0415
+        from cutpoint.assistant import keys, providers  # noqa: PLC0415
 
         if not self.available():
             return None
@@ -175,8 +173,6 @@ class AssistantVision:
             return self.provider.chat([{"role": "user", "content": parts}]).text
         except (
             providers.ProviderError,
-            oauth.OAuthError,
-            grants.GrantExpiredError,
             keys.KeyringError,
         ) as err:
             logger.warning("Vision request failed: %s", keys.redact(str(err)))
