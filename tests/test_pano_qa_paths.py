@@ -204,6 +204,30 @@ def test_sliver_that_would_be_the_subject_is_an_edge_cut_at_any_area() -> None:
     assert QP.sliver_subject_frames(slivers, own, np.array([True]), TH) == set()
 
 
+def test_a_side_sliver_counts_from_the_paths_floor() -> None:
+    # [frame, view, score, x1, y1, x2, y2, is_self]: area 0.085, touching the left edge
+    sl = np.array([[0, 0, 0.9, 0.0, 0.2, 0.17, 0.7, 0]], float)
+    assert QP.sliver_edge_frames(sl, TH) == set()  # the rendered QA's floor: 0.10
+    assert QP.sliver_edge_frames(sl, QP.paths_thresholds(TH)) == {0}
+
+
+def test_path_quality_counts_a_side_cut_from_the_paths_floor() -> None:
+    """A person of 0.095 area cut by the left edge (beside a larger friend) is an edge cut
+    only from the paths floor (0.075): path_quality applies it by itself."""
+    big = (0.99, 0.0, -8.0, 30.0, 34.0, FWD_V)
+    side = (0.99, -42.0, -8.0, 18.0, 26.0, FWD_V)
+    pv = make_views({f: [big, side] for f in range(10)}, source="pq.lrv")
+    t = np.array([2.4])
+    idx = QP.view_frame_index(pv.t.astype(float), t)
+    assert "edge_cut" not in QP.geo_frames(pv, fixed_path(), t, idx, TH)[0]["flags"]
+    q = QP.path_quality(fixed_path(), pv, 2.0, 4.0, TH)
+    assert q["edge_cut"] > 0.0
+    assert (
+        q["edge_cut"]
+        == QP.path_quality(fixed_path(), pv, 2.0, 4.0, QP.paths_thresholds(TH))["edge_cut"]
+    )
+
+
 def test_slivers_are_recorded_per_frame_with_score_filter_and_is_self() -> None:
     far = (0.99, 70.0, -8.0, 60.0, 28.0, FWD_V)
     r = flags_of(make_views({2: [far]}, source="s.lrv"), fixed_path())
@@ -250,6 +274,8 @@ def test_run_paths_qa_on_a_paths_folder(tmp_path: Path, monkeypatch: pytest.Monk
     assert Path(rep["out_dir"]) == d.with_name("trial_paths_qa")
     saved = json.loads((Path(rep["out_dir"]) / "qa.json").read_text(encoding="utf-8"))
     assert saved["mode"] == "paths"
+    assert saved["thresholds"]["edge_side_min_area"] == 0.075  # the paths floor, recorded
+    assert saved["thresholds"]["edge_min_area"] == TH.edge_min_area
     assert [c["file"] for c in saved["clips"]] == ["001_a.json", "002_b.json"]
     assert saved["skipped"] == [{"file": "003_c.json", "error": "no 360 view cache"}]
     a, b = saved["clips"]

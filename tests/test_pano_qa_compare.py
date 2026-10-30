@@ -61,7 +61,7 @@ def pair(d: Path) -> tuple[dict, dict]:
         *(fr(2.0 + k / 2, [], [pairs[0]]) for k in range(5)),  # the median offset
         fr(4.5, ["edge_cut"], [[0.0, 0.3, 0.15, 0.8]]),  # 0.04 inside once shifted
         fr(5.0, ["edge_cut"], [[0.0, 0.3, 0.3, 0.8]]),  # projected well inside
-        fr(5.5, ["edge_cut"], [LEFT]),  # source 15.5 s: past the segment
+        fr(5.5, ["edge_cut"], [LEFT]),  # source 15.5 s: past the segment, nothing projected
         fr(6.0, [], [pairs[0]]),
     ]
     paths = [
@@ -106,12 +106,15 @@ def test_every_cause_is_attributed(tmp_path: Path) -> None:
         1.5: "stale_view",
         4.5: "yaw_offset",
         5.0: "other",
-        5.5: "outside_segment",
+        5.5: "no_projected_box",
     }
+    inside = {f["t"]: f["in_selected"] for f in c["rendered_only_frames"]}
+    assert inside[5.5] is False and inside[5.0] is True and c["outside_selected"] == 1
     assert (c["rendered_edge"], c["paths_edge"], c["both"]) == (7, 2, 1)
     assert (c["rendered_only"], c["paths_only"], c["frames"]) == (6, 1, 13)
     e = saved["edit"]
-    assert e["causes"] == {**dict.fromkeys(QC.CAUSES, 1), "unpaired": 0}
+    assert e["causes"] == {**dict.fromkeys(QC.CAUSES, 1), "unpaired": 0, "no_projected_box": 2}
+    assert e["outside_selected"] == 1
     assert e["cause_share"]["stale_view"] == pytest.approx(0.167)
     assert saved["unmatched"] == {"rendered": ["009_x.mp4"], "paths": []}
     assert rep["source_mismatch"] == []
@@ -158,7 +161,7 @@ def test_360_qa_compare_json(home, capsys) -> None:
     assert out["edge_gap"] == str(a.parent / "edge_gap.json")
     assert (out["mode"], out["rendered"], out["paths"]) == ("compare", str(a), str(b))
     assert (out["count"], out["rendered_only"]) == (1, 6)
-    assert out["causes"] == {**dict.fromkeys(QC.CAUSES, 1), "unpaired": 0}
+    assert out["causes"] == {**dict.fromkeys(QC.CAUSES, 1), "unpaired": 0, "no_projected_box": 2}
     assert out["other_detail"] == {**dict.fromkeys(QC.OTHER_DETAILS, 0), "paths_inside": 1}
     assert out["clips"][0]["other_detail"]["paths_inside"] == 1
     assert out["clips"][0]["file"] == str(d / "001_a.mp4")
@@ -339,6 +342,56 @@ def test_a_side_sliver_over_edge_min_area_is_counted_even_over_a_self_box() -> N
     assert (got["cause"], got["other_detail"]) == ("other", "unexplained")
 
 
+def test_each_report_replays_its_own_thresholds() -> None:
+    """A projected box of 0.085 at the left edge is below the rendered floor (0.10) but
+    counts with the paths report's side floor (0.075): then nothing explains the cut."""
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    p = fr(0.0, boxes=[[0.0, 0.3, 0.17, 0.8], BIG_INSIDE])
+    assert QC.explain(r, p, TH, None, None, None)["other_detail"] == "paths_below_area"
+    th_paths = QAThresholds(edge_side_min_area=0.075)
+    got = QC.explain(r, p, TH, None, None, None, th_paths)
+    assert got["other_detail"] == "unexplained"
+
+
+def test_a_side_sliver_replays_with_the_paths_floor() -> None:
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    p = fr(0.0, boxes=[BIG_INSIDE], slivers=[[0.0, 0.3, 0.17, 0.8, False]])  # area 0.085
+    assert QC.explain(r, p, TH, None, None, None)["other_detail"] == "paths_below_area"
+    got = QC.explain(r, p, TH, None, None, None, QAThresholds(edge_side_min_area=0.075))
+    assert got["other_detail"] == "unexplained"
+
+
+def test_run_compare_uses_the_paths_reports_thresholds(tmp_path: Path) -> None:
+    d = tmp_path / "c"
+    r = fr(0.0, ["edge_cut"], [BIG_LEFT])
+    p = fr(0.0, boxes=[[0.0, 0.3, 0.17, 0.8], BIG_INSIDE])
+    rend = report("rendered", d, [clip("001_a.mp4", [r])])
+    paths = report("paths", d, [clip("001_a.json", [p])])
+    got = {}
+    for name, side in (("old", None), ("new", 0.075)):
+        th = asdict(TH)
+        if side is None:
+            th.pop("edge_side_min_area")  # a report from before the side floor
+        else:
+            th["edge_side_min_area"] = side
+        a, b = _write(tmp_path, d, rend, {**paths, "thresholds": th})
+        QC.run_compare(d, a, b)
+        saved = json.loads((tmp_path / "edge_gap.json").read_text(encoding="utf-8"))
+        got[name] = saved["edit"]["other_detail"]
+        (tmp_path / "edge_gap.json").unlink()
+    assert got["old"] != got["new"]
+
+
+def test_thresholds_of_an_older_report_use_edge_min_area_at_the_sides() -> None:
+    old = {k: v for k, v in asdict(TH).items() if k != "edge_side_min_area"}
+    old["edge_min_area"] = 0.12
+    assert QC.thresholds({"thresholds": old}).edge_side_min_area == 0.12
+    assert (
+        QC.thresholds({"thresholds": {**old, "edge_side_min_area": 0.075}}).edge_side_min_area
+        == 0.075
+    )
+
+
 def test_the_paths_subject_under_size_min_h_beats_below_area() -> None:
     """F2: the only (largest) projected box, 0.15 tall, against a cut box of 0.125 area."""
     r = fr(0.0, ["edge_cut"], [BIG_LEFT])
@@ -374,21 +427,28 @@ def _write(tmp_path: Path, d: Path, rend: dict, paths: dict) -> tuple[Path, Path
     return a, b
 
 
-def test_the_selected_moment_bounds_outside_segment(tmp_path: Path) -> None:
-    """#11: a clip's tail (source 16-20 s) lies in its planned segment but outside the
-    moment picked (``selected``), so its frames are outside_segment."""
+def test_a_tail_frame_gets_its_cause_and_in_selected(tmp_path: Path) -> None:
+    """#11: a clip's tail (source 16-20 s) is planned and checked like the moment, so its
+    frames get the full cause chain; ``in_selected`` says they lie outside the pick."""
     d = tmp_path / "clips"
-    rend = [fr(1.0, ["edge_cut"], [RIGHT]), fr(7.0, ["edge_cut"], [RIGHT])]  # source 11 s, 17 s
-    paths = [fr(1.0), fr(7.0)]
+    pairs = [[0.40, 0.3, 0.60, 0.8], [0.45, 0.3, 0.65, 0.8]]  # rendered 0.05 left
+    rend = [fr(2.0 + k / 2, [], [pairs[0]]) for k in range(5)]
+    paths = [fr(2.0 + k / 2, [], [pairs[1]]) for k in range(5)]
+    rend.append(fr(7.0, ["edge_cut"], [[0.0, 0.3, 0.15, 0.8]]))  # source 17 s: the tail
+    paths.append(fr(7.0, [], [[0.04, 0.3, 0.19, 0.8]]))  # at the edge once shifted
     rc, pc = clip("001_a.mp4", rend, (10.0, 20.0)), clip("001_a.mp4", paths, (10.0, 20.0))
-    a, b = _write(tmp_path, d, report("rendered", d, [rc]), report("paths", d, [pc]))
-    causes = [f["cause"] for f in QC.run_compare(d, a, b)["clips"][0]["rendered_only_frames"]]
-    assert causes == ["no_projected_box", "no_projected_box"]  # old reports: segment only
     for c in (rc, pc):
         c["selected"] = [10.0, 16.0]
     a, b = _write(tmp_path, d, report("rendered", d, [rc]), report("paths", d, [pc]))
-    causes = [f["cause"] for f in QC.run_compare(d, a, b)["clips"][0]["rendered_only_frames"]]
-    assert causes == ["no_projected_box", "outside_segment"]
+    rep = QC.run_compare(d, a, b)
+    (f,) = rep["clips"][0]["rendered_only_frames"]
+    assert (f["cause"], f["in_selected"]) == ("yaw_offset", False)
+    assert rep["clips"][0]["outside_selected"] == rep["edit"]["outside_selected"] == 1
+    for c in (rc, pc):
+        del c["selected"]  # an older report: the segment is the moment
+    a, b = _write(tmp_path, d, report("rendered", d, [rc]), report("paths", d, [pc]))
+    (f,) = QC.run_compare(d, a, b)["clips"][0]["rendered_only_frames"]
+    assert (f["cause"], f["in_selected"]) == ("yaw_offset", True)
     (tmp_path / "edge_gap.json").unlink()
 
 
@@ -410,4 +470,30 @@ def test_edge_gap_counts_frames_by_mode_and_self_method(tmp_path: Path) -> None:
     assert e["by_self_method"] == {"clip": one, "cone+clip": one, "unknown": none}
     assert [c["mode"] for c in saved["clips"]] == ["sdk", "dfisheye", None]
     assert {"causes", "cause_share", "other_detail", "other_detail_share"} <= set(e)
+    (tmp_path / "edge_gap.json").unlink()
+
+
+def test_size_ratio_of_matched_boxes(tmp_path: Path) -> None:
+    """#11 phase 2a: rendered boxes 1.2x the projected ones (after the median offset)."""
+    d = tmp_path / "clips"
+    proj = [0.40, 0.30, 0.50, 0.60]  # 0.1 x 0.3, centre (0.45, 0.45)
+    big = [0.39, 0.27, 0.51, 0.63]  # 1.2x about the same centre ...
+    shifted = [b + (0.03 if k % 2 == 0 else 0.0) for k, b in enumerate(big)]  # ... 0.03 right
+    rend = [fr(k / 2, [], [shifted]) for k in range(6)]
+    paths = [fr(k / 2, [], [proj]) for k in range(6)]
+    few = [fr(0.0, [], [shifted])]
+    a, b = _write(
+        tmp_path,
+        d,
+        report("rendered", d, [clip("001_a.mp4", rend), clip("002_b.mp4", few)]),
+        report("paths", d, [clip("001_a.json", paths), clip("002_b.json", paths[:1])]),
+    )
+    QC.run_compare(d, a, b)
+    saved = json.loads((tmp_path / "edge_gap.json").read_text(encoding="utf-8"))
+    one, two = saved["clips"]
+    assert one["median_dx"] == pytest.approx(0.03)
+    assert one["size_ratio"] == {"width": 1.2, "height": 1.2, "pairs": 6}
+    assert two["size_ratio"] == {"width": None, "height": None, "pairs": 1}  # too few
+    assert saved["edit"]["size_ratio"] == {"width": 1.2, "height": 1.2, "pairs": 7}
+    assert saved["version"] == QC.GAP_VERSION == 5
     (tmp_path / "edge_gap.json").unlink()
