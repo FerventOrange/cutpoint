@@ -282,10 +282,10 @@ OpenAI-compatible server on this machine needs no key. Ollama takes none.
 
 Subscription providers (`claude-code`, `codex`, `antigravity`) do not use API keys or the system
 keyring. They authenticate through the local authenticated `cutpoint proxy` daemon (CLIProxyAPI)
-bound to loopback `127.0.0.1:8317`. OAuth tokens and proxy configuration are stored in private
-files in `<CUTPOINT_HOME>/cliproxy/` (directory permission `0700`, configuration/keys `0600`; auth files
-in `auths/` are stored in plaintext on disk protected by file and directory permissions rather than
-at-rest encryption). The proxy operates in commercial mode with prompt/error logging disabled, prompt
+bound to loopback `127.0.0.1:8317`. OAuth tokens and proxy configuration are stored in
+`<CUTPOINT_HOME>/cliproxy/` (`0700` directories and `0600` configuration/keys on POSIX;
+inherited filesystem ACLs on Windows). Auth files in `auths/` are plaintext, not encrypted
+at rest. The proxy operates in commercial mode with prompt/error logging disabled, prompt
 cloaking disabled, and separate random client and management tokens generated once and persisted in
 `keys.json`. Model catalogs are populated from models advertised by the proxy daemon. Existing legacy
 keyring grants are not migrated; fresh authentication via `cutpoint proxy` is required.

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -402,10 +404,10 @@ def test_generate_config_and_permissions(temp_home: Path) -> None:
 
     kp = cliproxy.keys_path()
     assert kp.exists()
-    mode = stat.S_IMODE(kp.stat().st_mode)
-    assert mode == 0o600
-    dir_mode = stat.S_IMODE(kp.parent.stat().st_mode)
-    assert dir_mode == 0o700
+    if os.name != "nt":
+        # Windows does not support POSIX permission bits.
+        assert stat.S_IMODE(kp.stat().st_mode) == 0o600
+        assert stat.S_IMODE(kp.parent.stat().st_mode) == 0o700
 
 
 def test_run_missing_custom_binary_fails(temp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -417,10 +419,13 @@ def test_run_missing_custom_binary_fails(temp_home: Path, monkeypatch: pytest.Mo
 
 
 def test_run_nonzero_exit_fails(temp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_bin = temp_home / "fake_bin"
-    fake_bin.write_text("#!/bin/sh\nexit 2\n")
-    fake_bin.chmod(0o755)
-    monkeypatch.setenv("CUTPOINT_CLIPROXY_BINARY", str(fake_bin))
+    monkeypatch.setenv("CUTPOINT_CLIPROXY_BINARY", sys.executable)
+    real_popen = subprocess.Popen
+
+    def popen_exit_2(_args, **kwargs):
+        return real_popen([sys.executable, "-c", "raise SystemExit(2)"], **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", popen_exit_2)
 
     with pytest.raises(cliproxy.ProxyError, match="exited with non-zero code 2"):
         cliproxy.run()
@@ -431,6 +436,10 @@ def test_empty_port_env_ignored(temp_home: Path, monkeypatch: pytest.MonkeyPatch
     assert cliproxy.port() == cliproxy.DEFAULT_PORT
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX executable bit; Windows os.access(X_OK) only checks existence",
+)
 def test_run_nonexecutable_binary_fails(temp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     non_exec = temp_home / "non_exec"
     non_exec.write_text("#!/bin/sh\necho hi\n")

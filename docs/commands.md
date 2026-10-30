@@ -1388,9 +1388,9 @@ sessions, or run assistant or vision requests with a subscription provider.
 On first run, `cutpoint proxy` lazily downloads the checksum-verified ~24 MB binary (pinned version
 8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on port 8317 (`CUTPOINT_CLIPROXY_PORT` or
 `--port` overrides the port; `CUTPOINT_CLIPROXY_BINARY` overrides the executable path). Proxy
-configuration and credentials live in private on-disk files under `<CUTPOINT_HOME>/cliproxy/`
-(directory mode `0700`, files `0600`), separate from the system keyring; auth files are stored as
-plaintext on disk protected by file and directory permissions rather than at-rest encryption.
+configuration and credentials live in on-disk files under `<CUTPOINT_HOME>/cliproxy/`, separate
+from the system keyring. POSIX directories use mode `0700` and files `0600`; Windows access
+depends on inherited filesystem ACLs. Auth files are plaintext, not encrypted at rest.
 Separate client and management tokens are randomly generated on first setup, persisted in
 `keys.json`, and bound to loopback. Prompt cloaking is disabled and commercial mode is set so
 prompt and error logging are disabled.

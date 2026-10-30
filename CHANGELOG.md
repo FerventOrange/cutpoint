@@ -25,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Code, Codex and Antigravity subscriptions. First run lazily downloads the checksum-verified ~24 MB
   binary (pinned 8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on loopback `127.0.0.1:8317`
   (customizable with `--port` or `CUTPOINT_CLIPROXY_PORT`, binary with `CUTPOINT_CLIPROXY_BINARY`).
-  Auth tokens and config are stored in private files under `<CUTPOINT_HOME>/cliproxy/` (`0700` dir,
-  `0600` files; auth records in `auths/` stored in plaintext on disk protected by file permissions),
-  not in the system keyring or `config.json`. Direct API keys continue to use the system keyring.
+  Auth tokens and config are stored under `<CUTPOINT_HOME>/cliproxy/` (`0700` directories and
+  `0600` files on POSIX; inherited filesystem ACLs on Windows). Auth records in `auths/` are
+  plaintext, not encrypted or stored in the system keyring or `config.json`. Direct API keys
+  continue to use the system keyring.
   Existing keyring grants are not migrated automatically; fresh login is required. Prompt cloaking
   is disabled and commercial mode is enforced with prompt and error logging disabled. Separate client
   and management tokens are generated once and persisted in `keys.json`.
