@@ -723,13 +723,18 @@ class PanoExporter:
             sel = sel or path.get("selected")
             pl = path.get("planned", {})
             axis = G.cached_forward_axis(Path(clip.source))  # None: no track cached, no check
+            from cutpoint.pano.views import DET_FRAME  # noqa: PLC0415
+
             if path.get("version", 1) < D.MIN_REUSE_VERSION:
                 logger.warning(
                     "  %s: version %s director path predates the current framing; re-directing",
                     reuse,
                     path.get("version", 1),
                 )
-            elif axis is not None and path.get("forward_axis", G.axis_name(G.FORWARD_V)) != axis:
+            elif axis is not None and (
+                path.get("forward_axis", G.axis_name(G.FORWARD_V)) != axis
+                or (axis == G.axis_name(G.LENS_V) and path.get("det_frame") != DET_FRAME)
+            ):
                 logger.warning(
                     "  %s: planned for another forward axis (upright clip); re-directing", reuse
                 )

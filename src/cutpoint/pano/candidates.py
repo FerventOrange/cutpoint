@@ -811,7 +811,7 @@ def _level_forward(
     :data:`~cutpoint.pano.director.PATH_MARGIN_S` on both sides, as a director path
     (:func:`~cutpoint.pano.director.planned_span`)."""
     from cutpoint.pano import render as R  # noqa: PLC0415
-    from cutpoint.pano.views import forward_yaw, load_views  # noqa: PLC0415
+    from cutpoint.pano.views import DET_FRAME, forward_yaw, load_views  # noqa: PLC0415
 
     try:
         p = effective_params(kind, overrides)
@@ -853,6 +853,7 @@ def _level_forward(
     }
     if level == "imu" and axis not in (None, G.axis_name(G.FORWARD_V)):
         path["forward_axis"] = axis  # an upright clip (its preview key differs)
+        path["det_frame"] = DET_FRAME  # its forward_yaw is from views sampled in that frame
     return {"path": path, "kind": "level_forward", "reason": why}
 
 

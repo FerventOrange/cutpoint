@@ -508,7 +508,7 @@ def test_path_for_replans_a_reused_path_of_another_forward_axis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """An upright clip's path planned before the fix (no ``forward_axis``) is re-planned and
-    backed up; one with the clip's axis is reused."""
+    backed up; one with the clip's axis (and the views' ``det_frame``) is reused."""
     from cutpoint.pano import render as R  # noqa: PLC0415
 
     monkeypatch.setattr(R, "load", lambda project: {})
@@ -525,9 +525,13 @@ def test_path_for_replans_a_reused_path_of_another_forward_axis(
         got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
     assert got["keys"] == ["new"] and "another forward axis" in caplog.text
     assert json.loads(old.with_name("001_a.json.bak").read_text())["keys"] == ["old"]
-    old.write_text(json.dumps(path | {"forward_axis": "+z"}), encoding="utf-8")
+    upright = {"forward_axis": "+z", "det_frame": "-z"}
+    old.write_text(json.dumps(path | upright), encoding="utf-8")
     got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
     assert got["keys"] == ["old"]
+    old.write_text(json.dumps(path | {"forward_axis": "+z"}), encoding="utf-8")  # d10b5c0 views
+    got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
+    assert got["keys"] == ["new"]
     old.write_text(json.dumps(path | {"forward_axis": "-z"}), encoding="utf-8")  # first sign
     got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)
     assert got["keys"] == ["new"]

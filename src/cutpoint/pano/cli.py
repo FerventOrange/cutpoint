@@ -503,6 +503,12 @@ def _plan_key(
     return json.dumps([seg, p] + ([fwd] if fwd is not None else []), sort_keys=True)
 
 
+def _axis_key(fwd: Any, det_frame: Any) -> Any:
+    """``fwd`` of :func:`_plan_key`: ``None`` for the default axis, else the axis and the
+    views' detector frame (upright paths planned without ``det_frame`` are re-planned)."""
+    return None if fwd is None else [fwd, det_frame]
+
+
 def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
     """Plan key -> ``(stem, path)`` of the current-version path JSONs in ``out_dir``."""
     from cutpoint.pano.director import PATH_VERSION  # noqa: PLC0415
@@ -520,7 +526,7 @@ def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
             path.get("kind"),
             path.get("vertical"),
             path.get("params"),
-            path.get("forward_axis"),
+            _axis_key(path.get("forward_axis"), path.get("det_frame")),
         )
         found[key] = (f.stem, path)
     return found
@@ -657,6 +663,7 @@ def _direct(
     ``checker`` (:func:`_vl_checker`) is unloaded by the caller."""
     from cutpoint.pano import director as D  # noqa: PLC0415
     from cutpoint.pano import geometry as G  # noqa: PLC0415
+    from cutpoint.pano import views as VW  # noqa: PLC0415
     from cutpoint.pano.project import (  # noqa: PLC0415
         RenderSource,
         clip_for,
@@ -677,7 +684,7 @@ def _direct(
         p = D.params_for(m.get("kind"))
         p = asdict(D.with_params(p, overrides) if overrides else p)
         fwd = G.cached_forward_axis(Path(clip.source))
-        fwd = fwd if fwd != G.axis_name(G.FORWARD_V) else None
+        fwd = _axis_key(fwd, VW.DET_FRAME) if fwd != G.axis_name(G.FORWARD_V) else None
         key = _plan_key(clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p, fwd)
         segs.append((f"{i:03d}_{slugify(m.get('label', ''), 40)}", m, clip, key))
     stems = {stem for stem, *_ in segs}

@@ -7,16 +7,20 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from cutpoint import cache
+from cutpoint.events import visual as V
 from cutpoint.pano import cli as PC
 from cutpoint.pano import geometry as G
 from cutpoint.pano import render
 from cutpoint.pano import views as VW
+from cutpoint.pano.x3 import X3Clip
 
 FPS, DT, DUR = 30.0, 0.001, 12.0
 
@@ -177,7 +181,9 @@ def _write_views(src: Path, meta: dict) -> None:
         ([0.0, 0.0, -1.0], {}, True),  # helmet: as before
         (None, {}, True),  # no orientation cached: taken as it is
         ([0.0, -1.0, 0.0], {}, False),  # upright, computed before the fix
-        ([0.0, -1.0, 0.0], {"forward_axis": "+z"}, True),
+        ([0.0, -1.0, 0.0], {"forward_axis": "+z"}, False),  # d10b5c0: equirect in +z yaw
+        ([0.0, -1.0, 0.0], {"forward_axis": "+z", "det_frame": "-z"}, True),
+        ([0.0, 0.0, -1.0], {"det_frame": "-z"}, True),  # helmet: no det_frame check
         ([0.0, 0.0, -1.0], {"forward_axis": "+z"}, False),
         ([0.0, -1.0, 0.0], {"forward_axis": "-z"}, False),  # this branch's first sign
     ],
@@ -231,11 +237,15 @@ def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
         "params": {"a": 1},
     }
     cache.save_json(tmp_path / "001_a.json", base)
-    cache.save_json(tmp_path / "002_b.json", base | {"clip": "002", "forward_axis": "+z"})
+    upright = {"clip": "002", "forward_axis": "+z", "det_frame": VW.DET_FRAME}
+    cache.save_json(tmp_path / "002_b.json", base | upright)
+    cache.save_json(tmp_path / "003_c.json", base | upright | {"clip": "003", "det_frame": None})
     found = PC._reusable(tmp_path)
     assert PC._plan_key(*seg) in found
-    assert PC._plan_key("002", *seg[1:], "+z") in found
+    now = PC._axis_key("+z", VW.DET_FRAME)
+    assert PC._plan_key("002", *seg[1:], now) in found
     assert PC._plan_key("002", *seg[1:]) not in found  # planned upright, now default: re-plan
+    assert PC._plan_key("003", *seg[1:], now) not in found  # d10b5c0's +z views: re-plan
 
 
 # --------------------------------------------------------------------------- yaw 0 and meta
@@ -267,3 +277,90 @@ def test_a_stale_axis_in_the_meta_is_replaced() -> None:
         heading_smooth=np.zeros(3), meta={"fps": FPS, "forward_axis": "-z"},
     )  # fmt: skip
     assert o.meta["forward_axis"] == "+z"
+
+
+# --------------------------------------------------------------------------- detector frame
+def _upright_pair(n: int = 600) -> tuple[G.Orientation, G.Orientation]:
+    """An upright, tipped and turning track (``+z``) and the same track levelled by the
+    ``_00_`` lens (``-z``, the frame of 4b3894b; reported as the default axis)."""
+    k = np.arange(n)
+    up = np.stack([0.1 * np.sin(k / 50), -np.ones(n), 0.15 + 0.05 * np.cos(k / 70)], 1)
+    up /= np.linalg.norm(up, axis=1, keepdims=True)
+    o = G.Orientation(t=k / FPS, up=up, heading=0.7 * k, heading_smooth=0.6 * k, meta={"fps": FPS})
+    minus = G.Orientation(
+        t=o.t, up=up, heading=o.heading, heading_smooth=o.heading_smooth, meta={"fps": FPS}
+    )
+    minus.fwd = -G.LENS_V
+    assert o.forward_axis == "+z" and minus.forward_axis == "-y"
+    return o, minus
+
+
+def test_flip_is_exact() -> None:
+    o, minus = _upright_pair()
+    for t in o.t[::37]:
+        assert (o.r_vw(t) @ VW.DET_FLIP).tobytes() == minus.r_vw(t).tobytes()
+
+
+def test_upright_views_are_the_minus_z_views_relabelled(home, tmp_path, monkeypatch) -> None:
+    """``compute_views`` on an upright clip: the -z frame's detections, embeddings and crops
+    (4b3894b), with yaw + 180 and +z view k = -z view k + 4; the selfie pass too."""
+    import test_pano_selfie_recompute as SR  # noqa: PLC0415
+
+    rec = SimpleNamespace(built=[], closed=0, det_calls=0, embeds=[])
+    monkeypatch.setitem(sys.modules, "torch", SR.FAKE_TORCH)
+    monkeypatch.setattr(G, "FisheyeSampler", SR._Sampler)
+    monkeypatch.setattr(V, "iter_frames", SR._frames)
+    lrv = tmp_path / "LRV_001.lrv"
+    lrv.write_bytes(b"x")
+    clip = X3Clip("001", "2026-01-01", "5.7k", str(lrv), [], frames=600, duration=20.0)
+    p = VW.ViewParams(view_px=4, eq_width=32)
+    models = SR._Models(rec)
+    o, minus = _upright_pair()
+    plus = VW.compute_views(clip, models, p, o)
+    ref = VW.compute_views(clip, models, p, minus)
+    assert len(ref.det) and len(ref.box_idx)
+    assert plus.emb.tobytes() == ref.emb[:, VW.DET_PERM].tobytes()
+    assert plus.emb[:, 0].tobytes() == ref.emb[:, 4].tobytes()  # +z yaw 0 = -z yaw 180
+    assert plus.emb[:, VW.SELFIE].tobytes() == ref.emb[:, VW.SELFIE].tobytes()
+    yaw = 3
+    rest = [c for c in range(len(VW.DET_COLS)) if c != yaw]
+    assert plus.det[:, rest].tobytes() == ref.det[:, rest].tobytes()
+    assert np.allclose(plus.det[:, yaw], G.wrap_deg(ref.det[:, yaw] + 180.0), atol=1e-4)
+    for k in ("t", "box_emb", "box_idx", "rays"):
+        assert getattr(plus, k).tobytes() == getattr(ref, k).tobytes(), k
+    assert plus.meta["forward_axis"] == "+z" and plus.meta["det_frame"] == "-z"
+    assert "det_frame" not in ref.meta
+    # the selfie pass reuses the relabelled rows and permutes its views the same way
+    axis = np.array([0.3, 0.7, 0.65]) / np.linalg.norm([0.3, 0.7, 0.65])
+    plus2 = VW.compute_views(clip, models, p, o, wearer_v=axis, reuse=plus)
+    ref2 = VW.compute_views(clip, models, p, minus, wearer_v=axis, reuse=ref)
+    assert plus2.emb.tobytes() == ref2.emb[:, VW.DET_PERM].tobytes()
+    assert plus2.det[:, rest].tobytes() == ref2.det[:, rest].tobytes()
+    assert plus2.meta["det_frame"] == "-z"
+    # the standard visual layer gets 4b3894b's crops (same camera directions)
+    vis = {}
+    for name, pv in (("plus", plus), ("ref", ref)):
+        src = tmp_path / f"{name}.lrv"
+        src.write_bytes(b"x")
+        with np.load(VW.write_standard_visual(src, pv)) as z:
+            vis[name] = {f: z[f].tobytes() for f in z.files}
+    assert vis["plus"] == vis["ref"]
+
+
+def test_upright_viterbi_ties_break_as_in_the_minus_z_frame() -> None:
+    """Two equal vistas: +z (bins rolled by n_bins / 2) keeps -z's camera direction."""
+    from cutpoint.pano import director as D  # noqa: PLC0415
+
+    p = D.DirectorParams()
+    nb = p.n_bins
+    ys = np.zeros((20, nb))
+    ys[:, [5, 30]] = 1.0  # an exact tie
+    sg = {
+        "yaw_score": ys,
+        "selfie": np.full(20, -9.0),
+        "centres": np.arange(nb) * 360.0 / nb,
+    }
+    ref = D._viterbi(sg, p)
+    plus = D._viterbi(sg | {"yaw_score": np.roll(ys, nb // 2, 1)}, p, roll=nb // 2)
+    assert np.array_equal((plus + nb // 2) % nb, ref)
+    assert np.array_equal(D._viterbi(sg, p, roll=0), ref)

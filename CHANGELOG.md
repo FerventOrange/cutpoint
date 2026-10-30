@@ -249,10 +249,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clip now takes yaw 0 from the axis of the `_10_` lens, chosen once per clip from its
   orientation track (logged at INFO and recorded as `forward_axis` in its orientation meta,
   view layer and paths). Its wearer direction is found as on a helmet clip; a default suited to
-  upright mounts is left to #573. Its cached view layer is not used until `360 analyze`
-  computes it again (an INFO line says so), and its director paths are planned again (a
-  WARNING when `clips --force` or `extend` would have reused one); helmet-mount clips are
-  unchanged and keep their caches.
+  upright mounts is left to #573. Its people, views and selfie view are detected as before this
+  change, only relabelled to the new yaw (`det_frame` in its view layer and paths). Its cached
+  view layer is not used until `360 analyze` computes it again (an INFO line says so), and its
+  director paths are planned again (a WARNING when `clips --force` or `extend` would have
+  reused one); helmet-mount clips are unchanged and keep their caches.
 - `360 analyze --json` after a failure no longer names an earlier run's `pano_timings.json` as
   this run's (#11): once `highlights.json` changed, `outputs.timings` is `null`, whether the
   file was removed or could not be (then a `stale_timings_kept` warning names it).
