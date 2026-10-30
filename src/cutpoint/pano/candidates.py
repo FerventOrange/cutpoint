@@ -811,15 +811,15 @@ def _level_forward(
     :data:`~cutpoint.pano.director.PATH_MARGIN_S` on both sides, as a director path
     (:func:`~cutpoint.pano.director.planned_span`)."""
     from cutpoint.pano import render as R  # noqa: PLC0415
-    from cutpoint.pano.views import forward_yaw, load_views  # noqa: PLC0415
+    from cutpoint.pano.views import DET_FRAME, forward_yaw, load_views  # noqa: PLC0415
 
     try:
         p = effective_params(kind, overrides)
     except ValueError:
         p = D.params_for(kind)
-    level, yaw = "imu", 0.0
+    level, yaw, axis = "imu", 0.0, None
     try:
-        R.clip_orientation(clip)  # the track render_segment levels with (now cached)
+        axis = R.clip_orientation(clip).forward_axis  # render_segment's track (now cached)
     except Exception as err:  # noqa: BLE001 - no IMU: the upright horizon
         # footage offline: levelled by the IMU once it is back (render_segment reads it)
         if _reachable(clip) and (not isinstance(err, OSError) or _no_imu(clip)):
@@ -851,6 +851,9 @@ def _level_forward(
         "seconds_by_target": {"forward": round(t1 - t0, 1)},
         "keys": keys,
     }
+    if level == "imu" and axis not in (None, G.axis_name(G.FORWARD_V)):
+        path["forward_axis"] = axis  # an upright clip (its preview key differs)
+        path["det_frame"] = DET_FRAME  # its forward_yaw is from views sampled in that frame
     return {"path": path, "kind": "level_forward", "reason": why}
 
 

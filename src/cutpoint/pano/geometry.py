@@ -11,7 +11,10 @@ Frames (all right-handed, x right, y down, z forward, as in ``v360``):
 ``W`` (display world)
     Horizon-levelled: -y is up (from the fused IMU), yaw 0 is the camera's
     forward direction (``FORWARD_V``, where the skis point), smoothed over
-    ``heading_smooth_s`` so the view does not swing with every turn.
+    ``heading_smooth_s`` so the view does not swing with every turn. A clip
+    filmed upright (lenses horizontal: handheld, on a pole) has ``FORWARD_V``
+    near vertical; its yaw 0 is the ``_10_`` lens axis ``LENS_V`` instead
+    (:func:`forward_axis`, one choice per clip).
 
 ``v360`` rotation (measured): with ``rorder=ypr``, an output ray ``d`` samples
 the input along ``Ry(yaw) @ Rp(pitch) @ Rr(roll) @ d``, where ``Ry`` turns +z
@@ -34,7 +37,7 @@ import logging
 import math
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +51,8 @@ ORIENT_VERSION = 2
 LEVEL_VERSION = 1  # the up / heading part of the track (unchanged since v1; views cache key)
 M_IMU_TO_V = np.array([[0.0, 0.0, -1.0], [0.0, -1.0, 0.0], [-1.0, 0.0, 0.0]])
 FORWARD_V = np.array([0.0, -1.0, 0.0])  # where the skis point (camera "front")
+LENS_V = np.array([0.0, 0.0, 1.0])  # the _10_ lens: yaw 0 of an upright clip (forward_axis)
+FORWARD_MIN_HORIZONTAL = 0.5  # forward_axis keeps FORWARD_V while its median |horizontal| >= this
 # The wearer seen from the downward lens: helmet near the +y edge of the
 # _10_ circle, body toward its centre. Measured from person detections (the
 # 366 boxes taller than 60 deg on clip 030 have median direction
@@ -136,6 +141,32 @@ def level_matrix(up_v: np.ndarray, fwd_v: np.ndarray = FORWARD_V) -> np.ndarray:
     return np.stack([x, y, f], 1)
 
 
+def axis_name(v: np.ndarray) -> str:
+    """``"-y"`` for :data:`FORWARD_V`, ``"+z"`` for :data:`LENS_V` (meta and cache keys)."""
+    return "+z" if np.array_equal(v, LENS_V) else "-y"
+
+
+def forward_axis(up: np.ndarray) -> np.ndarray:
+    """The camera axis whose horizontal direction is a clip's yaw 0, from its ``up`` track.
+
+    :data:`FORWARD_V` (the helmet mount's front) while its median horizontal
+    part is at least :data:`FORWARD_MIN_HORIZONTAL`; else :data:`LENS_V` when
+    that lies more level (an upright camera, whose ``FORWARD_V`` points near
+    up or down, so its horizontal part is tiny and its direction noise). One
+    axis per clip, so the yaw 0 never jumps; whichever of the two is more
+    level is at least 45 deg from vertical. Its sign: on upright raft footage the
+    ``_10_`` lens (+z) faced the travel direction (the ``_00_`` lens the paddlers).
+    """
+    up = np.asarray(up, float).reshape(-1, 3)
+    if not len(up):
+        return FORWARD_V
+    hy = float(np.median(np.sqrt(np.clip(1.0 - (up @ FORWARD_V) ** 2, 0.0, 1.0))))
+    if hy >= FORWARD_MIN_HORIZONTAL:
+        return FORWARD_V
+    hz = float(np.median(np.sqrt(np.clip(1.0 - (up @ LENS_V) ** 2, 0.0, 1.0))))
+    return LENS_V if hz > hy else FORWARD_V
+
+
 def flat_fov(h_fov: float, width: int, height: int) -> float:
     """Vertical FOV (deg) of a rectilinear view with horizontal FOV ``h_fov``."""
     return math.degrees(2 * math.atan(math.tan(math.radians(h_fov) / 2) * height / width))
@@ -157,6 +188,7 @@ class Orientation:
             y, z)``, ``(N, 4)``; world -y is up, its yaw zero arbitrary), read
             ``meta["q_offset_s"]`` after each frame time; used by the renderer.
             ``up`` / ``heading`` stay the director's frame.
+        fwd: The camera axis of yaw 0 (:func:`forward_axis` of ``up``; set on creation).
     """
 
     t: np.ndarray
@@ -165,6 +197,17 @@ class Orientation:
     heading_smooth: np.ndarray
     meta: dict[str, Any]
     q: np.ndarray | None = None
+    fwd: np.ndarray = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self.fwd = forward_axis(self.up)
+        if self.forward_axis != axis_name(FORWARD_V):  # upright: recorded (helmet meta as is)
+            self.meta["forward_axis"] = self.forward_axis
+
+    @property
+    def forward_axis(self) -> str:
+        """Name of :attr:`fwd` (:func:`axis_name`)."""
+        return axis_name(self.fwd)
 
     def cam_to_world(self, idx: np.ndarray) -> np.ndarray:
         """Camera -> world rotations ``(K, 3, 3)`` at frame indices ``idx`` (clamped)."""
@@ -178,7 +221,7 @@ class Orientation:
     def r_vw(self, t: float) -> np.ndarray:
         """``R_VW`` at time ``t``: display-world -> camera coordinates."""
         i = self.index(t)
-        return level_matrix(self.up[i]) @ rot_y(self.heading[i] - self.heading_smooth[i])
+        return level_matrix(self.up[i], self.fwd) @ rot_y(self.heading[i] - self.heading_smooth[i])
 
     def tilt_deg(self, t: float) -> float:
         """Angle between the camera's ``-z`` (sky lens) and up (for logs)."""
@@ -229,6 +272,20 @@ def load_orientation(source: Path) -> Orientation | None:
     if "fps" not in meta:
         return None
     return _read_orientation(path, meta)
+
+
+def cached_forward_axis(source: Path) -> str | None:
+    """:attr:`Orientation.forward_axis` of a clip's cached track (reads only its ``up``), or
+    None when there is none (never parses the IMU)."""
+    try:
+        path = _orient_path(source)
+        with np.load(path) as z:
+            return axis_name(forward_axis(z["up"]))
+    except _NPZ_ERRORS:
+        return None
+
+
+_AXIS_LOGGED: set[str] = set()  # sources whose non-default forward axis was logged
 
 
 def wearer_yaw(orient: Orientation, times: np.ndarray, axis: np.ndarray = WEARER_V) -> np.ndarray:
@@ -447,6 +504,7 @@ def orientation(
     meta = cache.load_json(path.with_suffix(".json")) or {"fps": fps}
     same = q_offset_s is None or meta.get("q_offset_s", 0.0) == q_offset_s
     if not force and same and (cached := _read_orientation(path, meta)) is not None:
+        _log_axis(source, cached)
         return cached
     t0 = time.perf_counter()
     t, acc, gyr = load_imu(insv00)
@@ -463,7 +521,19 @@ def orientation(
     )
     cache.save_bytes(path, buf.getvalue())
     cache.save_json(path.with_suffix(".json"), o.meta)
+    _log_axis(source, o)
     return o
+
+
+def _log_axis(source: Path, o: Orientation) -> None:
+    """INFO once per source and process when its yaw 0 is not :data:`FORWARD_V`."""
+    if o.forward_axis != axis_name(FORWARD_V) and str(source) not in _AXIS_LOGGED:
+        _AXIS_LOGGED.add(str(source))
+        logger.info(
+            "%s: camera upright (lenses horizontal); yaw 0 follows the _10_ lens axis (%s)",
+            Path(source).name,
+            o.forward_axis,
+        )
 
 
 # --------------------------------------------------------------------------- projection

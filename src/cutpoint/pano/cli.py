@@ -494,10 +494,19 @@ def director_params(items: list[str] | None) -> dict[str, Any] | None:
     return merged
 
 
-def _plan_key(clip_id: str, start: float, end: float, kind: Any, vertical: bool, p: Any) -> str:
-    """What a director path depends on (besides the clip's cached layers)."""
+def _plan_key(
+    clip_id: str, start: float, end: float, kind: Any, vertical: bool, p: Any, fwd: Any = None
+) -> str:
+    """What a director path depends on (besides the clip's cached layers); ``fwd``: the
+    clip's forward axis when not the default (an upright clip)."""
     seg = [clip_id, round(start, 3), round(end, 3), kind, vertical]
-    return json.dumps([seg, p], sort_keys=True)
+    return json.dumps([seg, p] + ([fwd] if fwd is not None else []), sort_keys=True)
+
+
+def _axis_key(fwd: Any, det_frame: Any) -> Any:
+    """``fwd`` of :func:`_plan_key`: ``None`` for the default axis, else the axis and the
+    views' detector frame (upright paths planned without ``det_frame`` are re-planned)."""
+    return None if fwd is None else [fwd, det_frame]
 
 
 def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
@@ -517,6 +526,7 @@ def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
             path.get("kind"),
             path.get("vertical"),
             path.get("params"),
+            _axis_key(path.get("forward_axis"), path.get("det_frame")),
         )
         found[key] = (f.stem, path)
     return found
@@ -652,6 +662,8 @@ def _direct(
     stems of the paths written, in order, and whether this run saved ``vl_check.json``.
     ``checker`` (:func:`_vl_checker`) is unloaded by the caller."""
     from cutpoint.pano import director as D  # noqa: PLC0415
+    from cutpoint.pano import geometry as G  # noqa: PLC0415
+    from cutpoint.pano import views as VW  # noqa: PLC0415
     from cutpoint.pano.project import (  # noqa: PLC0415
         RenderSource,
         clip_for,
@@ -671,7 +683,9 @@ def _direct(
             continue
         p = D.params_for(m.get("kind"))
         p = asdict(D.with_params(p, overrides) if overrides else p)
-        key = _plan_key(clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p)
+        fwd = G.cached_forward_axis(Path(clip.source))
+        fwd = _axis_key(fwd, VW.DET_FRAME) if fwd != G.axis_name(G.FORWARD_V) else None
+        key = _plan_key(clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p, fwd)
         segs.append((f"{i:03d}_{slugify(m.get('label', ''), 40)}", m, clip, key))
     stems = {stem for stem, *_ in segs}
     # old stems whose path is reused under a new stem (known up front: an earlier segment may
