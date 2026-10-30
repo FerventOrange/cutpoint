@@ -140,9 +140,30 @@ def test_codex_chat_converts_neutral_images_to_image_url(
 def test_codex_not_logged_in_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         providers.cliproxy,
-        "status",
-        lambda p: {"logged_in": False, "error": "run cutpoint login codex first"},
+        "chat",
+        lambda prov, req: (_ for _ in ()).throw(
+            providers.cliproxy.ProxyError("run cutpoint login codex first")
+        ),
     )
-    p = providers.SubscriptionProvider("codex", "", "", 0)
+    p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
     with pytest.raises(ProviderError, match="run cutpoint login codex first"):
         p.chat([{"role": "user", "content": "hi"}])
+
+
+def test_codex_chat_does_not_check_management_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        providers.cliproxy,
+        "status",
+        lambda p: (_ for _ in ()).throw(AssertionError("unexpected management status request")),
+    )
+    monkeypatch.setattr(
+        providers.cliproxy,
+        "chat",
+        lambda prov, req: {
+            "choices": [
+                {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+            ]
+        },
+    )
+    p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
+    assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"

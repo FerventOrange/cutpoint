@@ -58,12 +58,6 @@ documents every key.
     configured vision model unless ``--no-vision`` is given (``--vision`` turns it on for one run).
     Default ``false``: vision is opt-in. The Models tab in ``cutpoint ui`` changes it.
 
-``vision_backend``
-    ``ollama`` (default) or ``assistant``: ``assistant`` sends the frames of ``--vision`` and
-    ``360 director --vl-check`` to the subscription ``assistant.provider`` (``claude-code``,
-    ``codex`` or ``antigravity``) via ``cutpoint proxy`` once ``assistant.consent`` lists it,
-    instead of Ollama. When a ``vision_assistant`` section is present, that section sets the vision
-    role directly and takes precedence.
 
 ``vision_assistant``
     The model that rates frames, set in the Models tab independently of the chat model:
@@ -106,8 +100,8 @@ documents every key.
     context size; default 8192 on this machine, 32768 hosted) and ``consent``
     (``<provider>@<host>`` of the hosted providers the user agreed to send project text to).
     Direct API keys are kept in the OS keyring and never read from or written to this file
-    (see :mod:`cutpoint.assistant.keys`); subscription credentials and tokens are stored in private
-    files in ``CUTPOINT_HOME/cliproxy`` by the ``cutpoint proxy`` daemon.
+    (see :mod:`cutpoint.assistant.keys`); subscription credentials are persisted in the same
+    OS keyring, with private working files while ``cutpoint proxy`` runs.
 The analysis cache key is canonicalised through the same table (a remapped
 path is keyed as its original), so a remapped source with the same size and
 mtime keeps its cache.
@@ -135,7 +129,6 @@ logger = logging.getLogger(__name__)
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
 COLOR_MODES = ("off", "auto", "underwater")  # --color; the grades are cutpoint.color.MODES
-VISION_BACKENDS = ("ollama", "assistant")  # vision_backend: who answers the frame requests
 VISION_PROVIDERS = ("ollama", "claude-code", "codex", "antigravity")
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
 ASSISTANT_PROVIDERS = (
@@ -178,7 +171,6 @@ class Config:
     export_workers: int | None = None  # None: auto
     assistant: AssistantSettings = field(default_factory=AssistantSettings)
     color: str = "off"
-    vision_backend: str = "ollama"
     vision_assistant: AssistantSettings = field(default_factory=AssistantSettings)
 
 
@@ -314,31 +306,11 @@ def _load_config(path: Path) -> Config:
     color = data.get("color") or "off"
     if color not in COLOR_MODES:
         raise ValueError(f"{path}: color is {color!r}; expected one of {', '.join(COLOR_MODES)}")
-    if "vision_assistant" in data:
-        v_ast = _vision_assistant(path, data)
-        backend = data.get("vision_backend")
-        if backend is not None:
-            if backend not in VISION_BACKENDS:
-                raise ValueError(
-                    f"{path}: vision_backend is {backend!r}; expected one of {', '.join(VISION_BACKENDS)}"
-                )
-        else:
-            backend = (
-                "assistant"
-                if v_ast.provider in ("claude-code", "codex", "antigravity")
-                else "ollama"
-            )
-    else:
-        backend = data.get("vision_backend") or "ollama"
-        if backend not in VISION_BACKENDS:
-            raise ValueError(
-                f"{path}: vision_backend is {backend!r}; expected one of {', '.join(VISION_BACKENDS)}"
-            )
-        v_ast = (
-            _assistant(path, data)
-            if backend == "assistant"
-            else AssistantSettings(provider="ollama")
-        )
+    v_ast = (
+        _vision_assistant(path, data)
+        if "vision_assistant" in data
+        else AssistantSettings(provider="ollama")
+    )
     return Config(
         projects,
         pairs,
@@ -353,7 +325,6 @@ def _load_config(path: Path) -> Config:
         _export_workers(path, data),
         _assistant(path, data),
         color,
-        backend,
         v_ast,
     )
 

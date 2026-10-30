@@ -1,5 +1,4 @@
-"""``vision_backend: assistant``: the frame rater and the 360 VL check ask the subscription
-provider (consent first) instead of Ollama. No network: the provider and ``requests`` are fakes."""
+"""The vision rater and 360 VL check use the configured vision_assistant provider."""
 
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ def fake(home, monkeypatch) -> FakeSubscription:
     monkeypatch.setattr(vision.requests, "post", no_network)
     monkeypatch.setattr(vision.requests, "get", no_network)
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: JPEG)
-    set_config(home, vision_backend="assistant", assistant={"consent": [CONSENT]})
+    set_config(home, vision_assistant={"provider": "codex", "model": "gpt-x", "consent": [CONSENT]})
     return fake
 
 
@@ -60,7 +59,7 @@ def test_the_rater_sends_its_frames_to_the_provider(fake) -> None:
 
 
 def test_nothing_is_sent_before_the_user_agreed(fake, home) -> None:
-    set_config(home, vision_backend="assistant", assistant={"consent": []})
+    set_config(home, vision_assistant={"provider": "codex", "model": "gpt-x", "consent": []})
     rater = vision.VisionRater()
     assert not rater.available()
     assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None and fake.sent == []
@@ -101,9 +100,9 @@ def test_image_parts_reach_each_wire_format() -> None:
     }
 
 
-def test_a_bad_backend_is_a_config_error(home) -> None:
-    set_config(home, vision_backend="gemini")
-    with pytest.raises(ValueError, match="vision_backend"):
+def test_a_bad_vision_provider_is_a_config_error(home) -> None:
+    set_config(home, vision_assistant={"provider": "gemini"})
+    with pytest.raises(ValueError, match=r"vision_assistant\.provider"):
         vision.VisionRater()
 
 
@@ -163,7 +162,6 @@ def test_rating_cache_key_distinguishes_provider() -> None:
 def test_offline_refresh_skips_vision_instead_of_raising(home, monkeypatch) -> None:
     set_config(
         home,
-        vision_backend="assistant",
         vision_assistant={
             "provider": "codex",
             "model": "gpt-x",

@@ -623,7 +623,6 @@ def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) 
     assert res.status_code == 200
     data = res.json()
     assert "vision_assistant" in data
-    assert "vision_backend" in data
     assert "vision_consent" in data
     v_view = data["vision_assistant"]
     assert v_view["provider"] == "ollama"
@@ -643,7 +642,6 @@ def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) 
     out = res.json()
     assert out["vision_assistant"]["provider"] == "codex"
     assert out["vision_assistant"]["model"] == "gpt-custom"
-    assert out["vision_backend"] == "assistant"
     # Chat assistant unaffected
     assert out["assistant"]["provider"] == "ollama"
 
@@ -667,6 +665,41 @@ def test_models_route_role_parameter(client: TestClient) -> None:
     res = client.get("/api/assistant/models?role=vision&provider=ollama")
     assert res.status_code == 200
     assert "models" in res.json()
+
+
+def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home: Path) -> None:
+    set_config(
+        home,
+        assistant={"provider": "ollama"},
+        vision_assistant={"provider": "codex", "consent": []},
+    )
+    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    model_requests = []
+    monkeypatch.setattr(
+        ui.cliproxy, "list_models", lambda *args, **kwargs: model_requests.append(args) or []
+    )
+    # Without consent, subscription/hosted provider requires consent and returns consent_needed
+    res = client.get("/api/assistant/models?role=vision&provider=codex")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["state"] == "consent_needed"
+    assert model_requests == []
+
+    # Grant consent for vision
+    set_config(
+        home,
+        assistant={"provider": "ollama"},
+        vision_assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
+    )
+    seen = []
+    monkeypatch.setattr(
+        ui.ai_providers,
+        "model_list",
+        lambda provider, consent, **kwargs: seen.append(consent) or {"state": "ok", "models": []},
+    )
+    res2 = client.get("/api/assistant/models?role=vision&provider=codex")
+    assert res2.status_code == 200
+    assert seen == [("codex@chatgpt.com",)]
 
 
 def test_role_aware_consent_endpoint(client: TestClient, monkeypatch, home: Path) -> None:
@@ -697,27 +730,6 @@ def test_subscription_host_pin_rejects_custom_url(client: TestClient) -> None:
 
     with pytest.raises(providers.ProviderError, match="does not accept a custom base URL"):
         providers.SubscriptionProvider("claude-code", url="https://evil.example.com")
-
-
-def test_legacy_consent_seed_preserves_vision_provider(client: TestClient, home: Path) -> None:
-    set_config(
-        home,
-        vision_backend="assistant",
-        assistant={"provider": "claude-code", "model": "claude-3-5-sonnet", "consent": []},
-    )
-    raw = config.load_config_data()
-    assert "vision_assistant" not in raw
-
-    res = client.post(
-        "/api/assistant/consent",
-        json={"role": "vision", "key": "claude-code@api.anthropic.com"},
-    )
-    assert res.status_code == 200
-    fresh = config.load_config_data()
-    assert "vision_assistant" in fresh
-    assert fresh["vision_assistant"]["provider"] == "claude-code"
-    assert fresh["vision_assistant"]["model"] == "claude-3-5-sonnet"
-    assert "claude-code@api.anthropic.com" in fresh["vision_assistant"]["consent"]
 
 
 def test_malformed_consent_does_not_500(client: TestClient, home: Path) -> None:

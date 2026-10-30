@@ -211,8 +211,9 @@ The Models tab (next to AI Chat) sets the model for each role: Chat (the
 with its own provider and model. Provider names say how they sign in: Anthropic API and OpenAI
 API use an API key; Claude Code subscription, Codex subscription and Antigravity subscription
 use a login ("Connected accounts", managed via `cutpoint proxy` and `cutpoint login`). With the
-`cutpoint proxy` daemon running in the foreground, the tab lists each account's advertised models
-(Refresh catalog asks again); Other model… takes any id. The tab works without a project, and
+`cutpoint proxy` daemon running in the foreground and consent granted for the role, the tab lists
+each account's advertised models (Refresh catalog asks again); Other model… takes any id.
+The tab works without a project, and
 one Save models saves both roles. "Rate frames with vision model"
 (off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
 every analysis the UI starts, a first one or "Analyze again", uses it (passed as `--vision` or
@@ -483,8 +484,12 @@ URL is typed:
   `/v1/chat/completions`. Not the Codex subscription below.
 - **Grok (xAI)**: `https://api.x.ai/v1` (OpenAI-compatible); choose an xAI model.
 - **Claude Code subscription**, **Codex subscription** and **Antigravity subscription**: your
-  login (`cutpoint login NAME`, or Connected accounts in the Models tab), no API key. Each lists
-  the models the account itself offers, once logged in; asking for the list sends no project data.
+  login (`cutpoint login NAME`, or Connected accounts in the Models tab), no API key. **Use at your
+  own risk**. Each lists the models the account itself offers, once logged in and after you agree
+  to that provider in the tab; nothing is requested before consent.
+
+All hosted API and subscription providers display **Use at your own risk**. Ollama/Local
+does not show this warning.
 
 A base URL set in `config.json` that no preset has (LM Studio, vLLM, llama-server, OpenRouter, an
 Ollama on another machine) shows as "Custom (from config.json)" and keeps working: its base URL
@@ -659,9 +664,9 @@ an analysed set processes only the new file.
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate top candidates with a local Ollama vision model, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style, so Ollama is never needed unless you ask; `--no-vision` skips it when `config.json` turns it on. The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep theirs, and the model's label names the clip only from a rating of 7. The model is unloaded from GPU memory right after the rating. Ratings are cached per source (`vision-ratings.json`), so a rerun asks Ollama only about candidates it has not rated and repeats the same scores. The cache also records the Ollama model's digest: a model pulled again under the same tag is rated again, and with Ollama down the cached ratings for the tag are used |
+| `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep theirs, and the model's label names the clip only from a rating of 7. A local model is unloaded from GPU memory right after rating. Ollama ratings are cached per source (`vision-ratings.json`), so a rerun asks only about candidates not rated and repeats the same scores. The cache also records the model's digest: a model pulled again under the same tag is rated again, and with Ollama down the cached ratings for the tag are used |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
-| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With [`vision_backend`](configuration.md#vision_backend) `assistant` or a subscription [`vision_assistant`](configuration.md#vision_assistant) in `config.json`, the frames (here and for `360 director --vl-check`) go to the subscription provider (`claude-code`, `codex`, `antigravity`) instead, once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used |
+| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a subscription [`vision_assistant`](configuration.md#vision_assistant) in `config.json`, the frames (here and for `360 director --vl-check`) go to the subscription provider (`claude-code`, `codex`, `antigravity`) instead, once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
@@ -1380,27 +1385,72 @@ cutpoint proxy [--port PORT]
 ```
 
 `proxy` runs the local authenticated [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
-daemon in the foreground. Subscriptions (Claude Code, ChatGPT Codex, Google Antigravity) route
-their OAuth authorization, token refresh and inference requests through this loopback service
-(`127.0.0.1`). Keep `cutpoint proxy` running in a dedicated terminal whenever you log in, refresh
-sessions, or run assistant or vision requests with a subscription provider.
+daemon in the foreground. **Use at your own risk**. Subscriptions (Claude Code, ChatGPT Codex,
+Google Antigravity) route their OAuth authorization, token refresh and inference requests
+through this loopback service (`127.0.0.1`). Available in both full and lite installs without
+requiring local models or PyTorch. Keep `cutpoint proxy` running in a dedicated terminal
+whenever you log in, refresh sessions, or run assistant or vision requests with a subscription provider.
 
 On first run, `cutpoint proxy` lazily downloads the checksum-verified ~24 MB binary (pinned version
-8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on port 8317 (`CUTPOINT_CLIPROXY_PORT` or
-`--port` overrides the port; `CUTPOINT_CLIPROXY_BINARY` overrides the executable path). Proxy
-configuration and credentials live in on-disk files under `<CUTPOINT_HOME>/cliproxy/`, separate
-from the system keyring. POSIX directories use mode `0700` and files `0600`; Windows access
-depends on inherited filesystem ACLs. Auth files are plaintext, not encrypted at rest.
-Separate client and management tokens are randomly generated on first setup, persisted in
-`keys.json`, and bound to loopback. Prompt cloaking is disabled and commercial mode is set so
-prompt and error logging are disabled.
+8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on port 18317 (`CUTPOINT_CLIPROXY_PORT` or
+`--port` overrides the port; `CUTPOINT_CLIPROXY_BINARY` overrides the executable path).
+Subscription credentials use Cutpoint's keyring integration with a native OS backend:
+Secret Service/KWallet, macOS Keychain or Windows Credential Manager. File-based keyrings
+are rejected. A chained backend selects one native store and never falls through to another
+backend after an operation fails. A missing, locked or failing keyring stops startup or
+credential persistence; Cutpoint does not fall back to permanent plaintext storage.
+
+CLIProxyAPI needs private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/`.
+An independent supervisor restores them only after acquiring the daemon lock, checkpoints
+refreshes and removals during the run, and stops and reaps the daemon before final persistence
+and cleanup. If a credential disappears or a read observes incomplete JSON or UTF-8 during a
+periodic scan, the whole snapshot is deferred until the next scan; no partial account map is
+committed. Unsafe paths and permission errors still stop persistence. The supervisor survives
+a foreground CLI hard kill on every supported
+OS. Login and logout report success only after a keyring checkpoint.
+
+If final keyring persistence fails, the supervisor uses its cached recovery key to encrypt the
+latest working files into `<CUTPOINT_HOME>/cliproxy/credential-recovery.enc` before removing
+the plaintext files. The recovery key is stored only in the native OS keyring. The command
+still reports failure; the next start authenticates and recovers the journal before restoring
+older keyring data. Do not delete the journal if you need the latest refreshed credentials.
+Corrupt or incomplete recovery data fails closed rather than replacing the committed snapshot.
+
+Killing the supervisor too, losing the host, or failing to write both the keyring and encrypted
+recovery can still leave private plaintext files. On restart, surviving working files are
+recovered before older keyring data. An interrupted daemon write cannot be made atomic with
+the OS keyring, and removing a file is not secure erasure of filesystem snapshots or backups.
+Use encrypted OS storage, including swap, for protection against whole-host failure or
+offline access. POSIX directories/files use `0700`/`0600`; Windows uses a verified, protected
+current-user-only DACL instead of inherited grants. Unsupported permissions fail closed.
+Configuration, the TLS private key, and separate random local client/management tokens remain
+private files under `<CUTPOINT_HOME>/cliproxy/`, including `keys.json`; these are not
+subscription credentials. Prompt cloaking and prompt/error logging are disabled.
+
+The port is persisted in `keys.json`; startup selects `--port`, then
+`CUTPOINT_CLIPROXY_PORT`, then the saved port (or the default). While the owned daemon is
+running, management and inference use its saved runtime port even if a client's environment
+specifies another port. Each explicit start creates a fresh TLS identity and local
+client/management tokens. Management and inference
+use HTTPS and verify the listener against that private local trust file on the actual request
+connection, before sending credentials or request bodies. There is no HTTP or unverified-TLS
+fallback. Startup also refuses occupied ports and requires the installation's running-daemon
+lock. This does not protect against same-user malware or administrators able to read the
+keyring or replace private files. Connection failures are distinguished from HTTP errors.
+Ctrl+C stops and reaps the daemon, completes credential cleanup, and exits with code `130`.
+
+TLS and encrypted recovery use the core `cryptography` package in both full and lite installs.
+Where upstream does not publish a wheel, a source build needs its
+[Rust/OpenSSL build prerequisites](https://cryptography.io/en/latest/installation/).
 
 The child runs from the private `<CUTPOINT_HOME>/cliproxy/run/` directory, not the caller's directory.
 It ignores the caller's `.env` and strips CLIProxyAPI's remote-store, Home, deployment and
 `MANAGEMENT_PASSWORD` overrides, keeping the generated private management key exclusive. Network
-proxy and TLS/CA settings are preserved. Startup refuses an existing `.env` in the private run
-directory rather than loading or deleting it. On macOS, a pipe guardian also stops and reaps the
-daemon if the Python parent is killed.
+proxy and TLS/CA settings are preserved for the child's upstream connections; Cutpoint's local
+HTTPS client trusts only its generated certificate. Startup refuses an existing `.env` in the
+private run directory rather than loading or deleting it. The cross-platform supervisor owns
+the daemon lock through child termination and credential cleanup, so a restart cannot race
+the previous supervisor's finalization.
 
 ## login
 
@@ -1410,17 +1460,18 @@ cutpoint logout claude-code|codex|antigravity
 ```
 
 `login` starts an OAuth sign-in to a Claude Code, Codex (ChatGPT) or Antigravity subscription
-through the running `cutpoint proxy` daemon. It opens the provider's authorization URL in your
-browser and completes via local callback; `--no-browser` logs the URL to stderr without opening
-a browser window. Credentials are saved in `<CUTPOINT_HOME>/cliproxy/auths/` by CLIProxyAPI,
-never in `config.json` or the system keyring. Existing legacy keyring grants are not migrated
-automatically; a fresh sign-in is required.
+through the running `cutpoint proxy` daemon. **Use at your own risk**. It opens the provider's
+authorization URL in your browser and completes via local callback; `--no-browser` logs the URL
+to stderr without opening a browser window. Subscription credentials are persisted in the OS
+keyring, never in `config.json`; CLIProxyAPI uses private runtime files while the proxy runs
+(see the recovery and platform limits under [`proxy`](#proxy)).
 
 An unsuccessful login (including polling errors, timeout or Ctrl+C) attempts to cancel the pending
 authorization; cancellation is best-effort if the proxy is unreachable. Successful logins are not
-cancelled.
+cancelled. Ctrl+C exits `130`, including at the Antigravity confirmation prompt.
 
-`logout` removes the provider's subscription session from the running proxy.
+`logout` removes the provider's subscription sessions from the running proxy and checkpoints
+their removal in the OS keyring before reporting success.
 
 Set `assistant.provider` (Chat) or `vision_assistant.provider` (Vision) to `claude-code`, `codex`
 or `antigravity` to use a subscription provider; the Models tab in `cutpoint ui` reflects the same
@@ -1428,6 +1479,9 @@ login status and starts login flows under Connected accounts.
 
 An enabled, nonexpired account remains connected during a temporary provider error or rate-limit
 cooldown. Requests then report the proxy's availability condition instead of requiring fresh login.
+
+Activity detection for `profile`, `crashes` and the crash step of `analyze` stays on Ollama,
+regardless of the selected Vision provider.
 
 Logging in to Antigravity upstream may auto-provision a free-tier companion project if your account
 does not already have one. Cutpoint discloses this during sign-in and in the UI.

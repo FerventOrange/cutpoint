@@ -3832,20 +3832,20 @@ const VISION_PROVIDERS = ['ollama', 'claude-code', 'codex', 'antigravity'];
 
 const CHAT_HINTS = {
   ollama: 'Runs with Ollama (local), at OLLAMA_HOST or the Ollama URL in config.json. On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
-  anthropic: "Anthropic API (api.anthropic.com): uses your Anthropic API key. Requests go to Anthropic's hosted service. It asks once before it gets project data.",
-  'claude-code': "Claude Code subscription: uses your Claude subscription login (log in under Connected accounts below, no API key). Requests go to Anthropic's hosted service. It asks once before it gets project data.",
-  openai: "OpenAI API (api.openai.com): uses your OpenAI API key. Requests go to OpenAI's hosted service. It asks once before it gets project data.",
-  codex: "Codex subscription: uses your ChatGPT subscription login (log in under Connected accounts below, no API key). Requests go to OpenAI's hosted service. It asks once before it gets project data.",
-  antigravity: "Antigravity subscription: uses your Google/Antigravity subscription login (log in under Connected accounts below, no API key). Requests go to Google's hosted service. It asks once before it gets project data.",
-  xai: "xAI API (api.x.ai): uses your xAI API key. Requests go to xAI's hosted service. It asks once before it gets project data.",
+  anthropic: "Anthropic API (api.anthropic.com): uses your Anthropic API key. Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
+  'claude-code': "Claude Code subscription: uses your Claude subscription login (log in under Connected accounts below, no API key). Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
+  openai: "OpenAI API (api.openai.com): uses your OpenAI API key. Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
+  codex: "Codex subscription: uses your ChatGPT subscription login (log in under Connected accounts below, no API key). Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
+  antigravity: "Antigravity subscription: uses your Google/Antigravity subscription login (log in under Connected accounts below, no API key). Requests go to Google's hosted service. It asks once before it gets project data. Use at your own risk.",
+  xai: "xAI API (api.x.ai): uses your xAI API key. Requests go to xAI's hosted service. It asks once before it gets project data. Use at your own risk.",
   custom: 'The provider and base URL set in config.json, which no preset has. It keeps working, and its model can be changed here; choose a preset and save to use that instead.',
 };
 
 const VISION_HINTS = {
   ollama: 'Runs with Ollama (local) vision models (e.g. qwen3-vl:8b, llava) to rate video frames on this machine.',
-  'claude-code': "Claude Code subscription: rates video frames via your Claude subscription login (no API key). Requests go to Anthropic's hosted service.",
-  codex: "Codex subscription: rates video frames via your ChatGPT subscription login (no API key). Requests go to OpenAI's hosted service.",
-  antigravity: "Antigravity subscription: rates video frames via your Google/Antigravity subscription login (no API key). Requests go to Google's hosted service.",
+  'claude-code': "Claude Code subscription: rates video frames via your Claude subscription login (no API key). Requests go to Anthropic's hosted service. Use at your own risk.",
+  codex: "Codex subscription: rates video frames via your ChatGPT subscription login (no API key). Requests go to OpenAI's hosted service. Use at your own risk.",
+  antigravity: "Antigravity subscription: rates video frames via your Google/Antigravity subscription login (no API key). Requests go to Google's hosted service. Use at your own risk.",
 };
 
 const AI_MODEL_HINTS = {
@@ -3902,6 +3902,7 @@ function renderChatRoleHints() {
     ? S.ai?.providers?.find((x) => x.name === S.ai?.provider)
     : S.ai?.providers?.find((x) => x.name === choice);
   let hint = CHAT_HINTS[custom ? AI_CUSTOM : (p?.name ?? choice)] ?? '';
+  if (custom && !S.ai?.local) hint += ' Use at your own risk.';
   if (p?.subscription && !custom && !S.logins?.find((l) => l.provider === p.name)?.logged_in) {
     hint += ' Not logged in yet.';
   }
@@ -3914,6 +3915,9 @@ function renderVisionRoleHints() {
   const choice = sel.value;
   const p = S.visionAi?.providers?.find((x) => x.name === choice);
   let hint = VISION_HINTS[choice] ?? '';
+  if (S.visionAi?.custom && choice === S.visionAi.provider && !S.visionAi.local) {
+    hint += ' Use at your own risk.';
+  }
   if (p?.subscription && !S.logins?.find((l) => l.provider === p.name)?.logged_in) {
     hint += ' Not logged in yet.';
   }
@@ -4281,6 +4285,8 @@ function renderLogins() {
 }
 
 async function subLogin(provider) {
+  const title = PROVIDER_TITLES[provider] ?? provider;
+  if (!window.confirm(`Log in with ${title}? Use at your own risk.`)) return;
   if (provider === 'antigravity') {
     const ok = window.confirm('Antigravity sign-in may provision a free-tier project if your account has none. Continue?');
     if (!ok) return;

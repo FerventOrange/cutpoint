@@ -14,9 +14,12 @@ import platform
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -25,9 +28,17 @@ from typing import Any
 import requests
 
 from cutpoint import paths
-from cutpoint.events.llama_server import _pdeathsig_hook
-from cutpoint.ffmpeg_utils import FolderBusyError, swap_lock
-from cutpoint.winjob import kill_with_parent
+from cutpoint.assistant import proxy_tls
+from cutpoint.assistant.keys import KeyringError
+from cutpoint.assistant.private_files import private_directory, private_file
+from cutpoint.assistant.proxy_credentials import checkpoint
+from cutpoint.ffmpeg_utils import (
+    FolderBusyError,
+    _lock_stale,
+    _read_lock,
+    lock_path,
+    swap_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +62,7 @@ PREFIX_BY_PROVIDER = {
     "antigravity": "antigravity",
 }
 
-DEFAULT_PORT = 8317
+DEFAULT_PORT = 18317
 PINNED_VERSION = "8.0.47"
 
 PLATFORM_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
@@ -116,6 +127,23 @@ class ProxyError(RuntimeError):
     """CLIProxyAPI error; safe to display (secrets and tokens redacted)."""
 
 
+class ProxyConnectionError(ProxyError):
+    """CLIProxyAPI connection error (daemon offline or unreachable)."""
+
+
+class ProxyHTTPError(ProxyError):
+    """CLIProxyAPI daemon responded with an HTTP error status."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _credential_store_error(err: Exception) -> ProxyError:
+    detail = str(err) if isinstance(err, KeyringError) else type(err).__name__
+    return ProxyError(f"secure credential storage failed: {detail}")
+
+
 def cliproxy_dir() -> Path:
     """Directory for cutpoint cliproxy keys, config, and auth records."""
     return paths.home() / "cliproxy"
@@ -148,23 +176,31 @@ def _validate_port(val: Any) -> int:
 
 def port() -> int:
     """Effective port for CLIProxyAPI loopback daemon."""
+    if _is_daemon_owned():
+        owned_keys = _read_keys_file()
+        if owned_keys:
+            return owned_keys[2]
     env_port = os.environ.get("CUTPOINT_CLIPROXY_PORT")
     if env_port:
         return _validate_port(env_port)
     kp = keys_path()
-    if kp.exists():
-        with contextlib.suppress(OSError, ValueError, json.JSONDecodeError):
+    if kp.exists() or kp.is_symlink():
+        private_directory(kp.parent)
+        private_file(kp)
+        try:
             with kp.open(encoding="utf-8") as f:
                 data = json.load(f)
             stored_port = data.get("port")
             if stored_port:
                 return _validate_port(stored_port)
+        except (ValueError, json.JSONDecodeError):
+            pass
     return DEFAULT_PORT
 
 
 def base_url() -> str:
     """Base loopback URL of the running proxy daemon."""
-    return f"http://127.0.0.1:{port()}"
+    return f"https://127.0.0.1:{port()}"
 
 
 _BEARER_RE = re.compile(r"(Bearer\s+)[a-zA-Z0-9_\-\.\$]+", re.IGNORECASE)
@@ -193,19 +229,32 @@ def redact(text: str) -> str:
 
 
 def _write_private_file(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(content)
-    path.chmod(0o600)
+    private_directory(path.parent)
+    if path.exists() or path.is_symlink():
+        private_file(path)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        os.close(fd)
+        fd = -1
+        private_file(temp_path)
+        with temp_path.open("w", encoding="utf-8") as f:
+            f.write(content)
+        temp_path.replace(path)
+    finally:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            temp_path.unlink()
 
 
 def _read_keys_file() -> tuple[str, str, int] | None:
     kp = keys_path()
-    if not kp.exists():
+    if not kp.exists() and not kp.is_symlink():
         return None
+    private_directory(kp.parent)
+    private_file(kp)
     try:
         with kp.open(encoding="utf-8") as f:
             data = json.load(f)
@@ -214,15 +263,15 @@ def _read_keys_file() -> tuple[str, str, int] | None:
         p = int(data.get("port") or DEFAULT_PORT)
         if mgmt and client:
             return mgmt, client, p
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError):
         return None
     return None
 
 
-def _ensure_keys(target_port: int | None = None) -> tuple[str, str]:
+def _ensure_keys(target_port: int | None = None, *, refresh: bool = False) -> tuple[str, str]:
     existing = _read_keys_file()
     p = target_port or port()
-    if existing:
+    if existing and not refresh:
         mgmt, client, curr_p = existing
         if target_port and curr_p != target_port:
             _write_private_file(
@@ -248,14 +297,33 @@ def _ensure_keys(target_port: int | None = None) -> tuple[str, str]:
 def _load_keys() -> tuple[str, str]:
     res = _read_keys_file()
     if not res:
-        raise ProxyError("cutpoint proxy not running; run 'cutpoint proxy' to authenticate")
+        raise ProxyConnectionError(
+            "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+        )
     return res[0], res[1]
 
 
 def _session() -> requests.Session:
+    cert_path = cliproxy_dir() / "proxy-cert.pem"
+    try:
+        private_file(cert_path)
+    except OSError as err:
+        raise ProxyError("local proxy TLS identity is unavailable; restart the proxy") from err
     s = requests.Session()
     s.trust_env = False
+    s.verify = str(cert_path)
     return s
+
+
+def _is_daemon_owned() -> bool:
+    """Whether the CLIProxyAPI daemon on the current port is owned by this Cutpoint installation."""
+    lock = lock_path(cliproxy_dir() / "daemon.run")
+    if lock is None:
+        return False
+    found = _read_lock(lock)
+    if not found or found[1] is None:
+        return False
+    return not _lock_stale(lock, found[1])
 
 
 def _management_request(
@@ -265,6 +333,10 @@ def _management_request(
     params: dict | None = None,
     timeout: float = 15.0,
 ) -> dict[str, Any]:
+    if not _is_daemon_owned():
+        raise ProxyConnectionError(
+            "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+        )
     mgmt_key, _ = _load_keys()
     url = f"{base_url().rstrip('/')}/{path.lstrip('/')}"
     headers = {
@@ -282,8 +354,10 @@ def _management_request(
             timeout=timeout,
             allow_redirects=False,
         )
+    except requests.exceptions.SSLError as err:
+        raise ProxyError("proxy TLS identity validation failed; refusing the request") from err
     except requests.RequestException as err:
-        raise ProxyError(redact(f"proxy connection failed: {err}")) from err
+        raise ProxyConnectionError(redact(f"proxy connection failed: {err}")) from err
 
     if not resp.ok:
         try:
@@ -291,8 +365,8 @@ def _management_request(
             err_msg = body.get("error") or body.get("message") or resp.text
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
-        raise ProxyError(redact(f"proxy error {resp.status_code}: {err_msg}"))
-
+        clean_msg = redact(f"proxy error {resp.status_code}: {err_msg}")
+        raise ProxyHTTPError(clean_msg, status_code=resp.status_code)
     try:
         return resp.json()
     except (ValueError, json.JSONDecodeError) as err:
@@ -306,6 +380,10 @@ def _client_request(
     params: dict | None = None,
     timeout: float = 180.0,
 ) -> dict[str, Any]:
+    if not _is_daemon_owned():
+        raise ProxyConnectionError(
+            "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+        )
     _, client_key = _load_keys()
     url = f"{base_url().rstrip('/')}/{path.lstrip('/')}"
     headers = {
@@ -323,8 +401,10 @@ def _client_request(
             timeout=timeout,
             allow_redirects=False,
         )
+    except requests.exceptions.SSLError as err:
+        raise ProxyError("proxy TLS identity validation failed; refusing the request") from err
     except requests.RequestException as err:
-        raise ProxyError(redact(f"proxy inference request failed: {err}")) from err
+        raise ProxyConnectionError(redact(f"proxy inference request failed: {err}")) from err
 
     if not resp.ok:
         try:
@@ -332,7 +412,8 @@ def _client_request(
             err_msg = body.get("error") or body.get("message") or resp.text
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
-        raise ProxyError(redact(f"proxy inference error {resp.status_code}: {err_msg}"))
+        clean_msg = redact(f"proxy inference error {resp.status_code}: {err_msg}")
+        raise ProxyHTTPError(clean_msg, status_code=resp.status_code)
 
     try:
         return resp.json()
@@ -366,7 +447,20 @@ def statuses() -> list[dict[str, Any]]:
         _load_keys()
         data = _management_request("GET", "/v8/management/credentials", timeout=3.0)
         files = data.get("files") or []
-    except (ProxyError, OSError):
+    except ProxyHTTPError as err:
+        return [
+            {
+                "provider": p,
+                "logged_in": False,
+                "email": None,
+                "org": None,
+                "expired": False,
+                "expires_ms": None,
+                "error": str(err),
+            }
+            for p in PROVIDERS
+        ]
+    except ProxyConnectionError:
         return [
             {
                 "provider": p,
@@ -376,6 +470,19 @@ def statuses() -> list[dict[str, Any]]:
                 "expired": False,
                 "expires_ms": None,
                 "error": "cutpoint proxy not running; run 'cutpoint proxy' to authenticate",
+            }
+            for p in PROVIDERS
+        ]
+    except (ProxyError, OSError) as err:
+        return [
+            {
+                "provider": p,
+                "logged_in": False,
+                "email": None,
+                "org": None,
+                "expired": False,
+                "expires_ms": None,
+                "error": redact(str(err)),
             }
             for p in PROVIDERS
         ]
@@ -502,6 +609,10 @@ def poll_login(state: str) -> dict[str, Any]:
                 "state": "error",
                 "error": redact(f"failed to configure credential prefix: {err}"),
             }
+        try:
+            checkpoint(cliproxy_dir())
+        except KeyringError as err:
+            raise _credential_store_error(err) from None
         return {"state": "done", "error": None}
     elif status_str == "error":
         err_msg = resp.get("error") or "login failed"
@@ -535,6 +646,10 @@ def logout(provider: str) -> None:
                     "/v8/management/credentials",
                     params={"name": filename},
                 )
+    try:
+        checkpoint(cliproxy_dir())
+    except KeyringError as err:
+        raise _credential_store_error(err) from None
 
 
 def list_models(provider: str) -> list[dict[str, str]]:
@@ -543,7 +658,6 @@ def list_models(provider: str) -> list[dict[str, str]]:
         raise ValueError(f"unknown provider {provider!r}; must be one of {PROVIDERS}")
     cli_p = CLI_PROVIDERS[provider]
     prefix = PREFIX_BY_PROVIDER[provider]
-    _ensure_credential_prefixes()
 
     data = _management_request("GET", "/v8/management/credentials")
     files = data.get("files") or []
@@ -592,7 +706,6 @@ def chat(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; must be one of {PROVIDERS}")
     prefix = PREFIX_BY_PROVIDER[provider]
-    _ensure_credential_prefixes()
 
     req_body = dict(payload)
     model = str(req_body.get("model", ""))
@@ -651,7 +764,12 @@ def _install_binary(dst_dir: Path) -> Path:
         if filename.endswith(".zip"):
             with zipfile.ZipFile(archive_dst, "r") as zf:
                 for member in zf.namelist():
-                    base_name = Path(member).name
+                    p_member = Path(member)
+                    if p_member.is_absolute() or ".." in p_member.parts:
+                        raise ProxyError(
+                            f"failed to extract {filename}: unsafe member path {member!r}"
+                        )
+                    base_name = p_member.name
                     if base_name in (bin_name, "cli-proxy-api", "cli-proxy-api.exe"):
                         with zf.open(member) as src, tmp_bin.open("wb") as dst:
                             dst.write(src.read())
@@ -663,7 +781,12 @@ def _install_binary(dst_dir: Path) -> Path:
         else:
             with tarfile.open(archive_dst, "r:*") as tf:
                 for member in tf.getmembers():
-                    base_name = Path(member.name).name
+                    p_member = Path(member.name)
+                    if p_member.is_absolute() or ".." in p_member.parts:
+                        raise ProxyError(
+                            f"failed to extract {filename}: unsafe member path {member.name!r}"
+                        )
+                    base_name = p_member.name
                     if base_name in (bin_name, "cli-proxy-api", "cli-proxy-api.exe"):
                         f = tf.extractfile(member)
                         if f is not None:
@@ -704,12 +827,19 @@ def _generate_config(
     auth_dir_path: Path,
     mgmt_key: str,
     client_key: str,
+    tls_cert_path: Path,
+    tls_key_path: Path,
 ) -> dict[str, Any]:
     return {
         "config-version": 8,
         "server": {
             "host": "127.0.0.1",
             "port": port,
+            "tls": {
+                "enable": True,
+                "cert": str(tls_cert_path),
+                "key": str(tls_key_path),
+            },
             "commercial-mode": True,
             "discovery": {
                 "enabled": False,
@@ -772,23 +902,35 @@ def run(port: int | None = None) -> None:
         resolved_port = existing_keys[2] if existing_keys else DEFAULT_PORT
 
     home_dir = cliproxy_dir()
-    home_dir.mkdir(parents=True, exist_ok=True)
-    home_dir.chmod(0o700)
-
-    auths = auth_dir()
-    auths.mkdir(parents=True, exist_ok=True)
-    auths.chmod(0o700)
-
-    lock_target = home_dir / "daemon.run"
+    private_directory(home_dir)
     try:
-        with swap_lock(lock_target):
-            mgmt_key, client_key = _ensure_keys(target_port=resolved_port)
+        with swap_lock(home_dir / "launch"):
+            if _is_daemon_owned():
+                raise ProxyError("another cutpoint proxy is already running")
+            auths = auth_dir()
+            private_directory(auths)
+            run_dir = home_dir / "run"
+            private_directory(run_dir)
+            if (run_dir / ".env").exists():
+                raise ProxyError(f"untrusted .env found in daemon working directory: {run_dir}")
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    probe.bind(("127.0.0.1", resolved_port))
+            except OSError as err:
+                raise ProxyError(
+                    f"port {resolved_port} is already in use; refusing to send Cutpoint credentials"
+                ) from err
+
+            tls_cert, tls_key = proxy_tls.ensure_identity(home_dir)
+            mgmt_key, client_key = _ensure_keys(target_port=resolved_port, refresh=True)
             cfg_path = config_path()
             cfg_dict = _generate_config(
                 port=resolved_port,
                 auth_dir_path=auths,
                 mgmt_key=mgmt_key,
                 client_key=client_key,
+                tls_cert_path=tls_cert,
+                tls_key_path=tls_key,
             )
             _write_private_file(cfg_path, json.dumps(cfg_dict, indent=2))
 
@@ -808,80 +950,93 @@ def run(port: int | None = None) -> None:
 
             cmd = [str(bin_file), "-config", str(cfg_path), "-no-browser", "--local-model"]
             logger.info("Starting CLIProxyAPI on 127.0.0.1:%d", resolved_port)
-            run_dir = home_dir / "run"
-            run_dir.mkdir(parents=True, exist_ok=True)
-            run_dir.chmod(0o700)
-            if (run_dir / ".env").exists():
-                raise ProxyError(f"untrusted .env found in daemon working directory: {run_dir}")
-
+            guardian_cmd = [
+                sys.executable,
+                "-m",
+                "cutpoint.assistant._proxy_guardian",
+                "--root",
+                str(home_dir),
+                "--parent-pid",
+                str(os.getpid()),
+                "--",
+                *cmd,
+            ]
             child_env = _sanitize_daemon_env()
             proc: subprocess.Popen[Any] | None = None
-            w_fd: int | None = None
-            orig_sigint = None
-            orig_sigterm = None
+            orig_handlers: dict[int, Any] = {}
 
             def _handle_signal(signum: int, frame: Any) -> None:
-                logger.info("Stopping CLIProxyAPI...")
-                if proc is not None and proc.poll() is None:
+                raise KeyboardInterrupt
+
+            if threading.current_thread() is threading.main_thread():
+                signals_to_hook = [signal.SIGINT, signal.SIGTERM]
+                if hasattr(signal, "SIGBREAK"):
+                    signals_to_hook.append(signal.SIGBREAK)
+                for sig in signals_to_hook:
+                    with contextlib.suppress(ValueError, OSError):
+                        orig_handlers[sig] = signal.signal(sig, _handle_signal)
+
+            def stop_guardian() -> int:
+                assert proc is not None
+                if proc.stdin is not None and not proc.stdin.closed:
+                    with contextlib.suppress(OSError):
+                        proc.stdin.close()
+                try:
+                    return proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
                     proc.terminate()
                     try:
-                        proc.wait(timeout=6.0)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                sys.exit(0)
-
-            orig_sigint = signal.signal(signal.SIGINT, _handle_signal)
-            orig_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
+                        return proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired as err:
+                        raise ProxyError(
+                            "proxy supervisor did not finish credential cleanup"
+                        ) from err
 
             try:
-                if sys.platform == "darwin":
-                    r_fd, w_fd = os.pipe()
-                    os.set_inheritable(r_fd, True)
-                    os.set_inheritable(w_fd, False)
-                    guardian_cmd = [
-                        sys.executable,
-                        "-m",
-                        "cutpoint.assistant._darwin_guardian",
-                        "--read-fd",
-                        str(r_fd),
-                        "--",
-                        *cmd,
-                    ]
+                proc = subprocess.Popen(
+                    guardian_cmd,
+                    cwd=run_dir,
+                    env=child_env,
+                    stdin=subprocess.PIPE,
+                    close_fds=True,
+                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    if os.name == "nt"
+                    else 0,
+                    start_new_session=os.name != "nt",
+                )
+                for attempt in range(40):
+                    rc = proc.poll()
+                    if rc is not None:
+                        if rc:
+                            raise ProxyError(
+                                f"CLIProxyAPI supervisor exited with non-zero code {rc}"
+                            )
+                        break
                     try:
-                        proc = subprocess.Popen(
-                            guardian_cmd,
-                            cwd=run_dir,
-                            env=child_env,
-                            pass_fds=(r_fd,),
-                        )
-                    finally:
-                        os.close(r_fd)
-                else:
-                    proc = subprocess.Popen(
-                        cmd,
-                        cwd=run_dir,
-                        env=child_env,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        preexec_fn=_pdeathsig_hook(),
-                    )
-                kill_with_parent(proc)
+                        _ensure_credential_prefixes()
+                        break
+                    except ProxyConnectionError:
+                        if attempt == 39:
+                            raise
+                        time.sleep(0.2)
 
-                rc = proc.wait()
-                if rc != 0:
-                    raise ProxyError(f"CLIProxyAPI process exited with non-zero code {rc}")
-            finally:
-                if orig_sigint is not None:
-                    signal.signal(signal.SIGINT, orig_sigint)
-                if orig_sigterm is not None:
-                    signal.signal(signal.SIGTERM, orig_sigterm)
-                if proc is not None and proc.poll() is None:
-                    proc.terminate()
+                while True:
                     try:
-                        proc.wait(timeout=6.0)
+                        rc = proc.wait(timeout=0.5)
+                        break
                     except subprocess.TimeoutExpired:
-                        proc.kill()
-                if w_fd is not None:
-                    with contextlib.suppress(OSError):
-                        os.close(w_fd)
+                        continue
+                if rc != 0:
+                    raise ProxyError(f"CLIProxyAPI supervisor exited with non-zero code {rc}")
+            except KeyboardInterrupt:
+                if proc is not None and stop_guardian() != 0:
+                    raise ProxyError("proxy supervisor failed during interrupt cleanup") from None
+                raise
+            finally:
+                if proc is not None and proc.poll() is None and stop_guardian() != 0:
+                    raise ProxyError("proxy supervisor failed during cleanup") from None
+                for sig, orig in orig_handlers.items():
+                    with contextlib.suppress(ValueError, OSError):
+                        signal.signal(sig, orig)
     except FolderBusyError as err:
         raise ProxyError(f"another cutpoint proxy is already running: {err}") from err

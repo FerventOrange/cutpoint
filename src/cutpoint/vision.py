@@ -1,5 +1,4 @@
-"""Optional frame rating with a local Ollama vision model (e.g. qwen3.5:9b), or with a
-subscription provider when ``vision_backend`` is ``assistant``."""
+"""Optional frame rating through the configured local Ollama or subscription provider."""
 
 from __future__ import annotations
 
@@ -115,9 +114,7 @@ class VisionResult:
 
 
 class AssistantVision:
-    """Image requests through the assistant's subscription provider (``vision_backend`` is
-    ``assistant``) instead of Ollama. Frames leave the machine, so it asks only a subscription
-    provider (``claude-code``, ``codex``) the user agreed to in AI Chat (``assistant.consent``)."""
+    """Frames are sent to the configured vision subscription provider with consent."""
 
     def __init__(self, settings: Any = None) -> None:
         from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
@@ -147,8 +144,11 @@ class AssistantVision:
         if providers.consent_key(p) not in self.settings.consent:
             logger.info("Agree to send to %s for Vision first; skipping vision", p.name)
             return False
+        if missing := providers.missing_key(p):
+            logger.info("%s; skipping vision", keys.redact(missing))
+            return False
         try:
-            p.capabilities()  # the login is there and usable
+            p.capabilities()
         except (
             providers.ProviderError,
             keys.KeyringError,
@@ -182,12 +182,12 @@ class AssistantVision:
 class VisionRater:
     """Client for Ollama's /api/chat endpoint with images."""
 
-    def __init__(self, url: str | None = None, model: str | None = None) -> None:
+    def __init__(
+        self, url: str | None = None, model: str | None = None, *, local_only: bool = False
+    ) -> None:
         cfg = get_config()
         v_ast = cfg.vision_assistant
-        # AssistantVision refuses a provider that is not a subscription one, so a legacy
-        # "assistant" backend with another provider skips vision instead of asking Ollama
-        self.via = AssistantVision(v_ast) if cfg.vision_backend == "assistant" else None
+        self.via = AssistantVision(v_ast) if not local_only and v_ast.provider != "ollama" else None
         env_model = paths.env("VISION_MODEL")
         if self.via:
             self.model = self.via.model

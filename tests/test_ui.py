@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -8466,17 +8467,31 @@ def test_a_failed_subscription_login_says_why_and_can_start_again(
     assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
 
 
-def test_the_provider_picker_offers_the_subscriptions_that_have_a_provider(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+def test_login_timeout_cancellation_does_not_hold_login_lock(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def names() -> dict[str, bool]:
-        offered = client.get("/api/settings").json()["assistant"]["providers"]
-        return {p["name"]: p["subscription"] for p in offered}
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+    original_monotonic = time.monotonic
+    monkeypatch.setattr(ui.time, "monotonic", lambda: original_monotonic() + ui.LOGIN_TIMEOUT_S + 1)
 
-    monkeypatch.delitem(ui.ai_providers.PROVIDERS, "antigravity", raising=False)
-    assert names() == {
-        "ollama": False, "anthropic": False, "openai": False, "xai": False,
-        "claude-code": True, "codex": True,
-    }  # fmt: skip
-    monkeypatch.setitem(ui.ai_providers.PROVIDERS, "antigravity", lambda _s: None)
-    assert names()["antigravity"] is True
+    entered, release = threading.Event(), threading.Event()
+    logins.cancelled = []
+
+    def slow_cancel(state: str) -> None:
+        logins.cancelled.append(state)
+        entered.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(ui.cliproxy, "cancel_login", slow_cancel)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        expired = pool.submit(login_state, client, "codex")
+        try:
+            assert entered.wait(2)
+            # A second endpoint request can acquire the lock while daemon cancellation is blocked.
+            idle = pool.submit(login_state, client, "claude-code")
+            assert idle.result(timeout=1) == {"state": "idle", "error": ""}
+        finally:
+            release.set()
+        assert expired.result(timeout=2) == {"state": "error", "error": "login timed out"}
+    assert logins.cancelled == ["state_codex"]

@@ -573,10 +573,7 @@ def require_config() -> None:
 def _vision_provider_from_data(data: dict[str, Any]) -> ai_providers.Provider | None:
     section = data.get("vision_assistant")
     if not isinstance(section, dict):
-        if data.get("vision_backend") == "assistant" and isinstance(data.get("assistant"), dict):
-            section = data.get("assistant")
-        else:
-            section = {"provider": "ollama"}
+        section = {"provider": "ollama"}
     provider_name = (section.get("provider") or "ollama").strip().lower()
     if provider_name not in VISION_PROVIDERS:
         provider_name = "ollama"
@@ -607,12 +604,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     except TypeError:
         folder = str(data.get("projects_dir"))
     vis_section = data.get("vision_assistant")
-    if isinstance(vis_section, dict):
-        vis_consent = _tuple_of_str(vis_section.get("consent"))
-    elif data.get("vision_backend") == "assistant" and isinstance(data.get("assistant"), dict):
-        vis_consent = _tuple_of_str(data.get("assistant", {}).get("consent"))
-    else:
-        vis_consent = ()
+    vis_consent = _tuple_of_str(vis_section.get("consent")) if isinstance(vis_section, dict) else ()
     vp = _vision_provider_from_data(data)
     if vp is not None and (vp.name in cliproxy.PROVIDERS or ai_providers.is_subscription(vp.name)):
         v_consent_info = consent_view(vp, consent=vis_consent)
@@ -623,19 +615,12 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
             "host": getattr(vp, "host", "") if vp is not None else "",
             "missing_key": None,
         }
-    backend = data.get("vision_backend") or (
-        "assistant"
-        if (data.get("vision_assistant") or {}).get("provider")
-        in ("claude-code", "codex", "antigravity")
-        else "ollama"
-    )
     return {
         "projects_dir": folder,
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
         "config_file": str(paths.config_file()),
         "vision": data.get("vision") is True,
         "vision_model": default_model(),
-        "vision_backend": backend,
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
         # whether config.json sets it: the page's Compress peaks then starts from it, else Light
         "compress_peaks_set": peaks in COMPRESS_PEAKS,
@@ -655,9 +640,7 @@ def subscription_presets() -> dict[str, str]:
     """The picker's providers: the keyed and local presets, then each subscription login a
     provider is built for (Antigravity only once :data:`~cutpoint.assistant.providers.PROVIDERS`
     has it)."""
-    subscriptions = {
-        p: cliproxy.TITLES[p] for p in cliproxy.PROVIDERS if p in ai_providers.PROVIDERS
-    }
+    subscriptions = {p: cliproxy.TITLES[p] for p in cliproxy.PROVIDERS}
     return {**ai_providers.PRESETS, **subscriptions}
 
 
@@ -668,14 +651,7 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
     preset offers, and where each provider's key comes from (``"env"``, ``"keyring"`` or None)."""
     section = data.get(section_name)
     if not isinstance(section, dict):
-        if (
-            section_name == "vision_assistant"
-            and data.get("vision_backend") == "assistant"
-            and isinstance(data.get("assistant"), dict)
-        ):
-            section = data.get("assistant")
-        else:
-            section = {}
+        section = {}
     name = section.get("provider")
     name = name.strip().lower() if isinstance(name, str) else ""
 
@@ -733,11 +709,14 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
     allowed = VISION_PROVIDERS if is_vision else ASSISTANT_PROVIDERS
     name = name if name in allowed else "ollama"
     all_presets = subscription_presets()
-    presets_offered = (
-        {p: title for p, title in all_presets.items() if p in allowed} if is_vision else all_presets
-    )
+    presets_offered = {p: title for p, title in all_presets.items() if p in allowed}
+    try:
+        local = ai_providers.make(AssistantSettings(provider=name, url=text("url"))).local
+    except (ValueError, TypeError):
+        local = name == "ollama"
     return {
         "provider": name,
+        "local": local,
         "model": text("model"),
         "url": ai_providers.public(text("url")),  # a hand-edited one too; Settings refuses it
         # a base URL no preset has: shown as "Custom (from config.json)", kept as it is
@@ -3784,12 +3763,9 @@ def create_app(port: int) -> FastAPI:
         existing_ast = data.get("assistant")
         existing_ast_prov = existing_ast.get("provider") if isinstance(existing_ast, dict) else None
         existing_v_ast = data.get("vision_assistant")
-        if isinstance(existing_v_ast, dict):
-            existing_v_ast_prov = existing_v_ast.get("provider")
-        elif data.get("vision_backend") == "assistant" and isinstance(existing_ast, dict):
-            existing_v_ast_prov = existing_ast.get("provider")
-        else:
-            existing_v_ast_prov = None
+        existing_v_ast_prov = (
+            existing_v_ast.get("provider") if isinstance(existing_v_ast, dict) else None
+        )
         assistant = (
             check_assistant(body["assistant"], "assistant", existing_provider=existing_ast_prov)
             if "assistant" in body
@@ -3817,27 +3793,12 @@ def create_app(port: int) -> FastAPI:
             section = data.get("assistant")
             updates["assistant"] = {**(section if isinstance(section, dict) else {}), **assistant}
         if vision_ast is not None:
-            if "vision_assistant" not in data and data.get("vision_backend") == "assistant":
-                legacy = data.get("assistant") if isinstance(data.get("assistant"), dict) else {}
-                v_section = {
-                    "provider": legacy.get("provider", "ollama"),
-                    "model": legacy.get("model", ""),
-                    "url": legacy.get("url", ""),
-                    "consent": list(_tuple_of_str(legacy.get("consent"))),
-                }
-            else:
-                raw_v = data.get("vision_assistant")
-                v_section = dict(raw_v) if isinstance(raw_v, dict) else {}
+            raw_v = data.get("vision_assistant")
+            v_section = dict(raw_v) if isinstance(raw_v, dict) else {}
             updates["vision_assistant"] = {
                 **v_section,
                 **vision_ast,
             }
-            updates["vision_backend"] = (
-                "assistant"
-                if updates["vision_assistant"].get("provider")
-                in ("claude-code", "codex", "antigravity")
-                else "ollama"
-            )
         if moving:
             folder, created = check_projects_dir(body.get("projects_dir"))
             updates["projects_dir"] = str(folder)
@@ -3927,20 +3888,7 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"the {role} provider changed: check it and agree again", 409)
         data = config_data()
         raw_section = data.get(section_name)
-        if (
-            role == "vision"
-            and "vision_assistant" not in data
-            and data.get("vision_backend") == "assistant"
-        ):
-            legacy = data.get("assistant") if isinstance(data.get("assistant"), dict) else {}
-            section = {
-                "provider": legacy.get("provider", "ollama"),
-                "model": legacy.get("model", ""),
-                "url": legacy.get("url", ""),
-                "consent": list(_tuple_of_str(legacy.get("consent"))),
-            }
-        else:
-            section = dict(raw_section) if isinstance(raw_section, dict) else {}
+        section = dict(raw_section) if isinstance(raw_section, dict) else {}
         given = list(_tuple_of_str(section.get("consent")))
         if want not in given:
             try:
@@ -3995,14 +3943,7 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"unknown provider {provider}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
-        consent = settings.consent
-        if provider in cliproxy.PROVIDERS and ai_providers.is_subscription_official(
-            provider, p.host
-        ):
-            want = ai_providers.consent_key(p)
-            if want:
-                consent = (*consent, want)
-        return ai_providers.model_list(p, consent, refresh=refresh)
+        return ai_providers.model_list(p, settings.consent, refresh=refresh)
 
     # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
     def login_provider(value: Any) -> str:
@@ -4040,7 +3981,6 @@ def create_app(port: int) -> FastAPI:
                     "provider": p,
                     **st,
                     "title": cliproxy.TITLES.get(p, p),
-                    "selectable": p in ai_providers.PROVIDERS,
                 }
             )
         return {"logins": out}
@@ -4059,7 +3999,7 @@ def create_app(port: int) -> FastAPI:
                     raise bad(f"a {name} login is already waiting for the browser", 409)
                 old_state_to_cancel = cur.get("proxy_state")
             login_states[name] = {"state": "pending", "started_at": now, "error": ""}
-        if old_state_to_cancel and hasattr(cliproxy, "cancel_login"):
+        if old_state_to_cancel:
             with contextlib.suppress(Exception):
                 cliproxy.cancel_login(old_state_to_cancel)
         try:
@@ -4105,10 +4045,14 @@ def create_app(port: int) -> FastAPI:
             if time.monotonic() - started_at > LOGIN_TIMEOUT_S:
                 info["state"] = "error"
                 info["error"] = "login timed out"
-                if proxy_state and hasattr(cliproxy, "cancel_login"):
-                    with contextlib.suppress(Exception):
-                        cliproxy.cancel_login(proxy_state)
-                return {"state": "error", "error": "login timed out"}
+                to_cancel = proxy_state
+                proxy_state = None
+            else:
+                to_cancel = None
+        if to_cancel:
+            with contextlib.suppress(Exception):
+                cliproxy.cancel_login(to_cancel)
+            return {"state": "error", "error": "login timed out"}
         try:
             poll_res = cliproxy.poll_login(proxy_state)
         except (cliproxy.ProxyError, OSError) as err:

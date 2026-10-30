@@ -114,10 +114,12 @@ def test_tool_calls_and_their_results_round_trip(monkeypatch: pytest.MonkeyPatch
 def test_not_logged_in_raises_actionable_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         providers.cliproxy,
-        "status",
-        lambda p: {"logged_in": False, "error": "run cutpoint login antigravity first"},
+        "chat",
+        lambda prov, req: (_ for _ in ()).throw(
+            providers.cliproxy.ProxyError("run cutpoint login antigravity first")
+        ),
     )
-    p = providers.SubscriptionProvider("antigravity", "", "", 0)
+    p = providers.SubscriptionProvider("antigravity", "", "gemini-3.1-pro", 0)
     with pytest.raises(ProviderError, match="run cutpoint login antigravity first"):
         p.chat([{"role": "user", "content": "hi"}])
 

@@ -1140,13 +1140,6 @@ def is_subscription(name: str | Provider) -> bool:
     return name in SUBSCRIPTION_PROVIDERS
 
 
-def is_subscription_official(provider: str, host: str) -> bool:
-    h = (host or "").lower()
-    if provider == "antigravity":
-        return h == "daily-cloudcode-pa.googleapis.com" or h.endswith(".googleapis.com")
-    return SUBSCRIPTION_HOSTS.get(provider) == h
-
-
 def _format_openai_message(m: dict[str, Any]) -> dict[str, Any]:
     msg = dict(m)
     role = msg.get("role")
@@ -1240,14 +1233,12 @@ class SubscriptionProvider(OpenAIProvider):
         return self._model
 
     def list_models(self) -> list[dict[str, str]]:
-        self._need_key()
         try:
             return cliproxy.list_models(self.name)
         except cliproxy.ProxyError as err:
             raise ProviderError(str(err)) from err
 
     def capabilities(self) -> Capabilities:
-        self._need_key()
         return Capabilities(tool_calls=True, json_schema=False)
 
     def chat(
@@ -1258,7 +1249,6 @@ class SubscriptionProvider(OpenAIProvider):
         schema: dict[str, Any] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> Reply:
-        self._need_key()
         formatted_messages = [_format_openai_message(m) for m in messages]
         if self.name == "claude-code":
             has_identity = any(
@@ -1444,10 +1434,7 @@ def model_list(
         return {"state": "unsupported", "models": [], "message": None}
     if missing := missing_key(provider):
         return {"state": "key_needed", "models": [], "message": missing}
-    is_sub_official = (
-        isinstance(provider, SubscriptionProvider) or is_subscription(provider.name)
-    ) and is_subscription_official(provider.name, provider.host)
-    if not is_sub_official and (want := consent_key(provider)) is not None and want not in consent:
+    if (want := consent_key(provider)) is not None and want not in consent:
         return {
             "state": "consent_needed",
             "models": [],

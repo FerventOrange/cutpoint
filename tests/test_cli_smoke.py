@@ -236,11 +236,13 @@ def test_director_on_unscanned_project_creates_no_folder(home, caplog):
     assert "cutpoint 360 scan" in caplog.text
 
 
-def test_proxy_command_invokes_cliproxy_run(monkeypatch):
+def test_proxy_command_invokes_cliproxy_run(monkeypatch, caplog):
     ran = []
     monkeypatch.setattr(cliproxy, "run", lambda port=None: ran.append(port))
-    assert cli.main(["proxy", "--port", "9999"]) == 0
+    with caplog.at_level(logging.WARNING):
+        assert cli.main(["proxy", "--port", "9999"]) == 0
     assert ran == [9999]
+    assert "Use at your own risk" in caplog.text
 
 
 def test_proxy_command_exits_1_on_proxy_error(monkeypatch, caplog):
@@ -267,6 +269,7 @@ def test_login_cli_command(monkeypatch, caplog):
     monkeypatch.setattr(cliproxy, "cancel_login", lambda s: cancelled.append(s))
     with caplog.at_level(logging.INFO):
         assert cli.main(["login", "codex", "--no-browser"]) == 0
+    assert "Use at your own risk" in caplog.text
     assert "open this URL to log in: https://auth.example/test" in caplog.text
     assert "logged in to" in caplog.text
     assert cancelled == []
@@ -352,6 +355,13 @@ def test_login_antigravity_confirmation(monkeypatch, caplog):
     with caplog.at_level(logging.INFO):
         assert cli.main(["login", "antigravity", "--no-browser"]) == 0
     assert "logged in to" in caplog.text
+
+    # Ctrl+C at the confirmation uses the CLI's interrupt exit, not rejection.
+    def interrupt(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupt)
+    assert cli.main(["login", "antigravity", "--no-browser"]) == 130
 
 
 def test_logout_cli_command(monkeypatch, caplog):

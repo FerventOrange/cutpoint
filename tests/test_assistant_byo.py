@@ -1037,8 +1037,6 @@ def test_codex_list_models_queries_cliproxy(monkeypatch) -> None:
 
 
 def test_codex_list_models_honest_errors_no_fake_fallback(monkeypatch) -> None:
-    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
-
     def fake_err(p):
         raise providers.cliproxy.ProxyError("proxy refused login (401)")
 
@@ -1047,9 +1045,10 @@ def test_codex_list_models_honest_errors_no_fake_fallback(monkeypatch) -> None:
     with pytest.raises(ProviderError, match="proxy refused login"):
         p.list_models()
 
-    monkeypatch.setattr(
-        providers.cliproxy, "status", lambda p: {"logged_in": False, "error": "not logged in"}
-    )
+    def not_logged_in(p):
+        raise providers.cliproxy.ProxyError("not logged in; run cutpoint login codex")
+
+    monkeypatch.setattr(providers.cliproxy, "list_models", not_logged_in)
     with pytest.raises(ProviderError, match="not logged in"):
         p.list_models()
 
@@ -1066,7 +1065,7 @@ def test_claude_code_list_models_queries_cliproxy(monkeypatch) -> None:
     assert models == [{"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"}]
 
 
-def test_model_list_subscription_login_bypasses_project_consent(
+def test_model_list_subscription_login_requires_project_consent(
     monkeypatch,
 ) -> None:
     providers.clear_model_cache()
@@ -1077,8 +1076,11 @@ def test_model_list_subscription_login_bypasses_project_consent(
         lambda p: [{"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"}],
     )
     codex = providers.SubscriptionProvider("codex", "", "", 0)
-    # Subscription provider succeeds with empty consent (metadata only, no project data sent)
-    res = providers.model_list(codex, consent=())
+    # Subscription provider without consent requires consent
+    assert providers.model_list(codex, consent=())["state"] == "consent_needed"
+
+    # With consent, model list loads
+    res = providers.model_list(codex, consent=(providers.consent_key(codex),))
     assert res["state"] == "ok"
     assert res["models"] == [{"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"}]
 
@@ -1092,7 +1094,10 @@ def test_model_list_subscription_login_bypasses_project_consent(
         "status",
         lambda p: {"logged_in": False, "error": "not logged in to Codex subscription"},
     )
-    assert providers.model_list(codex, consent=(), refresh=True)["state"] == "key_needed"
+    assert (
+        providers.model_list(codex, consent=(providers.consent_key(codex),), refresh=True)["state"]
+        == "key_needed"
+    )
 
 
 def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:
@@ -1109,18 +1114,18 @@ def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:
     monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
     monkeypatch.setattr(providers.cliproxy, "list_models", fake_list)
     codex = providers.SubscriptionProvider("codex", "", "", 0)
-    res1 = providers.model_list(codex, consent=())
+    res1 = providers.model_list(codex, consent=(providers.consent_key(codex),))
     assert res1["models"][0]["id"] == "gpt-6.1-sol"
     assert call_count == 1
 
     # Cached: no second request
-    res2 = providers.model_list(codex, consent=())
+    res2 = providers.model_list(codex, consent=(providers.consent_key(codex),))
     assert res2["models"][0]["id"] == "gpt-6.1-sol"
     assert call_count == 1
 
     # Invalidate cache for codex
     providers.clear_model_cache("codex")
-    res3 = providers.model_list(codex, consent=())
+    res3 = providers.model_list(codex, consent=(providers.consent_key(codex),))
     assert res3["models"][0]["id"] == "gpt-6.1-terra"
     assert call_count == 2
     providers.clear_model_cache()

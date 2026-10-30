@@ -44,8 +44,9 @@ uv run cutpoint --help
 In a clone, `uv sync` installs everything, including the `events` and `gpu` extras (the `full`
 dependency group, about 7 GB or more with torch). For a lite environment without them, use
 `uv sync --no-group full` (and `uv run --no-group full ...`, or set `UV_NO_GROUP=full`). The lite
-install is enough for `analyze`, `clips`, `extend`, `assemble`, `stage` and `cutpoint ui`.
-The lite installer does not offer Ollama; the UI assistant can use a third-party provider instead.
+install is enough for `analyze`, `clips`, `extend`, `assemble`, `stage`, `cutpoint ui` and the
+subscription proxy. The lite installer does not offer Ollama; hosted API providers and
+subscription providers work without the full edition or a local model download.
 
 ### Browser workspace
 
@@ -73,6 +74,25 @@ its running jobs. In a lite environment, keep `--no-group full` and every extra 
 
 The startup URL grants access to local footage: keep it private. The token is stored only in the
 current browser tab's session storage. After restarting the server, open its newly printed URL.
+
+### Hosted models and subscriptions
+
+**Use at your own risk** when using a hosted API or subscription provider. In the Models tab,
+choose Chat and Vision independently; saving a model does not grant permission. Hosted model
+catalogs and requests load only after consent for that role. Ollama/Local shows no risk warning.
+
+For Claude Code, Codex or Antigravity subscriptions, first run `uv run cutpoint proxy` in a
+dedicated terminal, then `uv run cutpoint login claude-code` (or `codex` / `antigravity`),
+or sign in under Connected accounts. This also works in lite with `--no-group full`.
+The first proxy start downloads a checksum-verified binary of about 24 MB on demand; no
+`cutpoint setup` or full-edition models are needed. See [`proxy`](commands.md#proxy) and
+[`login`](commands.md#login). Subscription credentials require a native OS keyring; an
+unavailable keyring is an error. An independent supervisor cleans up the proxy's private
+plaintext working files even if the foreground CLI is killed. Final keyring-write failures use
+encrypted recovery, not a plaintext fallback. Whole-host/supervisor loss or failed recovery
+writes can still leave working files; see [`proxy`](commands.md#proxy) for recovery, encrypted
+storage and platform requirements. The loopback connection uses a private per-start TLS identity.
+Activity detection always uses Ollama, not the hosted Vision selection.
 
 ### Optional extras
 

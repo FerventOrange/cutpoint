@@ -76,7 +76,6 @@ with `_` are ignored.
   "video_encoder": "auto",
   "export_workers": "auto",
   "vision": false,
-  "vision_backend": "ollama",
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
@@ -152,22 +151,6 @@ Models tab writes this key ("Rate frames with vision model"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
 
-### vision_backend
-
-`ollama` (default) or `assistant`. Who answers the frame requests of `analyze --vision`, `edit
---vision`, `360 director --vl-check` and new activity profiles. With `assistant` they go, as
-images with the prompt, to a subscription provider (`claude-code`, `codex` or `antigravity`;
-managed by `cutpoint proxy`) instead of Ollama: the [`vision_assistant`](#vision_assistant) one, or, when
-there is no such section, the [`assistant`](#assistant) one. Frames leave this machine, so
-nothing is sent until you agreed to that provider (its entry in the `consent` of the section that
-names it, via "Allow vision requests" in the Models tab); without it, another provider or no login,
-vision is skipped with an INFO line, as when Ollama is unreachable. Consent covers subscription
-providers; a remote Ollama server is not gated. Subscription providers are pinned to their official
-hosts (`api.anthropic.com`, `chatgpt.com`, `*.googleapis.com`); a custom `url` for them is rejected.
-`--ollama-url` and `--ollama-model` have no effect when using a subscription provider, and the rating
-has no logprob-based score. Other values are rejected. Saving a subscription Vision provider in
-the UI's Models tab sets it.
-
 ### vision_assistant
 
 The model that rates frames, chosen independently of the chat model. The same keys as
@@ -176,10 +159,13 @@ The model that rates frames, chosen independently of the chat model. The same ke
 Ollama model and URL (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win).
 Subscription providers use only their official host; a `url` for them is rejected.
 The Models tab fetches the catalog from this configured Ollama URL, including custom servers.
-Without this section the frame rater uses Ollama, or the `assistant` provider when
-`vision_backend` is `assistant`, as before. The Models tab of `cutpoint ui` writes it. Frames go
-to a subscription provider only after you allow it there (`consent`, via "Allow vision requests");
-choosing or saving a model never grants it.
+Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
+Catalogs and frames go to a subscription provider only after you allow it there
+(`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
+grants it. **Use at your own risk** when selecting a hosted provider.
+`--ollama-url` and `--ollama-model` have no effect for subscription providers, whose ratings
+have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
+`analyze` always uses Ollama, independently of this selection.
 
 ### compress_peaks
 
@@ -263,6 +249,9 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
 
 Other values are rejected.
 
+Hosted API providers also display **Use at your own risk**. Ollama/Local has no risk warning;
+the existing consent requirement still applies to a remote host.
+
 API keys are never read from or written to `config.json`. A key belongs to a provider and the
 host of its base URL. It is taken, in order, from:
 
@@ -280,15 +269,24 @@ ui` takes these variables out of its own environment when it starts, so jobs, ff
 dialogs never see them; they are also redacted from log lines and error messages. An
 OpenAI-compatible server on this machine needs no key. Ollama takes none.
 
-Subscription providers (`claude-code`, `codex`, `antigravity`) do not use API keys or the system
-keyring. They authenticate through the local authenticated `cutpoint proxy` daemon (CLIProxyAPI)
-bound to loopback `127.0.0.1:8317`. OAuth tokens and proxy configuration are stored in
-`<CUTPOINT_HOME>/cliproxy/` (`0700` directories and `0600` configuration/keys on POSIX;
-inherited filesystem ACLs on Windows). Auth files in `auths/` are plaintext, not encrypted
-at rest. The proxy operates in commercial mode with prompt/error logging disabled, prompt
-cloaking disabled, and separate random client and management tokens generated once and persisted in
-`keys.json`. Model catalogs are populated from models advertised by the proxy daemon. Existing legacy
-keyring grants are not migrated; fresh authentication via `cutpoint proxy` is required.
+Subscription providers (`claude-code`, `codex`, `antigravity`): **Use at your own risk**.
+They do not use API keys. They authenticate through the local HTTPS `cutpoint proxy`
+daemon (CLIProxyAPI), bound to loopback `127.0.0.1:18317`, with a private per-start TLS identity.
+Subscription credentials use Cutpoint's existing keyring integration with a native OS backend;
+file-based backends and fallback after a native-backend failure are rejected. CLIProxyAPI needs
+private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/` while running. A separate
+supervisor checkpoints credentials and removals, survives a foreground CLI hard kill, and removes
+working files after stopping the daemon. Final keyring-write failures preserve the latest data
+in an authenticated encrypted recovery journal whose key lives only in the OS keyring.
+Whole-host/supervisor loss or failed recovery writes can still leave private working files;
+see [`proxy`](commands.md#proxy) for recovery, storage-encryption and refresh-durability limits.
+
+Configuration, the TLS private key, and separate random local client/management tokens remain
+private files in `<CUTPOINT_HOME>/cliproxy/`, including `keys.json` (`0700` directories and
+`0600` files on POSIX; verified protected user-only DACLs on Windows). Local tokens and the TLS
+identity rotate on every explicit start; the saved port is preserved. The proxy operates in
+commercial mode with prompt/error logging and prompt cloaking disabled. Model catalogs are
+populated from models advertised by the proxy daemon only after consent for the selected role.
 
 Temporary provider errors and rate-limit cooldowns do not remove an enabled, nonexpired login.
 The proxy's remote-store/Home environment overrides and the caller's `.env` cannot replace this

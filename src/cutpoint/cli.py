@@ -837,6 +837,7 @@ def _cmd_skill_print(a: argparse.Namespace) -> None:
 
 
 def _cmd_proxy(a: argparse.Namespace) -> None:
+    logger.warning("Use at your own risk. Subscription proxy connects to third-party endpoints.")
     from cutpoint.assistant import cliproxy  # noqa: PLC0415
 
     try:
@@ -847,6 +848,7 @@ def _cmd_proxy(a: argparse.Namespace) -> None:
 
 
 def _cmd_login(a: argparse.Namespace) -> None:
+    logger.warning("Use at your own risk. Subscription login connects to third-party endpoints.")
     from cutpoint.assistant import cliproxy  # noqa: PLC0415
 
     if a.provider == "antigravity":
@@ -858,7 +860,7 @@ def _cmd_login(a: argparse.Namespace) -> None:
                 .strip()
                 .lower()
             )
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             ans = "n"
         if ans not in ("y", "yes"):
             logger.info("login aborted")
@@ -1729,7 +1731,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--port",
         type=_port,
         default=None,
-        help="port on 127.0.0.1 (default: 8317 or CUTPOINT_CLIPROXY_PORT)",
+        help="port on 127.0.0.1 (default: 18317 or CUTPOINT_CLIPROXY_PORT)",
     )
     pr.set_defaults(func=_cmd_proxy)
 
