@@ -45,7 +45,7 @@ import requests
 from urllib3.exceptions import LocationParseError
 from urllib3.util import parse_url
 
-from cutpoint.assistant import keys
+from cutpoint.assistant import cliproxy, keys
 from cutpoint.backends import ollama_url
 from cutpoint.config import AssistantSettings, assistant_settings
 from cutpoint.vision import default_model as vision_model
@@ -76,16 +76,23 @@ MAX_ERROR = 300  # characters of a server's error text in a message
 TITLES = {
     "ollama": "Ollama",
     "openai": "OpenAI-compatible",
-    "anthropic": "Anthropic",
+    "anthropic": "Anthropic API",
     "xai": "xAI-compatible",
+    "claude-code": "Claude Code subscription",
+    "codex": "Codex subscription",
+    "antigravity": "Antigravity (Gemini)",
 }
-OFFICIAL_TITLES = {"openai": "OpenAI", "anthropic": "Anthropic", "xai": "xAI"}  # official host
+OFFICIAL_TITLES = {
+    "openai": "OpenAI API",
+    "anthropic": "Anthropic API",
+    "xai": "xAI",
+}  # official host
 # Settings' Provider choices, in order: provider name -> title. Each uses its official base URL
 # (Ollama: the configured one, cutpoint.backends.ollama_url), so no URL is typed.
 PRESETS = {
     "ollama": "None (local Ollama)",
-    "anthropic": "Claude (Anthropic)",
-    "openai": "Codex (OpenAI)",
+    "anthropic": "Anthropic API",
+    "openai": "OpenAI API",
     "xai": "Grok (xAI)",
 }
 MODELS_TTL_S = 600.0  # a provider's model list is asked again after this (or on Refresh)
@@ -151,7 +158,7 @@ class Reply:
 
 
 class Provider(Protocol):
-    name: str  # "ollama", "openai", "anthropic", "xai"
+    name: str  # "ollama", "openai", "anthropic", "xai", "claude-code", "codex"
     model: str
     local: bool  # runs on this machine: nothing leaves it
     host: str  # the host of its URL ("" when it has none)
@@ -348,7 +355,7 @@ def public(text: str) -> str:
 def _key_hint(name: str, host: str) -> str:
     """How to add ``name``'s key for ``host``: its own variable only for its own host,
     :data:`keys.ENV_KEY` only for a host that is not official (#504), or the keyring."""
-    ring = "save one in Settings (kept in the system keyring)"
+    ring = "save one in the Models tab (kept in the system keyring)"
     names = keys.env_names(name, host)
     if not names:
         return ring
@@ -606,7 +613,11 @@ class _HttpProvider:
             raise ProviderError(f"No API key for {self.title}: {_key_hint(self.name, self.host)}")
 
     def _send(
-        self, method: str, url: str, payload: dict[str, Any] | None, timeout: float
+        self,
+        method: str,
+        url: str,
+        payload: dict[str, Any] | None,
+        timeout: float,
     ) -> requests.Response:
         """One request. A key is never sent in clear text to another machine."""
         if self._key and not self.local and urlsplit(url).scheme.lower() != "https":
@@ -703,7 +714,7 @@ class OpenAIProvider(_HttpProvider):
 
     @property
     def title(self) -> str:
-        return "OpenAI" if self.host == "api.openai.com" else f"OpenAI-compatible {self.host}"
+        return "OpenAI API" if self.host == "api.openai.com" else f"OpenAI-compatible {self.host}"
 
     @property
     def model(self) -> str:
@@ -842,6 +853,9 @@ class OpenAIProvider(_HttpProvider):
                     instructions.append(content)
             elif role == "assistant" and isinstance(m.get("output"), list):
                 items += m["output"]  # a reply's items as sent, reasoning and calls included
+            elif role == "user" and isinstance(content, list):  # text and image parts
+                parts = [_responses_part(p) for p in content if isinstance(p, dict)]
+                items.append({"role": "user", "content": parts})
             elif role in ("user", "assistant") and isinstance(content, str) and content.strip():
                 item = {"role": role, "content": content}
                 if role == "assistant":  # an earlier reply: OpenAI asks for its phase
@@ -1051,6 +1065,22 @@ class AnthropicProvider(_HttpProvider):
         return {"role": "user", "content": [block]}
 
 
+def _anthropic_block(b: dict[str, Any]) -> dict[str, Any]:
+    """A content block as the Messages API takes it: the neutral image part
+    ``{"type": "image", "media_type", "data" (base64)}`` becomes a base64 ``source``."""
+    if b.get("type") != "image":
+        return b
+    source = {"type": "base64", "media_type": b["media_type"], "data": b["data"]}
+    return {"type": "image", "source": source}
+
+
+def _responses_part(p: dict[str, Any]) -> dict[str, Any]:
+    """A neutral text or image part as a Responses input part (an image as a data URL)."""
+    if p.get("type") == "image":
+        return {"type": "input_image", "image_url": f"data:{p['media_type']};base64,{p['data']}"}
+    return {"type": "input_text", "text": str(p.get("text") or "")}
+
+
 def _anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """``(system, messages)`` for the Messages API: system text joined, each message as content
     blocks without empty text, consecutive messages of one role merged."""
@@ -1066,7 +1096,7 @@ def _anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[
             continue
         raw = [{"type": "text", "text": content}] if isinstance(content, str) else content
         blocks = [
-            b
+            _anthropic_block(b)
             for b in (raw if isinstance(raw, list) else [])
             if isinstance(b, dict)
             and not (b.get("type") == "text" and not str(b.get("text") or "").strip())
@@ -1086,6 +1116,208 @@ def _ollama(settings: AssistantSettings) -> Provider:
         settings.model,  # "": auto (OllamaProvider.resolve_model)
         settings.context_tokens or LOCAL_CONTEXT_TOKENS,
     )
+
+
+CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
+DEFAULT_ANTIGRAVITY_MODEL = "gemini-3.1-pro"
+DEFAULT_SUBSCRIPTION_MODELS: dict[str, str] = {
+    "claude-code": DEFAULT_ANTHROPIC_MODEL,
+    "codex": DEFAULT_CODEX_MODEL,
+    "antigravity": DEFAULT_ANTIGRAVITY_MODEL,
+}
+SUBSCRIPTION_PROVIDERS = ("claude-code", "codex", "antigravity")
+SUBSCRIPTION_HOSTS = {
+    "claude-code": "api.anthropic.com",
+    "codex": "chatgpt.com",
+    "antigravity": "daily-cloudcode-pa.googleapis.com",
+}
+
+
+def is_subscription(name: str | Provider) -> bool:
+    if not isinstance(name, str):
+        name = getattr(name, "name", "")
+    return name in SUBSCRIPTION_PROVIDERS
+
+
+def _format_openai_message(m: dict[str, Any]) -> dict[str, Any]:
+    msg = dict(m)
+    role = msg.get("role")
+    if role == "model":
+        role = "assistant"
+        msg["role"] = "assistant"
+    content = msg.get("content")
+    if isinstance(content, list):
+        converted_parts: list[dict[str, Any]] = []
+        for p in content:
+            if not isinstance(p, dict):
+                continue
+            ptype = p.get("type")
+            if ptype == "text":
+                converted_parts.append({"type": "text", "text": str(p.get("text") or "")})
+            elif ptype == "image":
+                media_type = p.get("media_type") or "image/jpeg"
+                data = p.get("data") or ""
+                converted_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{data}"},
+                    }
+                )
+            else:
+                converted_parts.append(p)
+        msg["content"] = converted_parts
+    return msg
+
+
+class SubscriptionProvider(OpenAIProvider):
+    """A subscription provider (Claude Code, ChatGPT Codex, or Google Antigravity)
+    routed through the external CLIProxyAPI daemon over loopback.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        url: str = "",
+        model: str = "",
+        context_tokens: int = 0,
+    ) -> None:
+        self.name = provider
+        if url and url.strip():
+            raise AmbiguousURLError(
+                f"{TITLES.get(provider, provider)} does not accept a custom base URL; CLIProxyAPI handles routing"
+            )
+        super().__init__(OPENAI_URL, model, context_tokens, key=None)
+        self.host = SUBSCRIPTION_HOSTS.get(provider, "hosted")
+        self.local = False
+
+    @property
+    def title(self) -> str:
+        return TITLES.get(self.name, self.name)
+
+    @property
+    def model(self) -> str:
+        return self._model or DEFAULT_SUBSCRIPTION_MODELS.get(self.name, "")
+
+    @property
+    def responses(self) -> bool:
+        return False
+
+    @property
+    def has_key(self) -> bool:
+        st = cliproxy.status(self.name)
+        return bool(st.get("logged_in"))
+
+    def status(self) -> dict[str, Any]:
+        return cliproxy.status(self.name)
+
+    def _need_key(self) -> None:
+        st = cliproxy.status(self.name)
+        if not st.get("logged_in"):
+            err = st.get("error") or f"{self.title}: run cutpoint login {self.name} first"
+            raise ProviderError(err)
+
+    def resolve_model(self) -> str:
+        if not self._model:
+            models = self.list_models()
+            if not models:
+                raise ProviderError(f"{self.title}: no models available from proxy")
+            available = [m["id"] for m in models]
+            def_model = DEFAULT_SUBSCRIPTION_MODELS.get(self.name, "")
+            if def_model and def_model in available:
+                self._model = def_model
+            elif self.name == "antigravity":
+                self._model = next((m for m in available if m.startswith("gemini-")), available[0])
+            else:
+                self._model = available[0]
+        return self._model
+
+    def list_models(self) -> list[dict[str, str]]:
+        try:
+            return cliproxy.list_models(self.name)
+        except cliproxy.ProxyError as err:
+            raise ProviderError(str(err)) from err
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(tool_calls=True, json_schema=False)
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        schema: dict[str, Any] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> Reply:
+        formatted_messages = [_format_openai_message(m) for m in messages]
+        if self.name == "claude-code":
+            has_identity = any(
+                m.get("role") == "system" and CLAUDE_CODE_IDENTITY in str(m.get("content") or "")
+                for m in formatted_messages
+            )
+            if not has_identity:
+                formatted_messages.insert(0, {"role": "system", "content": CLAUDE_CODE_IDENTITY})
+        payload: dict[str, Any] = {
+            "model": self.resolve_model(),
+            "messages": formatted_messages,
+        }
+        if tools:
+            payload["tools"] = tools
+        if schema:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "cutpoint_reply", "schema": schema},
+            }
+        self._stop(cancelled)
+        try:
+            resp_data = cliproxy.chat(self.name, payload)
+        except cliproxy.ProxyError as err:
+            why = str(err)
+            low = why.lower()
+            if tools and "tool" in low and any(w in low for w in _NO_TOOLS):
+                raise ToolsUnsupportedError(why) from err
+            raise ProviderError(f"{self.title} failed: {why}") from err
+        self._stop(cancelled)
+        return self._reply(resp_data)
+
+    def _reply(self, data: dict[str, Any]) -> Reply:
+        choices = data.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices else None
+        if isinstance(first, dict):
+            finish = first.get("finish_reason")
+            if finish == "length":
+                raise ProviderError(f"{self.title}'s reply was cut off; try a simpler request")
+            if finish == "content_filter":
+                raise ProviderError(f"{self.title} declined this request (content filter)")
+        reply = super()._reply(data)
+        if (
+            isinstance(first, dict)
+            and first.get("finish_reason") == "tool_calls"
+            and not reply.tool_calls
+        ):
+            raise ProviderError(f"{self.title}'s answer ended without completed tool calls")
+        msg = first.get("message") if isinstance(first, dict) else None
+        if isinstance(msg, dict) and isinstance(reply.message, dict):
+            for k, v in msg.items():
+                if k not in reply.message:
+                    reply.message[k] = v
+        return reply
+
+
+def _claude_code(settings: AssistantSettings) -> Provider:
+    return SubscriptionProvider(
+        "claude-code", settings.url, settings.model, settings.context_tokens
+    )
+
+
+def _antigravity(settings: AssistantSettings) -> Provider:
+    return SubscriptionProvider(
+        "antigravity", settings.url, settings.model, settings.context_tokens
+    )
+
+
+def _codex(settings: AssistantSettings) -> Provider:
+    return SubscriptionProvider("codex", settings.url, settings.model, settings.context_tokens)
 
 
 DEFAULT_URLS = {"openai": OPENAI_URL, "anthropic": ANTHROPIC_URL, "xai": XAI_URL}
@@ -1135,6 +1367,9 @@ PROVIDERS: dict[str, Callable[[AssistantSettings], Provider]] = {
     "ollama": _ollama,
     "openai": _openai,
     "anthropic": _anthropic,
+    "claude-code": _claude_code,
+    "codex": _codex,
+    "antigravity": _antigravity,
     "xai": _xai,
 }
 
@@ -1170,6 +1405,17 @@ def make(settings: AssistantSettings | None = None) -> Provider:
 _MODELS: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
 _MODELS_LOCK = threading.Lock()
 _clock = time.monotonic  # replaced by tests
+
+
+def clear_model_cache(provider: str | None = None) -> None:
+    """Evict cached model lists for ``provider`` (or all providers if None)."""
+    with _MODELS_LOCK:
+        if provider is None:
+            _MODELS.clear()
+        else:
+            keys_to_del = [k for k in _MODELS if k[0] == provider]
+            for k in keys_to_del:
+                del _MODELS[k]
 
 
 def model_list(

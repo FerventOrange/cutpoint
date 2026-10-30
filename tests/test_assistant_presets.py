@@ -9,7 +9,6 @@ from __future__ import annotations
 import io
 import json
 import logging
-import re
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -65,6 +64,25 @@ def test_each_hosted_preset_is_its_provider_at_its_official_url(home, name, cls,
     assert providers.consent_key(p) == f"{name}@{host}"
     assert providers.key_host(name, "") == host and keys.official(name, host)
     assert providers.is_preset(name, "") and providers.is_preset(name, url)
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "expected_host"),
+    [
+        ("claude-code", "api.anthropic.com"),
+        ("codex", "chatgpt.com"),
+        ("antigravity", "daily-cloudcode-pa.googleapis.com"),
+    ],
+)
+def test_constructing_subscription_providers_from_settings(
+    home, provider_id, expected_host
+) -> None:
+    p = providers.make(AssistantSettings(provider=provider_id))
+    assert isinstance(p, providers.SubscriptionProvider)
+    assert p.name == provider_id
+    assert p.host == expected_host
+    assert p.local is False
+    assert providers.consent_key(p) == f"{provider_id}@{expected_host}"
 
 
 def test_the_none_preset_is_the_configured_ollama(home, monkeypatch) -> None:
@@ -261,11 +279,14 @@ def test_each_preset_round_trips_through_settings(
 def test_settings_offer_the_presets_with_their_model_fields(client: TestClient) -> None:
     got = client.get("/api/settings").json()["assistant"]
     offers = {p["name"]: p for p in got["providers"]}
-    assert [p["title"] for p in got["providers"]] == [
-        "None (local Ollama)",
-        "Claude (Anthropic)",
-        "Codex (OpenAI)",
-        "Grok (xAI)",
+    assert [p["name"] for p in got["providers"]] == [
+        "ollama",
+        "anthropic",
+        "openai",
+        "xai",
+        "claude-code",
+        "codex",
+        "antigravity",
     ]
     assert offers["ollama"]["placeholder"] == "qwen3.5:9b" and not offers["ollama"]["key_env"]
     assert offers["anthropic"]["placeholder"] == "claude-sonnet-5-5"
@@ -303,6 +324,40 @@ def test_a_legacy_custom_url_is_shown_as_custom_and_kept(
     res = client.put("/api/settings", json={"assistant": {"model": "other-model"}})  # Custom
     assert res.status_code == 200 and saved(home) == {**section, "model": "other-model"}
     assert res.json()["assistant"]["custom"] is True
+
+
+def test_custom_vision_url_is_shown_as_custom_and_kept(client: TestClient, home: Path) -> None:
+    section = {"provider": "ollama", "url": "http://gpu-box:11434", "model": "llava:7b"}
+    set_config(home, vision_assistant=section)
+    got = client.get("/api/settings").json()["vision_assistant"]
+    assert got["custom"] is True
+    assert got["url"] == "http://gpu-box:11434"
+    assert got["provider"] == "ollama"
+
+    res = client.put("/api/settings", json={"vision_assistant": {"model": "llava:13b"}})
+    assert res.status_code == 200
+    out = res.json()["vision_assistant"]
+    assert out["custom"] is True
+    assert out["url"] == "http://gpu-box:11434"
+    assert out["model"] == "llava:13b"
+    assert out["provider"] == "ollama"
+    cfg = json.loads((home / "config.json").read_text("utf-8"))["vision_assistant"]
+    assert cfg["url"] == "http://gpu-box:11434"
+    assert cfg["model"] == "llava:13b"
+
+
+def test_chat_save_does_not_create_vision_assistant_on_legacy_config(
+    client: TestClient, home: Path, monkeypatch
+) -> None:
+    set_config(home, assistant={"provider": "ollama", "model": "llama3.2"})
+    monkeypatch.setattr(providers, "check", lambda p: None)
+    res = client.put(
+        "/api/settings",
+        json={"assistant": {"provider": "ollama", "model": "llama3.3", "url": ""}},
+    )
+    assert res.status_code == 200
+    cfg = json.loads((home / "config.json").read_text("utf-8"))
+    assert "vision_assistant" not in cfg
 
 
 def test_the_shared_key_can_be_left_out_of_a_lookup(monkeypatch) -> None:
@@ -548,67 +603,6 @@ def test_the_models_route_takes_presets_or_custom_and_the_token(
 
 def _web(name: str) -> str:
     return (_ui().WEB_DIR / name).read_text(encoding="utf-8")
-
-
-def test_the_settings_dialog_has_a_provider_choice_and_no_base_url_for_presets() -> None:
-    html = _web("index.html")
-    section = html[
-        html.index('id="setAssistant"') : html.index("</fieldset>", html.index('id="setAssistant"'))
-    ]
-    assert '<select id="setAiProvider"' in section
-    # #521: one native select, labelled Model; the id field only for "Other model…"
-    assert '<label for="setAiModel">Model</label>' in section
-    assert '<select id="setAiModel" aria-describedby="setAiModelHint setAiModelsStatus">' in section
-    assert "datalist" not in section and 'list="' not in section
-    other = re.search(
-        r'<label class="field" id="setAiModelOtherField" hidden>Model id\s*<input id="setAiModelOther"',
-        section,
-    )
-    assert other
-    assert 'id="setAiModelsRefresh"' in section and 'id="setAiModelsStatus"' in section
-    url_field = re.search(
-        r'<label class="field" id="setAiUrlField" hidden>.*?</label>', section, re.S
-    )
-    assert url_field and "readonly" in url_field[0]  # Custom only, never edited here
-
-
-def test_the_settings_script_shows_fields_by_the_provider_chosen() -> None:
-    js = _web("app.js")
-    fill = js[js.index("function fillAiSettings(") : js.index("const aiCustom = ")]
-    assert (
-        "if (a.custom) options.push(h('option', { value: AI_CUSTOM, text: 'Custom (from config.json)' }));"
-        in fill
-    )
-    assert "sel.value = sel.dataset.saved = a.custom ? AI_CUSTOM : a.provider;" in fill
-    render = js[js.index("function renderAiFields(") : js.index("async function loadAiModels(")]
-    assert "$('#setAiUrlField').hidden = $('#setAiUrlHint').hidden = !custom;" in render
-    assert "readOnly" not in render  # a custom provider's model can still be changed
-    assert "renderAiModelList(model);" in render
-    listing = js[js.index("function renderAiModelList(") : js.index("async function loadAiModels(")]
-    assert "aiModelChoices(current, S.aiModels?.[$('#setAiProvider').value], {" in listing
-    assert "$('#setAiModelOtherField').hidden = value !== AI_OTHER;" in listing
-    assert "fallback: custom ? [] : p.models," in listing  # the preset's models without a list
-    assert "renderAiFields(a.model);" in fill  # the saved model, whatever the list holds
-    changes = js[js.index("function aiChanges(") : js.index("/** Save the typed key")]
-    # Custom sends only a changed model: its provider and base URL are never rewritten
-    assert "if (aiCustom()) return aiModel() !== saved ? { model: aiModel() } : null;" in changes
-    assert "url: ''" in changes  # a preset's URL is its own
-    load = js[js.index("async function loadAiModels(") : js.index("function aiChanges(")]
-    assert "/api/assistant/models?provider=${encodeURIComponent(choice)}" in load
-    assert "AI_CUSTOM" not in load  # Custom lists its models too (?provider=custom)
-    assert "renderAiModelList(); // only the list" in load and "renderAiFields()" not in load
-    assert ".replace(/\\.?$/, '.')} ${AI_TYPE_ID}" in load
-    save = js[js.index("async function saveSettings(") : js.index("// The AI assistant's provider")]
-    assert "if (ai && !ai.model && !aiCustom() && aiOffer()?.model_required) {" in save
-    assert "$('#setAiModelsRefresh').addEventListener('click', () => loadAiModels(true));" in js
-    # switching provider shows its saved model or the default, with that provider's options
-    assert (
-        "renderAiFields(back ? $('#setAiModel').dataset.saved : '');\n    loadAiModels(false);"
-        in js
-    )
-    assert "$('#setAiModelOtherField').hidden = e.target.value !== AI_OTHER;" in js
-    aim = js[js.index("const aiModel = ") : js.index("function renderAiFields(")]
-    assert "=== AI_OTHER ? $('#setAiModelOther').value.trim() : $('#setAiModel').value;" in aim
 
 
 def _model_choices(tmp: Path, current: str, listed: list[dict] | None, **opts) -> dict:

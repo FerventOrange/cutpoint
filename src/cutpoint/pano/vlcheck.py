@@ -145,6 +145,7 @@ class VLChecker:
 
         self.rater = VisionRater(url, model)
         self.model = self.rater.model
+        self.provider_name = getattr(self.rater, "provider_name", "ollama")
         self.dead = False  # set when the server stops answering: no more requests
 
     def available(self) -> bool:
@@ -156,6 +157,14 @@ class VLChecker:
 
     def _post(self, prompt: str, image: str, num_predict: int) -> dict[str, Any] | None:
         import requests  # noqa: PLC0415
+
+        if self.rater.via:  # the frame is a JPEG; the prompt asks for JSON, no sampling options
+            text = self.rater.via.ask(prompt, [base64.b64decode(image)])
+            if text is None:
+                logger.warning("VL check request failed; no more VL checks")
+                self.dead = True
+                return None
+            return {"content": text}
 
         payload = {
             "model": self.model,
@@ -225,12 +234,13 @@ def _cache_file(clip_id: str) -> Path:
     return cache.cache_root() / "pano_vl" / f"{clip_id}.json"
 
 
-def frame_key(path: dict[str, Any], t: float, model: str) -> str:
+def frame_key(path: dict[str, Any], t: float, model: str, provider: str = "") -> str:
     """Cache key of the preview frame at source time ``t``: what the view shows there."""
     k = nearest_keys(path["keys"], [t])[0]
     vert = "v" if path.get("vertical") else "h"
+    prov = f"|{provider}" if provider and provider != "ollama" else ""
     return (
-        f"{VL_VERSION}|{model}|{vert}|{t:.2f}|"
+        f"{VL_VERSION}|{model}{prov}|{vert}|{t:.2f}|"
         f"{float(k['yaw']) % 360:.0f}|{float(k['pitch']):.0f}|{float(k['fov']):.0f}"
     )
 
@@ -260,7 +270,7 @@ def check_preview(
     secs, hits, dirty = 0.0, 0, False
     for tp in tps:
         t = start + float(tp)
-        key = frame_key(path, t, checker.model)
+        key = frame_key(path, t, checker.model, provider=getattr(checker, "provider_name", ""))
         reply = store.get(key)
         if reply is None:
             try:

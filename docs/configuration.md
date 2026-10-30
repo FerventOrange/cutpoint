@@ -144,12 +144,28 @@ see [troubleshooting](troubleshooting/models.md)).
 ### vision
 
 `true` or `false` (default). With `true`, `analyze` and `edit` rate the top candidates with the
-local Ollama vision model
+configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
-Settings (gear) dialog writes this key ("Rate frames with a local vision model (Ollama)"), and
+Models tab writes this key ("Rate frames with vision model"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
+
+### vision_assistant
+
+The model that rates frames, chosen independently of the chat model. The same keys as
+[`assistant`](#assistant) (`provider`, `model`, `url`, `consent`), but `provider` is `ollama`
+(default), `claude-code`, `codex` or `antigravity`. With `ollama`, `model` and `url` are the
+Ollama model and URL (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win).
+Subscription providers use only their official host; a `url` for them is rejected.
+The Models tab fetches the catalog from this configured Ollama URL, including custom servers.
+Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
+Catalogs and frames go to a subscription provider only after you allow it there
+(`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
+grants it. **Use at your own risk** when selecting a hosted provider.
+`--ollama-url` and `--ollama-model` have no effect for subscription providers, whose ratings
+have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
+`analyze` always uses Ollama, independently of this selection.
 
 ### compress_peaks
 
@@ -188,23 +204,28 @@ Settings for the `cutpoint ui` [AI Chat tab](commands.md#ai-chat), served by the
 (`/api/projects/{id}/assistant`, token header only). It writes `ui/assistant/chat.json` and
 `history.json` in the project. There is no API key setting (see below).
 
-Settings > AI assistant offers a Provider preset, so no base URL is typed: it saves `provider`
-and `model`, with `url` empty (the preset's own):
+The UI's Models tab offers a Provider, so no base URL is typed: it saves `provider`
+and `model`, with `url` empty (the preset's own). API providers and subscription logins are
+separate entries with their own credentials and model lists:
 
 | Preset | `provider` | Base URL | Model |
 |---|---|---|---|
 | None (local Ollama) | `ollama` | `ollama_url` (`OLLAMA_HOST`) | any pulled model; empty: the first pulled of `qwen3.5:9b`, the vision model and `qwen3-vl:8b`, else `qwen3.5:9b` |
-| Claude (Anthropic) | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered |
-| Codex (OpenAI) | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered |
+| Anthropic API | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered; an API key |
+| OpenAI API | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered; an API key |
 | Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name; `grok-4.7`, `grok-4.6`, `grok-4.5`, `grok-4.3` and `grok-build-0.1` offered |
+| Claude Code subscription | `claude-code` | Anthropic via `cutpoint proxy` | models advertised by the proxy (`GET /v1/models`); local subscription session, no API key |
+| Codex subscription | `codex` | OpenAI via `cutpoint proxy` | models advertised by the proxy (`/codex/models`); local subscription session, no API key |
+| Antigravity subscription | `antigravity` | Google Cloud via `cutpoint proxy` | models advertised by the proxy (`fetchAvailableModels`); local subscription session, no API key |
 
 A `url` set in `config.json` that is not the preset's (OpenRouter, LM Studio, a LAN Ollama) keeps
 working and shows as "Custom (from config.json)": its base URL is read-only (edit the file to
 change it), its model can be changed there, and choosing a preset and saving replaces it. The Model dropdown lists the models the provider offers (Refresh
 asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any other id.
 
-- `provider`: `ollama` (default), `openai` (OpenAI or a server that speaks its API: LM Studio,
-  vLLM, llama-server), `anthropic` or `xai` (Grok, OpenAI-compatible). `openai` at
+- `provider`: `ollama` (default), `openai` (OpenAI API, or a server that speaks its API: LM Studio,
+  vLLM, llama-server), `anthropic` (Anthropic API), `xai` (Grok, OpenAI-compatible), or a
+  subscription login: `claude-code`, `codex` or `antigravity`. `openai` at
   `api.openai.com` uses the Responses API (`/v1/responses`) and asks OpenAI not to store the
   chat (`store: false`); any other `url` uses `/v1/chat/completions`.
 - `model`: the model name. Empty (default): for Ollama the first that is pulled of
@@ -228,22 +249,48 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
 
 Other values are rejected.
 
+Hosted API providers also display **Use at your own risk**. Ollama/Local has no risk warning;
+the existing consent requirement still applies to a remote host.
+
 API keys are never read from or written to `config.json`. A key belongs to a provider and the
 host of its base URL. It is taken, in order, from:
 
 | Source | Used for |
 |---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com` / `api.x.ai`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine, and an xAI key never anywhere but `api.x.ai` (not to the `openai` provider with an `api.x.ai` URL either) |
-| The system keyring (service `cutpoint`) | saved from Settings (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
+| The system keyring (service `cutpoint`) | saved from the Models tab (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
 | `CUTPOINT_ASSISTANT_API_KEY` | custom and self-hosted base URLs only (for example an OpenRouter key, or a key for your own server). Never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai`, not even when no other key is set: those need their own variable or a keyring key |
 
 A preset's key is for its own host, so it can be saved before the settings. For a custom base
-URL, save the settings first, then save the key for it. The key is sent
+URL, save the model settings first, then save the key for it. The key is sent
 only to the host it belongs to, in a request header, and only over `https://` unless the server
 is on this machine (a key with an `http://` base URL on another machine is refused). `cutpoint
 ui` takes these variables out of its own environment when it starts, so jobs, ffmpeg and file
 dialogs never see them; they are also redacted from log lines and error messages. An
 OpenAI-compatible server on this machine needs no key. Ollama takes none.
+
+Subscription providers (`claude-code`, `codex`, `antigravity`): **Use at your own risk**.
+They do not use API keys. They authenticate through the local HTTPS `cutpoint proxy`
+daemon (CLIProxyAPI), bound to loopback `127.0.0.1:18317`, with a private per-start TLS identity.
+Subscription credentials use Cutpoint's existing keyring integration with a native OS backend;
+file-based backends and fallback after a native-backend failure are rejected. CLIProxyAPI needs
+private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/` while running. A separate
+supervisor checkpoints credentials and removals, survives a foreground CLI hard kill, and removes
+working files after stopping the daemon. Final keyring-write failures preserve the latest data
+in an authenticated encrypted recovery journal whose key lives only in the OS keyring.
+Whole-host/supervisor loss or failed recovery writes can still leave private working files;
+see [`proxy`](commands.md#proxy) for recovery, storage-encryption and refresh-durability limits.
+
+Configuration, the TLS private key, and separate random local client/management tokens remain
+private files in `<CUTPOINT_HOME>/cliproxy/`, including `keys.json` (`0700` directories and
+`0600` files on POSIX; verified protected user-only DACLs on Windows). Local tokens and the TLS
+identity rotate on every explicit start; the saved port is preserved. The proxy operates in
+commercial mode with prompt/error logging and prompt cloaking disabled. Model catalogs are
+populated from models advertised by the proxy daemon only after consent for the selected role.
+
+Temporary provider errors and rate-limit cooldowns do not remove an enabled, nonexpired login.
+The proxy's remote-store/Home environment overrides and the caller's `.env` cannot replace this
+private configuration; see [`proxy`](commands.md#proxy) for startup isolation and process lifetime.
 
 ### pano
 

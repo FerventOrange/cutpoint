@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -6643,13 +6644,13 @@ def test_play_sequence_keeps_a_window_proxy_only_when_it_covers_the_whole_clip()
 
 
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
-    """Contract pin (#462, #346): the column has a Sequence, an AI Chat and an Export tab, each
-    controlling a labelled tabpanel; only the selected tab is in the tab order (roving
+    """Contract pin (#462, #346): the column has a Sequence, an AI Chat, an Export and a Models
+    tab, each controlling a labelled tabpanel; only the selected tab is in the tab order (roving
     tabindex)."""
     html = _web("index.html")
     (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
     tabs = re.findall(r"<button\b[^>]*>", tablist)
-    assert len(tabs) == 3 and all('role="tab"' in t for t in tabs)
+    assert len(tabs) == 4 and all('role="tab"' in t for t in tabs)
     panels = dict(
         re.findall(r'<div id="(\w+)"[^>]*role="tabpanel"[^>]*aria-labelledby="(\w+)"', html)
     )
@@ -6657,6 +6658,7 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
         "panelSequence": "tabSequence",
         "panelAssistant": "tabAssistant",
         "panelExport": "tabExport",
+        "panelModels": "tabModels",
     }
     for tab in tabs:
         tab_id = re.search(r'id="(\w+)"', tab)[1]
@@ -6665,7 +6667,7 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     assert 'aria-selected="true"' in tabs[0]
     assert all('aria-selected="false"' in t and 'tabindex="-1"' in t for t in tabs[1:])
     assert "tabindex" not in tabs[0]
-    for later in ("panelAssistant", "panelExport"):
+    for later in ("panelAssistant", "panelExport", "panelModels"):
         assert " hidden" in re.search(rf'<div id="{later}"[^>]*>', html)[0]  # Sequence first
     js = _web("app.js")
     assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
@@ -6693,7 +6695,7 @@ def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
     html = _web("index.html")
     (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
     names = re.findall(r'<button\b[^>]*role="tab"[^>]*>([^<]+)</button>', tablist)
-    assert names == ["Sequence", "AI Chat", "Export"]  # the visible text is the accessible name
+    assert names == ["Sequence", "AI Chat", "Export", "Models"]  # the visible text is the name
     assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
 
 
@@ -8340,3 +8342,156 @@ def test_export_state_shows_the_color_note_from_the_manifest(
     for shown in ("say(`${note} Automatic picks", "say(note)",
                   "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
         assert body.count(shown) == 1, shown
+
+
+# --- Subscription logins (Settings > Subscriptions) ---
+
+
+@pytest.fixture
+def logins(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """A fake CLIProxyAPI and login state: no network, no daemon."""
+    fake = SimpleNamespace(
+        stored={},
+        release=threading.Event(),
+        fail="",
+        cleared=[],
+    )
+
+    def start_login(provider: str) -> dict:
+        return {
+            "url": f"https://auth.example/authorize?p={provider}",
+            "state": f"state_{provider}",
+        }
+
+    def poll_login(state: str) -> dict:
+        if not fake.release.is_set():
+            return {"state": "pending", "error": None}
+        if fail := fake.fail:
+            return {"state": "error", "error": fail}
+        provider = state.split("_", 1)[1] if "_" in state else "codex"
+        fake.stored[provider] = {
+            "provider": provider,
+            "logged_in": True,
+            "email": "a@b.c",
+            "org": "corp",
+            "expired": False,
+            "expires_ms": None,
+            "error": None,
+        }
+        return {"state": "done", "error": None}
+
+    def status(provider: str) -> dict:
+        return fake.stored.get(
+            provider,
+            {
+                "provider": provider,
+                "logged_in": False,
+                "email": None,
+                "org": None,
+                "expired": False,
+                "expires_ms": None,
+                "error": None,
+            },
+        )
+
+    def statuses() -> list[dict]:
+        return [status(p) for p in ui.cliproxy.PROVIDERS]
+
+    def logout(provider: str) -> None:
+        fake.stored.pop(provider, None)
+        fake.cleared.append(provider)
+
+    def cancel_login(state: str) -> None:
+        fake.cancelled = [*getattr(fake, "cancelled", []), state]
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+    monkeypatch.setattr(ui.cliproxy, "poll_login", poll_login)
+    monkeypatch.setattr(ui.cliproxy, "status", status)
+    monkeypatch.setattr(ui.cliproxy, "statuses", statuses)
+    monkeypatch.setattr(ui.cliproxy, "logout", logout)
+    monkeypatch.setattr(ui.cliproxy, "cancel_login", cancel_login)
+    return fake
+
+
+def login_state(client: TestClient, provider: str) -> dict:
+    return client.get("/api/assistant/login/status", params={"provider": provider}).json()
+
+
+def test_a_subscription_login_starts_polls_conflicts_and_logs_out_without_a_token(
+    client: TestClient, logins: SimpleNamespace
+) -> None:
+    listed = client.get("/api/assistant/logins").json()["logins"]
+    assert [x["provider"] for x in listed] == ["claude-code", "codex", "antigravity"]
+    assert not any(x["logged_in"] for x in listed)
+    assert login_state(client, "codex") == {"state": "idle", "error": ""}
+
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.json() == {"url": "https://auth.example/authorize?p=codex"}
+    assert login_state(client, "codex")["state"] == "pending"
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 409
+    assert client.post("/api/assistant/login", json={"provider": "claude-code"}).status_code == 200
+
+    logins.release.set()
+    deadline = time.time() + 5
+    while login_state(client, "codex")["state"] == "pending" and time.time() < deadline:
+        time.sleep(0.02)
+    assert login_state(client, "codex") == {"state": "done", "error": ""}
+    texts = [
+        client.get("/api/assistant/logins").text,
+        client.get("/api/settings").text,
+        client.post("/api/assistant/logout", json={"provider": "codex"}).text,
+    ]
+    assert logins.cleared == ["codex"]
+    assert not any("SECRET" in t for t in texts)
+    assert (
+        next(
+            x
+            for x in client.get("/api/assistant/logins").json()["logins"]
+            if x["provider"] == "codex"
+        )["logged_in"]
+        is False
+    )
+
+
+def test_a_failed_subscription_login_says_why_and_can_start_again(
+    client: TestClient, logins: SimpleNamespace
+) -> None:
+    logins.fail = "the login state did not match"
+    logins.release.set()
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+    deadline = time.time() + 5
+    while login_state(client, "codex")["state"] == "pending" and time.time() < deadline:
+        time.sleep(0.02)
+    assert login_state(client, "codex") == {"state": "error", "error": logins.fail}
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+    assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
+
+
+def test_login_timeout_cancellation_does_not_hold_login_lock(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+    original_monotonic = time.monotonic
+    monkeypatch.setattr(ui.time, "monotonic", lambda: original_monotonic() + ui.LOGIN_TIMEOUT_S + 1)
+
+    entered, release = threading.Event(), threading.Event()
+    logins.cancelled = []
+
+    def slow_cancel(state: str) -> None:
+        logins.cancelled.append(state)
+        entered.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(ui.cliproxy, "cancel_login", slow_cancel)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        expired = pool.submit(login_state, client, "codex")
+        try:
+            assert entered.wait(2)
+            # A second endpoint request can acquire the lock while daemon cancellation is blocked.
+            idle = pool.submit(login_state, client, "claude-code")
+            assert idle.result(timeout=1) == {"state": "idle", "error": ""}
+        finally:
+            release.set()
+        assert expired.result(timeout=2) == {"state": "error", "error": "login timed out"}
+    assert logins.cancelled == ["state_codex"]

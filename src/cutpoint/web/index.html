@@ -155,12 +155,13 @@
     <div id="sideSplit" class="splitter" role="separator" tabindex="0" aria-orientation="vertical"
          aria-controls="side" aria-label="Resize sequence column" title="Drag to resize, double-click to reset"></div>
 
-    <section class="col side" id="side" aria-label="Sequence, AI chat and export">
+    <section class="col side" id="side" aria-label="Sequence, AI chat, export and models">
       <!-- Tabs (#462, AI Chat #346): one button and panel each; app.js handles any number -->
       <div class="side-tabs" role="tablist" aria-label="Sequence column">
         <button type="button" role="tab" id="tabSequence" class="side-tab" data-tab="sequence" aria-selected="true" aria-controls="panelSequence">Sequence</button>
         <button type="button" role="tab" id="tabAssistant" class="side-tab" data-tab="assistant" aria-selected="false" aria-controls="panelAssistant" tabindex="-1">AI Chat</button>
         <button type="button" role="tab" id="tabExport" class="side-tab" data-tab="export" aria-selected="false" aria-controls="panelExport" tabindex="-1">Export</button>
+        <button type="button" role="tab" id="tabModels" class="side-tab" data-tab="models" aria-selected="false" aria-controls="panelModels" tabindex="-1">Models</button>
       </div>
       <!-- outside the panels, so a hidden tab's news is still announced -->
       <p id="chatLive" class="vh" role="status"></p>
@@ -398,6 +399,96 @@
           <ul id="outList" class="out-list"></ul>
         </section>
       </div>
+
+      <div id="panelModels" class="side-panel models" role="tabpanel" aria-labelledby="tabModels" hidden>
+        <h2 id="modelsTitle" class="vh" tabindex="-1">Models</h2>
+
+        <!-- Chat Role -->
+        <fieldset class="panel models-section" id="roleChat">
+          <legend>Chat role</legend>
+          <label class="field">Provider
+            <select id="chatRoleProvider" aria-describedby="chatRoleProviderHint"></select>
+          </label>
+          <p id="chatRoleProviderHint" class="hint"></p>
+          <div class="field">
+            <label for="chatRoleModel">Model</label>
+            <span class="row wrap">
+              <select id="chatRoleModel" aria-describedby="chatRoleModelHint chatRoleModelsStatus"></select>
+              <button type="button" class="btn small" id="chatRoleModelsRefresh">Refresh list</button>
+            </span>
+          </div>
+          <label class="field" id="chatRoleModelOtherField" hidden>Model id
+            <input id="chatRoleModelOther" autocomplete="off" spellcheck="false" aria-describedby="chatRoleModelHint">
+          </label>
+          <p id="chatRoleModelHint" class="hint"></p>
+          <p id="chatRoleModelsStatus" class="hint" role="status"></p>
+          <label class="field" id="chatRoleUrlField" hidden>Base URL
+            <input id="chatRoleUrl" inputmode="url" autocomplete="off" spellcheck="false" readonly aria-describedby="chatRoleUrlHint">
+          </label>
+          <p id="chatRoleUrlHint" class="hint" hidden></p>
+          <div id="chatRoleKey" class="field" hidden>
+            <p id="chatRoleKeyStatus" role="status"></p>
+            <span id="chatRoleKeyRow" class="row wrap">
+              <label for="chatRoleKeyInput" class="vh">API key to save in the system keyring</label>
+              <input id="chatRoleKeyInput" type="password" autocomplete="off" spellcheck="false" aria-describedby="chatRoleKeyHint">
+              <button type="button" class="btn small" id="chatRoleKeySave">Save key</button>
+              <button type="button" class="btn small" id="chatRoleKeyClear">Clear key</button>
+            </span>
+            <p id="chatRoleKeyHint" class="hint"></p>
+          </div>
+        </fieldset>
+
+        <!-- Vision Role -->
+        <fieldset class="panel models-section" id="roleVision">
+          <legend>Vision role</legend>
+          <label class="check">
+            <input type="checkbox" id="visionRoleEnabled" aria-describedby="visionRoleEnabledHint">
+            Rate frames with vision model
+          </label>
+          <p id="visionRoleEnabledHint" class="hint">Analyzes video frames for moment scoring. Supported providers: Ollama (local), Claude Code subscription, Codex subscription, Antigravity subscription.</p>
+          <label class="field">Provider
+            <select id="visionRoleProvider" aria-describedby="visionRoleProviderHint"></select>
+          </label>
+          <p id="visionRoleProviderHint" class="hint"></p>
+          <div class="field">
+            <label for="visionRoleModel">Model</label>
+            <span class="row wrap">
+              <select id="visionRoleModel" aria-describedby="visionRoleModelHint visionRoleModelsStatus"></select>
+              <button type="button" class="btn small" id="visionRoleModelsRefresh">Refresh list</button>
+            </span>
+          </div>
+          <label class="field" id="visionRoleModelOtherField" hidden>Model id
+            <input id="visionRoleModelOther" autocomplete="off" spellcheck="false" aria-describedby="visionRoleModelHint">
+          </label>
+          <p id="visionRoleModelHint" class="hint"></p>
+          <p id="visionRoleModelsStatus" class="hint" role="status"></p>
+          <label class="field" id="visionRoleUrlField" hidden>Base URL
+            <input id="visionRoleUrl" inputmode="url" autocomplete="off" spellcheck="false" readonly aria-describedby="visionRoleUrlHint">
+          </label>
+          <p id="visionRoleUrlHint" class="hint" hidden></p>
+          <div id="visionConsent" class="chat-consent" role="group" aria-labelledby="visionConsentTitle" hidden>
+            <h3 id="visionConsentTitle">Send video frames to hosted model?</h3>
+            <p id="visionConsentText"></p>
+            <button type="button" id="visionConsentOk" class="btn primary small">Allow vision requests</button>
+          </div>
+          <p id="visionConsentStatus" class="hint" role="status"></p>
+        </fieldset>
+
+        <div class="models-save">
+          <button type="button" id="btnSaveModels" class="btn primary">Save models</button>
+          <p id="modelsSaveStatus" class="hint" role="status"></p>
+          <p id="modelsError" class="error" role="alert"></p>
+        </div>
+
+        <!-- Connected Accounts / Subscriptions -->
+        <fieldset class="panel models-section" id="modelsSubs">
+          <legend>Connected accounts</legend>
+          <p class="hint">Subscriptions (Claude Code, ChatGPT Codex, Google Antigravity) are managed by CLIProxyAPI. Run <code>cutpoint proxy</code> in a terminal to authenticate or refresh sessions. Credentials use the OS keyring; the proxy needs private plaintext working files while running. A guardian handles CLI hard kills; keyring-write failures use encrypted recovery. A host crash or failed recovery write can leave private files. Use at your own risk.</p>
+          <p class="hint">Antigravity sign-in may provision a free-tier project if your account has none.</p>
+          <ul id="modelsSubsList" class="subs-list"></ul>
+          <p id="modelsSubsStatus" class="hint" role="status"></p>
+        </fieldset>
+      </div>
     </section>
   </main>
 
@@ -462,47 +553,6 @@
             <button type="button" class="btn" id="setProjectsPick" data-pick="folder" hidden>Choose folder…</button>
           </span>
           <p id="setProjectsNote" class="hint"></p>
-        </div>
-      </fieldset>
-      <fieldset class="panel">
-        <legend>Analysis</legend>
-        <label class="check"><input type="checkbox" id="setVision" aria-describedby="setVisionHint"> Rate frames with a local vision model (Ollama)</label>
-        <p id="setVisionHint" class="hint"></p>
-      </fieldset>
-      <!-- AI Chat provider (#346): saved in config.json; an API key never is, and the page never sees one -->
-      <fieldset class="panel" id="setAssistant">
-        <legend>AI assistant</legend>
-        <label class="field">Provider
-          <select id="setAiProvider" aria-describedby="setAiProviderHint"></select>
-        </label>
-        <p id="setAiProviderHint" class="hint"></p>
-        <div class="field">
-          <label for="setAiModel">Model</label>
-          <span class="row wrap">
-            <select id="setAiModel" aria-describedby="setAiModelHint setAiModelsStatus"></select>
-            <button type="button" class="btn" id="setAiModelsRefresh">Refresh list</button>
-          </span>
-        </div>
-        <!-- Shown only for "Other model…" (#521): an id the provider's list lacks -->
-        <label class="field" id="setAiModelOtherField" hidden>Model id
-          <input id="setAiModelOther" autocomplete="off" spellcheck="false" aria-describedby="setAiModelHint">
-        </label>
-        <p id="setAiModelHint" class="hint"></p>
-        <p id="setAiModelsStatus" class="hint" role="status"></p>
-        <!-- Shown only for a custom base URL from config.json (no preset has it): read-only -->
-        <label class="field" id="setAiUrlField" hidden>Base URL
-          <input id="setAiUrl" inputmode="url" autocomplete="off" spellcheck="false" readonly aria-describedby="setAiUrlHint">
-        </label>
-        <p id="setAiUrlHint" class="hint" hidden></p>
-        <div id="setAiKey" class="field" hidden>
-          <p id="setAiKeyStatus" role="status"></p>
-          <span id="setAiKeyRow" class="row wrap">
-            <label for="setAiKeyInput" class="vh">API key to save in the system keyring</label>
-            <input id="setAiKeyInput" type="password" autocomplete="off" spellcheck="false" aria-describedby="setAiKeyHint">
-            <button type="button" class="btn" id="setAiKeySave">Save key</button>
-            <button type="button" class="btn" id="setAiKeyClear">Clear key</button>
-          </span>
-          <p id="setAiKeyHint" class="hint"></p>
         </div>
       </fieldset>
       <fieldset class="panel">

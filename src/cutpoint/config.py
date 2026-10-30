@@ -54,10 +54,18 @@ documents every key.
     one clip at a time.
 
 ``vision``
-    ``true`` rates the top candidates of ``cutpoint analyze`` and ``cutpoint edit`` with the local
-    Ollama vision model unless ``--no-vision`` is given (``--vision`` turns it on for one run).
-    Default ``false``: vision is opt-in. ``cutpoint ui`` changes it in Settings.
+    ``true`` rates the top candidates of ``cutpoint analyze`` and ``cutpoint edit`` with the
+    configured vision model unless ``--no-vision`` is given (``--vision`` turns it on for one run).
+    Default ``false``: vision is opt-in. The Models tab in ``cutpoint ui`` changes it.
 
+
+``vision_assistant``
+    The model that rates frames, set in the Models tab independently of the chat model:
+    ``provider`` (``ollama``, ``claude-code``, ``codex`` or ``antigravity``), ``model``,
+    ``url`` (empty for official hosts; custom URLs are rejected for subscription providers)
+    and ``consent``. Subscription providers route requests through the local ``cutpoint proxy``
+    daemon. Frames go to a hosted subscription provider only after "Allow vision requests"
+    in the Models tab grants permission.
 ``compress_peaks``
     ``off`` (default), ``light`` or ``strong``: peak compression and clip leveling of
     ``cutpoint clips``, ``assemble`` and ``edit`` when ``--compress-peaks`` is not given
@@ -80,18 +88,20 @@ documents every key.
 
 ``assistant``
     The ``cutpoint ui`` assistant: ``provider`` (``ollama``, the default; ``anthropic`` for
-    Claude; ``openai`` for OpenAI or a server that speaks its API; ``xai`` for Grok), ``model``
-    (default: the first pulled of Ollama ``qwen3.5:9b``, the vision model
-    ``CUTPOINT_VISION_MODEL`` and ``qwen3-vl:8b``, else ``qwen3.5:9b``; Anthropic
-    ``claude-sonnet-5-5``;
-    OpenAI-compatible and xAI: the server's only model), ``url`` (the base URL; default, which
-    Settings' presets use: the Ollama URL above, ``https://api.anthropic.com``,
-    ``https://api.openai.com/v1`` or ``https://api.x.ai/v1``; another one is shown as custom),
-    ``context_tokens`` (the model's context size; default
-    8192 on this machine, 32768 hosted) and ``consent`` (``<provider>@<host>`` of the hosted
-    providers the user agreed to send project text to). API keys are never read from or
-    written to this file (see :mod:`cutpoint.assistant.keys`).
-
+    Claude; ``openai`` for OpenAI or a server that speaks its API; ``xai`` for Grok; or a
+    subscription provider routed via ``cutpoint proxy``: ``claude-code``, ``codex``,
+    ``antigravity``), ``model`` (default: the first pulled of Ollama ``qwen3.5:9b``, the vision
+    model ``CUTPOINT_VISION_MODEL`` and ``qwen3-vl:8b``, else ``qwen3.5:9b``; Anthropic
+    ``claude-sonnet-5-5``; OpenAI-compatible and xAI: the server's only model; subscription: models
+    advertised by ``cutpoint proxy``), ``url`` (the base URL; default, which the Models tab's
+    presets use: the Ollama URL above, ``https://api.anthropic.com``,
+    ``https://api.openai.com/v1`` or ``https://api.x.ai/v1``; custom URLs are rejected for
+    subscription providers; another one is shown as custom), ``context_tokens`` (the model's
+    context size; default 8192 on this machine, 32768 hosted) and ``consent``
+    (``<provider>@<host>`` of the hosted providers the user agreed to send project text to).
+    Direct API keys are kept in the OS keyring and never read from or written to this file
+    (see :mod:`cutpoint.assistant.keys`); subscription credentials are persisted in the same
+    OS keyring, with private working files while ``cutpoint proxy`` runs.
 The analysis cache key is canonicalised through the same table (a remapped
 path is keyed as its original), so a remapped source with the same size and
 mtime keeps its cache.
@@ -119,8 +129,17 @@ logger = logging.getLogger(__name__)
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
 COLOR_MODES = ("off", "auto", "underwater")  # --color; the grades are cutpoint.color.MODES
+VISION_PROVIDERS = ("ollama", "claude-code", "codex", "antigravity")
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
-ASSISTANT_PROVIDERS = ("ollama", "openai", "anthropic", "xai")
+ASSISTANT_PROVIDERS = (
+    "ollama",
+    "openai",
+    "anthropic",
+    "xai",
+    "claude-code",
+    "codex",
+    "antigravity",
+)
 MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
 
 
@@ -152,6 +171,7 @@ class Config:
     export_workers: int | None = None  # None: auto
     assistant: AssistantSettings = field(default_factory=AssistantSettings)
     color: str = "off"
+    vision_assistant: AssistantSettings = field(default_factory=AssistantSettings)
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -286,6 +306,11 @@ def _load_config(path: Path) -> Config:
     color = data.get("color") or "off"
     if color not in COLOR_MODES:
         raise ValueError(f"{path}: color is {color!r}; expected one of {', '.join(COLOR_MODES)}")
+    v_ast = (
+        _vision_assistant(path, data)
+        if "vision_assistant" in data
+        else AssistantSettings(provider="ollama")
+    )
     return Config(
         projects,
         pairs,
@@ -300,6 +325,7 @@ def _load_config(path: Path) -> Config:
         _export_workers(path, data),
         _assistant(path, data),
         color,
+        v_ast,
     )
 
 
@@ -357,6 +383,52 @@ def _assistant(path: Path, data: dict) -> AssistantSettings:
 def assistant_settings() -> AssistantSettings:
     """The ``assistant`` section of ``config.json`` (defaults when it is missing)."""
     return get_config().assistant
+
+
+def _vision_assistant(path: Path, data: dict) -> AssistantSettings:
+    """The ``vision_assistant`` section of config ``data``, checked."""
+    _check_type(path, data, "vision_assistant", lambda v: isinstance(v, dict), "an object")
+    section = data.get("vision_assistant") or {}
+    checks = (
+        ("provider", _is_str, "a string"),
+        ("model", _is_str, "a string"),
+        ("url", _is_str, "a string"),
+        ("consent", _is_str_list, "a list of <provider>@<host> entries"),
+    )
+    for key, ok, what in checks:
+        _check_type(
+            path,
+            {f"vision_assistant.{key}": section.get(key)},
+            f"vision_assistant.{key}",
+            ok,
+            what,
+        )
+    provider = (section.get("provider") or "ollama").strip().lower()
+    if provider not in VISION_PROVIDERS:
+        raise ValueError(
+            f"{path}: vision_assistant.provider is {provider!r}; "
+            f"expected one of {', '.join(VISION_PROVIDERS)}"
+        )
+    tokens = section.get("context_tokens")
+    if tokens is None:
+        tokens = 0
+    elif isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < MIN_CONTEXT_TOKENS:
+        raise ValueError(
+            f"{path}: vision_assistant.context_tokens is {tokens!r}; "
+            f"expected a whole number of at least {MIN_CONTEXT_TOKENS}"
+        )
+    return AssistantSettings(
+        provider,
+        (section.get("model") or "").strip(),
+        (section.get("url") or "").strip(),
+        tokens,
+        tuple(dict.fromkeys(section.get("consent") or ())),
+    )
+
+
+def vision_assistant_settings() -> AssistantSettings:
+    """The ``vision_assistant`` section of ``config.json`` (defaults when it is missing)."""
+    return get_config().vision_assistant
 
 
 def export_workers() -> int | None:

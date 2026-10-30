@@ -3631,7 +3631,7 @@ function renderChat() {
   $('#chatConsentOk').hidden = !consent;
   $('#chatConsentText').textContent = noKey ? `${noKey}.`
     : consent
-    ? `Each message sends ${CONSENT_SENDS} to ${PROVIDER_NAMES[prov?.name] ?? prov?.name ?? 'the provider'} at ${consent.host}. Nothing is sent until you agree. You agree once for this provider and host; Cutpoint saves it in config.json. Change the provider in Settings.`
+    ? `Each message sends ${CONSENT_SENDS} to ${PROVIDER_NAMES[prov?.name] ?? prov?.name ?? 'the provider'} at ${consent.host}. Nothing is sent until you agree. You agree once for this provider and host; Cutpoint saves it in config.json. Change the provider in the Models tab.`
     : '';
   $('#chatClear').disabled = !c?.turns.length;
   const log = $('#chatLog');
@@ -3752,7 +3752,6 @@ const PROJECTS_NOTE = 'New projects are created in this folder. Existing project
 async function openSettings() {
   const d = $('#settingsDialog');
   const input = $('#setProjects');
-  const box = $('#setVision');
   $('#settingsError').textContent = $('#settingsNote').textContent = '';
   let st;
   try {
@@ -3767,25 +3766,19 @@ async function openSettings() {
   $('#setProjectsNote').textContent = st.projects_dir_locked
     ? 'Set by the CUTPOINT_PROJECTS_DIR environment variable. Change or unset it, then restart cutpoint ui, to choose the folder here.'
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
-  box.checked = st.vision === true;
-  box.dataset.saved = String(box.checked);
-  $('#setVisionHint').textContent = `Off by default. Slower, and uses several GB of GPU memory while it runs; needs Ollama with ${st.vision_model}. Every analysis, new or "Analyze again", uses this setting; "Analyze again" keeps the Ollama model, URL and vision-top the last analysis recorded. Saved in ${st.config_file}.${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
-  fillAiSettings(st.assistant);
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
   $('#setAdvExport').checked = S.advExport;
   S.advExportWas = S.advExport;
   S.themeWas = $('#setTheme').value = theme();
   d.showModal();
-  // a locked folder cannot be edited: start on the first control that can
-  (st.projects_dir_locked ? box : input).focus();
+  input.focus();
 }
 
 async function saveSettings() {
   const input = $('#setProjects');
-  const box = $('#setVision');
   const err = $('#settingsError');
-  const note = $('#settingsNote'); // progress and remarks; err is for what went wrong
+  const note = $('#settingsNote');
   const value = input.value.trim();
   err.textContent = note.textContent = '';
   const body = {};
@@ -3793,21 +3786,9 @@ async function saveSettings() {
     if (!value) return (err.textContent = 'Enter the full path of a folder (~ is your home folder).');
     if (value !== input.dataset.saved) body.projects_dir = value;
   }
-  if (String(box.checked) !== box.dataset.saved) body.vision = box.checked;
-  const ai = aiChanges();
-  if (ai && $('#setAiModel').value === AI_OTHER && !aiModel()) {
-    err.textContent = 'Enter the model id.';
-    return $('#setAiModelOther').focus();
-  }
-  if (ai && !ai.model && !aiCustom() && aiOffer()?.model_required) {
-    err.textContent = `Choose a model for ${aiOffer().title}.`;
-    return $('#setAiModel').focus();
-  }
-  if (ai) body.assistant = ai;
   if (!Object.keys(body).length) return $('#settingsDialog').close();
   if (body.projects_dir && dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
   $('#settingsSave').disabled = true;
-  if (ai) note.textContent = 'Saving, and checking that the assistant can answer…';
   let st;
   try {
     st = await api('/api/settings', { method: 'PUT', body });
@@ -3820,24 +3801,8 @@ async function saveSettings() {
   }
   err.textContent = '';
   input.value = input.dataset.saved = st.projects_dir;
-  box.dataset.saved = String(st.vision === true);
-  if (ai) {
-    fillAiSettings(st.assistant);
-    if (S.id && !body.projects_dir) loadAssistant(); // the chat names the provider in use
-    if (st.assistant_check && !body.projects_dir) {
-      // saved, but it cannot answer yet: say why here, where it can be fixed
-      err.textContent = `Saved. The assistant can't answer yet: ${st.assistant_check}`;
-      return;
-    }
-    if (st.assistant_note && !body.projects_dir) {
-      // saved without a full check (consent pending, or a key not proven): neutral, not the error line
-      note.textContent = `Saved. ${st.assistant_note}`;
-      return;
-    }
-  }
   $('#settingsDialog').close();
   if (!body.projects_dir) return;
-  // A project of the same id in the new folder is another project: start afresh either way.
   try {
     const was = S.id;
     closeProject();
@@ -3850,24 +3815,50 @@ async function saveSettings() {
   }
 }
 
-// The AI assistant's provider (#346): a preset per provider, so no base URL is typed. The page
-// never gets an API key: only where each comes from.
+// ---------- Models tab: role management and subscription accounts ----------
 const KEY_WHERE = { env: 'set (env)', keyring: 'set (keyring)' };
-const AI_CUSTOM = 'custom'; // a base URL from config.json that no preset has: shown and kept (URL read-only)
-const AI_HINTS = {
-  ollama: 'Runs with Ollama (the default), at OLLAMA_HOST or the Ollama URL in config.json. On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
-  anthropic: "Claude through Anthropic's API (api.anthropic.com), with your API key. It asks once before it gets project data.",
-  openai: "OpenAI's API (api.openai.com), with your API key. It asks once before it gets project data.",
-  xai: "Grok through xAI's API (api.x.ai), with your API key. It asks once before it gets project data.",
+const AI_CUSTOM = 'custom';
+const PROVIDER_TITLES = {
+  ollama: 'Ollama (local)',
+  anthropic: 'Anthropic API',
+  'claude-code': 'Claude Code subscription',
+  openai: 'OpenAI API',
+  codex: 'Codex subscription',
+  antigravity: 'Antigravity subscription',
+  xai: 'xAI API',
+  custom: 'Custom (from config.json)',
+};
+const VISION_PROVIDERS = ['ollama', 'claude-code', 'codex', 'antigravity'];
+
+const CHAT_HINTS = {
+  ollama: 'Runs with Ollama (local), at OLLAMA_HOST or the Ollama URL in config.json. On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
+  anthropic: "Anthropic API (api.anthropic.com): uses your Anthropic API key. Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
+  'claude-code': "Claude Code subscription: uses your Claude subscription login (log in under Connected accounts below, no API key). Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
+  openai: "OpenAI API (api.openai.com): uses your OpenAI API key. Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
+  codex: "Codex subscription: uses your ChatGPT subscription login (log in under Connected accounts below, no API key). Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
+  antigravity: "Antigravity subscription: uses your Google/Antigravity subscription login (log in under Connected accounts below, no API key). Requests go to Google's hosted service. It asks once before it gets project data. Use at your own risk.",
+  xai: "xAI API (api.x.ai): uses your xAI API key. Requests go to xAI's hosted service. It asks once before it gets project data. Use at your own risk.",
   custom: 'The provider and base URL set in config.json, which no preset has. It keeps working, and its model can be changed here; choose a preset and save to use that instead.',
 };
+
+const VISION_HINTS = {
+  ollama: 'Runs with Ollama (local) vision models (e.g. qwen3-vl:8b, llava) to rate video frames on this machine.',
+  'claude-code': "Claude Code subscription: rates video frames via your Claude subscription login (no API key). Requests go to Anthropic's hosted service. Use at your own risk.",
+  codex: "Codex subscription: rates video frames via your ChatGPT subscription login (no API key). Requests go to OpenAI's hosted service. Use at your own risk.",
+  antigravity: "Antigravity subscription: rates video frames via your Google/Antigravity subscription login (no API key). Requests go to Google's hosted service. Use at your own risk.",
+};
+
 const AI_MODEL_HINTS = {
   ollama: 'The name of a model Ollama has pulled. Default: the first Ollama has of qwen3.5:9b, the vision model and qwen3-vl:8b, else qwen3.5:9b.',
   anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
-  openai: "Needed: the name of an OpenAI model your key can use. It is asked through OpenAI's Responses API, so gpt-6-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna and *-codex models all make tool calls.",
+  'claude-code': 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
+  openai: 'Needed: the name of an OpenAI model your key can use (e.g. gpt-4o, gpt-4o-mini).',
+  codex: 'ChatGPT subscription (Codex) backend models from your account catalog.',
+  antigravity: 'Models from your Antigravity subscription account catalog.',
   xai: 'Needed: the name of an xAI model your key can use.',
   custom: "The model of the custom provider, saved in config.json. Default: the server's model, when it serves only one.",
 };
+
 const AI_TYPE_ID = 'Choose Other model… to enter an id.';
 const AI_LIST_STATES = {
   key_needed: `The model list loads once there is an API key. ${AI_TYPE_ID}`,
@@ -3875,143 +3866,502 @@ const AI_LIST_STATES = {
   unsupported: AI_TYPE_ID,
 };
 
-/** Fill the AI assistant fields from the settings' assistant view. */
-function fillAiSettings(a) {
-  if (!a) return;
-  S.ai = a;
-  S.aiModels = {}; // preset -> the models its provider listed
-  const sel = $('#setAiProvider');
-  const options = a.providers.map((p) => h('option', { value: p.name, text: p.title }));
-  if (a.custom) options.push(h('option', { value: AI_CUSTOM, text: 'Custom (from config.json)' }));
-  sel.replaceChildren(...options);
-  sel.value = sel.dataset.saved = a.custom ? AI_CUSTOM : a.provider;
-  $('#setAiModel').dataset.saved = a.model;
-  $('#setAiUrl').value = a.url;
-  $('#setAiKeyInput').value = '';
-  renderAiFields(a.model);
-  loadAiModels(false);
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return '';
+  const at = email.indexOf('@');
+  if (at <= 1) return email;
+  const name = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  return `${name[0]}***${name.length > 2 ? name[name.length - 1] : ''}@${domain}`;
 }
 
-const aiCustom = () => $('#setAiProvider').value === AI_CUSTOM;
-/** The offer of the chosen preset; for Custom, of the configured provider. */
-const aiOffer = () => {
-  const name = aiCustom() ? S.ai?.provider : $('#setAiProvider').value;
-  return S.ai?.providers.find((p) => p.name === name);
-};
-
-/** The model chosen: the select's, or the id typed under "Other model…"; '' is the default. */
-const aiModel = () =>
-  $('#setAiModel').value === AI_OTHER ? $('#setAiModelOther').value.trim() : $('#setAiModel').value;
-
-/** The hints, model field, base URL (Custom only) and key status of the provider chosen;
- * `model` shows that model instead of the one chosen (see renderAiModelList). */
-function renderAiFields(model) {
-  const p = aiOffer();
-  if (!p) return;
-  const custom = aiCustom();
-  $('#setAiProviderHint').textContent = AI_HINTS[custom ? AI_CUSTOM : p.name] ?? '';
-  $('#setAiModel').setAttribute('aria-required', String(!custom && p.model_required));
-  renderAiModelList(model);
-  $('#setAiModelHint').textContent = AI_MODEL_HINTS[custom ? AI_CUSTOM : p.name] ?? '';
-  $('#setAiUrlField').hidden = $('#setAiUrlHint').hidden = !custom;
-  $('#setAiUrlHint').textContent = custom ? 'Set in config.json (assistant.url); edit that file to change it.' : '';
-  const keyed = p.name in (S.ai.keys ?? {}); // key_env may be empty: a keyring key only (#504)
-  $('#setAiKey').hidden = !keyed;
-  if (!keyed) return;
-  const where = S.ai.keys[p.name];
-  const host = S.ai.key_hosts?.[p.name] ?? '';
-  // The key is for the saved base URL's host: a preset of the provider a custom URL is saved for
-  // has another host, so save that first. Every other choice's key is for its official host.
-  const unsaved = !custom && S.ai.custom && p.name === S.ai.provider;
-  $('#setAiKeyStatus').textContent = unsaved
-    ? 'API key: save the settings first to see or set the key for this provider.'
-    : `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
-  $('#setAiKeySave').disabled = $('#setAiKeyClear').disabled = unsaved;
-  $('#setAiKeyHint').textContent = unsaved
-    ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
-    : `${aiKeyOrder(p.key_env)} Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.`;
-}
-
-/** Where a key is read from, in order (#504): the provider's own variable before a saved key;
- *  a saved key before CUTPOINT_ASSISTANT_API_KEY, which is only for custom base URLs. */
 function aiKeyOrder(env) {
-  if (!env.length) return 'Read from the system keyring.';
+  if (!env || !env.length) return 'Read from the system keyring.';
   if (env[0] === 'CUTPOINT_ASSISTANT_API_KEY') {
     return `Read from the system keyring, else from ${env[0]} when cutpoint ui starts.`;
   }
   return `Read from ${env.join(' or ')} when cutpoint ui starts, else from the system keyring.`;
 }
 
-/** The Model select (#521): the default, the models the provider listed, "Other model…" last.
- * Without `model` the choice made stays, an id typed under Other too; a model the list lacks
- * stays chosen as an extra option, so opening Settings never changes it. */
-function renderAiModelList(model) {
-  const p = aiOffer();
-  if (!p) return;
-  const sel = $('#setAiModel');
-  const input = $('#setAiModelOther');
+function getChatModel() {
+  const sel = $('#chatRoleModel');
+  return sel.value === AI_OTHER ? $('#chatRoleModelOther').value.trim() : sel.value;
+}
+
+function getVisionModel() {
+  const sel = $('#visionRoleModel');
+  return sel.value === AI_OTHER ? $('#visionRoleModelOther').value.trim() : sel.value;
+}
+
+function renderChatRoleHints() {
+  const sel = $('#chatRoleProvider');
+  if (!sel) return;
+  const choice = sel.value;
+  const custom = choice === AI_CUSTOM;
+  const p = custom
+    ? S.ai?.providers?.find((x) => x.name === S.ai?.provider)
+    : S.ai?.providers?.find((x) => x.name === choice);
+  let hint = CHAT_HINTS[custom ? AI_CUSTOM : (p?.name ?? choice)] ?? '';
+  if (custom && !S.ai?.local) hint += ' Use at your own risk.';
+  if (p?.subscription && !custom && !S.logins?.find((l) => l.provider === p.name)?.logged_in) {
+    hint += ' Not logged in yet.';
+  }
+  $('#chatRoleProviderHint').textContent = hint;
+}
+
+function renderVisionRoleHints() {
+  const sel = $('#visionRoleProvider');
+  if (!sel) return;
+  const choice = sel.value;
+  const p = S.visionAi?.providers?.find((x) => x.name === choice);
+  let hint = VISION_HINTS[choice] ?? '';
+  if (S.visionAi?.custom && choice === S.visionAi.provider && !S.visionAi.local) {
+    hint += ' Use at your own risk.';
+  }
+  if (p?.subscription && !S.logins?.find((l) => l.provider === p.name)?.logged_in) {
+    hint += ' Not logged in yet.';
+  }
+  $('#visionRoleProviderHint').textContent = hint;
+}
+
+function renderChatRoleFields(model) {
+  const sel = $('#chatRoleProvider');
+  const choice = sel.value;
+  const custom = choice === AI_CUSTOM;
+  const p = custom
+    ? S.ai?.providers?.find((x) => x.name === S.ai?.provider)
+    : S.ai?.providers?.find((x) => x.name === choice);
+
+  renderChatRoleHints();
+  $('#chatRoleModel').setAttribute('aria-required', String(!custom && (p?.model_required ?? false)));
+  renderRoleModelList('chat', model);
+  $('#chatRoleModelHint').textContent = AI_MODEL_HINTS[custom ? AI_CUSTOM : (p?.name ?? choice)] ?? '';
+  $('#chatRoleUrlField').hidden = $('#chatRoleUrlHint').hidden = !custom;
+  $('#chatRoleUrlHint').textContent = custom ? 'Set in config.json (assistant.url); edit that file to change it.' : '';
+
+  const keyed = p?.name in (S.ai?.keys ?? {});
+  $('#chatRoleKey').hidden = !keyed;
+  if (!keyed) return;
+  const where = S.ai.keys[p.name];
+  const host = S.ai.key_hosts?.[p.name] ?? '';
+  const unsaved = !custom && S.ai.custom && p.name === S.ai.provider;
+  $('#chatRoleKeyStatus').textContent = unsaved
+    ? 'API key: save the models first to see or set the key for this provider.'
+    : `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
+  $('#chatRoleKeySave').disabled = $('#chatRoleKeyClear').disabled = unsaved;
+  $('#chatRoleKeyHint').textContent = unsaved
+    ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
+    : `${aiKeyOrder(p.key_env || [])} Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.`;
+}
+
+function renderVisionRoleFields(model) {
+  const sel = $('#visionRoleProvider');
+  const choice = sel.value;
+  const custom = Boolean(S.visionAi?.custom && choice === (S.visionAi?.provider || 'ollama'));
+  const p = S.visionAi?.providers?.find((x) => x.name === choice);
+
+  renderVisionRoleHints();
+  $('#visionRoleModel').setAttribute('aria-required', String(!custom && (p?.model_required ?? false)));
+  renderRoleModelList('vision', model);
+  $('#visionRoleModelHint').textContent = AI_MODEL_HINTS[choice] ?? '';
+  $('#visionRoleUrlField').hidden = $('#visionRoleUrlHint').hidden = !custom;
+  $('#visionRoleUrlHint').textContent = custom ? 'Set in config.json (vision_assistant.url); edit that file to change it.' : '';
+  renderVisionConsent();
+}
+
+function renderVisionConsent() {
+  const box = $('#visionConsent');
+  const status = $('#visionConsentStatus');
+  if (!box || !status) return;
+
+  const sel = $('#visionRoleProvider');
+  const unsaved = sel.value !== sel.dataset.saved;
+  const consent = S.visionConsent;
+
+  status.textContent = '';
+  box.hidden = true;
+
+  if (unsaved) {
+    if (sel.value !== 'ollama') {
+      status.textContent = 'Save models first to review and grant permission for this provider.';
+    }
+    return;
+  }
+
+  if (!consent || consent.key === null) {
+    if (sel.value === 'ollama') {
+      status.textContent = 'Local model: frame ratings run on this machine; no frame data leaves it.';
+    }
+    return;
+  }
+
+  if (consent.needed) {
+    box.hidden = false;
+    const host = consent.host || 'the remote service';
+    $('#visionConsentTitle').textContent = `Send video frames to ${host}?`;
+    $('#visionConsentText').textContent = `Rating moments with this hosted vision provider sends frame crops and descriptions to ${host}. Frame data is never sent until you explicitly grant permission. Permission is saved in config.json.`;
+    $('#visionConsentOk').disabled = false;
+  } else {
+    status.textContent = `Permission granted: frame ratings allowed with ${consent.host || 'this provider'}.`;
+  }
+}
+
+async function giveVisionConsent() {
+  if (!S.visionConsent?.key) return;
+  const btn = $('#visionConsentOk');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/assistant/consent', {
+      method: 'POST',
+      body: { role: 'vision', key: S.visionConsent.key },
+    });
+    S.visionConsent = r.consent;
+    renderVisionConsent();
+    const saveStatus = $('#modelsSaveStatus');
+    saveStatus.className = 'hint ok';
+    saveStatus.textContent = 'Vision permission granted.';
+  } catch (e) {
+    btn.disabled = false;
+    $('#modelsError').textContent = `Permission grant failed: ${e.message}`;
+  }
+}
+
+function renderRoleModelList(role, model) {
+  const isChat = role === 'chat';
+  const sel = $(isChat ? '#chatRoleModel' : '#visionRoleModel');
+  const input = $(isChat ? '#chatRoleModelOther' : '#visionRoleModelOther');
+  const otherField = $(isChat ? '#chatRoleModelOtherField' : '#visionRoleModelOtherField');
+  const providerSel = $(isChat ? '#chatRoleProvider' : '#visionRoleProvider');
+  if (!sel || !providerSel) return;
+  const provider = providerSel.value;
+  const custom = provider === AI_CUSTOM;
+  const p = isChat
+    ? (custom ? S.ai?.providers?.find((x) => x.name === S.ai?.provider) : S.ai?.providers?.find((x) => x.name === provider))
+    : S.visionAi?.providers?.find((x) => x.name === provider);
+
   const typing = model === undefined && sel.value === AI_OTHER;
-  const current = model ?? aiModel();
-  const custom = aiCustom();
-  const { options, value } = aiModelChoices(current, S.aiModels?.[$('#setAiProvider').value], {
-    typing, required: !custom && p.model_required, placeholder: custom ? '' : p.placeholder,
-    fallback: custom ? [] : p.models, // the preset's models when no list came
+  const current = model ?? (typing ? input.value.trim() : (sel.value === AI_OTHER ? input.value.trim() : sel.value));
+
+  const catalog = isChat ? S.aiModels?.[provider] : S.visionModels?.[provider];
+  const { options, value } = aiModelChoices(current, catalog, {
+    typing,
+    required: !custom && (p?.model_required ?? false),
+    placeholder: custom ? '' : (p?.placeholder ?? ''),
+    fallback: custom ? [] : (p?.models ?? []),
   });
   sel.replaceChildren(...options.map((o) => h('option', { value: o.value, text: o.text })));
   sel.value = value;
-  if (!typing) input.value = '';
-  $('#setAiModelOtherField').hidden = value !== AI_OTHER;
+  if (!typing && value !== AI_OTHER) input.value = '';
+  otherField.hidden = value !== AI_OTHER;
 }
 
-/** Ask the server for the models the chosen preset's provider offers (cached there; `refresh`
- * asks the provider again) and offer them in the Model list. Other model… takes any other id. */
-async function loadAiModels(refresh) {
-  const sel = $('#setAiProvider');
-  const status = $('#setAiModelsStatus');
+async function loadRoleModels(role, refresh) {
+  const isChat = role === 'chat';
+  const sel = $(isChat ? '#chatRoleProvider' : '#visionRoleProvider');
+  const status = $(isChat ? '#chatRoleModelsStatus' : '#visionRoleModelsStatus');
+  if (!sel || !status) return;
   const choice = sel.value;
-  const seq = (S.aiModelsSeq = (S.aiModelsSeq ?? 0) + 1);
+  const seqKey = isChat ? 'chatModelsSeq' : 'visionModelsSeq';
+  const seq = (S[seqKey] = (S[seqKey] ?? 0) + 1);
   status.textContent = '';
-  if (!S.ai) return;
+
+  const meta = isChat ? S.ai : S.visionAi;
+  if (!meta) return;
+  const p = isChat
+    ? (choice === AI_CUSTOM ? S.ai?.providers?.find((x) => x.name === S.ai?.provider) : S.ai?.providers?.find((x) => x.name === choice))
+    : S.visionAi?.providers?.find((x) => x.name === choice);
+
+  if (p?.subscription) {
+    const login = S.logins?.find((l) => l.provider === choice);
+    if (!login?.logged_in) {
+      status.textContent = 'Account not connected. Log in under Connected accounts to view and use models.';
+      return;
+    }
+  }
+
   status.textContent = 'Loading the model list…';
   let r;
   try {
-    r = await api(`/api/assistant/models?provider=${encodeURIComponent(choice)}${refresh ? '&refresh=1' : ''}`);
+    const isCustomVision = !isChat && Boolean(S.visionAi?.custom && choice === (S.visionAi?.provider || 'ollama'));
+    const queryProvider = isCustomVision ? AI_CUSTOM : choice;
+    const roleParam = isChat ? 'assistant' : 'vision';
+    r = await api(`/api/assistant/models?provider=${encodeURIComponent(queryProvider)}&role=${roleParam}${refresh ? '&refresh=1' : ''}`);
   } catch (e) {
     r = { state: 'error', models: [], message: e.message };
   }
-  if (seq !== S.aiModelsSeq || sel.value !== choice) return; // another choice since
-  S.aiModels[choice] = r.models ?? [];
-  renderAiModelList(); // only the list: the key status (a keyring confirmation) stays
-  const n = S.aiModels[choice].length;
+
+  if (seq !== S[seqKey] || sel.value !== choice) {
+    if (status.textContent === 'Loading the model list…') status.textContent = '';
+    return;
+  }
+
+  const catalog = isChat ? (S.aiModels ??= {}) : (S.visionModels ??= {});
+  catalog[choice] = r.models ?? [];
+
+  renderRoleModelList(role);
+
+  const n = catalog[choice].length;
   if (r.state === 'ok') {
-    status.textContent = n
-      ? `${n} model${n === 1 ? '' : 's'} listed by the provider. Choose Other model… to enter another.`
-      : `The provider listed no models. ${AI_TYPE_ID}`;
+    status.textContent = n ? '' : `The provider listed no models. ${AI_TYPE_ID}`;
   } else if (r.state === 'error') {
-    status.textContent = `Could not load the model list: ${String(r.message ?? '').replace(/\.?$/, '.')} ${AI_TYPE_ID}`;
+    const cleanMsg = String(r.message ?? '').trim().replace(/\.+$/, '');
+    status.textContent = cleanMsg
+      ? `Could not load model list: ${cleanMsg}. ${AI_TYPE_ID}`
+      : `Could not load model list. ${AI_TYPE_ID}`;
   } else {
-    const msg = r.message && String(r.message).replace(/\.?$/, '.');
-    status.textContent = [msg, AI_LIST_STATES[r.state]].filter(Boolean).join(' ');
+    const msg = r.message ? String(r.message).trim().replace(/\.+$/, '') + '.' : '';
+    status.textContent = [msg, AI_LIST_STATES[r.state] ?? AI_TYPE_ID].filter(Boolean).join(' ');
   }
 }
 
-/** The preset and model when either differs from what config.json has, else null. A preset
- * always sends an empty base URL (its own); Custom sends only a changed model, so its provider
- * and base URL stay as config.json has them. */
-function aiChanges() {
-  if (!S.ai) return null;
-  const sel = $('#setAiProvider');
-  const saved = $('#setAiModel').dataset.saved;
-  if (aiCustom()) return aiModel() !== saved ? { model: aiModel() } : null;
-  const now = { provider: sel.value, model: aiModel(), url: '' };
-  return now.provider !== sel.dataset.saved || now.model !== saved ? now : null;
+const SUB_POLL_MS = 1500;
+const subNote = (...parts) => $('#modelsSubsStatus')?.replaceChildren(...parts);
+
+async function loadLogins() {
+  try {
+    S.logins = (await api('/api/assistant/logins')).logins;
+  } catch (e) {
+    return subNote(e.message);
+  }
+  renderLogins();
+  await enumerateSubCatalogs(false);
+
+  const chatProv = $('#chatRoleProvider')?.value;
+  const chatP = chatProv === AI_CUSTOM
+    ? S.ai?.providers?.find((x) => x.name === S.ai?.provider)
+    : S.ai?.providers?.find((x) => x.name === chatProv);
+  if (chatP?.subscription) loadRoleModels('chat', false);
+
+  const visProv = $('#visionRoleProvider')?.value;
+  const visP = S.visionAi?.providers?.find((x) => x.name === visProv);
+  if (visP?.subscription) loadRoleModels('vision', false);
 }
 
-/** Save the typed key in the system keyring, or remove the saved one; the field is emptied either way. */
+async function enumerateSubCatalogs(refresh) {
+  if (!S.logins) return;
+  S.subCatalogs ??= {};
+  const subs = S.logins.filter((l) => l.logged_in);
+  if (!subs.length) {
+    renderLogins();
+    return;
+  }
+
+  const chatSeq = S.chatModelsSeq;
+  const visionSeq = S.visionModelsSeq;
+  const seq = (S.subCatalogSeq = (S.subCatalogSeq ?? 0) + 1);
+  await Promise.all(subs.map(async (l) => {
+    try {
+      const r = await api(`/api/assistant/models?provider=${encodeURIComponent(l.provider)}${refresh ? '&refresh=1' : ''}`);
+      if (seq !== S.subCatalogSeq) return;
+      if (r.state === 'ok') {
+        S.aiModels ??= {};
+        S.aiModels[l.provider] = r.models ?? [];
+        if (VISION_PROVIDERS.includes(l.provider)) {
+          S.visionModels ??= {};
+          S.visionModels[l.provider] = r.models ?? [];
+        }
+        S.subCatalogs[l.provider] = { state: 'ok', count: (r.models ?? []).length };
+      } else {
+        S.subCatalogs[l.provider] = { state: r.state, error: r.message, count: 0 };
+      }
+    } catch (e) {
+      if (seq !== S.subCatalogSeq) return;
+      S.subCatalogs[l.provider] = { state: 'error', error: e.message, count: 0 };
+    }
+  }));
+
+  if (seq !== S.subCatalogSeq) return;
+  renderLogins();
+
+  const chatProv = $('#chatRoleProvider')?.value;
+  if (subs.some((s) => s.provider === chatProv) && chatSeq === S.chatModelsSeq) {
+    renderRoleModelList('chat');
+    if ($('#chatRoleModelsStatus')?.textContent === 'Loading the model list…') {
+      $('#chatRoleModelsStatus').textContent = '';
+    }
+  }
+  const visionProv = $('#visionRoleProvider')?.value;
+  if (subs.some((s) => s.provider === visionProv) && visionSeq === S.visionModelsSeq) {
+    renderRoleModelList('vision');
+    if ($('#visionRoleModelsStatus')?.textContent === 'Loading the model list…') {
+      $('#visionRoleModelsStatus').textContent = '';
+    }
+  }
+}
+
+
+function renderLogins() {
+  S.loginPending ??= new Set();
+  const list = $('#modelsSubsList');
+  if (!list || !S.logins) return;
+
+  list.replaceChildren(...S.logins.map((l) => {
+    const wait = S.loginPending.has(l.provider);
+    const title = PROVIDER_TITLES[l.provider] ?? l.title;
+    const cat = S.subCatalogs?.[l.provider];
+
+    let badgeClass = 'disconnected';
+    let badgeText = 'Not connected';
+    if (wait) {
+      badgeClass = 'disconnected';
+      badgeText = 'Waiting for browser…';
+    } else if (l.logged_in) {
+      if (l.expired) {
+        badgeClass = 'error';
+        badgeText = 'Expired';
+      } else {
+        badgeClass = 'connected';
+        badgeText = 'Connected';
+      }
+    }
+
+    let detailText = '';
+    if (wait) {
+      detailText = 'Sign in in the browser window that opened.';
+    } else if (l.logged_in) {
+      const emailMasked = maskEmail(l.email);
+      const org = (l.org ?? '').replace(/[^\s@]+@[^\s@]+/g, maskEmail); // an org may be named after the email
+      const who = [emailMasked, org].filter(Boolean).join(' · ');
+      detailText = who ? `${who}` : 'Subscription active';
+    } else if (l.error) {
+      detailText = l.error;
+    } else {
+      detailText = 'Not logged in. Log in to use this subscription without an API key.';
+    }
+
+    // shown only when it fails: Connected accounts never counts the models
+    const countNode = l.logged_in && !wait && cat?.state === 'error'
+      ? h('span', { class: 'error', text: `Catalog error: ${cat.error || 'Failed to load'}` })
+      : null;
+
+    const acts = [];
+    if (!l.logged_in || wait) {
+      acts.push(h('button', {
+        type: 'button',
+        class: 'btn small',
+        disabled: wait,
+        text: wait ? 'Waiting…' : 'Log in',
+        onclick: () => subLogin(l.provider),
+      }));
+    } else {
+      if (cat?.state === 'error') {
+        acts.push(h('button', {
+          type: 'button',
+          class: 'btn small',
+          text: 'Retry catalog',
+          onclick: () => enumerateSubCatalogs(true),
+        }));
+      } else {
+        acts.push(h('button', {
+          type: 'button',
+          class: 'btn small',
+          text: 'Refresh catalog',
+          onclick: () => enumerateSubCatalogs(true),
+        }));
+      }
+      acts.push(h('button', {
+        type: 'button',
+        class: 'btn small',
+        text: 'Log out',
+        onclick: () => subLogout(l.provider),
+      }));
+    }
+
+    return h('li', { class: 'subs-item' },
+      h('div', { class: 'subs-item-head' },
+        h('span', { class: 'subs-title', text: title }),
+        h('span', { class: `subs-badge ${badgeClass}`, text: badgeText }),
+      ),
+      h('div', { class: 'subs-detail' },
+        h('span', { class: 'hint', text: detailText }),
+        countNode,
+      ),
+      h('div', { class: 'row' }, ...acts),
+    );
+  }));
+
+  renderChatRoleHints();
+  renderVisionRoleHints();
+}
+
+async function subLogin(provider) {
+  const title = PROVIDER_TITLES[provider] ?? provider;
+  if (!window.confirm(`Log in with ${title}? Use at your own risk.`)) return;
+  if (provider === 'antigravity') {
+    const ok = window.confirm('Antigravity sign-in may provision a free-tier project if your account has none. Continue?');
+    if (!ok) return;
+  }
+  subNote();
+  let r;
+  try {
+    r = await api('/api/assistant/login', { method: 'POST', body: { provider } });
+  } catch (e) {
+    return subNote(e.message);
+  }
+  S.loginPending.add(provider);
+  window.open(r.url, '_blank', 'noopener');
+  subNote('Finish signing in in the browser tab that opened. ',
+    h('a', { href: r.url, target: '_blank', rel: 'noopener', text: 'Open the sign-in page again' }));
+  renderLogins();
+  while (S.loginPending.has(provider)) {
+    await new Promise((resolve) => setTimeout(resolve, SUB_POLL_MS));
+    let s;
+    try {
+      s = await api(`/api/assistant/login/status?provider=${encodeURIComponent(provider)}`);
+    } catch (e) {
+      subNote(e.message);
+      break;
+    }
+    if (s.state === 'pending') continue;
+    subNote(s.state === 'done' ? 'Logged in.' : `Login failed: ${s.error}`);
+    break;
+  }
+  S.loginPending.delete(provider);
+  await loadLogins();
+  for (const statusId of ['#chatRoleModelsStatus', '#visionRoleModelsStatus']) {
+    const el = $(statusId);
+    if (el && el.textContent.includes('Account not connected')) {
+      el.textContent = '';
+    }
+  }
+  if (S.id) loadAssistant();
+}
+
+async function subLogout(provider) {
+  subNote();
+  try {
+    await api('/api/assistant/logout', { method: 'POST', body: { provider } });
+    subNote('Logged out.');
+  } catch (e) {
+    subNote(e.message);
+  }
+  delete S.aiModels?.[provider];
+  delete S.visionModels?.[provider];
+  delete S.subCatalogs?.[provider];
+  await loadLogins();
+
+  const chatProv = $('#chatRoleProvider')?.value;
+  if (chatProv === provider) {
+    renderRoleModelList('chat');
+    renderChatRoleFields();
+    loadRoleModels('chat', false);
+  }
+  const visionProv = $('#visionRoleProvider')?.value;
+  if (visionProv === provider) {
+    renderRoleModelList('vision');
+    renderVisionRoleFields();
+    loadRoleModels('vision', false);
+  }
+  if (S.id) loadAssistant();
+}
+
+
 async function saveAiKey(clear) {
-  const p = aiOffer();
-  const input = $('#setAiKeyInput');
-  const err = $('#settingsError');
+  const custom = $('#chatRoleProvider').value === AI_CUSTOM;
+  const name = custom ? S.ai?.provider : $('#chatRoleProvider').value;
+  const p = S.ai?.providers?.find((x) => x.name === name);
+  const input = $('#chatRoleKeyInput');
+  const err = $('#modelsError');
   err.textContent = '';
   const key = input.value.trim();
   if (!p) return;
@@ -4029,12 +4379,213 @@ async function saveAiKey(clear) {
     err.textContent = e.message;
     return;
   }
-  renderAiFields();
-  $('#setAiKeyStatus').textContent += clear
+  renderChatRoleFields();
+  $('#chatRoleKeyStatus').textContent += clear
     ? '. Removed from the keyring.'
     : '. Saved in the system keyring; it is checked when you send the first message.';
-  if (!clear) loadAiModels(false); // the list may load now that there is a key
+  if (!clear) loadRoleModels('chat', false);
   if (S.id) loadAssistant();
+}
+
+function fillChatRoleSettings(a) {
+  if (!a) return;
+  S.ai = a;
+  S.aiModels ??= {};
+  const sel = $('#chatRoleProvider');
+  const options = a.providers.map((p) => h('option', { value: p.name, text: PROVIDER_TITLES[p.name] ?? p.title }));
+  if (a.custom) options.push(h('option', { value: AI_CUSTOM, text: 'Custom (from config.json)' }));
+  sel.replaceChildren(...options);
+  sel.value = sel.dataset.saved = a.custom ? AI_CUSTOM : a.provider;
+  $('#chatRoleModel').dataset.saved = a.model;
+  $('#chatRoleUrl').value = a.url;
+  $('#chatRoleKeyInput').value = '';
+  renderChatRoleFields(a.model);
+  loadRoleModels('chat', false);
+}
+
+function fillVisionRoleSettings(v, enabled, defaultLocalModel, consent) {
+  S.visionConsent = consent ?? null;
+  const box = $('#visionRoleEnabled');
+  box.checked = enabled === true;
+  box.dataset.saved = String(box.checked);
+  $('#visionRoleEnabledHint').textContent = `Off by default. Rates moments using video frames.${defaultLocalModel ? ` Default local model: ${defaultLocalModel}.` : ''}${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
+
+  S.visionAi = v ?? {
+    provider: 'ollama',
+    model: defaultLocalModel || '',
+    url: '',
+    providers: (S.ai?.providers ?? []).filter((p) => VISION_PROVIDERS.includes(p.name)),
+  };
+  S.visionModels ??= {};
+  const sel = $('#visionRoleProvider');
+  const providers = (S.visionAi.providers || []).filter((p) => VISION_PROVIDERS.includes(p.name));
+  const list = providers.length ? providers : VISION_PROVIDERS.map((name) => ({ name, title: PROVIDER_TITLES[name] }));
+  sel.replaceChildren(...list.map((p) => h('option', { value: p.name, text: PROVIDER_TITLES[p.name] ?? p.title })));
+  sel.value = sel.dataset.saved = S.visionAi.provider || 'ollama';
+  $('#visionRoleModel').dataset.saved = S.visionAi.model || '';
+  $('#visionRoleUrl').dataset.saved = S.visionAi.url || '';
+  $('#visionRoleUrl').value = S.visionAi.url || '';
+  renderVisionRoleFields(S.visionAi.model);
+  renderVisionConsent();
+  loadRoleModels('vision', false);
+}
+
+async function loadModelsSettings() {
+  let st;
+  try {
+    st = await api('/api/settings');
+  } catch (e) {
+    $('#modelsError').textContent = e.message;
+    return false;
+  }
+  fillChatRoleSettings(st.assistant);
+  fillVisionRoleSettings(st.vision_assistant, st.vision, st.vision_model, st.vision_consent);
+  return true;
+}
+
+async function saveModels() {
+  const err = $('#modelsError');
+  const status = $('#modelsSaveStatus');
+  err.textContent = status.textContent = '';
+  status.className = 'hint';
+
+  const chatProvider = $('#chatRoleProvider').value;
+  const chatModel = getChatModel();
+  const savedChatProvider = $('#chatRoleProvider').dataset.saved;
+  const savedChatModel = $('#chatRoleModel').dataset.saved ?? '';
+  const customChat = chatProvider === AI_CUSTOM;
+  const chatOffer = customChat ? S.ai?.providers?.find((x) => x.name === S.ai?.provider) : S.ai?.providers?.find((x) => x.name === chatProvider);
+  const chatChanged = (chatProvider !== savedChatProvider) || (chatModel !== savedChatModel);
+
+  if (chatChanged && !customChat && chatOffer?.model_required && !chatModel) {
+    err.textContent = `Choose a model for ${PROVIDER_TITLES[chatProvider] ?? chatOffer?.title ?? chatProvider}.`;
+    return $('#chatRoleModel').focus();
+  }
+
+  const visionEnabled = $('#visionRoleEnabled').checked;
+  const savedVisionEnabled = $('#visionRoleEnabled').dataset.saved === 'true';
+  const visionEnabledChanged = visionEnabled !== savedVisionEnabled;
+
+  const visionProvider = $('#visionRoleProvider').value;
+  const visionModel = getVisionModel();
+  const savedVisionProvider = $('#visionRoleProvider').dataset.saved;
+  const savedVisionModel = $('#visionRoleModel').dataset.saved ?? '';
+  const customVision = Boolean(S.visionAi?.custom && visionProvider === (S.visionAi?.provider || 'ollama'));
+  const visionChanged = (visionProvider !== savedVisionProvider) || (visionModel !== savedVisionModel);
+  const visionOffer = S.visionAi?.providers?.find((x) => x.name === visionProvider);
+
+  if ((visionChanged || (visionEnabledChanged && visionEnabled)) && visionEnabled && visionOffer?.model_required && !visionModel) {
+    err.textContent = `Choose a model for ${PROVIDER_TITLES[visionProvider] ?? visionOffer?.title ?? visionProvider} vision.`;
+    return $('#visionRoleModel').focus();
+  }
+
+  if (!chatChanged && !visionChanged && !visionEnabledChanged) {
+    status.className = 'hint';
+    status.textContent = 'No changes to save.';
+    return;
+  }
+
+  const body = {};
+  if (chatChanged) {
+    body.assistant = customChat ? { model: chatModel } : { provider: chatProvider, model: chatModel, url: '' };
+  }
+  if (visionChanged) {
+    body.vision_assistant = customVision ? { model: visionModel } : { provider: visionProvider, model: visionModel, url: '' };
+  }
+  if (visionEnabledChanged) {
+    body.vision = visionEnabled;
+  }
+
+  const btn = $('#btnSaveModels');
+  btn.disabled = true;
+  status.textContent = 'Saving models…';
+
+  let st;
+  try {
+    st = await api('/api/settings', { method: 'PUT', body });
+  } catch (e) {
+    err.textContent = e.message;
+    status.textContent = '';
+    return;
+  } finally {
+    btn.disabled = false;
+  }
+
+  if (st.assistant) fillChatRoleSettings(st.assistant);
+  if (st.vision_assistant) {
+    fillVisionRoleSettings(st.vision_assistant, st.vision, st.vision_model, st.vision_consent);
+  } else if (st.vision !== undefined) {
+    $('#visionRoleEnabled').checked = st.vision === true;
+    $('#visionRoleEnabled').dataset.saved = String($('#visionRoleEnabled').checked);
+  }
+  status.className = 'hint ok';
+  status.textContent = 'Models saved successfully.';
+  if (st.assistant_note) status.textContent += ` ${st.assistant_note}`;
+  if (st.vision_note) status.textContent += ` ${st.vision_note}`;
+  if (st.assistant_check) err.textContent = `Assistant notice: ${st.assistant_check}`;
+  if (st.vision_check) err.textContent += ` Vision notice: ${st.vision_check}`;
+
+  if (S.id) loadAssistant();
+}
+
+async function openModelsTab() {
+  if (S.modelsTabLoading) return;
+  $('#modelsError').textContent = '';
+  $('#modelsSaveStatus').textContent = '';
+
+  if (!S.modelsTabInitialized) {
+    S.modelsTabLoading = true;
+    try {
+      const ok = await loadModelsSettings();
+      if (ok) S.modelsTabInitialized = true;
+      await loadLogins();
+    } finally {
+      S.modelsTabLoading = false;
+    }
+  } else {
+    await loadLogins();
+  }
+}
+
+function bindModelsTab() {
+  $('#chatRoleProvider').addEventListener('change', (e) => {
+    const back = e.target.value === e.target.dataset.saved;
+    renderChatRoleFields(back ? $('#chatRoleModel').dataset.saved : '');
+    loadRoleModels('chat', false);
+  });
+  $('#chatRoleModel').addEventListener('change', (e) => {
+    S.chatModelsSeq = (S.chatModelsSeq ?? 0) + 1;
+    $('#chatRoleModelOtherField').hidden = e.target.value !== AI_OTHER;
+  });
+  $('#chatRoleModelOther').addEventListener('input', () => {
+    S.chatModelsSeq = (S.chatModelsSeq ?? 0) + 1;
+  });
+  $('#chatRoleModelsRefresh').addEventListener('click', () => loadRoleModels('chat', true));
+  $('#chatRoleKeySave').addEventListener('click', () => saveAiKey(false));
+  $('#chatRoleKeyClear').addEventListener('click', () => saveAiKey(true));
+  $('#chatRoleKeyInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveAiKey(false);
+    }
+  });
+
+  $('#visionRoleProvider').addEventListener('change', (e) => {
+    const back = e.target.value === e.target.dataset.saved;
+    renderVisionRoleFields(back ? $('#visionRoleModel').dataset.saved : '');
+    loadRoleModels('vision', false);
+  });
+  $('#visionRoleModel').addEventListener('change', (e) => {
+    S.visionModelsSeq = (S.visionModelsSeq ?? 0) + 1;
+    $('#visionRoleModelOtherField').hidden = e.target.value !== AI_OTHER;
+  });
+  $('#visionRoleModelOther').addEventListener('input', () => {
+    S.visionModelsSeq = (S.visionModelsSeq ?? 0) + 1;
+  });
+  $('#visionRoleModelsRefresh').addEventListener('click', () => loadRoleModels('vision', true));
+  $('#visionConsentOk').addEventListener('click', giveVisionConsent);
+
+  $('#btnSaveModels').addEventListener('click', saveModels);
 }
 
 /** Turn Stats for Nerds on or off: store it in this browser, show or hide the overlay and tick the box to match. */
@@ -4151,25 +4702,6 @@ function bindSettings() {
   $('#settingsForm').addEventListener('submit', (e) => {
     e.preventDefault();
     if (!$('#settingsSave').hidden) saveSettings();
-  });
-  d.addEventListener('close', () => { $('#setAiKeyInput').value = ''; });
-  $('#setAiProvider').addEventListener('change', (e) => {
-    // model names belong to one provider: back to the saved one, else the default
-    const back = e.target.value === e.target.dataset.saved;
-    renderAiFields(back ? $('#setAiModel').dataset.saved : '');
-    loadAiModels(false);
-  });
-  $('#setAiModel').addEventListener('change', (e) => {
-    $('#setAiModelOtherField').hidden = e.target.value !== AI_OTHER; // the id field only for Other
-  });
-  $('#setAiModelsRefresh').addEventListener('click', () => loadAiModels(true));
-  $('#setAiKeySave').addEventListener('click', () => saveAiKey(false));
-  $('#setAiKeyClear').addEventListener('click', () => saveAiKey(true));
-  $('#setAiKeyInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault(); // saves the key, not the dialog
-      saveAiKey(false);
-    }
   });
   $('#setProjectsPick').addEventListener('click', async () => {
     const input = $('#setProjects');
@@ -4374,7 +4906,14 @@ function initVolume() {
  */
 function initSideTabs() {
   const tabs = [...document.querySelectorAll('#side [role=tab]')];
+  let currentTab = null;
   const select = (tab, focus = false) => {
+    if (tab === currentTab) {
+      if (focus) tab.focus();
+      return;
+    }
+    const prev = currentTab;
+    currentTab = tab;
     for (const t of tabs) {
       const on = t === tab;
       t.setAttribute('aria-selected', String(on));
@@ -4383,6 +4922,7 @@ function initSideTabs() {
       panel.hidden = !on;
       if (!on) for (const vid of panel.querySelectorAll('video')) vid.pause(); // the Export tab's final video: not heard unseen
     }
+    if (tab.dataset.tab === 'models' && prev?.dataset.tab !== 'models') openModelsTab();
     if (focus) tab.focus();
     try {
       if (tab === tabs[0]) localStorage.removeItem(TAB_KEY);
@@ -4397,12 +4937,13 @@ function initSideTabs() {
   } catch {
     // storage blocked: start on the first tab
   }
-  select(tabs.find((t) => t.dataset.tab === saved) ?? tabs[0]);
+  const initial = tabs.find((t) => t.dataset.tab === saved) ?? tabs[0];
+  select(initial);
   for (const t of tabs) t.addEventListener('click', () => select(t));
   // rows brought into view (focus, revealRow) land between the sticky tab bar and panel header and
   // the sticky chat input; their heights follow the column's width and the selected tab (a hidden
   // panel's measure 0). --side-bars: where the Selected clips bar sticks, under the header
-  const bars = [$('#side .side-tabs'), $('#panelSequence .col-head'), $('#panelAssistant .chat-head')];
+  const bars = [$('#side .side-tabs'), $('#panelSequence .col-head'), $('#panelAssistant .chat-head')].filter(Boolean);
   const pad = new ResizeObserver(() => {
     const side = $('#side');
     const px = `${bars.reduce((n, el) => n + el.offsetHeight, 0)}px`;
@@ -4768,6 +5309,7 @@ function bind() {
   initSplitters();
   const toggleMute = initVolume();
   bindSettings();
+  bindModelsTab();
   initNerdStats();
   showTab = initSideTabs();
   initMomentOrder();

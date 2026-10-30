@@ -1,4 +1,4 @@
-"""Optional frame rating with a local Ollama vision model (e.g. qwen3.5:9b)."""
+"""Optional frame rating through the configured local Ollama or subscription provider."""
 
 from __future__ import annotations
 
@@ -16,11 +16,13 @@ import requests
 
 from cutpoint import cache, paths
 from cutpoint.backends import ollama_url
+from cutpoint.config import get_config
 from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
 
 logger = logging.getLogger(__name__)
 
 FALLBACK_MODEL = "qwen3.5:9b"
+SUBSCRIPTIONS = ("claude-code", "codex", "antigravity")  # the providers vision role may ask
 
 
 def default_model() -> str:
@@ -111,14 +113,98 @@ class VisionResult:
     label: str
 
 
+class AssistantVision:
+    """Frames are sent to the configured vision subscription provider with consent."""
+
+    def __init__(self, settings: Any = None) -> None:
+        from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
+
+        self.settings = settings or get_config().vision_assistant
+        self.provider = providers.make(self.settings)
+        self.model = self.provider.model
+        self._ready: bool | None = None
+
+    def available(self) -> bool:
+        """Whether frames may go to the provider; the reason is logged. Checked once."""
+        if self._ready is None:
+            self._ready = self._check()
+        return self._ready
+
+    def _check(self) -> bool:
+        from cutpoint.assistant import keys, providers  # noqa: PLC0415
+
+        p = self.provider
+        if p.name not in SUBSCRIPTIONS:
+            logger.info(
+                "vision provider is %s; it must be %s",
+                p.name,
+                " or ".join(SUBSCRIPTIONS),
+            )
+            return False
+        if providers.consent_key(p) not in self.settings.consent:
+            logger.info("Agree to send to %s for Vision first; skipping vision", p.name)
+            return False
+        if missing := providers.missing_key(p):
+            logger.info("%s; skipping vision", keys.redact(missing))
+            return False
+        try:
+            p.capabilities()
+        except (
+            providers.ProviderError,
+            keys.KeyringError,
+        ) as err:
+            logger.info("%s; skipping vision", keys.redact(str(err)))
+            return False
+        return True
+
+    def ask(self, prompt: str, jpegs: list[bytes]) -> str | None:
+        """The provider's reply to ``prompt`` with the JPEG frames; None (logged) when it is not
+        :meth:`available` or fails."""
+        from cutpoint.assistant import keys, providers  # noqa: PLC0415
+
+        if not self.available():
+            return None
+        parts: list[dict[str, str]] = [{"type": "text", "text": prompt}]
+        parts += [
+            {"type": "image", "media_type": "image/jpeg", "data": base64.b64encode(j).decode()}
+            for j in jpegs
+        ]
+        try:
+            return self.provider.chat([{"role": "user", "content": parts}]).text
+        except (
+            providers.ProviderError,
+            keys.KeyringError,
+        ) as err:
+            logger.warning("Vision request failed: %s", keys.redact(str(err)))
+            return None
+
+
 class VisionRater:
     """Client for Ollama's /api/chat endpoint with images."""
 
-    def __init__(self, url: str | None = None, model: str | None = None) -> None:
-        self.url = (url or ollama_url()).rstrip("/")
-        if not self.url.startswith("http"):
-            self.url = f"http://{self.url}"
-        self.model = model or default_model()
+    def __init__(
+        self, url: str | None = None, model: str | None = None, *, local_only: bool = False
+    ) -> None:
+        cfg = get_config()
+        v_ast = cfg.vision_assistant
+        self.via = AssistantVision(v_ast) if not local_only and v_ast.provider != "ollama" else None
+        env_model = paths.env("VISION_MODEL")
+        if self.via:
+            self.model = self.via.model
+            self.url = self.via.provider.url if hasattr(self.via.provider, "url") else ""
+            self.provider_name = self.via.provider.name
+        else:
+            self.provider_name = "ollama"
+            self.model = (
+                model
+                or env_model
+                or (v_ast.model if v_ast.provider == "ollama" else "")
+                or default_model()
+            )
+            raw_url = (
+                url or (v_ast.url if v_ast.provider == "ollama" else "") or ollama_url()
+            ).rstrip("/")
+            self.url = raw_url if raw_url.startswith("http") else f"http://{raw_url}"
         self.used = False  # True once a request went to the model: unload() frees it
         self.hits = 0  # ratings taken from the cache by rate()
         self.asked = 0  # ratings rate() asked the model for (failed ones included)
@@ -133,6 +219,8 @@ class VisionRater:
     def available(self) -> bool:
         """True if the server answers and has the model pulled; records the model's
         ``digest`` for the rating cache."""
+        if self.via:
+            return self.via.available()
         try:
             resp = requests.get(f"{self.url}/api/tags", timeout=3)
             resp.raise_for_status()
@@ -171,6 +259,14 @@ class VisionRater:
         through ``/api/generate`` in raw mode with the ChatML turn and an empty
         ``<think></think>`` block already written; other models use ``/api/chat``.
         """
+        if self.via:
+            reply = self.via.ask(prompt, images or [])
+            try:
+                data = _json_object(reply) if reply else None
+            except ValueError as err:
+                logger.warning("Assistant reply is not JSON: %s", err)
+                return None
+            return data if isinstance(data, dict) else None
         options = {"temperature": 0.2, "num_ctx": 8192, "num_predict": num_predict}
         payload: dict = {"model": self.model, "stream": False, "format": schema or "json"}
         raw = not images and self.model.lower().startswith("qwen")
@@ -213,7 +309,7 @@ class VisionRater:
         """
         times = _frame_times(start, end, self._n_frames(n_frames))
         store = self._store(src)
-        key = rating_key(self.model, style, times)
+        key = rating_key(self.model, style, times, provider=self.provider_name)
         if (hit := self._lookup(store, key)) is not None:
             self.hits += 1
             return hit
@@ -234,7 +330,12 @@ class VisionRater:
         self, src: Path, start: float, end: float, style: str, n_frames: int = 3
     ) -> VisionResult | None:
         """The rating :meth:`rate` would take from the cache, or None; counts nothing."""
-        key = rating_key(self.model, style, _frame_times(start, end, self._n_frames(n_frames)))
+        key = rating_key(
+            self.model,
+            style,
+            _frame_times(start, end, self._n_frames(n_frames)),
+            provider=self.provider_name,
+        )
         return self._lookup(self._store(src), key)
 
     def _n_frames(self, n_frames: int) -> int:
@@ -292,35 +393,37 @@ class VisionRater:
         content = ""
         steps = zip(_prompts(style, profile), _ATTEMPTS, _TEMPERATURES, strict=True)
         for attempt, (prompt, (num_ctx, num_predict), temperature) in enumerate(steps, 1):
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt.format(n=n_frames, style=style),
-                        "images": images,
-                    }
-                ],
-                "stream": False,
-                "think": False,
-                "format": "json",
-                "options": {
-                    "temperature": temperature,
-                    "num_ctx": num_ctx,
-                    "num_predict": num_predict,
-                },
-            }
-            if profile and profile.expected:
-                payload |= {"logprobs": True, "top_logprobs": _TOP_LOGPROBS}
-            self.used = True
-            try:
-                resp = requests.post(f"{self.url}/api/chat", json=payload, timeout=300)
-                resp.raise_for_status()
-                body = resp.json()
-                content = body["message"]["content"]
-            except (requests.RequestException, KeyError, ValueError) as err:
-                logger.warning("Vision request failed: %s", err)
-                return None
+            text = prompt.format(n=n_frames, style=style)
+            if self.via:
+                body: dict[str, Any] = {}
+                reply = self.via.ask(text, frames)
+                if reply is None:
+                    return None
+                content = reply
+            else:
+                payload = {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": text, "images": images}],
+                    "stream": False,
+                    "think": False,
+                    "format": "json",
+                    "options": {
+                        "temperature": temperature,
+                        "num_ctx": num_ctx,
+                        "num_predict": num_predict,
+                    },
+                }
+                if profile and profile.expected:
+                    payload |= {"logprobs": True, "top_logprobs": _TOP_LOGPROBS}
+                self.used = True
+                try:
+                    resp = requests.post(f"{self.url}/api/chat", json=payload, timeout=300)
+                    resp.raise_for_status()
+                    body = resp.json()
+                    content = body["message"]["content"]
+                except (requests.RequestException, KeyError, ValueError) as err:
+                    logger.warning("Vision request failed: %s", err)
+                    return None
             result = _parse(content)
             if result is not None and profile and profile.expected:
                 ev = _expected_score(body.get("logprobs"))
@@ -363,7 +466,7 @@ def _frame_times(start: float, end: float, n_frames: int) -> list[float]:
     return [start + span * (i + 1) / (n_frames + 1) for i in range(n_frames)]
 
 
-def rating_key(model: str, style: str, times: list[float]) -> str:
+def rating_key(model: str, style: str, times: list[float], provider: str = "") -> str:
     """Cache key of one rating: a hash of everything sent to the model except the frames
     (``RATING_VERSION``, model, style, both prompts, attempt options and temperatures, frame
     width and the model's :class:`RatingProfile` if it has one), then the frame times to the
@@ -382,6 +485,8 @@ def rating_key(model: str, style: str, times: list[float]) -> str:
         "temperatures": list(_TEMPERATURES),
         "width": FRAME_WIDTH,
     }
+    if provider and provider != "ollama":
+        params["provider"] = provider
     if profile:  # only then, so the keys of the other models stay as they were
         params["profile"] = asdict(profile)
     return f"{cache.params_hash(params)}@" + ",".join(f"{t:.3f}" for t in times)

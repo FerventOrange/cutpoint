@@ -88,6 +88,7 @@ from fastapi.staticfiles import StaticFiles
 
 from cutpoint import cache, paths, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
+from cutpoint.assistant import cliproxy
 from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
@@ -99,6 +100,8 @@ from cutpoint.config import (
     ASSISTANT_PROVIDERS,
     COLOR_MODES,
     COMPRESS_PEAKS,
+    VISION_PROVIDERS,
+    AssistantSettings,
     assistant_settings,
     get_config,
     load_config_data,
@@ -106,6 +109,7 @@ from cutpoint.config import (
     remap_source,
     resolve_projects_dir,
     set_config_values,
+    vision_assistant_settings,
 )
 from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
@@ -566,6 +570,28 @@ def require_config() -> None:
         raise bad(f"Invalid config file {paths.config_file()}: {err}", 409) from err
 
 
+def _vision_provider_from_data(data: dict[str, Any]) -> ai_providers.Provider | None:
+    section = data.get("vision_assistant")
+    if not isinstance(section, dict):
+        section = {"provider": "ollama"}
+    provider_name = (section.get("provider") or "ollama").strip().lower()
+    if provider_name not in VISION_PROVIDERS:
+        provider_name = "ollama"
+    model = (section.get("model") or "").strip()
+    url = (section.get("url") or "").strip()
+    try:
+        return ai_providers.make(AssistantSettings(provider=provider_name, model=model, url=url))
+    except (ValueError, TypeError):  # an invalid value in config.json: the view shows no provider
+        return None
+
+
+def _tuple_of_str(val: Any) -> tuple[str, ...]:
+    """A tuple of string items when ``val`` is a list, else empty tuple."""
+    if not isinstance(val, list):
+        return ()
+    return tuple(x for x in val if isinstance(x, str))
+
+
 def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     """The settings for config ``data``: the projects folder, the vision default and the export
     defaults of Compress peaks and Color, so other invalid keys in ``config.json`` do not hide
@@ -577,6 +603,18 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         folder = str(resolve_projects_dir(data))
     except TypeError:
         folder = str(data.get("projects_dir"))
+    vis_section = data.get("vision_assistant")
+    vis_consent = _tuple_of_str(vis_section.get("consent")) if isinstance(vis_section, dict) else ()
+    vp = _vision_provider_from_data(data)
+    if vp is not None and (vp.name in cliproxy.PROVIDERS or ai_providers.is_subscription(vp.name)):
+        v_consent_info = consent_view(vp, consent=vis_consent)
+    else:
+        v_consent_info = {
+            "needed": False,
+            "key": None,
+            "host": getattr(vp, "host", "") if vp is not None else "",
+            "missing_key": None,
+        }
     return {
         "projects_dir": folder,
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
@@ -588,21 +626,32 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "compress_peaks_set": peaks in COMPRESS_PEAKS,
         # the page's Color starts from it (Off when unset), never with a grade on gaming footage
         "color": color if isinstance(color, str) and color in COLOR_MODES else "off",
-        "assistant": assistant_view(data),
+        "assistant": assistant_view(data, section_name="assistant"),
+        "vision_assistant": assistant_view(data, section_name="vision_assistant"),
+        "vision_consent": v_consent_info,
     }
 
 
 MAX_ASSISTANT_TEXT = 500  # characters of the assistant's model or base URL
+LOGIN_TIMEOUT_S = 300.0  # seconds before a pending login expires
 
 
-def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
-    """The assistant settings of config ``data`` for Settings, never a key: the provider, model
-    and base URL as saved (an invalid value shown as the default), whether that URL is custom
-    (not the preset's, :func:`cutpoint.assistant.providers.is_preset`), what each preset offers
-    (in :data:`~cutpoint.assistant.providers.PRESETS` order), and where each provider's key comes
-    from (``"env"``, ``"keyring"`` or None)."""
-    section = data.get("assistant")
-    section = section if isinstance(section, dict) else {}
+def subscription_presets() -> dict[str, str]:
+    """The picker's providers: the keyed and local presets, then each subscription login a
+    provider is built for (Antigravity only once :data:`~cutpoint.assistant.providers.PROVIDERS`
+    has it)."""
+    subscriptions = {p: cliproxy.TITLES[p] for p in cliproxy.PROVIDERS}
+    return {**ai_providers.PRESETS, **subscriptions}
+
+
+def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dict[str, Any]:
+    """The assistant or vision_assistant settings of config ``data`` for Settings, never a key:
+    the provider, model and base URL as saved (an invalid value shown as the default), whether that
+    URL is custom (not the preset's, :func:`cutpoint.assistant.providers.is_preset`), what each
+    preset offers, and where each provider's key comes from (``"env"``, ``"keyring"`` or None)."""
+    section = data.get(section_name)
+    if not isinstance(section, dict):
+        section = {}
     name = section.get("provider")
     name = name.strip().lower() if isinstance(name, str) else ""
 
@@ -615,9 +664,10 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
     except (ValueError, TypeError):  # a bad port or config.json: Settings still opens
         ollama = ""
     # provider -> (default URL, default model, models offered, Model placeholder, model needed)
-    dm = ai_providers.DEFAULT_OLLAMA_MODEL
+    is_vision = section_name == "vision_assistant"
+    dm = default_model() if is_vision else ai_providers.DEFAULT_OLLAMA_MODEL
     offers = {
-        "ollama": (ollama, ai_providers.AUTO_MODEL, [dm], dm, False),
+        "ollama": (ollama, dm if is_vision else ai_providers.AUTO_MODEL, [dm], dm, False),
         "openai": (
             ai_providers.OPENAI_URL,
             "",
@@ -633,17 +683,40 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
             False,
         ),
         "xai": (ai_providers.XAI_URL, "", list(ai_providers.XAI_MODELS), "xAI model name", True),
+        "claude-code": (
+            "",
+            ai_providers.DEFAULT_ANTHROPIC_MODEL,
+            list(ai_providers.ANTHROPIC_MODELS),
+            ai_providers.DEFAULT_ANTHROPIC_MODEL,
+            False,
+        ),
+        "codex": (
+            "",
+            ai_providers.DEFAULT_CODEX_MODEL,
+            [ai_providers.DEFAULT_CODEX_MODEL],
+            ai_providers.DEFAULT_CODEX_MODEL,
+            False,
+        ),
+        "antigravity": ("", "", [], "model name", False),
     }
-    hosts = key_hosts(data)
+    hosts = key_hosts(data, section_name=section_name)
 
     def key_env(p: str) -> list[str]:
         if p not in ai_keys.KEYED:
             return []
         return ai_keys.env_names(p, hosts[p])
 
-    name = name if name in ASSISTANT_PROVIDERS else "ollama"
+    allowed = VISION_PROVIDERS if is_vision else ASSISTANT_PROVIDERS
+    name = name if name in allowed else "ollama"
+    all_presets = subscription_presets()
+    presets_offered = {p: title for p, title in all_presets.items() if p in allowed}
+    try:
+        local = ai_providers.make(AssistantSettings(provider=name, url=text("url"))).local
+    except (ValueError, TypeError):
+        local = name == "ollama"
     return {
         "provider": name,
+        "local": local,
         "model": text("model"),
         "url": ai_providers.public(text("url")),  # a hand-edited one too; Settings refuses it
         # a base URL no preset has: shown as "Custom (from config.json)", kept as it is
@@ -658,17 +731,18 @@ def assistant_view(data: dict[str, Any]) -> dict[str, Any]:
                 "placeholder": offers[p][3],
                 "model_required": offers[p][4],
                 "key_env": key_env(p),
+                "subscription": p in cliproxy.PROVIDERS,  # logs in (Settings > Subscriptions)
             }
-            for p, title in ai_providers.PRESETS.items()
+            for p, title in presets_offered.items()
         ],
-        **key_status(data),
+        **key_status(data, section_name=section_name),
     }
 
 
-def key_hosts(data: dict[str, Any]) -> dict[str, str]:
+def key_hosts(data: dict[str, Any], section_name: str = "assistant") -> dict[str, str]:
     """The host each keyed provider's key is for, by config ``data``: the configured base URL's
     for the configured provider, the official API host for the others."""
-    section = data.get("assistant")
+    section = data.get(section_name)
     section = section if isinstance(section, dict) else {}
     name, url = section.get("provider"), section.get("url")
     name = name.strip().lower() if isinstance(name, str) else ""
@@ -676,57 +750,73 @@ def key_hosts(data: dict[str, Any]) -> dict[str, str]:
     return {p: ai_providers.key_host(p, url if p == name else "") for p in ai_keys.KEYED}
 
 
-def key_status(data: dict[str, Any]) -> dict[str, Any]:
+def key_status(data: dict[str, Any], section_name: str = "assistant") -> dict[str, Any]:
     """``{keys, key_hosts}``: where each keyed provider's key for its host comes from
     (``"env"``, ``"keyring"`` or None), and that host. Never a key."""
-    hosts = key_hosts(data)
+    hosts = key_hosts(data, section_name=section_name)
     return {
         "keys": {p: ai_keys.status(p, hosts[p]) for p in ai_keys.KEYED},
         "key_hosts": hosts,
     }
 
 
-def check_assistant(value: Any) -> dict[str, str]:
-    """The ``assistant`` object of a Settings change: ``provider`` (one of
-    ``ASSISTANT_PROVIDERS``), ``model`` and ``url`` (an http(s) base URL; "" for the default).
+def check_assistant(
+    value: Any, section_name: str = "assistant", existing_provider: str | None = None
+) -> dict[str, str]:
+    """The ``assistant`` or ``vision_assistant`` object of a Settings change: ``provider``,
+    ``model`` and ``url`` (an http(s) base URL; "" for the default).
 
     Raises:
         HTTPException: 400 for anything else.
     """
+    is_vision = section_name == "vision_assistant"
+    label = "vision_assistant" if is_vision else "assistant"
+    allowed = VISION_PROVIDERS if is_vision else ASSISTANT_PROVIDERS
     if not isinstance(value, dict) or not value or set(value) - {"provider", "model", "url"}:
-        raise bad("assistant must be an object with provider, model and/or url")
+        raise bad(f"{label} must be an object with provider, model and/or url")
     out: dict[str, str] = {}
     for key, raw in value.items():
         if not isinstance(raw, str) or len(raw) > MAX_ASSISTANT_TEXT:
-            raise bad(f"assistant.{key} must be text of at most {MAX_ASSISTANT_TEXT} characters")
+            raise bad(f"{label}.{key} must be text of at most {MAX_ASSISTANT_TEXT} characters")
         if any(not c.isprintable() for c in raw):
-            raise bad(f"assistant.{key} must be printable text")
+            raise bad(f"{label}.{key} must be printable text")
         out[key] = raw.strip()
     if "provider" in out:
         out["provider"] = out["provider"].lower()
-        if out["provider"] not in ASSISTANT_PROVIDERS:
-            raise bad(f"assistant.provider must be one of {', '.join(ASSISTANT_PROVIDERS)}")
+        if out["provider"] not in allowed:
+            raise bad(f"{label}.provider must be one of {', '.join(allowed)}")
     url = out.get("url")
+    provider = out.get("provider") or existing_provider or ""
+    if url and (provider in cliproxy.PROVIDERS or ai_providers.is_subscription(provider)):
+        raise bad(f"{label}.url cannot be customized for subscription providers")
     if url:
         scheme = url.split("://", 1)[0].lower() if "://" in url else "http"
         if scheme not in ("http", "https") or " " in url or not ai_providers.host_of(url):
-            raise bad("assistant.url must be an http:// or https:// base URL")
+            raise bad(f"{label}.url must be an http:// or https:// base URL")
         if "\\" in url:  # requests and urlsplit read different hosts from some of these
-            raise bad("assistant.url must not have a backslash")
+            raise bad(f"{label}.url must not have a backslash")
         if ai_providers.has_userinfo(url):  # https://api.openai.com@evil.example goes to evil
-            raise bad("assistant.url must not contain a user name or password")
+            raise bad(f"{label}.url must not contain a user name or password")
         if not ai_providers.unambiguous(url):  # the host a request goes to must be the one shown
-            raise bad("assistant.url must not have an unclear host")
+            raise bad(f"{label}.url must not have an unclear host")
     return out
 
 
-def consent_view(provider: ai_providers.Provider) -> dict[str, Any]:
-    """Whether the user still has to agree before project text goes to ``provider``:
+def consent_view(
+    provider: ai_providers.Provider,
+    consent: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Whether the user still has to agree before project data goes to ``provider``:
     ``{needed, key, host, missing_key}``; ``key`` (``<name>@<host>``) is None for a local
     provider; ``missing_key``: how to add the API key it needs, which comes before agreeing."""
     key = ai_providers.consent_key(provider)
+    if consent is None:
+        try:
+            consent = assistant_settings().consent
+        except (ValueError, TypeError):  # config.json is invalid: no consent is known
+            consent = ()
     return {
-        "needed": key is not None and key not in assistant_settings().consent,
+        "needed": key is not None and key not in consent,
         "key": key,
         "host": provider.host,
         "missing_key": ai_providers.missing_key(provider),
@@ -3542,6 +3632,8 @@ def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
     previews = PanoPreviews()
+    login_lock = threading.Lock()
+    login_states: dict[str, dict[str, Any]] = {}
     ai_keys.redact_logs()  # an assistant API key never reaches a log line
 
     @asynccontextmanager
@@ -3662,12 +3754,32 @@ def create_app(port: int) -> FastAPI:
         ``assistant_check`` is why it cannot answer, or None. Nothing (a key least of all) is
         sent to a hosted provider the user has not agreed to in AI Chat (#504): its check waits
         for the consent, and ``assistant_note`` says so."""
-        if not {"projects_dir", "vision", "assistant"} & set(body):
-            raise bad("send projects_dir, vision and/or assistant")
+        if not {"projects_dir", "vision", "assistant", "vision_assistant"} & set(body):
+            raise bad("send projects_dir, vision, assistant and/or vision_assistant")
         updates: dict[str, Any] = {}
         if "vision" in body:
             updates["vision"] = _flag(body, "vision")
-        assistant = check_assistant(body["assistant"]) if "assistant" in body else None
+        data = config_data()  # an unreadable config.json: refuse before creating the folder
+        existing_ast = data.get("assistant")
+        existing_ast_prov = existing_ast.get("provider") if isinstance(existing_ast, dict) else None
+        existing_v_ast = data.get("vision_assistant")
+        existing_v_ast_prov = (
+            existing_v_ast.get("provider") if isinstance(existing_v_ast, dict) else None
+        )
+        assistant = (
+            check_assistant(body["assistant"], "assistant", existing_provider=existing_ast_prov)
+            if "assistant" in body
+            else None
+        )
+        vision_ast = (
+            check_assistant(
+                body["vision_assistant"],
+                section_name="vision_assistant",
+                existing_provider=existing_v_ast_prov,
+            )
+            if "vision_assistant" in body
+            else None
+        )
         moving = "projects_dir" in body
         if moving and paths.env("PROJECTS_DIR") is not None:
             raise bad(
@@ -3676,11 +3788,17 @@ def create_app(port: int) -> FastAPI:
         busy = "wait for the running job to finish before changing the projects folder"
         if moving and any(j.status == "running" for j in list(jobs.jobs.values())):
             raise bad(busy, 409)
-        data = config_data()  # an unreadable config.json: refuse before creating the folder
         folder, created = None, False
         if assistant is not None:
             section = data.get("assistant")
             updates["assistant"] = {**(section if isinstance(section, dict) else {}), **assistant}
+        if vision_ast is not None:
+            raw_v = data.get("vision_assistant")
+            v_section = dict(raw_v) if isinstance(raw_v, dict) else {}
+            updates["vision_assistant"] = {
+                **v_section,
+                **vision_ast,
+            }
         if moving:
             folder, created = check_projects_dir(body.get("projects_dir"))
             updates["projects_dir"] = str(folder)
@@ -3717,6 +3835,9 @@ def create_app(port: int) -> FastAPI:
                     out["assistant_note"] = ai_providers.check_note(provider)
             except (ValueError, TypeError) as err:  # another invalid value in config.json
                 out["assistant_check"] = str(err)
+        if vision_ast is not None:
+            out["vision_note"] = None
+            out["vision_check"] = None
         return out
 
     # -- assistant provider: key and consent (#346); config.json and the keyring only -------
@@ -3755,36 +3876,58 @@ def create_app(port: int) -> FastAPI:
 
     @secure.post("/assistant/consent")
     def give_consent(body: dict[str, Any]):
-        """Record that the user agreed to send project text to the provider in use, named by
-        its ``key`` (``consent.key`` of ``GET .../assistant``); 409 when the provider in use is
-        another one by now, or is local."""
-        want = ai_providers.consent_key(assistant_provider())
+        """Record that the user agreed to send project data to the provider in use, named by
+        its ``key``; 409 when the provider in use is another one by now, or is local."""
+        role = body.get("role") or "assistant"
+        if role not in ("assistant", "vision"):
+            raise bad("role must be assistant or vision")
+        section_name = "vision_assistant" if role == "vision" else "assistant"
+        provider = vision_provider() if role == "vision" else assistant_provider()
+        want = ai_providers.consent_key(provider)
         if want is None or body.get("key") != want:
-            raise bad("the assistant's provider changed: check it and agree again", 409)
+            raise bad(f"the {role} provider changed: check it and agree again", 409)
         data = config_data()
-        section = data.get("assistant")
-        section = dict(section) if isinstance(section, dict) else {}
-        given = section.get("consent")
-        given = [c for c in given if isinstance(c, str)] if isinstance(given, list) else []
+        raw_section = data.get(section_name)
+        section = dict(raw_section) if isinstance(raw_section, dict) else {}
+        given = list(_tuple_of_str(section.get("consent")))
         if want not in given:
             try:
-                set_config_values({"assistant": {**section, "consent": [*given, want]}})
+                set_config_values({section_name: {**section, "consent": [*given, want]}})
             except ValueError as err:
                 raise bad(str(err), 409) from err
             except OSError as err:
                 raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
-        return {"consent": consent_view(assistant_provider())}
+        fresh_data = config_data()
+        fresh_section = fresh_data.get(section_name)
+        fresh_dict = fresh_section if isinstance(fresh_section, dict) else {}
+        consent_list = _tuple_of_str(fresh_dict.get("consent"))
+        return {"consent": consent_view(provider, consent=consent_list)}
 
     @secure.get("/assistant/models")
-    def assistant_models(provider: str = "ollama", refresh: bool = False):
-        """The models a preset ``provider`` (or ``custom``: the configured provider and base URL)
-        offers, for Settings' Model field: ``{state, models, message}``
-        (:func:`cutpoint.assistant.providers.model_list`). A hosted one is asked only with its
-        key and once the user agreed to it; never a key in the answer. A preset that is not the
-        saved provider and base URL gets only its own key, never ``CUTPOINT_ASSISTANT_API_KEY``
-        (which may be meant for the saved host)."""
+    def assistant_models(
+        provider: str = "ollama",
+        role: str = "assistant",
+        refresh: bool = False,
+    ):
+        """The models a provider offers, for Settings' Model field: ``{state, models, message}``
+        (:func:`cutpoint.assistant.providers.model_list`). Accepts role=assistant|vision."""
+        if role not in ("assistant", "vision"):
+            raise bad("role must be assistant or vision")
         try:
-            settings = assistant_settings()
+            if role == "vision":
+                if provider not in VISION_PROVIDERS and provider != "custom":
+                    raise bad(f"provider must be custom or one of {', '.join(VISION_PROVIDERS)}")
+                settings = vision_assistant_settings()
+            else:
+                if (
+                    provider not in ai_providers.PRESETS
+                    and provider not in cliproxy.PROVIDERS
+                    and provider != "custom"
+                ):
+                    raise bad(
+                        f"provider must be custom or one of {', '.join(ai_providers.PRESETS)}"
+                    )
+                settings = assistant_settings()
             saved = settings.provider == provider and ai_providers.is_preset(
                 settings.provider, settings.url
             )
@@ -3792,11 +3935,159 @@ def create_app(port: int) -> FastAPI:
                 p = ai_providers.make(settings)
             elif provider in ai_providers.PRESETS:
                 p = ai_providers.preset(provider, settings.context_tokens)
+            elif provider in cliproxy.PROVIDERS:
+                p = ai_providers.make(
+                    AssistantSettings(provider=provider, context_tokens=settings.context_tokens)
+                )
             else:
-                raise bad(f"provider must be custom or one of {', '.join(ai_providers.PRESETS)}")
+                raise bad(f"unknown provider {provider}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
         return ai_providers.model_list(p, settings.consent, refresh=refresh)
+
+    # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
+    def login_provider(value: Any) -> str:
+        if value not in cliproxy.PROVIDERS:
+            raise bad(f"provider must be one of {', '.join(cliproxy.PROVIDERS)}")
+        return value
+
+    @secure.get("/assistant/logins")
+    def assistant_logins():
+        """Each subscription's login (cliproxy.status: never a token) with its title and
+        whether the assistant can use it as a provider."""
+        st_map = {}
+        with contextlib.suppress(cliproxy.ProxyError, OSError):
+            for s in cliproxy.statuses():
+                if isinstance(s, dict) and "provider" in s:
+                    st_map[s["provider"]] = s
+        out = []
+        for p in cliproxy.PROVIDERS:
+            st = st_map.get(p)
+            if not st:
+                try:
+                    st = cliproxy.status(p)
+                except (cliproxy.ProxyError, OSError) as err:
+                    st = {
+                        "provider": p,
+                        "logged_in": False,
+                        "email": None,
+                        "org": None,
+                        "expired": False,
+                        "expires_ms": None,
+                        "error": str(err),
+                    }
+            out.append(
+                {
+                    "provider": p,
+                    **st,
+                    "title": cliproxy.TITLES.get(p, p),
+                }
+            )
+        return {"logins": out}
+
+    @secure.post("/assistant/login")
+    def start_login(body: dict[str, Any]):
+        """Start ``provider``'s login via CLIProxyAPI and answer with the sign-in ``url`` for
+        the page to open; ``GET .../login/status`` tells when it is done. 409 while one waits."""
+        name = login_provider(body.get("provider"))
+        now = time.monotonic()
+        old_state_to_cancel = None
+        with login_lock:
+            cur = login_states.get(name)
+            if cur and cur.get("state") == "pending":
+                if now - cur.get("started_at", 0) < LOGIN_TIMEOUT_S:
+                    raise bad(f"a {name} login is already waiting for the browser", 409)
+                old_state_to_cancel = cur.get("proxy_state")
+            login_states[name] = {"state": "pending", "started_at": now, "error": ""}
+        if old_state_to_cancel:
+            with contextlib.suppress(Exception):
+                cliproxy.cancel_login(old_state_to_cancel)
+        try:
+            res = cliproxy.start_login(name)
+        except (cliproxy.ProxyError, OSError) as err:
+            with login_lock:
+                login_states[name] = {
+                    "state": "error",
+                    "error": ai_keys.redact(str(err)) or type(err).__name__,
+                }
+            raise bad(ai_keys.redact(str(err)) or f"the {name} login did not start", 500) from None
+
+        url = res.get("url")
+        proxy_state = res.get("state")
+        if not url or not proxy_state:
+            with login_lock:
+                login_states[name] = {"state": "error", "error": f"the {name} login did not start"}
+            raise bad(f"the {name} login did not start", 500)
+
+        with login_lock:
+            login_states[name] = {
+                "state": "pending",
+                "proxy_state": proxy_state,
+                "started_at": now,
+                "error": "",
+            }
+        return {"url": url}
+
+    @secure.get("/assistant/login/status")
+    def login_status(provider: str):
+        """``{state, error}`` of ``provider``'s last login: ``pending``, ``done`` or ``error``
+        (``idle`` before any)."""
+        name = login_provider(provider)
+        with login_lock:
+            info = login_states.get(name)
+            if not info:
+                return {"state": "idle", "error": ""}
+            if info.get("state") != "pending":
+                return {"state": info.get("state", "idle"), "error": info.get("error", "")}
+
+            proxy_state = info.get("proxy_state")
+            started_at = info.get("started_at", 0)
+            if time.monotonic() - started_at > LOGIN_TIMEOUT_S:
+                info["state"] = "error"
+                info["error"] = "login timed out"
+                to_cancel = proxy_state
+                proxy_state = None
+            else:
+                to_cancel = None
+        if to_cancel:
+            with contextlib.suppress(Exception):
+                cliproxy.cancel_login(to_cancel)
+            return {"state": "error", "error": "login timed out"}
+        try:
+            poll_res = cliproxy.poll_login(proxy_state)
+        except (cliproxy.ProxyError, OSError) as err:
+            poll_res = {"state": "error", "error": ai_keys.redact(str(err)) or type(err).__name__}
+
+        with login_lock:
+            cur = login_states.get(name)
+            if cur and cur.get("proxy_state") == proxy_state:
+                p_state = poll_res.get("state", "pending")
+                if p_state == "done":
+                    ai_providers.clear_model_cache(name)
+                    cur["state"] = "done"
+                    cur["error"] = ""
+                elif p_state == "error":
+                    cur["state"] = "error"
+                    cur["error"] = poll_res.get("error") or "login failed"
+                elif p_state == "pending":
+                    cur["state"] = "pending"
+                return {"state": cur.get("state", "pending"), "error": cur.get("error", "")}
+            return {
+                "state": (cur or {}).get("state", "idle"),
+                "error": (cur or {}).get("error", ""),
+            }
+
+    @secure.post("/assistant/logout")
+    def logout(body: dict[str, Any]):
+        """Remove ``provider``'s login from CLIProxyAPI."""
+        name = login_provider(body.get("provider"))
+        try:
+            cliproxy.logout(name)
+        except (cliproxy.ProxyError, OSError) as err:
+            raise bad(str(err), 500) from None
+        ai_providers.clear_model_cache(name)
+        st = cliproxy.status(name)
+        return {"provider": name, **st, "title": cliproxy.TITLES.get(name, name)}
 
     @owned.get("/projects")
     def list_projects():
@@ -4505,6 +4796,12 @@ def create_app(port: int) -> FastAPI:
     def assistant_provider() -> ai_providers.Provider:
         try:
             return ai_providers.make()
+        except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
+            raise bad(str(err), 409) from err
+
+    def vision_provider() -> ai_providers.Provider:
+        try:
+            return ai_providers.make(vision_assistant_settings())
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
 

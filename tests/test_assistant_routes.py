@@ -19,7 +19,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from conftest import set_config
-from cutpoint import cache, ui
+from cutpoint import cache, config, ui
 from cutpoint.assistant import keys, providers
 from cutpoint.assistant import store as ai_store
 from test_assistant import FakeProvider, Reply, _Resp, call
@@ -356,7 +356,7 @@ def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
         "missing_key": None,
     }
     assert got["provider"]["local"] is False
-    assert got["provider"]["label"] == "Anthropic · fake-model · api.anthropic.com"
+    assert got["provider"]["label"] == "Anthropic API · fake-model · api.anthropic.com"
 
     turns = "/api/projects/cli/assistant/turns"
     res = client.post(turns, json={"text": "hi", "segments": seq})
@@ -388,7 +388,15 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     assert got["provider"] == "ollama" and got["model"] == "" and got["url"] == ""
     assert got["keys"] == {"anthropic": "env", "openai": None, "xai": None}
     assert "keyring" not in got and got["custom"] is False
-    assert [p["name"] for p in got["providers"]] == ["ollama", "anthropic", "openai", "xai"]
+    assert [p["name"] for p in got["providers"]] == [
+        "ollama",
+        "anthropic",
+        "openai",
+        "xai",
+        "claude-code",
+        "codex",
+        "antigravity",
+    ]
     claude = got["providers"][1]
     assert claude["default_model"] == "claude-sonnet-5-5"
     assert claude["models"] == ["claude-sonnet-5-5", "claude-opus-5-5"]
@@ -420,7 +428,7 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     }
     assert SECRET not in text and SECRET not in res.text
     view = client.get("/api/projects/cli/assistant")
-    assert view.json()["provider"]["label"] == "Anthropic · claude-opus-5-5 · api.anthropic.com"
+    assert view.json()["provider"]["label"] == "Anthropic API · claude-opus-5-5 · api.anthropic.com"
     assert view.json()["consent"]["needed"] is False and SECRET not in view.text
 
     # saved even when it cannot answer yet; the check says why
@@ -604,7 +612,136 @@ def test_a_missing_key_comes_before_the_consent_box(
     got = client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["needed"] is True and got["key"] == "anthropic@api.anthropic.com"
     assert "No API key for Anthropic" in got["missing_key"]
-    assert "ANTHROPIC_API_KEY" in got["missing_key"] and "Settings" in got["missing_key"]
+    assert "ANTHROPIC_API_KEY" in got["missing_key"] and "Models tab" in got["missing_key"]
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     got = client.get("/api/projects/cli/assistant")
     assert got.json()["consent"]["missing_key"] is None and SECRET not in got.text
+
+
+def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) -> None:
+    res = client.get("/api/settings")
+    assert res.status_code == 200
+    data = res.json()
+    assert "vision_assistant" in data
+    assert "vision_consent" in data
+    v_view = data["vision_assistant"]
+    assert v_view["provider"] == "ollama"
+    provider_names = [p["name"] for p in v_view["providers"]]
+    assert provider_names == ["ollama", "claude-code", "codex", "antigravity"]
+
+    # PUT vision_assistant
+    put_body = {
+        "vision_assistant": {
+            "provider": "codex",
+            "model": "gpt-custom",
+            "url": "",
+        }
+    }
+    res = client.put("/api/settings", json=put_body)
+    assert res.status_code == 200
+    out = res.json()
+    assert out["vision_assistant"]["provider"] == "codex"
+    assert out["vision_assistant"]["model"] == "gpt-custom"
+    # Chat assistant unaffected
+    assert out["assistant"]["provider"] == "ollama"
+
+    # Rejects unsupported provider for vision
+    bad_res = client.put("/api/settings", json={"vision_assistant": {"provider": "openai"}})
+    assert bad_res.status_code == 400
+    assert "vision_assistant.provider must be one of" in bad_res.json()["detail"]
+
+
+def test_models_route_role_parameter(client: TestClient) -> None:
+    # Role validation
+    bad_role = client.get("/api/assistant/models?role=invalid")
+    assert bad_role.status_code == 400
+
+    # Vision role rejects non-vision provider
+    bad_p = client.get("/api/assistant/models?role=vision&provider=openai")
+    assert bad_p.status_code == 400
+    assert "provider must be custom or one of" in bad_p.json()["detail"]
+
+    # Vision role accepts vision providers (e.g. ollama)
+    res = client.get("/api/assistant/models?role=vision&provider=ollama")
+    assert res.status_code == 200
+    assert "models" in res.json()
+
+
+def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home: Path) -> None:
+    set_config(
+        home,
+        assistant={"provider": "ollama"},
+        vision_assistant={"provider": "codex", "consent": []},
+    )
+    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    model_requests = []
+    monkeypatch.setattr(
+        ui.cliproxy, "list_models", lambda *args, **kwargs: model_requests.append(args) or []
+    )
+    # Without consent, subscription/hosted provider requires consent and returns consent_needed
+    res = client.get("/api/assistant/models?role=vision&provider=codex")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["state"] == "consent_needed"
+    assert model_requests == []
+
+    # Grant consent for vision
+    set_config(
+        home,
+        assistant={"provider": "ollama"},
+        vision_assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
+    )
+    seen = []
+    monkeypatch.setattr(
+        ui.ai_providers,
+        "model_list",
+        lambda provider, consent, **kwargs: seen.append(consent) or {"state": "ok", "models": []},
+    )
+    res2 = client.get("/api/assistant/models?role=vision&provider=codex")
+    assert res2.status_code == 200
+    assert seen == [("codex@chatgpt.com",)]
+
+
+def test_role_aware_consent_endpoint(client: TestClient, monkeypatch, home: Path) -> None:
+    set_config(
+        home,
+        assistant={"provider": "ollama"},
+        vision_assistant={"provider": "codex", "consent": []},
+    )
+    # Grant consent for vision
+    res = client.post("/api/assistant/consent", json={"key": "codex@chatgpt.com", "role": "vision"})
+    assert res.status_code == 200
+    consent = res.json()["consent"]
+    assert consent["needed"] is False
+
+    cfg = config.load_config_data()
+    assert cfg["vision_assistant"]["consent"] == ["codex@chatgpt.com"]
+    # Assistant consent remains empty
+    assert cfg.get("assistant", {}).get("consent", []) == []
+
+
+def test_subscription_host_pin_rejects_custom_url(client: TestClient) -> None:
+    res = client.put(
+        "/api/settings",
+        json={"assistant": {"provider": "claude-code", "url": "https://evil.example.com"}},
+    )
+    assert res.status_code == 400
+    assert "url cannot be customized" in res.json()["detail"]
+
+    with pytest.raises(providers.ProviderError, match="does not accept a custom base URL"):
+        providers.SubscriptionProvider("claude-code", url="https://evil.example.com")
+
+
+def test_malformed_consent_does_not_500(client: TestClient, home: Path) -> None:
+    cfg_file = home / "config.json"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    raw = {
+        "projects_dir": str(home / "projects"),
+        "assistant": {"provider": "ollama", "consent": None},
+        "vision_assistant": {"provider": "ollama", "consent": 123},
+    }
+    cfg_file.write_text(json.dumps(raw), encoding="utf-8")
+    res = client.get("/api/settings")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["vision_consent"]["needed"] is False

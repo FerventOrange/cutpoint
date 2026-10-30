@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
+  `vision_assistant` section, same keys, any of Ollama, `claude-code`, `codex`, `antigravity`), each
+  with its own provider, model and, for hosted ones, permission. It replaces the AI assistant
+  settings. With `cutpoint proxy` running, it lists models advertised by the proxy for each
+  account after consent for the role. Anthropic API and OpenAI API (API key) are separate
+  from Claude Code subscription and Codex subscription (login). Hosted API and subscription
+  providers display "Use at your own risk"; Ollama/Local does not.
+  Save models sits at the bottom of model selection under the Vision role, directly above Connected
+  accounts (which lists login status without model counts). Vision frames go to a subscription provider
+  only after "Allow vision requests" in the tab (`vision_assistant.consent`; custom URLs are rejected
+  for subscription providers).
+  Without a `vision_assistant` section, frame rating uses Ollama. Activity detection in
+  `profile`, `crashes` and the crash step of `analyze` always uses Ollama.
+- `cutpoint proxy` command runs the authenticated CLIProxyAPI daemon in the foreground for Claude
+  Code, Codex and Antigravity subscriptions (Use at your own risk). Available in both full and lite
+  installs. First run lazily downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to
+  `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on loopback `127.0.0.1:18317` (customizable with
+  `--port` or `CUTPOINT_CLIPROXY_PORT`, binary with `CUTPOINT_CLIPROXY_BINARY`). Startup prefers
+  `--port`, then the environment, then the saved port; clients use the owned daemon's saved
+  runtime port even when their environment differs. Subscription
+  credentials use Cutpoint's existing keyring integration with a native OS backend; file-based
+  backends and fallback after a native-store failure are rejected. An independent cross-platform
+  supervisor restores private working files under `<CUTPOINT_HOME>/cliproxy/auths/`, checkpoints
+  refreshes and deletions, and stops/reaps the daemon before cleanup, including after the
+  foreground CLI is killed. Concurrent credential removal or incomplete JSON/UTF-8 writes defer
+  the whole periodic snapshot without stopping the daemon or committing a partial account map.
+  Final keyring-write failures preserve the latest data in an
+  authenticated encrypted recovery journal with its key only in the OS keyring. Whole-host or
+  supervisor loss and failed recovery writes can still leave private files; daemon writes cannot
+  be atomic with keyring persistence. POSIX directories/files use `0700`/`0600`; Windows replaces
+  inherited grants with verified protected user-only DACLs and normalizes legitimate token-default
+  ownership to the current user; foreign owners are rejected. HTTPS authenticates the actual local
+  listener before credentials or request bodies are sent, closing the port-handoff impersonation
+  gap. TLS identity and local client/management keys rotate on each explicit start; configuration
+  and these local secrets remain private files. Prompt cloaking and prompt/error logging are disabled.
+- `cutpoint login` and `cutpoint logout` for Claude Code, Codex and Antigravity subscriptions via
+  `cutpoint proxy` browser-callback flows, and a Connected accounts section in the Models tab.
+  `claude-code`, `codex` and `antigravity` are assistant providers that route through the proxy daemon
+  instead of direct API keys. Interrupts exit `130`, including at the login confirmation prompt.
 - `assemble <project>` makes the final video without keeping clips (#519): given a project
   (with `highlights.json`, or `--segments`) instead of a clips folder, it picks the moments as
   `clips` does (`--top`, `--ids`, `--segments`, `--max-total`, `--order`) and exports them with
