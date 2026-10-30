@@ -64,6 +64,14 @@ DET_COLS = (
     "vy",
     "vz",
 )
+# Upright ("+z") clips: the detector equirect, the 9 views and the selfie view are sampled in
+# the "-z" display frame (yaw 0 on the _00_ lens, the frame of 4b3894b), whose equirect seam
+# and wrap margins lie at the _10_ lens horizon. Exact: R_VW(+z) = R_VW(-z) @ DET_FLIP. The
+# rows are relabelled to the "+z" frame (yaw + 180), the views permuted (+z view k = -z view
+# k + 4), so the detections and embeddings are those of 4b3894b (meta ``det_frame``).
+DET_FRAME = "-z"
+DET_FLIP = np.diag([-1.0, 1.0, -1.0])
+DET_PERM = [4, 5, 6, 7, 0, 1, 2, 3, SELFIE]
 
 
 @dataclass(frozen=True)
@@ -129,13 +137,32 @@ def cache_path(src: Path, params: ViewParams | None = None) -> Path:
     return cache.source_dir(src) / f"pano-views-{params_key((params or ViewParams()).key())}.npz"
 
 
+_STALE_AXIS: set[str] = set()  # sources whose stale-axis view layer was logged
+
+
 def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
-    """Cached view-layer outputs of a clip, or None."""
+    """Cached view-layer outputs of a clip, or None (also when they were computed with
+    another forward axis than the clip's cached orientation track has now)."""
     try:
         path = cache_path(Path(src), params)
     except OSError:
         return None
     if not path.exists():
+        return None
+    meta = cache.load_json(path.with_suffix(".json")) or {}
+    fwd = G.cached_forward_axis(Path(src))
+    upright = fwd == G.axis_name(G.LENS_V)
+    if fwd is not None and (
+        meta.get("forward_axis", G.axis_name(G.FORWARD_V)) != fwd
+        or (upright and meta.get("det_frame") != DET_FRAME)
+    ):
+        if str(src) not in _STALE_AXIS:
+            _STALE_AXIS.add(str(src))
+            logger.info(
+                "%s: view layer computed with another forward axis (upright clip); not used "
+                "until `cutpoint 360 analyze` recomputes it",
+                Path(src).name,
+            )
         return None
     with np.load(path) as z:
         return PanoViews(
@@ -144,7 +171,7 @@ def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
             det=z["det"],
             box_emb=z["box_emb"],
             box_idx=z["box_idx"],
-            meta=cache.load_json(path.with_suffix(".json")) or {},
+            meta=meta,
         )
 
 
@@ -226,6 +253,7 @@ def compute_views(
     n_rows = 0
     wear = wearer_v / np.linalg.norm(wearer_v)
     person_lab = torch.tensor(DET_LABELS, device=dev)
+    flip = orient.forward_axis == G.axis_name(G.LENS_V)  # sampled in the DET_FRAME frame
 
     def flush() -> None:
         nonlocal gpu_s, n_rows
@@ -233,6 +261,8 @@ def compute_views(
         b = len(batch_f)
         x = torch.from_numpy(np.stack(batch_f)).to(dev).permute(0, 3, 1, 2).float() / 255
         rv = np.stack([orient.r_vw(t) for t in batch_t])
+        if flip:
+            rv = rv @ DET_FLIP
         with torch.inference_mode():
             views = sampler.sample(x, rv, view_rays, vrot)  # (B, 8, 3, S, S)
             sel = sampler.sample(
@@ -240,6 +270,8 @@ def compute_views(
             )  # (B, 3, S, S)
             allv = torch.cat([views, sel[:, None]], 1).reshape(b * 9, 3, p.view_px, p.view_px)
             e = models._embed(allv).view(b, 9, -1)
+        if flip:
+            e = e[:, DET_PERM]
         embs.append(e.cpu().numpy().astype(np.float16))
         if reuse is not None:  # detections and crops do not depend on the wearer axis
             ts.extend(batch_t)
@@ -279,7 +311,7 @@ def compute_views(
                         len(ts) + i,
                         float(lab[j]),
                         float(sc[j]),
-                        yaw,
+                        float(G.wrap_deg(yaw + 180.0)) if flip else yaw,
                         pitch,
                         wdeg,
                         hdeg,
@@ -363,6 +395,10 @@ def compute_views(
         "wearer_v": [round(float(v), 4) for v in wear],
         "params": p.key(),
     }
+    if orient.forward_axis != G.axis_name(G.FORWARD_V):  # load_views checks it
+        data.meta["forward_axis"] = orient.forward_axis
+    if flip:
+        data.meta["det_frame"] = DET_FRAME
     return data
 
 
@@ -894,7 +930,8 @@ def write_standard_visual(src: Path, pv: PanoViews) -> Path:
     sel = [i for i, row in enumerate(pv.box_idx) if int(row) in remap]
     box_idx = np.asarray([remap[int(pv.box_idx[i])] for i in sel], np.int64)
     box_emb = pv.box_emb[sel] if sel else np.zeros((0, 768), np.float16)
-    emb = pv.emb[:, [6, 0, 2]]
+    # the camera directions of 4b3894b's crops (-z yaw 270 / 0 / 90) on an upright clip
+    emb = pv.emb[:, [2, 4, 6] if pv.meta.get("det_frame") == DET_FRAME else [6, 0, 2]]
     np.savez_compressed(path, t=pv.t, emb=emb, det=std, box_emb=box_emb, box_idx=box_idx)
     cache.save_json(
         path.with_suffix(".json"),
