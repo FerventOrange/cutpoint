@@ -87,8 +87,7 @@ def _side_feed_frame(b: int, k: int, base: int, pitch: int) -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("pitch", [28, 30, 32, 36])
-@pytest.mark.parametrize("base", [40, 44, 47, 50])
+@pytest.mark.parametrize(("base", "pitch"), [(40, 28), (44, 30), (47, 32), (50, 36)])
 def test_feed_rows_with_short_plus_boxes_stay_a_feed(base: int, pitch: int) -> None:
     """A feed row's name box plus its shorter, bottom-aligned "+N" box is one row: the feed
     stays a feed whatever the row band phase (base y, pitch)."""

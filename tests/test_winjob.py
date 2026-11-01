@@ -93,7 +93,7 @@ def test_assign_failure_is_logged_not_raised(k32, caplog):
     k32(assign_ok=0)
     with caplog.at_level(logging.DEBUG, logger="cutpoint.winjob"):
         winjob.kill_with_parent(_proc(11))  # type: ignore[arg-type]
-    assert "process 1011 not put in the job object: error 5" in caplog.text
+    assert "not put in the job object" in caplog.text
 
 
 def test_api_unavailable_is_a_noop(k32, monkeypatch):

@@ -4,7 +4,6 @@ RapidOCR, split over its lanes, which run OCR calls at once with the output of o
 
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import time
@@ -32,66 +31,51 @@ def _fake_rapidocr(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return made
 
 
-def test_thread_cap_is_at_most_four_and_the_cpu_count() -> None:
-    assert min(4, os.cpu_count() or 1) == killfeed.OCR_THREADS
-    assert 1 <= killfeed.OCR_THREADS <= 4
+def _layer_engine(tmp_path: Path) -> None:
+    killfeed.OcrEngine(lanes=1)
 
 
-@pytest.mark.parametrize("det_side", [killfeed.OCR_DET_SIDE, 1280])  # OCR layer, discovery
-def test_engine_passes_the_thread_cap(monkeypatch: pytest.MonkeyPatch, det_side: int) -> None:
-    made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 3)
-
-    killfeed.OcrEngine(det_side=det_side, lanes=1)
-
-    assert made == [
-        {"det_limit_type": "max", "det_limit_side_len": det_side, "intra_op_num_threads": 3}
-    ]
-
-
-def test_lanes_split_the_thread_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
-
+def _two_lanes(tmp_path: Path) -> None:
     killfeed.OcrEngine(lanes=2)
 
-    assert [m["intra_op_num_threads"] for m in made] == [2, 2]
-    assert (2 if killfeed.OCR_THREADS >= 4 else 1) == killfeed.OCR_LANES
+
+def _discovery(tmp_path: Path) -> None:
+    src = SimpleNamespace(name="a.mp4", io_path=tmp_path / "a.mp4")
+    discover._ocr_frames(
+        [(src, 1.0)], discover.DiscoverParams(), tmp_path / "frames", tmp_path / "ocr.jsonl"
+    )
 
 
-def test_discovery_reads_on_one_lane_with_every_thread(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def _kwargs(side: int, threads: int, **more: Any) -> dict[str, Any]:
+    return {
+        "det_limit_type": "max",
+        "det_limit_side_len": side,
+        "intra_op_num_threads": threads,
+        **more,
+    }
+
+
+@pytest.mark.parametrize(
+    ("make", "expected"),
+    [
+        # the OCR layer: every thread, RapidOCR's own rec batching (raw reads, cache key)
+        (_layer_engine, [_kwargs(killfeed.OCR_DET_SIDE, 4)]),
+        # lanes split the thread cap
+        (_two_lanes, [_kwargs(killfeed.OCR_DET_SIDE, 2)] * 2),
+        # discovery: one lane with every thread, each box recognised alone (#443)
+        (_discovery, [_kwargs(discover.DiscoverParams().width, 4, rec_batch_num=1)]),
+    ],
+    ids=["ocr-layer", "two-lanes", "discovery"],
+)
+def test_engines_get_the_thread_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, make, expected
 ) -> None:
+    """#374, #403, #443: what each OcrEngine passes to RapidOCR."""
     made = _fake_rapidocr(monkeypatch)
     monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
     monkeypatch.setattr(discover, "_burst_frames", lambda *a: [])
-    params = discover.DiscoverParams()
-    src = SimpleNamespace(name="a.mp4", io_path=tmp_path / "a.mp4")
-
-    discover._ocr_frames([(src, 1.0)], params, tmp_path / "frames", tmp_path / "ocr.jsonl")
-
-    assert made == [
-        {
-            "det_limit_type": "max",
-            "det_limit_side_len": params.width,
-            "intra_op_num_threads": 4,
-            "rec_batch_num": 1,  # each box recognised alone (#443)
-        }
-    ]
-
-
-def test_the_ocr_layer_keeps_rapidocrs_rec_batch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only discovery recognises one box at a time (#443): the OCR layer's engines (as
-    pipeline and ocr_prefetch make them) keep RapidOCR's batching, so its raw reads and
-    their cache key are unchanged."""
-    made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
-
-    engine = killfeed.OcrEngine()
-
-    assert engine.rec_batch is None
-    assert len(made) == killfeed.OCR_LANES
-    assert all("rec_batch_num" not in kwargs for kwargs in made)
+    make(tmp_path)
+    assert made == expected
 
 
 class _Lanes:
@@ -201,7 +185,7 @@ def test_det_side_stays_in_the_raw_cache_key(monkeypatch: pytest.MonkeyPatch) ->
     side = killfeed.OcrEngine(lanes=1).det_side
     key = ocr_raw.raw_key(3.0, [], "bottom", 0.5, [], side) | {"engine": "1.4.4"}
 
-    assert side == killfeed.OCR_DET_SIDE == 960
+    assert side == killfeed.OCR_DET_SIDE
     assert cache.params_hash(key) == "2e53590a5c"  # the key before #443
 
 

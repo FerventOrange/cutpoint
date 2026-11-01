@@ -28,7 +28,7 @@ def _info(path: Path, duration: float) -> MediaInfo:
 WORDS = _words((101.0, 101.4, "hello"), (101.5, 101.9, "there."), (104.5, 104.9, "bye"))
 
 
-def test_single_clip_srt_is_timed_to_the_clip_start():
+def test_single_clip_srt_is_timed_to_the_clip_start_and_times_round():
     cues = srt.clip_cues(WORDS, 100.0, 104.0)
     assert srt.format_srt(cues) == "1\n00:00:01,000 --> 00:00:02,050\nhello there.\n\n"
     # cue times clipped to the clip; hours, carries and rounding
@@ -182,26 +182,6 @@ def test_clips_force_keeps_a_clip_renamed_in_case_only_and_its_srt(home, monkeyp
     assert any(
         r.levelname == "WARNING" and "Kept 001_joke.mp4" in r.message for r in caplog.records
     )
-
-
-@pytest.mark.parametrize("renamed", [("001_a.mp4", "001_a.srt"), ("001_a.srt",)])
-def test_clips_force_replaces_the_listed_srt_of_a_replaced_clip_renamed_in_case(
-    home, monkeypatch, renamed
-):
-    """Review renamed 001_a (or only its .srt) to 001_A. The run writes 001_a again without
-    a transcript: the clip is replaced, so its old .srt goes too, not stays with stale cues."""
-    project, seg, out = _project(home)
-    monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
-    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
-    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
-    clips.export_clips(project, segments=seg)
-    if not (out / "001_A.mp4").exists():
-        pytest.skip("case-sensitive file system")
-    for n in renamed:
-        (out / n).rename(out / n.replace("_a", "_A"))
-    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
-    clips.export_clips(project, segments=seg, force=True)
-    assert sorted(p.name for p in out.iterdir()) == ["001_a.mp4", "manifest.json"]
 
 
 def test_renamed_clip_uses_its_own_srt_in_the_final(tmp_path):

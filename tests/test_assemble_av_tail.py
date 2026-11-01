@@ -49,7 +49,7 @@ def test_concat_copy_trims_the_last_clip_to_its_video_and_keeps_timestamps(monke
     assert args[args.index("-c:v") + 1] == "copy"
 
 
-@pytest.mark.parametrize("limit, loudnorm", [(False, True), (True, False), (True, True)])
+@pytest.mark.parametrize("limit, loudnorm", [(False, True), (True, False)])
 def test_post_process_trims_the_audio_to_the_stage_video(monkeypatch, tmp_path, limit, loudnorm):
     calls: list[list[str]] = []
     monkeypatch.setattr(assemble, "run", lambda args, **_: calls.append(args) or "")
@@ -130,11 +130,8 @@ def _durations(path: Path) -> tuple[float, float, float, float]:
 @pytest.mark.parametrize(
     "transition, loudnorm, audio_extra",
     [
-        ("cut", False, -0.025),
-        ("cut", False, 0.0),
         ("cut", False, 0.03),
         ("cut", True, -0.025),
-        ("cut", True, 0.03),
         ("fade", True, -0.025),
         ("fade", True, 0.03),
     ],

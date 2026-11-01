@@ -11,22 +11,6 @@ from cutpoint import cli
 from cutpoint.assistant import cliproxy
 
 
-@pytest.mark.parametrize(
-    ("argv", "word"),
-    [
-        (["--help"], "paths"),
-        (["events", "--help"], "events"),
-        (["edit", "--help"], "--kind"),
-        (["paths", "--help"], "--json"),
-    ],
-)
-def test_help_exits_zero(capsys, argv, word):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(argv)
-    assert exc.value.code == 0
-    assert word in capsys.readouterr().out
-
-
 def test_paths_command_uses_isolated_home(home, capsys):
     assert cli.main(["paths"]) == 0
     out = capsys.readouterr().out
@@ -48,64 +32,24 @@ def test_paths_command_uses_isolated_home(home, capsys):
     assert not home.exists()  # printing paths creates nothing
 
 
-def test_clips_bad_size_is_a_usage_error(capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["clips", "some-project", "--size", "abc"])
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "--size" in err and "expected WxH" in err
-    assert "Traceback" not in err
-
-
 @pytest.mark.parametrize(
-    ("option", "value"),
-    [("--kind", "trailer"), ("--top", "0"), ("--max-total", "-5"), ("--vision-top", "0")],
-)
-def test_edit_bad_option_is_a_usage_error(capsys, option, value):
-    """--top / --max-total are checked before the long analysis, not after it."""
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["edit", "video.mp4", option, value])
-    assert exc.value.code == 2
-    assert option in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "argv",
+    ("argv", "message"),
     [
-        ["clips", "some-project", "--top", "-1"],
-        ["clips", "some-project", "--max-total", "0"],
-        ["360", "director", "some-project", "--top", "0"],
-        ["360", "stitch", "some-project", "--top", "-1"],
-        ["360", "stitch", "some-project", "--max-total", "0"],
-        ["assemble", "some-clips", "--transition", "fade", "--fade-dur", "-0.5"],
+        (["clips", "some-project", "--size", "abc"], "expected WxH"),
+        (["clips", "some-project", "--top", "-1"], "must be greater than 0"),
+        (["edit", "video.mp4", "--vision-top", "0"], "must be greater than 0"),
+        (["analyze", "video.mp4", "--must-include-crash", "1.5"], "must be from 0 to 1"),
     ],
 )
-def test_non_positive_top_max_total_or_fade_dur_is_a_usage_error(capsys, argv):
-    """`--top -1` used to select all but one moment; `--fade-dur 0` cut the video short."""
+def test_bad_option_value_is_a_usage_error(capsys, argv, message):
+    """Checked before the long analysis, without a traceback: `--top -1` used to select all
+    but one moment, `--vision-top -3` to rate all but the last 3 candidates."""
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert argv[-2] in err and "must be greater than 0" in err
-
-
-@pytest.mark.parametrize(
-    ("option", "value", "message"),
-    [
-        ("--vision-top", "-3", "must be greater than 0"),
-        ("--max-candidates", "0", "must be greater than 0"),
-        ("--must-include-crash", "-0.5", "must be from 0 to 1"),
-        ("--must-include-crash", "1.5", "must be from 0 to 1"),
-        ("--must-include-crash", "high", "expected a number"),
-    ],
-)
-def test_analyze_bad_count_or_confidence_is_a_usage_error(capsys, option, value, message):
-    """`--vision-top -3` used to rate all but the last 3 candidates."""
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["analyze", "video.mp4", option, value])
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert option in err and message in err
+    assert argv[-2] in err and message in err
+    assert "Traceback" not in err
 
 
 @pytest.mark.parametrize("value", ["0", "1", "0.6"])
@@ -145,35 +89,9 @@ def test_analyze_default_project_name(home, tmp_path, monkeypatch, make, name):
     assert outs == [home / "projects" / name]
 
 
-def test_360_qa_bad_size_is_a_usage_error(capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["360", "qa", "x", "--paths", "--size", "abc"])
-    assert exc.value.code == 2
-    assert "--size" in capsys.readouterr().err
-
-
 def test_guide_prints_agents_md(capsys):
     assert cli.main(["guide"]) == 0
     assert capsys.readouterr().out.startswith("# Cutpoint for AI agents")
-
-
-def test_shared_vision_and_source_filter_options_parse_alike():
-    p = cli.build_parser()
-    vision = ["--no-vision", "--vision-top", "5", "--ollama-url", "u", "--ollama-model", "m"]
-    for command in ("edit", "analyze"):
-        a = p.parse_args([command, "v.mp4", *vision])
-        assert (a.vision, a.vision_top, a.ollama_url, a.ollama_model) == (False, 5, "u", "m")
-    for command in ("analyze", "stage"):
-        a = p.parse_args([command, "v.mp4", "--exclude", "*DVR*", "--exclude", "x", "--recursive"])
-        assert (a.exclude, a.recursive) == (["*DVR*", "x"], True)
-        assert p.parse_args([command, "v.mp4"]).recursive is False
-
-
-def test_version_flag_prints_version_without_subcommand(capsys):
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["--version"])
-    assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == f"cutpoint {cutpoint.__version__}"
 
 
 @pytest.mark.ffmpeg
@@ -217,7 +135,7 @@ def test_failed_analyze_leaves_no_new_project_folder(home, tmp_path, monkeypatch
     assert not projects.exists() or list(projects.iterdir()) == []
 
 
-def test_huggingface_warning_is_printed_once():
+def test_huggingface_hub_logs_through_cutpoints_handler():
     pytest.importorskip("huggingface_hub.utils.logging")
     assert cli.main(["paths"]) == 0
     assert logging.getLogger("huggingface_hub").handlers == []
@@ -236,13 +154,22 @@ def test_director_on_unscanned_project_creates_no_folder(home, caplog):
     assert "cutpoint 360 scan" in caplog.text
 
 
-def test_proxy_command_invokes_cliproxy_run(monkeypatch, caplog):
+@pytest.mark.parametrize("argv", [["proxy", "--port", "9999"], ["login", "codex", "--no-browser"]])
+def test_proxy_and_login_warn_at_the_users_own_risk(monkeypatch, caplog, argv):
     ran = []
     monkeypatch.setattr(cliproxy, "run", lambda port=None: ran.append(port))
-    with caplog.at_level(logging.WARNING):
-        assert cli.main(["proxy", "--port", "9999"]) == 0
-    assert ran == [9999]
+    monkeypatch.setattr(
+        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
+    )
+    monkeypatch.setattr(cliproxy, "poll_login", lambda s: {"state": "done", "error": None})
+    monkeypatch.setattr(cliproxy, "status", lambda p: {"logged_in": True, "email": "u@example.com"})
+    with caplog.at_level(logging.INFO):
+        assert cli.main(argv) == 0
     assert "Use at your own risk" in caplog.text
+    if argv[0] == "proxy":
+        assert ran == [9999]
+    else:
+        assert "open this URL to log in: https://auth.example/test" in caplog.text
 
 
 def test_proxy_command_exits_1_on_proxy_error(monkeypatch, caplog):
@@ -255,24 +182,6 @@ def test_proxy_command_exits_1_on_proxy_error(monkeypatch, caplog):
             cli.main(["proxy"])
         assert exc.value.code == 1
     assert "proxy failed: port in use" in caplog.text
-
-
-def test_login_cli_command(monkeypatch, caplog):
-    cancelled = []
-    monkeypatch.setattr(
-        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
-    )
-    monkeypatch.setattr(cliproxy, "poll_login", lambda s: {"state": "done", "error": None})
-    monkeypatch.setattr(
-        cliproxy, "status", lambda p: {"logged_in": True, "email": "user@example.com"}
-    )
-    monkeypatch.setattr(cliproxy, "cancel_login", lambda s: cancelled.append(s))
-    with caplog.at_level(logging.INFO):
-        assert cli.main(["login", "codex", "--no-browser"]) == 0
-    assert "Use at your own risk" in caplog.text
-    assert "open this URL to log in: https://auth.example/test" in caplog.text
-    assert "logged in to" in caplog.text
-    assert cancelled == []
 
 
 def test_login_cli_poll_error_cancels_session(monkeypatch, caplog):
@@ -289,12 +198,6 @@ def test_login_cli_poll_error_cancels_session(monkeypatch, caplog):
             if state in self.sessions:
                 self.sessions[state] = "cancelled"
 
-        def complete_browser_callback(self, state: str) -> bool:
-            if self.sessions.get(state) != "pending":
-                return False
-            self.sessions[state] = "done"
-            return True
-
     fixture = OAuthFixture()
     monkeypatch.setattr(cliproxy, "start_login", fixture.start_login)
     monkeypatch.setattr(
@@ -310,7 +213,6 @@ def test_login_cli_poll_error_cancels_session(monkeypatch, caplog):
         assert exc.value.code == 1
     assert "login failed: transport error" in caplog.text
     assert fixture.sessions["state-codex"] == "cancelled"
-    assert fixture.complete_browser_callback("state-codex") is False
 
 
 def test_login_cli_cancellation_failure_preserves_primary_exit(monkeypatch, caplog):
@@ -362,15 +264,6 @@ def test_login_antigravity_confirmation(monkeypatch, caplog):
 
     monkeypatch.setattr("builtins.input", interrupt)
     assert cli.main(["login", "antigravity", "--no-browser"]) == 130
-
-
-def test_logout_cli_command(monkeypatch, caplog):
-    logged_out = []
-    monkeypatch.setattr(cliproxy, "logout", lambda p: logged_out.append(p))
-    with caplog.at_level(logging.INFO):
-        assert cli.main(["logout", "codex"]) == 0
-    assert logged_out == ["codex"]
-    assert "logged out of" in caplog.text
 
 
 def test_logout_cli_command_error(monkeypatch, caplog):

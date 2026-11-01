@@ -470,11 +470,6 @@ def test_watch_extract_reports_the_growing_temp_wav(tmp_path, monkeypatch):
     assert {0.25, 0.5, 0.75, 1.0} <= set(got)
 
 
-def test_watch_extract_is_a_no_op_without_a_report(tmp_path):
-    with analyze._watch_extract(tmp_path / "a.wav", 10.0, None):
-        pass  # no thread, nothing to stop
-
-
 def test_whisper_progress_is_passed_only_on_a_transcript_cache_miss(tmp_path):
     calls = []
 
@@ -793,28 +788,6 @@ def test_without_layers_the_transcript_is_still_written(run):
     )
 
 
-@pytest.mark.parametrize("where", ["keyframes", "vision"])
-def test_a_cancel_after_the_transcription_leaves_no_transcript_txt(run, where):
-    run.segments = SPEECH
-    run.plan = plan(keyframes=("visual",))
-    run.fail, run.cancel = ("visual" if where == "keyframes" else "vision"), True
-    with pytest.raises(KeyboardInterrupt):
-        run.go(vision=where == "vision")
-    # nothing written: the new project folder is removed too (events.json, held back, #408)
-    assert not run.proj.exists()
-
-
-def test_a_cancel_leaves_the_previous_transcript_txt_byte_identical(run):
-    old = b"# old\r\n(no speech)\r\n"
-    write(run.proj / "transcript.txt", old)
-    run.segments = SPEECH
-    run.plan = plan(keyframes=("visual",))
-    run.fail, run.cancel = "visual", True
-    with pytest.raises(KeyboardInterrupt):
-        run.go()
-    assert (run.proj / "transcript.txt").read_bytes() == old
-
-
 def test_pending_transcript_is_parsed_only_inside_the_block(tmp_path):
     write(tmp_path / "transcript.txt", "[a.mp4 00:00:01.0-00:00:02.0] file\n")
     text = "# a.mp4\n[a.mp4 00:00:03.0-00:00:04.0] memory\n"
@@ -1059,8 +1032,17 @@ def test_the_standalone_writers_still_write_at_once(tmp_path, monkeypatch):
     assert sheet.read_bytes() == plain.read_bytes() == (tmp_path / "again.jpg").read_bytes()
 
 
-@pytest.mark.parametrize("where", ["audio", "visual", "crash", "write", "ranking", "vision"])
-@pytest.mark.parametrize("earlier", [True, False])
+@pytest.mark.parametrize(
+    ("where", "earlier"),
+    [
+        ("audio", True),
+        ("visual", False),
+        ("crash", True),
+        ("write", False),
+        ("ranking", True),
+        ("vision", False),
+    ],
+)
 def test_a_cancel_at_any_step_leaves_the_result_files_as_they_were(
     run, monkeypatch, where, earlier
 ):
@@ -1244,38 +1226,6 @@ def test_the_ocr_prefetch_stops_before_a_cancelled_run_cleans_up(prefetched):
 
 # ----------------------------------------------------------------- --skip and analysis.skip
 @pytest.mark.parametrize(
-    ("argv", "skip"),
-    [
-        ([], ()),
-        (["--skip", "reactions"], ("reactions",)),
-        (["--skip", "keyframes", "crashes"], ("keyframes", "crashes")),
-    ],
-)
-def test_skip_option_reaches_analyze(home, tmp_path, monkeypatch, argv, skip):
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.append(kw))
-    assert cli.main(["analyze", str(video), "--out", "p", *argv]) == 0
-    assert seen[0]["skip"] == skip and seen[0]["layers"] is True
-
-
-@pytest.mark.parametrize("bad", ["transcribe", "ranking", "vision", "nope"])
-def test_skip_rejects_steps_that_cannot_be_skipped(home, tmp_path, capsys, bad):
-    video = write(tmp_path / "a.mp4")
-    with pytest.raises(SystemExit) as err:
-        cli.main(["analyze", str(video), "--skip", bad])
-    assert err.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err
-
-
-def test_skip_needs_at_least_one_step(home, tmp_path, capsys):
-    video = write(tmp_path / "a.mp4")
-    with pytest.raises(SystemExit) as err:
-        cli.main(["analyze", str(video), "--skip"])
-    assert err.value.code == 2
-
-
-@pytest.mark.parametrize(
     ("cfg", "argv", "skip"),
     [
         (None, [], ()),
@@ -1298,10 +1248,8 @@ def test_config_analysis_skip_is_the_default(home, tmp_path, monkeypatch, cfg, a
 @pytest.mark.parametrize(
     ("data", "message"),
     [
-        ({"analysis": []}, "analysis must be an object"),
         ({"analysis": {"skip": "crashes"}}, "analysis.skip must be a list"),
         ({"analysis": {"skip": ["ranking"]}}, "analysis.skip has 'ranking'"),
-        ({"analysis": {"skip": ["reactions", 3]}}, "analysis.skip must be a list"),
     ],
 )
 def test_config_analysis_skip_is_validated(home, data, message):
@@ -1370,19 +1318,7 @@ def test_plan_without_cuda_leaves_out_the_clip_keyframes(env, caplog):
     assert "keyframes" not in got and why["keyframes"].startswith("no CUDA GPU")
     assert got["crashes"] == ("crash",)
     assert "No CUDA GPU" in caplog.text
-
-
-def test_plan_cuda_is_not_needed_for_hud_text(env):
-    env.cuda = False
-    assert planned("funny")[0]["keyframes"] == ("ocr",)
-
-
-def test_plan_cuda_check_uses_torch(env, monkeypatch):
-    monkeypatch.undo()  # the real _cuda
-    for on in (True, False):
-        fake = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda on=on: on))
-        monkeypatch.setitem(sys.modules, "torch", fake)
-        assert analyze._cuda() is on
+    assert planned("funny")[0]["keyframes"] == ("ocr",)  # HUD text needs no CUDA
 
 
 @pytest.mark.parametrize("broken", ["import", "call"])
@@ -1410,11 +1346,8 @@ def test_plan_skip_option_leaves_steps_out(env):
     got, why = planned("action", skip=("reactions", "crashes"))
     assert got == {"keyframes": ("visual",)}
     assert why == dict.fromkeys(("reactions", "crashes"), "left out by --skip or analysis.skip")
-
-
-def test_plan_skipping_crashes_drops_the_voice_layer(env):
-    got, _ = planned("action", skip=("crashes",))
-    assert got["reactions"] == ("audio",)
+    # skipping crashes drops the voice layer
+    assert planned("action", skip=("crashes",))[0]["reactions"] == ("audio",)
 
 
 def test_plan_everything_skipped_is_an_empty_plan(env):

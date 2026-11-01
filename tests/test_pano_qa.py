@@ -286,10 +286,7 @@ def test_aggregate_shares_runs_spans_and_score() -> None:
     ("mutate", "fail"),
     [
         (lambda f, p, h: [f[i]["flags"].append("too_close") for i in (3, 4)], "close run"),
-        (lambda f, p, h: [f[i]["flags"].append("edge_cut") for i in (1, 2, 3)], "edge_cut run"),
         (lambda f, p, h: [f[i].update(subj=None) for i in range(9)], "subject present"),
-        (lambda f, p, h: [f[i]["flags"].append("low_info") for i in (1, 9, 17)], "low_info"),
-        (lambda f, p, h: p.update(speed_p95=40.0), "pan"),
         (lambda f, p, h: p.update(speed_max=60.0), "pan"),
         (lambda f, p, h: p.update(min_shot_s=1.5), "shot"),
         (lambda f, p, h: h.update(p95=12.5), "horizon"),

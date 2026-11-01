@@ -188,15 +188,18 @@ def test_read_state_dict_reads_torch_zip_with_offset_and_strides(tmp_path: Path)
     np.testing.assert_array_equal(sd["c"], plain.reshape(2, 3).T)
 
 
-def test_read_state_dict_rejects_disallowed_global(tmp_path: Path):
+class _Evil:
+    def __reduce__(self):
+        return os.system, ("echo pwned",)
 
-    class Evil:
-        def __reduce__(self):
-            return os.system, ("echo pwned",)
 
-    path = tmp_path / "evil.pth"
+@pytest.mark.parametrize(
+    "payload", [_Evil(), [1, 2], {"a": 1.5}], ids=["disallowed-global", "not-a-dict", "not-arrays"]
+)
+def test_read_state_dict_rejects_what_is_no_state_dict(tmp_path: Path, payload):
+    path = tmp_path / "bad.pth"
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("archive/data.pkl", pickle.dumps(Evil(), protocol=2))
+        zf.writestr("archive/data.pkl", pickle.dumps(payload, protocol=2))
     with pytest.raises(
         ValueError, match=r"not readable without torch.*cutpoint setup --only visual"
     ):
@@ -261,23 +264,6 @@ def test_read_state_dict_rejects_views_outside_the_storage(tmp_path: Path, spec)
     )
     assert run.returncode == 0, run.stderr
     assert "ValueError" in run.stdout and "not readable without torch" in run.stdout
-
-
-def test_read_state_dict_rejects_non_dict_and_non_array_values(tmp_path: Path):
-    plain = tmp_path / "list.pth"
-    with zipfile.ZipFile(plain, "w") as zf:
-        zf.writestr("archive/data.pkl", pickle.dumps([1, 2], protocol=2))
-    with pytest.raises(
-        ValueError, match=r"not readable without torch.*cutpoint setup --only visual"
-    ):
-        visual._read_state_dict(plain)
-    values = tmp_path / "values.pth"
-    with zipfile.ZipFile(values, "w") as zf:
-        zf.writestr("archive/data.pkl", pickle.dumps({"a": 1.5}, protocol=2))
-    with pytest.raises(
-        ValueError, match=r"not readable without torch.*cutpoint setup --only visual"
-    ):
-        visual._read_state_dict(values)
 
 
 def test_aesthetic_layers_rejects_a_checkpoint_that_is_not_an_aesthetic_head(

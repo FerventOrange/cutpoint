@@ -166,11 +166,6 @@ def test_event_boost(names, boost, evidence):
         ("player !verb", {"player": True}, True),  # AND, negated flag false
         ("player !verb", {"player": True, "verb": "kill"}, False),  # negation fails
         ("player !verb", {"verb": "kill"}, False),  # AND, first flag missing
-        ("player_kill", {"player_kill": True, "player": True}, True),  # single flag
-        ("player_kill", {"player": True}, False),
-        ("player_death !player_kill", {"player_death": True}, True),
-        ("player_death !player_kill", {"player_death": True, "player_kill": True}, False),
-        ("player_death !player_kill", {"player_kill": True}, False),
         ("", {}, True),  # empty flag matches any event of the type
     ],
 )

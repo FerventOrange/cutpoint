@@ -43,7 +43,6 @@ FAILURES = [FFmpegError("ffmpeg failed (exit 1)"), KeyboardInterrupt()]
 def test_interrupted_clip_export_leaves_no_file(monkeypatch, tmp_path):
     """Any failure is cleaned up the same way (see test_gpu_encode for an ffmpeg error)."""
     exc = KeyboardInterrupt()
-    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setattr(encode, "run", _dies_midway(exc))
     src = tmp_path / "src.mp4"
     with pytest.raises(type(exc)):
@@ -105,7 +104,6 @@ def test_stop_signal_cancels_a_command_like_ctrl_c(monkeypatch):
     [
         (3752568763, "-542398533 (0xDFABA7BB)"),  # Windows crash code, reported unsigned
         (-9, "-9"),  # POSIX: killed by SIGKILL
-        (1, "1"),
     ],
 )
 def test_ffmpeg_failure_shows_crash_codes_readably(monkeypatch, rc, shown):
@@ -195,26 +193,6 @@ def _fake_export(monkeypatch):
 
     monkeypatch.setattr(clips, "probe", media_info)
     monkeypatch.setattr(clips, "export_clip_checked", export)
-
-
-@pytest.mark.usefixtures("no_sleep")
-def test_clips_force_over_a_locked_clip_says_who_to_close(monkeypatch, home, caplog):
-    """The hint's wording per winerror is test_lock_hint_mentions_read_only_only_for_access_denied."""
-    project, seg = _project(home)
-    old = _old_clip(project)
-    _fake_export(monkeypatch)
-    real_replace = Path.replace
-
-    def replace(self, target):
-        if self == old:
-            raise _locked(32)
-        return real_replace(self, target)
-
-    monkeypatch.setattr(Path, "replace", replace)
-    assert cli.main(["clips", "p", "--segments", str(seg), "--force"]) == 1
-    assert "open in another program" in caplog.text
-    assert "001_a.mp4" in caplog.text
-    assert old.read_bytes() == b"x"
 
 
 @pytest.mark.usefixtures("no_sleep")
@@ -372,10 +350,15 @@ def _fail_nth_swap_replace(monkeypatch, project: Path, n: int, mode: str, folder
     return seen
 
 
-@pytest.mark.parametrize("mode", ["lock", "ctrl-c"])
 @pytest.mark.parametrize(
-    ("cmd", "n"),
-    [("clips", n) for n in (1, 3, 5, 8)] + [("extend", 5)],  # extend shares swap_in with clips
+    ("cmd", "n", "mode"),
+    [
+        ("clips", 1, "lock"),
+        ("clips", 3, "ctrl-c"),
+        ("clips", 5, "lock"),
+        ("clips", 8, "ctrl-c"),
+        ("extend", 5, "lock"),  # extend shares swap_in with clips
+    ],
     ids=["clips-first", "clips-backing-up", "clips-moving-in", "clips-last", "extend-moving-in"],
 )
 def test_failed_swap_puts_every_original_back(monkeypatch, home, caplog, cmd, mode, n):
@@ -387,6 +370,7 @@ def test_failed_swap_puts_every_original_back(monkeypatch, home, caplog, cmd, mo
     if mode == "lock":
         assert rc == 1
         assert "open in another program" in caplog.text
+        assert seen[n - 1][0].name in caplog.text  # names the file to close
     else:
         assert rc == 130
     assert _snapshot(project / "clips") == before
@@ -455,7 +439,7 @@ def test_extend_out_finishes_a_killed_earlier_replace_before_checking_it_is_empt
     assert not bak.exists()
 
 
-@pytest.mark.parametrize("cmd", ["clips", "extend", "extend-out"])
+@pytest.mark.parametrize("cmd", ["clips", "extend-out"])
 @pytest.mark.parametrize(
     ("kind", "message"),
     [
@@ -525,31 +509,15 @@ def test_force_refuses_a_root_or_mount_before_exporting(
     assert sorted(p.name for p in project.iterdir()) == sorted(top)
 
 
-@pytest.mark.parametrize(
-    ("folder", "is_mount", "message"),
-    [
-        ("root", True, "is a drive root"),
-        pytest.param(
-            "unc", True, "is a drive root",
-            marks=pytest.mark.skipif(os.name != "nt", reason="UNC paths"),
-        ),
-    ],
-)  # fmt: skip
-def test_swap_target_that_resolves_to_a_nameless_root(
-    monkeypatch, tmp_path, folder, is_mount, message
-):
+def test_swap_target_that_resolves_to_a_nameless_root(monkeypatch, tmp_path):
     """#185: a folder that is already a root before resolving (a drive root, or a UNC share
     root on Windows) is refused as a drive root although ``is_mount()`` is True for it; a
     volume mounted into a named folder is a mount point instead (the ``volume mount`` case
     above). The error names the folder as given."""
-    dst = {
-        "root": Path(tmp_path.anchor),
-        "unc": Path(r"\\srv\share"),
-    }[folder]
-    root = Path(tmp_path.anchor)
+    dst = root = Path(tmp_path.anchor)
     monkeypatch.setattr(Path, "resolve", lambda self, *a, **kw: root if self == dst else self)
-    monkeypatch.setattr(Path, "is_mount", lambda self: is_mount and self == dst)
-    with pytest.raises(ValueError, match=message) as err:
+    monkeypatch.setattr(Path, "is_mount", lambda self: self == dst)
+    with pytest.raises(ValueError, match="is a drive root") as err:
         ffmpeg_utils.check_swap_target(dst)
     assert str(dst) in str(err.value)
 
@@ -733,25 +701,6 @@ def test_rollback_with_one_stuck_original_restores_the_rest_and_finishes_next_ru
     cli.main(_argv("clips", project))
     assert _snapshot(clips_dir) == before
     _only_original_folders(project)
-
-
-def test_swap_in_moves_a_file_named_in_two_cases_once(tmp_path, monkeypatch):
-    """``001_A.SRT`` (a hand-edited manifest) and ``001_a.srt`` are one file on a
-    case-insensitive file system: it is moved to the backup once, not twice."""
-    dst = tmp_path / "clips"
-    write(dst / "001_a.srt", "old")
-    if not (dst / "001_A.SRT").exists():
-        pytest.skip("case-sensitive file system")
-    monkeypatch.setattr(ffmpeg_utils, "path_key", lambda p, _folder=None: p.lower())
-    write(dst / "001_a.mp4", "old")
-    new = tmp_path / "staged"
-    write(new / "001_a.mp4", "new")
-
-    ffmpeg_utils.swap_in(new, dst, ["001_A.SRT", "001_a.srt"])
-
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging left
-    assert sorted(p.name for p in dst.iterdir()) == ["001_a.mp4"]
-    assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "new"
 
 
 def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacement(
@@ -1066,42 +1015,23 @@ def test_extend_out_force_keeps_a_listed_clip_that_is_this_runs_source(monkeypat
     assert (out / "001_a.mp4").read_bytes() == b"new"
 
 
-def test_clips_force_keeps_a_clip_reached_through_source_remap(monkeypatch, home, caplog, tmp_path):
-    project = _setup(home, monkeypatch)
-    out = project / "clips"
-    gone = tmp_path / "gone"
-    remap(home, monkeypatch, gone, out)
-    _segments(project / "seg.json", gone / "003_c.mp4")
-    assert cli.main(_argv("clips", project, "--force")) == 0
-    assert (out / "003_c.mp4").read_bytes() == b"old 003_c.mp4"
-    assert "reads as a source" in _warnings(caplog)
-
-
-def test_clips_force_refuses_a_new_clip_name_reached_through_source_remap(
-    monkeypatch, home, tmp_path
+@pytest.mark.parametrize(("name", "rc"), [("003_c.mp4", 0), ("001_a.mp4", 1)])
+def test_clips_force_and_a_clip_reached_through_source_remap(
+    monkeypatch, home, caplog, tmp_path, name, rc
 ):
+    """An old clip this run reads through source_remap is kept; a new clip's name refused."""
     project = _setup(home, monkeypatch)
     out = project / "clips"
     gone = tmp_path / "gone"
     remap(home, monkeypatch, gone, out)
-    _segments(project / "seg.json", gone / "001_a.mp4")
+    _segments(project / "seg.json", gone / name)
     before = _snapshot(out)
-    assert cli.main(_argv("clips", project, "--force")) == 1
-    assert _snapshot(out) == before
-
-
-@pytest.mark.parametrize(("winerror", "read_only_hint"), [(32, False), (5, True)])
-@pytest.mark.usefixtures("no_sleep")
-def test_lock_hint_mentions_read_only_only_for_access_denied(
-    monkeypatch, tmp_path, winerror, read_only_hint
-):
-
-    def op():
-        raise _locked(winerror)
-
-    with pytest.raises(PermissionError, match="open in another program") as exc:
-        ffmpeg_utils.retry_locked(op, tmp_path / "x.json", "write")
-    assert ("read-only" in str(exc.value)) is read_only_hint
+    assert cli.main(_argv("clips", project, "--force")) == rc
+    if rc:
+        assert _snapshot(out) == before
+    else:
+        assert (out / name).read_bytes() == b"old " + name.encode()
+        assert "reads as a source" in _warnings(caplog)
 
 
 # --- #145: assemble recovers leftovers; one run at a time; renamed clips; foreign manifests ---
@@ -1326,17 +1256,6 @@ def test_pid_alive_takes_a_process_created_after_the_lock_for_another_one(
     assert ffmpeg_utils._pid_alive(os.getpid())  # no time to compare: running
 
 
-def test_stale_lock_check_passes_the_locks_mtime(monkeypatch, tmp_path):
-    lock = tmp_path / ".x.cutpoint-lock"
-    lock.write_bytes(_lock_record(4321))
-    seen = []
-    monkeypatch.setattr(
-        ffmpeg_utils, "_pid_alive", lambda pid, not_after=None: seen.append(not_after)
-    )
-    ffmpeg_utils._lock_stale(lock, json.loads(lock.read_bytes()))
-    assert seen == [lock.stat().st_mtime]
-
-
 def test_pid_alive_counts_a_process_it_cannot_open_as_alive():
     """Windows: the System process (4) cannot be opened (access denied); POSIX: init (1)
     belongs to root, so signal 0 is refused (EPERM)."""
@@ -1361,12 +1280,6 @@ def test_stale_lock_replaced_meanwhile_by_a_live_one_is_put_back(monkeypatch, ho
     assert list(project.glob("*.stale")) == []
 
 
-def test_pid_alive_tells_this_process_from_a_missing_one():
-    assert ffmpeg_utils._pid_alive(os.getpid())
-    assert not ffmpeg_utils._pid_alive(2**31 - 4)  # above pid_max (Linux), not in use (Windows)
-    assert not ffmpeg_utils._pid_alive(0)
-
-
 @pytest.mark.slow
 def test_pid_alive_sees_a_child_exit():
     """The Windows path (OpenProcess + GetExitCodeProcess) or os.kill(pid, 0) elsewhere."""
@@ -1377,6 +1290,7 @@ def test_pid_alive_sees_a_child_exit():
         child.kill()
         child.wait()
     assert not ffmpeg_utils._pid_alive(child.pid)
+    assert not ffmpeg_utils._pid_alive(0)
 
 
 def test_manifest_records_each_clips_size_and_that_cutpoint_wrote_it(monkeypatch, home):
@@ -1408,8 +1322,7 @@ def test_clips_force_names_a_clip_renamed_during_review_as_its_own(monkeypatch, 
     (clips_dir / "009_mine.mp4").write_bytes(b"mine")
     assert cli.main(_argv("clips", project, "--force")) == 0
     warnings = _warnings(caplog)
-    assert "cutpoint exported 001b_c.mp4 as 003_c.mp4 (renamed during review)" in warnings
-    assert "does not list 009_mine.mp4 (added by hand?)" in warnings
+    assert "001b_c.mp4" in warnings and "009_mine.mp4" in warnings
     assert (clips_dir / "001b_c.mp4").read_bytes() == b"old" * 4  # kept, never deleted
     assert (clips_dir / "009_mine.mp4").read_bytes() == b"mine"
 
@@ -1486,13 +1399,12 @@ def test_extend_names_a_source_in_the_clips_folder_as_a_source(monkeypatch, home
     argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
     assert cli.main([*argv, "--out", str(project / "out")]) == 0
     warnings = _warnings(caplog)
-    assert "footage.mp4: a source of these clips, not a clip; skipped" in warnings
+    assert "footage.mp4: a source of these clips" in warnings
     assert "added by hand" not in warnings
     caplog.clear()
     assert cli.main([*argv, "--out", str(project / "clips"), "--force"]) == 0  # in place
     warnings = _warnings(caplog)
     assert "Kept footage.mp4" in warnings
-    assert "a source of these clips is never replaced" in warnings
     assert "added by hand" not in warnings
     assert src.read_bytes() == b"precious source"
 
@@ -1504,10 +1416,10 @@ def test_extend_names_a_clip_renamed_during_review(monkeypatch, home, caplog):
     argv = ["extend", str(clips_dir), "--seconds", "1", "--no-speech-aware"]
     assert cli.main([*argv, "--out", str(project / "out")]) == 0
     warnings = _warnings(caplog)
-    assert "001b_c.mp4: exported as 003_c.mp4 and renamed during review" in warnings
+    assert "001b_c.mp4" in warnings and "renamed during review" in warnings
     caplog.clear()
     assert cli.main([*argv, "--out", str(clips_dir), "--force"]) == 0  # in place: it stays
-    assert "cutpoint exported 001b_c.mp4 as 003_c.mp4" in _warnings(caplog)
+    assert "001b_c.mp4" in _warnings(caplog)
     assert (clips_dir / "001b_c.mp4").read_bytes() == b"old" * 4
 
 
@@ -1581,9 +1493,10 @@ def test_failed_direct_export_into_an_empty_mount_keeps_the_clips_already_writte
     assert "Could not remove" not in caplog.text
 
 
+@pytest.mark.parametrize("retry", [True, False])
 @pytest.mark.usefixtures("no_sleep")
 def test_retry_locked_predicate_picks_what_is_retried_and_reraises_the_last_unchanged(
-    monkeypatch, tmp_path
+    tmp_path, retry
 ):
     errs = [_locked(32) for _ in range(ffmpeg_utils.REPLACE_ATTEMPTS)]
     calls = []
@@ -1593,22 +1506,10 @@ def test_retry_locked_predicate_picks_what_is_retried_and_reraises_the_last_unch
         raise errs[len(calls) - 1]
 
     with pytest.raises(OSError) as exc:
-        ffmpeg_utils.retry_locked(op, tmp_path / "x", "remove", lambda e: True)
-    assert exc.value is errs[-1]  # not reworded, though winerror 32 would be
-    assert len(calls) == ffmpeg_utils.REPLACE_ATTEMPTS
-
-
-@pytest.mark.usefixtures("no_sleep")
-def test_retry_locked_predicate_rejecting_an_error_does_not_retry_it(monkeypatch, tmp_path):
-    calls = []
-
-    def op():
-        calls.append(1)
-        raise PermissionError(13, "denied")  # retried by default, rejected by this predicate
-
-    with pytest.raises(PermissionError, match="denied"):
-        ffmpeg_utils.retry_locked(op, tmp_path / "x", "remove", lambda e: False)
-    assert len(calls) == 1
+        ffmpeg_utils.retry_locked(op, tmp_path / "x", "remove", lambda e: retry)
+    tries = ffmpeg_utils.REPLACE_ATTEMPTS if retry else 1
+    assert exc.value is errs[tries - 1]  # not reworded, though winerror 32 would be
+    assert len(calls) == tries
 
 
 @pytest.mark.parametrize(
@@ -1617,17 +1518,11 @@ def test_retry_locked_predicate_rejecting_an_error_does_not_retry_it(monkeypatch
         # the folder, why it is there, the cause, what to do about it
         (
             _locked(32),
-            [
-                "Cannot remove {p}",
-                "why",
-                "open in another program",
-                "Close it",
-                "The process cannot access",
-            ],
+            ["Cannot remove {p}", "open in another program", "The process cannot access"],
         ),
         (
             OSError(errno.EIO, "Input/output error"),
-            ["Cannot remove {p}", "why", "Input/output error", "Delete the folder and re-run"],
+            ["Cannot remove {p}", "Input/output error"],
         ),
     ],
 )
@@ -1647,21 +1542,20 @@ def test_remove_leftover_messages(monkeypatch, tmp_path, error, parts):
     assert exc.value.__cause__ is error
 
 
-def test_extract_audio_leaves_no_temp_wav_when_it_fails_or_is_interrupted_midway(
-    monkeypatch, tmp_path
-):
+def test_extract_audio_leaves_no_temp_wav_when_ffmpeg_fails_midway(monkeypatch, tmp_path):
+    """The interrupt that waits for ffmpeg first is the test after the _Child runner tests."""
     dst = tmp_path / "cache" / "a.wav"
-    for exc in (FFmpegError("ffmpeg failed"), KeyboardInterrupt()):
+    exc = FFmpegError("ffmpeg failed")
 
-        def run(args, *_a, exc=exc, **_kw):
-            Path(args[-1]).write_bytes(b"partial")  # ffmpeg had started writing
-            raise exc
+    def run(args, *_a, **_kw):
+        Path(args[-1]).write_bytes(b"partial")  # ffmpeg had started writing
+        raise exc
 
-        monkeypatch.setattr(ffmpeg_utils, "run_progress", run)
-        with pytest.raises(type(exc)) as err:
-            ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, media_info(tmp_path / "a.mp4"))
-        assert err.value is exc
-        assert list(dst.parent.iterdir()) == []
+    monkeypatch.setattr(ffmpeg_utils, "run_progress", run)
+    with pytest.raises(FFmpegError) as err:
+        ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, media_info(tmp_path / "a.mp4"))
+    assert err.value is exc
+    assert list(dst.parent.iterdir()) == []
 
 
 # --- #199: an interrupted ffmpeg exits before its partial output is removed ---

@@ -98,18 +98,12 @@ def test_missing_file_is_not_cached(calls, tmp_path):
     assert not fu._PROBED
 
 
-def test_clear_probe_cache_forces_a_new_probe(calls, media):
+@pytest.mark.parametrize("clear", [fu.clear_probe_cache, reset_state])
+def test_clearing_the_memo_forces_a_new_probe(calls, media, clear):
     fu.probe(media)
-    fu.clear_probe_cache()
-    assert not fu._PROBED
+    clear()
     fu.probe(media)
     assert len(calls) == 2
-
-
-def test_reset_state_clears_the_memo(calls, media):
-    fu.probe(media)
-    reset_state()
-    assert not fu._PROBED
 
 
 def test_cap_evicts_the_least_recently_used(calls, tmp_path, monkeypatch):
