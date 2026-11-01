@@ -42,7 +42,8 @@ def extra_ok(monkeypatch):
     monkeypatch.setattr(paths.shutil, "which", lambda *a, **k: None)
 
 
-def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok):
+def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VLM_TRANSPORT", "llama")  # vlm needs files only via llama-server
     layers = ("voice", "vlm", "visual")
     with pytest.raises(FileNotFoundError) as exc:
         pipeline.preflight(layers)

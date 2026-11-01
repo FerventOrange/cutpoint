@@ -4,8 +4,10 @@ Stages run one after another so only one GPU model is resident at a time:
 PANNs (torch) -> freed -> voice (PANNs on high-passed audio + Silero VAD) ->
 visual (CLIP ViT-L/14 + Faster R-CNN, one decode per source) -> freed -> OCR
 (CPU, GPU decode) -> crashes (CLIP, handed over by the visual layer when no
-OCR runs in between) -> Ollama unloaded -> llama-server started -> windows
-described -> server stopped. ``cutpoint analyze`` may have read the OCR in the background
+OCR runs in between) -> windows described by the vision model (Ollama, unloaded
+afterwards, or the hosted Vision role; with the temporary ``CUTPOINT_VLM_TRANSPORT=llama``:
+Ollama unloaded -> llama-server started -> windows described -> server stopped).
+``cutpoint analyze`` may have read the OCR in the background
 already (:mod:`cutpoint.events.ocr_prefetch`); its results are taken in the OCR turn.
 """
 
@@ -61,8 +63,10 @@ from cutpoint.events.vlm_windows import (
     describe_windows,
     game_prompt,
     select_windows,
+    use_llama,
     windows_to_events,
 )
+from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
 LAYERS = ("audio", "voice", "visual", "crash", "ocr", "vlm")
@@ -106,9 +110,10 @@ def _require_model_files(layers: tuple[str, ...]) -> None:
 def preflight(layers: tuple[str, ...]) -> None:
     """Cheap checks for ``layers`` (events extra, model files) that :func:`run_events`
     makes before it unloads Ollama or imports torch; callers that run a long step
-    first (``cutpoint 360 analyze``) call it up front."""
+    first (``cutpoint 360 analyze``) call it up front. The VLM layer needs model files only
+    with the temporary llama-server transport (:func:`use_llama`)."""
     _require_events_extra(layers)
-    _require_model_files(layers)
+    _require_model_files(layers if use_llama() else tuple(x for x in layers if x != "vlm"))
 
 
 def run_events(
@@ -184,6 +189,12 @@ def run_events(
         cached_ocr = not ski
     vlm.ski = ski
     preflight(layers)
+    rater = None  # the shared vision client; None: the temporary llama-server transport
+    if not use_llama():
+        rater = VisionRater()
+        hosted = rater.provider_name != "ollama"
+        vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
+        vlm.audio = False  # the transcript and detector hints stand in for the audio
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
@@ -446,7 +457,32 @@ def run_events(
             None, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
         )
         missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
-        if missing > 0:
+        if missing > 0 and rater is not None:
+            results = cached
+            if rater.available():
+                try:
+                    with VramMonitor() as vm:
+                        results, vstats = describe_windows(
+                            rater,
+                            by_path,
+                            windows,
+                            vlm,
+                            prompts,
+                            transcript,
+                            layer1,
+                            force="vlm" in force,
+                        )
+                    vram["vlm"] = vm.summary()
+                finally:
+                    rater.unload()
+            else:
+                logger.warning(
+                    "VLM: vision model %s not available (see above); %d window(s) not "
+                    "described, cached descriptions used",
+                    vlm.model,
+                    missing,
+                )
+        elif missing > 0:
             from cutpoint.events.llama_server import LlamaServer  # noqa: PLC0415
 
             with (
