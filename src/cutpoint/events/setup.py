@@ -656,9 +656,8 @@ def install_visual() -> None:
     The head comes from the first of ``AESTHETIC_MIRRORS`` that works; the pickled ``.pth``
     earlier versions downloaded is then removed.
     """
-    head = _download_mirrors(
-        list(AESTHETIC_MIRRORS), paths.aesthetic_head(), AESTHETIC_SIZE, AESTHETIC_SHA256
-    )
+    head = paths.aesthetic_head()
+    _download_mirrors(list(AESTHETIC_MIRRORS), head, AESTHETIC_SIZE, AESTHETIC_SHA256)
     old = head.with_suffix(".pth")
     for f in (old, old.with_name(old.name + ".part")):
         f.unlink(missing_ok=True)

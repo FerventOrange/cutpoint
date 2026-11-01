@@ -624,8 +624,8 @@ def _aesthetic_layers(path: Path) -> list[tuple[np.ndarray, np.ndarray]]:
     layers = [(arrays.get(f"{k}.weight"), arrays.get(f"{k}.bias")) for k in keys]
     dims = _AESTHETIC_DIMS
     if len(layers) != len(dims) - 1 or not all(
-        w is not None
-        and b is not None
+        isinstance(w, np.ndarray)
+        and isinstance(b, np.ndarray)
         and w.dtype == b.dtype == np.float32
         and w.shape == (n_out, n_in)
         and b.shape == (n_out,)

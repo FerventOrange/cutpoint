@@ -12,6 +12,7 @@ import io
 import os
 import sys
 import threading
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -176,6 +177,12 @@ def _bad_zip(path: Path) -> None:
     path.write_bytes(b"PK\x03\x04truncated")
 
 
+def _raw_member(path: Path) -> None:
+    np.savez(path, **{k: v for k, v in _head().items() if k != "layers.0.weight"})
+    with zipfile.ZipFile(path, "a") as z:
+        z.writestr("layers.0.weight", b"x")  # no .npy suffix: NpzFile returns raw bytes
+
+
 def _npy(path: Path) -> None:
     with path.open("wb") as fh:
         np.save(fh, np.zeros(3, np.float32))
@@ -190,6 +197,7 @@ def _npy(path: Path) -> None:
         (_missing_bias, r"not an aesthetic head \(expected float32"),
         (_extra_layer, r"not an aesthetic head \(expected float32"),
         (_other_names, r"not an aesthetic head \(unexpected tensor names\)"),
+        (_raw_member, r"not an aesthetic head \(expected float32"),
         (_not_a_zip, r"not readable"),
         (_bad_zip, r"not readable"),
         (_npy, r"not readable \(not an \.npz archive\)"),
