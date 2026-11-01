@@ -86,7 +86,7 @@ irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | 
 curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh
 ```
 
-Add `--lite` (`$env:CUTPOINT_LITE = 1` on Windows) for the lite edition without torch. To work
+For the lite edition without torch, use `curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh -s -- --lite` (on Windows, set `$env:CUTPOINT_LITE = 1` before the `irm` command). To work
 from a clone instead:
 
 ```powershell

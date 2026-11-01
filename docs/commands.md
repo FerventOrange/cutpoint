@@ -96,12 +96,12 @@ So do these combinations:
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
 | `nothing_staged_under_input` | `stage --clear` | An input that no longer exists has no staged copy recorded |
 | `events_extra_missing` | `setup` | The `pip` component found modules for `events` missing |
-| `stale_timings_kept` | `360 analyze` | See [360 analyze outputs](#360-analyze-outputs) below |
+| `stale_timings_kept` | `360 analyze` | The run failed after `highlights.json` changed and the earlier run's `pano_timings.json` could not be removed (held open by another program); `files` names it. It does not describe the analysis in the project: delete it, or rerun `360 analyze` |
 | `events_not_in_highlights` | `360 analyze` | A source was not reachable, so `highlights.json` lacks the events |
 | `not_a_360_clip` | `360 director` | A selected moment is not a 360 clip and was skipped |
 | `vl_check_unavailable` | `360 director` | `--vl-check` could not run or stopped answering |
 | `stitch_failed` | `360 stitch` | A clip's stitch failed; `files` names its log |
-| `qa_clips_skipped` | `360 qa` | See [360 qa outputs](#360-qa-outputs) below |
+| `qa_clips_skipped` | `360 qa` | Clips that could not be checked |
 | `qa_clips_unmatched` | `360 qa --compare` | Clips in only one of the two `qa.json` files |
 | `qa_source_mismatch` | `360 qa --compare` | A `qa.json` was written for another folder than `<dir>` |
 | `qa_fps_mismatch` | `360 qa --compare` | The two `qa.json` were checked at different `--fps`; frames without a partner are `unpaired` |
@@ -138,21 +138,13 @@ So do these combinations:
 | `events` | See [events outputs](#events-outputs) below |
 | `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
 
-#### 360 analyze outputs
-
-The run failed after `highlights.json` changed and the earlier run's `pano_timings.json` could not be removed (held open by another program); `files` names it. It does not describe the analysis in the project: delete it, or rerun `360 analyze`
-
-#### 360 qa outputs
-
-Clips that could not be checked
-
-#### events outputs
+### events outputs
 
 `events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0; `preset` is `built-in` when the kept preset is marked `"builtin": true`, in the user or bundled presets folder). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files or llama-server are `not_found` and name the `cutpoint setup` command
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
 
-### Stopping a run
+## Stopping a run
 
 Ctrl+C (and Ctrl+Break on Windows) exits `130` and removes partial files. From a program on
 Windows, start Cutpoint with `CREATE_NEW_PROCESS_GROUP` and send `CTRL_BREAK_EVENT`

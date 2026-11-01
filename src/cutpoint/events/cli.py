@@ -153,7 +153,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "--preset-scope",
         choices=["user", "project", "package"],
         default="user",
-        help="where a newly discovered preset is saved: user = "
+        help="Where a newly discovered preset is saved: user = "
         "<CUTPOINT_HOME>/presets (default; 'package' is an old alias) or "
         "project = <project>/hud_presets",
     )

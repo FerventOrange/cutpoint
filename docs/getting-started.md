@@ -365,7 +365,7 @@ shell's `PATH` refreshes.
 
 ## Your first edit
 
-Use any video. Here one file becomes a highlights cut:
+Use any video. Here one file becomes a highlights cut (with the installer, drop `uv run`):
 
 ```powershell
 uv run cutpoint analyze D:\Videos\clip.mp4 --style gaming --out my-edit
