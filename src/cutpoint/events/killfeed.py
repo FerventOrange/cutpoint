@@ -1917,8 +1917,8 @@ def _log_menu_frames(
 # --------------------------------------------------------------------------- reader
 
 
-# Region kinds whose interpretation never looks at pixels: their reads keep no band.
-TEXT_ONLY_KINDS = ("banner", "notice", "bigtext")
+# Region kinds whose interpretation looks at pixels: only their reads keep a band.
+PIXEL_KINDS = ("feed",)
 
 
 @dataclass
@@ -1932,7 +1932,7 @@ class FrameRec:
     "read", "items": [[box, text, score], ...]}`` (an OCR call). Records of "det"
     gate regions other than feeds carry the gate's ``boxes`` (reference px ``[x0,
     y0, x1, y1]``, for the menu test); reads in regions whose kind looks at pixels
-    (not :data:`TEXT_ONLY_KINDS`) carry ``rows``, the crop rows ``[a, b]`` their
+    (:data:`PIXEL_KINDS`) carry ``rows``, the crop rows ``[a, b]`` their
     boxes cover, whose pixels are stacked in ``bands``. A region skipped by its
     ``every``, or that its "mask" gate did not let through, has no record.
     ``thumb`` is the :func:`_thumb_bgr` thumbnail (None without "det" gates).
@@ -2133,7 +2133,7 @@ class OcrReader:
                 [[[_plain(v) for v in p] for p in box], str(text), float(score)]
                 for box, text, score in items
             ]
-            if r.kind not in TEXT_ONLY_KINDS and (rows := _band_rows(g["items"], crop.shape[0])):
+            if r.kind in PIXEL_KINDS and (rows := _band_rows(g["items"], crop.shape[0])):
                 g["rows"] = rows
                 rec.bands[r.name] = np.concatenate([crop[a:b] for a, b in rows])
             crops[r.name] = crop

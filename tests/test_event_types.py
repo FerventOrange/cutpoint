@@ -150,17 +150,17 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0) -> dict[s
 @pytest.mark.parametrize(
     ("names", "boost", "evidence"),
     [
-        # boxfeed: 1 kill (the own death does not count), teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
-        (list(BOXFEED), 30.0, _ev(kills=1, tk=2, banners=2)),
+        # boxfeed: 1 kill (the own death does not count), teamkill (12), ACE + DOUBLE (2 banners = 12), RFF nothing -> 30 cap
+        (list(BOXFEED), 30.0, _ev(kills=1, tk=1, banners=2)),
         # verbfeed: only the player's kill counts (6), not the death; TARGET DESTROYED (6); crashes do not count
         (list(VERBFEED), 12.0, _ev(kills=1, banners=1)),
         # no preset: laughter min(12, 30), scream min(6, 4)
         (list(NONE), 16.0, _ev(laugh=0.5, scream=0.1)),
-        (list(LAYER), 30.0, _ev(0.5, 0.1, 2, 2, 3)),
+        (list(LAYER), 30.0, _ev(0.5, 0.1, 2, 1, 3)),
         (["boxfeed_kill", "boxfeed_double"], 12.0, _ev(kills=1, banners=1)),
-        (["boxfeed_rff"], 12.0, _ev(tk=1)),
+        (["boxfeed_rff"], 0.0, _ev()),  # the removed R6 banner scores nothing
         (["boxfeed_match_point", "boxfeed_other_kill"], 0.0, _ev()),
-        (["boxfeed_death"], 0.0, _ev()),  # the player's own death in a built-in feed is no kill
+        (["boxfeed_death"], 0.0, _ev()),  # the player's own death is no kill
         (["verbfeed_death", "verbfeed_crash"], 0.0, _ev()),
     ],
 )
@@ -227,12 +227,19 @@ def test_verb_feed_self_kill_is_self_kill():
 
 
 @pytest.mark.parametrize(
-    ("label", "teamkills"),
-    [("REVERSE FRIENDLY FIRE", 1), ("NOT REVERSE FRIENDLY FIRE", 0)],
+    ("label", "banners"),
+    [("WON ROUND 5", 1), ("NOT WON ROUND", 0)],
 )
-def test_rff_banner_is_prefix(label, teamkills):
+def test_payoff_banner_is_prefix(label, banners):
     ev = normalize("a.mp4", _ocr("b", "banner", label, 1.0)[1])
-    assert scoring.event_boost(CAND, [ev])[1]["teamkills"] == teamkills
+    assert scoring.event_boost(CAND, [ev])[1]["banners"] == banners
+
+
+def test_player_row_without_player_kill_is_no_kill():
+    """A kill row with ``player`` set but neither ``player_kill`` nor ``player_death``
+    (an events.json written before the built-in feeds were removed) is no player kill."""
+    ev = normalize("a.mp4", _ocr("e", "kill", "Ash > Bob", 1.0, player=True)[1])
+    assert scoring.event_boost(CAND, [ev]) == (0.0, _ev())
 
 
 def test_event_boost_window():
@@ -244,7 +251,7 @@ def test_event_boost_window():
 PAYOFF = {
     "boxfeed_kill": True,
     "boxfeed_teamkill": True,
-    "boxfeed_rff": True,
+    "boxfeed_rff": False,
     "boxfeed_ace": True,
     "boxfeed_match_point": False,
     "boxfeed_double": True,
@@ -261,7 +268,7 @@ PAYOFF = {
 SEED = {
     "boxfeed_kill": 1.2,
     "boxfeed_teamkill": 2.0,
-    "boxfeed_rff": 2.0,
+    "boxfeed_rff": 0.6,
     "boxfeed_ace": 2.0,
     "boxfeed_match_point": None,
     "boxfeed_double": 2.0,
@@ -285,7 +292,7 @@ def test_is_payoff(name):
 @pytest.mark.parametrize(
     ("end", "words", "events", "limit", "expected"),
     [
-        # speech ends at 10: payoffs up to 20 count (kills, RFF, ACE, DOUBLE, boxfeed_death, verbfeed_kill), cap 24
+        # speech ends at 10: payoffs up to 20 count (kills, ACE, DOUBLE, boxfeed_death, verbfeed_kill), cap 24
         (
             10.0,
             None,
@@ -297,7 +304,6 @@ def test_is_payoff(name):
                 [
                     "OCR kill: Ash > Bob @10.0",
                     "OCR kill: Ash > Cy @11.0",
-                    "OCR banner: REVERSE FRIENDLY FIRE @12.0",
                     "OCR banner: ACE @13.0",
                     "OCR multikill: DOUBLE KILL (Bob, Cy) @15.0",
                     "OCR kill: Bob > Ash @17.0",

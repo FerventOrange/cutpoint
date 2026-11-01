@@ -282,7 +282,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preset is ignored and the preset is read like any other. The OCR layer reads each source's HUD
   once more on its next run (the OCR and raw OCR cache keys changed), and the `audio` layer runs
   PANNs once more, as it no longer reports the unused `Gunfire` and `Explosion` events. The
-  `events --json` discovery `preset` is never `built-in` any more.
+  `events --json` discovery `preset` is never `built-in` any more. `--audio-thr` and
+  `--audio-floor` no longer accept `Gunfire` or `Explosion`. Events of the removed feeds no
+  longer score: a `REVERSE FRIENDLY FIRE` banner is neither a teamkill nor a payoff banner
+  (no points, no clip-tail payoff, the VLM seed of any other banner), and kill rows that
+  mark only the player are no player kills.
 
 ### Fixed
 

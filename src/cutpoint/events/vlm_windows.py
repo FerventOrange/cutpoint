@@ -275,7 +275,7 @@ def _seed_priority(ev: dict[str, Any], types: tuple[EventType, ...] = ()) -> flo
     if ev.get("kind") == "ocr":
         typ, text = ev.get("type"), (ev.get("text") or "").upper()
         if typ == "banner":
-            if "REVERSE FRIENDLY FIRE" in text or text == "ACE" or "CLUTCH" in text:
+            if text == "ACE" or "CLUTCH" in text:
                 return 2.0
             if any(
                 k in text

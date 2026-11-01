@@ -14,8 +14,7 @@ reaction, never further than ``max_ext`` past the speech and never past
 Payoff events:
     * audio: Laughter, Scream, Cheering;
     * OCR: kill-feed entries involving the player or a teamkill, and round
-      banners (WON/LOST ROUND, VICTORY, DEFEAT, ACE, CLUTCH, REVERSE FRIENDLY
-      FIRE); "MATCH POINT"/"OVERTIME"/"x VS y" are context, not payoffs;
+      banners (WON/LOST ROUND, VICTORY, DEFEAT, ACE, CLUTCH); "MATCH POINT"/"OVERTIME"/"x VS y" are context, not payoffs;
     * VLM: moments with funny or hype >= ``vlm_min``;
     * OCR events of a HUD preset's event type that sets ``payoff`` (with its
       own ``tail_s`` instead of ``pad``, see :mod:`cutpoint.events.eventtypes`).
