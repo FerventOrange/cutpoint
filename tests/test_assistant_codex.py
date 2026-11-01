@@ -1,5 +1,9 @@
-"""The Codex subscription provider: OpenAI format chat through cliproxy,
-structured outputs (json_schema), tool calls, image URLs, and hosted consent.
+"""The subscription providers (Codex, Antigravity): OpenAI format chat through cliproxy,
+structured outputs (json_schema), the replies they refuse, and the model they pick.
+
+Registration, hosted consent and the custom-URL refusal are in ``test_assistant_presets`` and
+``test_assistant_routes``; image parts in ``test_vision_assistant``; the OpenAI tool-call parser
+in ``test_assistant_byo``.
 """
 
 from __future__ import annotations
@@ -21,123 +25,68 @@ def logged_in(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_codex_registration_and_hosted_consent() -> None:
-    assert "codex" in providers.PROVIDERS and "codex" in providers.TITLES
-    p = providers.SubscriptionProvider("codex", "", "", 0)
-    assert (p.name, p.local, p.host) == ("codex", False, "chatgpt.com")
-    assert providers.consent_key(p) == "codex@chatgpt.com"
+def _answer(message: dict[str, Any], finish: str | None = "stop") -> dict[str, Any]:
+    return {"choices": [{"message": {"role": "assistant", **message}, "finish_reason": finish}]}
 
 
-def test_codex_capabilities() -> None:
-    p = providers.SubscriptionProvider("codex", "", "", 0)
-    caps = p.capabilities()
-    assert caps.tool_calls is True
-    assert caps.json_schema is False
-
-
-def test_custom_url_rejected_for_codex() -> None:
-    with pytest.raises(ProviderError, match="does not accept a custom base URL"):
-        providers.SubscriptionProvider("codex", "http://codex.internal:8080", "", 0)
-
-
-def test_content_filter_and_incomplete_tool_calls_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
-
-    monkeypatch.setattr(
-        providers.cliproxy,
-        "chat",
-        lambda prov, req: {
-            "choices": [
-                {"message": {"role": "assistant", "content": ""}, "finish_reason": "content_filter"}
-            ]
-        },
-    )
-    with pytest.raises(ProviderError, match="content filter"):
-        p.chat([{"role": "user", "content": "filter me"}])
-
-    monkeypatch.setattr(
-        providers.cliproxy,
-        "chat",
-        lambda prov, req: {
-            "choices": [
-                {"message": {"role": "assistant", "content": ""}, "finish_reason": "tool_calls"}
-            ]
-        },
-    )
-    with pytest.raises(ProviderError, match="without completed tool calls"):
-        p.chat([{"role": "user", "content": "call tool"}])
-
-
-def test_codex_chat_sends_structured_schema_and_preserves_messages(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("name", "model", "schema", "reasoning_key"),
+    [
+        ("codex", "gpt-5.6-sol", {"type": "object", "properties": {"a": {"type": "string"}}},
+         "reasoning"),
+        ("antigravity", "gemini-3.1-pro", None, "reasoning_content"),
+    ],
+)  # fmt: skip
+def test_a_turn_is_sent_to_cliproxy_and_the_reply_read(
+    monkeypatch: pytest.MonkeyPatch, name, model, schema, reasoning_key
 ) -> None:
-    sent: list[dict[str, Any]] = []
+    """The turn goes to cliproxy under the provider's name with the chosen model and the
+    messages as sent; a schema asks for json_schema output; the reply text and the model's
+    reasoning field come back."""
+    sent: list[tuple[str, dict[str, Any]]] = []
 
     def fake_chat(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
-        sent.append({"provider": provider, "payload": payload})
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": '{"analysis": "done"}',
-                        "reasoning": "step-by-step reasoning",
-                    },
-                    "finish_reason": "stop",
-                }
-            ]
-        }
+        sent.append((provider, payload))
+        return _answer({"content": '{"a": "done"}', reasoning_key: "step by step"})
 
     monkeypatch.setattr(providers.cliproxy, "chat", fake_chat)
-    p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
-    schema = {"type": "object", "properties": {"analysis": {"type": "string"}}}
-    reply = p.chat([{"role": "user", "content": "analyze"}], schema=schema)
-    assert reply.text == '{"analysis": "done"}'
-    assert reply.message["reasoning"] == "step-by-step reasoning"
-    assert len(sent) == 1
-    assert sent[0]["provider"] == "codex"
-    assert sent[0]["payload"]["model"] == "gpt-5.6-sol"
-    assert sent[0]["payload"]["response_format"] == {
-        "type": "json_schema",
-        "json_schema": {"name": "cutpoint_reply", "schema": schema},
-    }
+    p = providers.SubscriptionProvider(name, "", model, 0)
+    messages = [{"role": "system", "content": "be brief"}, {"role": "user", "content": "go"}]
+    reply = p.chat(messages, schema=schema)
+    assert reply.text == '{"a": "done"}'
+    assert reply.message[reasoning_key] == "step by step"
+    ((provider, payload),) = sent
+    assert provider == name and payload["model"] == model
+    assert payload["messages"] == messages
+    if schema:
+        assert payload["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {"name": "cutpoint_reply", "schema": schema},
+        }
+    else:
+        assert "response_format" not in payload
 
 
-def test_codex_chat_converts_neutral_images_to_image_url(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("finish", "error"),
+    [
+        ("length", "cut off"),
+        ("content_filter", "content filter"),
+        ("tool_calls", "without completed tool calls"),
+    ],
+)
+def test_an_unfinished_reply_is_a_provider_error(
+    monkeypatch: pytest.MonkeyPatch, finish, error
 ) -> None:
-    sent: list[dict[str, Any]] = []
-
-    def fake_chat(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
-        sent.append({"provider": provider, "payload": payload})
-        return {
-            "choices": [{"message": {"role": "assistant", "content": "I see a cat"}}],
-        }
-
-    monkeypatch.setattr(providers.cliproxy, "chat", fake_chat)
+    monkeypatch.setattr(
+        providers.cliproxy, "chat", lambda prov, req: _answer({"content": "partial"}, finish)
+    )
     p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
-    b64_data = "aW1hZ2VkYXRh"
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "what is this?"},
-                {"type": "image", "media_type": "image/png", "data": b64_data},
-            ],
-        }
-    ]
-    reply = p.chat(messages)
-    assert reply.text == "I see a cat"
-    assert len(sent) == 1
-    content_parts = sent[0]["payload"]["messages"][0]["content"]
-    assert content_parts[0] == {"type": "text", "text": "what is this?"}
-    assert content_parts[1] == {
-        "type": "image_url",
-        "image_url": {"url": f"data:image/png;base64,{b64_data}"},
-    }
+    with pytest.raises(ProviderError, match=error):
+        p.chat([{"role": "user", "content": "hi"}])
 
 
-def test_codex_not_logged_in_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_not_logged_in_raises_actionable_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         providers.cliproxy,
         "chat",
@@ -150,20 +99,29 @@ def test_codex_not_logged_in_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         p.chat([{"role": "user", "content": "hi"}])
 
 
+@pytest.mark.parametrize(
+    ("name", "listed", "chosen"),
+    [
+        ("antigravity", ["gemini-2.5-flash", "gemini-3.1-pro"], "gemini-3.1-pro"),  # the default
+        ("antigravity", ["claude-x", "gemini-2.5-flash"], "gemini-2.5-flash"),  # first Gemini
+        ("codex", ["gpt-a", "gpt-b"], "gpt-a"),  # default not listed: the first
+    ],
+)
+def test_without_a_model_the_default_or_a_listed_one_is_asked(
+    monkeypatch: pytest.MonkeyPatch, name, listed, chosen
+) -> None:
+    monkeypatch.setattr(
+        providers.cliproxy, "list_models", lambda p: [{"id": m, "name": m} for m in listed]
+    )
+    assert providers.SubscriptionProvider(name, "", "", 0).resolve_model() == chosen
+
+
 def test_codex_chat_does_not_check_management_status(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         providers.cliproxy,
         "status",
         lambda p: (_ for _ in ()).throw(AssertionError("unexpected management status request")),
     )
-    monkeypatch.setattr(
-        providers.cliproxy,
-        "chat",
-        lambda prov, req: {
-            "choices": [
-                {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
-            ]
-        },
-    )
+    monkeypatch.setattr(providers.cliproxy, "chat", lambda prov, req: _answer({"content": "ok"}))
     p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"

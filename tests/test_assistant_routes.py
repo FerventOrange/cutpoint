@@ -651,7 +651,7 @@ def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) 
     assert "vision_assistant.provider must be one of" in bad_res.json()["detail"]
 
 
-def test_models_route_role_parameter(client: TestClient) -> None:
+def test_models_route_role_parameter(client: TestClient, monkeypatch) -> None:
     # Role validation
     bad_role = client.get("/api/assistant/models?role=invalid")
     assert bad_role.status_code == 400
@@ -661,10 +661,22 @@ def test_models_route_role_parameter(client: TestClient) -> None:
     assert bad_p.status_code == 400
     assert "provider must be custom or one of" in bad_p.json()["detail"]
 
-    # Vision role accepts vision providers (e.g. ollama)
-    res = client.get("/api/assistant/models?role=vision&provider=ollama")
+    # Vision role accepts vision providers (e.g. ollama); Ollama's /api/tags is faked
+    asked: list[str] = []
+
+    def get(url, **kw):
+        asked.append(url)
+        return _Resp({"models": [{"name": "qwen3.5:9b"}]})
+
+    monkeypatch.setattr(providers.requests, "get", get)
+    res = client.get("/api/assistant/models?role=vision&provider=ollama&refresh=true")
     assert res.status_code == 200
-    assert "models" in res.json()
+    assert res.json() == {
+        "state": "ok",
+        "models": [{"id": "qwen3.5:9b", "name": "qwen3.5:9b"}],
+        "message": None,
+    }
+    assert len(asked) == 1 and asked[0].endswith("/api/tags")
 
 
 def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home: Path) -> None:

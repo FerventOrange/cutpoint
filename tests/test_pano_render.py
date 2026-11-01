@@ -21,7 +21,7 @@ from cutpoint import encode, ffmpeg_utils, paths
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, qa, render
 from cutpoint.pano.x3 import X3Clip, imu_source
-from pano_helpers import LRV, orientation, x3clip
+from pano_helpers import LRV, fuse_rotations, orientation, qmul, quat, x3clip
 
 FPS = 30.0
 
@@ -94,33 +94,14 @@ class TestResolveSource:
 
 
 # --------------------------------------------------------------------------- command_lines
-def _q(axis: tuple[float, float, float], deg: float) -> np.ndarray:
-    """Quaternion ``(w, x, y, z)`` of a right-handed turn by ``deg`` about ``axis``."""
-    h = math.radians(deg) / 2
-    return np.r_[math.cos(h), math.sin(h) * np.asarray(axis, float)]
-
-
-def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    w1, x1, y1, z1 = a
-    w2, x2, y2, z2 = b
-    return np.array(
-        [
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-        ]
-    )
-
-
 # Sky lens up, skis (FORWARD_V) along world +z: camera -> world = Rp(-90).
-MOUNT = _q((1, 0, 0), -90)
+MOUNT = quat((1, 0, 0), -90)
 
 
 def _orient(n: int, heading_deg: np.ndarray | None = None) -> G.Orientation:
     """Camera on the usual mount, turning about the vertical by ``heading_deg``."""
     hd = np.zeros(n) if heading_deg is None else heading_deg
-    return orientation(n, FPS, np.array([_qmul(_q((0, 1, 0), h), MOUNT) for h in hd]))
+    return orientation(n, FPS, np.array([qmul(quat((0, 1, 0), h), MOUNT) for h in hd]))
 
 
 def _path(*keys: tuple[float, float, float]) -> dict:
@@ -203,7 +184,7 @@ class TestCommandLines:
         display up vertical, 0 follows the camera's (smoothed) roll."""
         n = 240
         roll = 10 * np.sin(2 * np.pi * np.arange(n) / FPS / 4)
-        q = np.array([_qmul(_q((0, 0, 1), r), MOUNT) for r in roll])
+        q = np.array([qmul(quat((0, 0, 1), r), MOUNT) for r in roll])
         orient = dataclasses.replace(_orient(n), q=q)
         idx = np.arange(n)
 
@@ -219,7 +200,7 @@ class TestCommandLines:
     @staticmethod
     def _rolled(roll_deg: np.ndarray) -> G.Orientation:
         """Camera on the usual mount, rolled by ``roll_deg`` about the travel direction."""
-        q = np.array([_qmul(_q((0, 0, 1), r), MOUNT) for r in roll_deg])
+        q = np.array([qmul(quat((0, 0, 1), r), MOUNT) for r in roll_deg])
         return dataclasses.replace(_orient(len(roll_deg)), q=q)
 
     @staticmethod
@@ -313,7 +294,6 @@ class TestRenderSegmentSendcmd:
     def _filter(self, args: list[str]) -> str:
         return args[args.index("-filter_complex") + 1]
 
-    @pytest.mark.ffmpeg
     def test_still_path_skips_sendcmd(self, clip, tmp_path, ffmpeg):
         path = _path((0.0, 10.0, -5.0), (10.0, 10.0, -5.0))
         out = tmp_path / "still.mp4"
@@ -326,7 +306,6 @@ class TestRenderSegmentSendcmd:
         assert rec["commands"] == 0 and rec["cmd_file"] is None
         assert not list(tmp_path.glob("*.cmd"))
 
-    @pytest.mark.ffmpeg
     def test_moving_path_uses_sendcmd(self, clip, tmp_path, ffmpeg):
         path = _path((0.0, 0.0, -5.0), (10.0, 90.0, -5.0))
         out = tmp_path / "pan.mp4"
@@ -434,7 +413,6 @@ class TestRenderSegmentSendcmd:
 
 
 # --------------------------------------------------------------------------- moved footage
-@pytest.mark.ffmpeg
 def test_render_segment_reads_moved_footage_and_records_the_original_paths(moved, tmp_path, ffmpeg):
     clip, old, new = moved
     calls = ffmpeg
@@ -497,19 +475,11 @@ class TestQuatTrack:
         roll = 20 + 1.5 * np.sin(2 * np.pi * 7 * t)  # lean + shake
         q = np.array(
             [
-                _qmul(_qmul(_q((0, 1, 0), p), _q((0, 0, 1), r)), MOUNT)
+                qmul(qmul(quat((0, 1, 0), p), quat((0, 0, 1), r)), MOUNT)
                 for p, r in zip(psi, roll, strict=True)
             ]
         )
-        rm = G.quat_matrix(q)
-        rel = np.einsum("kji,kjl->kil", rm[:-1], rm[1:])  # small body-frame steps
-        w = np.stack(
-            [rel[:, 2, 1] - rel[:, 1, 2], rel[:, 0, 2] - rel[:, 2, 0], rel[:, 1, 0] - rel[:, 0, 1]],
-            1,
-        ) / (2 * dt)
-        w = np.vstack([np.zeros(3), w])
-        a_v = np.einsum("kji,j->ki", rm, [0.0, -G.G, 0.0])
-        o = G.fuse(t, a_v @ G.M_IMU_TO_V, np.degrees(w) @ G.M_IMU_TO_V, fps, int(12 * fps) - 1)
+        o = fuse_rotations(t, G.quat_matrix(q), fps, int(12 * fps) - 1)
         idx = np.arange(60, len(o.t) - 60)
         new = render.stabilised_r_vw(o, idx, 1.0, 0.5)
         old = np.stack([o.r_vw(i / fps) for i in idx])

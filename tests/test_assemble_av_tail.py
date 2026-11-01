@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from assemble_helpers import SHORT, export_clips
 from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, sources
 from cutpoint.ffmpeg_utils import probe
-from test_assemble_fadecopy import SHORT, _export_clips
 
 # -- unit -------------------------------------------------------------------------------
 
@@ -83,7 +83,7 @@ def exported(tmp_path_factory) -> Path:
     # The fade pieces are CPU-encoded, so the clips must be too (else NVENC clips fail the check).
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
-        return _export_clips(tmp_path_factory.mktemp("av_tail"), "30", SHORT)
+        return export_clips(tmp_path_factory.mktemp("av_tail"), "30", SHORT)
 
 
 def _make_clips(exported: Path, tmp_path: Path, audio_extra: float) -> Path:

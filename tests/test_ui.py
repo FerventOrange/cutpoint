@@ -6039,7 +6039,7 @@ def source_names(client: TestClient, pid: str) -> list[str]:
     return sorted(s["name"] for s in res.json()["sources"])
 
 
-@pytest.mark.ffmpeg
+@needs_ffmpeg
 def test_media_requests_list_an_unanalyzed_folder_once(
     client: TestClient, tmp_path: Path, folder_listings: list[int]
 ) -> None:
@@ -6127,45 +6127,21 @@ def test_project_reports_the_video_length_and_time_of_the_last_analysis(
     ("seconds", "text"),
     [(45, "45 s"), (59.5, "1 min"), (3570, "1 h"), (8040, "2 h 14 min")],
 )
-def test_span_text_formats_analysis_lengths(tmp_path: Path, seconds: float, text: str) -> None:
+@pytest.mark.slow
+def test_span_text_formats_analysis_lengths(util_js, seconds: float, text: str) -> None:
     """#459: seconds under a minute, minutes under an hour, then hours and minutes."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node not installed")
-    mod = tmp_path / "util.mjs"  # .mjs: an ES module for every node >= 18 (see _sort_positions)
-    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
-    script = (
-        f"import {{ spanText }} from {json.dumps(mod.resolve().as_uri())};"
-        "console.log(spanText(Number(process.argv[1])));"
-    )
-    out = subprocess.run(
-        [node, "--input-type=module", "-e", script, str(seconds)],
-        capture_output=True, text=True, check=True, timeout=30,
-    )  # fmt: skip
-    assert out.stdout.strip() == text
+    assert util_js("return U.spanText(args[0]);", seconds) == text
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(("at", "n", "row"), [(2, 5, 2), (4, 4, 3), (0, 0, -1)])
 def test_focus_goes_to_the_row_in_place_of_one_that_left_the_list(
-    tmp_path: Path, at: int, n: int, row: int
+    util_js, at: int, n: int, row: int
 ) -> None:
     """Add under "Not in sequence" jumped the Moments column to the top: the added card left the
     list and preserveFocus focused the list's first button. util.js rowInPlace picks the row now at
     the card's index instead (the last one past the end, none in an empty list)."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node not installed")
-    mod = tmp_path / "util.mjs"  # .mjs: an ES module for every node >= 18 (see _sort_positions)
-    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
-    script = (
-        f"import {{ rowInPlace }} from {json.dumps(mod.resolve().as_uri())};"
-        "console.log(rowInPlace(Number(process.argv[1]), Number(process.argv[2])));"
-    )
-    out = subprocess.run(
-        [node, "--input-type=module", "-e", script, str(at), str(n)],
-        capture_output=True, text=True, check=True, timeout=30,
-    )  # fmt: skip
-    assert out.stdout.strip() == str(row)
+    assert util_js("return U.rowInPlace(args[0], args[1]);", at, n) == row
     assert "rowInPlace(at, rows.length)" in _web("app.js")  # preserveFocus uses it
 
 
@@ -7795,35 +7771,17 @@ def test_play_sequence_sits_under_undo_redo_at_a_fixed_width() -> None:
 # --- Moments list order (#469) ---
 
 
-def _sort_positions(tmp: Path, moments: list[dict]) -> list[str]:
-    """Run util.js's positionCompare under node on ``moments``; return their ids in sorted order.
-
-    util.js is copied to ``util.mjs`` so every node >= 18 loads it as an ES module: there is no
-    package.json, and node before 22.7 would read a ``.js`` file as CommonJS. util.js has no
-    imports of its own, so the copy runs on its own."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node not installed")
-    mod = tmp / "util.mjs"
-    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
-    url = mod.resolve().as_uri()
-    script = (
-        f"import {{ positionCompare }} from {json.dumps(url)};"
-        "const m = JSON.parse(process.argv[1]);"
-        "console.log(JSON.stringify(m.sort(positionCompare).map((c) => c.id)));"
-    )
-    out = subprocess.run(
-        [node, "--input-type=module", "-e", script, json.dumps(moments)],
-        capture_output=True, text=True, check=True, timeout=30,
-    )  # fmt: skip
-    return json.loads(out.stdout)
+def _sort_positions(util_js, moments: list[dict]) -> list[str]:
+    """Run util.js's positionCompare under node on ``moments``; return their ids in sorted order."""
+    return util_js("return args[0].sort(U.positionCompare).map((c) => c.id);", moments)
 
 
 def _m(id_: str, source: str, start: float) -> dict:
     return {"id": id_, "source": source, "start": start}
 
 
-def test_position_order_is_natural_by_file_then_start_time(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_position_order_is_natural_by_file_then_start_time(util_js) -> None:
     """#469: video order groups moments by source (clip2 before clip10, A-Z), then start time."""
     moments = [
         _m("c10b", "/v/clip10.mp4", 5),
@@ -7832,24 +7790,25 @@ def test_position_order_is_natural_by_file_then_start_time(tmp_path: Path) -> No
         _m("c10a", "/v/clip10.mp4", 2),
         _m("c2early", "/v/clip2.mp4", 3),
     ]
-    assert _sort_positions(tmp_path, moments) == ["a", "c2early", "c2late", "c10a", "c10b"]
+    assert _sort_positions(util_js, moments) == ["a", "c2early", "c2late", "c10a", "c10b"]
 
 
-def test_position_order_is_stable_and_keeps_same_named_files_apart(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_position_order_is_stable_and_keeps_same_named_files_apart(util_js) -> None:
     """#469: equal starts keep score order (stable), case variants and same-named files in two
     folders sort the same whatever the input order, and each folder's file stays together."""
     ties = [_m("first", "/v/a.mp4", 4), _m("second", "/v/a.mp4", 4), _m("third", "/v/a.mp4", 4)]
-    assert _sort_positions(tmp_path, ties) == ["first", "second", "third"]
+    assert _sort_positions(util_js, ties) == ["first", "second", "third"]
     mixed = [
         _m("x1", "/two/clip.mp4", 1), _m("y1", "/one/clip.mp4", 50),
         _m("x2", "/two/clip.mp4", 9), _m("y0", "/one/clip.mp4", 2),
     ]  # fmt: skip
-    got = _sort_positions(tmp_path, mixed)
-    assert _sort_positions(tmp_path, mixed[::-1]) == got
+    got = _sort_positions(util_js, mixed)
+    assert _sort_positions(util_js, mixed[::-1]) == got
     assert got == ["y0", "y1", "x1", "x2"]
     cased = [_m("up", "/v/Clip.mp4", 1), _m("low", "/v/clip.mp4", 1), _m("z", "/v/zed.mp4", 0)]
-    got = _sort_positions(tmp_path, cased)
-    assert _sort_positions(tmp_path, cased[::-1]) == got and got[-1] == "z"
+    got = _sort_positions(util_js, cased)
+    assert _sort_positions(util_js, cased[::-1]) == got and got[-1] == "z"
 
 
 def test_moment_order_control_is_labelled_with_score_default() -> None:
@@ -7986,30 +7945,19 @@ def test_moment_card_order_matches_the_mockup() -> None:
     assert re.search(r"^\.cand-top \{[^}]*padding-right: 5em;", css, re.M)
 
 
-def _filter_moments(tmp: Path, moments: list[dict], q: str, f: dict) -> list[str]:
-    """Run util.js's momentMatches under node (as _sort_positions); ``f`` over NO_FILTERS."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node not installed")
-    mod = tmp / "util.mjs"
-    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
-    url = mod.resolve().as_uri()
-    script = (
-        f"import {{ momentMatches, NO_FILTERS, filtersOn }} from {json.dumps(url)};"
-        "const [m, q, f] = JSON.parse(process.argv[1]);"
-        "const all = { ...NO_FILTERS, ...f };"
-        "console.log(JSON.stringify([m.filter((c) => momentMatches(c, q, all)).map((c) => c.id), filtersOn(all)]));"
-    )
-    out = subprocess.run(
-        [node, "--input-type=module", "-e", script, json.dumps([moments, q, f])],
-        capture_output=True, text=True, check=True, timeout=30,
+def _filter_moments(util_js, moments: list[dict], q: str, f: dict) -> list[str]:
+    """Run util.js's momentMatches under node; ``f`` over NO_FILTERS."""
+    ids, on = util_js(
+        "const [m, q, f] = args; const all = { ...U.NO_FILTERS, ...f };"
+        "return [m.filter((c) => U.momentMatches(c, q, all)).map((c) => c.id), U.filtersOn(all)];",
+        moments, q, f,
     )  # fmt: skip
-    ids, on = json.loads(out.stdout)
     assert on == any(f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "source"))
     return ids
 
 
-def test_moment_filters_combine_with_the_search_text(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_moment_filters_combine_with_the_search_text(util_js) -> None:
     """Sort and filter: every quick filter and the search text must all hold; the search matches
     label, transcript or file name, case ignored; no filter shows every moment."""
     ms = [
@@ -8019,7 +7967,7 @@ def test_moment_filters_combine_with_the_search_text(tmp_path: Path) -> None:
     ]  # fmt: skip
 
     def run(q: str, f: dict) -> list[str]:
-        return _filter_moments(tmp_path, ms, q, f)
+        return _filter_moments(util_js, ms, q, f)
 
     assert run("", {}) == ["a", "b", "c"]
     assert run("  JUMP ", {}) == ["a", "c"]
@@ -8244,78 +8192,67 @@ def test_color_starts_from_config_json_but_never_on_for_gaming() -> None:
     assert "if (switched) startColor();" in adopt
 
 
-def _color_note(tmp: Path, clips: list[dict]) -> str:
-    """Run util.js's colorNote under node on manifest ``clips`` (see ``_sort_positions``)."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node not installed")
-    mod = tmp / "util.mjs"
-    shutil.copyfile(ui.WEB_DIR / "util.js", mod)
-    script = (
-        f"import {{ colorNote }} from {json.dumps(mod.resolve().as_uri())};"
-        "console.log(JSON.stringify(colorNote(JSON.parse(process.argv[1]))));"
-    )
-    out = subprocess.run(
-        [node, "--input-type=module", "-e", script, json.dumps(clips)],
-        capture_output=True, text=True, check=True, timeout=30,
-    )  # fmt: skip
-    return json.loads(out.stdout)
+def _color_note(util_js, clips: list[dict]) -> str:
+    """Run util.js's colorNote under node on manifest ``clips``."""
+    return util_js("return U.colorNote(args[0]);", clips)
 
 
 def _graded(method: str, skip: str | None) -> dict:
     return {"file": "001_a.mp4", "color": {"method": method, "strength": 1.0, "skip": skip}}
 
 
-def test_color_note_counts_the_clips_graded_and_why_the_others_were_not(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_color_note_counts_the_clips_graded_and_why_the_others_were_not(util_js) -> None:
     """A dive exported with Color on had every clip vetoed and the page said nothing (#461
     follow-up): Export now says how many clips the grade changed and why it left the others
     as is, grouping the reasons, in a sentence that starts with a space."""
     vetoed = [_graded("underwater", "veto_clipped") for _ in range(4)]
-    assert _color_note(tmp_path, vetoed) == " Color: no clips graded (too much highlight clipping)."
+    assert _color_note(util_js, vetoed) == " Color: no clips graded (too much highlight clipping)."
     good = [_graded("auto", s) for s in (None, "good", None, None)]
-    assert _color_note(tmp_path, good) == (
+    assert _color_note(util_js, good) == (
         " Color: 3 of 4 clips graded; 1 left as is (already looked good)."
     )
     skips = ("veto_m3_drop", "veto_clipped", "veto_m3_drop", None)
-    assert _color_note(tmp_path, [_graded("underwater", s) for s in skips]) == (
+    assert _color_note(util_js, [_graded("underwater", s) for s in skips]) == (
         " Color: 1 of 4 clips graded; 3 left as is"
         " (would wash out the color: 2, too much highlight clipping: 1)."
     )
     other = ("360", "log", "no_frames", "veto_cast", "veto_m3", "veto_new", "not_underwater")
-    assert _color_note(tmp_path, [_graded("auto", s) for s in (*other, "veto_faded", "good")]) == (
+    assert _color_note(util_js, [_graded("auto", s) for s in (*other, "veto_faded", "good")]) == (
         " Color: no clips graded (360 footage: 1, log footage: 1, frames could not be read: 1,"
         " would add a color cast: 1, would oversaturate: 1, veto_new: 1,"
         " did not look underwater: 1, would wash out the color: 1, already looked good: 1)."
     )
     # PR #495's veto_faded reads as veto_m3_drop does, so the two group together
     faded = [_graded("auto", s) for s in ("veto_faded", "veto_m3_drop", None)]
-    assert _color_note(tmp_path, faded) == (
+    assert _color_note(util_js, faded) == (
         " Color: 1 of 3 clips graded; 2 left as is (would wash out the color)."
     )
-    assert _color_note(tmp_path, [_graded("auto", None)] * 2) == " Color: all 2 clips graded."
-    assert _color_note(tmp_path, [_graded("auto", None)]) == " Color: 1 clip graded."
+    assert _color_note(util_js, [_graded("auto", None)] * 2) == " Color: all 2 clips graded."
+    assert _color_note(util_js, [_graded("auto", None)]) == " Color: 1 clip graded."
     # Color Off, an export from before --color, or a LUT grade (no ``method``): no sentence
-    assert _color_note(tmp_path, [{"file": "a.mp4", "color": None}, {"file": "b.mp4"}]) == ""
-    assert _color_note(tmp_path, [{"file": "a.mp4", "lut": {"file": "x.cube"}}]) == ""
-    assert _color_note(tmp_path, []) == ""
+    assert _color_note(util_js, [{"file": "a.mp4", "color": None}, {"file": "b.mp4"}]) == ""
+    assert _color_note(util_js, [{"file": "a.mp4", "lut": {"file": "x.cube"}}]) == ""
+    assert _color_note(util_js, []) == ""
 
 
-def test_color_note_counts_a_clip_at_strength_0_as_not_graded(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_color_note_counts_a_clip_at_strength_0_as_not_graded(util_js) -> None:
     """Strength 0% applies no grade with no skip reason: such a clip is not counted as graded,
     and an export whose every clip had Strength 0% gets no sentence."""
 
     def at(strength: float, skip: str | None = None) -> dict:
         return {"file": "a.mp4", "color": {"method": "auto", "strength": strength, "skip": skip}}
 
-    assert _color_note(tmp_path, [at(0.0), at(0.0)]) == ""
-    assert _color_note(tmp_path, [at(0.5), at(0.0)]) == (
+    assert _color_note(util_js, [at(0.0), at(0.0)]) == ""
+    assert _color_note(util_js, [at(0.5), at(0.0)]) == (
         " Color: 1 of 2 clips graded; 1 left as is (strength 0%)."
     )
-    assert _color_note(tmp_path, [at(0.5, "good"), at(0.0), at(0.0)]) == (
+    assert _color_note(util_js, [at(0.5, "good"), at(0.0), at(0.0)]) == (
         " Color: no clips graded (already looked good: 1, strength 0%: 2)."
     )
     # an entry without ``strength`` is at full strength
-    assert _color_note(tmp_path, [{"file": "a.mp4", "color": {"method": "auto"}}]) == (
+    assert _color_note(util_js, [{"file": "a.mp4", "color": {"method": "auto"}}]) == (
         " Color: 1 clip graded."
     )
 
