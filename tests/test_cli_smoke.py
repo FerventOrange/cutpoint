@@ -119,7 +119,10 @@ def test_analyze_must_include_crash_accepts_0_to_1(home, tmp_path, monkeypatch, 
         "analyze",
         lambda targets, style, out, **kw: styles.append(style.must_include_crash),
     )
-    assert cli.main(["analyze", str(video), "--style", "ski", "--must-include-crash", value]) == 0
+    assert (
+        cli.main(["analyze", str(video), "--style", "action-cam", "--must-include-crash", value])
+        == 0
+    )
     assert styles == [float(value)]
 
 

@@ -132,11 +132,11 @@ X3_CLIPS = {X3_00: b"", X3_10: b"", X3_LRV: b""}
 @pytest.mark.parametrize(
     ("pick", "style", "meta"),
     [
-        (None, None, {"kind": "360", "style": "ski"}),
-        (X3_00, None, {"kind": "360", "style": "ski", "clips": ["001"]}),
-        (None, "ski", {"kind": "360", "style": "ski"}),
+        (None, None, {"kind": "360", "style": "action-cam"}),
+        (X3_00, None, {"kind": "360", "style": "action-cam", "clips": ["001"]}),
+        (None, "action-cam", {"kind": "360", "style": "action-cam"}),
     ],
-    ids=["folder-flat-style-becomes-pano-default", "file-keeps-its-clip", "ski-style"],
+    ids=["folder-flat-style-becomes-pano-default", "file-keeps-its-clip", "action-cam-style"],
 )
 def test_create_project_makes_a_360_project_from_x3_footage(
     client: TestClient, tmp_path: Path, pick: str | None, style: str | None, meta: dict
@@ -156,14 +156,26 @@ def test_create_project_makes_a_360_project_from_x3_footage(
     assert ("clips" in saved) == ("clips" in meta)
 
 
-def test_create_project_refuses_a_ski_style_on_flat_footage(
+def test_create_project_refuses_an_action_cam_style_on_flat_footage(
+    client: TestClient, tmp_path: Path
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(b"x")
+    body = {"name": "T", "source": str(folder), "style": "action-cam"}
+    res = client.post("/api/projects", json=body)
+    assert res.status_code == 400 and "unknown style" in res.json()["detail"]
+    assert client.get("/api/projects").json() == {"projects": []}
+
+
+def test_create_project_refuses_the_old_ski_style_naming_action_cam(
     client: TestClient, tmp_path: Path
 ) -> None:
     folder = tmp_path / "footage"
     folder.mkdir()
     (folder / "a.mp4").write_bytes(b"x")
     res = client.post("/api/projects", json={"name": "T", "source": str(folder), "style": "ski"})
-    assert res.status_code == 400 and "unknown style" in res.json()["detail"]
+    assert res.status_code == 400 and "renamed to 'action-cam'" in res.json()["detail"]
     assert client.get("/api/projects").json() == {"projects": []}
 
 
@@ -401,7 +413,7 @@ def test_360_analyze_job_runs_the_360_command_with_a_plan(
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     p = ui.project_dir(pid)
-    want = ["cutpoint", "360", "analyze", str(p), "--scan", str(folder), "--style", "ski"]
+    want = ["cutpoint", "360", "analyze", str(p), "--scan", str(folder), "--style", "action-cam"]
     assert seen == [want + (["--only", only] if only else [])]
     assert "--vision" not in seen[0] and "--no-vision" not in seen[0]
     # the Analyze options are analyze flags 360 analyze does not take: refused, not dropped
@@ -458,7 +470,11 @@ class StitchExport:
         self.clip = x3clip(lrv=lrv, insv=[str(folder / X3_00), str(folder / X3_10)], duration=60)
         pano_project.save(self.p, [self.clip], [folder])
         cand = {"id": "h001", "source": lrv, "start": 1.0, "end": 5.0, "score": 80, "label": "a"}
-        hl = {"sources": [{"path": lrv, "duration": 60.0}], "candidates": [cand], "style": "ski"}
+        hl = {
+            "sources": [{"path": lrv, "duration": 60.0}],
+            "candidates": [cand],
+            "style": "action-cam",
+        }
         cache.save_json(self.p / "highlights.json", hl)
         self.segment = {k: cand[k] for k in ("id", "source", "start", "end", "label")}
         self.seen: list[list[str]] = []
@@ -717,7 +733,7 @@ class DirectorPreviews:
             for c, (a, b) in spans.items()
         ]
         hl = {"sources": [{"path": self.lrv, "duration": 60.0}], "candidates": cands}
-        cache.save_json(self.p / "highlights.json", {**hl, "style": "ski"})
+        cache.save_json(self.p / "highlights.json", {**hl, "style": "action-cam"})
         folder_c = self.p / PC.CACHE_DIR
         folder_c.mkdir()
         diag = {
@@ -1826,7 +1842,7 @@ def test_a_ski_analysis_without_no_scenes_keeps_presets_and_scene_detection_on(
 ) -> None:
     """Regression: ski never detects scenes, so its analysis records "scenes": false without
     --no-scenes; that turned the presets off with the --no-scenes reason."""
-    meta = {"style": "ski", "source": str(tmp_path / "clip.mp4")}
+    meta = {"style": "action-cam", "source": str(tmp_path / "clip.mp4")}
     settings = {"scenes": False, "must_include_crash": 0.6}  # the ski style's own
     res, captured, _, _ = preset_job(
         client, monkeypatch, tmp_path, {"kind": "clips"}, settings=settings, meta=meta
@@ -7510,7 +7526,11 @@ def test_a_preset_refuses_bad_values(
         ({"recover": True}, None, "--recover"),
         ({"language": "en"}, None, "--language"),
         ({"max_candidates": 40}, None, "--max-candidates"),
-        ({"must_include_crash": 0.3}, {"style": "ski", "source": "x"}, "--must-include-crash"),
+        (
+            {"must_include_crash": 0.3},
+            {"style": "action-cam", "source": "x"},
+            "--must-include-crash",
+        ),
     ],
 )
 def test_presets_are_off_with_the_reason_where_edit_cannot_remake_the_analysis(

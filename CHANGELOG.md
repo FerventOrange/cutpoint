@@ -199,6 +199,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** the `ski` style is renamed `action-cam`, with no alias: it is the
+  telemetry-driven scorer for any action-cam footage, not only skiing. Use `--style action-cam`
+  on `analyze`, `edit` and `360 analyze`; `style` and `style_kind` in `highlights.json`,
+  `pano.default_style` (default `action-cam`), `fit --base` (default `action-cam`) and the docs
+  use the new name. `ski` is no longer accepted: `--style ski` is refused (exit 2) and a
+  `config.json` value, a project, a UI project or a learned preset that says `ski` stops with
+  an error naming `action-cam`; analyse such projects again and change a learned preset's
+  `"base"`. Vision ratings cached for `ski` are not reused. Activity profiles keep their names
+  (`--activity ski` is still the skiing profile).
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or

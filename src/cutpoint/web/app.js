@@ -2193,7 +2193,7 @@ function confirmAction(title, text, ok = 'Remove') {
 /**
  * Analyze options (#483): filled with what the project's analysis used (``analyze_options``), so
  * Analyze again repeats it unless changed; the disclosure starts open when one is set. Hidden
- * for 360 projects; Must-include crash only for ski styles (``must_include_crash_default``).
+ * for 360 projects; Must-include crash only for action-cam styles (``must_include_crash_default``).
  */
 function fillAnalyzeOptions(p) {
   const o = p.analyze_options ?? {};

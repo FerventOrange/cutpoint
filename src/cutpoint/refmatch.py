@@ -884,7 +884,7 @@ def mask_modes(thresholds: tuple[float, ...], default: float) -> tuple[float, ..
 def fit_weights(
     project: Path | list[FitData],
     result: dict[str, Any] | None = None,
-    base: str = "ski",
+    base: str = "action-cam",
     name: str | None = None,
     folds: int = 4,
     thresholds: tuple[float, ...] = (0, 7),
@@ -1115,7 +1115,7 @@ ABLATION_SETS = {
 
 def ablate(
     datasets: list[FitData],
-    base: str = "ski",
+    base: str = "action-cam",
     sets: dict[str, Any] | None = None,
     thresholds: tuple[float, ...] = (0, 7),
 ) -> list[dict[str, Any]]:
@@ -1228,7 +1228,9 @@ def run_refmatch(
     cache.save_json(project / "refmatch.json", result)
     logger.info("Wrote %s", project / "refmatch.json")
     if fit is None:
-        fit = hl.get("style_kind") == "ski"
+        from cutpoint.styles import ACTION_CAM, project_kind  # noqa: PLC0415
+
+        fit = project_kind(hl) == ACTION_CAM
     if fit:
         from cutpoint.styles import get_style  # noqa: PLC0415
 
@@ -1244,7 +1246,7 @@ def run_fit(
     projects: list[Path],
     *,
     name: str | None = None,
-    base: str = "ski",
+    base: str = "action-cam",
     taste: bool = True,
     do_ablate: bool = False,
     save: bool = True,

@@ -42,7 +42,7 @@ Notes:
 - `crashes` and `events` skip sources that are offline or moved (warning `footage not reachable`)
   and fail with `No footage of <project> is reachable` if none is. Reconnect the footage and rerun.
 - If the original path is gone but `source_remap` maps it to an existing location, `analyze`,
-  `crashes` (default `--reanalyze`) and ski `events` read from the new location and re-analyze.
+  `crashes` (default `--reanalyze`) and action-cam `events` read from the new location and re-analyze.
   They warn `path(s) not found where analyze recorded them, even through source_remap ...;
   highlights.json left unchanged` and exit 0 only when re-analysis would fail, drop a source or
   re-key one: for example a file moved out of a folder input that still exists, or a 0.1.0 project

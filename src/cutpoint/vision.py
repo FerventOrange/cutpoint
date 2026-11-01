@@ -18,6 +18,7 @@ from cutpoint import cache, paths
 from cutpoint.backends import ollama_url
 from cutpoint.config import get_config
 from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
+from cutpoint.styles import ACTION_CAM
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ _RETRY_PROMPT_SKI = (
     'Output only JSON: {{"score": <number>, "label": "<2-4 words>"}}'
 )
 # (first prompt, retry prompt) per style; styles not listed use the default pair.
-_PROMPTS = {"ski": (_PROMPT_SKI, _RETRY_PROMPT_SKI)}
+_PROMPTS = {ACTION_CAM: (_PROMPT_SKI, _RETRY_PROMPT_SKI)}
 _DEFAULT_PROMPTS = (_PROMPT, _RETRY_PROMPT)
 # (num_ctx, num_predict) per attempt. 3 frames at 640 px are ~3300 prompt
 # tokens, so num_ctx must leave room for the reasoning plus the JSON.

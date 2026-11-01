@@ -20,6 +20,7 @@ from cutpoint.events.audio_events import DEFAULT_GROUPS, AudioParams
 from cutpoint.events.killfeed import OcrParams
 from cutpoint.events.pipeline import DEFAULT_LAYERS, LAYERS, SKI_LAYERS, run_events
 from cutpoint.events.vlm_windows import VlmParams
+from cutpoint.styles import ACTION_CAM, project_kind
 
 
 def _group_overrides(thr: list[str], floor: list[str]) -> tuple:
@@ -53,7 +54,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         choices=LAYERS,
         default=None,
         help="Layers to run (others still use cached results). Default: audio "
-        "ocr vlm; ski projects: audio voice visual crash vlm (no HUD; crash = "
+        "ocr vlm; action-cam projects: audio voice visual crash vlm (no HUD; crash = "
         "cutpoint crashes, writes crashes.json)",
     )
     ap.add_argument(
@@ -162,7 +163,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "--max-windows",
         type=int,
         default=None,
-        help="Default 60; ski: one per seed + riding coverage, 60-150",
+        help="Default 60; action-cam: one per seed + riding coverage, 60-150",
     )
     g.add_argument("--window", type=float, default=15.0, help="Window length (s)")
     g.add_argument("--pre", type=float, default=3.0, help="Seconds before an event")
@@ -216,7 +217,7 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
     if args.layers is not None or args.no_vlm:
         from cutpoint.events.common import load_highlights  # noqa: PLC0415
 
-        ski = load_highlights(args.project).get("style_kind") == "ski"
+        ski = project_kind(load_highlights(args.project)) == ACTION_CAM
         chosen = args.layers or list(SKI_LAYERS if ski else DEFAULT_LAYERS)
         layers = tuple(x for x in chosen if not (args.no_vlm and x == "vlm"))
     jpath, tpath = run_events(
@@ -244,7 +245,7 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
         highlights = args.project / "highlights.json"
         backup = args.project / "highlights.pre-events.json"
         had_backup = backup.exists()
-        if load_highlights(args.project).get("style_kind") == "ski":
+        if project_kind(load_highlights(args.project)) == ACTION_CAM:
             # Ski: events are features of the scorer, so re-run the (cached) analysis.
             from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
 

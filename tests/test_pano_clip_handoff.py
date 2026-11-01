@@ -96,7 +96,7 @@ def pano(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: rec.analyze_hook())
     monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda p: {})
     monkeypatch.setattr(analyze_mod, "report_highlights", lambda p, hl: None)
-    monkeypatch.setattr(project, "default_style", lambda: "ski")
+    monkeypatch.setattr(project, "default_style", lambda: "action-cam")
     monkeypatch.setattr(styles, "get_style", lambda name: None)
     rec.views_fail = rec.events_fail = False
     rec.analyze_hook = lambda: None

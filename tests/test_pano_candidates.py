@@ -78,7 +78,7 @@ def project(tmp_path: Path, stub_scores: None) -> tuple[Path, object]:
         {"id": "h002", "source": str(lrv), "start": 14.0, "end": 20.0, "label": "b"},
         {"id": "h003", "source": str(tmp_path / "flat.mp4"), "start": 1.0, "end": 5.0},
     ]
-    cache.save_json(proj / "highlights.json", {"style": "ski", "candidates": cands})
+    cache.save_json(proj / "highlights.json", {"style": "action-cam", "candidates": cands})
     return proj, clip
 
 
@@ -297,7 +297,7 @@ def test_360_analyze_plans_paths_into_the_envelope_and_timings(
     monkeypatch.setattr(VW, "run_layer", lambda clips, force=False, handoff=None: {})
     monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: order.append("analyze"))
     monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda project: None)
-    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "ski")
+    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     stats = {"candidates": 2, "computed": 2, "flags": {"sky": 1}, "dir": None, "seconds": 1.5}
 
@@ -355,7 +355,7 @@ def _timing_run(monkeypatch, tmp_path: Path) -> list[dict | None]:
     monkeypatch.setattr(VW, "run_layer", lambda clips, force=False, handoff=None: {"computed": 1})
     monkeypatch.setattr(analyze_mod, "analyze", _rewrite_highlights)
     monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda project: None)
-    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "ski")
+    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     monkeypatch.setattr(C, "cache_candidate_paths", lambda project: {"seconds": 1.5})
     scanned: list[dict | None] = []

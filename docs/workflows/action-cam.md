@@ -3,18 +3,19 @@
 This module is part of every install; the full feature set needs the `events` extra, which
 Cutpoint lite leaves out, and `cutpoint setup`. It uses telemetry in GoPro HERO 9-13 files (accelerometer, gyro, GPS) to
 score moments by what happened: speed, airtime, carving, crashes. Lifts and stops are masked
-even with friends in view. The style name is `ski`, but the signals apply to any riding or
-action footage that carries telemetry.
+even with friends in view. The style is `action-cam` (formerly `ski`, which is no longer
+accepted); the signals apply to any riding or action footage that
+carries telemetry.
 
 ```powershell
 cutpoint stage D:\Videos\trip                        # telemetry reading uses whole files: stage slow storage first
-cutpoint analyze D:\Videos\trip --style ski --out trip
+cutpoint analyze D:\Videos\trip --style action-cam --out trip
 cutpoint events trip                                 # optional: model tags (VLM layer) or forced layers
 cutpoint clips trip --max-total 150
 cutpoint assemble projects/trip/clips --loudnorm
 ```
 
-`analyze --style ski` skips scene detection. It also runs the reaction (sound events, voice), keyframe
+`analyze --style action-cam` skips scene detection. It also runs the reaction (sound events, voice), keyframe
 (visual, only with a CUDA GPU) and crash steps when the `events` extra and models are installed,
 and writes `events.json` and `crashes.json`; `--skip` leaves steps out. As with every style, the Ollama frame rating runs
 only with `--vision`. It writes `telemetry.json` (day summary, runs, per-source events). These
@@ -35,7 +36,7 @@ cutpoint clips trip --max-total 480
 
 Candidates come from full-rate IMU shocks plus spoken crash cues. Each gets telemetry, visual,
 dense-frame, audio and transcript sub-scores and a confidence. Crashes at or above the style's
-`must_include_crash` threshold (0.6 for `ski`) are always exported with their lead-in,
+`must_include_crash` threshold (0.6 for `action-cam`) are always exported with their lead-in,
 aftermath and a reaction clip. `analyze --must-include-crash CONF` overrides it; 0 disables.
 Check `crash_check\` by eye: weights and thresholds are hand-set, and the detector misses
 tumbles when the camera points at the rider's own skis and can be fooled by shadows.

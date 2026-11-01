@@ -105,8 +105,9 @@ updates `final.mp4` and `final.srt`, not the `clip-final` copies.
 Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
 
 1. **Pick a style** from the request: `funny`, `gaming`, `action`, `sport`, `commentary`
-   (long talk), `ski` (action-cam with telemetry). Footage that is not any of these: use `action`
-   or `gaming`.
+   (long talk), `action-cam` (helmet-, chest- or bike-mounted action-cam footage, best with
+   GoPro or Insta360 X3 telemetry; formerly `ski`, which is no longer accepted).
+   Footage that is not any of these: use `action` or `gaming`.
 2. **Analyze.**
 
    ```powershell
@@ -175,7 +176,7 @@ Variants:
 | The user asks to fix dull, washed-out or tinted colors | `clips <project> --color auto` (or on `edit`); `--color underwater` only for underwater footage or when an INFO line suggests it. Clips that look good, log footage, 360 clips and clips a safety check vetoes stay as they are; tell the user which clips were not graded and why (`color.skip` of each clip in `clips/manifest.json`: `good`, `log`, `360`, `no_frames`, `not_underwater` (`--color underwater` on a clip that does not look underwater, open blue ocean water included), or a veto: `veto_clipped`, `veto_cast`, `veto_m3` for too much color, `veto_m3_drop` (`auto`) or `veto_faded` (`underwater`) for too little). `assemble <project>` (mp4) and `edit --no-keep-clips` keep no manifest: report the clips not graded from the per-clip INFO lines of the run instead |
 | The user gives a LUT for log or flat footage ("use my GoPro Flat LUT") | `clips <project> --lut <file>.cube` (or on `edit`); `--lut-strength 0.5` for half the grade. Only with a LUT the user names; never pick one for them |
 | 360 (Insta360 X3) footage | [docs/workflows/360.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/360.md) |
-| Action-cam with telemetry | [docs/workflows/action-cam.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/action-cam.md) |
+| Action-cam with telemetry | `analyze <input> --style action-cam`, then [docs/workflows/action-cam.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/action-cam.md) |
 | Gameplay with kill feeds | [docs/workflows/game-streams.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/game-streams.md) |
 
 ## Project files

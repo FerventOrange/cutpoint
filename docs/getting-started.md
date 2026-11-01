@@ -378,7 +378,7 @@ On Linux: `uv run cutpoint analyze ~/Videos/ride.mp4 --style action --out my-edi
 4. `assemble` joins what is left, in filename order, into `final.mp4` with `final.srt`
    subtitles (`--format fcpxml` or `otio` writes that timeline for an editor instead).
 
-Styles are `gaming`, `action`, `sport`, `funny`, `commentary` and `ski`; see
+Styles are `gaming`, `action`, `sport`, `funny`, `commentary` and `action-cam` (formerly `ski`); see
 [Configuration](configuration.md#styles). More recipes: [Workflows](workflows/README.md).
 
 Next: [Using Cutpoint from an agent](agents.md), or [Troubleshooting](troubleshooting/README.md)

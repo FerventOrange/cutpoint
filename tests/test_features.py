@@ -40,7 +40,8 @@ def test_every_ski_feature_is_registered():
 
 def test_learned_style_with_ski_features_loads(tmp_path):
     path = write_style(
-        tmp_path, {"name": "mine", "base": "ski", "weights": dict.fromkeys(ski.FEATURES, 0.1)}
+        tmp_path,
+        {"name": "mine", "base": "action-cam", "weights": dict.fromkeys(ski.FEATURES, 0.1)},
     )
     assert load_learned(path).weights["wipeout"] == 0.1
 
@@ -197,7 +198,7 @@ def test_lite_renormalises_a_learned_style_with_an_events_feature(home, monkeypa
 
 
 def test_ski_score_is_renormalised_like_the_other_styles():
-    assert scorer.available_for(STYLES["ski"]) == features.available()
+    assert scorer.available_for(STYLES["action-cam"]) == features.available()
     assert scorer.available_for(STYLES["gaming"]) == features.available()
 
 
@@ -207,7 +208,7 @@ def test_ski_features_come_from_the_registry_in_the_grid_order():
     assert all(features.get(f).kind == "grid" for f in ski.FEATURES)
     # the voice and visual layers and the taste head, in the order they had before 1b
     assert ski.NEW_FEATURES == ("beauty", "people", "group", "voice_laughter", "voice", "taste")
-    assert "laughter" not in ski.FEATURES and "laughter" not in STYLES["ski"].weights
+    assert "laughter" not in ski.FEATURES and "laughter" not in STYLES["action-cam"].weights
 
 
 def test_ski_names_renames_in_place_and_prefers_the_new_name(caplog):
@@ -221,13 +222,15 @@ def test_ski_names_renames_in_place_and_prefers_the_new_name(caplog):
 
 def test_learned_ski_preset_with_the_old_laughter_name_scores_as_before(tmp_path, caplog):
     """An older preset says "laughter": it is voice_laughter, in its place, without a warning."""
-    path = write_style(tmp_path, {"name": "mine", "base": "ski", "weights": {"laughter": 0.6}})
+    path = write_style(
+        tmp_path, {"name": "mine", "base": "action-cam", "weights": {"laughter": 0.6}}
+    )
     with caplog.at_level(logging.DEBUG):
         st = load_learned(path)
-    assert list(st.weights) == list(STYLES["ski"].weights)
+    assert list(st.weights) == list(STYLES["action-cam"].weights)
     assert st.weights["voice_laughter"] == 0.6
     assert sum(st.weights.values()) == sum(
-        {**STYLES["ski"].weights, "voice_laughter": 0.6}.values()
+        {**STYLES["action-cam"].weights, "voice_laughter": 0.6}.values()
     )
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
@@ -266,7 +269,7 @@ def test_combine_sums_like_the_code_before_the_registry():
 
 def test_lite_ski_score_is_capped_at_100():
     """social still has transcript laughter on lite, so a peak can pass the core divisor."""
-    w = STYLES["ski"].weights
+    w = STYLES["action-cam"].weights
     lite = features.available(())
     peak = sum(v for k, v in w.items() if k in lite) + w["social"]
     assert features.divisor(w, lite) == pytest.approx(0.67)

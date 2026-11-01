@@ -156,7 +156,7 @@ def _analyze_stubs(monkeypatch, tmp_path: Path) -> list[str]:
     )
     monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: order.append("analyze"))
     monkeypatch.setattr(analyze_mod, "reanalyze", lambda project: None)
-    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "ski")
+    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     return order
 
@@ -271,7 +271,7 @@ def test_cmd_analyze_footage_gone_before_rescoring_keeps_highlights(
     lrv = tmp_path / "a.lrv"
     lrv.write_bytes(b"x")
     hl = tmp_path / "highlights.json"
-    written = json.dumps({"style": "ski", "sources": [{"path": str(lrv)}]})
+    written = json.dumps({"style": "action-cam", "sources": [{"path": str(lrv)}]})
 
     def fake_analyze(*a, **k):
         if not lrv.exists():  # the real analyze refuses a missing input

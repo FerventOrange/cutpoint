@@ -29,13 +29,13 @@ def test_fit_weights_fits_each_mask_once(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(refmatch, "_train", stop)
     with pytest.raises(RuntimeError, match="stop"):
         refmatch.fit_weights([], thresholds=(0, 5, 6, 7, 8, 11), save=False)
-    assert seen == [(0.0, get_style("ski").mask_friends)]
+    assert seen == [(0.0, get_style("action-cam").mask_friends)]
 
 
 def test_old_preset_mask_friends_is_still_read_as_a_hard_mask(home: Path) -> None:
     styles = home / "styles"
     styles.mkdir(parents=True)
-    preset = {"name": "old", "base": "ski", "weights": {"speed": 1.0}, "mask_friends": 5}
+    preset = {"name": "old", "base": "action-cam", "weights": {"speed": 1.0}, "mask_friends": 5}
     (styles / "old.json").write_text(json.dumps(preset), encoding="utf-8")
     style = get_style("old")
     assert style.mask_friends == 5.0

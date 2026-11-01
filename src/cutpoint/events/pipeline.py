@@ -63,6 +63,7 @@ from cutpoint.events.vlm_windows import (
     select_windows,
     windows_to_events,
 )
+from cutpoint.styles import ACTION_CAM, project_kind
 
 logger = logging.getLogger(__name__)
 LAYERS = ("audio", "voice", "visual", "crash", "ocr", "vlm")
@@ -177,7 +178,7 @@ def run_events(
     audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
     stage = stage or (lambda _layer: contextlib.nullcontext())
     hl = load_highlights(project)
-    ski = hl.get("style_kind") == "ski"
+    ski = project_kind(hl) == ACTION_CAM
     if layers is None:
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
     if cached_ocr is None:
