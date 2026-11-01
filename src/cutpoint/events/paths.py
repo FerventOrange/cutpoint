@@ -14,6 +14,7 @@ from pathlib import Path
 
 from cutpoint import paths as _paths
 from cutpoint import state
+from cutpoint.hub import quiet_hub_handler
 
 OMNI_HF_REPO = "ggml-org/Qwen2.5-Omni-7B-GGUF"
 AESTHETIC_URL = (
@@ -96,8 +97,10 @@ def apply_torch_home() -> None:
 
     It is (re)set when unset or still equal to the value Cutpoint set last, so
     a changed ``CUTPOINT_HOME`` / ``CUTPOINT_MODELS_DIR`` is followed and a
-    user's own ``TORCH_HOME`` is left alone.
+    user's own ``TORCH_HOME`` is left alone. Called before every model load, so it also
+    drops huggingface_hub's duplicate stderr handler (open_clip downloads through the Hub).
     """
+    quiet_hub_handler()
     want = str(torch_home())
     current = os.environ.get("TORCH_HOME")
     if current is None or current == _TORCH_HOME_SET.get("value"):

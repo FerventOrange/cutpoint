@@ -9,7 +9,7 @@ import pytest
 
 import cutpoint
 import cutpoint.analyze
-from cutpoint import cli, mix, transcribe
+from cutpoint import cli, hub, mix
 from cutpoint.assistant import cliproxy
 
 
@@ -223,8 +223,8 @@ def test_huggingface_warning_is_printed_once(monkeypatch):
     pytest.importorskip("huggingface_hub.utils.logging")
     hf_logger = logging.getLogger("huggingface_hub")
     hf_logger.addHandler(logging.StreamHandler())  # as huggingface_hub adds on import
-    monkeypatch.setattr(transcribe, "_hub_handler_removed", False)
-    transcribe._quiet_hub_handler()  # before whisper loads
+    monkeypatch.setattr(hub, "_hub_handler_removed", False)
+    hub.quiet_hub_handler()  # before whisper loads
     assert hf_logger.handlers == []
 
 
