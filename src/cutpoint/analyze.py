@@ -127,7 +127,6 @@ class Candidate:
     label_hint: str = ""
     transcript: str = ""
     transcript_unsure: list[tuple[int, float]] | None = None  # see _transcript_snippet
-    vision: dict[str, Any] | None = None
     score: float = 0.0
     label: str = ""
     kind: str = ""  # ski: dominant feature of the clip (airtime, crash, speed, ...)
@@ -607,8 +606,6 @@ def vision_label(rating: float, label: str) -> str | None:
 
 
 def _label(c: Candidate, style: Style) -> str:
-    if c.vision and (slug := vision_label(c.vision.get("score", 0), c.vision.get("label", ""))):
-        return slug
     if c.label_hint:
         return slugify(c.label_hint, 30)
     if c.signals.get("laughter", 0) > 0.5:
@@ -1427,7 +1424,7 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
         "signals": {
             **c.signals,
             "keywords": c.keywords,
-            "vision": c.vision["score"] if c.vision else None,
+            "vision": None,  # set by _rate_vision
         },
         "label": _label(c, style),
         **({"kind": c.kind} if c.kind else {}),

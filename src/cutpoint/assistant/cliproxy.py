@@ -134,10 +134,6 @@ class ProxyConnectionError(ProxyError):
 class ProxyHTTPError(ProxyError):
     """CLIProxyAPI daemon responded with an HTTP error status."""
 
-    def __init__(self, message: str, status_code: int | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
 
 def _credential_store_error(err: Exception) -> ProxyError:
     detail = str(err) if isinstance(err, KeyringError) else type(err).__name__
@@ -268,20 +264,8 @@ def _read_keys_file() -> tuple[str, str, int] | None:
     return None
 
 
-def _ensure_keys(target_port: int | None = None, *, refresh: bool = False) -> tuple[str, str]:
-    existing = _read_keys_file()
+def _ensure_keys(target_port: int | None = None) -> tuple[str, str]:
     p = target_port or port()
-    if existing and not refresh:
-        mgmt, client, curr_p = existing
-        if target_port and curr_p != target_port:
-            _write_private_file(
-                keys_path(),
-                json.dumps(
-                    {"management_key": mgmt, "client_api_key": client, "port": target_port},
-                    indent=2,
-                ),
-            )
-        return mgmt, client
     mgmt = secrets.token_hex(32)
     client = secrets.token_hex(32)
     _write_private_file(
@@ -366,7 +350,7 @@ def _management_request(
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
         clean_msg = redact(f"proxy error {resp.status_code}: {err_msg}")
-        raise ProxyHTTPError(clean_msg, status_code=resp.status_code)
+        raise ProxyHTTPError(clean_msg)
     try:
         return resp.json()
     except (ValueError, json.JSONDecodeError) as err:
@@ -413,7 +397,7 @@ def _client_request(
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
         clean_msg = redact(f"proxy inference error {resp.status_code}: {err_msg}")
-        raise ProxyHTTPError(clean_msg, status_code=resp.status_code)
+        raise ProxyHTTPError(clean_msg)
 
     try:
         return resp.json()
@@ -922,7 +906,7 @@ def run(port: int | None = None) -> None:
                 ) from err
 
             tls_cert, tls_key = proxy_tls.ensure_identity(home_dir)
-            mgmt_key, client_key = _ensure_keys(target_port=resolved_port, refresh=True)
+            mgmt_key, client_key = _ensure_keys(target_port=resolved_port)
             cfg_path = config_path()
             cfg_dict = _generate_config(
                 port=resolved_port,
