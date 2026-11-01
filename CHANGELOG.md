@@ -138,9 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path when the span, kind, settings, layers and planning code are unchanged, else plans it as
   before and logs why (`director path re-planned (span differs from 360 analyze)`, or
   `(9:16 not planned by 360 analyze)` under `--vertical`). A failed path logs a WARNING and the
-  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag).
-  `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
-  diagnostics for previews (#517).
+  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag) (#517).
 - `360 qa <dir> --compare RENDERED PATHS` (#11): joins the rendered and the `--paths` `qa.json`
   of `<dir>` (either order) per clip and frame and writes `edge_gap.json` next to the rendered
   one: the frames each QA flags `edge_cut`, and a cause for every frame only the rendered QA
@@ -266,6 +264,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING:** `cutpoint setup --torch-cuda` is gone. It did nothing since torch comes from the
+  `events` extra; commands that still pass it now stop with exit code 2. Drop the flag.
+- **BREAKING:** `cutpoint events --preset-scope package` is gone. It was an old alias of `user`
+  (the default); commands that still pass it now stop with exit code 2. Use `--preset-scope user`
+  or leave the option out.
 - **BREAKING:** `assemble` (default `--format mp4`) no longer writes `final.fcpxml` and
   `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 
