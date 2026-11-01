@@ -88,11 +88,6 @@ def names(kind: str | None = None) -> list[str]:
     return sorted(n for n, f in REGISTRY.items() if kind is None or f.kind == kind)
 
 
-def unknown(weights: Iterable[str]) -> list[str]:
-    """The names in ``weights`` that are not registered, in their order."""
-    return [k for k in weights if k not in REGISTRY]
-
-
 @state.register_cache
 @functools.cache
 def installed_extras() -> frozenset[str]:

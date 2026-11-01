@@ -40,8 +40,6 @@ from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
 
 logger = logging.getLogger(__name__)
 
-# Your in-game names come from config.json ``player_tags`` (or ``--player``).
-DEFAULT_PLAYER_TAGS: tuple[str, ...] = ()
 _VS_RE = re.compile(r"(\d)\s*V\s*S\s*(\d)")
 _POINTS_RE = re.compile(r"\+\s?(\d{2,4})\b")
 
@@ -52,7 +50,7 @@ class OcrParams:
 
     fps: float = 3.0
     game: str = "auto"
-    player_tags: tuple[str, ...] = DEFAULT_PLAYER_TAGS
+    player_tags: tuple[str, ...] = ()  # config.json ``player_tags`` (or ``--player``)
     hwaccel: bool = True
     min_text_score: float = 0.6
     fuzzy: float = 0.8  # SequenceMatcher ratio for phrase / dedupe matches
@@ -1549,7 +1547,7 @@ def keep_segments(duration: float, avoid: list[tuple[float, float]]) -> list[tup
 def link_teamkills(
     events: list[dict[str, Any]],
     window_s: float = 3.0,
-    tags: tuple[str, ...] = DEFAULT_PLAYER_TAGS,
+    tags: tuple[str, ...] = (),
     generic_teamkills: bool = False,
 ) -> None:
     """Post-process kill events in place (also applied to cached results).

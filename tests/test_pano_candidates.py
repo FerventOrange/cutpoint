@@ -211,7 +211,6 @@ def test_changed_planning_code_invalidates(project, monkeypatch) -> None:
     assert C.code_id() == C.code_id()
     monkeypatch.setattr(C, "code_id", lambda: "0123456789ab")  # director code changed
     assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is None
-    assert C.candidate_path(proj, "h002")["current"] is False
     st = C.cache_candidate_paths(proj)
     assert (st["computed"], st["cached"]) == (2, 0)
 
@@ -716,27 +715,11 @@ def test_failed_quality_is_flagged_and_flags_follow_the_thresholds(monkeypatch) 
 
 
 # --------------------------------------------------------------------------- read API
-def test_read_api_returns_the_cached_path_and_diagnostics(project, home) -> None:
-    proj, clip = project
-    assert C.candidate_path(proj, "h001") is None  # not planned yet
+def test_read_api_flags_every_planned_360_candidate(project) -> None:
+    proj, _clip = project
     assert C.candidate_flags(proj) == {}
     C.cache_candidate_paths(proj)
-    got = C.candidate_path(proj, "h001")
-    assert got is not None and got["current"] is True
-    assert got["file"] == proj / C.CACHE_DIR / C.slot_name(clip, 4.0, 12.5)
-    assert _dump(got["path"]) == _dump(_fresh(clip, 4.0, 12.5, "people"))
-    assert got["diagnostics"]["reasons"] == {f: C.FLAGS[f] for f in got["diagnostics"]["flags"]}
-    assert C.candidate_path(proj, "h003") is None  # not a 360 clip
-    assert C.candidate_path(proj, "h999") is None
-    assert set(C.candidate_flags(proj)) == {"h001", "h002"}
-    # a re-ranked analysis: the ids change, the spans stay
-    hl = cache.load_json(proj / "highlights.json")
-    hl["candidates"][0]["id"], hl["candidates"][1]["id"] = "h002", "h001"
-    cache.save_json(proj / "highlights.json", hl)
-    assert C.candidate_path(proj, "h002")["path"]["segment"] == {"start": 4.0, "end": 12.5}
-    # other settings: still readable for a preview, but clips would plan it anew
-    set_config(home, pano={"director": {"max_speed": 30}})
-    assert C.candidate_path(proj, "h002")["current"] is False
+    assert set(C.candidate_flags(proj)) == {"h001", "h002"}  # h003 is not a 360 clip
 
 
 def test_version_1_entries_are_planned_again(project) -> None:

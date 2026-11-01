@@ -150,9 +150,8 @@ def run_events(
             without a preset, False = never.
         discover_bursts: Frame bursts sampled by discovery (x4 frames).
         preset_scope: Where a newly discovered preset is installed:
-            "user" (``<CUTPOINT_HOME>/presets``, reused by every project;
-            "package" is accepted as an old alias) or "project"
-            (``<project>/hud_presets``).
+            "user" (``<CUTPOINT_HOME>/presets``, reused by every project) or
+            "project" (``<project>/hud_presets``).
         sheets: Write visual-layer contact sheets to ``<project>/visual_check``.
         stage: Called with each layer of ``layers`` that runs ("audio", "voice",
             "visual", "ocr", "crash"; not "vlm"), then with "write" for the events

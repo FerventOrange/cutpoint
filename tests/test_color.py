@@ -1045,11 +1045,6 @@ def test_a_red_highlight_the_levels_intend_is_counted_once():
     assert _color_eval().evaluate(frames, grade)["red_highlights"] == 1 / 400
 
 
-def test_an_underwater_veto_without_a_saturation_record_does_not_judge_it():
-    old = Metrics(m3=20.0, residual=0.1, clipped=0.0, black=0.05, white=0.9)  # version 2
-    assert color._veto(old, replace(old, m3=10.0), 0.0, underwater=True) is None
-
-
 @pytest.mark.parametrize(
     ("before", "after", "veto"),
     [

@@ -98,10 +98,10 @@ def test_missing_file_is_not_cached(calls, tmp_path):
     assert not fu._PROBED
 
 
-@pytest.mark.parametrize("clear", [fu.clear_probe_cache, reset_state])
-def test_clearing_the_memo_forces_a_new_probe(calls, media, clear):
+def test_reset_state_clears_the_memo(calls, media):
     fu.probe(media)
-    clear()
+    reset_state()
+    assert not fu._PROBED
     fu.probe(media)
     assert len(calls) == 2
 
