@@ -480,7 +480,7 @@ def probe(path: Path) -> MediaInfo:
 
     Memoised per caller path, probed file (the staged copy or ``path``) and its size, mtime and
     inode, so a rewritten or newly staged file is probed again (#372). Failures are not cached;
-    :func:`clear_probe_cache` (or :func:`cutpoint.reset_state`) empties the memo.
+    :func:`cutpoint.reset_state` empties the memo.
     """
     from cutpoint.stage import staged_path  # noqa: PLC0415
 
@@ -500,12 +500,6 @@ def probe(path: Path) -> MediaInfo:
         while len(_PROBED) > _PROBED_MAX:
             del _PROBED[next(iter(_PROBED))]
     return info
-
-
-def clear_probe_cache() -> None:
-    """Forget every memoised :func:`probe` result."""
-    with _PROBED_LOCK:
-        _PROBED.clear()
 
 
 def _probe(path: Path) -> MediaInfo:

@@ -22,7 +22,6 @@ from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
 logger = logging.getLogger(__name__)
 
 FALLBACK_MODEL = "qwen3.5:9b"
-SUBSCRIPTIONS = ("claude-code", "codex", "antigravity")  # the providers vision role may ask
 
 
 def default_model() -> str:
@@ -134,11 +133,11 @@ class AssistantVision:
         from cutpoint.assistant import keys, providers  # noqa: PLC0415
 
         p = self.provider
-        if p.name not in SUBSCRIPTIONS:
+        if not providers.is_subscription(p):
             logger.info(
                 "vision provider is %s; it must be %s",
                 p.name,
-                " or ".join(SUBSCRIPTIONS),
+                " or ".join(providers.SUBSCRIPTION_PROVIDERS),
             )
             return False
         if providers.consent_key(p) not in self.settings.consent:

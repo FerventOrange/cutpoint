@@ -41,8 +41,6 @@ from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
 
 logger = logging.getLogger(__name__)
 
-# Your in-game names come from config.json ``player_tags`` (or ``--player``).
-DEFAULT_PLAYER_TAGS: tuple[str, ...] = ()
 MIN_TEXT_SCORE = 0.6  # recognised text below this score is dropped
 FUZZY = 0.8  # SequenceMatcher ratio for phrase / dedupe matches
 PERSIST_S = 8.0  # an entry seen again within this is the same event
@@ -54,7 +52,7 @@ class OcrParams:
 
     fps: float = 3.0
     game: str = "auto"
-    player_tags: tuple[str, ...] = DEFAULT_PLAYER_TAGS
+    player_tags: tuple[str, ...] = ()  # config.json ``player_tags`` (or ``--player``)
     hwaccel: bool = True
     project: Path | None = None  # for project-local presets (not part of the key)
 

@@ -363,25 +363,7 @@ regions or `feed.newest`, or of the OCR frame rate, reads it again, and an inter
 near where it stopped. `--force ocr` drops the raw read too. It holds OCR text: it is git-ignored and
 never written inside a git checkout.
 
-A preset may list `candidate_phrases`: banner texts mined from the discovery OCR. They are inactive
-and not part of any cache key; to have OCR look for one, move it into `banner_phrases`. They are
-texts of 2 to 5 words read in the banner and notice regions (and in the screen centre, text at
-least 36 px tall at 1080p, as the OCR layer reads it there; smaller centre text is mined through
-the notice regions) of at least 2 sampled frames that are at least 2 s apart (two frames
-of one burst can count), in the casing the game shows ("Shield Saver" or "SHIELD SAVER"). They
-may be part of a longer line or sentence: words OCR joined are split ("blockedShieldSaver" is
-"blocked Shield Saver"), and numbers, timestamps, gamertags and your player tags are cut out.
-Matching ignores case and spaces, so a phrase also finds text OCR read without spaces
-("Hullbreached" for "Hull breached"), but only whole words: a phrase is not found inside a longer
-word. Static hint lines (tutorial and control hints) are left out: a text found in at least 25%
-of a recording's sampled gameplay frames whose sightings span at least half of the sampled time
-(tested for recordings with at least 8 sampled bursts). An event banner shows for a few seconds
-per event, far below that share; text in at least half of all gameplay frames is a static label
-and left out too. A hint shown only briefly is left out when OCR read it a little differently
-each time (words joined in one read): a phrase found only inside sentences of more than 5 words
-(a number, gamertag or separator such as `|`, `/` or `:` ends a sentence; commas and brackets do
-not), with the same text right around it each time, is a part of one sentence. A phrase in log lines with changing names or gamertags around it, one also
-shown on its own, or one OCR reads in a box with a stats line after a separator or number, stays. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
+Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
 far more text than the recording usually shows), so a busy game HUD is not mistaken for a menu.
 With a JSON preset, the OCR layer applies the same test to the text it detects in the preset's
 regions other than feeds (a full kill feed is no menu) and drops what menu frames show. It also

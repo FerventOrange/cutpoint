@@ -769,11 +769,7 @@ def _veto(
     if after.m3 > before.m3 * (1.0 + VETO_M3_RISE):
         return VETO_COLOURFUL
     if underwater:
-        if (
-            before.saturation
-            and after.saturation is not None
-            and after.saturation < before.saturation * VETO_SATURATION_DROP
-        ):
+        if after.saturation < before.saturation * VETO_SATURATION_DROP:
             return VETO_FADED
     elif after.m3 < before.m3 * VETO_M3_DROP:
         return VETO_M3_LOSS
