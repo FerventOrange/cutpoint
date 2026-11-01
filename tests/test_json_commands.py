@@ -351,7 +351,7 @@ def test_edit_events_json_reports_the_re_ranked_highlights(home, tmp_path, capsy
         (out / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
         report_highlights(out, out / "highlights.json")
 
-    def events(a):
+    def events(a, **_kw):
         hl_file = Path(a.project) / "highlights.json"
         hl = json.loads(hl_file.read_text(encoding="utf-8"))
         hl["suggested_top"] = 1
