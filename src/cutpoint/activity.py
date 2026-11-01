@@ -1,4 +1,5 @@
-"""Activity profiles: what an incident (crash, wipeout, fall, fail) looks and sounds like.
+"""Activity profiles: what an incident (crash, wipeout, fall, fail) looks and sounds like,
+and the zero-shot CLIP captions the visual and 360 layers judge this footage with.
 
 A profile is a small JSON document (any sport, game or kind of video)::
 
@@ -6,13 +7,28 @@ A profile is a small JSON document (any sport, game or kind of video)::
      "detect": [CLIP captions that recognise this kind of footage],
      "incident": {"pos": [incident captions], "neg": [normal-activity captions],
                   "words": {"over the bars": 1.0, "bail*": 0.8}},
-     "highlight": {"pos": [...], "neg": [...]}, "low_info": [...],
+     "highlight": {"pos": [highlight-worthy views], "neg": [dull ones]},
+     "group": {"pos": [friends close to the camera], "neg": [nobody near]},
+     "person": {"pos": [another person], "neg": [the wearer's own body, gear, shadow]},
+     "selfie": {"pos": [a usable selfie view], "neg": [more captions against it]},
+     "lift": {"pos": [riding a lift], "neg": [the activity itself]},
+     "occluder": [things at the lens], "low_info": [frames with nothing to see],
+     "scene": [ordinary footage: negatives of occluder and low_info],
+     "vl": {"video": "...", "gear": "...", "scenery": "...", "low_info": "..."},
      "exclude_base": [base entries this profile replaces], "<section>": {...}}
 
 Every profile inherits the shared floor ``presets/activities/base.json`` (generic
-incident captions and crash words); ``exclude_base`` drops floor entries the
-profile replaces with its own (the ski profile has snowy versions of all of
-them). Extra object sections (e.g. a future ``game`` HUD vocabulary) are kept.
+incident captions and crash words, neutral captions of every list); ``exclude_base``
+drops floor entries the profile replaces with its own (the ski profile has snowy
+versions of all of them). ``vl`` is the wording of the 360 vision check
+(:mod:`cutpoint.pano.vlcheck`); a profile's strings replace the floor's. ``lift``
+is empty in the floor: activities without lifts never look for one. Extra object
+sections (e.g. a future ``game`` HUD vocabulary) are kept.
+
+:class:`Prompts` holds a profile's caption lists as the CLIP consumers use them
+(:func:`prompts`); :func:`use_prompts` makes a set the active one for the visual
+and 360 layers (:func:`active_prompts`, else :func:`default_prompts`) and
+:func:`project_prompts` reads a project's set from its ``activity.json``.
 
 :func:`resolve` picks the profile of a project, in this order:
 
@@ -40,10 +56,14 @@ output is added on top of that profile. Built-in profiles live in
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +87,9 @@ MAX_WORDS = 40
 MAX_PROMPT_CHARS = 100
 MAX_WORD_CHARS = 40
 MAX_CONTEXT_CHARS = 500
+MAX_LIST = 8  # occluder / low_info / scene captions
+MAX_EXCLUDE = 80  # exclude_base entries (the ski profile replaces every floor caption)
+MAX_VL_CHARS = 80
 MATCH_SHARE = 0.5  # library match: mean zero-shot share of the best profile ...
 MATCH_MARGIN = 0.2  # ... and its lead over the runner-up
 DESCRIBE_FRAMES = 4
@@ -80,6 +103,13 @@ SYNTH_SIZES = ((10, 20, 4), (6, 10, 3))
 # talk more often than a phrase) and filler that says nothing about an incident.
 # Sections an LLM-written profile may have (extra sections only come from files).
 SCHEMA_KEYS = ("name", "description", "detect", "incident", "highlight", "low_info")
+# Caption sections of a profile: pairs of lists, plain lists, the vision check's wording.
+PAIR_SECTIONS = ("incident", "highlight", "group", "person", "selfie", "lift")
+LIST_SECTIONS = ("low_info", "occluder", "scene")
+VL_KEYS = ("video", "gear", "scenery", "low_info")
+# The prompt set of callers that do not know the project's activity (the action-cam
+# scorer, the events contact sheets, the 360 mix): the ski lists they always used.
+DEFAULT_ACTIVITY = "ski"
 GEN_WORD_CAP = 0.6
 GEN_PHRASE_CAP = 0.9
 FILLER = {"down", "trail", "ride", "go", "run", "the", "a", "on", "in", "up", "it", "off", "to"}
@@ -146,42 +176,53 @@ def validate(raw: Any) -> dict[str, Any]:
     """Normalise a profile (built-in, library file or LLM output): known fields
     typed, deduplicated and capped; extra object sections kept as they are."""
     raw = raw if isinstance(raw, dict) else {}
-    inc = raw.get("incident") if isinstance(raw.get("incident"), dict) else {}
-    hl = raw.get("highlight") if isinstance(raw.get("highlight"), dict) else {}
-    prof = {
+
+    def sec(k: str) -> dict[str, Any]:
+        return raw[k] if isinstance(raw.get(k), dict) else {}
+
+    prof: dict[str, Any] = {
         "name": slugify(str(raw.get("name") or ""), 40, "custom"),
         "description": " ".join(str(raw.get("description") or "").split())[:300],
         "detect": _texts(raw.get("detect"), 6),
-        "exclude_base": _texts(raw.get("exclude_base"), MAX_PROMPTS + MAX_WORDS),
-        "incident": {
-            "pos": _texts(inc.get("pos")),
-            "neg": _texts(inc.get("neg")),
-            "words": _words(inc.get("words")),
-        },
-        "highlight": {"pos": _texts(hl.get("pos")), "neg": _texts(hl.get("neg"))},
-        "low_info": _texts(raw.get("low_info"), 8),
+        "exclude_base": _texts(raw.get("exclude_base"), MAX_EXCLUDE),
+    }
+    for k in PAIR_SECTIONS:
+        prof[k] = {"pos": _texts(sec(k).get("pos")), "neg": _texts(sec(k).get("neg"))}
+    prof["incident"]["words"] = _words(sec("incident").get("words"))
+    for k in LIST_SECTIONS:
+        prof[k] = _texts(raw.get(k), MAX_LIST)
+    prof["vl"] = {
+        k: " ".join(v.split())[:MAX_VL_CHARS]
+        for k in VL_KEYS
+        if isinstance(v := sec("vl").get(k), str) and v.strip()
     }
     prof.update({k: v for k, v in raw.items() if k not in prof and isinstance(v, dict)})
     return prof
 
 
 def merge(base: dict[str, Any], top: dict[str, Any]) -> dict[str, Any]:
-    """``top`` on ``base``: caption lists appended (deduplicated), words
-    overridden, identity (name, description, detect) from ``top``; entries in
-    ``top["exclude_base"]`` are dropped from ``base``."""
+    """``top`` on ``base``: caption lists appended (deduplicated), words and ``vl``
+    strings overridden, identity (name, description, detect) from ``top``; entries in
+    ``top["exclude_base"]`` are dropped from ``base``. A section ``top`` lacks (an LLM
+    profile has only :data:`SCHEMA_KEYS`) is the base's."""
     drop = set(top.get("exclude_base") or ())
 
     def cat(a: list[str], b: list[str]) -> list[str]:
         out = [s for s in a if s not in drop]
         return out + [s for s in b if s not in out]
 
+    def pair(p: dict[str, Any], sec: str, k: str) -> list[str]:
+        return (p.get(sec) or {}).get(k) or []
+
     out = {**base, **top, "exclude_base": []}
-    for sec in ("incident", "highlight"):
-        out[sec] = {k: cat(base[sec][k], top[sec][k]) for k in ("pos", "neg")}
+    for sec in PAIR_SECTIONS:
+        out[sec] = {k: cat(pair(base, sec, k), pair(top, sec, k)) for k in ("pos", "neg")}
     out["incident"]["words"] = {
         k: w for k, w in base["incident"]["words"].items() if k not in drop
     } | top["incident"]["words"]
-    out["low_info"] = cat(base["low_info"], top["low_info"])
+    for sec in LIST_SECTIONS:
+        out[sec] = cat(base.get(sec) or [], top.get(sec) or [])
+    out["vl"] = {**(base.get("vl") or {}), **(top.get("vl") or {})}
     return out
 
 
@@ -229,6 +270,131 @@ def save_to_library(profile: dict[str, Any]) -> str:
     cache.save_json(path, {**profile, "name": name})
     _FILES.pop(str(path), None)
     return name
+
+
+# --------------------------------------------------------------------------- prompts
+@dataclass(frozen=True)
+class Prompts:
+    """The zero-shot caption lists of one activity, as the CLIP consumers use them.
+
+    ``highlight_*``: beauty / highlight-worthy views (:func:`cutpoint.events.visual.frame_scores`,
+    the 360 view scores); ``group_*``: friends close to the camera; ``person_*``: a person
+    box is somebody else (pos) or the wearer's own body, gear or shadow (neg);
+    ``incident_*``: crash prompts (360 ``crash_zs``); ``occluder``, ``low_info`` and
+    ``scene`` (with the group and highlight positives: :meth:`qa_negatives`): the 360 QA
+    flags; ``selfie_*``: a usable selfie view (against the occluders too); ``lift_*``:
+    riding a lift (empty: no lift detection); ``vl``: the 360 vision check's wording.
+    """
+
+    name: str
+    highlight_pos: tuple[str, ...]
+    highlight_neg: tuple[str, ...]
+    group_pos: tuple[str, ...]
+    group_neg: tuple[str, ...]
+    person_pos: tuple[str, ...]
+    person_neg: tuple[str, ...]
+    incident_pos: tuple[str, ...]
+    incident_neg: tuple[str, ...]
+    occluder: tuple[str, ...]
+    low_info: tuple[str, ...]
+    scene: tuple[str, ...]
+    selfie_pos: tuple[str, ...]
+    selfie_neg: tuple[str, ...]
+    lift_pos: tuple[str, ...]
+    lift_neg: tuple[str, ...]
+    vl: tuple[tuple[str, str], ...]
+
+    @property
+    def lift(self) -> bool:
+        """Whether this activity has lifts to look for."""
+        return bool(self.lift_pos and self.lift_neg)
+
+    def qa_negatives(self) -> tuple[str, ...]:
+        """Negative prompts shared by :attr:`occluder` and :attr:`low_info`."""
+        return self.group_pos + self.highlight_pos + self.scene
+
+    def key(self) -> str:
+        """Short hash of the captions (not the name): a cache-key part."""
+        return cache.params_hash({k: v for k, v in asdict(self).items() if k != "name"})
+
+
+def prompts(profile: dict[str, Any]) -> Prompts:
+    """The :class:`Prompts` of a full profile (:func:`full`, ``activity.json``'s ``profile``)."""
+
+    def t(sec: str, k: str | None = None) -> tuple[str, ...]:
+        v = profile.get(sec) or ({} if k else [])
+        return tuple((v.get(k) or []) if k else v)
+
+    return Prompts(
+        name=str(profile.get("name") or "custom"),
+        highlight_pos=t("highlight", "pos"),
+        highlight_neg=t("highlight", "neg"),
+        group_pos=t("group", "pos"),
+        group_neg=t("group", "neg"),
+        person_pos=t("person", "pos"),
+        person_neg=t("person", "neg"),
+        incident_pos=t("incident", "pos"),
+        incident_neg=t("incident", "neg"),
+        occluder=t("occluder"),
+        low_info=t("low_info"),
+        scene=t("scene"),
+        selfie_pos=t("selfie", "pos"),
+        selfie_neg=t("selfie", "neg"),
+        lift_pos=t("lift", "pos"),
+        lift_neg=t("lift", "neg"),
+        vl=tuple((k, str(v)) for k, v in (profile.get("vl") or {}).items() if k in VL_KEYS),
+    )
+
+
+@state.register_cache
+@functools.cache
+def default_prompts() -> Prompts:
+    """The prompt set when none is active: the built-in :data:`DEFAULT_ACTIVITY` profile."""
+    return prompts(full(builtin(DEFAULT_ACTIVITY)))
+
+
+_ACTIVE: ContextVar[Prompts | None] = ContextVar("activity_prompts", default=None)
+
+
+def active_prompts() -> Prompts:
+    """The prompt set of the running command (:func:`use_prompts`), else :func:`default_prompts`."""
+    return _ACTIVE.get() or default_prompts()
+
+
+@contextlib.contextmanager
+def use_prompts(p: Prompts) -> Iterator[Prompts]:
+    """Inside the block (this thread / task), the visual and 360 layers judge with ``p``."""
+    token = _ACTIVE.set(p)
+    try:
+        yield p
+    finally:
+        _ACTIVE.reset(token)
+
+
+def record_profile(rec: dict[str, Any]) -> dict[str, Any]:
+    """The full profile of an ``activity.json`` record. A record written before profiles had
+    every caption section gets them: a library profile chosen as is (``flag``, ``library``,
+    ``fallback``) is rebuilt from the library, any other keeps its own sections and takes
+    the missing ones from its library profile or the floor."""
+    prof = rec.get("profile") if isinstance(rec.get("profile"), dict) else {}
+    if all(k in prof for k in (*PAIR_SECTIONS, *LIST_SECTIONS, "vl")):
+        return prof
+    lib = library()
+    name = rec.get("name")
+    ref = full(lib[name]) if name in lib else base()
+    if rec.get("source") in ("flag", "library", "fallback") and name in lib:
+        return ref
+    return {**ref, **prof}
+
+
+def project_prompts(project: Path) -> Prompts:
+    """The prompt set of a project's ``activity.json`` (written by ``profile``, ``crashes``
+    and the crash step of ``analyze``); :func:`default_prompts` without one. Reads the
+    file only: never detects or builds a profile."""
+    rec = cache.load_json(project / ACTIVITY_FILE)
+    if not isinstance(rec, dict) or rec.get("version") != PROFILE_VERSION:
+        return default_prompts()
+    return prompts(record_profile(rec))
 
 
 # --------------------------------------------------------------------------- footage

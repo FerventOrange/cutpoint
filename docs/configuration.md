@@ -304,7 +304,7 @@ Settings for the optional 360 module. Every key is optional.
 | `auto_stitch` | `true` (default) or `false`. When true, the SDK runs and an NVIDIA GPU is present, "Export clips" in `cutpoint ui` first stitches the recordings a 360 export needs (about 54 GB per hour of footage in `stitched_dir`). `false` exports from the dual-fisheye preview. The command-line `clips` never stitches. See [360 video](workflows/360.md#auto-stitch-on-export) |
 | `stitch_args` | SDK arguments placed after the input and output. Replaces the defaults. See [insta360-sdk.md](insta360-sdk.md) |
 | `studio_dirs` | Folders searched for Insta360 Studio equirect exports. Default `<CUTPOINT_HOME>\360-studio`; `_stitched\`, `export\` and `Export\` next to the camera files are always searched |
-| `default_style` | `--style` of `cutpoint 360 analyze` when none is given. Default `ski` |
+| `default_style` | `--style` of `cutpoint 360 analyze` when none is given. Default: the built-in action-cam style |
 | `cmd_every` | Frames between virtual-camera updates when rendering. Default 1. 2 renders faster but leaves camera shake on every other frame. `--pano-cmd-every` overrides it |
 | `level_strength` | Horizon lock of the stabilised view, 0 to 1. 1 keeps the horizon level; 0 lets the view lean with the camera's smoothed tilt. Default 0.7 |
 | `tilt_follow_s` | Smoothing in seconds of the tilt the view follows when `level_strength` is below 1. Default 0.5 |
@@ -336,12 +336,12 @@ learned styles call it `laughter`, which still works.
 
 ## Activity profiles
 
-Crash detection uses an activity profile per project (`<project>\activity.json`): built-in
+Crash detection, the 360 views, QA and vision check, and the visual events layer use an activity profile per project (`<project>\activity.json`): built-in
 profiles in `src/cutpoint/presets/activities/`, plus the ones Cutpoint builds with the local LLM,
 saved as `<CUTPOINT_HOME>\profiles\<name>.json`. A file there with a built-in's name replaces
 that built-in for profile selection. The files are readable JSON, but nothing has to be edited:
-see [action-cam workflow](workflows/action-cam.md#activity-profiles). Profiles for the other
-scoring layers and for games are planned.
+see [action-cam workflow](workflows/action-cam.md#activity-profiles). Scorer weights from
+profiles and profiles for games are planned.
 
 ## HUD presets
 

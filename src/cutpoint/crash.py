@@ -90,15 +90,6 @@ CHECK_DIR = "crash_check"
 # ~1 s after the chair departs.
 LIFT_LEAD_S = 5.0
 
-# Zero-shot prompts (CLIP ViT-L/14, the visual layer's model) and transcript
-# cues (phrase -> weight, prefix match with a trailing ``*``) of the built-in
-# ski activity profile (presets/activities/ski.json on the shared base). Other
-# footage gets its own profile (:mod:`cutpoint.activity`).
-_SKI = activity.full(activity.builtin("ski"))["incident"]
-CRASH_POS: tuple[str, ...] = tuple(_SKI["pos"])
-CRASH_NEG: tuple[str, ...] = tuple(_SKI["neg"])
-CRASH_WORDS: dict[str, float] = dict(_SKI["words"])
-
 
 # --------------------------------------------------------------------------- params
 @dataclass(frozen=True)
@@ -129,8 +120,11 @@ class CrashParams:
         drop_top: At most this many such speed-drop candidates per project are
             confirmed on top of ``dense_top``.
         weights: Fusion weights of the sub-scores.
-        pos, neg: Zero-shot prompts.
-        words: Transcript cues.
+        pos, neg: Zero-shot prompts (CLIP ViT-L/14, the visual layer's model).
+        words: Transcript cues (phrase -> weight, prefix match with a trailing ``*``).
+
+    ``pos``, ``neg`` and ``words`` left None come from the project's activity profile
+    (:func:`detect_project` resolves it, :meth:`with_profile`); given ones override it.
     """
 
     impact_g: float = 4.0
@@ -155,9 +149,9 @@ class CrashParams:
         ("audio", 0.10),
         ("words", 0.15),
     )
-    pos: tuple[str, ...] = CRASH_POS
-    neg: tuple[str, ...] = CRASH_NEG
-    words: tuple[tuple[str, float], ...] = tuple(CRASH_WORDS.items())
+    pos: tuple[str, ...] | None = None
+    neg: tuple[str, ...] | None = None
+    words: tuple[tuple[str, float], ...] | None = None
 
     def key(self) -> str:
         """Short hash of everything that changes results (+ code version)."""
@@ -169,11 +163,20 @@ class CrashParams:
             {"fps": self.dense_fps, "pos": self.pos, "neg": self.neg, "v": CRASH_VERSION}
         )
 
+    @property
+    def resolved(self) -> bool:
+        """Whether prompts and words are all set (no activity profile needed)."""
+        return None not in (self.pos, self.neg, self.words)
+
     def with_profile(self, profile: dict[str, Any]) -> CrashParams:
-        """These params with an activity profile's incident prompts and words."""
+        """These params with an activity profile's incident prompts and words where
+        they are None."""
         inc = profile["incident"]
         return replace(
-            self, pos=tuple(inc["pos"]), neg=tuple(inc["neg"]), words=tuple(inc["words"].items())
+            self,
+            pos=tuple(inc["pos"]) if self.pos is None else self.pos,
+            neg=tuple(inc["neg"]) if self.neg is None else self.neg,
+            words=tuple(inc["words"].items()) if self.words is None else self.words,
         )
 
 
@@ -1157,8 +1160,8 @@ def detect_project(
         force: Recompute the IMU grids and the dense step.
         tmp_dir: Scratch folder for GPMF-only remuxes of files on slow storage.
         activity_name: Activity profile by name (default: detected, see
-            :func:`cutpoint.activity.resolve`); ignored when ``params`` brings
-            its own prompts or words.
+            :func:`cutpoint.activity.resolve`); not resolved when ``params`` brings
+            its own prompts and words (each one left None comes from the profile).
         context: The user's words about the video (refines the profile).
         refresh_profile: Re-detect / re-synthesize the profile.
         encoder: An already loaded CLIP model for the dense confirm (else it is
@@ -1191,7 +1194,7 @@ def detect_project(
         raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
     p = params or CrashParams()
     prof = None
-    if (p.pos, p.neg, p.words) == (CRASH_POS, CRASH_NEG, tuple(CRASH_WORDS.items())):
+    if not p.resolved:
         prof = activity.resolve(
             project,
             activity=activity_name,

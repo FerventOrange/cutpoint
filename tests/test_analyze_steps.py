@@ -18,10 +18,20 @@ import cv2
 import numpy as np
 import pytest
 
-import cutpoint.pano.x3 as x3
 import cutpoint.ski as ski
 from conftest import set_config, write
-from cutpoint import activity, analyze, cache, cli, config, crash, jsonout, progress, transcribe
+from cutpoint import (
+    activity,
+    analyze,
+    cache,
+    cli,
+    config,
+    crash,
+    insta360,
+    jsonout,
+    progress,
+    transcribe,
+)
 from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
 from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
@@ -1456,7 +1466,7 @@ def test_plan_missing_model_files_skip_that_step_only(env, caplog):
 @pytest.fixture
 def probe_env(monkeypatch):
     state = SimpleNamespace(imu=None, streams=[], error=None)
-    monkeypatch.setattr(x3, "imu_source", lambda p: state.imu)
+    monkeypatch.setattr(insta360, "imu_source", lambda p: state.imu)
 
     def fake_probe(path, **kw):
         if state.error:

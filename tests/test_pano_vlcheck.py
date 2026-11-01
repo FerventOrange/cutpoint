@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import requests
 
-from cutpoint import ffmpeg_utils
+from cutpoint import activity, ffmpeg_utils
 from cutpoint.pano import vlcheck as V
 
 
@@ -60,7 +60,7 @@ def test_unparseable_reply_is_retried_once_with_the_short_prompt(
         chk, "_post", lambda prompt, image, n: prompts.append(prompt) or next(replies)
     )
     assert chk.ask(b"jpeg")["where"] == "left"
-    assert prompts == [V.PROMPT, V.RETRY_PROMPT]
+    assert prompts == list(V.prompts_for(activity.default_prompts()))
     monkeypatch.setattr(chk, "_post", lambda prompt, image, n: {"content": "?"})
     assert chk.ask(b"jpeg") is None
 

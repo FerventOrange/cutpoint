@@ -1146,7 +1146,7 @@ class LayerPlan:
 def has_telemetry(src: Path) -> bool:
     """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
     trailer); only the container's stream list is read."""
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     try:
         if imu_source(src) is not None:

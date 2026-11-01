@@ -18,6 +18,11 @@ director only reports them, they do not drive it. A closed loop (flags as grid
 penalties, then as safe-area obstacles, re-plan kept only if it checks better)
 was measured on 36 segments and fixed too few of the problem frames for its cost.
 
+The prompt names the activity, its gear, scenery and low-information frames from
+the activity profile's ``vl`` wording (:func:`prompts_for`; the active prompt set when
+the checker is made). Replies to the ski wording keep the cache keys they always had;
+any other wording adds its hash to the key.
+
 One frame per request: qwen3-vl:8b (a thinking variant, the default vision
 model when this was measured) reasons even with ``think=false``; a multi-image
 request used up its token budget before the answer. Replies are cached per
@@ -34,12 +39,15 @@ import time
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from cutpoint import cache, ffmpeg_utils, state
 from cutpoint.pano.qa import nearest_keys
+
+if TYPE_CHECKING:
+    from cutpoint.activity import Prompts
 
 logger = logging.getLogger(__name__)
 
@@ -54,26 +62,46 @@ _WHERE_ALIASES = {
     "top-right": "right",
 }
 
-PROMPT = (
-    "One frame from a first-person ski video (a virtual camera aimed inside a 360 video). "
+# The profile's ``vl`` wording fills {video}, {gear}, {scenery} and {low_info}
+# (:func:`prompts_for`); {Video} is {video} capitalised.
+PROMPT_TEMPLATE = (
+    "One frame from a first-person {video} video (a virtual camera aimed inside a 360 video). "
     "Decide: blocked = something very close to the lens covers part of the view (a hand, "
-    "arm, glove or mitten, ski pole, a shoulder or jacket strip at the frame edge, goggles "
+    "arm, glove or mitten, {gear}, a shoulder or jacket strip at the frame edge, goggles "
     "or a face filling the frame). The friend the camera is framing is the subject, NOT "
     "blocked, even close up or wearing goggles, unless the frame edge cuts through them or "
-    "their hand or pole reaches at the lens. People at a normal distance, snow, sky and "
-    "trees are NOT blocked. low_info = the frame shows nothing worth watching (a close-up of a "
-    "sign, board or wall, only snow or sky, heavy blur). Answer immediately, no reasoning, "
-    'JSON only: {"blocked": true|false, "where": "left|right|center|bottom|top|none", '
-    '"what": "<2-5 words>", "low_info": true|false}'
+    "their hand or pole reaches at the lens. People at a normal distance, {scenery} "
+    "are NOT blocked. low_info = the frame shows nothing worth watching (a close-up of a "
+    "sign, board or wall, {low_info}, heavy blur). Answer immediately, no reasoning, "
+    'JSON only: {{"blocked": true|false, "where": "left|right|center|bottom|top|none", '
+    '"what": "<2-5 words>", "low_info": true|false}}'
 )
 # Retry: shorter, no reasoning (the pattern of cutpoint.vision's retry prompt).
-RETRY_PROMPT = (
-    "Ski video frame. Answer immediately, no reasoning. blocked = a hand, arm, glove, pole, "
-    "goggles or a jacket edge right at the lens. low_info = a sign close-up, only snow or "
-    'sky, or blur. Output only JSON: {"blocked": true|false, "where": '
-    '"left|right|center|bottom|top|none", "what": "<2-5 words>", "low_info": true|false}'
+RETRY_TEMPLATE = (
+    "{Video} video frame. Answer immediately, no reasoning. blocked = a hand, arm, glove, pole, "
+    "goggles or a jacket edge right at the lens. low_info = a sign close-up, {low_info}, "
+    'or blur. Output only JSON: {{"blocked": true|false, "where": '
+    '"left|right|center|bottom|top|none", "what": "<2-5 words>", "low_info": true|false}}'
 )
-_ATTEMPTS = ((PROMPT, 2048), (RETRY_PROMPT, 3072))  # (prompt, num_predict)
+NUM_PREDICT = (2048, 3072)  # per attempt: the prompt, then the retry
+
+
+def prompts_for(p: Prompts) -> tuple[str, str]:
+    """``(prompt, retry prompt)`` in the ``vl`` wording of a prompt set."""
+    vl = dict(p.vl)
+    words = {k: vl.get(k, "") for k in ("video", "gear", "scenery", "low_info")}
+    words["Video"] = words["video"][:1].upper() + words["video"][1:]
+    return PROMPT_TEMPLATE.format(**words), RETRY_TEMPLATE.format(**words)
+
+
+def wording_id(p: Prompts) -> str:
+    """Cache-key part of a prompt set's wording: empty for the default (ski) wording,
+    so replies cached before profiles held it stay valid, else a short hash."""
+    from cutpoint.activity import default_prompts  # noqa: PLC0415
+
+    texts = prompts_for(p)
+    return "" if texts == prompts_for(default_prompts()) else cache.params_hash(texts, 8)
+
 
 # clip id -> {cache key: reply}; the on-disk cache is the source of truth
 _MEMO: dict[str, dict[str, Any]] = state.register_container(__name__, "_MEMO", {})
@@ -140,9 +168,15 @@ def parse_reply(content: str, thinking: str = "") -> dict[str, Any] | None:
 class VLChecker:
     """One-frame requests to the local Ollama vision model (:class:`cutpoint.vision.VisionRater`)."""
 
-    def __init__(self, url: str | None = None, model: str | None = None) -> None:
+    def __init__(
+        self, url: str | None = None, model: str | None = None, prompts: Prompts | None = None
+    ) -> None:
+        from cutpoint.activity import active_prompts  # noqa: PLC0415
         from cutpoint.vision import VisionRater  # noqa: PLC0415
 
+        p = prompts or active_prompts()
+        self.attempts = tuple(zip(prompts_for(p), NUM_PREDICT, strict=True))
+        self.wording = wording_id(p)
         self.rater = VisionRater(url, model)
         self.model = self.rater.model
         self.provider_name = getattr(self.rater, "provider_name", "ollama")
@@ -193,7 +227,7 @@ class VLChecker:
         if self.dead:
             return None
         image = base64.b64encode(jpeg).decode("ascii")
-        for prompt, num_predict in _ATTEMPTS:
+        for prompt, num_predict in self.attempts:
             msg = self._post(prompt, image, num_predict)
             if msg is None:
                 return None
@@ -234,11 +268,15 @@ def _cache_file(clip_id: str) -> Path:
     return cache.cache_root() / "pano_vl" / f"{clip_id}.json"
 
 
-def frame_key(path: dict[str, Any], t: float, model: str, provider: str = "") -> str:
-    """Cache key of the preview frame at source time ``t``: what the view shows there."""
+def frame_key(
+    path: dict[str, Any], t: float, model: str, provider: str = "", wording: str = ""
+) -> str:
+    """Cache key of the preview frame at source time ``t``: what the view shows there
+    (``wording``: :func:`wording_id`)."""
     k = nearest_keys(path["keys"], [t])[0]
     vert = "v" if path.get("vertical") else "h"
     prov = f"|{provider}" if provider and provider != "ollama" else ""
+    prov += f"|w{wording}" if wording else ""
     return (
         f"{VL_VERSION}|{model}{prov}|{vert}|{t:.2f}|"
         f"{float(k['yaw']) % 360:.0f}|{float(k['pitch']):.0f}|{float(k['fov']):.0f}"
@@ -270,7 +308,13 @@ def check_preview(
     secs, hits, dirty = 0.0, 0, False
     for tp in tps:
         t = start + float(tp)
-        key = frame_key(path, t, checker.model, provider=getattr(checker, "provider_name", ""))
+        key = frame_key(
+            path,
+            t,
+            checker.model,
+            provider=getattr(checker, "provider_name", ""),
+            wording=getattr(checker, "wording", ""),
+        )
         reply = store.get(key)
         if reply is None:
             try:

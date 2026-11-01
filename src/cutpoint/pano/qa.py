@@ -8,7 +8,7 @@ R-CNN persons, person-crop CLIP) and each frame gets flags:
     a confident "self" person box (the wearer's glove, arm, sleeve, own body)
     covers more than ``self_area`` of the frame, unless it only comes in from
     the bottom (:func:`wearer_allowed`), or the zero-shot occluder prompts
-    (:data:`OCCL_POS`, max over the 3 crops) exceed ``occl_zs``.
+    (the profile's ``occluder`` captions, max over the 3 crops) exceed ``occl_zs``.
 ``too_close``
     any confident person box (but an allowed self box) covers more than
     ``close_area`` of the frame, or is (nearly) full height and wide.
@@ -21,7 +21,7 @@ R-CNN persons, person-crop CLIP) and each frame gets flags:
     ``edge_self_overlap`` of the smaller one's area with a self box is the wearer
     detected twice and does not count.
 ``low_info``
-    fog / flat snow / sky: low grey contrast plus the :data:`LOWINFO_POS`
+    fog / flat snow / sky: low grey contrast plus the profile's ``low_info``
     prompts (mean over the crops), or a very confident prompt alone.
 ``too_far``
     on a ``friend`` target: the subject is shorter than ``too_far_h``.
@@ -56,6 +56,11 @@ the clip (the path's ``vl`` record, :func:`vl_summary`) count toward the pass
 too (``max_vl_bad``); a path without that record (check skipped or the model
 unavailable) is judged without it.
 
+Zero-shot captions (occluders, low information, the beauty and own-body prompts)
+come from the project's activity profile (:func:`cutpoint.activity.project_prompts`:
+its ``activity.json``, else the ski lists); :func:`qa_negatives` are the negatives
+shared by the occluder and low-information prompts.
+
 Inputs: a clips folder (``manifest.json`` entries with ``pano.path_file`` and
 ``start``) or a director preview folder (``NNN_x.mp4`` + ``NNN_x.json``; the
 offset is the path's ``segment.start``). Outputs go to ``<dir>_qa/``:
@@ -76,12 +81,15 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from cutpoint import cache
 from cutpoint.utils import clip_files
+
+if TYPE_CHECKING:
+    from cutpoint.activity import Prompts
 
 logger = logging.getLogger(__name__)
 
@@ -97,32 +105,18 @@ CAPTION = {
     "dark": "DARK",
 }
 
-OCCL_POS = (
-    "a close-up of a glove",
-    "a hand covering the camera lens",
-    "a blurry close-up of a jacket sleeve",
-    "a ski helmet filling the frame",
-    "a person's face extremely close to the camera",
-    "a backpack strap close-up",
-)
-LOWINFO_POS = (
-    "a flat white foggy image",
-    "an empty white snow surface",
-    "a plain sky",
-    "a blurry image of snow",
-    "a dark blurry image",
-)
+
+def qa_negatives(prompts: Prompts | None = None) -> tuple[str, ...]:
+    """Negative prompts shared by the ``occluder`` and ``low_info`` prompts of ``prompts``
+    (default the active set): its group and highlight positives plus its ``scene``."""
+    from cutpoint.activity import active_prompts  # noqa: PLC0415
+
+    return (prompts or active_prompts()).qa_negatives()
 
 
-def qa_negatives() -> tuple[str, ...]:
-    """Negative prompts shared by :data:`OCCL_POS` and :data:`LOWINFO_POS`."""
-    from cutpoint.events.visual import BEAUTY_POS, GROUP_POS  # noqa: PLC0415
-
-    return (
-        GROUP_POS
-        + BEAUTY_POS
-        + ("a skier on a slope", "people standing in the snow", "a chairlift")
-    )
+def _project_of(qa_dir: Path) -> Path:
+    """The project of a clips folder or of a director folder (``<project>/pano_paths/<name>``)."""
+    return qa_dir.parent.parent if qa_dir.parent.name == "pano_paths" else qa_dir.parent
 
 
 @dataclass(frozen=True)
@@ -943,7 +937,8 @@ def horizon_source(item: dict[str, Any]) -> str:
 def qa_clip(
     item: dict[str, Any], models: Any, fps: float, size: tuple[int, int], th: QAThresholds
 ) -> dict[str, Any] | None:
-    """Decode, run the models and evaluate one rendered clip."""
+    """Decode, run the models and evaluate one rendered clip (prompts: the active set)."""
+    from cutpoint.activity import active_prompts  # noqa: PLC0415
     from cutpoint.events import visual as V  # noqa: PLC0415
 
     ts, frames = decode(item["video"], fps, size)
@@ -955,10 +950,11 @@ def qa_clip(
     gray_std = gray.reshape(len(gray), -1).std(1)
     dark = dark_frames(gray, th)
     del frames, gray
-    neg = qa_negatives()
+    pr = active_prompts()
+    neg = pr.qa_negatives()
     emb = data.emb.astype(np.float32)
-    occl = V.prompt_score(emb, OCCL_POS, neg, models).max(1)
-    low = V.prompt_score(emb, LOWINFO_POS, neg, models).mean(1)
+    occl = V.prompt_score(emb, pr.occluder, neg, models).max(1)
+    low = V.prompt_score(emb, pr.low_info, neg, models).mean(1)
     src_t = item["offset"] + ts
     clip_self = V.self_boxes(data)  # always run: also the fallback
     cone = cone_self(item, data.det, src_t)
@@ -1178,7 +1174,9 @@ def run_qa(
     json_only: bool = False,
     th: QAThresholds | None = None,
 ) -> dict[str, Any]:
-    """Rendered-frame QA of every clip in ``qa_dir``; writes ``<qa_dir>_qa/``."""
+    """Rendered-frame QA of every clip in ``qa_dir``; writes ``<qa_dir>_qa/``. The
+    zero-shot captions are the project's (:func:`cutpoint.activity.project_prompts`)."""
+    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
     from cutpoint.ffmpeg_utils import FFmpegError, output_dir  # noqa: PLC0415
 
@@ -1189,7 +1187,10 @@ def run_qa(
     if not items:
         raise FileNotFoundError(f"{qa_dir}: no rendered clips (manifest.json or NNN_x.mp4+.json)")
     out_dir = qa_dir.with_name(qa_dir.name + "_qa")
-    with output_dir(out_dir):  # a failed run leaves no empty folder behind
+    prompts = project_prompts(_project_of(qa_dir))
+    logger.debug("360 qa: the %s prompts", prompts.name)
+    # a failed run leaves no empty folder behind
+    with output_dir(out_dir), use_prompts(prompts):
         _clear_sheets(out_dir)
         t0 = time.perf_counter()
         models = VisualModels()

@@ -597,7 +597,9 @@ def _drop_stale(out_dir: Path, stems: set[str], carried: set[str]) -> None:
 
 
 def cmd_director(a: argparse.Namespace) -> None:
-    """Plan (and optionally preview) director paths without the full render."""
+    """Plan (and optionally preview) director paths without the full render, scoring
+    views with the project's activity prompts (:func:`cutpoint.activity.project_prompts`)."""
+    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
     from cutpoint.ffmpeg_utils import output_dir  # noqa: PLC0415
     from cutpoint.pano.project import load  # noqa: PLC0415
 
@@ -611,9 +613,12 @@ def cmd_director(a: argparse.Namespace) -> None:
     if not name or Path(name).name != name or name in (".", ".."):
         raise jsonout.ArgumentError(f"--out-name must be a plain folder name, got {name!r}")
     out_dir = project / "pano_paths" / name
-    checker = _vl_checker(a)
+    prompts = project_prompts(project)
+    with use_prompts(prompts):  # the vision check's wording too
+        checker = _vl_checker(a)
     try:
-        with output_dir(out_dir):  # a failed run leaves no empty folder behind
+        # a failed run leaves no empty folder behind
+        with output_dir(out_dir), use_prompts(prompts):
             stems, vl_saved = _direct(a, project, clips, overrides, out_dir, checker)
     finally:  # free the vision model's VRAM on any exit (errors, Ctrl+C, a dead model too)
         if checker is not None:
@@ -1057,7 +1062,7 @@ def add_parser(sub: Any) -> None:
         "--style",
         choices=style_names(),
         default=None,
-        help="style preset (default: pano.default_style in config.json, else ski)",
+        help="style preset (default: pano.default_style in config.json, else the action-cam style)",
     )
     an.add_argument("--model", help="whisper model (default: medium on CUDA)")
     an.add_argument("--language", help="force transcription language, e.g. en")

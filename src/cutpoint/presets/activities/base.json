@@ -50,8 +50,80 @@
       "holy shit": 0.4
     }
   },
-  "highlight": {"pos": [], "neg": []},
-  "low_info": ["a dark blurry image", "a plain sky", "a hand covering the camera lens"],
+  "highlight": {
+    "pos": [
+      "a breathtaking landscape view",
+      "a scenic view under a blue sky",
+      "a beautiful sunset over the landscape",
+      "a wide view over a valley"
+    ],
+    "neg": [
+      "a phone screen",
+      "a dark blurry image",
+      "the inside of a building",
+      "a close-up of the ground",
+      "a close-up of a glove"
+    ]
+  },
+  "group": {
+    "pos": [
+      "a group of friends standing together",
+      "a selfie of friends smiling at the camera",
+      "a person talking to the camera",
+      "people laughing together",
+      "a friend right in front of the camera"
+    ],
+    "neg": [
+      "an empty landscape with nobody around",
+      "a person far away in the distance",
+      "an empty path ahead",
+      "a close-up of the ground"
+    ]
+  },
+  "person": {
+    "pos": [
+      "a person's face",
+      "a person standing",
+      "a group of people",
+      "a person wearing a helmet"
+    ],
+    "neg": [
+      "a first-person view looking down at my own legs and feet",
+      "my own arm and hand in front of the camera",
+      "the shadow of a person on the ground",
+      "a blurry close-up of a jacket sleeve"
+    ]
+  },
+  "selfie": {
+    "pos": ["a selfie of a person looking at the camera", "a person seen from above"],
+    "neg": ["the top of a helmet"]
+  },
+  "lift": {"pos": [], "neg": []},
+  "occluder": [
+    "a close-up of a glove",
+    "a hand covering the camera lens",
+    "a blurry close-up of a jacket sleeve",
+    "a helmet filling the frame",
+    "a person's face extremely close to the camera",
+    "a backpack strap close-up"
+  ],
+  "low_info": [
+    "a dark blurry image",
+    "a plain sky",
+    "a flat grey foggy image",
+    "a blurry close-up of the ground"
+  ],
+  "scene": [
+    "a first-person view moving along a path",
+    "people standing outdoors",
+    "a person on a trail"
+  ],
+  "vl": {
+    "video": "action",
+    "gear": "pole or handlebar",
+    "scenery": "the ground, water, sky and trees",
+    "low_info": "only ground, water or sky"
+  },
   "vocabulary": [
     "skiing", "snowboarding", "mountain biking", "road cycling", "BMX riding",
     "motocross", "dirt biking", "motorcycle riding on a road", "driving a car",

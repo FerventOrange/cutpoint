@@ -6,8 +6,10 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from cutpoint import cache, crash, telemetry
+from cutpoint import activity, cache, crash, telemetry
 from cutpoint.events import common
+
+_SKI = activity.full(activity.builtin("ski"))
 
 
 # Pinned digests: a change here renames every user's existing cache files (and so re-runs
@@ -32,8 +34,8 @@ def test_params_hash_is_pinned(params, digest10, digest16):
 @pytest.mark.parametrize(
     ("key", "digest"),
     [
-        (crash.CrashParams().key(), "e7244b388a"),
-        (crash.CrashParams().dense_key(), "24551ce592"),
+        (crash.CrashParams().with_profile(_SKI).key(), "e7244b388a"),  # ski: as before
+        (crash.CrashParams().with_profile(_SKI).dense_key(), "24551ce592"),
         (telemetry.TelemetryParams().key(), "f60a858f09"),
         (common.params_key({"fps": 3.0, "game": "boxfeed", "tags": ["x"]}), "4183f1e1b3"),
     ],

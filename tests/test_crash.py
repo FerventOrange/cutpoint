@@ -12,8 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cutpoint import config, crash, stage, telemetry
-from cutpoint.pano import x3
+from cutpoint import config, crash, insta360, stage, telemetry
 
 N = 600  # 60 s on the 0.1 s grid
 
@@ -93,7 +92,7 @@ def test_detect_project_skips_offline_source_and_processes_the_rest(tmp_path, mo
         lambda src, dur, p, tmp, lang: loaded.append(src) or _inputs(spike=False),
     )
     monkeypatch.setattr(crash, "candidate_events", lambda inp, p: [])
-    own_words = replace(crash.CrashParams(), words=())  # keeps the activity profile out of it
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())  # no profile
     with caplog.at_level("WARNING"):
         out = crash.detect_project(project, params=own_words, dense=False)
     assert loaded == [here]
@@ -199,7 +198,7 @@ def test_detect_project_dense_checks_speed_drops_below_prefilter(tmp_path, monke
         return {"score": 0.5}
 
     monkeypatch.setattr(crash, "dense_feature", dense)
-    own_words = replace(crash.CrashParams(), words=())
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
     crash.detect_project(project, params=own_words, encoder=enc, sheets=0)
     p = crash.CrashParams()
     assert checked == ["high", "drop1", *[f"drop{k}" for k in range(2, 1 + p.drop_top)]]
@@ -224,7 +223,7 @@ def test_detect_project_dense_zero_never_lowers_a_speed_drop_bypass(tmp_path, mo
         c["name"]: crash._confidence(c, dict(crash.CrashParams().weights)) for c in (normal, drop)
     }
     monkeypatch.setattr(crash, "dense_feature", lambda e, inp, c, p, store: {"score": 0.0})
-    own_words = replace(crash.CrashParams(), words=())
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
     crash.detect_project(project, params=own_words, encoder=enc, sheets=0)
     got = {
         c["name"]: c
@@ -287,7 +286,7 @@ def test_imu_read_path_prefers_the_x3_trailer_then_the_staged_copy(
 ) -> None:
     src = Path("/nas/GX01.mp4")
     monkeypatch.setattr(config, "remap_source", Path)
-    monkeypatch.setattr(x3, "imu_source", lambda _p: trailer and Path(trailer))
+    monkeypatch.setattr(insta360, "imu_source", lambda _p: trailer and Path(trailer))
     monkeypatch.setattr(stage, "staged_path", functools.cache(lambda p: staged or p))
     monkeypatch.setattr(stage, "is_remote", lambda _p: remote)
     io, x3_imu, read_path, got = telemetry.imu_read_path(src)

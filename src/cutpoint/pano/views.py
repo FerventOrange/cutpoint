@@ -26,6 +26,12 @@ as its three crops and the non-wearer people as detections, so ``cutpoint events
 skips its fisheye decode and ``cutpoint crashes`` / taste / contact sheets work
 unchanged. :func:`layer_grids` gives the ski features (``beauty``, ``people``,
 ``group``) as the *best direction* per second, used by ``ski.layer_features``.
+
+Every zero-shot caption comes from the activity profile: the scores below take
+``prompts`` (:class:`cutpoint.activity.Prompts`) or use the active set
+(:func:`cutpoint.activity.active_prompts`: the project's, where the command set it
+with :func:`cutpoint.activity.use_prompts`; else the ski lists). Lift rides are only
+looked for when the profile has ``lift`` captions (:func:`lift_scores`).
 """
 
 from __future__ import annotations
@@ -36,13 +42,16 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from cutpoint import cache, progress, state
 from cutpoint.events.common import params_key
 from cutpoint.pano import geometry as G
+
+if TYPE_CHECKING:
+    from cutpoint.activity import Prompts
 
 logger = logging.getLogger(__name__)
 
@@ -492,9 +501,18 @@ class PeopleRules360:
     wearer_max_height_deg: float = 70.0  # is_wearer's height rule (inf: the cone only)
 
 
-def other_people(pv: PanoViews, rules: PeopleRules360 | None = None) -> np.ndarray:
-    """Boolean per det row: a person who is not the wearer (cone + CLIP classifier)."""
-    from cutpoint.events.visual import OTHER_POS, SELF_POS, prompt_score  # noqa: PLC0415
+def _prompts(prompts: Prompts | None) -> Prompts:
+    from cutpoint.activity import active_prompts  # noqa: PLC0415
+
+    return prompts or active_prompts()
+
+
+def other_people(
+    pv: PanoViews, rules: PeopleRules360 | None = None, prompts: Prompts | None = None
+) -> np.ndarray:
+    """Boolean per det row: a person who is not the wearer (cone + CLIP classifier on
+    the ``person`` prompts of ``prompts``, default the active set)."""
+    from cutpoint.events.visual import prompt_score  # noqa: PLC0415
 
     r = rules or PeopleRules360()
     d = pv.det
@@ -507,7 +525,8 @@ def other_people(pv: PanoViews, rules: PeopleRules360 | None = None) -> np.ndarr
         & (d[:, 6] >= r.min_height_deg)
     )
     if len(pv.box_idx):
-        other = prompt_score(pv.box_emb, OTHER_POS, SELF_POS)
+        p = _prompts(prompts)
+        other = prompt_score(pv.box_emb, p.person_pos, p.person_neg)
         selfish = np.zeros(len(d), bool)
         selfish[pv.box_idx] = other < r.other_min
         keep &= ~selfish
@@ -531,23 +550,20 @@ def wearer_view_mask(pv: PanoViews) -> np.ndarray | None:
     return d < WEARER_VIEW_DEG
 
 
-def view_scores(pv: PanoViews) -> dict[str, np.ndarray]:
-    """Per-frame, per-view scores ``(N, 9)`` (cached per clip in this process).
+def view_scores(pv: PanoViews, prompts: Prompts | None = None) -> dict[str, np.ndarray]:
+    """Per-frame, per-view scores ``(N, 9)`` (cached per clip and prompt set in this process).
 
     ``beauty`` (0-1: the existing beauty-shot score with aesthetic and
-    steadiness), ``beauty_zs``, ``group_zs``, ``aesthetic``, ``steady`` and
-    ``crash_zs`` (the crash prompts of ``cutpoint crashes``).
+    steadiness, on the profile's ``highlight`` prompts), ``beauty_zs``, ``group_zs``,
+    ``aesthetic``, ``steady`` and ``crash_zs`` (the profile's incident prompts, as
+    ``cutpoint crashes`` uses them). ``prompts``: default the active set.
     """
-    key = (pv.meta.get("source"), len(pv.t), float(pv.t[-1]) if len(pv.t) else 0.0)
+    p = _prompts(prompts)
+    key = (pv.meta.get("source"), len(pv.t), float(pv.t[-1]) if len(pv.t) else 0.0, p)
     cached = _SCORES.get(key)
     if cached is not None:
         return cached
-    from cutpoint.crash import CrashParams  # noqa: PLC0415
     from cutpoint.events.visual import (  # noqa: PLC0415
-        BEAUTY_NEG,
-        BEAUTY_POS,
-        GROUP_NEG,
-        GROUP_POS,
         aesthetic,
         beauty_score,
         prompt_score,
@@ -556,13 +572,12 @@ def view_scores(pv: PanoViews) -> dict[str, np.ndarray]:
 
     e = pv.emb.astype(np.float32)
     steady = steadiness(e)
-    cp = CrashParams()
     sc = {
-        "beauty_zs": prompt_score(e, BEAUTY_POS, BEAUTY_NEG),
-        "group_zs": prompt_score(e, GROUP_POS, GROUP_NEG),
+        "beauty_zs": prompt_score(e, p.highlight_pos, p.highlight_neg),
+        "group_zs": prompt_score(e, p.group_pos, p.group_neg),
         "aesthetic": aesthetic(e),
         "steady": steady,
-        "crash_zs": prompt_score(e, cp.pos, cp.neg),
+        "crash_zs": prompt_score(e, p.incident_pos, p.incident_neg),
     }
     sc["beauty"] = beauty_score(sc)
     mask = wearer_view_mask(pv)
@@ -575,31 +590,19 @@ def view_scores(pv: PanoViews) -> dict[str, np.ndarray]:
     return sc
 
 
-LIFT_POS = (
-    "riding a chairlift with a view over the trees",
-    "the safety bar of a chairlift",
-    "people sitting on a chairlift",
-    "chairlift cable and towers",
-    "inside a gondola cabin",
-)
-LIFT_NEG = (
-    "skiing down a snowy slope",
-    "skiers standing on a ski run",
-    "a snowy mountain landscape",
-    "trees covered in snow",
-    "the inside of a building",
-    "a trail map sign board",
-    "a ski resort information sign",
-)
 LIFT_MEDIAN = 5  # frames (~6 s): a lift ride is long, single-frame hits are not
 
 
-def lift_scores(pv: PanoViews) -> np.ndarray:
-    """Per-frame chairlift / gondola score (0-1): the best horizon view's lift
-    prompts, median-filtered over :data:`LIFT_MEDIAN` frames."""
+def lift_scores(pv: PanoViews, prompts: Prompts | None = None) -> np.ndarray:
+    """Per-frame chairlift / gondola score (0-1): the best horizon view's ``lift``
+    prompts of ``prompts`` (default the active set), median-filtered over
+    :data:`LIFT_MEDIAN` frames; all 0 when the activity has no lift captions."""
     from cutpoint.events.visual import prompt_score  # noqa: PLC0415
 
-    z = prompt_score(pv.emb[:, :SELFIE].astype(np.float32), LIFT_POS, LIFT_NEG).max(1)
+    p = _prompts(prompts)
+    if not p.lift:
+        return np.zeros(len(pv.t))
+    z = prompt_score(pv.emb[:, :SELFIE].astype(np.float32), p.lift_pos, p.lift_neg).max(1)
     h = LIFT_MEDIAN // 2
     if len(z) <= h:
         return z
@@ -680,9 +683,12 @@ def layer_grids(
 
 
 def lift_grid(src: Path, n: int, offset: float = 0.0, dt: float = 0.1) -> np.ndarray | None:
-    """:func:`lift_scores` on the analysis grid, or None (no 360 cache)."""
+    """:func:`lift_scores` (active prompt set) on the analysis grid, or None (no 360 cache,
+    or an activity without lift captions)."""
     from cutpoint.events.visual import to_grid  # noqa: PLC0415
 
+    if not _prompts(None).lift:
+        return None
     pv = _grid_views(src)
     if pv is None:
         return None
@@ -708,36 +714,33 @@ OCCLUDE_MIN_SCORE = 0.5  # person boxes (the wearer too) this confident can occl
 OCCLUDE_MIN_DEG2 = 300.0  # ... if their angular area could cover ~7 % of an 86-deg view
 OCCLUDE_RAMP = 0.65  # occlude rises from this share of the QA limit to 1 at the limit
 OCCL_ZS_FROM = 0.8  # the occluder prompts count above the rendered QA's occl_zs only
-SELFIE_OK_POS = (
-    "a selfie of a skier wearing a helmet and goggles",
-    "a person's face wearing ski goggles",
-    "a skier seen from above",
-)
 _OCCL: dict[tuple, dict[str, np.ndarray]] = state.register_container(__name__, "_OCCL", {})
 _OBINS: dict[tuple, np.ndarray] = state.register_container(__name__, "_OBINS", {})
 
 
-def occlusion_scores(pv: PanoViews) -> dict[str, np.ndarray]:
-    """Zero-shot occluder and selfie-content scores (cached per clip in this process).
+def occlusion_scores(pv: PanoViews, prompts: Prompts | None = None) -> dict[str, np.ndarray]:
+    """Zero-shot occluder and selfie-content scores (cached per clip and prompt set in
+    this process), on the captions of ``prompts`` (default the active set).
 
     ``occl_zs`` ``(N, 8)``: the rendered QA's occluder prompts (gloves, sleeves,
-    a face inches away: :data:`cutpoint.pano.qa.OCCL_POS`) on the horizon views;
-    ``selfie_ok`` ``(N,)``: :data:`SELFIE_OK_POS` against the occluders and "the
-    top of a helmet" on the selfie view (a usable selfie, not a glove on the lens).
+    a face inches away: ``occluder`` against :meth:`~cutpoint.activity.Prompts.qa_negatives`)
+    on the horizon views; ``selfie_ok`` ``(N,)``: the ``selfie`` positives against the
+    occluders and the ``selfie`` negatives ("the top of a helmet") on the selfie view (a
+    usable selfie, not a glove on the lens).
     """
-    key = (pv.meta.get("source"), len(pv.t), float(pv.t[-1]) if len(pv.t) else 0.0)
+    p = _prompts(prompts)
+    key = (pv.meta.get("source"), len(pv.t), float(pv.t[-1]) if len(pv.t) else 0.0, p)
     cached = _OCCL.get(key)
     if cached is not None:
         return cached
     from cutpoint.events.visual import prompt_score  # noqa: PLC0415
-    from cutpoint.pano.qa import OCCL_POS, qa_negatives  # noqa: PLC0415
 
     e = pv.emb.astype(np.float32)
     sc = {
-        "occl_zs": prompt_score(e[:, :SELFIE], OCCL_POS, qa_negatives()).astype(np.float32),
-        "selfie_ok": prompt_score(
-            e[:, SELFIE], SELFIE_OK_POS, (*OCCL_POS, "the top of a helmet")
-        ).astype(np.float32),
+        "occl_zs": prompt_score(e[:, :SELFIE], p.occluder, p.qa_negatives()).astype(np.float32),
+        "selfie_ok": prompt_score(e[:, SELFIE], p.selfie_pos, p.occluder + p.selfie_neg).astype(
+            np.float32
+        ),
     }
     _OCCL.clear()  # keep one clip
     _OCCL[key] = sc
@@ -966,7 +969,7 @@ def run_layer(
     Returns:
         Stats: ``computed``, ``cached``, ``seconds`` and per-clip ``frames`` / ``s``.
     """
-    from cutpoint.crash import CrashParams  # noqa: PLC0415
+    from cutpoint.activity import active_prompts  # noqa: PLC0415
     from cutpoint.events import visual as V  # noqa: PLC0415
     from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
 
@@ -984,12 +987,12 @@ def run_layer(
         det_min_size=512, det_thresh=p.det_thresh, box_min_score=p.box_min_score, box_max=p.box_max
     )
     try:
-        cp = CrashParams()
+        pr = active_prompts()
         for pos, neg in (
-            (V.BEAUTY_POS, V.BEAUTY_NEG),
-            (V.GROUP_POS, V.GROUP_NEG),
-            (V.OTHER_POS, V.SELF_POS),
-            (cp.pos, cp.neg),
+            (pr.highlight_pos, pr.highlight_neg),
+            (pr.group_pos, pr.group_neg),
+            (pr.person_pos, pr.person_neg),
+            (pr.incident_pos, pr.incident_neg),
         ):
             V.text_embeddings(pos + neg, models)
         for i, c in enumerate(todo, 1):

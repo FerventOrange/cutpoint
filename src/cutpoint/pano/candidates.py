@@ -205,6 +205,7 @@ def path_key(
         ValueError: On bad ``overrides``.
     """
     from cutpoint import __version__  # noqa: PLC0415
+    from cutpoint.activity import active_prompts  # noqa: PLC0415
 
     key = {
         "v": CACHE_VERSION,
@@ -219,6 +220,7 @@ def path_key(
         "kind": kind,
         "params": asdict(effective_params(kind, overrides)),
         "inputs": _inputs(Path(clip.source)),
+        "prompts": active_prompts().key(),  # the activity's captions the views are scored with
     }
     return json.loads(json.dumps(key))
 
@@ -316,10 +318,13 @@ def plan_path(
     Raises:
         Exception: Whatever :func:`director.compute_path` raises (footage offline, no IMU).
     """
-    path, why = cached_path(project, clip, start, end, kind, overrides, vertical)
-    if path is not None:
-        return path, True, None
-    path = D.compute_path(clip, start, end, vertical=vertical, kind=kind, overrides=overrides)
+    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
+
+    with use_prompts(project_prompts(project)):
+        path, why = cached_path(project, clip, start, end, kind, overrides, vertical)
+        if path is not None:
+            return path, True, None
+        path = D.compute_path(clip, start, end, vertical=vertical, kind=kind, overrides=overrides)
     return path, False, why
 
 
@@ -499,6 +504,15 @@ def _candidates(project: Path) -> list[dict[str, Any]]:
 
 
 def cache_candidate_paths(project: Path) -> dict[str, Any]:
+    """:func:`_cache_candidate_paths` with the project's activity prompts
+    (:func:`cutpoint.activity.project_prompts`)."""
+    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
+
+    with use_prompts(project_prompts(project)):
+        return _cache_candidate_paths(project)
+
+
+def _cache_candidate_paths(project: Path) -> dict[str, Any]:
     """Plan and cache the 16:9 director path of every 360 candidate of ``highlights.json``.
 
     A candidate whose cached entry has the current key is kept as is. Candidates of clips

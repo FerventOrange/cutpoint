@@ -11,7 +11,45 @@
     "dirt, mud, water or debris covering the camera lens",
     "a blurry tumbling view",
     "an upside down view of the ground",
-    "a person lying on the ground after a fall"
+    "a person lying on the ground after a fall",
+    "a breathtaking landscape view",
+    "a scenic view under a blue sky",
+    "a beautiful sunset over the landscape",
+    "a wide view over a valley",
+    "a phone screen",
+    "a dark blurry image",
+    "the inside of a building",
+    "a close-up of the ground",
+    "a close-up of a glove",
+    "a group of friends standing together",
+    "a selfie of friends smiling at the camera",
+    "a person talking to the camera",
+    "people laughing together",
+    "a friend right in front of the camera",
+    "an empty landscape with nobody around",
+    "a person far away in the distance",
+    "an empty path ahead",
+    "a person's face",
+    "a person standing",
+    "a group of people",
+    "a person wearing a helmet",
+    "a first-person view looking down at my own legs and feet",
+    "my own arm and hand in front of the camera",
+    "the shadow of a person on the ground",
+    "a blurry close-up of a jacket sleeve",
+    "a selfie of a person looking at the camera",
+    "a person seen from above",
+    "the top of a helmet",
+    "a hand covering the camera lens",
+    "a helmet filling the frame",
+    "a person's face extremely close to the camera",
+    "a backpack strap close-up",
+    "a plain sky",
+    "a flat grey foggy image",
+    "a blurry close-up of the ground",
+    "a first-person view moving along a path",
+    "people standing outdoors",
+    "a person on a trail"
   ],
   "incident": {
     "pos": [
@@ -46,12 +84,112 @@
   },
   "highlight": {
     "pos": [
-      "a skier in mid-air off a jump",
-      "skiing through deep powder snow spraying",
       "a breathtaking mountain vista",
-      "skiing fast through tight trees"
+      "sunlit snowy mountain peaks under a blue sky",
+      "snow covered trees in a winter forest",
+      "a view over a valley from a mountain ridge",
+      "alpenglow on snowy mountains at sunset",
+      "a scenic panorama of mountains and a ski resort",
+      "clouds and fog below a mountain summit",
+      "a beautiful winter landscape"
     ],
-    "neg": ["the safety bar of a chairlift", "people waiting in a lift line"]
+    "neg": [
+      "a close-up of ski boots",
+      "a close-up of skis on the snow",
+      "blurry snow",
+      "the safety bar of a chairlift",
+      "a phone screen",
+      "a dark blurry image",
+      "a close-up of a glove",
+      "the inside of a building",
+      "a flat white foggy image",
+      "a close-up of a jacket",
+      "a groomed ski run seen while skiing"
+    ]
   },
-  "low_info": ["a flat white foggy image", "an empty white snow surface", "a blurry image of snow"]
+  "group": {
+    "pos": [
+      "a group of friends standing together in the snow",
+      "friends sitting next to me on a chairlift",
+      "a selfie of friends wearing ski helmets and goggles",
+      "a person in ski clothes talking to the camera",
+      "people laughing together",
+      "a friend skiing right in front of the camera"
+    ],
+    "neg": [
+      "an empty ski slope",
+      "a skier far away in the distance",
+      "a close-up of ski boots",
+      "snowy trees with nobody around",
+      "an empty chairlift",
+      "a mountain landscape"
+    ]
+  },
+  "person": {
+    "pos": [
+      "a person wearing a ski helmet and goggles",
+      "a skier",
+      "a snowboarder",
+      "a person sitting on a chairlift",
+      "a person's face",
+      "a person standing in the snow",
+      "a group of people"
+    ],
+    "neg": [
+      "a first-person view looking down at my own legs and ski boots",
+      "my own arm and glove holding a ski pole",
+      "my own skis seen from above",
+      "my own snowboard and boots seen from above",
+      "the shadow of a person on the snow",
+      "a blurry close-up of a jacket sleeve"
+    ]
+  },
+  "selfie": {
+    "pos": [
+      "a selfie of a skier wearing a helmet and goggles",
+      "a person's face wearing ski goggles",
+      "a skier seen from above"
+    ],
+    "neg": ["the top of a helmet"]
+  },
+  "lift": {
+    "pos": [
+      "riding a chairlift with a view over the trees",
+      "the safety bar of a chairlift",
+      "people sitting on a chairlift",
+      "chairlift cable and towers",
+      "inside a gondola cabin"
+    ],
+    "neg": [
+      "skiing down a snowy slope",
+      "skiers standing on a ski run",
+      "a snowy mountain landscape",
+      "trees covered in snow",
+      "the inside of a building",
+      "a trail map sign board",
+      "a ski resort information sign"
+    ]
+  },
+  "occluder": [
+    "a close-up of a glove",
+    "a hand covering the camera lens",
+    "a blurry close-up of a jacket sleeve",
+    "a ski helmet filling the frame",
+    "a person's face extremely close to the camera",
+    "a backpack strap close-up"
+  ],
+  "low_info": [
+    "a flat white foggy image",
+    "an empty white snow surface",
+    "a plain sky",
+    "a blurry image of snow",
+    "a dark blurry image"
+  ],
+  "scene": ["a skier on a slope", "people standing in the snow", "a chairlift"],
+  "vl": {
+    "video": "ski",
+    "gear": "ski pole",
+    "scenery": "snow, sky and trees",
+    "low_info": "only snow or sky"
+  }
 }
