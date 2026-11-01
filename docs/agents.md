@@ -6,7 +6,9 @@ Ollama models), so the agent only issues commands and reads small JSON and text
 files. Video files are never uploaded, and local models are the default for the model features. A
 hosted provider is used only after you give consent in the Models tab or AI Chat of `cutpoint ui`.
 AI Chat then sends text (moment labels, transcript snippets, file names, times). A hosted Vision
-role sends still frames plus transcript text, never the video file. Ollama stays local.
+role sends still frames, transcript excerpts, file names and times, and detected on-screen text
+(such as player names) and telemetry (for frame ratings and the `events` window descriptions),
+never the video file. Ollama stays local.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install

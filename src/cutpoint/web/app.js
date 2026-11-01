@@ -3999,7 +3999,7 @@ function renderVisionConsent() {
     box.hidden = false;
     const host = consent.host || 'the remote service';
     $('#visionConsentTitle').textContent = `Send video frames to ${host}?`;
-    $('#visionConsentText').textContent = `Rating moments with this hosted vision provider sends frame crops and descriptions to ${host}. Frame data is never sent until you explicitly grant permission. Permission is saved in config.json.`;
+    $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, and detected on-screen text (such as player names) and telemetry to ${host}. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
     $('#visionConsentOk').disabled = false;
   } else {
     status.textContent = `Permission granted: frame ratings allowed with ${consent.host || 'this provider'}.`;

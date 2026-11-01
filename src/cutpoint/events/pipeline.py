@@ -131,6 +131,8 @@ def run_events(
     llm: bool = True,
     prefetch: OcrPrefetch | None = None,
     encoder: Any = None,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -170,6 +172,8 @@ def run_events(
             (``cutpoint 360 analyze``, #376); the visual layer then hands over none.
             Closed after the crash layer; the caller closes it if this raises before
             or the crash layer does not run.
+        ollama_url, ollama_model: Ollama base URL and vision model for the VLM layer
+            (None: from config.json and the environment, as for ``analyze --vision``).
 
     Returns:
         Paths of events.json and events.txt.
@@ -184,7 +188,7 @@ def run_events(
         cached_ocr = not ski
     vlm.ski = ski
     preflight(layers)
-    rater = VisionRater()  # the shared vision client
+    rater = VisionRater(ollama_url, ollama_model)  # the shared vision client
     hosted = rater.provider_name != "ollama"
     vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
     sources = []
@@ -468,12 +472,16 @@ def run_events(
                 finally:
                     rater.unload()
             else:
-                logger.warning(
-                    "VLM: vision model %s not available (see above); %d window(s) not "
-                    "described, cached descriptions used",
-                    vlm.model,
-                    missing,
+                if "vlm" in force:  # nothing to describe them with: keep the saved descriptions
+                    results, vstats = describe_windows(
+                        None, by_path, windows, vlm, prompts, transcript, layer1
+                    )
+                message = (
+                    f"VLM: vision model {vlm.model} not available (see above); {missing} "
+                    "window(s) not described, cached descriptions used"
                 )
+                logger.warning("%s", message)
+                jsonout.warn("vlm_unavailable", message)
         else:
             results = cached
         stats["vlm"] = {k: v for k, v in vstats.items() if k not in ("seconds", "prompt_tokens")}

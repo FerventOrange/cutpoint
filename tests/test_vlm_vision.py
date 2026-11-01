@@ -12,7 +12,7 @@ import pytest
 import requests
 
 from conftest import set_config
-from cutpoint import cache, vision
+from cutpoint import cache, jsonout, vision
 from cutpoint.assistant import providers
 from cutpoint.assistant.providers import Reply
 from cutpoint.events import common, pipeline
@@ -32,6 +32,7 @@ REPLY: dict[str, Any] = {
 class Resp:
     def __init__(self, body: Any, status: int = 200) -> None:
         self.body, self.status_code = body, status
+        self.is_redirect = False
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -120,6 +121,22 @@ def test_describe_failure_gives_none(ollama, reply, caplog) -> None:
         assert rater.describe("describe", JPEGS, vw.RESPONSE_SCHEMA) is None
     assert rater.last_prompt_tokens in (None, 1234)  # counted when Ollama answered
     assert any("Vision" in r.getMessage() for r in caplog.records)
+
+
+def test_describe_refuses_a_redirect(ollama, monkeypatch, caplog) -> None:
+    sent: list[dict[str, Any]] = []
+
+    def moved(url: str, json: dict[str, Any], **kw: Any) -> Resp:
+        sent.append(kw)
+        resp = Resp({}, status=307)
+        resp.is_redirect = True
+        return resp
+
+    monkeypatch.setattr(vision.requests, "post", moved)
+    with caplog.at_level(logging.WARNING):
+        assert vision.VisionRater().describe("describe", JPEGS, vw.RESPONSE_SCHEMA) is None
+    assert sent == [{"timeout": 600, "allow_redirects": False}]  # not followed
+    assert any("redirect" in r.getMessage() for r in caplog.records)
 
 
 class FakeSubscription:
@@ -287,11 +304,12 @@ def test_preflight_needs_no_model_files_for_the_vlm_layer(extra_ok) -> None:
     pipeline.preflight(("ocr", "vlm"))
 
 
-def _run_vlm(tmp_path: Path, monkeypatch) -> dict[str, Any]:
-    """``run_events`` with the VLM layer only over one fake source; returns events.json."""
+def _run_vlm(tmp_path: Path, monkeypatch, **kw: Any) -> dict[str, Any]:
+    """``run_events`` with the VLM layer only over one fake source (``kw``: more of its
+    arguments); returns events.json."""
     src = _source(tmp_path)
     project = tmp_path / "proj"
-    project.mkdir()
+    project.mkdir(exist_ok=True)
     cand = {"id": "h001", "source": str(src.path), "start": 10.0, "end": 14.0, "score": 70}
     monkeypatch.setattr(
         pipeline,
@@ -305,7 +323,7 @@ def _run_vlm(tmp_path: Path, monkeypatch) -> dict[str, Any]:
     monkeypatch.setattr(pipeline, "detect_ocr_events", lambda *a, **k: ([], {}))
     monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
     monkeypatch.setattr(vw, "grab_frames", lambda *a, **k: list(JPEGS))
-    jpath, _ = pipeline.run_events(project, layers=("vlm",))
+    jpath, _ = pipeline.run_events(project, layers=("vlm",), **kw)
     return cache.load_json(jpath)
 
 
@@ -330,7 +348,51 @@ def test_run_events_without_the_vision_model_keeps_going(
 
     monkeypatch.setattr(vision.requests, "get", down)
     monkeypatch.setattr(vision.requests, "post", down)
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING), jsonout.run("events") as res:
         data = _run_vlm(tmp_path, monkeypatch)
     assert not [e for e in data["events"] if e["kind"] == "vlm"]
     assert any("not available" in r.getMessage() for r in caplog.records)
+    # --json callers see that the layer was skipped
+    (warning,) = res.warnings
+    assert warning["code"] == "vlm_unavailable" and "not available" in warning["message"]
+
+
+@pytest.mark.parametrize("force", [(), ("vlm",)], ids=["cached", "force-vlm"])
+def test_run_events_without_the_vision_model_keeps_cached_descriptions(
+    extra_ok, ollama, tmp_path, monkeypatch, force
+) -> None:
+    ollama.replies = [REPLY]
+    _run_vlm(tmp_path, monkeypatch)  # describes the window and caches it
+    ollama.replies = [REPLY]  # a second window for the forced run, if it were asked
+
+    def down(*_a, **_k):
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr(vision.requests, "get", down)
+    monkeypatch.setattr(vision.requests, "post", down)
+    with jsonout.run("events") as res:
+        data = _run_vlm(tmp_path, monkeypatch, force=force)
+    # --force vlm with the model down keeps the saved description instead of losing it
+    vlm = [e for e in data["events"] if e["kind"] == "vlm"]
+    assert [e["label"] for e in vlm] == ["player gets a kill"]
+    assert data["stats"]["vlm"]["cached"] == 1
+    assert [w["code"] for w in res.warnings] == (["vlm_unavailable"] if force else [])
+
+
+def test_run_events_passes_the_ollama_options_to_the_vision_client(
+    extra_ok, home, tmp_path, monkeypatch
+) -> None:
+    seen: list[tuple[Any, ...]] = []
+    real = pipeline.VisionRater
+
+    def rater(*a: Any, **k: Any) -> vision.VisionRater:
+        seen.append((a, k))
+        return real(*a, **k)
+
+    monkeypatch.setattr(pipeline, "VisionRater", rater)
+    monkeypatch.setattr(vision.VisionRater, "available", lambda self: False)
+    data = _run_vlm(
+        tmp_path, monkeypatch, ollama_url="http://gpu-box:11434", ollama_model="my-vl:7b"
+    )
+    assert seen == [(("http://gpu-box:11434", "my-vl:7b"), {})]
+    assert data["settings"]["vlm"]["model"] == "my-vl:7b"

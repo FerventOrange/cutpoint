@@ -210,8 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `llama` and `omni` components and `--force` of `cutpoint setup` (which now downloads about
   2 GB instead of 8 GB); `version` in the `setup --json` output; the `llama.cpp` key of
   `paths --json`; the `llama_cpp` key of `capabilities --json` and its report line; the
-  `CUTPOINT_LLAMA_SERVER`, `CUTPOINT_LLAMA_BACKEND` and `CUTPOINT_VLM_TRANSPORT` environment
-  variables. Windows described by the old stack are described again. Earlier downloads are not
+  `CUTPOINT_LLAMA_SERVER` and `CUTPOINT_LLAMA_BACKEND` environment variables. Windows described by the old stack are described again. Earlier downloads are not
   removed: the `models/llm` and `models/llama-cache` folders and `tools/llama.cpp` in
   `CUTPOINT_HOME` can be deleted.
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for

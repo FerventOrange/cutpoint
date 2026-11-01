@@ -76,6 +76,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
+| `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama, or a hosted Vision role without consent) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
@@ -632,7 +633,7 @@ one of them is refused.
 | `--format mp4\|fcpxml\|otio` | As on [`assemble`](#assemble): `mp4` (default) makes the final video; `fcpxml` or `otio` writes only that timeline, referencing the kept clips, and copies it to `<name>-final.fcpxml` or `.otio` |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
-| `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
+| `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |

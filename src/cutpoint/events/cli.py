@@ -180,8 +180,12 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
 
-def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
-    """Run ``cutpoint events`` from parsed arguments; returns events.json / events.txt."""
+def run_args(
+    args: argparse.Namespace, *, ollama_url: str | None = None, ollama_model: str | None = None
+) -> tuple[Path, Path]:
+    """Run ``cutpoint events`` from parsed arguments; returns events.json / events.txt.
+    ``ollama_url``, ``ollama_model``: the VLM layer's Ollama (``edit --events``; None: from
+    config.json and the environment)."""
     from cutpoint.config import player_tags, resolve_project_path  # noqa: PLC0415
 
     args.project = resolve_project_path(args.project)
@@ -223,6 +227,8 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
         discover_bursts=args.discover_bursts,
         preset_scope=args.preset_scope,
         sheets=args.sheets,
+        ollama_url=ollama_url,
+        ollama_model=ollama_model,
     )
     log = logging.getLogger(__name__)
     log.info("Wrote %s and %s", jpath, tpath)

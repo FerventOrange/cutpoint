@@ -346,7 +346,13 @@ class VisionRater:
         }
         self.used = True
         try:
-            resp = requests.post(f"{self.url}/api/chat", json=payload, timeout=600)
+            resp = requests.post(
+                f"{self.url}/api/chat", json=payload, timeout=600, allow_redirects=False
+            )
+            if resp.is_redirect:  # never followed: the frames would go to another host
+                raise requests.HTTPError(
+                    f"Ollama answered with a redirect (HTTP {resp.status_code}); not followed"
+                )
             resp.raise_for_status()
             body = resp.json()
             content = body["message"]["content"]

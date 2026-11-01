@@ -158,7 +158,9 @@ The Models tab fetches the catalog from this configured Ollama URL, including cu
 Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
 Catalogs and frames go to a subscription provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
-grants it. **Use at your own risk** when selecting a hosted provider.
+grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
+times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
+the `events` window descriptions), never the video file. **Use at your own risk** when selecting a hosted provider.
 `--ollama-url` and `--ollama-model` have no effect for subscription providers, whose ratings
 have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection.

@@ -162,6 +162,22 @@ def test_edit_events_without_the_extra_fails_before_analyzing(pipeline, monkeypa
     assert "'events' extra" in caplog.text
 
 
+def test_edit_events_passes_the_ollama_options_to_the_vlm_layer(pipeline, monkeypatch):
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    got: list[dict] = []
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: got.append(kw))
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    argv = ["--events", "--ollama-url", "http://ollama.example:11434", "--ollama-model", "x:7b"]
+    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
+    assert got == [{"ollama_url": "http://ollama.example:11434", "ollama_model": "x:7b"}]
+    got.clear()
+    assert cli.main(["edit", str(pipeline.video), "--events", "--force"]) == 0
+    assert got == [{"ollama_url": None, "ollama_model": None}]  # config.json and env decide
+
+
 def test_edit_vertical_names_its_outputs(pipeline, home):
     assert cli.main(["edit", str(pipeline.video), "--vertical"]) == 0
     project = home / "projects" / "My Clip"
