@@ -153,9 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path when the span, kind, settings, layers and planning code are unchanged, else plans it as
   before and logs why (`director path re-planned (span differs from 360 analyze)`, or
   `(9:16 not planned by 360 analyze)` under `--vertical`). A failed path logs a WARNING and the
-  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag).
-  `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
-  diagnostics for previews (#517).
+  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag) (#517).
 - `360 qa <dir> --compare RENDERED PATHS` (#11): joins the rendered and the `--paths` `qa.json`
   of `<dir>` (either order) per clip and frame and writes `edge_gap.json` next to the rendered
   one: the frames each QA flags `edge_cut`, and a cause for every frame only the rendered QA
@@ -278,6 +276,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
+
+### Removed
+
+- **BREAKING:** `cutpoint setup --torch-cuda` is gone. It did nothing since torch comes from the
+  `events` extra; commands that still pass it now stop with exit code 2. Drop the flag.
+- **BREAKING:** `cutpoint events --preset-scope package` is gone. It was an old alias of `user`
+  (the default); commands that still pass it now stop with exit code 2. Use `--preset-scope user`
+  or leave the option out.
 
 ### Fixed
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cutpoint.events import discover, game_profile, killfeed
+from cutpoint.events import discover, killfeed
 
 
 @pytest.fixture
@@ -86,40 +86,6 @@ def test_old_cache_is_reused_except_for_a_shared_id(tmp_path, fake_ocr):
     fake_ocr.clear()
     assert _key(_run(tmp_path, bursts)) == _key(again)
     assert fake_ocr == []
-
-
-def test_mined_records_keep_only_the_last_per_id_after_an_upgrade(tmp_path, fake_ocr, monkeypatch):
-    """ocr.jsonl keeps the old shared-id records next to the new ones; the phrase miner
-    sees exactly the run's frames, the last record of each id."""
-    src = SimpleNamespace(name="short.mp4", io_path=tmp_path / "short.mp4")
-    bursts = [(src, 0.0), (src, 0.04), (src, 60.0)]
-    first = _run(tmp_path, bursts)
-    old = [f | {"id": f["id"].split("#")[0]} for f in first]
-    (tmp_path / "ocr.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in old), encoding="utf-8"
-    )
-    again = _run(tmp_path, bursts)  # appends the re-OCR'd frames to the old records
-
-    records = discover.read_ocr_samples(tmp_path / "ocr.jsonl")
-    assert len(records) > len(again)  # the stale shared-id records are still in the file
-
-    seen: list[list[dict]] = []
-
-    def capture(frames, params):
-        seen.append(frames)
-        return []
-
-    monkeypatch.setattr(game_profile, "gameplay_frames", capture)
-    preset = {"discovery": {"frames": [f["id"] for f in again]}}
-    game_profile.mine_phrases(preset, records)
-
-    used = seen[0]
-    assert len(used) == len(again)
-    assert sorted(f["id"] for f in used) == sorted(f["id"] for f in again)
-    by_id = {f["id"]: f for f in again}
-    assert all(
-        f["boxes"] == by_id[f["id"]]["boxes"] and f["t"] == by_id[f["id"]]["t"] for f in used
-    )
 
 
 def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(

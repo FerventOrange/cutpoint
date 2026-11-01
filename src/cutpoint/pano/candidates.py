@@ -631,63 +631,6 @@ def _prune(folder: Path, keep: set[str]) -> None:
 
 
 # --------------------------------------------------------------------------- read API
-def _current(entry: dict[str, Any], clip: Any, overrides: Any) -> bool | None:
-    """Whether ``entry`` was planned with today's inputs (None: cannot be checked)."""
-    cand = entry.get("candidate") or {}
-    try:
-        key = path_key(
-            clip,
-            entry["key"]["start"],
-            entry["key"]["end"],
-            cand.get("kind"),
-            overrides,
-            bool(entry["key"].get("vertical")),
-        )
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    return key == entry["key"]
-
-
-def candidate_path(project: Path, cid: str) -> dict[str, Any] | None:
-    """The cached director path of candidate ``cid`` of ``highlights.json`` (16:9).
-
-    The candidate is looked up by id in the current ``highlights.json`` and its entry by
-    its source and span, so a re-ranked analysis (new ids) still finds it.
-
-    Returns:
-        None when the candidate, its 360 clip or its cache entry is missing; else
-        ``id``, ``file`` (the cache file), ``path`` (render it with
-        :func:`cutpoint.pano.render.render_segment`), ``diagnostics`` (``flags`` by the
-        current thresholds, with ``reasons``: code -> text) and ``current`` (True: planned
-        with today's settings and layers, what ``clips`` would reuse; False: stale, ``clips``
-        plans it anew; None: cannot be checked, e.g. footage offline).
-    """
-    from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
-
-    cand = next((c for c in _candidates(project) if c.get("id") == cid), None)
-    if cand is None:
-        return None
-    clip = clip_for(load(project), cand["source"])
-    if clip is None:
-        return None
-    folder = project / CACHE_DIR
-    file = folder / slot_name(clip, float(cand["start"]), float(cand["end"]))
-    entry = _entry(folder, file.name)
-    if entry is None:
-        return None
-    try:
-        overrides = D.config_overrides() or None
-    except ValueError:
-        overrides = None
-        current = None
-    else:
-        current = _current(entry, clip, overrides)
-    diag = dict(entry.get("diagnostics") or {})
-    diag["flags"] = path_flags(diag)
-    diag["reasons"] = {f: FLAGS[f] for f in diag["flags"]}
-    return {"id": cid, "file": file, "path": entry["path"], "diagnostics": diag, "current": current}
-
-
 def path_id(path: dict[str, Any]) -> str:
     """Short stable identity of a path's content: 12 hex characters of the sha1 of its
     canonical JSON (sorted keys). Equal paths give equal ids; any change gives another."""
@@ -731,7 +674,7 @@ def preview_key(path: dict[str, Any], *, vertical: bool, fmt: Any, settings: dic
 
 def candidate_flags(project: Path) -> dict[str, dict[str, Any]]:
     """Per candidate id with a cache entry, for badges on every moment at once (no freshness
-    check: see :func:`candidate_path`):
+    check):
 
     ``file`` (the cache file), ``flags`` (:data:`FLAGS` codes by the current thresholds),
     ``reasons`` (code -> text), ``diagnostics`` (the stored record, its ``flags`` replaced by

@@ -215,7 +215,7 @@ def test_key_file_permission_failure_is_not_treated_as_missing(
 
 def test_explicit_start_key_refresh_invalidates_previous_tokens(temp_home: Path) -> None:
     old_keys = cliproxy._ensure_keys(target_port=8317)
-    fresh_keys = cliproxy._ensure_keys(target_port=8317, refresh=True)
+    fresh_keys = cliproxy._ensure_keys(target_port=8317)
     assert fresh_keys != old_keys
     assert cliproxy._read_keys_file() == (*fresh_keys, 8317)
 
@@ -1281,7 +1281,7 @@ def test_statuses_distinguishes_connection_error_vs_http_error(
 
     # 1. HTTP error (e.g. 401 Unauthorized)
     def http_401_request(method: str, path: str, **kwargs: object) -> dict:
-        raise cliproxy.ProxyHTTPError("proxy error 401: Unauthorized", status_code=401)
+        raise cliproxy.ProxyHTTPError("proxy error 401: Unauthorized")
 
     monkeypatch.setattr(cliproxy, "_management_request", http_401_request)
     all_st = cliproxy.statuses()

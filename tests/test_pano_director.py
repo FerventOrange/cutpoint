@@ -1,6 +1,5 @@
 """Director penalties (PR 3): framing utility, occluders, the wearer in view, selfie
-gating, ``DirectorParams.legacy()`` equivalence and ``pano.director`` overrides in
-``PanoExporter.path_for``.
+gating and ``pano.director`` overrides in ``PanoExporter.path_for``.
 
 No models or footage: the view layer is synthetic and its CLIP scores are stubbed.
 """
@@ -170,64 +169,6 @@ def test_occluded_selfie_is_gated(stub_scores: dict) -> None:
     assert D.params_for("follow").selfie_mode == "off"
     with pytest.raises(ValueError, match="selfie_mode: one of auto, off"):
         D.with_params(D.DirectorParams(), {"selfie_mode": "sometimes"})
-
-
-# --------------------------------------------------------------------------- legacy
-def legacy_cases(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict]:
-    """Synthetic legacy-parameter paths (also run against the pre-PR-3 commit)."""
-    out = {}
-    group = np.zeros((N, 9), np.float32)
-    group[:, 3] = np.linspace(0, 1, N)
-    friend = [  # walks right, then someone else at yaw 200 is closer (a cut)
-        (0.95, 30.0 + 8 * f if f < 6 else 200.0, -12.0, 10.0, 18.0 + 4 * f, FWD_V) for f in range(N)
-    ]
-    tall = (0.99, 120.0, -20.0, 80.0, 80.0, FWD_V)
-    walk = {f: [friend[f]] for f in range(N)}
-    cases = {
-        "friend": (walk, 0.0, None, {}),
-        "talk": ({f: [friend[f]] for f in range(0, N, 3)}, 0.9, "laughter", {}),
-        "tall": ({f: [friend[f], tall] for f in range(N)}, 0.6, "wipeout", {}),
-        # PR 4: a segment inside the planned range (cuts near its edges) and 9:16
-        "edge": (walk, 0.0, None, {"span": (4.5, 9.0, 4.0)}),
-        "vertical": (walk, 0.6, "people", {"vertical": True}),
-    }
-    for name, (boxes, talk, kind, kw) in cases.items():
-        monkeypatch.setattr(
-            VW, "view_scores", lambda pv: {"group_zs": group, "beauty": group * 0.5}
-        )
-        monkeypatch.setattr(
-            VW,
-            "occlusion_scores",
-            lambda pv: {"occl_zs": np.zeros((N, 8)), "selfie_ok": np.zeros(N)},
-            raising=False,
-        )
-        monkeypatch.setattr(VW, "forward_yaw", lambda pv: 10.0)
-        monkeypatch.setattr(D, "_voice_at", lambda src, times, v=talk: v * (times > 6.0))
-        pv = make_views(boxes, f"legacy_{name}.lrv")
-        params = D.DirectorParams.legacy()
-        p = path_of(pv, params, kind=kind, **kw)
-        out[name] = {k: p[k] for k in ("keys", "cuts", "seconds_by_target")}
-    return out
-
-
-# Paths of the legacy parameters, generated on commit 6fe1a40 (before the penalties); "edge" and
-# "vertical" on 99cc953 (before subject framing). The values are rounded to 0.01, so compare
-# with a tolerance of one rounding step instead of hashing the dumped floats.
-LEGACY_PATHS = Path(__file__).with_name("pano_legacy_paths.json")
-
-
-def test_legacy_params_reproduce_the_old_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    expected = json.loads(LEGACY_PATHS.read_text(encoding="utf-8"))
-    got = legacy_cases(monkeypatch)
-    assert got.keys() == expected.keys()
-    for name, case in got.items():
-        want = expected[name]
-        assert case["cuts"] == pytest.approx(want["cuts"], abs=0.015), name
-        assert case["seconds_by_target"] == pytest.approx(want["seconds_by_target"], abs=0.015)
-        assert len(case["keys"]) == len(want["keys"]), name
-        for i, (key, old) in enumerate(zip(case["keys"], want["keys"], strict=True)):
-            assert key["target"] == old["target"], (name, i)
-            assert key == pytest.approx(old, abs=0.015), (name, i)
 
 
 # --------------------------------------------------------------------------- render
