@@ -9,6 +9,8 @@
 // Timers are Node's own (setTimeout, setInterval, requestAnimationFrame is routed to setTimeout),
 // so `mock.timers.enable()` from node:test works; enable it BEFORE boot() to also catch the
 // timers app.js starts while booting.
+// clearTimeout/clearInterval seen by app.js skip null/undefined ids: app.js clears never-set timers at
+// boot, and Node 22.1 MockTimers throws a TypeError (priorityQueuePosition) for them (see guardClears).
 import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -163,6 +165,31 @@ const KEEP_NODE = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearIn
   'URL', 'URLSearchParams', 'AbortController', 'AbortSignal', 'TextEncoder', 'TextDecoder', 'performance',
   'console', 'Event', 'EventTarget', 'CustomEvent', 'Blob', 'FormData', 'File', 'atob', 'btoa']);
 
+// Node 22.1.0 MockTimers throws on clearTimeout(undefined|null); browsers and real timers accept it.
+// Replace the globals with accessors: the getter returns a guard that drops nullish ids and calls
+// whatever implementation is current at call time (the mock if enabled before boot, or one that a later
+// enable()/reset() assigns through the setter); it never calls itself. Returns an undo function.
+function guardClears() {
+  const undo = [];
+  for (const name of ['clearTimeout', 'clearInterval']) {
+    const desc = Object.getOwnPropertyDescriptor(globalThis, name);
+    let impl = globalThis[name];
+    const guard = (id) => (id == null ? undefined : impl(id));
+    Object.defineProperty(globalThis, name, {
+      configurable: true, enumerable: true,
+      get: () => guard,
+      set(v) { impl = v; },
+    });
+    undo.push(() => {
+      const now = Object.getOwnPropertyDescriptor(globalThis, name);
+      if (now?.get?.() !== guard) return; // replaced wholesale (e.g. by a mock reset): leave it
+      if (desc) Object.defineProperty(globalThis, name, { ...desc, value: impl });
+      else delete globalThis[name];
+    });
+  }
+  return () => undo.forEach((f) => f());
+}
+
 function installGlobals(window, extra) {
   const saved = new Map(); // name -> original descriptor (or undefined)
   const set = (name, value) => {
@@ -187,7 +214,11 @@ function installGlobals(window, extra) {
   // DOM Event classes must be jsdom's, so dispatchEvent accepts them
   for (const n of ['Event', 'CustomEvent']) set(n, window[n]);
   for (const [n, v] of Object.entries(extra)) set(n, v);
+  const unguard = guardClears();
+  window.clearTimeout = (id) => clearTimeout(id);
+  window.clearInterval = (id) => clearInterval(id);
   return () => {
+    unguard();
     for (const [name, desc] of saved) {
       if (desc) Object.defineProperty(globalThis, name, desc);
       else delete globalThis[name];
