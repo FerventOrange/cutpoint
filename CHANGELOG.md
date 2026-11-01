@@ -199,6 +199,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The LAION aesthetic head of the visual layer is now a numpy `.npz`
+  (`models/aesthetic/sac+logos+ava1-l14-linearMSE.npz`, same float32 values), downloaded from
+  the cutpoint-models Hugging Face repo with a GitHub release as the second mirror. It loads
+  without pickle, the same way in full and lite. Run `cutpoint setup --only visual` once to
+  get it; that also removes the old `.pth`. Until then the visual layer reports the head as
+  missing. The torch-free pickle reader for the old `.pth` is gone.
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or
