@@ -27,7 +27,7 @@ This needs your name set, as above; other styles are unchanged.
 |---|---|
 | `audio` | Laughter, screams, cheering, gunfire, explosions (PANNs) |
 | `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, "N VS M", multi-kills |
-| `vlm` | A local Qwen2.5-Omni model describes candidate windows from frames, audio and transcript |
+| `vlm` | The shared vision model (Ollama `qwen3.5:9b`, or a subscription Vision model you allowed in the Models tab) describes candidate windows from frames, the transcript and the other layers' hints |
 
 Outputs (written by `analyze` and by `events`): `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
 events by time, which is the easiest file to read when picking segments:
@@ -169,7 +169,7 @@ moments the vision model describes first) and the game name used in the vision p
   little.
 - Text colours are unreliable on bright backgrounds, so colour-based teamkill detection is off
   for discovered presets.
-- The Omni model gives fluent but generic descriptions; it is a soft signal.
+- The vision model's window descriptions are a soft signal: they boost a candidate but never lower it.
 - Stream layouts with the game in a box: there is no CLI flag to remap HUD regions into the box
   yet (a `--hud-box` option is a suggested feature). Crop the clips instead with
   `--crop auto` or a per-segment `"crop": "W:H:X:Y"`.

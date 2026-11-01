@@ -69,8 +69,8 @@ See the [command reference](docs/commands.md#ui) for details.
 - An NVIDIA GPU is recommended (add the `gpu` extra for GPU Whisper). Without one, everything
   still runs but slower.
 - Optional: [Ollama](docs/getting-started.md#optional-ollama-for-frame-rating-and-ai-chat) for
-  AI frame rating and the local AI Chat, extra downloads (about 8 GB) for sound, on-screen text
-  and scene-description features
+  AI frame rating, the scene descriptions of `cutpoint events` and the local AI Chat, and extra
+  model downloads (about 2 GB, `cutpoint setup`) for the sound and visual features
 
 ## Install
 

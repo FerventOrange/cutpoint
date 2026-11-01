@@ -157,7 +157,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "<CUTPOINT_HOME>/presets (default; 'package' is an old alias) or "
         "project = <project>/hud_presets",
     )
-    g = ap.add_argument_group("VLM (Qwen2.5-Omni via llama-server)")
+    g = ap.add_argument_group("VLM (vision model)")
     g.add_argument(
         "--max-windows",
         type=int,
@@ -175,12 +175,6 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         help='Always describe this window, e.g. "*22.13.09*@364-400"',
     )
     g.add_argument("--frames", type=int, default=14, help="Frames per window (12-16)")
-    g.add_argument("--frame-height", type=int, default=720)
-    g.add_argument("--image-max-tokens", type=int, default=640)
-    g.add_argument("--ctx", type=int, default=16384)
-    g.add_argument(
-        "--no-audio", action="store_true", help="Do not send audio (frames + transcript only)"
-    )
     g.add_argument(
         "--no-transcript", action="store_true", help="Do not send the transcript excerpt"
     )
@@ -205,10 +199,6 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
         post_s=args.post,
         max_windows=args.max_windows,
         frames=args.frames,
-        frame_height=args.frame_height,
-        image_max_tokens=args.image_max_tokens,
-        ctx=args.ctx,
-        audio=not args.no_audio,
         transcript=not args.no_transcript,
         forced=tuple(_forced(s) for s in args.window_at),
     )

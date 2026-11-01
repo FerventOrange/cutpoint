@@ -37,25 +37,22 @@ def test_clip_weights_found_in_hf_snapshot(home: Path):
 # --------------------------------------------------------------------------- pipeline
 @pytest.fixture
 def extra_ok(monkeypatch):
-    """The events extra counts as installed; no llama-server on PATH."""
+    """The events extra counts as installed."""
     monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(paths.shutil, "which", lambda *a, **k: None)
 
 
-def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok, monkeypatch):
-    monkeypatch.setenv("CUTPOINT_VLM_TRANSPORT", "llama")  # vlm needs files only via llama-server
+def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok):
     layers = ("voice", "vlm", "visual")
     with pytest.raises(FileNotFoundError) as exc:
         pipeline.preflight(layers)
     msg = str(exc.value)
     for name in (
-        "Cnn14_", "class_labels_indices.csv", "silero_vad.onnx", "llama-server",
-        "Qwen2.5-Omni-7B-Q4_K_M.gguf", "mmproj-", "vit_large_patch14", "fasterrcnn_",
-        "sac+logos",
+        "Cnn14_", "class_labels_indices.csv", "silero_vad.onnx", "vit_large_patch14",
+        "fasterrcnn_", "sac+logos",
     ):  # fmt: skip
         assert name in msg
-    # setup order is pip, panns, llama, omni, visual, voice
-    assert msg.endswith("cutpoint setup --only panns llama omni visual voice")
+    # setup order is pip, panns, visual, voice; the VLM layer has no model files
+    assert msg.endswith("cutpoint setup --only panns visual voice")
 
 
 def test_preflight_passes_when_files_present_or_ocr(home: Path, extra_ok):

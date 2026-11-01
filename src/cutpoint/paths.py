@@ -7,8 +7,8 @@
     CUTPOINT_HOME/
       config.json     settings (see config.example.json in the repository)
       cache/          per-source analysis cache (audio, transcripts, scenes, ...)
-      models/         PANNs, CLIP, detector, aesthetic head, Silero VAD, LLMs
-      tools/          llama.cpp, CLIProxyAPI binary (``tools/cliproxy/``)
+      models/         PANNs, CLIP, detector, aesthetic head, Silero VAD
+      tools/          CLIProxyAPI binary (``tools/cliproxy/``)
       cliproxy/       CLIProxyAPI keys, config, and subscription auth records
       stage/          local copies of sources on slow/network storage (``cutpoint stage``)
       styles/         learned style presets (``cutpoint refmatch`` / ``fit``)
@@ -109,7 +109,7 @@ def models_dir() -> Path:
 
 
 def tools_dir() -> Path:
-    """External tools (llama.cpp): ``CUTPOINT_TOOLS_DIR`` or ``<home>/tools``."""
+    """External tools (CLIProxyAPI): ``CUTPOINT_TOOLS_DIR`` or ``<home>/tools``."""
     return _dir("TOOLS_DIR", "tools")
 
 

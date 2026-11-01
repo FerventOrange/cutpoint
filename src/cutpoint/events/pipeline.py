@@ -5,8 +5,7 @@ PANNs (torch) -> freed -> voice (PANNs on high-passed audio + Silero VAD) ->
 visual (CLIP ViT-L/14 + Faster R-CNN, one decode per source) -> freed -> OCR
 (CPU, GPU decode) -> crashes (CLIP, handed over by the visual layer when no
 OCR runs in between) -> windows described by the vision model (Ollama, unloaded
-afterwards, or the hosted Vision role; with the temporary ``CUTPOINT_VLM_TRANSPORT=llama``:
-Ollama unloaded -> llama-server started -> windows described -> server stopped).
+afterwards, or the hosted Vision role).
 ``cutpoint analyze`` may have read the OCR in the background
 already (:mod:`cutpoint.events.ocr_prefetch`); its results are taken in the OCR turn.
 """
@@ -27,7 +26,6 @@ from typing import Any
 
 from cutpoint import cache, jsonout, progress
 from cutpoint import paths as cutpoint_paths
-from cutpoint.config import source_path
 from cutpoint.events import paths
 from cutpoint.events.audio_events import (
     AudioParams,
@@ -37,7 +35,6 @@ from cutpoint.events.audio_events import (
 )
 from cutpoint.events.common import (
     VramMonitor,
-    audio_slice,
     load_highlights,
     load_source,
     load_transcript_lines,
@@ -59,11 +56,9 @@ from cutpoint.events.vlm_windows import (
     VlmParams,
     add_incremental,
     cached_windows,
-    check_audio,
     describe_windows,
     game_prompt,
     select_windows,
-    use_llama,
     windows_to_events,
 )
 from cutpoint.vision import VisionRater
@@ -82,7 +77,7 @@ DISCOVERY_PCT = 50.0
 def _require_events_extra(layers: tuple[str, ...]) -> None:
     """Fail before any side effect (unloading Ollama) when the events extra is missing.
 
-    Every layer but VLM (llama-server) loads a model from the extra.
+    Every layer but VLM (the shared vision model) loads a model from the extra.
     """
     if not set(layers) - {"vlm"}:
         return
@@ -110,10 +105,10 @@ def _require_model_files(layers: tuple[str, ...]) -> None:
 def preflight(layers: tuple[str, ...]) -> None:
     """Cheap checks for ``layers`` (events extra, model files) that :func:`run_events`
     makes before it unloads Ollama or imports torch; callers that run a long step
-    first (``cutpoint 360 analyze``) call it up front. The VLM layer needs model files only
-    with the temporary llama-server transport (:func:`use_llama`)."""
+    first (``cutpoint 360 analyze``) call it up front. The VLM layer has no model files: its
+    vision model is checked when it runs."""
     _require_events_extra(layers)
-    _require_model_files(layers if use_llama() else tuple(x for x in layers if x != "vlm"))
+    _require_model_files(layers)
 
 
 def run_events(
@@ -189,12 +184,9 @@ def run_events(
         cached_ocr = not ski
     vlm.ski = ski
     preflight(layers)
-    rater = None  # the shared vision client; None: the temporary llama-server transport
-    if not use_llama():
-        rater = VisionRater()
-        hosted = rater.provider_name != "ollama"
-        vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
-        vlm.audio = False  # the transcript and detector hints stand in for the audio
+    rater = VisionRater()  # the shared vision client
+    hosted = rater.provider_name != "ollama"
+    vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
@@ -457,7 +449,7 @@ def run_events(
             None, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
         )
         missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
-        if missing > 0 and rater is not None:
+        if missing > 0:
             results = cached
             if rater.available():
                 try:
@@ -482,31 +474,6 @@ def run_events(
                     vlm.model,
                     missing,
                 )
-        elif missing > 0:
-            from cutpoint.events.llama_server import LlamaServer  # noqa: PLC0415
-
-            with (
-                VramMonitor() as vm,
-                LlamaServer(
-                    ctx=vlm.ctx,
-                    image_max_tokens=vlm.image_max_tokens,
-                    log_path=paths.llama_dir() / "llama-server.log",
-                ) as srv,
-            ):
-                stats["llama_load_s"] = srv.load_s
-                if vlm.audio:
-                    stats["audio_check"] = _audio_check(srv, by_path, layer1)
-                    if not stats["audio_check"]["accepted"]:
-                        logger.warning(
-                            "Audio input NOT accepted by llama-server (%s); "
-                            "falling back to frames + transcript",
-                            stats["audio_check"].get("error"),
-                        )
-                        vlm.audio = False
-                results, vstats = describe_windows(
-                    srv, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
-                )
-            vram["vlm"] = vm.summary()
         else:
             results = cached
         stats["vlm"] = {k: v for k, v in vstats.items() if k not in ("seconds", "prompt_tokens")}
@@ -730,30 +697,3 @@ def bad_ranges(
             if fnmatch.fnmatch(src.name.lower(), pattern.lower()):
                 out.setdefault(str(src.path), []).append((a, b))
     return out
-
-
-def _audio_check(
-    srv: Any, sources: dict[str, Any], layer1: dict[str, list[dict[str, Any]]]
-) -> dict[str, Any]:
-    """Run :func:`check_audio` on the strongest laughter event (or any audio)."""
-    best = None
-    for src, evs in layer1.items():
-        for e in evs:
-            if (
-                e.get("kind") == "audio"
-                and e["label"] == "Laughter"
-                and (best is None or e["confidence"] > best[1]["confidence"])
-            ):
-                best = (src, e)
-    if best:
-        src, e = best
-        samples = audio_slice(sources[src], e["peak_t"] - 4, e["peak_t"] + 4)
-        where = f"{source_path(src).name} @ {e['peak_t']:.1f}s (PANNs {e['confidence']:.2f})"
-    else:
-        s = next(iter(sources.values()))
-        samples = audio_slice(s, 0, 8)
-        where = f"{s.name} @ 0s"
-    res = check_audio(srv, samples)
-    res["clip"] = where
-    logger.info("Audio check on %s: %s", where, res.get("reply") or res.get("error"))
-    return res

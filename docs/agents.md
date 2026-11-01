@@ -2,10 +2,11 @@
 
 Cutpoint is a command-line tool, so any agent that can run shell commands can drive it:
 Claude Code, Codex, Grok CLI, or a script. Analysis runs locally (ffmpeg, Whisper, optional
-Ollama and llama.cpp models), so the agent only issues commands and reads small JSON and text
-files. No video is sent to an API, and local models are the default for the model features. The AI
-Chat in `cutpoint ui` can optionally use a hosted provider with your own API key; it then sends
-text (moment labels, transcript snippets, file names, times), never video.
+Ollama models), so the agent only issues commands and reads small JSON and text
+files. Video files are never uploaded, and local models are the default for the model features. A
+hosted provider is used only after you give consent in the Models tab or AI Chat of `cutpoint ui`.
+AI Chat then sends text (moment labels, transcript snippets, file names, times). A hosted Vision
+role sends still frames plus transcript text, never the video file. Ollama stays local.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install

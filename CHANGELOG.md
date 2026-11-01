@@ -199,6 +199,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** the VLM layer of `cutpoint events` (also run by `edit --events` and `360 analyze`)
+  now uses the shared vision model of `analyze --vision`: Ollama with `qwen3.5:9b`
+  (`CUTPOINT_VISION_MODEL`), or the subscription Vision model of the Models tab once vision
+  requests are allowed there. When neither answers, the layer keeps its cached window
+  descriptions and the run goes on. The llama-server + Qwen2.5-Omni-7B stack is removed, and no
+  audio is sent to the model any more (an A/B showed it added nothing; the transcript and the
+  detector hints stay). Removed: the `events` options `--ctx`, `--image-max-tokens`,
+  `--frame-height` and `--no-audio` (frames are capped at 606 px high to fit the 16k context);
+  the `llama` and `omni` components and `--force` of `cutpoint setup` (which now downloads about
+  2 GB instead of 8 GB); `version` in the `setup --json` output; the `llama.cpp` key of
+  `paths --json`; the `llama_cpp` key of `capabilities --json` and its report line; the
+  `CUTPOINT_LLAMA_SERVER`, `CUTPOINT_LLAMA_BACKEND` and `CUTPOINT_VLM_TRANSPORT` environment
+  variables. Windows described by the old stack are described again. Earlier downloads are not
+  removed: the `models/llm` and `models/llama-cache` folders and `tools/llama.cpp` in
+  `CUTPOINT_HOME` can be deleted.
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or

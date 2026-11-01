@@ -15,7 +15,7 @@ from conftest import set_config
 from cutpoint import cache, vision
 from cutpoint.assistant import providers
 from cutpoint.assistant.providers import Reply
-from cutpoint.events import common, paths, pipeline
+from cutpoint.events import common, pipeline
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source, layer_cache_path
 
@@ -179,7 +179,7 @@ def test_describe_hosted_reply_without_json_gives_none(hosted) -> None:
     assert vision.VisionRater().describe("describe", JPEGS, vw.RESPONSE_SCHEMA) is None
 
 
-# --------------------------------------------------------------------------- vlm_windows transport
+# --------------------------------------------------------------------------- vlm_windows requests
 
 
 def _source(tmp_path: Path) -> Source:
@@ -187,29 +187,26 @@ def _source(tmp_path: Path) -> Source:
     return Source(tmp_path / "game.mp4", 60.0, tmp_path / "cache", [])
 
 
-def test_vision_request_keeps_text_and_frames_in_order_without_system_or_audio(tmp_path) -> None:
+def test_vision_request_keeps_text_and_frames_in_order(tmp_path) -> None:
     src = _source(tmp_path)
     win = vw.Window(str(src.path), 5.0, 20.0, 1.0, ["seed"])
     lines = [{"name": src.name, "start": 6.0, "end": 8.0, "text": "nice shot"}]
     events = [{"kind": "audio", "t": 7.0, "label": "Laughter", "confidence": 0.9}]
-    msgs = vw.build_messages(src, win, JPEGS, vw.VlmParams(audio=False), None, lines, events)
+    msgs = vw.build_messages(src, win, JPEGS, vw.VlmParams(), None, lines, events)
     prompt, images = vw.vision_request(msgs)
     assert images == JPEGS
-    assert vw.QWEN_SYSTEM not in prompt
+    assert [m["role"] for m in msgs] == ["user"]
     assert "Frame 1 @ 0.0s: [image 1]" in prompt and "Frame 3 @ 10.0s: [image 3]" in prompt
     assert "nice shot" in prompt  # the transcript and the detected sounds replace the audio
     assert "Laughter" in prompt
     assert prompt.rstrip().endswith('"label": "2-4 word slug"}')
-    # an audio part (llama-server only) is never sent to the vision client
-    msgs[1]["content"].append({"type": "input_audio", "input_audio": {"data": "", "format": "wav"}})
-    assert vw.vision_request(msgs) == (prompt, images)
 
 
 def _describe(tmp_path: Path, monkeypatch, rater: vision.VisionRater, ski: bool = False):
     src = _source(tmp_path)
     monkeypatch.setattr(vw, "grab_frames", lambda *a, **k: list(JPEGS))
     win = vw.Window(str(src.path), 5.0, 20.0, 1.0, ["seed"])
-    params = vw.VlmParams(audio=False, model="qwen3.5:9b", ski=ski)
+    params = vw.VlmParams(model="qwen3.5:9b", ski=ski)
     results, stats = vw.describe_windows(rater, {str(src.path): src}, [win], params, {}, [], {})
     return src, params, results, stats
 
@@ -219,7 +216,7 @@ def test_describe_windows_with_the_vision_client(ollama, tmp_path, monkeypatch) 
     src, params, results, stats = _describe(tmp_path, monkeypatch, vision.VisionRater())
     (body,) = ollama.chats
     assert body["format"] == vw.RESPONSE_SCHEMA
-    # Ollama indents structured output: twice llama-server's token budget
+    # Ollama indents structured output: twice the token budget of a compact reply
     assert body["options"] == {
         "temperature": 0.2,
         "num_ctx": params.ctx,
@@ -230,11 +227,11 @@ def test_describe_windows_with_the_vision_client(ollama, tmp_path, monkeypatch) 
     assert res["label"] == "kill-after-banter" and res["highlight_score"] == 6  # parse_reply
     assert res["prompt_tokens"] == 1234 and res["frames"] == 3
     assert stats["ok"] == 1 and stats["failed"] == 0
-    # cached under the vision model's key, not under the Omni one
+    # cached under the vision model's key
     stored = cache.load_json(layer_cache_path(src.cdir, "vlm", params.key()))
     assert stored["params"]["model"] == "qwen3.5:9b"
     assert stored["windows"]["5.0-20.0"]["summary"] == REPLY["summary"]
-    assert not layer_cache_path(src.cdir, "vlm", vw.VlmParams(audio=False).key()).exists()
+    assert not layer_cache_path(src.cdir, "vlm", vw.VlmParams(model="other").key()).exists()
     # a rerun takes the window from the cache and asks nothing
     _, _, again, stats = _describe(tmp_path, monkeypatch, vision.VisionRater())
     assert stats["cached"] == 1 and len(ollama.chats) == 1 and again[0]["label"] == res["label"]
@@ -264,8 +261,7 @@ def test_describe_windows_retry_succeeds(ollama, tmp_path, monkeypatch) -> None:
 
 def test_vision_frames_are_capped_to_the_image_token_budget(ollama, tmp_path, monkeypatch) -> None:
     # 640 tokens of 32x32 px at 16:9: 606 px high, so 16 frames fit the 16k context
-    assert vw.vision_frame_height(vw.VlmParams()) == 606
-    assert vw.vision_frame_height(vw.VlmParams(frame_height=480)) == 480
+    assert vw.FRAME_HEIGHT == 606
     heights: list[int] = []
     monkeypatch.setattr(vw, "grab_frames", lambda *a, **k: heights.append(a[4]) or list(JPEGS))
     src = _source(tmp_path)
@@ -277,30 +273,18 @@ def test_vision_frames_are_capped_to_the_image_token_budget(ollama, tmp_path, mo
     assert heights == [606]
 
 
-def test_vlm_key_keeps_the_omni_cache_key_for_llama() -> None:
-    assert vw.VlmParams().key()["model"] == vw.OMNI_MODEL
-    assert vw.VlmParams(model="qwen3.5:9b").key()["model"] == "qwen3.5:9b"
-
-
 # --------------------------------------------------------------------------- pipeline wiring
 
 
 @pytest.fixture
-def no_llama_files(home, monkeypatch):
-    """The events extra counts as installed; no llama-server or Omni files anywhere."""
+def extra_ok(home, monkeypatch):
+    """The events extra counts as installed; no model files anywhere."""
     monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(paths.shutil, "which", lambda *a, **k: None)
 
 
-def test_preflight_needs_no_llama_files_for_the_vision_client(no_llama_files) -> None:
+def test_preflight_needs_no_model_files_for_the_vlm_layer(extra_ok) -> None:
     pipeline.preflight(("vlm",))
     pipeline.preflight(("ocr", "vlm"))
-
-
-def test_preflight_needs_llama_files_for_the_llama_transport(no_llama_files, monkeypatch) -> None:
-    monkeypatch.setenv("CUTPOINT_VLM_TRANSPORT", "llama")
-    with pytest.raises(FileNotFoundError, match="setup --only llama omni"):
-        pipeline.preflight(("vlm",))
 
 
 def _run_vlm(tmp_path: Path, monkeypatch) -> dict[str, Any]:
@@ -326,20 +310,20 @@ def _run_vlm(tmp_path: Path, monkeypatch) -> dict[str, Any]:
 
 
 def test_run_events_describes_windows_with_the_vision_client(
-    no_llama_files, ollama, tmp_path, monkeypatch
+    extra_ok, ollama, tmp_path, monkeypatch
 ) -> None:
     ollama.replies = [REPLY]
     data = _run_vlm(tmp_path, monkeypatch)
     assert len(ollama.chats) == 1 and ollama.unloads == [{"model": "qwen3.5:9b", "keep_alive": 0}]
     assert data["settings"]["vlm"]["model"] == "qwen3.5:9b"
-    assert data["settings"]["vlm"]["audio"] is False
+    assert "audio" not in data["settings"]["vlm"]
     vlm = [e for e in data["events"] if e["kind"] == "vlm"]
     assert [e["label"] for e in vlm] == ["player gets a kill"]
     assert data["stats"]["vlm"]["ok"] == 1
 
 
 def test_run_events_without_the_vision_model_keeps_going(
-    no_llama_files, home, tmp_path, monkeypatch, caplog
+    extra_ok, home, tmp_path, monkeypatch, caplog
 ) -> None:
     def down(*_a, **_k):
         raise requests.ConnectionError("refused")

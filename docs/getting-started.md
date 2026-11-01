@@ -270,23 +270,18 @@ For `cutpoint events`, install the `events` extra and run:
 uv run cutpoint setup
 ```
 
-This downloads about 8 GB into `CUTPOINT_HOME`: the PANNs sound-event checkpoint, a
-llama.cpp build selected for the platform, Qwen2.5-Omni-7B (Q4_K_M plus its mmproj), CLIP ViT-L/14, a Faster R-CNN
-person detector, an aesthetic head and Silero VAD. Downloads resume if interrupted. Choose
-parts with `--only`:
+This downloads about 2 GB into `CUTPOINT_HOME`: the PANNs sound-event checkpoint, CLIP ViT-L/14,
+a Faster R-CNN person detector, an aesthetic head and Silero VAD. Downloads resume if
+interrupted. Choose parts with `--only`:
 
 ```powershell
 uv run cutpoint setup --only panns voice
 ```
 
-Valid components: `pip`, `panns`, `llama`, `omni`, `visual`, `voice`. `setup` installs no Python
-packages; the `pip` step only checks them and prints the install command. The llama.cpp build it
-downloads is selected on Windows and Linux: CUDA with a usable NVIDIA driver, otherwise Vulkan,
-then CPU, depending on release assets. Windows CUDA uses the CUDA 12.4 distribution; Linux uses
-the oldest CUDA distribution with cudart in the newest matching release.
-Set `CUTPOINT_LLAMA_BACKEND=auto`, `cuda`, `vulkan` or `cpu` to override selection. An explicit
-backend does not silently fall back. `llama-server` is found through `CUTPOINT_LLAMA_SERVER`,
-then the bundled build, then `PATH`, so a self-built `llama-server` on `PATH` works.
+Valid components: `pip`, `panns`, `visual`, `voice`. `setup` installs no Python
+packages; the `pip` step only checks them and prints the install command. The VLM layer of
+`cutpoint events` downloads nothing here: it uses the shared vision model (see
+[Ollama](#optional-ollama-for-frame-rating-and-ai-chat)).
 
 ### Optional: Ollama for frame rating and AI Chat
 
@@ -298,13 +293,15 @@ Ollama runs local models. Cutpoint works without it. Only these features use it:
   in `config.json` (`--no-vision` then skips it for one run). In `cutpoint ui`, that setting is
   the only switch: every analysis there follows it. The model is unloaded from GPU memory as soon
   as the rating is done.
+- The VLM layer of `cutpoint events` (and `edit --events`): the same vision model describes
+  candidate windows from frames, the transcript and the other layers' hints. Without Ollama, it
+  can use a subscription Vision model chosen in the Models tab once you allowed vision requests
+  there ([`vision_assistant`](configuration.md#vision_assistant)); with neither, the layer is
+  skipped with a WARNING and earlier descriptions are kept.
 - `360 director --vl-check` and building a new activity profile (see
   [action-cam](workflows/action-cam.md#activity-profiles)).
 - The [AI Chat](commands.md#ai-chat) tab in `cutpoint ui`, when its provider is `ollama` (the
   default). The hosted providers (OpenAI-compatible, Anthropic) do not need Ollama.
-
-The `events` model layer does not use Ollama. It runs llama.cpp, which `cutpoint setup` installs
-(see [Download models](#download-models-only-for-cutpoint-events)).
 
 **Install Ollama.**
 

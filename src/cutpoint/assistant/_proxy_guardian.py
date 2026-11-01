@@ -14,9 +14,8 @@ from typing import Any
 
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.proxy_credentials import CredentialStore
-from cutpoint.events.llama_server import _pdeathsig_hook
 from cutpoint.ffmpeg_utils import FolderBusyError, _pid_alive, swap_lock
-from cutpoint.winjob import kill_with_parent
+from cutpoint.winjob import kill_with_parent, pdeathsig_hook
 
 _TERMINATE_TIMEOUT = 3.0
 _KILL_TIMEOUT = 2.0
@@ -129,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         close_fds=True,
-                        preexec_fn=_pdeathsig_hook(),
+                        preexec_fn=pdeathsig_hook(),
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                     kill_with_parent(child)

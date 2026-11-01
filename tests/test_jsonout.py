@@ -173,7 +173,7 @@ def test_paths_json(home, capsys):
     assert doc["ok"] is True and doc["command"] == "paths" and doc["project"] is None
     outputs = doc["outputs"]
     assert outputs["home"] == str(home)
-    keys = ["home", "config", "cache", "models", "tools", "llama.cpp", "stage", "styles"]
+    keys = ["home", "config", "cache", "models", "tools", "stage", "styles"]
     keys += ["presets", "profiles", "projects", "bundled", "missing"]
     assert list(outputs) == keys
     assert all(Path(outputs[k]).is_absolute() for k in keys[:-1])

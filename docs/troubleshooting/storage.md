@@ -4,7 +4,7 @@
 
 | What | Where | Size |
 |---|---|---|
-| Models for `events` | `<CUTPOINT_HOME>\models`, `tools` | about 8 GB |
+| Models for `events` | `<CUTPOINT_HOME>\models` | about 2 GB (the Ollama vision model is stored by Ollama) |
 | Analysis cache | `<CUTPOINT_HOME>\cache` | grows with footage; safe to delete |
 | Staged copies | `<CUTPOINT_HOME>\stage` | a full copy of each staged source; `cutpoint stage --clear` frees it |
 | Projects | `projects_dir` | clips and finals are re-encoded video |

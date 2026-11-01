@@ -35,9 +35,9 @@ RUN mkdir -p /tmp/ffmpeg/bin \
 FROM base
 ENV DEBIAN_FRONTEND=noninteractive
 # libgl1, libglib2.0-0t64, libxcb1: needed by the opencv-python wheel (cv2 import); fontconfig and
-# fonts-dejavu-core: burned-in captions (libass); libgomp1: llama-server downloaded by `cutpoint setup`.
+# fonts-dejavu-core: burned-in captions (libass).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libgl1 libglib2.0-0t64 libxcb1 fontconfig fonts-dejavu-core libgomp1 \
+    && apt-get install -y --no-install-recommends ca-certificates libgl1 libglib2.0-0t64 libxcb1 fontconfig fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /tmp/ffmpeg/bin/ /usr/local/bin/
 # Fallback when the static download failed in the ffmpeg stage.
@@ -68,7 +68,7 @@ RUN (userdel -r ubuntu 2>/dev/null || true) \
     && chown -R "$CUTPOINT_UID:$CUTPOINT_GID" /data
 
 # NUMBA_CACHE_DIR: librosa/numba needs a writable cache when run with --user <uid> (HOME is /).
-ENV CUTPOINT_HOME=/data HF_HOME=/data/huggingface CUTPOINT_LLAMA_BACKEND=cpu NUMBA_CACHE_DIR=/tmp/numba-cache
+ENV CUTPOINT_HOME=/data HF_HOME=/data/huggingface NUMBA_CACHE_DIR=/tmp/numba-cache
 VOLUME /data
 USER cutpoint
 ENTRYPOINT ["/app/.venv/bin/cutpoint"]
