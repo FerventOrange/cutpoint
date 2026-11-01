@@ -119,12 +119,14 @@ def test_every_cause_is_attributed(tmp_path: Path) -> None:
 
 def test_stale_without_any_view_frame_and_no_median_with_few_pairs() -> None:
     p = fr(0.0, view_dt=None)  # no view frame within the hold
-    assert QC.cause_of(fr(0.0, ["edge_cut"], [LEFT]), p, TH, None, None, None) == "stale_view"
+    assert (
+        QC.explain(fr(0.0, ["edge_cut"], [LEFT]), p, TH, None, None, None)["cause"] == "stale_view"
+    )
     pairs = QC.join_frames([fr(0.0, [], [LEFT])], [fr(0.0, [], [LEFT])], 2.0)
     assert QC.median_dx(pairs, TH) is None
     # an old paths report without view_dt: never stale
     old = {k: v for k, v in fr(0.0).items() if k != "view_dt"}
-    assert QC.cause_of(fr(0.0, ["edge_cut"], [LEFT]), old, TH, None, None, None) == (
+    assert QC.explain(fr(0.0, ["edge_cut"], [LEFT]), old, TH, None, None, None)["cause"] == (
         "no_projected_box"
     )
 
@@ -189,12 +191,12 @@ def test_a_wearer_seen_only_as_a_sliver_is_wearer_overlap() -> None:
     still explains the rendered cut; another person's sliver is a projected box."""
     r = fr(0.0, ["edge_cut"], [LEFT])
     wearer = fr(0.0, slivers=[[0.0, 0.3, 0.11, 0.8, True]])
-    assert QC.cause_of(r, wearer, TH, None, None, None) == "wearer_overlap"
+    assert QC.explain(r, wearer, TH, None, None, None)["cause"] == "wearer_overlap"
     other = fr(0.0, slivers=[[0.0, 0.3, 0.11, 0.8, False]])
-    assert QC.cause_of(r, other, TH, None, None, None) == "other"  # matched, not no box
+    assert QC.explain(r, other, TH, None, None, None)["cause"] == "other"  # matched, not no box
     # the sliver would be the paths subject: the paths QA counts it (a hand-built pair)
     assert QC.explain(r, other, TH, None, None, None)["other_detail"] == "unexplained"
-    assert QC.cause_of(r, fr(0.0), TH, None, None, None) == "no_projected_box"
+    assert QC.explain(r, fr(0.0), TH, None, None, None)["cause"] == "no_projected_box"
 
 
 def test_frames_without_a_paths_partner_are_unpaired_and_fps_mismatch_warns(
@@ -224,7 +226,7 @@ def test_a_tiny_far_person_at_the_edge_does_not_decide_the_cause() -> None:
     r = fr(0.0, ["edge_cut"], [LEFT, tiny])
     p = fr(0.0, own=[[0.96, 0.4, 1.0, 0.5]])  # the projected wearer covers the tiny one
     assert QC.cut_boxes(r, TH).tolist() == [LEFT]
-    assert QC.cause_of(r, p, TH, None, None, None) == "no_projected_box"
+    assert QC.explain(r, p, TH, None, None, None)["cause"] == "no_projected_box"
 
 
 BIG_LEFT = [0.0, 0.3, 0.25, 0.8]  # counted by its area (0.125)

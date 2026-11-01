@@ -1142,10 +1142,6 @@ def is_subscription(name: str | Provider) -> bool:
 
 def _format_openai_message(m: dict[str, Any]) -> dict[str, Any]:
     msg = dict(m)
-    role = msg.get("role")
-    if role == "model":
-        role = "assistant"
-        msg["role"] = "assistant"
     content = msg.get("content")
     if isinstance(content, list):
         converted_parts: list[dict[str, Any]] = []
@@ -1207,9 +1203,6 @@ class SubscriptionProvider(OpenAIProvider):
     def has_key(self) -> bool:
         st = cliproxy.status(self.name)
         return bool(st.get("logged_in"))
-
-    def status(self) -> dict[str, Any]:
-        return cliproxy.status(self.name)
 
     def _need_key(self) -> None:
         st = cliproxy.status(self.name)

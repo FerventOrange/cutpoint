@@ -8,7 +8,7 @@ const BAD_TOKEN = 'The server rejected this session token. Open the complete URL
 const TOKEN_DETAIL = 'missing or wrong session token';
 const EXPIRED = 'The Cutpoint server restarted or this link expired. Open the new link printed in the terminal.';
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(status, message) {
     super(message);
     this.status = status;

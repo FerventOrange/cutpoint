@@ -151,10 +151,10 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
     g.add_argument(
         "--preset-scope",
-        choices=["user", "project", "package"],
+        choices=["user", "project"],
         default="user",
         help="Where a newly discovered preset is saved: user = "
-        "<CUTPOINT_HOME>/presets (default; 'package' is an old alias) or "
+        "<CUTPOINT_HOME>/presets (default) or "
         "project = <project>/hud_presets",
     )
     g = ap.add_argument_group("VLM (vision model)")
