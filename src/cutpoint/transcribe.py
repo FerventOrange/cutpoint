@@ -25,6 +25,7 @@ Segment = dict[str, Any]  # {"start", "end", "text", "words": [{"start","end","w
 _dll_dirs_added = False
 _cpu_notice_logged = False
 _torch_loaded = False
+_hub_handler_removed = False
 
 # Libraries ctranslate2 needs for CUDA inference (the 'gpu' extra's wheels or a CUDA
 # 12 / cuDNN 9 install). cuDNN's front library alone is not enough: it loads the
@@ -157,6 +158,27 @@ def _cuda_libs_hint() -> str:
     return f"For GPU transcription add the 'gpu' extra: {install_hint('gpu')}"
 
 
+def _quiet_hub_handler() -> None:
+    """Remove huggingface_hub's own stderr handler (once), which faster-whisper's model
+    download logs through.
+
+    It also propagates to Cutpoint's handler, so the Hub's warnings (e.g. "unauthenticated
+    requests") came out twice: keep only ours. The handler is added on import, so import it
+    first.
+    """
+    global _hub_handler_removed
+    if _hub_handler_removed:
+        return
+    _hub_handler_removed = True
+    try:
+        import huggingface_hub.utils.logging  # noqa: F401, PLC0415 - only with whisper
+    except ImportError:
+        return
+    hf_logger = logging.getLogger("huggingface_hub")
+    for handler in list(hf_logger.handlers):
+        hf_logger.removeHandler(handler)
+
+
 class Transcriber:
     """Lazily-loaded WhisperModel that falls back to CPU int8 on CUDA failure."""
 
@@ -167,6 +189,7 @@ class Transcriber:
         self._model: Any = None
 
     def _load(self) -> Any:
+        _quiet_hub_handler()
         from faster_whisper import WhisperModel  # noqa: PLC0415
 
         if self._model is None:

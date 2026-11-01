@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import webbrowser
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,10 @@ class ProxyHTTPError(ProxyError):
     def __init__(self, message: str, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class LoginError(ProxyError):
+    """A terminal login (:func:`login_interactive`) did not start, failed or timed out."""
 
 
 def _credential_store_error(err: Exception) -> ProxyError:
@@ -625,6 +630,51 @@ def cancel_login(state: str) -> None:
     if not state:
         return
     _management_request("DELETE", "/v8/management/oauth/session", params={"state": state})
+
+
+LOGIN_TIMEOUT_S = 300.0  # how long login_interactive waits for the browser sign-in
+
+
+def login_interactive(provider: str, *, open_browser: bool = True) -> dict[str, Any]:
+    """Log in to ``provider`` from a terminal (``cutpoint login``): start the OAuth login, log
+    its URL (and open it in the browser with ``open_browser``), poll once a second until it
+    is done and return :func:`status`. A login that fails, times out or is interrupted is
+    cancelled on the daemon.
+
+    Raises:
+        LoginError: The login could not start, failed or timed out.
+        ProxyError: Polling or the status after the login failed otherwise.
+    """
+    try:
+        res = start_login(provider)
+    except ProxyError as err:
+        raise LoginError(f"could not start login for {provider}: {err}") from err
+    url = res.get("url")
+    state = res.get("state")
+    if not url or not state:
+        raise LoginError(f"invalid login response from proxy for {provider}")
+    logger.info("open this URL to log in: %s", url)
+    success = False
+    try:
+        if open_browser:
+            with contextlib.suppress(Exception):
+                webbrowser.open(url)
+        deadline = time.monotonic() + LOGIN_TIMEOUT_S
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            poll = poll_login(state)
+            p_state = poll.get("state")
+            if p_state == "done":
+                st = status(provider)
+                success = True
+                return st
+            if p_state == "error":
+                raise LoginError(f"login failed: {poll.get('error') or 'unknown error'}")
+        raise LoginError("login timed out")
+    finally:
+        if not success:
+            with contextlib.suppress(Exception):
+                cancel_login(state)
 
 
 def logout(provider: str) -> None:
