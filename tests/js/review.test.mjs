@@ -299,7 +299,7 @@ test('dragging a trim handle moves the point with the pointer and ends as one un
 
 // ---- Play sequence ----
 
-test('Play sequence runs the clips in order and stops after the last; Stop ends it early', async (t) => {
+test('Play sequence runs the clips in order and stops after the last', async (t) => {
   const m = await review(t, { project: withSegments('h002', 'h001') }); // 100-108 then 10-18
   const live = () => m.$('#seqLive').textContent;
   const playBtn = m.$('#seqPlayBtn');
@@ -331,6 +331,22 @@ test('Play sequence runs the clips in order and stops after the last; Stop ends 
   await m.page.settle();
   assert.equal(live(), 'Sequence finished');
   assert.equal(playBtn.textContent, 'Play sequence');
+});
+
+test('Stop ends the sequence early and pauses the player', async (t) => {
+  const m = await review(t, { project: withSegments('h002', 'h001') });
+  const playBtn = m.$('#seqPlayBtn');
+  await m.click(playBtn);
+  assert.equal(playBtn.textContent, 'Stop');
+  assert.ok(m.row('h002').classList.contains('playing'));
+  const v = m.$('#video');
+  v.__media.loaded(600);
+  await m.page.settle();
+
+  await m.click(playBtn);
+  assert.equal(playBtn.textContent, 'Play sequence');
+  assert.equal(m.$('#seqList').querySelectorAll('.playing').length, 0);
+  assert.equal(v.__media.paused, true);
 });
 
 test('Play sequence is unavailable with an empty sequence', async (t) => {
