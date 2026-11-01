@@ -668,12 +668,6 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         default=list(COMPONENTS),
         help="components to install (default: all)",
     )
-    ap.add_argument(
-        "--torch-cuda",
-        action="store_true",
-        help="no longer used: torch comes from the events extra (CUDA 12.6 "
-        "on Windows/Linux); kept so old commands still run",
-    )
     ap.add_argument("--force", action="store_true", help="Reinstall llama.cpp.")
 
 
