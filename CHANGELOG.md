@@ -279,6 +279,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
 
+### Removed
+
+- **BREAKING:** `cutpoint setup --torch-cuda` is gone. It did nothing since torch comes from the
+  `events` extra; commands that still pass it now stop with exit code 2. Drop the flag.
+- **BREAKING:** `cutpoint events --preset-scope package` is gone. It was an old alias of `user`
+  (the default); commands that still pass it now stop with exit code 2. Use `--preset-scope user`
+  or leave the option out.
+
 ### Fixed
 
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
