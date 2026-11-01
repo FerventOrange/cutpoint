@@ -22,7 +22,7 @@ import pytest
 
 from conftest import needs_ffmpeg
 from cutpoint import assemble as asm
-from cutpoint import cache, capabilities, crash, refmatch, stage
+from cutpoint import cache, capabilities, crash, stage
 from cutpoint import ffmpeg_utils as fu
 from cutpoint.ffmpeg_utils import FFmpegError
 from cutpoint.pano import x3
@@ -521,112 +521,6 @@ def test_decode_window_returns_empty_arrays_on_ffmpeg_error(monkeypatch):
 
 
 # --------------------------------------------------------------------------- caching
-@pytest.fixture
-def thumbs_env(monkeypatch, tmp_path):
-    """refmatch.thumbnails with a 10 s video and a fake decoder (frames per pass)."""
-    state = SimpleNamespace(per_pass={"auto": 100, None: 100}, calls=[])
-    monkeypatch.setattr(cache, "source_dir", lambda _p: tmp_path)
-    monkeypatch.setattr(refmatch, "probe", lambda _p: SimpleNamespace(vduration=10.0))
-    state.gpu = [fu.HwDecoder("cuda")]  # the decoder found for the source; [None] = CPU only
-    monkeypatch.setattr(refmatch, "decoder_for", lambda _p: state.gpu[0])
-
-    def fake_decode(_path, *, size, vf, pix_fmt, hwaccel, fallback_cpu=True):
-        state.calls.append((hwaccel, fallback_cpu))
-        n = state.per_pass[hwaccel]
-        if isinstance(n, Exception):
-            raise n
-        w, h = size
-        for k in range(n):
-            yield k / refmatch.FPS, np.full((h, w), k % 256, np.uint8)
-
-    monkeypatch.setattr(refmatch, "decode_raw", fake_decode)
-    state.cpath = tmp_path / refmatch.THUMBS_FILE
-    return state
-
-
-def test_thumbnails_full_decode_is_cached(thumbs_env):
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert frames.shape == (100, refmatch.W * refmatch.H)
-    assert frames[3, 0] == 3
-    assert thumbs_env.calls == [("auto", False)]  # no hidden CPU pass in decode_raw
-    assert thumbs_env.cpath.exists()
-
-
-def test_thumbnails_short_cuda_decode_is_redone_on_cpu(thumbs_env):
-    thumbs_env.per_pass["auto"] = 40
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert thumbs_env.calls == [("auto", False), (None, True)]
-    assert len(frames) == 100 and thumbs_env.cpath.exists()
-
-
-def test_thumbnails_without_a_gpu_decoder_decode_once_on_the_cpu(thumbs_env):
-    """VAAPI declines HEVC/10-bit: "auto" would be the CPU pass the retry then repeats."""
-    thumbs_env.gpu[0] = None
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert len(frames) == 100
-    assert thumbs_env.calls == [(None, True)]
-
-
-def test_thumbnails_still_short_is_not_cached(thumbs_env):
-    thumbs_env.per_pass.update({"auto": 40, None: 60})
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert len(frames) == 60
-    assert not thumbs_env.cpath.exists()
-
-
-def test_thumbnails_failed_cuda_decode_runs_cpu(thumbs_env):
-    thumbs_env.per_pass["auto"] = FFmpegError("No device")
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert thumbs_env.calls == [("auto", False), (None, True)]
-    assert len(frames) == 100 and thumbs_env.cpath.exists()
-
-
-def test_thumbnails_keeps_cuda_frames_when_cpu_retry_fails(thumbs_env):
-    thumbs_env.per_pass.update({"auto": 40, None: FFmpegError("read error")})
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert len(frames) == 40
-    assert not thumbs_env.cpath.exists()
-
-
-def test_thumbnails_raise_when_neither_pass_decodes(thumbs_env):
-    thumbs_env.per_pass.update({"auto": FFmpegError("a"), None: FFmpegError("b")})
-    with pytest.raises(FFmpegError, match="Could not decode thumbnails"):
-        refmatch.thumbnails(Path("x.mp4"))
-    assert not thumbs_env.cpath.exists()
-
-
-@pytest.fixture
-def audio_env(monkeypatch, tmp_path):
-    """refmatch.audio_8k with a failing decoder; ``streams`` = probed audio streams."""
-    state = SimpleNamespace(streams=1, decodes=0, cpath=tmp_path / "audio8k.npy")
-
-    def failing(*_a, **_kw):
-        state.decodes += 1
-        raise FFmpegError("decode failed")
-
-    monkeypatch.setattr(cache, "source_dir", lambda _p: tmp_path)
-    monkeypatch.setattr(refmatch, "decode_pcm", failing)
-    monkeypatch.setattr(refmatch, "probe", lambda _p: SimpleNamespace(audio_streams=state.streams))
-    monkeypatch.setattr(refmatch, "_AUDIO_FAILED", set())
-    return state
-
-
-def test_audio_8k_no_audio_stream_is_cached(audio_env):
-    audio_env.streams = 0
-    x = refmatch.audio_8k(Path("x.mp4"))
-    assert x.shape == (0,) and x.dtype == np.float32
-    assert audio_env.cpath.exists()
-
-
-def test_audio_8k_other_failure_not_cached_nor_retried_in_process(audio_env, caplog):
-    for _ in range(3):
-        x = refmatch.audio_8k(Path("x.mp4"))
-        assert x.shape == (0,) and x.dtype == np.float32
-    assert not audio_env.cpath.exists()
-    assert audio_env.decodes == 1
-    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
-
-
 def test_x3_failed_probe_is_not_cached(monkeypatch, tmp_path):
     insv = tmp_path / "VID_00_000.insv"
     insv.write_bytes(b"x")

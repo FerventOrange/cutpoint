@@ -1111,20 +1111,40 @@ def clip_record(
     }
 
 
-def _sheet_item(video: Path, stem: str, fr: dict[str, Any], what: str) -> dict[str, Any]:
+def _sheet_item(
+    video: Path, stem: str, fr: dict[str, Any], what: str, view: str = ""
+) -> dict[str, Any]:
     boxes = [(*b, False) for b in fr.get("self", [])]
     if fr["subj"] is not None:
         boxes.append((*fr["subj"], True))
     return {
         "path": str(video),
         "t": fr["t"],
-        "caption": f"{stem[:16]} {fr['t']:.1f}s {what} {fr['target']}",
+        "caption": f"{stem[:16]} {fr['t']:.1f}s {what} {fr['target']}{view}",
         "boxes": boxes,
     }
 
 
-def write_sheets(qa_dir: Path, out_dir: Path, clips: list[dict[str, Any]]) -> list[Path]:
-    """``flagged_NN.jpg`` (one tile per flagged span) and ``overview_NN.jpg``."""
+def _views(path: dict[str, Any] | None, offset: float, frames: list[dict[str, Any]]) -> list[str]:
+    """Per frame: `` y<yaw> p<pitch>`` of the director path at its source time (yaw wrapped
+    to -180..180 degrees), or ``""`` for every frame without a path."""
+    if not path or not path.get("keys"):
+        return [""] * len(frames)
+    from cutpoint.pano.director import evaluate  # noqa: PLC0415
+
+    yaw, pitch, _ = evaluate(path, offset + np.array([fr["t"] for fr in frames], float))
+    yaw = (yaw + 180.0) % 360.0 - 180.0
+    return [f" y{y:.0f} p{q:.0f}" for y, q in zip(yaw, pitch, strict=True)]
+
+
+def write_sheets(
+    qa_dir: Path,
+    out_dir: Path,
+    clips: list[dict[str, Any]],
+    paths: dict[str, dict[str, Any]] | None = None,
+) -> list[Path]:
+    """``flagged_NN.jpg`` (one tile per flagged span) and ``overview_NN.jpg``; overview tiles
+    of a clip with a director path in ``paths`` (by file) also give its yaw and pitch."""
     from cutpoint.events.sheets import contact_sheet  # noqa: PLC0415
 
     flagged, overview = [], []
@@ -1142,9 +1162,11 @@ def write_sheets(qa_dir: Path, out_dir: Path, clips: list[dict[str, Any]]) -> li
             what = "/".join(CAPTION[f] for f in fr["flags"])
             flagged.append(_sheet_item(video, stem, fr, what))
         step = max(1, round(2.0 / max(1e-6, _frame_dt(c["frames"]))))
-        for fr in c["frames"][::step]:
+        picked = c["frames"][::step]
+        views = _views((paths or {}).get(c["file"]), float(c["offset"]), picked)
+        for fr, view in zip(picked, views, strict=True):
             what = "/".join(CAPTION[f] for f in fr["flags"]) or "ok"
-            overview.append(_sheet_item(video, stem, fr, what))
+            overview.append(_sheet_item(video, stem, fr, what, view))
     written = []
     for name, items, cols, width, per in (
         ("flagged", flagged, 4, 480, 24),
@@ -1223,7 +1245,9 @@ def run_qa(
         }
         report["edit"]["elapsed_s"] = round(time.perf_counter() - t0, 1)
         cache.save_json(out_dir / "qa.json", report, indent=1)
-    report["sheets"] = [] if json_only else [str(p) for p in write_sheets(qa_dir, out_dir, clips)]
+    paths = {it["file"]: it["path"] for it in items if it.get("path")}
+    sheets = [] if json_only else write_sheets(qa_dir, out_dir, clips, paths)
+    report["sheets"] = [str(p) for p in sheets]
     report["out_dir"] = str(out_dir)
     return report
 

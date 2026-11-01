@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from cutpoint import ski
+from cutpoint.styles import get_style
 from cutpoint.telemetry import DT, Telemetry, paint_spans
 
 N = 900  # 90 s on the 0.1 s grid
@@ -122,11 +124,19 @@ def test_paint_spans_keeps_the_largest_value_and_includes_the_end_bin() -> None:
     assert paint_spans(5, [(2.0, 3.0, 1.0), (0.25, -0.55, 1.0)]).tolist() == [0.0] * 5  # empty
 
 
-def test_taste_prob_is_the_logistic_head_per_row() -> None:
-    taste = {"w": np.array([1.0, -1.0], np.float32), "b": 0.5}
-    emb = np.array([[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]], np.float32)
-    p = ski.taste_prob(emb, taste)
-    assert p[0] == pytest.approx(1 / (1 + np.exp(-0.5)))
-    assert p[1] == pytest.approx(1.0) and p[2] == pytest.approx(0.0)  # clipped at +-30
-    vd = type("VD", (), {"mean_emb": emb})()
-    assert ski.taste_frames(vd, taste).tolist() == p.tolist()
+def test_old_learned_presets_still_load(home: Path) -> None:
+    """A preset saved by ``refmatch``/``fit`` (now ``scripts/refmatch.py``): an old numeric
+    ``mask_friends`` is a hard mask, and a removed taste head (``taste`` weight and file)
+    does not stop it loading; ``taste`` scores 0 on every grid."""
+    styles = home / "styles"
+    styles.mkdir(parents=True)
+    preset = {"name": "old", "base": "ski", "weights": {"speed": 1.0}, "mask_friends": 5}
+    (styles / "old.json").write_text(json.dumps(preset), encoding="utf-8")
+    style = get_style("old")
+    assert style.mask_friends == 5.0
+    mask, friends = np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 1.0])
+    assert ski.effective_mask(mask, friends, style.mask_friends).tolist() == [1.0, 1.0, 0.0]
+    assert ski.effective_mask(mask, friends, 0).tolist() == [0.0, 0.0, 0.0]  # soft
+    tasted = {**preset, "name": "tasted", "weights": {"taste": 2.0}, "taste": "t.taste.npz"}
+    (styles / "tasted.json").write_text(json.dumps(tasted), encoding="utf-8")
+    assert get_style("tasted").weights["taste"] == 2.0

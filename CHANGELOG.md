@@ -278,6 +278,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
+- `360 qa` overview sheets caption each tile with the director path's yaw and pitch, as
+  `360 check` did.
+- `cutpoint events`: `--audio-thr` and `--ocr-debug` (developer tuning) still work but are
+  hidden from `--help`.
+- The tests of the development scripts in `scripts/` moved to `tests/scripts/` and are marked
+  `script` (`-m "not script"` skips them).
+
+### Removed
+
+- `cutpoint refmatch` and `cutpoint fit`: they are now the development script
+  `scripts/refmatch.py` (`match` and `fit` subcommands, from a clone). Learned styles they saved
+  still load as `--style <name>`.
+- The personal taste head (`refmatch --taste`, `fit --taste`): a learned style's `taste` file
+  is ignored and its `taste` feature scores 0. `scikit-learn` is no longer a direct dependency
+  of the `events` extra (it is still installed through `panns-inference`).
+- `cutpoint 360 check`: the `360 qa` overview sheet shows the same frames with the director
+  target, yaw and pitch.
 
 ### Fixed
 

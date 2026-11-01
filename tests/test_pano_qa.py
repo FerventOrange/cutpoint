@@ -852,3 +852,13 @@ def test_360_qa_json_has_the_edge_cut_breakdowns(home, monkeypatch, capsys) -> N
     edit = {}  # no clip checked: aggregate_edit has no breakdowns
     code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips", "--json-only"])
     assert (doc["outputs"]["by_mode"], doc["outputs"]["by_self_method"]) == ({}, {})
+
+
+def test_overview_tiles_give_the_path_yaw_and_pitch() -> None:
+    """``360 check`` is gone (S-43): the QA overview captions carry its yaw and pitch."""
+    keys = [
+        {"t": t, "yaw": 190.0, "pitch": -10.0, "fov": 90.0, "target": "friend"} for t in (10, 20)
+    ]
+    frames = [{"t": 0.0}, {"t": 4.0}]
+    assert qa._views({"keys": keys}, 10.0, frames) == [" y-170 p-10"] * 2  # yaw wrapped
+    assert qa._views(None, 10.0, frames) == ["", ""]

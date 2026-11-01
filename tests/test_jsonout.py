@@ -292,7 +292,7 @@ def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
     [
         ["paths", "--bogus"],  # no --json
         ["pathz", "--json"],  # unknown command: no command to report
-        ["fit", "x", "--json"],  # a command without --json (yet)
+        ["guide", "--json"],  # a command without --json
         ["clips", "p", "--size", "abc"],  # an error of the command's own parser, no --json
         ["clips", "p", "--size", "abc", "--", "--json"],  # after "--" it is not an option
         ["clips", "p", "--size", "abc", "--jsonx"],  # not an abbreviation of --json

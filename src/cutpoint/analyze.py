@@ -1618,9 +1618,8 @@ def _analyze(
             if stale.is_dir():
                 for f in stale.glob("*.npz"):
                     cache.remove(f)  # held: removed only when the run completes
-            taste = (style.learned or {}).get("taste")
             durations = {str(s): probe(remap_source(s)).duration for s in sources}
-            ski_ctx = ski.prepare(sources, durations, out_dir, taste=Path(taste) if taste else None)
+            ski_ctx = ski.prepare(sources, durations, out_dir)
             telemetry_s = round(time.perf_counter() - t0, 2)
         tr = Transcriber(model=model, language=language)
 
@@ -1818,9 +1817,7 @@ def _analyze(
         steps.start("ranking")
         if ski_ctx is not None:
             if events_new:  # with this run's events.json and crashes.json
-                ski_ctx = ski.prepare(
-                    sources, durations, out_dir, taste=Path(taste) if taste else None
-                )
+                ski_ctx = ski.prepare(sources, durations, out_dir)
             for r in results:
                 r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
                 logger.info("%s: %d candidates", r.source.name, len(r.candidates))

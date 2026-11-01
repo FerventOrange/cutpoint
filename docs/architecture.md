@@ -39,7 +39,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `assemble.py`, `timeline.py` | Concat or crossfade, loudness, captions; FCPXML 1.10 and OTIO writers |
 | `stage.py` | Local copies of slow sources; staged-read lookup used by ffmpeg calls |
 | `ffmpeg_utils.py` | ffmpeg discovery, probing, loudness, encoder choice, read-error detection |
-| `telemetry.py`, `ski.py`, `crash.py`, `refmatch.py`, `mix.py` | Action-cam module |
+| `telemetry.py`, `ski.py`, `crash.py`, `mix.py` | Action-cam module; `scripts/refmatch.py` is the ski scorer's development harness (fits learned styles to a reference edit) |
 | `extras.py` | Maps missing optional modules to the extra and install command |
 | `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, `llama_server.py`), `pipeline.py` to run them, `scoring.py` to feed results back; `setup.py` downloads models; `presets/` is the bundled HUD presets folder (no game presets ship) |
 | `pano/` | `cutpoint 360`: `x3.py` (clip discovery), `geometry.py` (IMU levelling), `views.py`, `director.py`, `render.py`, `stitch.py` (SDK wrapper), `qa.py`, `repair.py`, `project.py` (`pano.json` and the `pano` config section) |

@@ -96,15 +96,17 @@ a scenic opener, and 180-300 s total. `--exclude-file` lists source spans to lea
 
 ## Learning from your own edit
 
-If you already cut a video from the same footage, Cutpoint can fit scoring weights to it:
+If you already cut a video from the same footage, the development script
+`scripts/refmatch.py` (from a clone; it was `cutpoint refmatch` and `cutpoint fit`) fits
+scoring weights to it:
 
 ```powershell
-cutpoint refmatch trip D:\Videos\trip-cut.mp4 --name my_style
+uv run python scripts/refmatch.py match trip D:\Videos\trip-cut.mp4 --name my_style
 cutpoint analyze D:\Videos\trip --style my_style --out trip      # re-rank with the learned style
 ```
 
-Use `cutpoint refmatch ... --no-fit` on several projects, then `cutpoint fit proj1 proj2
---name my_style` to fit one style on all of them. Learned styles are JSON in
+Use `scripts/refmatch.py match ... --no-fit` on several projects, then
+`scripts/refmatch.py fit proj1 proj2 --name my_style` to fit one style on all of them. Learned styles are JSON in
 `<CUTPOINT_HOME>\styles\`. The fit is only as good as the edit you teach it: with one or two
 edits, treat the result as a starting point.
 

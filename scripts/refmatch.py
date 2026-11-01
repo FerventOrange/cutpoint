@@ -1,4 +1,22 @@
-"""``cutpoint refmatch``: find a reference edit's shots in the sources and learn from them.
+"""Development harness for the ski scorer: find a reference edit's shots in a project's
+sources and fit ski style weights to them. Not part of the package (formerly ``cutpoint refmatch``
+and ``cutpoint fit``); presets it saves load as before (``--style <name>``).
+
+Usage::
+
+    uv run python scripts/refmatch.py match trip D:/Videos/trip-cut.mp4 --name my_style
+    uv run python scripts/refmatch.py match trip D:/Videos/trip-cut.mp4 --no-fit
+    uv run python scripts/refmatch.py fit trip day2 --name my_style --ablate
+
+``match`` writes ``<project>/refmatch.json`` and side-by-side check frames in
+``<project>/refmatch_check``, then (by default on ``--style ski`` projects) fits and saves
+``<CUTPOINT_HOME>/styles/<name>.json``. ``fit`` fits one preset on several projects that
+already have ``refmatch.json`` (run ``match --no-fit`` on each first), with held-out
+cross-validation, and writes ``<first project>/fit_report.json``; ``--ablate`` refits on
+feature subsets, ``--no-save`` only reports. Projects are named as on the ``cutpoint`` command
+line (bare name = projects folder). The project must have been analysed with ``--style ski``.
+
+How it works:
 
 1. **Thumbnails.** The reference and every project source are decoded once to
    64x36 grey frames at 10 fps (GPU decode when possible), cached per file as
@@ -23,16 +41,16 @@
    at the edit's duration before and after (in-sample and grouped by source
    with cross-validation), and saves a learned preset to
    ``<CUTPOINT_HOME>/styles/<name>.json`` (usable as ``--style <name>``).
-   ``--taste`` adds a logistic-regression head on the visual layer's CLIP
-   frame embeddings, cross-fitted so no score is ever produced by a head
-   that saw the same clip. :func:`run_fit` (``cutpoint fit``) fits one preset on
-   several projects at once and adds cross-project numbers and ablations.
+   :func:`run_fit` (``fit``) fits one preset on several projects at once and adds
+   cross-project numbers and ablations.
 """
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import logging
+import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -43,7 +61,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, paths, state
-from cutpoint.config import path_key, source_path
+from cutpoint.config import path_key, resolve_project_path, source_path
 from cutpoint.ffmpeg_utils import (
     FFmpegError,
     decode_pcm,
@@ -445,7 +463,6 @@ def check_frames(result: dict[str, Any], out_dir: Path, n: int = 6) -> list[Path
 
 # --------------------------------------------------------------------------- fitting (ski)
 BIN_S = 1.0
-TASTE_C = 0.5  # inverse L2 strength of the taste head (unit-norm CLIP embeddings)
 Key = tuple[int, int]  # (dataset index, index into that dataset's saved features)
 
 
@@ -474,7 +491,8 @@ def load_fit_data(project: Path, result: dict[str, Any] | None = None) -> FitDat
     result = result or cache.load_json(project / "refmatch.json")
     if not result:
         raise FileNotFoundError(
-            f"{project / 'refmatch.json'} not found; run `cutpoint refmatch` on this project first"
+            f"{project / 'refmatch.json'} not found; run `scripts/refmatch.py match` on this "
+            "project first"
         )
     return FitData(project, result, ski.load_project_features(project))
 
@@ -696,122 +714,13 @@ def pool(evs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-# ---- taste head: logistic regression on CLIP frame embeddings
-def _taste_frames(datasets: list[FitData], keys: list[Key]) -> dict[Key, dict[str, np.ndarray]]:
-    """Mean-crop CLIP embeddings, part-relative frame times and labels per saved source."""
-    from cutpoint.events.visual import load_visual  # noqa: PLC0415
-
-    out: dict[Key, dict[str, np.ndarray]] = {}
-    pos_of = [_positives(ds.result) for ds in datasets]
-    for k in keys:
-        d = datasets[k[0]].feats[k[1]]
-        vd = load_visual(Path(d["source"]))
-        if vd is None or not len(vd.t):
-            continue
-        t = vd.t.astype(float) - d["offset"]
-        ok = (t >= 0) & (t <= d["duration"])
-        y = np.zeros(int(ok.sum()), bool)
-        for a, b in pos_of[k[0]].get(path_key(str(Path(d["source"]))), []):
-            y |= (t[ok] + d["offset"] >= a) & (t[ok] + d["offset"] < b)
-        out[k] = {"emb": vd.mean_emb[ok], "t": t[ok], "y": y}
-    return out
-
-
-def fit_taste(
-    frames: dict[Key, dict[str, np.ndarray]], keys: list[Key], c: float = TASTE_C
-) -> dict[str, Any] | None:
-    """Class-balanced L2 logistic regression on the frames of ``keys`` (None if one class).
-
-    Only clips the editor used are trained on (kept vs not-kept seconds within
-    a clip): whole unused clips are left out for many reasons (duplicates, a
-    day's quota), and with them in, the head learns which clips rather than
-    which moments. On a day of helmet-cam ski footage that raised the clip-held-out AUC from
-    0.50 to 0.54; a random frame split reaches 0.86 only through leakage
-    between neighbouring frames, which is why every evaluation holds out
-    whole clips.
-    """
-    from sklearn.linear_model import LogisticRegression  # noqa: PLC0415
-
-    ks = [k for k in keys if k in frames and frames[k]["y"].any()]
-    if not ks:
-        return None
-    E = np.concatenate([frames[k]["emb"] for k in ks])
-    y = np.concatenate([frames[k]["y"] for k in ks])
-    if y.sum() < 5 or (~y).sum() < 5:
-        return None
-    m = LogisticRegression(C=c, class_weight="balanced", max_iter=3000)
-    m.fit(E * 10.0, y)  # x10: unit-norm embeddings need a larger scale for L2 to bite
-    return {
-        "w": (m.coef_[0] * 10.0).astype(np.float32),
-        "b": float(m.intercept_[0]),
-        "c": c,
-        "frames": len(y),
-        "positive_frames": int(y.sum()),
-    }
-
-
-def _taste_grid(
-    fr: dict[str, np.ndarray] | None, n: int, taste: dict[str, Any] | None
-) -> np.ndarray:
-    from cutpoint.events.visual import to_grid  # noqa: PLC0415
-    from cutpoint.ski import DT, smooth3, taste_prob  # noqa: PLC0415
-
-    if fr is None or taste is None or not len(fr["t"]):
-        return np.zeros(n)
-    return to_grid(fr["t"], smooth3(taste_prob(fr["emb"], taste)), n, DT)
-
-
-def _with_taste(
-    fmap: dict[Key, dict[str, Any]],
-    frames: dict[Key, dict[str, np.ndarray]],
-    model_of: dict[Key, dict[str, Any] | None],
-) -> dict[Key, dict[str, Any]]:
-    """Copies of the feature dicts whose ``taste`` grid comes from ``model_of[key]``."""
-    out = dict(fmap)
-    for k, model in model_of.items():
-        d = fmap[k]
-        out[k] = {
-            **d,
-            "features": {
-                **d["features"],
-                "taste": _taste_grid(frames.get(k), len(d["mask"]), model),
-            },
-        }
-    return out
-
-
-def _crossfit(
-    frames: dict[Key, dict[str, np.ndarray]],
-    keys: list[Key],
-    groups: dict[Key, int],
-    folds: int,
-    seed: int,
-    c: float,
-) -> dict[Key, dict[str, Any] | None]:
-    """Out-of-fold taste models: each key gets a model trained without its group."""
-    uniq = sorted({groups[k] for k in keys})
-    perm = np.random.default_rng(seed).permutation(uniq)
-    fold_of = {g: i % folds for i, g in enumerate(perm)}
-    out: dict[Key, dict[str, Any] | None] = {}
-    for f in range(folds):
-        test = [k for k in keys if fold_of[groups[k]] == f]
-        if not test:
-            continue
-        model = fit_taste(frames, [k for k in keys if fold_of[groups[k]] != f], c)
-        out.update(dict.fromkeys(test, model))
-    return out
-
-
 # ---- training / evaluation over sets of saved sources
 @dataclass
 class _Ctx:
     datasets: list[FitData]
     fmap: dict[Key, dict[str, Any]]
     groups: dict[Key, int]
-    frames: dict[Key, dict[str, np.ndarray]]
     keys_w: list[str]
-    taste: bool
-    taste_c: float
 
 
 def _evaluate_keys(
@@ -839,13 +748,8 @@ def _evaluate_keys(
 def _train(
     ctx: _Ctx, keys: list[Key], thresholds: tuple[float, ...], th_default: float, seed: int = 0
 ) -> dict[str, Any]:
-    """Fit taste (cross-fitted) and weights on ``keys``; pick ``mask_friends``."""
+    """Fit weights on ``keys``; pick ``mask_friends``."""
     fmap = ctx.fmap
-    taste_model = None
-    if ctx.taste:
-        oof = _crossfit(ctx.frames, keys, ctx.groups, 4, seed + 1, ctx.taste_c)
-        fmap = _with_taste(ctx.fmap, ctx.frames, oof)
-        taste_model = fit_taste(ctx.frames, keys, ctx.taste_c)
     search = []
     for th in thresholds:
         d = _bins(ctx.datasets, keys, fmap, ctx.keys_w, ctx.groups, th)
@@ -864,7 +768,7 @@ def _train(
             -abs(s["mask_friends"] - th_default),
         ),
     )
-    return {**best, "search": search, "taste": taste_model, "fmap": fmap}
+    return {**best, "search": search, "fmap": fmap}
 
 
 def mask_modes(thresholds: tuple[float, ...], default: float) -> tuple[float, ...]:
@@ -889,8 +793,6 @@ def fit_weights(
     folds: int = 4,
     thresholds: tuple[float, ...] = (0, 7),
     features: list[str] | None = None,
-    taste: bool = False,
-    taste_c: float = TASTE_C,
     save: bool = True,
     cross: bool = True,
     vlm_friends_only: bool = False,
@@ -902,9 +804,7 @@ def fit_weights(
     weights are fitted on the bins that mode leaves eligible, and the pair
     with the best in-sample precision + recall at the edits' durations is
     kept. Cross-validation (whole clips held out, across all projects) then
-    re-fits the weights for that mode on each training fold. With ``taste`` the taste head is cross-fitted too: weights
-    are fitted on out-of-fold taste scores, and held-out clips are scored by a
-    head that never saw them. With two or more projects, each project is also
+    re-fits the weights for that mode on each training fold. With two or more projects, each project is also
     predicted by a model trained on the others alone (cross-project).
 
     Args:
@@ -915,9 +815,8 @@ def fit_weights(
         folds: Cross-validation folds.
         thresholds: ``mask_friends`` candidates (older numeric lists are
             accepted; values above 0 collapse into one hard-mask fit).
-        features: Feature subset (default: every feature of ``base``).
-        taste: Fit and use the taste head.
-        taste_c: Inverse L2 strength of the taste head.
+        features: Feature subset (default: every feature of ``base``; never ``taste``,
+            whose head is no longer computed).
         save: Write the preset (False for ablations).
         cross: Run the cross-project evaluation.
         vlm_friends_only: Use the VLM friends tags alone as the ``friends``
@@ -934,9 +833,7 @@ def fit_weights(
     base_style = get_style(base)
     if features is not None:  # registry names; an older name is read as its new one
         features = list(registry.ski_names(dict.fromkeys(features, 0.0)))
-    keys_w = [k for k in (features or list(base_style.weights)) if taste or k != "taste"]
-    if taste and "taste" not in keys_w:
-        keys_w.append("taste")
+    keys_w = [k for k in (features or list(base_style.weights)) if k != "taste"]
     default = base_style.weights
     th_default = base_style.mask_friends
     thresholds = mask_modes(thresholds, th_default)
@@ -950,8 +847,7 @@ def fit_weights(
             fmap[(di, fi)] = d
             groups[(di, fi)] = gid.setdefault((di, path_key(d["source"])), len(gid))
     all_keys = list(fmap)
-    frames = _taste_frames(datasets, all_keys) if taste else {}
-    ctx = _Ctx(datasets, fmap, groups, frames, keys_w, taste, taste_c)
+    ctx = _Ctx(datasets, fmap, groups, keys_w)
 
     final = _train(ctx, all_keys, thresholds, th_default)
     th, learned, data = final["mask_friends"], final["weights"], final["data"]
@@ -989,10 +885,9 @@ def fit_weights(
         tr = _train(ctx, train, (th,), th_default, seed=f + 1)
         if not tr["data"]["y"][tr["data"]["elig"]].any():
             continue
-        fm = _with_taste(fmap, frames, dict.fromkeys(test, tr["taste"])) if taste else fmap
-        cv_eval["learned"].append(_evaluate_keys(ctx, test, fm, tr["weights"], th))
+        cv_eval["learned"].append(_evaluate_keys(ctx, test, fmap, tr["weights"], th))
         cv_eval["default"].append(_evaluate_keys(ctx, test, fmap, default, th_default))
-        dt = _bins(datasets, test, fm, keys_w, groups, th)
+        dt = _bins(datasets, test, fmap, keys_w, groups, th)
         e = dt["elig"]
         cv_scores.append(dt["X"][e] @ np.array([tr["weights"][k] for k in keys_w]))
         cv_y.append(dt["y"][e])
@@ -1006,14 +901,13 @@ def fit_weights(
                 if b == a:
                     continue
                 te = [k for k in all_keys if k[0] == b]
-                fm = _with_taste(fmap, frames, dict.fromkeys(te, tr["taste"])) if taste else fmap
                 cross_rep.append(
                     {
                         "train": datasets[a].name,
                         "test": datasets[b].name,
                         "mask_friends": tr["mask_friends"],
                         "weights": tr["weights"],
-                        "learned": _evaluate_keys(ctx, te, fm, tr["weights"], tr["mask_friends"]),
+                        "learned": _evaluate_keys(ctx, te, fmap, tr["weights"], tr["mask_friends"]),
                         "default": _evaluate_keys(ctx, te, fmap, default, th_default),
                     }
                 )
@@ -1088,11 +982,6 @@ def fit_weights(
         "references": [ds.result["reference"] for ds in datasets],
         "fit": report,
     }
-    if taste and final["taste"] is not None:
-        tpath = learned_dir / f"{name}.taste.npz"
-        np.savez(tpath, w=final["taste"]["w"], b=np.float32(final["taste"]["b"]))
-        preset["taste"] = tpath.name
-        report["taste_head"] = {k: v for k, v in final["taste"].items() if k not in ("w", "b")}
     path = learned_dir / f"{name}.json"
     cache.save_json(path, preset)
     report["preset"] = str(path)
@@ -1106,10 +995,8 @@ ABLATION_SETS = {
     "old + group": ["group"],
     "old + voice_laughter": ["voice_laughter"],
     "old + voice": ["voice"],
-    "old + taste": ["taste"],
     "all": "all",
     "all - vlm (no VLM tags)": "no_vlm",
-    "all - taste": "no_taste",
 }
 
 
@@ -1132,21 +1019,18 @@ def ablate(
     for label, spec in (sets or ABLATION_SETS).items():
         vlm_only = spec == "old"
         if spec == "old":
-            feats, taste = old, False
+            feats = old
         elif spec == "all":
-            feats, taste = list(FEATURES), True
+            feats = [f for f in FEATURES if f != "taste"]
         elif spec == "no_vlm":
-            feats, taste = [f for f in FEATURES if f not in ("vlm", "scenic")], True
-        elif spec == "no_taste":
-            feats, taste = [f for f in FEATURES if f != "taste"], False
+            feats = [f for f in FEATURES if f not in ("vlm", "scenic", "taste")]
         else:
-            feats, taste = old + [f for f in spec if f != "taste"], "taste" in spec
+            feats = old + list(spec)
         t0 = time.perf_counter()
         rep = fit_weights(
             datasets,
             base=base,
             features=feats,
-            taste=taste,
             save=False,
             thresholds=thresholds,
             cross=len(datasets) > 1,
@@ -1156,7 +1040,6 @@ def ablate(
         row = {
             "set": label,
             "features": feats,
-            "taste": taste,
             "mask_friends": rep["mask_friends"],
             "in_sample": {
                 k: rep["at_edit_duration"]["learned_in_sample"][k] for k in ("precision", "recall")
@@ -1204,13 +1087,8 @@ def run_refmatch(
     fit: bool | None = None,
     name: str | None = None,
     check: int = 6,
-    taste: bool = False,
 ) -> dict[str, Any]:
-    """Match, write ``refmatch.json``, optionally fit and save a learned preset.
-
-    With ``taste`` the fit includes the personal taste head (needs the
-    visual layer: ``cutpoint events`` on a ski project).
-    """
+    """Match, write ``refmatch.json``, optionally fit and save a learned preset."""
     from cutpoint.config import remap_source  # noqa: PLC0415
     from cutpoint.events.common import load_highlights  # noqa: PLC0415
 
@@ -1233,7 +1111,7 @@ def run_refmatch(
         from cutpoint.styles import get_style  # noqa: PLC0415
 
         base = get_style(hl["style"]).base
-        rep = fit_weights(project, result, base=base, name=name, taste=taste)
+        rep = fit_weights(project, result, base=base, name=name)
         result["fit"] = rep
         cache.save_json(project / "refmatch.json", result)
         _log_fit(rep, get_style(base).weights)
@@ -1245,11 +1123,10 @@ def run_fit(
     *,
     name: str | None = None,
     base: str = "ski",
-    taste: bool = True,
     do_ablate: bool = False,
     save: bool = True,
 ) -> dict[str, Any]:
-    """``cutpoint fit``: fit one preset on several projects' ``refmatch.json`` at once.
+    """``fit``: fit one preset on several projects' ``refmatch.json`` at once.
 
     Reports in-sample, cross-validated (clips held out across all projects) and
     cross-project numbers (train on all but one project, test on that one),
@@ -1267,7 +1144,7 @@ def run_fit(
     out: dict[str, Any] = {"projects": [str(p) for p in projects]}
     if do_ablate:
         out["ablation"] = ablate(datasets, base=base)
-    rep = fit_weights(datasets, base=base, name=name, taste=taste, save=save)
+    rep = fit_weights(datasets, base=base, name=name, save=save)
     out["fit"] = rep
     from cutpoint.styles import get_style  # noqa: PLC0415
 
@@ -1369,3 +1246,78 @@ def _log_fit(rep: dict[str, Any], default: dict[str, float]) -> None:
         m["still_masked_s"],
     )
     logger.info("Saved learned preset %s", rep["preset"])
+
+
+# --------------------------------------------------------------------------- command line
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("-v", "--verbose", action="store_true", help="debug output")
+    sub = ap.add_subparsers(dest="command", required=True)
+    m = sub.add_parser("match", help="find the reference's shots (refmatch.json) and fit")
+    m.add_argument("project", help="analysed project (bare name = projects folder)")
+    m.add_argument("reference", type=Path, help="the finished edit to learn from")
+    m.add_argument(
+        "--fit",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="fit weights and save <CUTPOINT_HOME>/styles/<name>.json (default: on for "
+        "ski projects)",
+    )
+    m.add_argument("--name", help="learned preset name (default: <base>_learned)")
+    p = MatchParams()
+    m.add_argument("--min-score", type=float, default=p.min_score, help="accept a shot at this")
+    m.add_argument(
+        "--margin-score",
+        type=float,
+        default=p.margin_score,
+        help="lower score accepted when it leads the next source/position by --margin",
+    )
+    m.add_argument("--margin", type=float, default=p.margin)
+    m.add_argument(
+        "--cut-corr",
+        type=float,
+        default=p.cut_corr,
+        help="frame-to-frame correlation below which the edit has a cut",
+    )
+    m.add_argument(
+        "--check", type=int, default=6, help="side-by-side check frames in refmatch_check"
+    )
+    f = sub.add_parser("fit", help="fit one preset on several projects' refmatch.json")
+    f.add_argument("projects", nargs="+", help="projects with refmatch.json")
+    f.add_argument("--name", help="learned preset name (default: <base>_learned)")
+    f.add_argument("--base", default="ski", help="built-in preset whose features are fitted")
+    f.add_argument("--ablate", action="store_true", help="also refit on feature subsets")
+    f.add_argument("--no-save", action="store_true", help="report only; write no preset")
+    a = ap.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if a.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    if a.command == "match":
+        run_refmatch(
+            resolve_project_path(a.project),
+            a.reference,
+            params=MatchParams(
+                min_score=a.min_score,
+                cut_corr=a.cut_corr,
+                margin_score=a.margin_score,
+                margin=a.margin,
+            ),
+            fit=a.fit,
+            name=a.name,
+            check=a.check,
+        )
+    else:
+        run_fit(
+            [resolve_project_path(x) for x in a.projects],
+            name=a.name,
+            base=a.base,
+            do_ablate=a.ablate,
+            save=not a.no_save,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

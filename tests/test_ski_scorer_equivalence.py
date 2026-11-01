@@ -4,7 +4,7 @@
 ``ski_scorer_baseline.json`` was written by the code of cba4698 (ski's own feature list, its
 ``laughter`` feature, ``100 * peak / sum(weights)``) on the synthetic inputs below: the
 candidates of ``analyze.pick_candidates`` with a ski context, the saved ``ski_features`` grids,
-and ``refmatch.evaluate`` and ``fit_weights`` on them. Every value is compared with ``==``: a full
+and ``refmatch.evaluate`` and ``fit_weights`` (``scripts/refmatch.py``) on them. Every value is compared with ``==``: a full
 install must score byte-identically. The only expected difference is the rename of the ski
 feature ``laughter`` to ``voice_laughter`` (:data:`RENAMED`), in grid names, ``signals`` keys,
 ``kind`` values and fitted weight names. The grids are built with integer arithmetic and one
@@ -24,11 +24,14 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, features, refmatch, scorer, ski
+from conftest import load_script
+from cutpoint import analyze, features, scorer, ski
 from cutpoint.events import visual, voice
 from cutpoint.pano import views
 from cutpoint.styles import STYLES, Style, load_learned
 
+# evaluate / fit_weights live in the development script scripts/refmatch.py
+refmatch = load_script("refmatch")
 BASELINE = Path(__file__).with_name("ski_scorer_baseline.json")
 N = 1800  # 180 s on the 0.1 s grid
 SRC = Path("ski.mp4")

@@ -5,9 +5,8 @@ One decode pass per source feeds two GPU models:
 * **CLIP ViT-L/14** (OpenAI weights via ``open_clip``): three square crops
   (left, centre, right) of every sampled frame become L2-normalised 768-d
   embeddings. They are reused by the zero-shot prompt scores (beauty shot,
-  friends/group), the LAION "improved aesthetic predictor" head (trained on
-  exactly these embeddings) and the personal *taste* head that
-  ``cutpoint refmatch`` fits on a reference edit.
+  friends/group) and the LAION "improved aesthetic predictor" head (trained on
+  exactly these embeddings).
 * **Faster R-CNN ResNet50-FPN v2** (torchvision, COCO weights, BSD licence):
   person, skis and snowboard boxes. Every confident person box is also
   cropped and embedded with CLIP, so zero-shot prompts can tell another

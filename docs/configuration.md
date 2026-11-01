@@ -15,7 +15,7 @@ CUTPOINT_HOME/
   models/          PANNs, CLIP, detector, aesthetic head, Silero VAD, Qwen2.5-Omni
   tools/           llama.cpp build (for `cutpoint events`)
   stage/           local copies made by `cutpoint stage`; disposable
-  styles/          learned styles from `refmatch` / `fit` (JSON, editable)
+  styles/          learned styles from `scripts/refmatch.py` (JSON, editable)
   presets/         HUD presets written by region discovery
   profiles/        activity profiles built by `cutpoint profile` / `crashes` (JSON)
   projects/        project folders, unless `projects_dir` says otherwise
@@ -328,8 +328,8 @@ A style tells `analyze` how to score and how long clips and the final cut should
 
 `ski` is the action-cam style. Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); other footage is scored from audio, speech and model features only.
 
-Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by `cutpoint
-refmatch` and `cutpoint fit`. They appear as extra `--style` choices, hold the feature weights
+Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by the
+development script `scripts/refmatch.py`. They appear as extra `--style` choices, hold the feature weights
 and the fit report, and can be edited by hand. Style definitions live in `src/cutpoint/styles.py`.
 In a ski style, the weight of laughter heard over the wind noise is `voice_laughter`; older
 learned styles call it `laughter`, which still works.

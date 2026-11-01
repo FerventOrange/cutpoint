@@ -18,11 +18,9 @@ import cutpoint
 from conftest import write
 from cutpoint import (
     backends,
-    cache,
     config,
     features,
     ffmpeg_utils,
-    refmatch,
     reset_state,
     stage,
     state,
@@ -247,31 +245,6 @@ def test_vision_and_unload_use_the_same_url(monkeypatch):
     assert common.unload_ollama() == []
     assert seen == ["http://gpu-box:1234/api/ps"]
     assert vision.VisionRater().url == "http://gpu-box:1234"
-
-
-# -- F11: refmatch audio failures keyed by cache folder ------------------------------
-def test_audio_failure_keyed_by_source_cache_dir(tmp_path, monkeypatch):
-    calls: list[Path] = []
-
-    def fail(path, sr):
-        calls.append(path)
-        raise FFmpegError("decode failed")
-
-    monkeypatch.setattr(refmatch, "decode_pcm", fail)
-    monkeypatch.setattr(refmatch, "probe", lambda p: SimpleNamespace(audio_streams=1))
-    src = write(tmp_path / "clip.mp4", "a")
-    assert refmatch.audio_8k(src).size == 0
-    assert refmatch.audio_8k(src).size == 0
-    assert len(calls) == 1
-    failed = refmatch._AUDIO_FAILED
-    assert failed == {str(cache.source_dir(src))}
-    write(src, "changed")  # new size -> new cache folder -> retried
-    refmatch.audio_8k(src)
-    assert len(calls) == 2
-    reset_state()
-    assert not refmatch._AUDIO_FAILED
-    refmatch.audio_8k(src)
-    assert len(calls) == 3
 
 
 # -- TORCH_HOME -----------------------------------------------------------------------

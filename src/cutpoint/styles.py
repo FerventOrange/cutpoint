@@ -396,8 +396,6 @@ def load_learned(path: Path) -> Style:
     bad = unknown_weights(weights)
     if bad:  # kept, so the score is as before: counted in the divisor, nothing on the grid
         _warn_unknown(str(path), tuple(bad))
-    if data.get("taste"):  # personal taste head next to the preset (cutpoint refmatch --taste)
-        data["taste"] = str((path.parent / data["taste"]).resolve())
     return replace(
         base,
         name=data.get("name", path.stem),
