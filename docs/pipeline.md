@@ -67,6 +67,10 @@ flowchart TD
     EDIT --> CLIPS
     EDIT --> ASM
     FIN -->|edit only| COPY[/"name-final.mp4 and .srt"/]
+    HL -->|"assemble <project>, edit --no-keep-clips"| TMP[/".assemble-tmp-id: temporary clips, removed"/]
+    TMP --> ASM
+    CLIPS -->|"--vertical"| VDIR[/"clips_vertical/"/]
+    VDIR --> ASM
 
     SRC --> P360["cutpoint 360 analyze --scan"]
     P360 --> V360["views: proxy view scores"]

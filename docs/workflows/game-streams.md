@@ -170,8 +170,8 @@ moments the vision model describes first) and the game name used in the vision p
 - Text colours are unreliable on bright backgrounds, so colour-based teamkill detection is off
   for discovered presets.
 - The Omni model gives fluent but generic descriptions; it is a soft signal.
-- Stream layouts with the game in a box: there is no CLI flag to remap HUD regions into the box
-  yet (a `--hud-box` option is a suggested feature). Crop the clips instead with
+- Stream layouts with the game in a box: HUD regions cannot be remapped into the box. Crop the
+  clips instead with
   `--crop auto` or a per-segment `"crop": "W:H:X:Y"`.
 - `--avoid "GLOB@START-END"` marks ranges that are never decoded. Passing the complement of the
   windows you care about restricts OCR to them, which saves hours on long VODs. Each range is
