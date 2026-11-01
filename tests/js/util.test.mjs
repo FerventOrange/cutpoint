@@ -1,10 +1,10 @@
 // Pure helpers behind the moments list, the trim fields and the model picker.
-import { test, before } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { importPure } from './harness.mjs';
 
-let u;
-before(async () => { u = await importPure('util.js'); });
+// top-level await, not a before() hook: older Node 22 releases start tests before an async hook finishes
+const u = await importPure('util.js');
 
 test('timecodes: typed times parse in every accepted form and reject the rest; fmt is their inverse', () => {
   assert.equal(u.parseTime('1:23.5'), 83.5);
