@@ -8495,3 +8495,56 @@ def test_login_timeout_cancellation_does_not_hold_login_lock(
             release.set()
         assert expired.result(timeout=2) == {"state": "error", "error": "login timed out"}
     assert logins.cancelled == ["state_codex"]
+
+
+def test_the_media_query_token_does_not_unlock_other_routes(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """``?t=`` is for <video>/<img> URLs only; every other route needs the header."""
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    (p / "final.mp4").write_bytes(b"final video")
+    token = {"t": client.headers["X-Cutpoint-Token"]}
+    no_header = {"X-Cutpoint-Token": ""}
+
+    assert client.get(f"/api/projects/{pid}", params=token, headers=no_header).status_code == 403
+    review = client.put(f"/api/projects/{pid}/review", params=token, headers=no_header, json={})
+    assert review.status_code == 403
+    media = client.get(f"/api/projects/{pid}/outputs/final.mp4", params=token, headers=no_header)
+    assert media.status_code == 200 and media.content == b"final video"
+
+
+@pytest.mark.parametrize("sep", ["%2F", "%5C"])
+def test_outputs_route_refuses_path_traversal(client: TestClient, tmp_path: Path, sep: str) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    (p / "final.mp4").write_bytes(b"x")
+    for folder in (p.parent, p.parent.parent):
+        (folder / "secret.txt").write_text("TOP-SECRET", encoding="utf-8")
+    token = client.headers["X-Cutpoint-Token"]
+
+    for name in (f"..{sep}secret.txt", f"..{sep}..{sep}secret.txt"):
+        res = client.get(f"/api/projects/{pid}/outputs/{name}?t={token}")
+        assert res.status_code == 404, (name, res.status_code)
+        assert "TOP-SECRET" not in res.text
+
+
+@pytest.mark.parametrize(
+    ("err", "error"),
+    [
+        (ui.cliproxy.ProxyError("no usable keyring: credentials not stored"), None),
+        (OSError(), "OSError"),  # no message: the error type still says what failed
+    ],
+    ids=["keyring-refused", "bare-oserror"],
+)
+def test_a_login_whose_poll_fails_reports_the_error_and_can_start_again(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, err, error
+) -> None:
+    def broken(state: str) -> dict:
+        raise err
+
+    monkeypatch.setattr(ui.cliproxy, "poll_login", broken)
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+
+    assert login_state(client, "codex") == {"state": "error", "error": error or str(err)}
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200

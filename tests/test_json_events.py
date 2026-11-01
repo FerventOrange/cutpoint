@@ -119,6 +119,27 @@ def test_events_json_missing_extra(project, monkeypatch, capsys):
     assert doc["project"] == str(project) and doc["outputs"] == {}
 
 
+def test_events_json_missing_project_is_not_found(home, monkeypatch, capsys):
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    code, doc = run_json(capsys, ["events", "nosuch", "--layers", "audio"])
+    assert code == 1 and doc["ok"] is False
+    assert doc["error"]["code"] == "not_found"
+    assert "nosuch" in doc["error"]["message"]
+    assert not (home / "projects" / "nosuch").exists()
+
+
+def test_events_json_interrupted(project, monkeypatch, capsys):
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_events", interrupted)
+    code, doc = run_json(capsys, ["events", "ev", "--layers", "audio"])
+    assert code == 130 and doc["ok"] is False
+    assert doc["error"]["code"] == "interrupted"
+    assert doc["project"] == str(project)
+
+
 def test_events_json_footage_unreachable(project, tmp_path, monkeypatch, capsys):
     gone = tmp_path / "gone.mp4"
     cache.save_json(project / "highlights.json", {"sources": [{"path": str(gone)}]})

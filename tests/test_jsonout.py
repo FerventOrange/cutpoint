@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -10,8 +11,8 @@ from pathlib import Path
 import pytest
 
 from conftest import envelope
-from cutpoint import cli, ffmpeg_utils, jsonout
-from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
+from cutpoint import cli, ffmpeg_utils, jsonout, reset_state
+from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError, FolderBusyError
 
 
 def test_envelope_collects_outputs_project_and_warnings(tmp_path, capsys):
@@ -195,6 +196,7 @@ def _paths_raising(monkeypatch, err: BaseException) -> None:
         (FileNotFoundError("Segments file not found: x"), "not_found", 1, None),
         (FFmpegNotFoundError("ffmpeg not found. Install it"), "ffmpeg_missing", 1, None),
         (FileExistsError("clips is not empty; use --force"), "output_not_empty", 1, None),
+        (FolderBusyError("another run holds clips"), "folder_busy", 1, None),
         (RuntimeError("encoder failed"), "error", 1, None),
         (ModuleNotFoundError("x", name="torch"), "missing_extra", 1, "'events' extra"),
         (KeyboardInterrupt(), "interrupted", 130, "interrupted"),
@@ -209,6 +211,27 @@ def test_cli_error_envelope(monkeypatch, capsys, err, code, exit_code, message):
     assert doc["error"]["code"] == code
     assert (message or str(err)) in doc["error"]["message"]
     assert "noise" in stderr
+
+
+@pytest.mark.skipif(Path("C:/ffmpeg/bin").is_dir(), reason="C:/ffmpeg/bin is always searched")
+def test_ffmpeg_off_path_gives_ffmpeg_missing(home, tmp_path, monkeypatch, capsys):
+    """A real lookup, not an injected exception: nothing on PATH or in the default folders."""
+    video = tmp_path / "videos" / "a.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"not probed")
+    segments = tmp_path / "seg.json"
+    segments.write_text(json.dumps([{"source": str(video), "start": 0, "end": 2}]), "utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "programs"))
+    reset_state()  # forget any ffmpeg found earlier in this process
+
+    assert cli.main(["clips", "p", "--segments", str(segments), "--json"]) == 1
+
+    doc = envelope(capsys.readouterr().out)
+    assert doc["ok"] is False
+    assert doc["error"]["code"] == "ffmpeg_missing"
+    assert "not found" in doc["error"]["message"]
 
 
 def test_cli_error_without_json_prints_nothing_on_stdout(monkeypatch, capsys):
@@ -240,11 +263,13 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
         (["crashes", "ski", "--dense-top", "many", "--json"], "argument --dense-top: invalid int"),
         (["profile", "ski", "--json", "--activity"], "argument --activity: expected one argument"),
         (["setup", "--only", "bogus", "--json"], "argument --only: invalid choice: 'bogus'"),
+        (["events", "ev", "--layers", "bogus", "--json"], "argument --layers: invalid choice"),
         (["clips", "p", "--size", "abc", "--j"], "argument --size: 'abc': expected WxH"),
         (["paths", "--json=1"], "argument --json: ignored explicit argument '1'"),
     ],
     ids=[
         *["paths-unknown-option", "paths-extra", "clips-size", "crashes", "profile", "setup"],
+        "events-layers",
         "abbreviated",
         "json-with-value",
     ],

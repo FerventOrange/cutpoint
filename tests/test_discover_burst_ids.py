@@ -120,3 +120,35 @@ def test_mined_records_keep_only_the_last_per_id_after_an_upgrade(tmp_path, fake
     assert all(
         f["boxes"] == by_id[f["id"]]["boxes"] and f["t"] == by_id[f["id"]]["t"] for f in used
     )
+
+
+def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(
+    tmp_path, fake_ocr, monkeypatch
+):
+    """Ctrl+C during the OCR: the frames already saved are not decoded or OCR'd again, and
+    the resumed run gives the same records as an uninterrupted one."""
+    src = SimpleNamespace(name="long.mp4", io_path=tmp_path / "long.mp4")
+    bursts = [(src, 0.0), (src, 60.0), (src, 120.0)]
+    reference = _run(tmp_path / "reference", bursts)
+    frames = discover.DiscoverParams().burst_frames
+
+    real_engine = killfeed.OcrEngine
+    calls = {"n": 0}
+
+    class InterruptedEngine(real_engine):
+        def __call__(self, img, min_score):
+            calls["n"] += 1
+            if calls["n"] == frames + 2:  # the third frame of the second burst
+                raise KeyboardInterrupt
+            return super().__call__(img, min_score)
+
+    monkeypatch.setattr(killfeed, "OcrEngine", InterruptedEngine)
+    with pytest.raises(KeyboardInterrupt):
+        _run(tmp_path, bursts)
+    monkeypatch.setattr(killfeed, "OcrEngine", real_engine)
+
+    fake_ocr.clear()
+    resumed = _run(tmp_path, bursts)
+
+    assert fake_ocr == [60.0, 120.0]  # the finished first burst comes from the cache
+    assert _key(resumed) == _key(reference)
