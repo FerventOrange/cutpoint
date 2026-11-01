@@ -57,11 +57,6 @@ def omni_mmproj() -> Path:
     return llm_dir() / "mmproj-Qwen2.5-Omni-7B-Q8_0.gguf"
 
 
-def llama_cache() -> Path:
-    """``LLAMA_CACHE`` for ``-hf`` fallback loading."""
-    return _paths.models_dir() / "llama-cache"
-
-
 def llama_dir() -> Path:
     """llama.cpp install folder."""
     return _paths.tools_dir() / "llama.cpp"

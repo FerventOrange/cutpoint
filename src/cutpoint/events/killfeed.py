@@ -1,13 +1,14 @@
-"""Layer 1b: on-screen events (kill feed, round banners, "X VS Y") via OCR.
+"""Layer 1b: on-screen events (kill feed, round banners, notices) via OCR.
 
 One sequential ffmpeg pass per source decodes only the bounding box of the
 game's HUD regions at a low frame rate (the probed GPU decoder when it works) and
 pipes raw BGR frames to numpy. Each region is OCR'd with RapidOCR (CPU) only
-when its "HUD pixel" mask (white text, blue/orange name boxes) has changed
-since the last OCR of that region, which skips the vast majority of frames.
+when its gate lets it through: the text layout RapidOCR detects changed ("det")
+or its "HUD pixel" mask (white text, blue/orange boxes) changed ("mask"), which
+skips the vast majority of frames.
 
 Events: ``{t, end, type, text, confidence, region, ...}`` with type one of
-``kill``, ``banner``, ``vs``, ``points``, ``log``.
+``kill`` (and the other feed verbs), ``banner``, ``notice``, ``bigtext``, ``multikill``.
 """
 
 from __future__ import annotations
@@ -42,8 +43,9 @@ logger = logging.getLogger(__name__)
 
 # Your in-game names come from config.json ``player_tags`` (or ``--player``).
 DEFAULT_PLAYER_TAGS: tuple[str, ...] = ()
-_VS_RE = re.compile(r"(\d)\s*V\s*S\s*(\d)")
-_POINTS_RE = re.compile(r"\+\s?(\d{2,4})\b")
+MIN_TEXT_SCORE = 0.6  # recognised text below this score is dropped
+FUZZY = 0.8  # SequenceMatcher ratio for phrase / dedupe matches
+PERSIST_S = 8.0  # an entry seen again within this is the same event
 
 
 @dataclass
@@ -54,34 +56,26 @@ class OcrParams:
     game: str = "auto"
     player_tags: tuple[str, ...] = DEFAULT_PLAYER_TAGS
     hwaccel: bool = True
-    min_text_score: float = 0.6
-    fuzzy: float = 0.8  # SequenceMatcher ratio for phrase / dedupe matches
-    persist_s: float = 8.0  # an entry seen again within this is the same event
-    regions: tuple[Region, ...] | None = None  # None = preset for the game
-    extra: dict[str, Any] = field(default_factory=dict)
     project: Path | None = None  # for project-local presets (not part of the key)
 
     def key(self, game: str | None, preset: HudPreset | None = None) -> dict[str, Any]:
         """Cache key (hwaccel does not change results, so it is left out).
 
-        Built-in presets (R6) produce the keys they had before JSON presets
-        existed, but :func:`detect_ocr_events` adds the hash of the raw read's key
-        (``"raw"``, which includes the RapidOCR version), so results cached before
-        the raw OCR cache are read once more, and again after a RapidOCR upgrade.
+        :func:`detect_ocr_events` adds the hash of the raw read's key (``"raw"``,
+        which includes the RapidOCR version), so results are read again after a
+        RapidOCR upgrade.
         """
-        regs = self.regions or (preset.all_regions() if preset else ())
         key = {
             "fps": self.fps,
             "game": game,
             "tags": list(self.player_tags),
-            "min_text_score": self.min_text_score,
-            "fuzzy": self.fuzzy,
-            "persist_s": self.persist_s,
-            "regions": [r.key() for r in regs],
-            "extra": self.extra,
-            "v": 3,
+            "min_text_score": MIN_TEXT_SCORE,
+            "fuzzy": FUZZY,
+            "persist_s": PERSIST_S,
+            "regions": [r.key() for r in (preset.all_regions() if preset else ())],
+            "v": 4,  # 4: no built-in (R6) presets, no ``extra``
         }
-        if preset is not None and preset.key():
+        if preset is not None:
             key["preset"] = preset.key() | {"interp": GENERIC_VERSION}
         return key
 
@@ -197,27 +191,6 @@ def hud_mask(bgr: np.ndarray) -> np.ndarray:
     blue = (b > 150) & (r < 120) & (b - r > 80)
     orange = (r > 200) & (g > 90) & (g < 190) & (b < 100)
     return white | blue | orange
-
-
-def team_color(bgr: np.ndarray) -> str | None:
-    """ "ally" (blue box), "enemy" (orange box) or None for a name-box crop.
-
-    Kill-feed boxes are semi-transparent, so the decision uses the median
-    red-minus-blue of the non-text pixels (measured: orange boxes +80..+200,
-    blue boxes -25..-200, grey/neutral boxes about 0).
-    """
-    if bgr.size == 0:
-        return None
-    px = bgr.reshape(-1, 3).astype(np.int16)
-    bg = px[px.min(axis=1) < 170]  # drop white text pixels
-    if len(bg) < 10:
-        return None
-    diff = float(np.median(bg[:, 2]) - np.median(bg[:, 0]))
-    if diff >= 40:
-        return "enemy"
-    if diff <= -20:
-        return "ally"
-    return None
 
 
 _HUES = (  # upper hue limits (degrees) of the colour names
@@ -689,20 +662,13 @@ class EventTracker:
         for e in self.events:
             if e.get("unknown") and e["sightings"] < 2:
                 continue  # one-frame OCR noise in a generic text region
-            if e["sightings"] >= min_sightings or e["type"] in ("banner", "vs"):
+            if e["sightings"] >= min_sightings or e["type"] == "banner":
                 out.append({k: v for k, v in e.items() if not k.startswith("_")})
         return out
 
 
 # --------------------------------------------------------------------------- OCR logic
 
-
-# The OCR layer's detection size limit (long side, px). RapidOCR 1.4.4 ignores it: with
-# det_limit_type="max" its TextDetector picks the limit from the image's long side (960 below
-# 960 px, 1500 below 1500 px, else 2000), so crops up to 2000 px are never scaled (#443). It
-# stays because it is part of the raw OCR cache key (ocr_raw.raw_key): changing or dropping it
-# would make every existing raw read miss.
-OCR_DET_SIDE = 960
 
 # onnxruntime intra-op threads for the OCR models (det, cls, rec). CPU OCR stops scaling at
 # about 4 threads: 8 / 4 / 2 / 1 threads took 4.0 / 3.3 / 6.9 / 8.7 s per 1280 px frame on an
@@ -729,24 +695,21 @@ class OcrEngine:
     the text of a box can depend on the others: 1 recognises each box alone.
     """
 
-    def __init__(
-        self, det_side: int = OCR_DET_SIDE, lanes: int | None = None, rec_batch: int | None = None
-    ) -> None:
+    def __init__(self, lanes: int | None = None, rec_batch: int | None = None) -> None:
         from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
-        self.det_side = det_side  # part of the raw OCR cache key
         self.lanes = OCR_LANES if lanes is None else lanes
         self.rec_batch = rec_batch
         extra = {} if rec_batch is None else {"rec_batch_num": rec_batch}
 
         # Default det config upscales the short side to 736 px ("limit_type: min"),
         # which makes wide HUD strips ~10x slower; cap the long side instead. RapidOCR
-        # 1.4.4 then ignores det_limit_side_len (see OCR_DET_SIDE): det_side does not
-        # change the output and is kept only as self.det_side, a part of the raw cache key.
+        # 1.4.4 then picks the limit from the image's long side (960 below 960 px, 1500
+        # below 1500 px, else 2000), so crops up to 2000 px are never scaled and
+        # det_limit_side_len would change nothing (#443).
         engines = [
             RapidOCR(
                 det_limit_type="max",
-                det_limit_side_len=det_side,
                 intra_op_num_threads=max(1, OCR_THREADS // self.lanes),
                 **extra,
             )
@@ -886,132 +849,18 @@ class Interpreter:
         self.params = params
         self.scale = scale
         self.preset = preset
-        self.generic = preset is not None and not preset.builtin
         self.phrases = preset.phrases if preset else ()
         self.tags = tuple(
             dict.fromkeys([*params.player_tags, *(preset.player_tags if preset else ())])
         )
-        self.tracker = EventTracker(params.persist_s, params.fuzzy)
-        self.last_vs: tuple[int, int] | None = None
+        self.tracker = EventTracker(PERSIST_S, FUZZY)
         self.feed = FeedParser(preset.feed if preset else {}, self.tags, scale)
 
     def _phrases(self, t: float, region: Region, text: str, conf: float) -> bool:
-        found = False
-        for ph in self.phrases:
-            if fuzzy_contains(text, ph, self.params.fuzzy):
-                # Keep trailing digits for "WON ROUND 5"-style banners.
-                m = re.search(r"ROUND\s*(\d{1,2})\b", norm(text)) if "ROUND" in ph.upper() else None
-                label = f"{ph} {m.group(1)}" if m else ph
-                self.tracker.see(
-                    t,
-                    "banner",
-                    ph,
-                    text=label,
-                    raw=text[:120],
-                    confidence=round(conf, 3),
-                    region=region.name,
-                )
-                found = True
-        return found
-
-    def handle(
-        self, t: float, region: Region, img: np.ndarray, items: list[tuple[list, str, float]]
-    ) -> None:
-        """Interpret OCR ``items`` of ``region`` (crop ``img``) at time ``t``."""
-        if not items:
-            return
-        if self.generic:
-            self._handle_generic(t, region, img, items)
-            return
-        tags = self.params.player_tags
-        full = " ".join(i[1] for i in items)
-        conf = float(np.mean([i[2] for i in items]))
-        for m in _POINTS_RE.finditer(full):
-            self.tracker.see(
-                t,
-                "points",
-                m.group(0),
-                text=f"+{m.group(1)}",
-                confidence=round(conf, 3),
-                region=region.name,
-            )
-        if region.kind == "counter":
-            m = _VS_RE.search(full.upper().replace("O", "0"))
-            if m:
-                pair = (int(m.group(1)), int(m.group(2)))
-                if pair != self.last_vs and pair[0] <= 5 and pair[1] <= 5:
-                    self.last_vs = pair
-                    self.tracker.see(
-                        t,
-                        "vs",
-                        f"{pair[0]}v{pair[1]}",
-                        text=f"{pair[0]} VS {pair[1]}",
-                        confidence=round(conf, 3),
-                        region=region.name,
-                    )
-            return
-        if region.kind in ("banner", "notice"):
-            self._phrases(t, region, full, conf)
-            return
-        if region.kind == "log":
-            for row in _rows(items, 10 * self.scale):
-                line = " ".join(i[1] for i in row)
-                c = float(np.mean([i[2] for i in row]))
-                low = line.lower()
-                if any(
-                    k in low
-                    for k in ("destroyed", "shot down", "set afire", "has achieved", "critical")
-                ):
-                    self.tracker.see(
-                        t,
-                        "log",
-                        norm(line),
-                        text=line[:160],
-                        confidence=round(c, 3),
-                        region=region.name,
-                        player=is_player(line, tags),
-                    )
-            return
-        # killfeed
-        for row in _rows(items, 12 * self.scale):
-            line = " ".join(i[1] for i in row)
-            c = float(np.mean([i[2] for i in row]))
-            if self._phrases(t, region, line, c):
-                continue
-            names = _merge_adjacent([i for i in row if len(norm(i[1])) >= 2], gap=14 * self.scale)
-            if len(names) < 2:
-                continue
-            killer, victim = names[0], names[-1]
-            k_team = team_color(_box_crop(img, killer[0]))
-            v_team = team_color(_box_crop(img, victim[0]))
-            if k_team is None and v_team is None:
-                continue  # not a kill-feed row (no coloured name boxes)
-            teamkill = k_team == "ally" and v_team == "ally"
-            player = is_player(killer[1], tags) or is_player(victim[1], tags)
-            text = f"{killer[1]} > {victim[1]}"
-            self.tracker.see(
-                t,
-                "kill",
-                norm(text),
-                text=text,
-                killer=killer[1],
-                victim=victim[1],
-                killer_team=k_team,
-                victim_team=v_team,
-                teamkill=teamkill,
-                player=player,
-                player_kill=is_player(killer[1], tags),
-                player_death=is_player(victim[1], tags),
-                confidence=round(c, 3),
-                region=region.name,
-            )
-
-    # ------------------------------------------------------------ generic presets
-    def _generic_phrases(self, t: float, region: Region, text: str, conf: float) -> bool:
         """Phrase matches, keeping only the longest of nested matches
         ("YOU HAVE BEEN DESTROYED", not also "DESTROYED"); the text after the
         phrase is kept as ``detail`` ("by -BRoFS- Sinistro9121 (Strv m/40L)")."""
-        hits = [ph for ph in self.phrases if fuzzy_contains(text, ph, self.params.fuzzy)]
+        hits = [ph for ph in self.phrases if fuzzy_contains(text, ph, FUZZY)]
         hits = [ph for ph in hits if not any(ph != o and norm(ph) in norm(o) for o in hits)]
         for ph in hits:
             last = norm(ph).split()[-1]
@@ -1029,10 +878,13 @@ class Interpreter:
             )
         return bool(hits)
 
-    def _handle_generic(
+    def handle(
         self, t: float, region: Region, img: np.ndarray, items: list[tuple[list, str, float]]
     ) -> None:
-        """JSON-preset interpretation: feeds, banners, notices and big text."""
+        """Interpret OCR ``items`` of ``region`` (crop ``img``) at time ``t``: feeds,
+        banners, notices and big text."""
+        if not items:
+            return
         if region.kind == "feed":
             for ev in self.feed.parse(img, items):
                 # exclusive: identical rows on screen at once are separate kills
@@ -1048,7 +900,7 @@ class Interpreter:
                 continue
             line = " ".join(i[1] for i in row).strip()
             c = float(np.mean([i[2] for i in row]))
-            if self._generic_phrases(t, region, line, c):
+            if self._phrases(t, region, line, c):
                 continue
             if region.kind == "bigtext" and h < 1.4 * min_h:
                 continue  # unknown text must be really big to count as a banner
@@ -1546,65 +1398,27 @@ def keep_segments(duration: float, avoid: list[tuple[float, float]]) -> list[tup
     return [(a, b) for a, b in segs if b - a >= 1.0]
 
 
-def link_teamkills(
-    events: list[dict[str, Any]],
-    window_s: float = 3.0,
-    tags: tuple[str, ...] = DEFAULT_PLAYER_TAGS,
-    generic_teamkills: bool = False,
-) -> None:
-    """Post-process kill events in place (also applied to cached results).
+def link_teamkills(events: list[dict[str, Any]], generic_teamkills: bool = False) -> None:
+    """(Re)compute the ``teamkill`` flag of kill events in place.
 
-    * Drops "kills" whose killer + victim text is one of the player's tags:
-      OCR split a single name into two boxes ("layer" > "ame"). Built-in
-      (R6) events only; generic feed events carry ``verb`` and keep player
-      deaths.
-    * Generic feed events: ``teamkill`` only when ``generic_teamkills`` (the
-      preset's ``feed.teamkills``) and both name colours read as ally.
-    * (Re)computes ``teamkill``.
-
-    A kill is a teamkill when both name boxes are blue, or when a "REVERSE
-    FRIENDLY FIRE" banner shows within ``window_s`` and neither name box is
-    orange (the victim's box is often grey, so colour alone misses it).
+    A kill is a teamkill only when ``generic_teamkills`` (the preset's
+    ``feed.teamkills``: it trusts its colours) and both name colours read as ally.
     Applied to cached results too, so the rule can change without re-OCR.
     """
-    events[:] = [
-        e
-        for e in events
-        if e.get("verb")
-        or not (
-            e.get("type") == "kill"
-            and not is_player(str(e.get("killer", "")), tags)
-            and is_player(f"{e.get('killer', '')}{e.get('victim', '')}", tags)
-        )
-    ]
-    rff = [
-        e["t"]
-        for e in events
-        if e.get("type") == "banner" and str(e.get("text", "")).startswith("REVERSE FRIENDLY FIRE")
-    ]
     for e in events:
-        if e.get("type") != "kill":
-            continue
-        if e.get("verb"):
-            # generic feeds (JSON presets): colour teamkills only if the preset
-            # trusts its colours (``"feed": {"teamkills": true}``)
+        if e.get("type") == "kill":
             e["teamkill"] = bool(
                 generic_teamkills
                 and e.get("killer_team") == "ally"
                 and e.get("victim_team") == "ally"
             )
-            continue
-        k, v = e.get("killer_team"), e.get("victim_team")
-        near = any(abs(e["t"] - t) <= window_s for t in rff)
-        e["teamkill"] = (k == "ally" and v == "ally") or (near and "enemy" not in (k, v))
 
 
 def derive_streaks(events: list[dict[str, Any]], window_s: float = 20.0) -> None:
     """Add ``multikill`` events for 2+ player kills within ``window_s`` (in place).
 
-    Only generic-feed kills (JSON presets, they carry ``verb``) are considered,
-    so built-in R6 results are unchanged; a self-kill (``player_death`` set too)
-    is no kill here. Idempotent: old derived events are dropped first.
+    Only feed kills (they carry ``verb``) are considered; a self-kill
+    (``player_death`` set too) is no kill here. Idempotent: old derived events are dropped first.
     """
     events[:] = [e for e in events if e.get("type") != "multikill"]
     kills = sorted(
@@ -1691,7 +1505,7 @@ STATIC_TEXT_SHARE = 0.5
 # them first read within STATIC_FEED_GUARD_S of each other, in a stretch of at least
 # STATIC_MIN_FRAMES such frames over at least TEXT_MIN_S (frames at most STATIC_MAX_GAP_S
 # apart, or 2 frame intervals at low OCR frame rates, as :class:`StillRuns`). A span runs from
-# a line's first read to its last, so it bridges gaps up to ``persist_s`` (8 s): a notice that
+# a line's first read to its last, so it bridges gaps up to PERSIST_S (8 s): a notice that
 # keeps coming back counts as one line that stays. Gameplay text flashes (notices, kill lines,
 # score popups) or is a few lasting labels that arrive one by one (a location, an objective,
 # an overlay, a returning notice); a menu opens with many lines at once. Measured on R6,
@@ -2104,7 +1918,7 @@ def _log_menu_frames(
 
 
 # Region kinds whose interpretation never looks at pixels: their reads keep no band.
-TEXT_ONLY_KINDS = ("counter", "banner", "notice", "log", "bigtext")
+TEXT_ONLY_KINDS = ("banner", "notice", "bigtext")
 
 
 @dataclass
@@ -2286,7 +2100,7 @@ class OcrReader:
         if prev is not None and np.mean(np.abs(mask - prev) > 0.25) < r.min_change:
             return None, None, None
         self.last_mask[r.name] = mask
-        return {}, None, self.engine(crop, self.params.min_text_score)
+        return {}, None, self.engine(crop, MIN_TEXT_SCORE)
 
     def read(self, n: int, t: float, frame: np.ndarray) -> tuple[FrameRec, dict[str, np.ndarray]]:
         """The record of frame ``n`` (time ``t``) and the crops of the regions read."""
@@ -2311,9 +2125,7 @@ class OcrReader:
             rec.regions[r.name] = g
             crop = cut[r.name]
             if text_rows is not None:
-                items = self.engine.read_rows(
-                    crop, text_rows, self.params.min_text_score, pad=6 * self.scale
-                )
+                items = self.engine.read_rows(crop, text_rows, MIN_TEXT_SCORE, pad=6 * self.scale)
             elif items is None:
                 continue
             g["g"] = "read"
@@ -2411,8 +2223,8 @@ class OcrInterpretation:
         det = any(r.gate == "det" for r in regions)
         if det:
             stats["det_calls"] = {r.name: 0 for r in regions if r.gate == "det"}
-        # menu test (JSON presets): the det boxes of every region in reference px, per frame
-        self.menus = self.interp.generic and det
+        # menu test: the det boxes of every region in reference px, per frame
+        self.menus = preset is not None and det
         self.det_boxes: dict[str, list[list[float]]] = {}
         self.frame_boxes: list[dict[str, Any]] = []
         # static screens (see STATIC_THUMB): only when the decoded HUD area sees enough of the frame
@@ -2600,8 +2412,7 @@ def detect_ocr_events(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
 
-    JSON presets (not ``"builtin"``) drop what menu and scoreboard frames show
-    (:func:`menu_times`): every frame records the text boxes the "det" gates
+    What menu and scoreboard frames show is dropped (:func:`menu_times`): every frame records the text boxes the "det" gates
     last detected in its regions other than feeds (a region keeps its boxes on
     the frames it is skipped) and the still run of the decoded HUD area
     (:func:`static_frames`; when that area is at least :data:`STATIC_MIN_AREA` of
@@ -2631,8 +2442,7 @@ def detect_ocr_events(
         on_progress: Called with the share (0-1) of the source decoded so far,
             at most once per percent.
         make_engine: Instead of ``engine``: makes the engine only when the footage is
-            read (a replay or a cache hit loads no OCR model). Its engine must use
-            :data:`OCR_DET_SIDE`, which the raw cache key assumes.
+            read (a replay or a cache hit loads no OCR model).
         cancel: For a read in a background thread (:mod:`cutpoint.events.ocr_prefetch`):
             once set, the read stops at the next frame with :class:`OcrCancelled`, its
             ffmpeg killed and nothing committed after the last finished raw chunk. ffmpeg
@@ -2654,7 +2464,7 @@ def detect_ocr_events(
     """
     game = game_key_for_path(str(src.path), params.game, params.project)
     preset = load_preset(game, params.project)
-    regions = params.regions or (preset.all_regions() if preset else ())
+    regions = preset.all_regions() if preset else ()
     if not regions:
         logger.info(
             "%s: no HUD preset for %r; skipping OCR (run with --discover-regions)", src.name, game
@@ -2668,9 +2478,8 @@ def detect_ocr_events(
             params.fps,
             [r.key() for r in regions],
             newest,
-            params.min_text_score,
+            MIN_TEXT_SCORE,
             avoid,
-            getattr(engine, "det_side", OCR_DET_SIDE),
         ),
     )
     key = params.key(game, preset) | ({"avoid": avoid} if avoid else {})

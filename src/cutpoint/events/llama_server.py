@@ -1,9 +1,7 @@
 """Start, health-check and stop a local ``llama-server`` (llama.cpp) process.
 
 The server is loaded with the model + mmproj from ``models/llm`` (``-m`` /
-``--mmproj``). If that fails, e.g. the 400 some builds return with a manually
-loaded mmproj, :class:`LlamaServer` can retry with ``-hf`` loading, using
-``LLAMA_CACHE=models/llama-cache`` so any download stays under ``models/``.
+``--mmproj``).
 
 Before starting, any Ollama models are unloaded so the two never hold VRAM at
 the same time.
@@ -81,13 +79,10 @@ class LlamaServer:
     """Context manager owning one llama-server process.
 
     Args:
-        model: GGUF model path (``-m``). Ignored when ``hf_repo`` is used.
+        model: GGUF model path (``-m``).
         mmproj: Multimodal projector path (``--mmproj``).
-        hf_repo: ``-hf`` spec (e.g. ``ggml-org/Qwen2.5-Omni-7B-GGUF:Q4_K_M``)
-            used instead of ``model``/``mmproj``.
         ctx: Context size in tokens.
         image_max_tokens: Cap per image (keeps 12-16 frames inside the context).
-        extra_args: More command-line arguments.
         log_path: Where server output goes (default: next to the exe).
     """
 
@@ -96,22 +91,18 @@ class LlamaServer:
         model: Path | None = None,
         mmproj: Path | None = None,
         *,
-        hf_repo: str | None = None,
         ctx: int = 16384,
         image_max_tokens: int | None = None,
         port: int = 8089,
-        extra_args: list[str] | None = None,
         log_path: Path | None = None,
         startup_timeout_s: float = 300.0,
     ) -> None:
         # None = the Qwen2.5-Omni files installed by ``cutpoint setup``.
         self.model = model or paths.omni_model()
         self.mmproj = mmproj or paths.omni_mmproj()
-        self.hf_repo = hf_repo
         self.ctx = ctx
         self.image_max_tokens = image_max_tokens
         self.port = free_port(port)
-        self.extra_args = extra_args or []
         self.log_path = log_path or paths.llama_dir() / "llama-server.log"
         self.startup_timeout_s = startup_timeout_s
         self.proc: subprocess.Popen[bytes] | None = None
@@ -144,21 +135,18 @@ class LlamaServer:
             "--cache-ram",
             "0",
         ]
-        if self.hf_repo:
-            cmd += ["-hf", self.hf_repo]
-        else:
-            cmd += ["-m", str(self.model)]
-            if self.mmproj:
-                cmd += ["--mmproj", str(self.mmproj)]
+        cmd += ["-m", str(self.model)]
+        if self.mmproj:
+            cmd += ["--mmproj", str(self.mmproj)]
         if self.image_max_tokens:
             cmd += ["--image-max-tokens", str(self.image_max_tokens)]
-        return cmd + self.extra_args
+        return cmd
 
     def start(self) -> LlamaServer:
         """Launch the server and wait until ``/health`` reports ok."""
         unload_ollama()
         cmd = self.command()
-        env = dict(os.environ, LLAMA_CACHE=str(paths.llama_cache()))
+        env = dict(os.environ)
         exe_dir = str(paths.llama_server_exe().parent)
         if sys.platform.startswith("linux"):  # the Linux builds ship .so files next to the exe
             env["LD_LIBRARY_PATH"] = os.pathsep.join(

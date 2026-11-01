@@ -29,7 +29,7 @@ def _ocr(name: str, typ: str, text: str, t: float, **kw: Any) -> tuple[str, dict
     return name, {"kind": "ocr", "type": typ, "text": text, "t": t, "end": t + 3, **kw}
 
 
-# Layer events by game shape: box feed (banners, multikill), verb feed (verb-based feed, log),
+# Layer events by game shape: box feed (banners, multikill), verb feed (verb-based feed, crash),
 # no preset (audio only), as the layers emit them before events.json.
 BOXFEED = dict(
     [
@@ -86,7 +86,15 @@ VERBFEED = dict(
             player_death=True,
             teamkill=False,
         ),
-        _ocr("verbfeed_log", "log", "me crashed", 22.0, verb="crash", player=True),
+        _ocr(
+            "verbfeed_crash",
+            "crash",
+            "me crashed",
+            22.0,
+            verb="crash",
+            player=True,
+            player_death=True,
+        ),
         _ocr("verbfeed_banner", "banner", "TARGET DESTROYED", 23.0),
     ]
 )
@@ -144,7 +152,7 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0) -> dict[s
     [
         # boxfeed: 1 kill (the own death does not count), teamkill + RFF (capped at 1 = 12), ACE + DOUBLE (2 banners = 12) -> 30 cap
         (list(BOXFEED), 30.0, _ev(kills=1, tk=2, banners=2)),
-        # verbfeed: only the player's kill counts (6), not the death; TARGET DESTROYED (6); logs do not count
+        # verbfeed: only the player's kill counts (6), not the death; TARGET DESTROYED (6); crashes do not count
         (list(VERBFEED), 12.0, _ev(kills=1, banners=1)),
         # no preset: laughter min(12, 30), scream min(6, 4)
         (list(NONE), 16.0, _ev(laugh=0.5, scream=0.1)),
@@ -153,7 +161,7 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0) -> dict[s
         (["boxfeed_rff"], 12.0, _ev(tk=1)),
         (["boxfeed_match_point", "boxfeed_other_kill"], 0.0, _ev()),
         (["boxfeed_death"], 0.0, _ev()),  # the player's own death in a built-in feed is no kill
-        (["verbfeed_death", "verbfeed_log"], 0.0, _ev()),
+        (["verbfeed_death", "verbfeed_crash"], 0.0, _ev()),
     ],
 )
 def test_event_boost(names, boost, evidence):
@@ -244,7 +252,7 @@ PAYOFF = {
     "boxfeed_death": True,
     "verbfeed_kill": True,
     "verbfeed_death": True,
-    "verbfeed_log": True,
+    "verbfeed_crash": False,
     "verbfeed_banner": True,
     "audio_laugh": True,
     "audio_scream": True,
@@ -261,7 +269,7 @@ SEED = {
     "boxfeed_death": 1.2,
     "verbfeed_kill": 1.2,
     "verbfeed_death": 1.2,
-    "verbfeed_log": 0.9,
+    "verbfeed_crash": None,
     "verbfeed_banner": 0.6,
     "audio_laugh": 1.5,
     "audio_scream": 0.5833333333333334,
@@ -432,45 +440,41 @@ KEY_FIELDS = {
     "fuzzy",
     "min_text_score",
     "persist_s",
-    "extra",
     "tags",
     "regions",
 }
-REGION_FIELDS = {"name", "x", "y", "w", "h", "kind", "min_change", "min_fill"}
+REGION_FIELDS = {
+    "name", "x", "y", "w", "h", "kind", "min_change", "min_fill",
+    "gate", "every", "min_text_h", "det_scale",
+}  # fmt: skip
 
 
-BUILTIN_KEY_SHA1 = "1589f1e259b5864facdd747664ef08d46a3fdfa7"
-PLAIN_KEY_SHA1 = "8bd31e1301f547575c5570c1945b64ee0e50f7f2"  # the plain preset's key without ``interp`` (its own version)
+PLAIN_KEY_SHA1 = "ecc99457ca1b78b48396a46fb407b8863155f3bc"  # the preset's key without ``interp`` (its own version)
 
 
 def test_ocr_key(home, tmp_path, monkeypatch):
-    """The OCR cache key: a plain preset adds ``preset``; a ``builtin`` one keeps the original
-    key layout (so its cached results stay valid), wherever it is loaded from."""
+    """The OCR cache key: every field of every region and the preset's ``preset`` fields;
+    the same wherever an installed preset is loaded from."""
     write_preset(paths.presets_dir(), verbfeed())
     key = OcrParams().key("verbfeed", load_preset("verbfeed"))
     assert set(key) == KEY_FIELDS | {"preset"}
-    assert (key["v"], key["game"], key["fps"], key["tags"]) == (3, "verbfeed", 3.0, [])
+    assert (key["v"], key["game"], key["fps"], key["tags"]) == (4, "verbfeed", 3.0, [])
     preset = key["preset"]
     assert set(preset) == {"phrases", "feed", "bigtext", "preset_tags", "interp"}
     assert preset["interp"] == GENERIC_VERSION
     assert preset["phrases"] == ["VERB DONE", *GENERIC_BANNERS]
     assert preset["feed"] == {"kill_words": {"toppled": "kill"}}
     assert preset["preset_tags"] == ["BOXER"]
-    # the region fields are the key too: gate/every/min_text_h/det_scale only on the bigtext region
+    # every region field is the key too
     feed, banner, bigtext = key["regions"]
     assert (feed["name"], banner["name"], bigtext["name"]) == ("feed", "banner", "bigtext")
-    assert set(feed) == set(banner) == REGION_FIELDS
-    assert set(bigtext) == REGION_FIELDS | {"gate", "every", "min_text_h", "det_scale"}
+    assert set(feed) == set(banner) == set(bigtext) == REGION_FIELDS
+    no_interp = {**key, "preset": {k: v for k, v in key["preset"].items() if k != "interp"}}
+    assert cache.params_hash(no_interp, 40) == PLAIN_KEY_SHA1, "preset cache file names"
 
     write_preset(paths.presets_dir(), boxfeed())
     from_user = OcrParams().key("boxfeed", load_preset("boxfeed"))
-    assert set(from_user) == KEY_FIELDS and from_user["v"] == 3
     assert from_user["regions"] == key["regions"]
-    # the values count too: any change renames every cache file of the built-in (R6) presets
-    assert cache.params_hash(from_user, 40) == BUILTIN_KEY_SHA1, "never change"
-    no_interp = {**key, "preset": {k: v for k, v in key["preset"].items() if k != "interp"}}
-    assert cache.params_hash(no_interp, 40) == PLAIN_KEY_SHA1, "plain-preset cache file names"
-
     bundled = tmp_path / "bundled"
     write_preset(bundled, boxfeed())
     (paths.presets_dir() / "boxfeed.json").unlink()
