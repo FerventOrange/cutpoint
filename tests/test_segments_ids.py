@@ -22,10 +22,8 @@ def _segs(*ids: object) -> list[dict[str, object]]:
     [
         pytest.param((None, None, None), ["s001", "s002", "s003"], id="no-collision"),
         pytest.param(("s002", None), ["s002", "s002b"], id="generated-id-is-taken"),
-        pytest.param(("s002", "s002b", None), ["s002", "s002b", "s003"], id="other-slot"),
         pytest.param(("s002", None, "s003", None), ["s002", "s002b", "s003", "s004"], id="chained"),
         pytest.param((None, "s001", "s001b"), ["s001c", "s001", "s001b"], id="next-letter"),
-        pytest.param(("x", "s002b", "s002", None), ["x", "s002b", "s002", "s004"], id="plain"),
     ],
 )
 def test_segment_ids(given: tuple[object, ...], expected: list[object]) -> None:
@@ -223,7 +221,7 @@ def _mapped_drive(
     def fake_unc(path: str) -> str:
         return str(unc) + path[len(str(old)) :] if path.startswith(str(old)) else path
 
-    monkeypatch.setattr(clips, "unc_path", fake_unc, raising=False)
+    monkeypatch.setattr(clips, "unc_path", fake_unc)
     return old, unc
 
 

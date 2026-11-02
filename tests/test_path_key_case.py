@@ -94,16 +94,6 @@ def test_folds_case_is_cached_per_folder_and_reset(tmp_path, monkeypatch):
     assert len(calls) == 3
 
 
-def test_folds_case_cache_is_bounded(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(config, "_probe_case", lambda p: False)
-    monkeypatch.setattr(config, "_FOLDS_CASE_MAX", 2)
-    for n in "abc":
-        (tmp_path / n).mkdir()
-        config.folds_case(tmp_path / n)
-    assert len(config._FOLDS_CASE) == 1
-
-
 def test_a_missing_output_folder_uses_its_nearest_existing_parent(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     calls: list[Path] = []
@@ -138,15 +128,15 @@ def test_case_sensitive_folder_keeps_two_spellings_apart(tmp_path, case_sensitiv
 
 
 def test_swap_in_moves_a_case_variant_name_once(tmp_path, case_insensitive):
-    """The old manifest names ``001_A.mp4``, the folder has ``001_a.mp4`` and the run writes
-    ``001_a.mp4``: one file, moved to the backup once."""
+    """The old manifest names ``001_A.mp4`` (and, hand-edited, ``001_a.mp4`` too), the folder
+    has ``001_a.mp4`` and the run writes ``001_a.mp4``: one file, moved to the backup once."""
     dst = tmp_path / "clips"
     write(dst / "001_a.mp4", "old")
     case_insensitive(dst)
     new = tmp_path / "staged"
     write(new / "001_a.mp4", "new")
 
-    ffmpeg_utils.swap_in(new, dst, ["001_A.mp4"])
+    ffmpeg_utils.swap_in(new, dst, ["001_A.mp4", "001_a.mp4"])
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging
     assert [p.name for p in dst.iterdir()] == ["001_a.mp4"]

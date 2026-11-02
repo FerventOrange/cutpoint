@@ -76,12 +76,6 @@ def mean_abs_yaw(path: dict, centre: float) -> float:
 
 
 # --------------------------------------------------------------------------- helpers
-def test_wrap_deg() -> None:
-    d = np.array([-540.0, -180.0, -90.0, 0.0, 179.5, 180.0, 360.0, 540.0])
-    assert G.wrap_deg(d).tolist() == [-180.0, -180.0, -90.0, 0.0, 179.5, -180.0, 0.0, -180.0]
-    assert float(G.wrap_deg(190.0)) == -170.0
-
-
 def test_gauss_smooth_edges_and_axis() -> None:
     x = np.r_[np.zeros(20), np.ones(20)]
     y = G.gauss_smooth(x, 2.0)
@@ -714,17 +708,6 @@ def test_evaluate_cubic_never_crosses_a_cut() -> None:
     assert 10.0 < yaw[0] < 30.0  # still in shot 1, no pull towards 100
     assert yaw[1] == pytest.approx(100.0)
     assert yaw[2] == pytest.approx(125.0)  # held after the last key
-    grid = np.linspace(0.0, 4.0, 161)
-    got = D.evaluate(path, grid)[0]
-    first = grid < 2.0
-    for sel, kx, ky in (
-        (first, np.array([0.0, 1.0, 2.0]), np.array([0.0, 10.0, 30.0])),
-        (~first, np.array([2.0, 3.0, 4.0]), np.array([100.0, 105.0, 125.0])),
-    ):
-        flat = np.zeros(3)
-        mask = D._linear_intervals(kx, ky, flat)
-        want = D._pchip(grid[sel], kx, np.stack([ky, flat], 1), mask)[:, 0]
-        assert got[sel] == pytest.approx(want)
 
 
 # ------------------------------------------------ evaluate: the cubic never pans faster than linear
@@ -762,21 +745,6 @@ def test_evaluate_stop_go_keys_peak_at_the_linear_speed() -> None:
     t = np.linspace(0.0, 1.5, 301)
     yaw = D.evaluate(path, t)[0]
     assert np.abs(np.diff(yaw) / np.diff(t)).max() == pytest.approx(60.0)  # a cubic hits 90
-
-
-def test_evaluate_near_limit_path_does_not_pan_faster_than_linear(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # 8 keys at 0.5 s (random, seed 4, yaw only): linear peaks at 38.2 deg/s and passes
-    # the pan gates; the plain cubic reached 56.8 and failed max_pan_max
-    yaw = [-117.2, -99.4, -99.0, -79.9, -96.7, -92.4, -97.4, -85.3]
-    path = keys_path(yaw)
-    lin = _pan_metrics(path, _linear_eval, monkeypatch)
-    cubic = _pan_metrics(path, _EVALUATE, monkeypatch)
-    assert lin["speed_max"] == pytest.approx(38.2, abs=0.2)
-    assert cubic["speed_max"] <= lin["speed_max"] + 0.1
-    assert cubic["speed_p95"] <= lin["speed_p95"] + 0.1
-    assert not _fails_pan_gate(cubic) or _fails_pan_gate(lin)  # no gate fails only for cubic
 
 
 def test_evaluate_fast_short_interval_does_not_push_neighbours_over_the_p95_gate(

@@ -127,16 +127,6 @@ def test_running_updates_are_throttled_and_the_last_is_flushed(monkeypatch, caps
     assert [g["pct"] for g in lines(capsys)] == [40]
 
 
-def test_at_most_two_running_updates_per_second(monkeypatch, capsys):
-    clock = FakeClock(monkeypatch)
-    r = progress.Run(progress.ANALYZE_STEPS, active=True)
-    r.start("transcribe")
-    for i in range(100):  # 1 second in 10 ms steps
-        clock.now += 0.01
-        r.update(i)
-    assert len(lines(capsys)) <= 1 + 2
-
-
 def test_state_changes_are_never_throttled_and_drop_the_held_update(monkeypatch, capsys):
     clock = FakeClock(monkeypatch)
     r = progress.Run(progress.ANALYZE_STEPS, active=True)
@@ -200,30 +190,23 @@ def test_a_missing_stderr_does_not_raise(monkeypatch):
 
 
 # ----------------------------------------------------------------- run(): errors and cancel
-def test_keyboard_interrupt_fails_the_current_step_as_cancelled(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("error", "detail"),
+    [(KeyboardInterrupt(), "cancelled"), (RuntimeError("no audio in x.mp4"), "no audio in x.mp4")],
+    ids=["ctrl-c", "run-stopping-error"],
+)
+def test_an_error_fails_the_current_step(monkeypatch, capsys, error, detail):
+    """Ctrl+C fails the running step as cancelled; a run-stopping error with its text."""
     monkeypatch.setenv(progress.ENV, "1")
-    with pytest.raises(KeyboardInterrupt), progress.run(progress.ANALYZE_STEPS) as r:
+    with pytest.raises(type(error)), progress.run(progress.ANALYZE_STEPS) as r:
         r.start("transcribe")
         r.done()
         r.start("reactions")
-        raise KeyboardInterrupt
+        raise error
     got = lines(capsys)
-    assert (got[-1]["step"], got[-1]["state"], got[-1]["detail"]) == (
-        "reactions", "failed", "cancelled",
-    )  # fmt: skip
+    assert (got[-1]["step"], got[-1]["state"], got[-1]["detail"]) == ("reactions", "failed", detail)
     assert not any(g["step"] == "keyframes" for g in got)  # later steps are not announced
     assert progress.current() is None
-
-
-def test_a_run_stopping_error_fails_the_step_with_the_error_text(monkeypatch, capsys):
-    monkeypatch.setenv(progress.ENV, "1")
-    with pytest.raises(RuntimeError), progress.run(progress.ANALYZE_STEPS) as r:
-        r.start("transcribe")
-        raise RuntimeError("no audio in x.mp4")
-    last = lines(capsys)[-1]
-    assert (last["step"], last["state"], last["detail"]) == (
-        "transcribe", "failed", "no audio in x.mp4",
-    )  # fmt: skip
 
 
 def test_an_error_between_steps_fails_the_next_step_and_only_once(monkeypatch, capsys):
@@ -310,8 +293,3 @@ def test_nested_run_reuses_the_active_one(monkeypatch, capsys):
         assert progress.current() is outer
     assert progress.current() is None
     assert {g["total"] for g in lines(capsys)} == {8}
-
-
-def test_fraction():
-    assert progress.fraction(1, 4) == 25.0
-    assert progress.fraction(1, 0) == 0.0

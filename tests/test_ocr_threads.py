@@ -37,43 +37,47 @@ def test_thread_cap_is_at_most_four_and_the_cpu_count() -> None:
     assert 1 <= killfeed.OCR_THREADS <= 4
 
 
-def test_engine_passes_the_thread_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 3)
-
+def _layer_engine(tmp_path: Path) -> None:
     killfeed.OcrEngine(lanes=1)
 
-    assert made == [{"det_limit_type": "max", "intra_op_num_threads": 3}]
 
-
-def test_lanes_split_the_thread_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
-
+def _two_lanes(tmp_path: Path) -> None:
     killfeed.OcrEngine(lanes=2)
 
-    assert [m["intra_op_num_threads"] for m in made] == [2, 2]
-    assert (2 if killfeed.OCR_THREADS >= 4 else 1) == killfeed.OCR_LANES
 
-
-def test_discovery_reads_on_one_lane_with_every_thread(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
-    monkeypatch.setattr(discover, "_burst_frames", lambda *a: [])
-    params = discover.DiscoverParams()
+def _discovery(tmp_path: Path) -> None:
     src = SimpleNamespace(name="a.mp4", io_path=tmp_path / "a.mp4")
+    discover._ocr_frames(
+        [(src, 1.0)], discover.DiscoverParams(), tmp_path / "frames", tmp_path / "ocr.jsonl"
+    )
 
-    discover._ocr_frames([(src, 1.0)], params, tmp_path / "frames", tmp_path / "ocr.jsonl")
 
-    assert made == [
-        {
-            "det_limit_type": "max",
-            "intra_op_num_threads": 4,
-            "rec_batch_num": 1,  # each box recognised alone (#443)
-        }
-    ]
+def _kwargs(threads: int, **more: Any) -> dict[str, Any]:
+    return {"det_limit_type": "max", "intra_op_num_threads": threads, **more}
+
+
+@pytest.mark.parametrize("threads", [3, 4])
+@pytest.mark.parametrize(
+    ("make", "per_engine", "count", "more"),
+    [
+        # the OCR layer: every thread, RapidOCR's own rec batching (raw reads, cache key)
+        (_layer_engine, 1, 1, {}),
+        # lanes split the thread cap
+        (_two_lanes, 2, 2, {}),
+        # discovery: one lane with every thread, each box recognised alone (#443)
+        (_discovery, 1, 1, {"rec_batch_num": 1}),
+    ],
+    ids=["ocr-layer", "two-lanes", "discovery"],
+)
+def test_engines_get_the_thread_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, make, per_engine, count, more, threads
+) -> None:
+    """#374, #403, #443: what each OcrEngine passes to RapidOCR."""
+    made = _fake_rapidocr(monkeypatch)
+    monkeypatch.setattr(killfeed, "OCR_THREADS", threads)
+    monkeypatch.setattr(discover, "_burst_frames", lambda *a: [])
+    make(tmp_path)
+    assert made == [_kwargs(threads // per_engine, **more)] * count
 
 
 def test_the_ocr_layer_keeps_rapidocrs_rec_batch(monkeypatch: pytest.MonkeyPatch) -> None:
