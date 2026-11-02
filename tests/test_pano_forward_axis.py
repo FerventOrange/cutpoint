@@ -20,6 +20,8 @@ from cutpoint.pano import geometry as G
 from cutpoint.pano import render
 from cutpoint.pano import views as VW
 from cutpoint.pano.x3 import X3Clip
+from pano_fakes import FAKE_TORCH, Models, Sampler, frames
+from pano_helpers import fuse_rotations
 
 FPS, DT, DUR = 30.0, 0.001, 12.0
 
@@ -50,13 +52,7 @@ def _fuse(mount: np.ndarray, turn_dps: float = 0.0, sway_deg: float = 0.0) -> G.
     roll = sway_deg * np.sin(2 * np.pi * 1.3 * t)
     pitch = sway_deg * np.sin(2 * np.pi * 0.7 * t + 1.0)
     rm = _rot(1, psi) @ _rot(2, roll) @ _rot(0, pitch) @ mount
-    rel = np.einsum("kji,kjl->kil", rm[:-1], rm[1:])  # small body-frame steps
-    w = np.stack(
-        [rel[:, 2, 1] - rel[:, 1, 2], rel[:, 0, 2] - rel[:, 2, 0], rel[:, 1, 0] - rel[:, 0, 1]], 1
-    ) / (2 * DT)
-    w = np.vstack([np.zeros(3), w])
-    a_v = np.einsum("kji,j->ki", rm, [0.0, -G.G, 0.0])
-    return G.fuse(t, a_v @ G.M_IMU_TO_V, np.degrees(w) @ G.M_IMU_TO_V, FPS, int(DUR * FPS) - 1)
+    return fuse_rotations(t, rm, FPS, int(DUR * FPS) - 1)
 
 
 def _display_yaw(o: G.Orientation, r_vw: np.ndarray, idx: np.ndarray) -> np.ndarray:
@@ -274,17 +270,15 @@ def test_flip_is_exact() -> None:
 def test_upright_views_are_the_minus_z_views_relabelled(home, tmp_path, monkeypatch) -> None:
     """``compute_views`` on an upright clip: the -z frame's detections, embeddings and crops
     (4b3894b), with yaw + 180 and +z view k = -z view k + 4; the selfie pass too."""
-    import test_pano_selfie_recompute as SR  # noqa: PLC0415
-
     rec = SimpleNamespace(built=[], closed=0, det_calls=0, embeds=[])
-    monkeypatch.setitem(sys.modules, "torch", SR.FAKE_TORCH)
-    monkeypatch.setattr(G, "FisheyeSampler", SR._Sampler)
-    monkeypatch.setattr(V, "iter_frames", SR._frames)
+    monkeypatch.setitem(sys.modules, "torch", FAKE_TORCH)
+    monkeypatch.setattr(G, "FisheyeSampler", Sampler)
+    monkeypatch.setattr(V, "iter_frames", frames)
     lrv = tmp_path / "LRV_001.lrv"
     lrv.write_bytes(b"x")
     clip = X3Clip("001", "2026-01-01", "5.7k", str(lrv), [], frames=600, duration=20.0)
     p = VW.ViewParams(view_px=4, eq_width=32)
-    models = SR._Models(rec)
+    models = Models(rec)
     o, minus = _upright_pair()
     plus = VW.compute_views(clip, models, p, o)
     ref = VW.compute_views(clip, models, p, minus)

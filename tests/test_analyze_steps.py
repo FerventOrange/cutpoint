@@ -20,7 +20,7 @@ import pytest
 
 import cutpoint.pano.x3 as x3
 import cutpoint.ski as ski
-from conftest import set_config, write
+from conftest import StubTranscriber, set_config, write
 from cutpoint import activity, analyze, cache, cli, config, crash, jsonout, progress, transcribe
 from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
@@ -60,15 +60,6 @@ def run(home, tmp_path, monkeypatch):
         events_calls=[], layers_seen=[], saves=[], vision_ok=True, vision_cached=False,
         rated=0, segments=[], transcripts=[], events=[],
     )  # fmt: skip
-
-    class StubTranscriber:
-        model_name, device = "stub", "cpu"
-
-        def __init__(self, **_):
-            pass
-
-        def close(self):
-            pass
 
     def fake_analyze_source(src, style, tr, use_scenes, max_cand, timings, **kw):
         info = MediaInfo(

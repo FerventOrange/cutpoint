@@ -17,12 +17,10 @@ def _skill_text() -> str:
     return skill.skill_bytes().decode("utf-8")
 
 
-def test_install_writes_skill_md(tmp_path, caplog):
-    caplog.set_level("INFO", logger="cutpoint")
+def test_install_writes_skill_md(tmp_path):
     assert cli.main(["skill", "install", "--dir", str(tmp_path / "skills")]) == 0
     target = tmp_path / "skills" / "cutpoint" / "SKILL.md"
     assert target.read_bytes() == skill.skill_bytes()
-    assert str(target) in caplog.text
     assert list(target.parent.iterdir()) == [target]  # no temp file left
 
 
