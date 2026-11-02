@@ -659,6 +659,8 @@ def test_a_model_without_a_profile_asks_for_no_logprobs(posts):
         ([("9", {"9": 0.6, "1": 0.4})], 9.4),  # next to a 9, "1" starts "10"
         ([("3", {"3": 0.6, "1": 0.4})], 2.2),  # next to a 3, "1" is 1
         ([("1", {"1": 1.0}), ("0", {"0": 0.75, ",": 0.25})], 7.75),  # 10 at 0.75, else 1
+        # the next token's alternatives win over its sampled text: no "0" among them is 1
+        ([("1", {"1": 1.0}), ("0", {",": 1.0})], 1.0),
         # "1" as 1 or 10 from the alternatives, whichever digit was sampled
         ([("6", {"3": 0.5, "6": 0.3, "1": 0.2})], 3.5),
     ],

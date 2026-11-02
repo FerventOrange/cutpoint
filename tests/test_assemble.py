@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, encode, ffmpeg_utils, sources
+from cutpoint import assemble, encode, ffmpeg_utils, jsonout, sources
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import MediaInfo, VideoEncoder
 
@@ -585,3 +585,64 @@ def test_loudnorm_gain_is_linear_when_the_peaks_do_not_fit(tmp_path):
     gap_out = _mean_db(out, 5, 3) - _mean_db(out, 0.5, 3)
     assert gap_in == pytest.approx(6.0, abs=0.15)
     assert gap_out == pytest.approx(gap_in, abs=0.2)
+
+
+def _loudness_passes(monkeypatch, measured: list[tuple[float, float]]) -> list[float]:
+    """``normalize_with_ceiling`` with ffmpeg replaced: each pass measures the next of
+    ``measured``; returns the limiter ceiling of each pass."""
+    ceilings: list[float] = []
+    results = iter(measured)
+
+    def post_process(stage, out, loudnorm, captions, model, limit_db, *rest, **kw):
+        ceilings.append(limit_db)
+        return None
+
+    monkeypatch.setattr(assemble, "post_process", post_process)
+    monkeypatch.setattr(assemble, "measure_loudness", lambda path: next(results))
+    return ceilings
+
+
+def test_loudness_pass_two_lowers_the_limiter_by_the_overshoot(monkeypatch, tmp_path):
+    ceilings = _loudness_passes(monkeypatch, [(-14.0, -1.0), (-14.1, -1.6)])
+    got = assemble.normalize_with_ceiling(tmp_path / "s.mp4", tmp_path / "f.mp4", False, None)
+    assert got == (-14.1, -1.6)
+    overshoot = -1.0 - assemble.TP_CEILING
+    assert ceilings == pytest.approx(
+        [assemble.LIMIT_START_DB, assemble.LIMIT_START_DB - overshoot - assemble.LIMIT_MARGIN_DB]
+    )
+
+
+def test_loudness_gives_up_after_the_last_pass_with_a_warning(monkeypatch, tmp_path, caplog):
+    ceilings = _loudness_passes(monkeypatch, [(-14.0, -0.5)] * assemble.LIMIT_PASSES)
+    got = assemble.normalize_with_ceiling(tmp_path / "s.mp4", tmp_path / "f.mp4", False, None)
+    assert got == (-14.0, -0.5)
+    assert len(ceilings) == assemble.LIMIT_PASSES
+    assert ceilings == sorted(ceilings, reverse=True)  # each pass lower than the last
+    assert f"still above {assemble.TP_CEILING:.1f} after {assemble.LIMIT_PASSES} passes" in (
+        caplog.text
+    )
+
+
+def test_a_final_well_below_the_loudness_target_warns(monkeypatch, tmp_path):
+    _loudness_passes(monkeypatch, [(-16.5, -2.0)])
+    with jsonout.run("assemble") as res:
+        assemble.normalize_with_ceiling(tmp_path / "s.mp4", tmp_path / "f.mp4", False, None)
+    assert [w["code"] for w in res.warnings] == ["loudness_below_target"]
+
+
+@pytest.mark.parametrize(
+    ("t", "text"),
+    [(0.0, "0:00:00.00"), (61.234, "0:01:01.23"), (3725.5, "1:02:05.50"), (-1.0, "0:00:00.00")],
+)
+def test_ass_time(t, text):
+    assert assemble._ass_time(t) == text
+
+
+def test_an_other_format_from_an_earlier_run_is_warned_about(tmp_path, caplog):
+    out = tmp_path / "final.mp4"
+    (tmp_path / "final.fcpxml").write_text("old", encoding="utf-8")
+    assemble._warn_earlier(out, "mp4")
+    assert "final.fcpxml is from an earlier run and may not match final" in caplog.text
+    caplog.clear()
+    assemble._warn_earlier(tmp_path / "final.fcpxml", "fcpxml")  # its own format: no warning
+    assert "earlier run" not in caplog.text

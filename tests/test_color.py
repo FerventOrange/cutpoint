@@ -1545,3 +1545,58 @@ def test_real_clips_color_underwater_records_the_grade_and_extend_redoes_it(
     redone = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
     assert redone["color"]["params"] == entry["color"]["params"]
     assert (out / "001_a.mp4").stat().st_size > 0
+
+
+def _desaturated(frames: np.ndarray, keep: float) -> np.ndarray:
+    gray = frames.mean(axis=-1, keepdims=True)
+    return gray + (frames - gray) * keep
+
+
+def test_a_grade_that_would_leave_a_worse_cast_is_vetoed():
+    """The neutral mid-tones are tinted magenta, the coloured patches green-starved: balancing
+    the gray ramp pushes the rest of the frame further off, so the clip is left alone."""
+    frames = _flat(_scene(), 0.1, 0.9)
+    frames[:, :29] = _cast(frames[:, :29], 0.93, 1.1, 0.93)
+    frames[:, 29:] = _cast(frames[:, 29:], 1.0, 0.7, 0.95)
+
+    grade = color.estimate(_stats(frames), "auto")
+
+    assert grade.skip == color.VETO_CAST
+    assert grade.filter() == ""
+    assert grade.predicted.residual > grade.before.residual
+
+
+def test_an_auto_grade_that_would_wash_out_a_dull_clip_is_vetoed():
+    """A nearly gray, flat, warm clip: correcting the warmth takes away most of what little
+    colour it has (M3 below VETO_M3_DROP of its value), so it is not graded."""
+    frames = _cast(_flat(_desaturated(_scene(), 0.1), 0.15, 0.8), 1.1, 1.0, 0.9)
+
+    grade = color.estimate(_stats(frames), "auto")
+
+    assert grade.skip == color.VETO_M3_LOSS
+    assert grade.filter() == ""
+    assert grade.predicted.m3 < grade.before.m3 * color.VETO_M3_DROP
+
+
+def _level_opts(text: str) -> dict[str, float]:
+    assert text.startswith("colorlevels=")
+    return {k: float(v) for k, v in (kv.split("=") for kv in text.split("=", 1)[1].split(":"))}
+
+
+def test_levels_with_a_gain_below_one_lower_the_output_white_instead():
+    """A channel at gain 0.8 would reach 1 only at input 1.25, outside the filter's range: the
+    input white stays 1 and the output white comes down to 0.8, the same line."""
+    opts = _level_opts(color._levels(0.0, 1.0, (0.8, 1.0, 1.25)))
+    assert (opts["rimin"], opts["rimax"], opts["romax"]) == pytest.approx((0.0, 1.0, 0.8))
+    assert (opts["gimax"], opts["gomax"]) == pytest.approx((1.0, 1.0))
+    assert (opts["bimax"], opts["bomax"]) == pytest.approx((0.8, 1.0))  # gain > 1: earlier white
+
+
+def test_an_underwater_mix_puts_red_from_green_before_the_levels():
+    mix_only = color.AutoGrade("underwater", mix=0.3)
+    text = mix_only.filter()
+    assert "colorchannelmixer=rr=0.70000:rg=0.30000" in text
+    assert "colorlevels" not in text  # nothing else to change
+
+    both = color.AutoGrade("underwater", black=0.05, mix=0.3).filter()
+    assert both.index("colorchannelmixer") < both.index("colorlevels")

@@ -1004,6 +1004,22 @@ def test_clips_force_keeps_an_old_clip_that_is_this_runs_source(monkeypatch, hom
     assert "003_c.mp4" in warned
 
 
+def test_clips_force_json_names_the_kept_source_in_a_kept_sources_warning(
+    monkeypatch, home, capsys
+):
+    project = _setup(home, monkeypatch)
+    kept = project / "clips" / "003_c.mp4"
+    _segments(project / "seg.json", kept)
+
+    code, doc = run_json(capsys, _argv("clips", project, "--force"))
+
+    assert code == 0 and doc["ok"] is True
+    [warning] = [w for w in doc["warnings"] if w["code"] == "kept_sources"]
+    assert warning["files"] == [str(kept)]
+    assert "003_c.mp4" in warning["message"]
+    assert kept.read_bytes() == b"old 003_c.mp4"
+
+
 @pytest.mark.parametrize("kind", ["old-clip", "hard-link"])
 def test_extend_out_force_keeps_a_listed_clip_that_is_this_runs_source(monkeypatch, home, kind):
     """DIR's manifest lists 003_c, which this run does not re-export but reads as a source:
