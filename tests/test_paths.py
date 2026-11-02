@@ -8,7 +8,7 @@ import pytest
 
 from cutpoint import paths
 from cutpoint.events import regions
-from cutpoint.events.killfeed import Interpreter, OcrParams
+from cutpoint.events.killfeed import OcrParams
 from hud_fixtures import boxfeed, write_preset
 
 
@@ -134,50 +134,28 @@ def test_lookups_without_bundled_presets(tmp_path, home, monkeypatch, bundled):
     assert regions.preset_for_path("/x/box.mp4") == "boxfeed"
 
 
-def test_builtin_flag_ignored_in_project_folder(preset_env, caplog, monkeypatch):
-    _, project, proj_dir, _, _ = preset_env
-    monkeypatch.setattr(regions, "_warned_builtin", set(), raising=False)
-    f = proj_dir / "boxfeed.json"
-    proj_dir.mkdir(parents=True)
-    f.write_text(
-        json.dumps({"game": "boxfeed", "builtin": True, "banner_phrases": ["ACE"], "regions": []}),
-        encoding="utf-8",
-    )
+def test_old_builtin_flag_is_ignored(preset_env, caplog):
+    """``"builtin": true`` (older presets) is an unknown key: a normal preset, no warning."""
+    _, _, _, user_dir, _ = preset_env
+    f = write_preset(user_dir, boxfeed(builtin=True))
     with caplog.at_level("WARNING"):
-        p = regions.load_preset("boxfeed", project)
-        regions.load_preset("boxfeed", project)
-    assert p.builtin is False
+        p = regions.load_preset("boxfeed")
     assert p.path == f
     assert set(regions.GENERIC_BANNERS) <= set(p.phrases)
     assert "phrases" in p.key()
-    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
-def test_user_builtin_preset_equals_bundled_one(preset_env, caplog, monkeypatch):
-    """A builtin preset in the user folder is the same as in the bundled folder; a project
-    copy is generic (own OCR key) and warns once."""
-    _, project, proj_dir, user_dir, bundled_dir = preset_env
-    monkeypatch.setattr(regions, "_warned_builtin", set(), raising=False)
+def test_user_preset_ocr_key_equals_bundled_one(preset_env):
+    """A preset in the user folder has the OCR key of the same file in the bundled folder."""
+    _, _, _, user_dir, bundled_dir = preset_env
     user_file = write_preset(user_dir, boxfeed())
     user = regions.load_preset("boxfeed")
-    assert user.builtin is True and user.path is None
-    assert user.phrases == ("STACK COMPLETE",)  # no GENERIC_BANNERS
     bundled_dir.mkdir()
     user_file.rename(bundled_dir / user_file.name)
     bundled = regions.load_preset("boxfeed")
-    assert user == bundled
     assert OcrParams().key("boxfeed", user) == OcrParams().key("boxfeed", bundled)
-    assert "preset" not in OcrParams().key("boxfeed", user)
-
-    write_preset(proj_dir, boxfeed())
-    with caplog.at_level("WARNING"):
-        generic = regions.load_preset("boxfeed", project)
-        regions.load_preset("boxfeed", project)
-    assert generic.builtin is False and generic.path is not None
-    assert "preset" in OcrParams().key("boxfeed", generic)
-    assert Interpreter(OcrParams(), 1.0, user).generic is False
-    assert Interpreter(OcrParams(), 1.0, generic).generic is True
-    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+    assert "preset" in OcrParams().key("boxfeed", user)
 
 
 @pytest.mark.parametrize("path", ["D:/Box Feed 2025.mp4", "/x/BOXES/match.mp4"])

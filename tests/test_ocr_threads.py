@@ -4,6 +4,7 @@ RapidOCR, split over its lanes, which run OCR calls at once with the output of o
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -31,6 +32,11 @@ def _fake_rapidocr(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return made
 
 
+def test_thread_cap_is_at_most_four_and_the_cpu_count() -> None:
+    assert min(4, os.cpu_count() or 1) == killfeed.OCR_THREADS
+    assert 1 <= killfeed.OCR_THREADS <= 4
+
+
 def _layer_engine(tmp_path: Path) -> None:
     killfeed.OcrEngine(lanes=1)
 
@@ -46,36 +52,46 @@ def _discovery(tmp_path: Path) -> None:
     )
 
 
-def _kwargs(side: int, threads: int, **more: Any) -> dict[str, Any]:
-    return {
-        "det_limit_type": "max",
-        "det_limit_side_len": side,
-        "intra_op_num_threads": threads,
-        **more,
-    }
+def _kwargs(threads: int, **more: Any) -> dict[str, Any]:
+    return {"det_limit_type": "max", "intra_op_num_threads": threads, **more}
 
 
+@pytest.mark.parametrize("threads", [3, 4])
 @pytest.mark.parametrize(
-    ("make", "expected"),
+    ("make", "per_engine", "count", "more"),
     [
         # the OCR layer: every thread, RapidOCR's own rec batching (raw reads, cache key)
-        (_layer_engine, [_kwargs(killfeed.OCR_DET_SIDE, 4)]),
+        (_layer_engine, 1, 1, {}),
         # lanes split the thread cap
-        (_two_lanes, [_kwargs(killfeed.OCR_DET_SIDE, 2)] * 2),
+        (_two_lanes, 2, 2, {}),
         # discovery: one lane with every thread, each box recognised alone (#443)
-        (_discovery, [_kwargs(discover.DiscoverParams().width, 4, rec_batch_num=1)]),
+        (_discovery, 1, 1, {"rec_batch_num": 1}),
     ],
     ids=["ocr-layer", "two-lanes", "discovery"],
 )
 def test_engines_get_the_thread_cap(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, make, expected
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, make, per_engine, count, more, threads
 ) -> None:
     """#374, #403, #443: what each OcrEngine passes to RapidOCR."""
     made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
+    monkeypatch.setattr(killfeed, "OCR_THREADS", threads)
     monkeypatch.setattr(discover, "_burst_frames", lambda *a: [])
     make(tmp_path)
-    assert made == expected
+    assert made == [_kwargs(threads // per_engine, **more)] * count
+
+
+def test_the_ocr_layer_keeps_rapidocrs_rec_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only discovery recognises one box at a time (#443): the OCR layer's engines (as
+    pipeline and ocr_prefetch make them) keep RapidOCR's batching, so its raw reads and
+    their cache key are unchanged."""
+    made = _fake_rapidocr(monkeypatch)
+    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
+
+    engine = killfeed.OcrEngine()
+
+    assert engine.rec_batch is None
+    assert len(made) == killfeed.OCR_LANES
+    assert all("rec_batch_num" not in kwargs for kwargs in made)
 
 
 class _Lanes:
@@ -174,34 +190,25 @@ def test_reader_gates_regions_at_once_with_the_records_of_one_lane(
     assert lanes.peak == 2
 
 
-def test_det_side_stays_in_the_raw_cache_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OCR_DET_SIDE has no effect on RapidOCR 1.4.4 (#443) but is part of the raw OCR cache
-    key: the key of a read stays byte-identical, so existing raw caches still hit."""
-    from cutpoint import cache  # noqa: PLC0415
-    from cutpoint.events import ocr_raw  # noqa: PLC0415
-
-    _fake_rapidocr(monkeypatch)
-
-    side = killfeed.OcrEngine(lanes=1).det_side
-    key = ocr_raw.raw_key(3.0, [], "bottom", 0.5, [], side) | {"engine": "1.4.4"}
-
-    assert side == killfeed.OCR_DET_SIDE
-    assert cache.params_hash(key) == "2e53590a5c"  # the key before #443
-
-
 @pytest.mark.slow
-def test_rapidocr_ignores_the_det_side() -> None:
+def test_rapidocr_ignores_the_det_side(monkeypatch: pytest.MonkeyPatch) -> None:
     """With det_limit_type="max", RapidOCR 1.4.4 picks the detection size from the image
-    (#443), so det_side does not change what is read. Fails when a RapidOCR version honours
-    it: then OCR_DET_SIDE changes the output and its comment is wrong."""
-    pytest.importorskip("rapidocr_onnxruntime")
+    (#443), so OcrEngine passes no det_limit_side_len: any value reads the same. Fails when
+    a RapidOCR version honours it: then the engine's comment is wrong."""
+    rapidocr = pytest.importorskip("rapidocr_onnxruntime")
+    import functools  # noqa: PLC0415
+
     import cv2  # noqa: PLC0415
 
-    img = np.zeros((200, 1400, 3), np.uint8)  # wider than 960: scaled if det_side were used
+    img = np.zeros((200, 1400, 3), np.uint8)  # wider than 960: scaled if the side were used
     for i, word in enumerate(("Alpha downed Bravo", "Charlie 1234 eliminated")):
         cv2.putText(img, word, (20 + 500 * i, 60 + 80 * i), 0, 1.4, (255, 255, 255), 3)
 
-    out = [killfeed.OcrEngine(det_side=side, lanes=1)(img, 0.5) for side in (320, 960)]
+    plain = killfeed.OcrEngine(lanes=1)(img, 0.5)
+    monkeypatch.setattr(
+        rapidocr, "RapidOCR", functools.partial(rapidocr.RapidOCR, det_limit_side_len=320)
+    )
+    small = killfeed.OcrEngine(lanes=1)(img, 0.5)
 
-    assert [text for _, text, _ in out[1]] == ["Alpha downed Bravo", "Charlie 1234 eliminated"]
-    assert repr(out[0]) == repr(out[1])
+    assert [text for _, text, _ in plain] == ["Alpha downed Bravo", "Charlie 1234 eliminated"]
+    assert repr(small) == repr(plain)

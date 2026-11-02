@@ -25,8 +25,8 @@ This needs your name set, as above; other styles are unchanged.
 
 | Layer | Detects |
 |---|---|
-| `audio` | Laughter, screams, cheering, gunfire, explosions (PANNs) |
-| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, "N VS M", multi-kills |
+| `audio` | Laughter, screams, cheering (PANNs) |
+| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills |
 | `vlm` | A local Qwen2.5-Omni model describes candidate windows from frames, audio and transcript |
 
 Outputs (written by `analyze` and by `events`): `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
@@ -48,9 +48,7 @@ With `events.json` present, `clips` also applies event tails: if a payoff starts
 
 OCR regions come from a per-game preset (lookup order in
 [Configuration](../configuration.md#hud-presets)). No game presets are bundled. Write one, or let region
-discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. A
-preset with `"builtin": true` in the user folder keeps the built-in interpretation; in a project `hud_presets`
-folder it is read as a generic preset (see [Configuration](../configuration.md#hud-presets)). The game is
+discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. The game is
 picked from the file or folder name, or set with `--game KEY`.
 
 For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events` run region discovery automatically; `analyze` logs `first run for <game>: discovering HUD regions`, which can take several minutes on CPU OCR. It samples bursts of
