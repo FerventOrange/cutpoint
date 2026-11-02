@@ -39,8 +39,6 @@ Features from the ``cutpoint events`` voice and visual layers (0 until they ran)
              speed); called ``laughter`` before #514 phase 1b, which older
              learned presets and ski_features files still say (read as this)
     voice    Silero VAD and PANNs speech both above wind-raised thresholds
-    taste    always 0: the personal taste head (``refmatch --taste``) was removed;
-             kept so learned presets that weigh it load and score as without it
 
 From ``cutpoint crashes`` (``<project>/crashes.json``, 0 until it ran):
 
@@ -80,7 +78,7 @@ from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 logger = logging.getLogger(__name__)
 
 FEATURES = features.SKI_FEATURES
-# Features computed from the voice / visual layers (and ``taste``, always 0).
+# Features computed from the voice / visual layers.
 NEW_FEATURES = tuple(f for f in FEATURES if features.get(f).layer in ("audio", "visual"))
 SHORT_CLIP_S = 30.0  # a clip this short was recorded on purpose for one moment
 VLM_ACTION_TAGS = ("jump_air", "landing", "powder_spray")
@@ -106,7 +104,6 @@ GEOMETRY: dict[str, tuple[float, float, float, float]] = {
     "group": (3.0, 6.0, 2.0, 2.0),
     "voice_laughter": (4.0, 8.0, 3.5, 2.5),
     "voice": (4.0, 8.0, 3.0, 2.5),
-    "taste": (3.0, 6.0, 2.0, 2.0),
     "wipeout": (6.0, 40.0, 5.0, 8.0),  # crashes.json plans its own clip
 }
 KIND_LABEL = {
@@ -126,7 +123,6 @@ KIND_LABEL = {
     "group": "crew",
     "voice_laughter": "laugh",
     "voice": "talk",
-    "taste": "pick",
     "wipeout": "crash",
 }
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from cutpoint import ski
+from cutpoint import features, scorer, ski
 from cutpoint.styles import get_style
 from cutpoint.telemetry import DT, Telemetry, paint_spans
 
@@ -126,8 +127,7 @@ def test_paint_spans_keeps_the_largest_value_and_includes_the_end_bin() -> None:
 
 def test_old_learned_presets_still_load(home: Path) -> None:
     """A preset saved by ``refmatch``/``fit`` (now ``scripts/refmatch.py``): an old numeric
-    ``mask_friends`` is a hard mask, and a removed taste head (``taste`` weight and file)
-    does not stop it loading; ``taste`` scores 0 on every grid."""
+    ``mask_friends`` is a hard mask."""
     styles = home / "styles"
     styles.mkdir(parents=True)
     preset = {"name": "old", "base": "ski", "weights": {"speed": 1.0}, "mask_friends": 5}
@@ -137,6 +137,24 @@ def test_old_learned_presets_still_load(home: Path) -> None:
     mask, friends = np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 1.0])
     assert ski.effective_mask(mask, friends, style.mask_friends).tolist() == [1.0, 1.0, 0.0]
     assert ski.effective_mask(mask, friends, 0).tolist() == [0.0, 0.0, 0.0]  # soft
-    tasted = {**preset, "name": "tasted", "weights": {"taste": 2.0}, "taste": "t.taste.npz"}
-    (styles / "tasted.json").write_text(json.dumps(tasted), encoding="utf-8")
-    assert get_style("tasted").weights["taste"] == 2.0
+
+
+def test_a_removed_taste_weight_scores_as_without_it(
+    home: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The taste head was removed: a preset that weighs ``taste`` (and names its file) loads
+    without a warning, and ``taste`` is not counted in the divisor, so it scores as the same
+    preset without it."""
+    styles = home / "styles"
+    styles.mkdir(parents=True)
+    plain = {"name": "plain", "base": "ski", "weights": {"speed": 1.0}}
+    tasted = {**plain, "name": "tasted", "weights": {"speed": 1.0, "taste": 2.0}}
+    tasted["taste"] = "t.taste.npz"
+    for p in (plain, tasted):
+        (styles / f"{p['name']}.json").write_text(json.dumps(p), encoding="utf-8")
+    with caplog.at_level(logging.INFO):
+        got, want = get_style("tasted"), get_style("plain")
+    assert not caplog.records
+    assert "taste" not in got.weights and got.weights == want.weights
+    for avail in (features.available(("events",)), features.available(())):
+        assert scorer.score(0.8, got, avail) == scorer.score(0.8, want, avail)

@@ -684,7 +684,7 @@ features this install can compute. A feature that needs a missing extra (the `ev
 in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,
 commentary) score the same on lite and full installs. Ski styles are renormalised the same way:
 on lite their `events` features (`vlm`, `social`, `voice_laughter`, `beauty`, `scenic`,
-`people`, `group`, `voice`, `taste`) are left out, and a renormalised score is capped at 100.
+`people`, `group`, `voice`) are left out, and a renormalised score is capped at 100.
 The features it could compute are in `settings.features_available`. Ski candidates' `signals`
 name the ski features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
 before #514 phase 1b.

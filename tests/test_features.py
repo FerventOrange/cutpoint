@@ -204,8 +204,9 @@ def test_ski_score_is_renormalised_like_the_other_styles():
 def test_ski_features_come_from_the_registry_in_the_grid_order():
     assert ski.FEATURES == features.SKI_FEATURES
     assert all(features.get(f).kind == "grid" for f in ski.FEATURES)
-    # the voice and visual layers and the taste head, in the order they had before 1b
-    assert ski.NEW_FEATURES == ("beauty", "people", "group", "voice_laughter", "voice", "taste")
+    # the voice and visual layers, in the order they had before 1b
+    assert ski.NEW_FEATURES == ("beauty", "people", "group", "voice_laughter", "voice")
+    assert not features.REMOVED & set(features.REGISTRY)
     assert "laughter" not in ski.FEATURES and "laughter" not in STYLES["ski"].weights
 
 
