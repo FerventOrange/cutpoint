@@ -17,7 +17,8 @@ import requests
 from cutpoint import cache, paths
 from cutpoint.backends import ollama_url
 from cutpoint.config import get_config
-from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import grab_frame_jpeg
 
 logger = logging.getLogger(__name__)
 

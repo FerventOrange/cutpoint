@@ -47,12 +47,12 @@ from cutpoint.encode import (
     plan_peaks,
     warn_if_log,
 )
+from cutpoint.errors import FFmpegError
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
     STOP_GRACE_S,
     ChildScope,
-    FFmpegError,
     MediaInfo,
     check_not_sources,
     child_scope,

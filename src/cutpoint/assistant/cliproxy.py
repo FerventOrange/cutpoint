@@ -33,13 +33,8 @@ from cutpoint.assistant import proxy_tls
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.private_files import private_directory, private_file
 from cutpoint.assistant.proxy_credentials import checkpoint
-from cutpoint.ffmpeg_utils import (
-    FolderBusyError,
-    _lock_stale,
-    _read_lock,
-    lock_path,
-    swap_lock,
-)
+from cutpoint.errors import FolderBusyError
+from cutpoint.ffmpeg_utils import _lock_stale, _read_lock, lock_path, swap_lock
 
 logger = logging.getLogger(__name__)
 

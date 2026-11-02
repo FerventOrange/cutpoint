@@ -19,7 +19,8 @@ from cutpoint import assemble, cache, color, encode, extend, ffmpeg_utils
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.color import AutoGrade, ColorStats, Metrics
 from cutpoint.crop import Crop
-from cutpoint.ffmpeg_utils import FFmpegError, VideoEncoder
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import VideoEncoder
 from cutpoint.planning import Padding
 
 BOTH = frozenset({"zscale", "tonemap", "scale"})

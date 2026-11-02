@@ -30,7 +30,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, capabilities, cli, config, edit, encode, ffmpeg_utils, ui
+from cutpoint import cache, capabilities, cli, config, edit, encode, errors, ffmpeg_utils, ui
 from cutpoint.assistant import session as ai_session
 from cutpoint.pano import candidates as pano_candidates
 from cutpoint.pano import director as pano_director
@@ -924,7 +924,7 @@ def test_a_failed_director_preview_reports_why_and_leaves_no_file(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = DirectorPreviews(client, tmp_path, monkeypatch)
-    run.fail = ffmpeg_utils.FFmpegError("ffmpeg failed (exit 1):\nInvalid data found")
+    run.fail = errors.FFmpegError("ffmpeg failed (exit 1):\nInvalid data found")
     run.ask("h001")
     pv = run.wait("h001", "failed")
     assert pv == {"state": "failed", "reason": "Invalid data found"}
@@ -2365,7 +2365,7 @@ def test_frame_failure_is_a_500_and_leaves_no_cache_file(
     pid, sid, _, frames = still_source
 
     def broken(*_a: object, **_k: object) -> list[bytes]:
-        raise ui.FFmpegError("no image")
+        raise errors.FFmpegError("no image")
 
     monkeypatch.setattr(ui, "grab_images", broken)
     res = client.get(
@@ -2394,7 +2394,7 @@ def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
             if len(calls) == 1:
                 first_in.set()
                 release_first.wait(5)
-                raise ui.FFmpegError("no image")
+                raise errors.FFmpegError("no image")
             if len(calls) == 2:
                 second_in.set()
                 release_second.wait(5)
@@ -2408,7 +2408,7 @@ def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
     def request() -> None:
         try:
             results.append(media.frame(ui.project_dir(pid), str(source), 0.5, 160))
-        except ui.FFmpegError as e:
+        except errors.FFmpegError as e:
             results.append(e)
 
     a = threading.Thread(target=request)

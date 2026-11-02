@@ -1179,8 +1179,9 @@ def run_qa(
     th: QAThresholds | None = None,
 ) -> dict[str, Any]:
     """Rendered-frame QA of every clip in ``qa_dir``; writes ``<qa_dir>_qa/``."""
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
-    from cutpoint.ffmpeg_utils import FFmpegError, output_dir  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import output_dir  # noqa: PLC0415
 
     # normalise "." / ".." (no name for <dir>_qa) without turning mapped drives into UNC
     qa_dir = Path(os.path.abspath(qa_dir))  # noqa: PTH100

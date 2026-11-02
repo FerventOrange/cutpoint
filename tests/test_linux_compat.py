@@ -23,7 +23,17 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import messages, remap, set_config, write
-from cutpoint import assemble, cache, config, crash, ffmpeg_utils, stage, telemetry, transcribe
+from cutpoint import (
+    assemble,
+    cache,
+    config,
+    crash,
+    errors,
+    ffmpeg_utils,
+    stage,
+    telemetry,
+    transcribe,
+)
 from cutpoint.events import llama_server, setup
 from cutpoint.events import paths as ev_paths
 from cutpoint.pano import stitch, x3
@@ -324,7 +334,7 @@ def test_forced_crash_run_logs_missing_telemetry_at_info(home, tmp_path, monkeyp
 def test_ffmpeg_not_found_on_linux_points_to_apt_and_env(plat, monkeypatch):
     plat("linux")
     monkeypatch.setattr(ffmpeg_utils.shutil, "which", lambda _n: None)
-    with pytest.raises(ffmpeg_utils.FFmpegError) as exc:
+    with pytest.raises(errors.FFmpegError) as exc:
         ffmpeg_utils.find_tool("ffmpeg")
     msg = str(exc.value)
     assert "apt" in msg

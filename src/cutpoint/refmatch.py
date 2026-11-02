@@ -44,8 +44,8 @@ import numpy as np
 
 from cutpoint import cache, paths, state
 from cutpoint.config import path_key, source_path
+from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import (
-    FFmpegError,
     decode_pcm,
     decode_raw,
     decoder_for,

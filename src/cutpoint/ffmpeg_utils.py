@@ -44,6 +44,12 @@ import numpy as np
 from cutpoint import paths, state
 from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import get_config, path_key
+from cutpoint.errors import (
+    EncoderUnavailableError,
+    FFmpegError,
+    FFmpegNotFoundError,
+    FolderBusyError,
+)
 from cutpoint.utils import file_stamp
 from cutpoint.winjob import kill_with_parent
 
@@ -54,14 +60,6 @@ PROGRESS_DRAIN_S = 5.0  # run_progress reads the rest of the progress pipe this 
 # a failed child in a ChildScope waits this long for the cancel of a Ctrl+C (3 polls of the
 # controlling thread, clips.POLL_S) before its exit counts as an ffmpeg failure
 STOP_GRACE_S = 0.3
-
-
-class FFmpegError(RuntimeError):
-    """Raised when ffmpeg/ffprobe is missing or a command fails."""
-
-
-class FFmpegNotFoundError(FFmpegError):
-    """Raised when the ffmpeg or ffprobe executable cannot be found."""
 
 
 def exit_code(rc: int) -> str:
@@ -789,10 +787,6 @@ def clip_momentary(
         ]
     )
     return [-120.0 if m.group(2) == "-inf" else float(m.group(2)) for m in _EBUR_RE.finditer(out)]
-
-
-class EncoderUnavailableError(FFmpegError):
-    """A video encoder the user asked for cannot encode on this machine."""
 
 
 VIDEO_CODECS = {"nvenc": "h264_nvenc", "amf": "h264_amf", "vaapi": "h264_vaapi", "cpu": "libx264"}
@@ -1721,10 +1715,6 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
 
 _LOCK_UNWRITTEN_S = 30.0  # an empty lock older than this was never written (a hard kill)
 _HELD_LOCKS: set[str] = set()  # path_key of the locks this process holds
-
-
-class FolderBusyError(RuntimeError):
-    """Another cutpoint run holds the lock of the folder (see :func:`swap_lock`)."""
 
 
 def lock_path(dst: Path) -> Path | None:

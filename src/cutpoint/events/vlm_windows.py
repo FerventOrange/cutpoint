@@ -30,6 +30,7 @@ from typing import Any
 
 from cutpoint import cache
 from cutpoint.config import source_path
+from cutpoint.errors import FFmpegError
 from cutpoint.events.common import (
     Source,
     audio_slice,
@@ -40,7 +41,7 @@ from cutpoint.events.common import (
 from cutpoint.events.eventtypes import EventType, first_match
 from cutpoint.events.llama_server import LlamaServer, LlamaServerError
 from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
-from cutpoint.ffmpeg_utils import FFmpegError, grab_images
+from cutpoint.ffmpeg_utils import grab_images
 from cutpoint.utils import clock
 
 logger = logging.getLogger(__name__)

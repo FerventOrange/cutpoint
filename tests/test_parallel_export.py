@@ -21,7 +21,8 @@ from conftest import media_info, set_config, write
 from cutpoint import audio_tracks, clips, config, ffmpeg_utils, paths, sources, srt
 from cutpoint.clips import ClipPlan
 from cutpoint.encode import OutputFormat, atomic_output
-from cutpoint.ffmpeg_utils import ChildScope, FFmpegError, VideoEncoder, child_scope
+from cutpoint.errors import EncoderUnavailableError, FFmpegError
+from cutpoint.ffmpeg_utils import ChildScope, VideoEncoder, child_scope
 from cutpoint.tail import TailResult
 
 FMT = OutputFormat(1920, 1080, 30)
@@ -489,7 +490,7 @@ def encoder(monkeypatch, kind: str | None):
 
     def choose():
         if kind is None:
-            raise ffmpeg_utils.EncoderUnavailableError("cannot encode")
+            raise EncoderUnavailableError("cannot encode")
         return VideoEncoder(kind)
 
     monkeypatch.setattr(clips, "video_encoder", choose)

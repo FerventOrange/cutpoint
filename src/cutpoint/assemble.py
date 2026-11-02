@@ -63,9 +63,8 @@ from cutpoint.encode import (
     plan_makeup,
     plan_peaks,
 )
+from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.ffmpeg_utils import (
-    FFmpegError,
-    FolderBusyError,
     MediaInfo,
     VideoEncoder,
     atomic_output,

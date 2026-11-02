@@ -113,11 +113,10 @@ from cutpoint.config import (
 )
 from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
+from cutpoint.errors import EncoderUnavailableError, FFmpegError
 from cutpoint.ffmpeg_utils import (
     SOFT_STOP_S,
     ChildScope,
-    EncoderUnavailableError,
-    FFmpegError,
     VideoEncoder,
     audio_mix_filter,
     child_scope,

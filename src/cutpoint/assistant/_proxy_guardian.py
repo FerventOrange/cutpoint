@@ -14,8 +14,9 @@ from typing import Any
 
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.proxy_credentials import CredentialStore
+from cutpoint.errors import FolderBusyError
 from cutpoint.events.llama_server import _pdeathsig_hook
-from cutpoint.ffmpeg_utils import FolderBusyError, _pid_alive, swap_lock
+from cutpoint.ffmpeg_utils import _pid_alive, swap_lock
 from cutpoint.winjob import kill_with_parent
 
 _TERMINATE_TIMEOUT = 3.0

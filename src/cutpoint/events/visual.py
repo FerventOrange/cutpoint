@@ -41,9 +41,10 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, state
+from cutpoint.errors import FFmpegError
 from cutpoint.events import paths
 from cutpoint.events.common import Source, free_torch, nearest_index, params_key
-from cutpoint.ffmpeg_utils import FFmpegError, decode_raw, ffprobe_json, find_tool, probe
+from cutpoint.ffmpeg_utils import decode_raw, ffprobe_json, find_tool, probe
 
 logger = logging.getLogger(__name__)
 

@@ -19,7 +19,7 @@ import pytest
 
 from conftest import hard_link, link_file, media_info, messages, remap, run_json, write
 from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning
-from cutpoint.ffmpeg_utils import FFmpegError
+from cutpoint.errors import FFmpegError, FolderBusyError
 
 
 @pytest.fixture(autouse=True)
@@ -1355,7 +1355,7 @@ def test_stale_lock_replaced_meanwhile_by_a_live_one_is_put_back(monkeypatch, ho
     old = _lock_record(4321)
     monkeypatch.setattr(ffmpeg_utils, "_read_lock", lambda _p: (old, json.loads(old)))
     monkeypatch.setattr(ffmpeg_utils, "_pid_alive", lambda pid, not_after=None: False)
-    with pytest.raises(ffmpeg_utils.FolderBusyError), ffmpeg_utils.swap_lock(project / "clips"):
+    with pytest.raises(FolderBusyError), ffmpeg_utils.swap_lock(project / "clips"):
         pytest.fail("locked")
     assert lock.read_bytes() == live
     assert list(project.glob("*.stale")) == []

@@ -355,7 +355,8 @@ def find_studio_export(
     clip: X3Clip, extra_dirs: list[Path] | None = None
 ) -> tuple[Path | None, str]:
     """An Insta360 Studio equirect export of ``clip``, or ``(None, reason)``."""
-    from cutpoint.ffmpeg_utils import FFmpegError, probe  # noqa: PLC0415
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
 
     f = parse_name(clip.insv[0]) or {}
     stem = f"{f.get('date', '')}_{f.get('time', '')}"

@@ -15,14 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint.config import get_config
-from cutpoint.ffmpeg_utils import (
-    VIDEO_CODECS,
-    EncoderUnavailableError,
-    FFmpegError,
-    find_encoder,
-    run,
-    video_encoder,
-)
+from cutpoint.errors import EncoderUnavailableError, FFmpegError
+from cutpoint.ffmpeg_utils import VIDEO_CODECS, find_encoder, run, video_encoder
 
 # Said in ``capabilities`` and before ``cutpoint 360 stitch`` when no NVIDIA GPU is found.
 SDK_NEEDS_NVIDIA = (

@@ -64,9 +64,9 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.encode import A_FMT, BT709_TAGS, Grade, audio_fade_filter, bt709_filter
+from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
-    FFmpegError,
     HwDecoder,
     VideoEncoder,
     atomic_output,

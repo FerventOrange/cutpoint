@@ -30,8 +30,8 @@ from cutpoint import (
     styles,
     vision,
 )
+from cutpoint.errors import FFmpegError
 from cutpoint.events import common
-from cutpoint.ffmpeg_utils import FFmpegError
 
 # Import every module so the registry is complete (``__main__`` modules run the CLI).
 for _mod in pkgutil.walk_packages(cutpoint.__path__, "cutpoint."):

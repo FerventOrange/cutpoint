@@ -36,13 +36,13 @@ import numpy as np
 from cutpoint import cache, features, jsonout, progress, scorer
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
+from cutpoint.errors import FFmpegError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import rescore
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
-    FFmpegError,
     HwDecoder,
     MediaInfo,
     ProgressResult,

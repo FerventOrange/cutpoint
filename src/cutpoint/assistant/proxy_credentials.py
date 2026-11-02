@@ -22,7 +22,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from cutpoint.assistant import keys
 from cutpoint.assistant.private_files import private_directory, private_file
-from cutpoint.ffmpeg_utils import FolderBusyError, lock_path, swap_lock
+from cutpoint.errors import FolderBusyError
+from cutpoint.ffmpeg_utils import lock_path, swap_lock
 
 _PREFIX = "proxy-credentials-v1"
 _CHUNK = 1000

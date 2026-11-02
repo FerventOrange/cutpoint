@@ -17,9 +17,9 @@ import numpy as np
 from cutpoint import jsonout, state
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.crop import Crop
+from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
-    FFmpegError,
     MediaInfo,
     VideoEncoder,
     atomic_output,

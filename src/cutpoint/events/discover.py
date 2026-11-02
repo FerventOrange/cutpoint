@@ -69,9 +69,10 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
 from cutpoint.events.regions import Region, bigtext_region
-from cutpoint.ffmpeg_utils import FFmpegError, grab_images, output_dir, probe
+from cutpoint.ffmpeg_utils import grab_images, output_dir, probe
 
 logger = logging.getLogger(__name__)
 

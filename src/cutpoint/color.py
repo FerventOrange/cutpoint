@@ -35,7 +35,8 @@ from cutpoint.encode import (
     log_stats,
     looks_log,
 )
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, decode_raw
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import MediaInfo, decode_raw
 
 logger = logging.getLogger(__name__)
 

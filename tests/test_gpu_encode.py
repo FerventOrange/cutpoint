@@ -12,8 +12,9 @@ import pytest
 from conftest import media_info, write
 from cutpoint import assemble, capabilities, cli, config, encode, ffmpeg_utils, reset_state
 from cutpoint.crop import Crop
+from cutpoint.errors import EncoderUnavailableError, FFmpegError
 from cutpoint.events import setup
-from cutpoint.ffmpeg_utils import EncoderUnavailableError, FFmpegError, VideoEncoder
+from cutpoint.ffmpeg_utils import VideoEncoder
 
 D128, D129 = "/dev/dri/renderD128", "/dev/dri/renderD129"
 

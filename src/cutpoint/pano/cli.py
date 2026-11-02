@@ -747,7 +747,7 @@ def _direct(
 
         checked = checker is not None  # its render is the preview
         if checker is not None:  # a failed render / check loses the check only
-            from cutpoint.ffmpeg_utils import FFmpegError  # noqa: PLC0415
+            from cutpoint.errors import FFmpegError  # noqa: PLC0415
             from cutpoint.pano.vlcheck import check_preview  # noqa: PLC0415
 
             try:

@@ -441,7 +441,7 @@ def iter_frames(
 
     Raises:
         RuntimeError: If ffmpeg produced no frames at all (an
-            :class:`~cutpoint.ffmpeg_utils.FFmpegError`; the caller may retry
+            :class:`~cutpoint.errors.FFmpegError`; the caller may retry
             without hwaccel).
     """
     _x, _y, w, h = rect

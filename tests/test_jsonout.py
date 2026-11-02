@@ -11,7 +11,7 @@ import pytest
 
 from conftest import envelope
 from cutpoint import cli, ffmpeg_utils, jsonout
-from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
+from cutpoint.errors import FFmpegError, FFmpegNotFoundError
 
 
 def test_envelope_collects_outputs_project_and_warnings(tmp_path, capsys):
