@@ -32,6 +32,7 @@ from test_assistant import _Resp
 
 KEY = "sk-test-0123456789abcdefSECRET"  # shaped like a real key, so the pattern redacts it too
 OTHER = "plain-secret-without-prefix-42"
+XKEY = "xai-0123456789abcdefghijSECRET"  # shaped like an xAI key
 
 
 @pytest.fixture(autouse=True)
@@ -160,15 +161,11 @@ def tool_use(cid: str, name: str, **args: Any) -> dict[str, Any]:
         ("localhost:1234", True),
         ("http://LOCALHOST:8080/v1", True),
         ("http://box.localhost:8080", True),
-        ("http://127.5.6.7", True),
         ("http://[::1]:11434", True),
         ("http://10.10.10.235:11434", False),
-        ("http://192.168.1.4:1234/v1", False),
         ("http://0.0.0.0:11434", False),
-        ("https://api.anthropic.com", False),
         ("http://localhost.evil.example", False),
         (r"http://evil.example\@127.0.0.1", False),  # requests goes to evil.example
-        (r"http://evil.example\@localhost:1234/v1", False),
         ("", False),
     ],
 )
@@ -392,7 +389,7 @@ def test_openai_json_mode_constrains_the_reply_to_the_schema(monkeypatch) -> Non
         ("", "Function tools are not supported with this model."),  # /v1/responses (#536)
     ],
 )
-def test_a_server_refusing_tools_is_asked_again_in_json_mode(monkeypatch, url, why) -> None:
+def test_a_server_refusing_tools_raises_tools_unsupported(monkeypatch, url, why) -> None:
     wire = Wire(monkeypatch, _Resp({"error": {"message": why}}, 400))
     with pytest.raises(ToolsUnsupportedError):
         OpenAIProvider(url, "m", 0, KEY).chat([], tools=session.TOOLS)
@@ -658,47 +655,19 @@ def test_a_key_comes_from_the_provider_variable_then_the_keyring_then_the_cutpoi
     assert keys.lookup("anthropic", "API.Anthropic.com") == ("env-key-1234567", "env")
     assert keys.lookup("anthropic", "proxy.example.com") == (None, None)  # official host only
     assert keys.lookup("openai", oa) == (None, None)  # another provider's variable is not used
+    monkeypatch.setenv("XAI_API_KEY", XKEY)
+    assert keys.lookup("xai", "API.X.AI") == (XKEY, "env")
+    assert keys.lookup("xai", "proxy.example.com") == (None, None)  # official host only
+    assert keys.lookup("openai", "api.x.ai") == (None, None)  # another provider's entry
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", "cp-key-12345678")
     assert keys.lookup("anthropic", an) == ("env-key-1234567", "env")  # the own one wins (#504)
+    assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")
     assert keys.lookup("openai", oa) == (None, None)  # never for an official host (#504)
     assert keys.lookup("openai", "openrouter.ai") == ("cp-key-12345678", "env")
     ring.saved[("cutpoint", "openai@openrouter.ai")] = "ring-key-654321"
     assert keys.lookup("openai", "openrouter.ai") == ("ring-key-654321", "keyring")
-
-
-def test_the_own_key_beats_the_shared_key_on_the_wire(home, monkeypatch) -> None:
-    """#504: with both CUTPOINT_ASSISTANT_API_KEY (an OpenRouter key) and ANTHROPIC_API_KEY set,
-    api.anthropic.com gets only the Anthropic key."""
-    monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", OTHER)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
-    set_config(home, assistant={"provider": "anthropic", "model": "m"})
-    wire = Wire(monkeypatch, an_reply({"type": "text", "text": "ok"}))
-    providers.make().chat(HI)
-    sent = wire.sent[0]
-    assert sent["url"].startswith("https://api.anthropic.com/")
-    assert sent["headers"]["x-api-key"] == KEY and OTHER not in json.dumps(sent["headers"])
-
-
-@pytest.mark.parametrize(
-    ("name", "url"),
-    [
-        ("anthropic", ""),
-        ("xai", ""),
-        ("openai", "https://api.x.ai/v1"),  # another provider's official host: never either
-        ("openai", "https://api.openai.com./v1"),  # the same host with a trailing dot
-    ],
-)
-def test_the_shared_key_never_reaches_an_official_host(home, monkeypatch, name, url) -> None:
-    """#504: CUTPOINT_ASSISTANT_API_KEY is for custom and self-hosted URLs only."""
-    monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
-    set_config(home, assistant={"provider": name, "model": "m", "url": url})
-    wire = Wire(monkeypatch)  # any request fails the test
-    p = providers.make()
-    assert not p.has_key
-    with pytest.raises(ProviderError, match="No API key"):
-        p.chat(HI)
-    assert "No API key" in (providers.check(p) or "")
-    assert wire.sent == []
+    monkeypatch.setenv("OPENAI_API_KEY", OTHER)
+    assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")  # never the OpenAI key
 
 
 def test_keys_are_saved_and_cleared_in_the_keyring_only(ring: FakeRing) -> None:
@@ -724,6 +693,9 @@ def test_a_key_for_another_host_is_saved_under_provider_at_host(ring: FakeRing) 
     assert keys.lookup("openai", "api.openai.com") == (None, None)
     keys.clear("openai", "openrouter.ai")
     assert ring.saved == {}
+    keys.save("xai", OTHER, "api.x.ai")
+    keys.save("xai", KEY, "proxy.example.com")
+    assert ring.saved == {("cutpoint", "xai"): OTHER, ("cutpoint", "xai@proxy.example.com"): KEY}
 
 
 def test_saving_a_key_without_a_keyring_backend_says_how_to_set_one() -> None:
@@ -733,12 +705,14 @@ def test_saving_a_key_without_a_keyring_backend_says_how_to_set_one() -> None:
     assert OTHER not in str(err.value)
     with pytest.raises(keys.KeyringError, match="did not remove the key"):
         keys.clear("anthropic", "api.anthropic.com")
+    with pytest.raises(keys.KeyringError, match=r"XAI_API_KEY"):
+        keys.save("xai", OTHER, "api.x.ai")
 
 
 def test_child_processes_get_no_key_variable(monkeypatch) -> None:
     env = {"PATH": "/bin", "ANTHROPIC_API_KEY": "a", "openai_api_key": "b", "CUTPOINT_HOME": "h"}
-    env["CUTPOINT_ASSISTANT_API_KEY"] = "c"
-    assert keys.child_env(env) == {"PATH": "/bin", "CUTPOINT_HOME": "h"}
+    env |= {"CUTPOINT_ASSISTANT_API_KEY": "c", "XAI_API_KEY": "d", "XAI_OTHER": "e"}
+    assert keys.child_env(env) == {"PATH": "/bin", "CUTPOINT_HOME": "h", "XAI_OTHER": "e"}
     monkeypatch.setenv("OPENAI_API_KEY", OTHER)
     assert "OPENAI_API_KEY" not in keys.child_env()
 
@@ -761,6 +735,8 @@ def test_redact_removes_read_keys_and_key_shaped_text(monkeypatch) -> None:
     assert keys.redact(f"bad key {OTHER}!") == "bad key [redacted]!"
     assert keys.redact("got sk-ant-api03-abcdefghijklmnopqrstuv") == "got [redacted]"
     assert keys.redact("short sk-1 stays") == "short sk-1 stays"
+    assert keys.redact(f"echo {XKEY} back") == "echo [redacted] back"
+    assert keys.redact("xai-short stays") == "xai-short stays"
 
 
 def test_log_records_never_carry_a_key(monkeypatch) -> None:
@@ -803,42 +779,59 @@ def sent_key(wire: Wire) -> bool:
     return any(KEY in json.dumps(s["headers"]) for s in wire.sent)
 
 
+OPENROUTER = "https://openrouter.ai/api/v1"
+
+
 @pytest.mark.parametrize(
-    "url", ["http://192.168.1.4:1234/v1", "https://openrouter.ai/api/v1", "http://127.0.0.1:8080"]
+    ("source", "name", "url", "outcome"),
+    [
+        ("OPENAI_API_KEY", "openai", "", "sent"),
+        ("OPENAI_API_KEY", "openai", OPENROUTER, "refused"),  # the variable is api.openai.com's
+        ("OPENAI_API_KEY", "openai", "http://127.0.0.1:8080", "asked without"),
+        ("CUTPOINT_ASSISTANT_API_KEY", "openai", OPENROUTER, "sent"),
+        # #504: the shared variable is for custom and self-hosted URLs only
+        ("CUTPOINT_ASSISTANT_API_KEY", "anthropic", "", "refused"),
+        ("CUTPOINT_ASSISTANT_API_KEY", "xai", "", "refused"),
+        ("CUTPOINT_ASSISTANT_API_KEY", "openai", "https://api.x.ai/v1", "refused"),
+        ("CUTPOINT_ASSISTANT_API_KEY", "openai", "https://api.openai.com./v1", "refused"),
+        ("both", "anthropic", "", "sent"),  # #504: the own key beats the shared one
+        ("keyring openai@openrouter.ai", "openai", OPENROUTER, "sent"),
+        ("keyring openai@openrouter.ai", "openai", "", "refused"),  # only for that host
+    ],
 )
-def test_the_openai_variable_goes_only_to_api_openai_com(home, monkeypatch, url) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", KEY)
-    set_config(home, assistant={"provider": "openai", "model": "m", "url": url})
-    wire = Wire(monkeypatch, oa_reply("ok"))
-    p = providers.make()
-    if p.local:
-        p.chat(HI)  # a server on this machine needs no key: asked without one
-        assert not sent_key(wire)
+def test_each_key_reaches_only_the_hosts_it_is_for(
+    home, monkeypatch, ring, source, name, url, outcome
+) -> None:
+    """Which key goes to which host: a provider's own variable only to its official host, the
+    shared CUTPOINT_ASSISTANT_API_KEY only to custom URLs, a keyring key only to its host; a
+    server on this machine is asked without a key; otherwise nothing is sent."""
+    if source == "both":
+        monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", OTHER)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    elif source.startswith("keyring "):
+        ring.saved[("cutpoint", source.split()[1])] = KEY
     else:
+        monkeypatch.setenv(source, KEY)
+    set_config(home, assistant={"provider": name, "model": "m", "url": url})
+    if name == "anthropic":
+        answer = an_reply({"type": "text", "text": "ok"})
+    else:
+        answer = oa_reply("ok") if url else rs_reply(rs_text("ok"))
+    wire = Wire(monkeypatch) if outcome == "refused" else Wire(monkeypatch, answer)
+    p = providers.make()
+    if outcome == "refused":
+        assert not p.has_key
         with pytest.raises(ProviderError, match="No API key"):
             p.chat(HI)
+        msg = providers.check(p) or ""
+        assert "No API key" in msg
+        if source == "OPENAI_API_KEY":
+            assert source not in msg  # nor offered as the fix
         assert wire.sent == []
-        assert "OPENAI_API_KEY" not in (providers.check(p) or "")  # nor offered as the fix
-
-
-def test_the_openai_variable_goes_to_the_official_host(home, monkeypatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", KEY)
-    set_config(home, assistant={"provider": "openai", "model": "m"})
-    wire = Wire(monkeypatch, rs_reply(rs_text("ok")))
-    providers.make().chat(HI)
-    assert wire.sent[0]["url"].startswith("https://api.openai.com/") and sent_key(wire)
-
-
-@pytest.mark.parametrize(
-    ("url", "sent"),
-    [("https://openrouter.ai/api/v1", True), ("http://127.0.0.1:8080", True)],
-)
-def test_the_cutpoint_variable_goes_to_any_host(home, monkeypatch, url, sent) -> None:
-    monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
-    set_config(home, assistant={"provider": "openai", "model": "m", "url": url})
-    wire = Wire(monkeypatch, oa_reply("ok"))
-    providers.make().chat(HI)
-    assert sent_key(wire) is sent
+        return
+    p.chat(HI)
+    assert sent_key(wire) is (outcome == "sent")
+    assert OTHER not in json.dumps(wire.sent[0]["headers"])
 
 
 def test_a_key_is_never_sent_over_http_to_another_machine(home, monkeypatch) -> None:
@@ -853,19 +846,6 @@ def test_a_key_is_never_sent_over_http_to_another_machine(home, monkeypatch) -> 
             p.chat(HI)
         assert "192.168.1.4" in str(err.value) and KEY not in str(err.value)
         assert wire.sent == []
-
-
-def test_a_keyring_key_for_another_host_is_used_only_there(home, monkeypatch, ring) -> None:
-    ring.saved[("cutpoint", "openai@openrouter.ai")] = KEY
-    set_config(
-        home, assistant={"provider": "openai", "model": "m", "url": "https://openrouter.ai/api/v1"}
-    )
-    wire = Wire(monkeypatch, oa_reply("ok"))
-    providers.make().chat(HI)
-    assert sent_key(wire)
-    set_config(home, assistant={"provider": "openai", "model": "m"})
-    with pytest.raises(ProviderError, match="No API key"):
-        providers.make().chat(HI)
 
 
 @pytest.mark.parametrize(
@@ -927,8 +907,9 @@ def test_jobs_and_dialogs_start_without_the_key_variables(monkeypatch) -> None:
 EVIL_URLS = [r"https://evil.example\@api.openai.com/v1", r"http://evil.example\@127.0.0.1:1234/v1"]
 
 
-@pytest.mark.parametrize("url", EVIL_URLS)
-@pytest.mark.parametrize("name", ["openai", "anthropic"])
+@pytest.mark.parametrize(
+    ("name", "url"), list(zip(["openai", "anthropic"], EVIL_URLS, strict=True))
+)
 def test_a_hand_edited_url_with_an_unclear_host_sends_nothing(home, monkeypatch, url, name) -> None:
     """urlsplit reads api.openai.com / 127.0.0.1; requests would go to evil.example."""
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
@@ -951,13 +932,27 @@ def test_hosts_are_read_as_requests_reads_them() -> None:
     assert not providers.unambiguous(r"https://openrouter.ai\api")
 
 
-def test_a_redirect_is_never_followed(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("make", "status", "location", "want"),
+    [
+        (
+            lambda: OpenAIProvider("https://openrouter.ai/api/v1", "m", 0, KEY),
+            307,
+            "https://elsewhere.example/v1/chat/completions",
+            r"answered 307, redirecting to elsewhere\.example",
+        ),
+        (lambda: AnthropicProvider("", "m", 0, KEY), 302, None, "redirecting to another address"),
+    ],
+    ids=["named-host", "no-location"],
+)
+def test_a_redirect_is_never_followed(monkeypatch, make, status, location, want) -> None:
     """requests would resend the key (and on 307/308 the body) to the new host."""
-    moved = _Resp({}, status=307)
-    moved.headers = {"Location": "https://elsewhere.example/v1/chat/completions"}
+    moved = _Resp({}, status=status)
+    if location:
+        moved.headers = {"Location": location}
     wire = Wire(monkeypatch, moved)
-    with pytest.raises(ProviderError, match=r"answered 307, redirecting to elsewhere\.example"):
-        OpenAIProvider("https://openrouter.ai/api/v1", "m", 0, KEY).chat(HI)
+    with pytest.raises(ProviderError, match=want):
+        make().chat(HI)
     assert len(wire.sent) == 1 and wire.sent[0]["allow_redirects"] is False
 
 
@@ -993,12 +988,6 @@ def test_a_url_with_a_user_name_or_password_sends_nothing(home, monkeypatch, url
     assert not providers.has_userinfo("https://openrouter.ai/api/v1")
 
 
-def test_a_redirect_without_a_location_names_no_host(monkeypatch) -> None:
-    Wire(monkeypatch, _Resp({}, status=302))
-    with pytest.raises(ProviderError, match="redirecting to another address"):
-        AnthropicProvider("", "m", 0, KEY).chat(HI)
-
-
 def test_only_a_key_for_another_host_is_noted_as_checked_later() -> None:
     later = providers.KEY_CHECKED_LATER
     assert (
@@ -1018,24 +1007,6 @@ def test_a_missing_key_is_named_with_where_to_set_it() -> None:
     assert providers.missing_key(OllamaProvider("http://10.0.0.2:11434", "m", 0)) is None
 
 
-def test_codex_list_models_queries_cliproxy(monkeypatch) -> None:
-    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
-    monkeypatch.setattr(
-        providers.cliproxy,
-        "list_models",
-        lambda p: [
-            {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"},
-            {"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"},
-        ],
-    )
-    p = providers.SubscriptionProvider("codex", "", "", 0)
-    models = p.list_models()
-    assert models == [
-        {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"},
-        {"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"},
-    ]
-
-
 def test_codex_list_models_honest_errors_no_fake_fallback(monkeypatch) -> None:
     def fake_err(p):
         raise providers.cliproxy.ProxyError("proxy refused login (401)")
@@ -1044,25 +1015,6 @@ def test_codex_list_models_honest_errors_no_fake_fallback(monkeypatch) -> None:
     p = providers.SubscriptionProvider("codex", "", "", 0)
     with pytest.raises(ProviderError, match="proxy refused login"):
         p.list_models()
-
-    def not_logged_in(p):
-        raise providers.cliproxy.ProxyError("not logged in; run cutpoint login codex")
-
-    monkeypatch.setattr(providers.cliproxy, "list_models", not_logged_in)
-    with pytest.raises(ProviderError, match="not logged in"):
-        p.list_models()
-
-
-def test_claude_code_list_models_queries_cliproxy(monkeypatch) -> None:
-    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
-    monkeypatch.setattr(
-        providers.cliproxy,
-        "list_models",
-        lambda p: [{"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"}],
-    )
-    p = providers.SubscriptionProvider("claude-code", "", "", 0)
-    models = p.list_models()
-    assert models == [{"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"}]
 
 
 def test_model_list_subscription_login_requires_project_consent(

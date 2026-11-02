@@ -85,7 +85,6 @@ EVENTS_MODULES = (
     "open_clip",
     "onnxruntime",
     "scipy",
-    "sklearn",
 )
 COMPONENTS = ("pip", "panns", "visual", "voice")
 

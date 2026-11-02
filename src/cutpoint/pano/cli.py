@@ -1,4 +1,4 @@
-"""``cutpoint 360 scan | analyze | status | director | stitch | check | qa | repair``.
+"""``cutpoint 360 scan | analyze | status | director | stitch | qa | repair``.
 
 Optional 360-camera (Insta360 X3) module. Typical flow (rendering itself
 happens in ``cutpoint clips`` / ``cutpoint extend``)::
@@ -870,19 +870,6 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     jsonout.output("dry_run", a.dry_run)
 
 
-def cmd_check(a: argparse.Namespace) -> None:
-    """Contact sheets of rendered clips (seam, horizon, framing, pans) for review by eye."""
-    from cutpoint.pano.check import clip_sheets  # noqa: PLC0415
-
-    clips_dir = _folder(a.clips_dir)
-    _set_folder_project(clips_dir)
-    sheets = clip_sheets(clips_dir, per_clip=a.per_clip)
-    for p in sheets:
-        logger.info("wrote %s", p)
-    jsonout.output("check_dir", clips_dir.with_name(clips_dir.name + "_check"))
-    jsonout.output("sheets", sheets)
-
-
 def cmd_qa(a: argparse.Namespace) -> None:
     """Rendered-frame direction QA (occlusion, close-ups, edge cuts, pans, horizon)."""
     from cutpoint.pano.qa import log_report, run_qa  # noqa: PLC0415
@@ -1150,12 +1137,6 @@ def add_parser(sub: Any) -> None:
     sti.add_argument("--dry-run", action="store_true", help="print the SDK commands only")
     _add_json_argument(sti)
     sti.set_defaults(func=cmd_stitch)
-
-    ck = s3.add_parser("check", help="contact sheets of rendered 360 clips")
-    ck.add_argument("clips_dir")
-    ck.add_argument("--per-clip", type=int, default=6, help="frames per clip (default 6)")
-    _add_json_argument(ck)
-    ck.set_defaults(func=cmd_check)
 
     qa = s3.add_parser(
         "qa",

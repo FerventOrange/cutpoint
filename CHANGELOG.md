@@ -250,9 +250,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
   of the features lite can compute, as the generic styles do since phase 1a. The `events`
   features are left out: `vlm`, `social`, `voice_laughter` and `beauty` (0.20, 0.05, 0.05 and
-  0.05 in the built-in `ski` style), and `scenic`, `people`, `group`, `voice` and `taste`
-  (0 there). The divisor goes from 1.02 to 0.67, so a built-in `ski` score on lite is about 52%
-  higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
+  0.05 in the built-in `ski` style), and `scenic`, `people`, `group` and `voice` (0 there).
+  The divisor goes from 1.02 to 0.67, so a built-in `ski` score on lite is about 52% higher
+  (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
   among themselves they keep the analysis order (source by source). Lite scores above about 65.7
   before become 100. Must-include crash scores (the crash's confidence) do not change. A learned
   ski preset shifts by its own weights. Any score renormalised this way is capped at 100: on lite,
@@ -317,6 +317,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
+- `360 qa` overview sheets caption each tile with the director path's yaw and pitch, as
+  `360 check` did.
+- `cutpoint events`: `--audio-thr` and `--ocr-debug` (developer tuning) still work but are
+  hidden from `--help`.
+- The tests of the development scripts in `scripts/` moved to `tests/scripts/` and are marked
+  `script` (`-m "not script"` skips them).
 - The built-in Rainbow Six interpretation of HUD presets is gone: a `"builtin": true` key in a
   preset is ignored and the preset is read like any other. The OCR layer reads each source's HUD
   once more on its next run (the OCR and raw OCR cache keys changed), and the `audio` layer runs
@@ -334,6 +340,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** `cutpoint events --preset-scope package` is gone. It was an old alias of `user`
   (the default); commands that still pass it now stop with exit code 2. Use `--preset-scope user`
   or leave the option out.
+- **BREAKING:** `cutpoint refmatch` and `cutpoint fit` are gone: they are now the development
+  script `scripts/refmatch.py`. Commands that still call them now stop with exit code 2; from a
+  clone use `uv run python scripts/refmatch.py match|fit`. Learned styles they saved still load
+  as `--style <name>`.
+- **BREAKING:** the personal taste head (`refmatch --taste`, `fit --taste`) and its `taste`
+  feature are gone. Learned styles fitted with it now rank without it: their `taste` file and
+  `taste` weight are ignored, and the weight no longer counts in the score's divisor, so they
+  score as the same style without `taste`. `scikit-learn` is no longer a direct dependency of
+  the `events` extra (it is still installed through `panns-inference`).
+- **BREAKING:** `cutpoint 360 check` is gone; commands that still call it now stop with exit
+  code 2. Use `360 qa <clips_dir>`: its overview sheet shows the same frames with the director
+  target, yaw and pitch.
 - **BREAKING:** `assemble` (default `--format mp4`) no longer writes `final.fcpxml` and
   `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 

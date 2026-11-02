@@ -22,7 +22,7 @@ prints tracebacks of errors.
 | [`extend`](#extend) | Re-export a clips folder with more padding |
 | [`assemble`](#assemble) | Join clips into one video |
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
-| [`crashes`](#crashes), [`mix`](#mix), [`refmatch`](#refmatch), [`fit`](#fit) | Action-cam module |
+| [`crashes`](#crashes), [`mix`](#mix) | Action-cam module |
 | [`profile`](#profile) | Pick or build the project's activity profile for crash detection |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
@@ -33,8 +33,8 @@ prints tracebacks of errors.
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
 on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
 `setup`, `events`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
-`director`, `stitch`, `check`, `qa`, `repair`). `refmatch`, `fit`, `ui`, `guide`, `skill`,
-`proxy`, `login` and `logout` have no `--json`. Logs and errors stay on stderr, and
+`director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
+`logout` have no `--json`. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
 codes are unchanged.
 
@@ -132,7 +132,6 @@ So do these combinations:
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
 | `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
-| `360 check` | `check_dir`, `sheets` |
 | `360 qa` | `qa_dir`, `report`, `mode`, `sheets`, `clips` (each `file`, `score`, `pass`, `fails`), `count`, `passed`, `score`, `by_mode` and `by_self_method` (the `qa.json` edit's `edge_cut` breakdowns: per render `mode` or `self_method`, its `clips`, `frames`, `duration` and `edge_cut` share; `{}` without a checked clip). With `--compare`: `edge_gap` (its path), `mode` (`compare`), `rendered` and `paths` (the two `qa.json`), `clips` (each `file`, `rendered_only`, `causes`, `other_detail`), `count`, `rendered_only`, `causes`, `other_detail`, `by_mode` and `by_self_method` (`edge_gap.json`'s frame counts per rendered `mode` or `self_method`: `clips`, `frames`, `rendered_edge`, `paths_edge`, `rendered_only`; `unknown` for an older `qa.json`) (see [360 video](workflows/360.md#where-the-two-qas-disagree)) |
 | `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
 | `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |
@@ -719,7 +718,7 @@ features this install can compute. A feature that needs a missing extra (the `ev
 in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,
 commentary) score the same on lite and full installs. Ski styles are renormalised the same way:
 on lite their `events` features (`vlm`, `social`, `voice_laughter`, `beauty`, `scenic`,
-`people`, `group`, `voice`, `taste`) are left out, and a renormalised score is capped at 100.
+`people`, `group`, `voice`) are left out, and a renormalised score is capped at 100.
 The features it could compute are in `settings.features_available`. Ski candidates' `signals`
 name the ski features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
 before #514 phase 1b.
@@ -1368,27 +1367,6 @@ rides, views, social) under per-category quotas, and writes `mix_segments.json`,
 If nothing is selected (no candidate fits `--target`, or every candidate is excluded), `mix`
 fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes no files. Raise
 `--target` or loosen the exclusions.
-
-## refmatch
-
-```text
-cutpoint refmatch <project> <reference_video> [--name NAME] [--no-fit] [--taste] [--check N]
-```
-
-Action-cam module. Finds the shots of a finished edit in the project's sources and fits style
-weights to what you kept, saved as a learned style in `<CUTPOINT_HOME>\styles\<name>.json`.
-It assumes the edit keeps the source framing; mirrored, heavily zoomed or picture-in-picture
-shots will not match.
-
-## fit
-
-```text
-cutpoint fit <project> [<project> ...] [--name NAME] [--taste | --no-taste] [--ablate] [--no-save]
-```
-
-Fits one learned style on several projects that already have `refmatch.json` (run `refmatch
---no-fit` on each first), with held-out cross-validation. `--ablate` refits on feature subsets;
-`--no-save` reports only.
 
 ## setup
 

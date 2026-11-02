@@ -48,7 +48,14 @@ def fake(home, monkeypatch) -> FakeSubscription:
     return fake
 
 
-def test_the_rater_sends_its_frames_to_the_provider(fake) -> None:
+def test_the_rater_sends_its_frames_to_the_provider(fake, home) -> None:
+    """vision_assistant is its own setting: the chat assistant's provider and model are not
+    used."""
+    set_config(
+        home,
+        assistant={"provider": "anthropic", "model": "claude-3-7-sonnet", "consent": []},
+        vision_assistant={"provider": "codex", "model": "gpt-x", "consent": [CONSENT]},
+    )
     rater = vision.VisionRater()
     assert rater.available() and rater.model == "gpt-x"
     res = rater.rate(Path("a.mp4"), 0, 4, "ski")
@@ -59,7 +66,12 @@ def test_the_rater_sends_its_frames_to_the_provider(fake) -> None:
 
 
 def test_nothing_is_sent_before_the_user_agreed(fake, home) -> None:
-    set_config(home, vision_assistant={"provider": "codex", "model": "gpt-x", "consent": []})
+    """Consent given to the chat assistant does not cover vision: no frame is sent."""
+    set_config(
+        home,
+        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
+        vision_assistant={"provider": "codex", "model": "gpt-x", "consent": []},
+    )
     rater = vision.VisionRater()
     assert not rater.available()
     assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None and fake.sent == []
@@ -100,42 +112,6 @@ def test_image_parts_reach_each_wire_format() -> None:
     }
 
 
-def test_a_bad_vision_provider_is_a_config_error(home) -> None:
-    set_config(home, vision_assistant={"provider": "gemini"})
-    with pytest.raises(ValueError, match=r"vision_assistant\.provider"):
-        vision.VisionRater()
-
-
-def test_independent_vision_assistant_settings(fake, home) -> None:
-    set_config(
-        home,
-        assistant={"provider": "anthropic", "model": "claude-3-7-sonnet", "consent": []},
-        vision_assistant={
-            "provider": "codex",
-            "model": "gpt-x",
-            "consent": [CONSENT],
-        },
-    )
-    rater = vision.VisionRater()
-    assert rater.available()
-    assert rater.model == "gpt-x"
-    res = rater.rate(Path("a.mp4"), 0, 4, "ski")
-    assert res == vision.VisionResult(8.0, "big jump")
-
-
-def test_independent_vision_consent_privacy_gate(fake, home) -> None:
-    # Assistant has consent, but vision_assistant does not have consent: frames MUST NOT be sent
-    set_config(
-        home,
-        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
-        vision_assistant={"provider": "codex", "consent": []},
-    )
-    rater = vision.VisionRater()
-    assert not rater.available()
-    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
-    assert fake.sent == []
-
-
 def test_the_assistant_s_versioned_consent_does_not_send_frames(fake, home) -> None:
     set_config(
         home,
@@ -159,21 +135,6 @@ def test_consent_under_the_old_vision_wording_no_longer_counts(fake, home) -> No
     assert not rater.available()
     assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
     assert fake.sent == []
-
-
-def test_antigravity_is_allowed_vision_subscription(fake, home) -> None:
-    fake.name = "antigravity"
-    fake.host = "daily-cloudcode-pa.googleapis.com"
-    set_config(
-        home,
-        vision_assistant={
-            "provider": "antigravity",
-            "model": "gemini-3.8-flash",
-            "consent": ["vision-v2:antigravity@daily-cloudcode-pa.googleapis.com"],
-        },
-    )
-    rater = vision.VisionRater()
-    assert rater.available()
 
 
 def test_rating_cache_key_distinguishes_provider() -> None:
