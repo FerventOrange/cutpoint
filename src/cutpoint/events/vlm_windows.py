@@ -275,7 +275,7 @@ def _seed_priority(ev: dict[str, Any], types: tuple[EventType, ...] = ()) -> flo
     if ev.get("kind") == "ocr":
         typ, text = ev.get("type"), (ev.get("text") or "").upper()
         if typ == "banner":
-            if "REVERSE FRIENDLY FIRE" in text or text == "ACE" or "CLUTCH" in text:
+            if text == "ACE" or "CLUTCH" in text:
                 return 2.0
             if any(
                 k in text
@@ -289,13 +289,6 @@ def _seed_priority(ev: dict[str, Any], types: tuple[EventType, ...] = ()) -> flo
             if ev.get("teamkill"):
                 return 2.0
             return 1.2 if ev.get("player") else 0.5
-        if typ == "vs":
-            m = re.match(r"(\d) VS (\d)", text)
-            if m and (m.group(1) == "1" or m.group(2) == "1"):
-                return 0.8  # clutch situation
-            return None
-        if typ == "log":
-            return 0.9 if ev.get("player") else None
         if typ == "multikill":
             return 2.0
     if ev.get("kind") == "telemetry" and ev.get("type") == "coverage_masked":
@@ -497,15 +490,13 @@ def _hints(events: list[dict[str, Any]], start: float, end: float) -> str:
         elif ev["kind"] == "ocr" and ev["type"] in (
             "kill",
             "banner",
-            "vs",
-            "log",
             "bigtext",
             "crit",
             "fire",
             "multikill",
         ):
             extra = " (TEAMKILL)" if ev.get("teamkill") else ""
-            # feed kills (generic verb feeds and built-in R6 rows): say whose kill it is
+            # feed kills and other feed verbs: say whose kill it is
             if ev.get("verb") or ev["type"] == "kill":
                 extra += (
                     " (the PLAYER killed themselves)"

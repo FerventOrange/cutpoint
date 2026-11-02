@@ -276,6 +276,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
+- The built-in Rainbow Six interpretation of HUD presets is gone: a `"builtin": true` key in a
+  preset is ignored and the preset is read like any other. The OCR layer reads each source's HUD
+  once more on its next run (the OCR and raw OCR cache keys changed), and the `audio` layer runs
+  PANNs once more, as it no longer reports the unused `Gunfire` and `Explosion` events. The
+  `events --json` discovery `preset` is never `built-in` any more. `--audio-thr` and
+  `--audio-floor` no longer accept `Gunfire` or `Explosion`. Events of the removed feeds no
+  longer score: a `REVERSE FRIENDLY FIRE` banner is neither a teamkill nor a payoff banner
+  (no points, no clip-tail payoff, the VLM seed of any other banner), and kill rows that
+  mark only the player are no player kills.
 
 ### Removed
 

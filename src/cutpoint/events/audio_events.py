@@ -88,14 +88,6 @@ DEFAULT_GROUPS: tuple[ClassGroup, ...] = (
         rel_margin=0.015,
         rel_floor=0.02,
     ),
-    ClassGroup(
-        "Gunfire",
-        ("Gunshot, gunfire", "Machine gun", "Fusillade", "Artillery fire", "Cap gun"),
-        abs_thr=0.40,
-        rel_factor=99.0,
-        seed=False,
-    ),
-    ClassGroup("Explosion", ("Explosion", "Boom"), abs_thr=0.30, rel_factor=99.0, seed=False),
 )
 
 
