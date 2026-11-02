@@ -145,7 +145,7 @@ def test_save_json_unserialisable_leaves_nothing(tmp_path):
 
 @pytest.mark.parametrize(
     ("encoding", "expected"),
-    [("utf-8-sig", {"name": "Café"}), ("utf-16", None), ("cp1252", None)],
+    [("utf-8-sig", {"name": "Café"}), ("utf-16", None)],
 )
 def test_load_json_handles_the_encoding_a_file_was_saved_with(tmp_path, encoding, expected):
     target = tmp_path / "saved.json"

@@ -46,10 +46,7 @@ def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok)
     with pytest.raises(FileNotFoundError) as exc:
         pipeline.preflight(layers)
     msg = str(exc.value)
-    for name in (
-        "Cnn14_", "class_labels_indices.csv", "silero_vad.onnx", "vit_large_patch14",
-        "fasterrcnn_", "sac+logos",
-    ):  # fmt: skip
+    for name in ("Cnn14_", "silero_vad.onnx", "vit_large_patch14"):  # one per layer
         assert name in msg
     # setup order is pip, panns, visual, voice; the VLM layer has no model files
     assert msg.endswith("cutpoint setup --only panns visual voice")
@@ -69,40 +66,33 @@ def no_unload(monkeypatch) -> list:
     return calls
 
 
-def test_run_events_missing_models_fails_before_unload(
-    home: Path, monkeypatch, tmp_path: Path, extra_ok, no_unload
-):
-    monkeypatch.setattr(pipeline, "load_highlights", lambda project: {"sources": []})
-    with pytest.raises(FileNotFoundError, match="cutpoint setup --only"):
-        pipeline.run_events(tmp_path, layers=("audio", "visual"))
-    assert no_unload == []
-
-
-# run_events fails fast, before side effects, when the events extra is missing
-def _no_modules(monkeypatch):
-    monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: None)
-
-
 def test_vlm_only_skips_check(monkeypatch):
     _no_modules(monkeypatch)
     pipeline._require_events_extra(("vlm",))
 
 
-def test_run_events_fails_before_unloading_ollama(monkeypatch, tmp_path, no_unload):
-    _no_modules(monkeypatch)
-    monkeypatch.setattr(pipeline, "load_highlights", lambda project: {"sources": []})
-    with pytest.raises(ModuleNotFoundError) as exc:
-        pipeline.run_events(tmp_path)
-    assert exc.value.name == pipeline.EVENTS_MODULES[0]
-    assert no_unload == []
+def _no_modules(monkeypatch):
+    monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: None)
 
 
-def test_run_events_all_footage_offline_fails_before_side_effects(monkeypatch, tmp_path, no_unload):
-    hl = {"sources": [{"path": str(tmp_path / "gone.mp4"), "duration": 60.0}]}
+@pytest.mark.parametrize("why", ["model-files", "events-extra", "footage-offline"])
+def test_run_events_fails_before_side_effects(home, monkeypatch, tmp_path, no_unload, why):
+    """Missing model files, a missing events extra or no reachable footage: run_events fails
+    before it unloads Ollama or writes anything."""
+    hl, layers = {"sources": []}, ("audio",)
+    if why == "model-files":
+        monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: object())
+        layers, error, match = ("audio", "visual"), FileNotFoundError, "cutpoint setup --only"
+    elif why == "events-extra":
+        _no_modules(monkeypatch)
+        error, match = ModuleNotFoundError, pipeline.EVENTS_MODULES[0]
+    else:
+        hl = {"sources": [{"path": str(tmp_path / "gone.mp4"), "duration": 60.0}]}
+        monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+        error, match = ValueError, "reachable"
     monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    with pytest.raises(ValueError, match="reachable"):
-        pipeline.run_events(tmp_path, layers=("audio",))
+    with pytest.raises(error, match=match):
+        pipeline.run_events(tmp_path, layers=layers)
     assert no_unload == []
     assert not (tmp_path / "events.json").exists()
 

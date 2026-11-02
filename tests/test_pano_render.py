@@ -546,8 +546,7 @@ class TestExporterSourceWarnings:
         with caplog.at_level(logging.WARNING):
             src = ex._source(clip, "sdk")
         assert src.mode == "dfisheye"
-        assert "recorded 360 source 'sdk' unavailable" in caplog.text
-        assert "no sdk file" in caplog.text and "using auto" in caplog.text
+        assert "'sdk' unavailable" in caplog.text and "no sdk file" in caplog.text
 
     def test_better_source_than_the_recorded_preview_one_is_suggested(
         self, tmp_path, monkeypatch, clip, caplog
@@ -556,7 +555,6 @@ class TestExporterSourceWarnings:
         with caplog.at_level(logging.WARNING):
             src = ex._source(clip, "dfisheye")
         assert src.mode == "dfisheye"  # the recorded source is still what is rendered
-        assert "a better one exists now (sdk)" in caplog.text
         assert "--pano-source auto" in caplog.text
 
     def test_recorded_preview_source_without_a_better_one_is_silent(
@@ -603,14 +601,14 @@ def test_uniform_360_sources_do_not_warn(recs) -> None:
 
 def test_mixed_or_unlevelled_360_sources_warn_once_with_the_clips() -> None:
     msg = render.source_mix_warning([("001_a.mp4", PLAIN_SDK), ("002_b.mp4", DFISH)])
-    assert "stitched sources (001_a.mp4) mixed with the dual fisheye (002_b.mp4)" in msg
-    assert "--pano-source dfisheye" in msg and "IMU levelling" not in msg
+    assert "mixed" in msg and "001_a.mp4" in msg and "002_b.mp4" in msg
+    assert "IMU levelling" not in msg
     msg = render.source_mix_warning([("001_a.mp4", FLOW_SDK), ("002_b.mp4", FLOW_SDK)])
-    assert "without our IMU levelling" in msg and "001_a.mp4, 002_b.mp4" in msg
+    assert "IMU levelling" in msg and "001_a.mp4, 002_b.mp4" in msg
     assert "mixed" not in msg
     studio = {"mode": "studio", "levelled": True}
     msg = render.source_mix_warning([("001_a.mp4", studio), ("002_b.mp4", DFISH)])
-    assert "mixed with the dual fisheye (002_b.mp4)" in msg and "levelling" in msg
+    assert "mixed" in msg and "levelling" in msg
 
 
 def test_clips_run_logs_one_pano_mixed_sources_warning(

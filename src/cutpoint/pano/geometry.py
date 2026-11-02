@@ -562,6 +562,9 @@ def yaw_pitch_ray(yaw: float | np.ndarray, pitch: float | np.ndarray) -> np.ndar
 
 POLAR_LINE_MAX_DEG = 80.0  # the yaw line stays this far from the poles (keeps a width)
 FRONT_Z = 0.1  # visible share: points within ~84 deg of the view axis (others blow up)
+# a box with less of it in view (qa_paths.MIN_VISIBLE: the QA's slivers) gets its visible
+SLIVER_SHARE = 0.25  # part from a grid
+SLIVER_GRID = 33  # ... of this many points per side (#11)
 
 
 def _view_xy(
@@ -573,6 +576,61 @@ def _view_xy(
     x = np.clip(d[..., 0] / z / tx, -1e3, 1e3)
     y = np.clip(d[..., 1] / z / ty, -1e3, 1e3)
     return x, y, d[..., 2]
+
+
+def sliver_boxes(
+    r: np.ndarray, tx: float, ty: float, boxes: np.ndarray
+) -> list[tuple[float, float, float, float] | None]:
+    """The part of each box ``(yaw, pitch, w, h)`` in view (fractions of the frame,
+    0-1), bounded from a :data:`SLIVER_GRID` grid over the whole box (None: no point in
+    view); all boxes at once.
+
+    ``x`` bounds the points within the frame's height, ``y`` those within its width
+    (points beyond ~84 deg of the view axis, :data:`FRONT_Z`, left out). A person
+    inches from the lens in a pitched view enters the frame at a corner: the cross of
+    :func:`project_box_visible` meets it at its bottom only (a 0.03-0.05 box where the
+    detector sees ~0.11, #11).
+    """
+    b = np.reshape(np.asarray(boxes, float), (-1, 4))
+    s = np.linspace(-0.5, 0.5, SLIVER_GRID)
+    yaw = np.radians(b[:, :1] + s * b[:, 2:3])
+    pitch = np.radians(np.clip(b[:, 1:2] + s * b[:, 3:4], -90.0, 90.0))
+    # the rays of _view_xy times r, per axis: d_j = cos p (sin y r_0j + cos y r_2j) - sin p r_1j
+    sy, cy, sp = np.sin(yaw), np.cos(yaw), np.sin(pitch)
+    cp = np.cos(pitch)[:, None, :]  # (boxes, yaws, pitches) below
+    x, y, z = (
+        (sy * r[0, j] + cy * r[2, j])[:, :, None] * cp - (sp * r[1, j])[:, None, :]
+        for j in range(3)
+    )
+    zc = np.maximum(z, 1e-3)
+    x, y = x / zc / tx, y / zc / ty  # only their parts within -1..1 are used
+    front = z > FRONT_Z
+    in_x, in_y = front & (np.abs(x) <= 1), front & (np.abs(y) <= 1)
+    seen = (in_x & in_y).any((1, 2))
+    ext = np.stack(
+        [
+            np.where(in_y, x, np.inf).min((1, 2)),
+            np.where(in_x, y, np.inf).min((1, 2)),
+            np.where(in_y, x, -np.inf).max((1, 2)),
+            np.where(in_x, y, -np.inf).max((1, 2)),
+        ],
+        1,
+    )
+    box = (np.clip(ext, -1.0, 1.0) + 1) / 2
+    return [tuple(float(v) for v in box[i]) if seen[i] else None for i in range(len(b))]
+
+
+def sliver_box(
+    r: np.ndarray,
+    tx: float,
+    ty: float,
+    box_yaw: float,
+    box_pitch: float,
+    box_w: float,
+    box_h: float,
+) -> tuple[float, float, float, float] | None:
+    """:func:`sliver_boxes` of one box."""
+    return sliver_boxes(r, tx, ty, np.array([box_yaw, box_pitch, box_w, box_h]))[0]
 
 
 def project_box_visible(
@@ -587,6 +645,7 @@ def project_box_visible(
     box_h: float,
     steps: int = 9,
     polar_shift: float = 0.5,
+    grid: bool = True,
 ) -> tuple[tuple[float, float, float, float], float] | None:
     """Where a display-frame box lands in a rendered flat view (fractions of the frame).
 
@@ -612,7 +671,10 @@ def project_box_visible(
     frame (or behind the camera, where points are pushed far out) does not
     stretch the height; ``x1`` / ``x2`` bound all points (bounding x by the
     points with ``|y| <= 1`` too, or moving an off-frame yaw line into the
-    frame, tracked the rendered QA worse: score r 0.80 vs 0.86).
+    frame, tracked the rendered QA worse: score r 0.80 vs 0.86). A box with a
+    share below :data:`SLIVER_SHARE` is the part in view instead
+    (:func:`sliver_box`; the share stays the cross's), unless ``grid`` is False
+    (the version 4 box, for the legacy edge rule).
 
     The share of the box inside the frame (0-1) is the clipped box's area over
     the box's projected extent (both in frame units, the extent clamped to 2
@@ -624,8 +686,8 @@ def project_box_visible(
 
     Returns:
         ``((x1, y1, x2, y2), share)``: the box with 0-1 inside the frame (x right,
-        y down, not clipped) and its visible share, or None when the box centre
-        is behind the camera.
+        y down, not clipped; a sliver's part in view is) and its visible share, or None
+        when the box centre is behind the camera.
     """
     vfov = flat_fov(hfov, out_w, out_h)
     tx, ty = math.tan(math.radians(hfov) / 2), math.tan(math.radians(vfov) / 2)
@@ -665,6 +727,8 @@ def project_box_visible(
     vis = np.clip([xs.min(), ys.min(), xs.max(), ys.max()], -1.0, 1.0)
     vis_area = max(0.0, vis[2] - vis[0]) * max(0.0, vis[3] - vis[1])
     share = float(vis_area / full_area) if full_area > 0 else 0.0
+    if grid and share < SLIVER_SHARE:
+        box = sliver_box(r, tx, ty, box_yaw, box_pitch, box_w, box_h) or box
     return box, share
 
 

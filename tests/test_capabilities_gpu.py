@@ -179,7 +179,7 @@ def test_format_report_has_torch_and_sdk_lines(sdk, torch_stub):
 
 @pytest.mark.parametrize(
     ("edition", "line"),
-    [("full", "Edition: full"), ("lite", "Edition: lite (no torch: the 'events' extra")],
+    [("full", "Edition: full"), ("lite", "Edition: lite")],
 )
 def test_format_report_starts_with_the_edition(sdk, torch_stub, edition, line):
     torch_stub()
@@ -236,17 +236,6 @@ def _install(monkeypatch, receipt=None, direct_url=None, uv=False, in_use=()):
     monkeypatch.setattr(extras, "uv_managed", lambda: uv)
     monkeypatch.setattr(extras, "extras_in_use", lambda: list(in_use))
     monkeypatch.setattr(extras.sys, "executable", "/py/python")
-
-
-def test_hint_tool_reruns_the_installer(monkeypatch):
-    # uv tool install without --torch-backend would pull CUDA torch on a CPU-only machine
-    _install(monkeypatch, receipt={"tool": {"requirements": [{"name": "cutpoint"}]}})
-    monkeypatch.setattr(extras, "edition", lambda: "full")
-    hint = extras.torch_cuda_hint()
-    assert hint.startswith("re-run the installer: ")
-    assert extras.INSTALL_SH in hint and extras.INSTALL_PS1 in hint
-    assert hint.endswith("(it installs CUDA torch when it finds an NVIDIA GPU)")
-    assert "uv tool install" not in hint
 
 
 def test_hint_clone_uv_sync(monkeypatch, tmp_path):

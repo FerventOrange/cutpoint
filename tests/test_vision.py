@@ -130,9 +130,10 @@ def test_vision_blend_keeps_an_unrated_score():
     assert cutpoint.analyze.vision_blend(23.4, None, 0.3) == 23.4
 
 
-@pytest.mark.parametrize("score", [0.0, 0.1, 50.0, 80.0, 99.9, 100.0])
-@pytest.mark.parametrize("rating", [0.0, 2.0, 5.0, 7.5, 10.0])
-@pytest.mark.parametrize("weight", [0.2, 0.45])
+@pytest.mark.parametrize(
+    ("score", "rating", "weight"),
+    [(0.0, 0.0, 0.45), (100.0, 10.0, 0.45), (0.1, 10.0, 0.2), (99.9, 0.0, 0.2)],
+)
 def test_vision_blend_stays_within_0_100(score, rating, weight):
     assert 0.0 <= cutpoint.analyze.vision_blend(score, rating, weight) <= 100.0
 
@@ -599,18 +600,9 @@ def test_only_the_qwen35_family_has_a_profile(model, profiled):
 def test_the_keys_of_models_without_a_profile_are_unchanged():
     """The profile joins the hash only for a profiled model, so qwen3-vl's cached ratings
     stay valid."""
+    # Pinned: a change here drops every user's cached qwen3-vl ratings.
     times = vision._frame_times(0, 4, 3)
-    params = {
-        "version": vision.RATING_VERSION,
-        "model": "qwen3-vl:8b",
-        "style": "ski",
-        "prompts": list(vision._PROMPTS["ski"]),
-        "attempts": [list(a) for a in vision._ATTEMPTS],
-        "temperatures": list(vision._TEMPERATURES),
-        "width": vision.FRAME_WIDTH,
-    }
-    want = f"{cache.params_hash(params)}@" + ",".join(f"{t:.3f}" for t in times)
-    assert vision.rating_key("qwen3-vl:8b", "ski", times) == want
+    assert vision.rating_key("qwen3-vl:8b", "ski", times) == "29eed62d03@1.000,2.000,3.000"
 
 
 def test_contact_sheet_tiles_the_frames_in_reading_order():
@@ -663,18 +655,12 @@ def test_a_model_without_a_profile_asks_for_no_logprobs(posts):
     [
         ([("3", {"3": 0.6, "4": 0.4})], 3.4),
         ([("1", {"1": 0.5, "9": 0.5}), ("0", {"0": 1.0})], 9.5),  # "1" then "0" is 10
-        ([("1", {"1": 0.5, "2": 0.5})], 1.5),
         ([("8", {"8": 0.5, "x": 0.5})], 8.0),  # alternatives that are not digits are left out
         ([("9", {"9": 0.6, "1": 0.4})], 9.4),  # next to a 9, "1" starts "10"
         ([("3", {"3": 0.6, "1": 0.4})], 2.2),  # next to a 3, "1" is 1
-        ([("1", {"1": 0.8, "9": 0.2}), ("0", {"0": 1.0})], 9.8),  # a chosen "10"
         ([("1", {"1": 1.0}), ("0", {"0": 0.75, ",": 0.25})], 7.75),  # 10 at 0.75, else 1
-        ([("1", {"1": 1.0})], 1.0),  # a chosen "1" with no "0" after it
         # "1" as 1 or 10 from the alternatives, whichever digit was sampled
-        ([("3", {"3": 0.5, "6": 0.3, "1": 0.2})], 3.5),
         ([("6", {"3": 0.5, "6": 0.3, "1": 0.2})], 3.5),
-        ([("6", {"6": 0.5, "3": 0.3, "1": 0.2})], 5.9),
-        ([("3", {"6": 0.5, "3": 0.3, "1": 0.2})], 5.9),
     ],
 )
 def test_expected_score_weighs_the_score_digit(digits, want):

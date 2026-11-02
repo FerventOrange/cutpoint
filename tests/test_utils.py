@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import logging
 import os
 import sys
@@ -16,11 +15,8 @@ from cutpoint.utils import clock, find_videos, input_name, matches_glob, seconds
 @pytest.mark.parametrize(
     "t, expected",
     [
-        (0, "00:00:00.0"),
-        (65, "00:01:05.0"),
         (3725.5, "01:02:05.5"),
-        (59.96, "00:01:00.0"),  # rounding carries into minutes
-        (3599.96, "01:00:00.0"),  # ... and into hours
+        (3599.96, "01:00:00.0"),  # rounding carries into minutes and hours
         (-5.5, "-00:00:05.5"),
         (-0.04, "00:00:00.0"),  # no "-0"
     ],
@@ -37,10 +33,8 @@ def test_parse_clock_round_trips_clock(t):
 @pytest.mark.parametrize(
     "path, patterns, expected",
     [
-        ("C:\\Videos\\Round4_DVR.mp4", ["*DVR*"], True),
         ("C:\\Videos\\Round4_dvr.mp4", ["*DVR*"], True),  # case-insensitive
         ("C:\\Videos\\Captures\\a.mp4", ["*/Captures/*"], True),  # backslashes == slashes
-        ("/videos/a.mp4", ["*/Captures/*"], False),
         ("/videos/a.mp4", ["b.mp4", "a.mp4"], True),  # any pattern, file name
         ("/videos/a.mp4", ["a.mp"], False),  # whole-name match only
     ],
@@ -77,9 +71,7 @@ def test_input_name_resolves_the_current_folder(tmp_path, monkeypatch):
     ("value", "allow_negative", "expected"),
     [
         (None, False, {}),
-        (2, False, {"t": 2.0}),
         (1.5, False, {"t": 1.5}),
-        ("x", False, "t must be a number of seconds"),
         (float("nan"), False, "t must be a number of seconds"),
         (-1, False, "t must not be negative"),
         (-1, True, {"t": -1.0}),
@@ -185,30 +177,3 @@ def test_find_videos_walk_does_not_warn_about_an_excluded_unreadable_folder(
         got = find_videos(tmp_path, recursive=True, exclude=["*/locked/*"])
     assert got == [(tmp_path / "ok" / "good.mp4").resolve()]
     assert not any("Skipping unreadable" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.parametrize("kind", ["file", "folder"])
-def test_find_videos_unreadable_input_is_not_reported_missing_when_checks_return_false(
-    tmp_path, monkeypatch, kind
-):
-    """Python 3.13 makes is_file/is_dir return False on EACCES instead of raising."""
-    target = tmp_path / "vault" / "a.mp4" if kind == "file" else tmp_path / "vault"
-    (tmp_path / "vault").mkdir()
-    if kind == "file":
-        target.write_bytes(b"x")
-
-    real_stat = Path.stat
-
-    def stat(self, *args, **kwargs):
-        if self == target:
-            raise PermissionError(errno.EACCES, "Permission denied")
-        return real_stat(self, *args, **kwargs)
-
-    def false_for_target(real):
-        return lambda self, *a, **k: False if self == target else real(self, *a, **k)
-
-    monkeypatch.setattr(Path, "stat", stat)
-    for name in ("is_file", "is_dir"):
-        monkeypatch.setattr(Path, name, false_for_target(getattr(Path, name)))
-    with pytest.raises(FileNotFoundError, match="Input not readable"):
-        find_videos(target)

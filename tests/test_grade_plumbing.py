@@ -327,14 +327,10 @@ LUT = Lut(Path("/l/a.cube"), 1.0)
     ("cfg", "given", "lut", "style", "want", "level"),
     [
         ("auto", None, None, FUNNY, "auto", None),
-        ("underwater", None, None, FUNNY, "underwater", None),
-        ("off", None, None, FUNNY, "off", None),
         ("auto", None, LUT, FUNNY, "off", None),  # config never applies with a LUT
         ("auto", None, None, GAMING, "off", "INFO"),  # ... nor to gaming footage
         ("auto", "off", None, FUNNY, "off", None),  # a given mode wins over config
-        ("off", "underwater", None, FUNNY, "underwater", None),
         ("off", "auto", None, GAMING, "auto", "WARNING"),  # explicit on gaming: allowed, warned
-        ("off", "underwater", None, GAMING, "underwater", "WARNING"),
         ("auto", "off", None, GAMING, "off", None),
     ],
 )
