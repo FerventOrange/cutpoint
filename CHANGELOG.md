@@ -462,6 +462,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused with "source must be an absolute path"; blank `sources` lines are left out, and with
   several sources the refusal names the path. Settings' projects folder takes a quoted path too.
   Relative paths are still refused.
+- Activity profile synthesis (`profile --context`, `crashes` and the crash step of `analyze`)
+  gives up on the local Ollama model after 120 s per request instead of 600 s, so a CPU-only
+  model no longer blocks for about 20 minutes before the generic profile is used (#608).
 
 ## [0.4.0] - 2026-10-29
 
