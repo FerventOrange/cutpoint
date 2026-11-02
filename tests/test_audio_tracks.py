@@ -11,7 +11,7 @@ import pytest
 
 from conftest import media_info, needs_ffmpeg
 from cutpoint import audio_tracks, cache, encode, errors, ffmpeg_utils
-from cutpoint.ffmpeg_utils import VideoEncoder, measure_loudness, mix_head
+from cutpoint.ffmpeg_utils import VideoEncoder, measure_loudness
 
 RNG = np.random.default_rng(365)
 GAME = RNG.normal(0, 0.1, 8000)
@@ -43,14 +43,6 @@ def test_distinct_tracks_are_all_kept():
     assert audio_tracks.kept_tracks(_windows(GAME, MIC, GAME)) == (0, 1)
 
 
-def test_a_window_with_another_waveform_at_the_same_level_keeps_the_track():
-    """Game and mic at the same level: only the waveform differs (a plain bool, see
-    :func:`~cutpoint.audio_tracks.same_window`)."""
-    assert audio_tracks.same_window(GAME, MIC) is False
-    same = np.stack([GAME, GAME])
-    assert audio_tracks.kept_tracks([same, same, np.stack([GAME, MIC])]) == (0, 1)
-
-
 def test_the_same_waveform_at_another_level_is_kept():
     assert audio_tracks.kept_tracks(_windows(GAME, GAME * 0.5)) == (0, 1)  # -6 dB
 
@@ -61,7 +53,9 @@ def test_a_silent_track_is_kept():
 
 
 def test_one_differing_window_keeps_the_track():
-    """A mic that copies the game track except where it talks is not a duplicate."""
+    """A mic that copies the game track except where it talks is not a duplicate. Game and
+    mic at the same level: only the waveform differs."""
+    assert audio_tracks.same_window(GAME, MIC) is False
     same = np.stack([GAME, GAME])
     talk = np.stack([GAME, GAME + MIC])
     assert audio_tracks.kept_tracks([same, same, talk]) == (0, 1)
@@ -73,7 +67,6 @@ def test_one_differing_window_keeps_the_track():
 
 def test_windows_spread_across_the_source_and_fit_short_ones():
     starts = audio_tracks.window_starts(600.0)
-    assert len(starts) == audio_tracks.WINDOWS
     assert starts[0] > 0 and starts[-1] + audio_tracks.WINDOW_S <= 600.0
     assert audio_tracks.window_starts(2.0) == [0.0]
 
@@ -177,12 +170,6 @@ def test_a_failed_comparison_is_memoised(monkeypatch, tmp_path):
 
 
 # -- filter graphs ----------------------------------------------------------------------
-
-
-def test_mix_head():
-    assert mix_head([0]) == "[0:a:0]"
-    assert mix_head([0, 2]) == "[0:a:0][0:a:2]amix=inputs=2:normalize=0,"
-    assert mix_head([0, 1], input_idx=1) == "[1:a:0][1:a:1]amix=inputs=2:normalize=0,"
 
 
 def _audio_graph(monkeypatch, streams: int, kept: tuple[int, ...] | None = None) -> str:

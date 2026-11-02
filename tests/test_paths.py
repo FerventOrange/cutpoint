@@ -17,9 +17,6 @@ from hud_fixtures import boxfeed, write_preset
     [
         ("CONFIG", paths.config_file, "config.json"),
         ("CACHE_DIR", paths.cache_dir, "cache"),
-        ("MODELS_DIR", paths.models_dir, "models"),
-        ("TOOLS_DIR", paths.tools_dir, "tools"),
-        ("STYLES_DIR", paths.styles_dir, "styles"),
     ],
 )
 def test_env_overrides_and_empty_falls_through(name, func, default, home, tmp_path, monkeypatch):

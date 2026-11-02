@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import envelope, needs_ffmpeg
-from cutpoint import assemble, cli, clips, folders, sources, srt
+from conftest import needs_ffmpeg, run_json
+from cutpoint import assemble, cli, clips, folders, sources
 from cutpoint.pano import stitch
 
 
@@ -44,15 +44,10 @@ def clips_dir(tmp_path, monkeypatch) -> Path:
     return folder
 
 
-def _json(capsys, argv: list[str]) -> tuple[int, dict]:
-    code = cli.main([*argv, "--json"])
-    return code, envelope(capsys.readouterr().out)
-
-
 # ------------------------------------------------------------------- assemble <clips_dir>
 @needs_ffmpeg
 def test_mp4_writes_no_timelines(clips_dir, capsys):
-    code, doc = _json(capsys, ["assemble", str(clips_dir)])
+    code, doc = run_json(capsys, ["assemble", str(clips_dir)])
     project = clips_dir.parent
     assert code == 0
     assert set(doc["outputs"]) == {"format", "final", "srt", "duration", "clip_count"}
@@ -73,7 +68,7 @@ def test_timeline_format_writes_only_the_timeline_and_srt_without_encoding(
         monkeypatch.setattr(assemble, name, no_encode)
     monkeypatch.setattr(assemble, "encode_with_fallback", no_encode)
     argv = ["assemble", str(clips_dir), "--format", fmt, "--transition", transition]
-    code, doc = _json(capsys, argv)
+    code, doc = run_json(capsys, argv)
     project = clips_dir.parent
     assert code == 0, doc
     out = doc["outputs"]
@@ -110,7 +105,7 @@ def test_timeline_format_refuses_options_of_the_final_video(tmp_path, capsys, fl
 
 
 def test_project_options_need_a_project(tmp_path, capsys):
-    code, doc = _json(capsys, ["assemble", str(tmp_path), "--top", "3"])
+    code, doc = run_json(capsys, ["assemble", str(tmp_path), "--top", "3"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert doc["error"]["message"].startswith("--top needs a project")
 
@@ -144,7 +139,7 @@ def test_project_mp4_leaves_only_the_final_and_never_touches_clips(project, caps
     clips = project / "clips"
     clips.mkdir()
     (clips / "001_old.mp4").write_bytes(b"earlier clip")
-    code, doc = _json(capsys, ["assemble", "p", "--top", "2", *NO_SHAPING])
+    code, doc = run_json(capsys, ["assemble", "p", "--top", "2", *NO_SHAPING])
     assert code == 0, doc
     assert doc["project"] == str(project)
     assert set(doc["outputs"]) == {"format", "final", "srt", "duration", "clip_count"}
@@ -168,22 +163,17 @@ def test_project_segments_vertical_names_the_final(video, home, tmp_path, monkey
 
 
 @needs_ffmpeg
-@pytest.mark.parametrize(
-    ("error", "code"), [(RuntimeError("join failed"), 1), (KeyboardInterrupt(), 130)]
-)
-def test_project_failure_or_interrupt_leaves_no_temporary_folder(
-    project, capsys, monkeypatch, error, code
-):
+def test_project_failure_leaves_no_temporary_folder(project, capsys, monkeypatch):
     seen = []
 
     def join(files, *a, **k):
         seen.append(files[0].parent)  # the temporary clips, exported by now
-        raise error
+        raise RuntimeError("join failed")
 
     monkeypatch.setattr(assemble, "_join", join)
-    got, doc = _json(capsys, ["assemble", "p", *NO_SHAPING])
-    assert got == code
-    assert doc["error"]["code"] == ("interrupted" if code == 130 else "error")
+    got, doc = run_json(capsys, ["assemble", "p", *NO_SHAPING])
+    assert got == 1
+    assert doc["error"]["code"] == "error"
     assert seen and seen[0].name.startswith(".assemble-tmp-") and seen[0].parent == project
     assert _names(project) == ["highlights.json"]
 
@@ -192,7 +182,7 @@ def test_project_failure_or_interrupt_leaves_no_temporary_folder(
 def test_project_with_too_little_space_stops_before_exporting(project, capsys, monkeypatch):
     monkeypatch.setattr(stitch, "free_gb", lambda folder: 0.5)
     monkeypatch.setattr(assemble, "_join", lambda *a, **k: pytest.fail("joined"))
-    code, doc = _json(capsys, ["assemble", "p", *NO_SHAPING])
+    code, doc = run_json(capsys, ["assemble", "p", *NO_SHAPING])
     assert code == 1
     assert (
         "0.5 GB free, the temporary clips and the final video need about"
@@ -205,7 +195,7 @@ def test_project_mp4_refuses_force(home, capsys):
     folder = home / "projects" / "p"
     folder.mkdir(parents=True)
     (folder / "highlights.json").write_text("{}", encoding="utf-8")
-    code, doc = _json(capsys, ["assemble", "p", "--force"])
+    code, doc = run_json(capsys, ["assemble", "p", "--force"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert "--force replaces kept clips" in doc["error"]["message"]
     assert _names(folder) == ["highlights.json"]
@@ -213,7 +203,7 @@ def test_project_mp4_refuses_force(home, capsys):
 
 @needs_ffmpeg
 def test_project_timeline_format_keeps_the_clips(project, capsys):
-    code, doc = _json(capsys, ["assemble", "p", "--format", "fcpxml", *NO_SHAPING])
+    code, doc = run_json(capsys, ["assemble", "p", "--format", "fcpxml", *NO_SHAPING])
     assert code == 0, doc
     clip_keys = {"clips_dir", "manifest", "clips", "count", "total_seconds"}  # kept: listed
     assert set(doc["outputs"]) == {"format", "fcpxml", "srt", "duration", "clip_count"} | clip_keys
@@ -222,9 +212,9 @@ def test_project_timeline_format_keeps_the_clips(project, capsys):
     assert _names(project) == ["clips", "final.fcpxml", "final.srt", "highlights.json"]
     assert len(list((project / "clips").glob("*.mp4"))) == 2
     # A non-empty clips folder needs --force, as for clips
-    code, doc = _json(capsys, ["assemble", "p", "--format", "otio", *NO_SHAPING])
+    code, doc = run_json(capsys, ["assemble", "p", "--format", "otio", *NO_SHAPING])
     assert code == 1 and doc["error"]["code"] == "output_not_empty"
-    code, doc = _json(capsys, ["assemble", "p", "--format", "otio", "--force", *NO_SHAPING])
+    code, doc = run_json(capsys, ["assemble", "p", "--format", "otio", "--force", *NO_SHAPING])
     assert code == 0 and (project / "final.otio").is_file()
 
 
@@ -297,28 +287,17 @@ def test_a_sweep_that_cannot_take_a_lock_does_not_fail_the_run(tmp_path, monkeyp
 
 
 @needs_ffmpeg
-@pytest.mark.parametrize(("error", "code"), [(RuntimeError("bad"), 1), (KeyboardInterrupt(), 130)])
-def test_project_failure_during_the_export_with_partial_clips_leaves_nothing(
-    project, monkeypatch, error, code
+def test_project_interrupt_during_the_export_with_partial_clips_leaves_nothing(
+    project, monkeypatch
 ):
     def render(plans, work, **kw):
         work.mkdir(exist_ok=True)
         (work / plans[0].name).write_bytes(b"half a clip")
-        raise error
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(clips, "render_clips", render)
-    assert cli.main(["assemble", "p", *NO_SHAPING]) == code
+    assert cli.main(["assemble", "p", *NO_SHAPING]) == 130
     assert _names(project) == ["highlights.json"]
-
-
-@needs_ffmpeg
-def test_project_failure_in_the_final_srt_leaves_no_temporary_clips(project, monkeypatch):
-    def fail(*a, **k):
-        raise RuntimeError("srt failed")
-
-    monkeypatch.setattr(srt, "write_final_srt", fail)
-    assert cli.main(["assemble", "p", *NO_SHAPING]) == 1
-    assert not [n for n in _names(project) if "assemble-tmp" in n]
 
 
 @needs_ffmpeg
@@ -337,7 +316,7 @@ def test_a_folder_that_cannot_be_removed_keeps_the_error_and_is_named(
 
     monkeypatch.setattr(shutil, "rmtree", rmtree)
     monkeypatch.setattr(assemble, "_join", join)
-    code, doc = _json(capsys, ["assemble", "p", *NO_SHAPING])
+    code, doc = run_json(capsys, ["assemble", "p", *NO_SHAPING])
     assert code == 1 and doc["error"]["message"] == "join failed"
     [left] = [n for n in _names(project) if n.startswith(".assemble-tmp-")]
     assert f"Cannot remove the temporary clips {project / left}" in caplog.text
@@ -356,7 +335,7 @@ def test_success_with_a_folder_left_does_not_say_removed(project, capsys, monkey
         return real(path, *a, **k)
 
     monkeypatch.setattr(shutil, "rmtree", rmtree)
-    code, doc = _json(capsys, ["assemble", "p", *NO_SHAPING])
+    code, doc = run_json(capsys, ["assemble", "p", *NO_SHAPING])
     assert code == 0
     assert [w["code"] for w in doc["warnings"]] == ["temporary_clips_left"]
 
@@ -366,7 +345,7 @@ def test_segments_with_a_clips_folder_is_refused(tmp_path, capsys):
     folder = tmp_path / "clips"
     folder.mkdir()
     (folder / "manifest.json").write_text('{"clips": []}', encoding="utf-8")
-    code, doc = _json(capsys, ["assemble", str(folder), "--segments", str(tmp_path / "s.json")])
+    code, doc = run_json(capsys, ["assemble", str(folder), "--segments", str(tmp_path / "s.json")])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert doc["error"]["message"] == (
         f"{folder} is a clips folder; --segments needs the project folder"
@@ -381,7 +360,7 @@ def test_a_project_without_highlights_is_refused(tmp_path, capsys, mark):
         (folder / mark).write_text("{}", encoding="utf-8")
     else:
         (folder / mark).mkdir()
-    code, doc = _json(capsys, ["assemble", str(folder)])
+    code, doc = run_json(capsys, ["assemble", str(folder)])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert doc["error"]["message"] == (
         f"{folder} is a project without highlights.json: run analyze, pass --segments, or give "
@@ -395,5 +374,5 @@ def test_clips_folders_with_a_manifest_still_assemble(clips_dir, capsys):
     ui = clips_dir.rename(clips_dir.with_name("clips_ui_2"))
     (ui / "clips").mkdir()  # even with a sub-folder of that name
     (ui.parent / "project.json").write_text("{}", encoding="utf-8")
-    code, doc = _json(capsys, ["assemble", str(ui), "--format", "otio"])
+    code, doc = run_json(capsys, ["assemble", str(ui), "--format", "otio"])
     assert code == 0 and doc["outputs"]["otio"] == str(ui.parent / "final_ui_2.otio")

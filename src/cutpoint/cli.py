@@ -1,5 +1,5 @@
-"""Command-line interface: ``cutpoint edit | analyze | events | crashes | profile | refmatch | fit |
-clips | extend | assemble | stage | 360 | setup | paths | capabilities | guide | skill | ui``.
+"""Command-line interface: ``cutpoint edit | analyze | events | crashes | profile | clips |
+extend | assemble | stage | 360 | setup | paths | capabilities | guide | skill | ui``.
 
 Installed as the ``cutpoint`` console script.
 """
@@ -407,35 +407,6 @@ def _cmd_stage(a: argparse.Namespace) -> None:
     jsonout.output("copied", summary["files"])
     for key in ("skipped", "bytes", "read_s", "mb_per_s"):
         jsonout.output(key, summary[key])
-
-
-def _cmd_refmatch(a: argparse.Namespace) -> None:
-    from cutpoint.refmatch import MatchParams, run_refmatch  # noqa: PLC0415 - action-cam module
-
-    run_refmatch(
-        resolve_project_path(a.project),
-        Path(a.reference),
-        params=MatchParams(
-            min_score=a.min_score, cut_corr=a.cut_corr, margin_score=a.margin_score, margin=a.margin
-        ),
-        fit=a.fit,
-        name=a.name,
-        check=a.check,
-        taste=a.taste,
-    )
-
-
-def _cmd_fit(a: argparse.Namespace) -> None:
-    from cutpoint.refmatch import run_fit  # noqa: PLC0415 - action-cam module
-
-    run_fit(
-        [resolve_project_path(p) for p in a.projects],
-        name=a.name,
-        base=a.base,
-        taste=a.taste,
-        do_ablate=a.ablate,
-        save=not a.no_save,
-    )
 
 
 def _cmd_crashes(a: argparse.Namespace) -> None:
@@ -1405,91 +1376,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_argument(st)
     st.set_defaults(func=_cmd_stage)
-
-    rm = sub.add_parser(
-        "refmatch",
-        help="find a reference edit's shots in the project "
-        "sources (refmatch.json) and fit style weights to them (action-cam/ski "
-        "module)",
-    )
-    rm.add_argument("project", help="analysed project (bare name = projects folder)")
-    rm.add_argument("reference", help="the finished edit to learn from")
-    rm.add_argument(
-        "--fit",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="fit weights and save <CUTPOINT_HOME>/styles/<name>.json (default: on for "
-        "ski projects)",
-    )
-    rm.add_argument("--name", help="learned preset name (default: <base>_learned)")
-    rm.add_argument(
-        "--min-score",
-        type=float,
-        default=0.80,
-        help="aligned frame correlation needed to accept a shot (default 0.80)",
-    )
-    rm.add_argument(
-        "--margin-score",
-        type=float,
-        default=0.60,
-        help="lower score accepted when it leads the next source/position by "
-        "--margin (default 0.60)",
-    )
-    rm.add_argument(
-        "--margin",
-        type=float,
-        default=0.25,
-        help="lead over the next source/position needed for --margin-score (default 0.25)",
-    )
-    rm.add_argument(
-        "--cut-corr",
-        type=float,
-        default=0.6,
-        help="frame-to-frame correlation below which the edit has a cut",
-    )
-    rm.add_argument(
-        "--check",
-        type=int,
-        default=6,
-        help="write N side-by-side check frames to <project>/refmatch_check",
-    )
-    rm.add_argument(
-        "--taste",
-        action="store_true",
-        help="also fit the personal taste head on the frame embeddings "
-        "(needs `cutpoint events` visual layer); saved as <name>.taste.npz",
-    )
-    rm.set_defaults(func=_cmd_refmatch)
-
-    ft = sub.add_parser(
-        "fit",
-        help="(action-cam/ski module) fit one learned preset "
-        "on several projects' "
-        "refmatch.json (cross-validated and cross-project report)",
-    )
-    ft.add_argument(
-        "projects", nargs="+", help="projects with refmatch.json (bare name = projects folder)"
-    )
-    ft.add_argument("--name", help="learned preset name (default: <base>_learned)")
-    ft.add_argument("--base", default="ski", help="built-in preset whose features are fitted")
-    ft.add_argument(
-        "--taste",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="fit the taste head on frame embeddings (default: on)",
-    )
-    ft.add_argument(
-        "--ablate",
-        action="store_true",
-        help="also refit on feature subsets (old features, +each new "
-        "feature, all, all without VLM tags, all without taste)",
-    )
-    ft.add_argument(
-        "--no-save",
-        action="store_true",
-        help="report only; do not write <CUTPOINT_HOME>/styles/<name>.json",
-    )
-    ft.set_defaults(func=_cmd_fit)
 
     cr = sub.add_parser(
         "crashes",

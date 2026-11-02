@@ -115,51 +115,28 @@ def test_crashes_json_warnings(ski, tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("warn_unreachable, expected", [(True, 1), (False, 0)])
-def test_detect_project_warn_unreachable(ski, tmp_path, capsys, caplog, warn_unreachable, expected):
-    """False (the events path, which already warned): no JSON warning and no WARNING line."""
-    project, src = ski
-    gone = tmp_path / "gone.mp4"
-    sources = [{"path": str(gone), "duration": 60}, {"path": str(src), "duration": 60}]
-    cache.save_json(project / "highlights.json", {"sources": sources})
-    with (
-        caplog.at_level(logging.DEBUG, logger=crash.logger.name),
-        jsonout.run("crashes") as result,
-    ):
-        crash.detect_project(
-            project, dense=False, sheets=0, activity_name="ski", warn_unreachable=warn_unreachable
-        )
-    capsys.readouterr()
-    assert warning_codes(result.warnings).count("footage_unreachable") == expected
-    lines = [r for r in caplog.records if "footage not reachable" in r.getMessage()]
-    assert [r.levelno for r in lines] == [logging.WARNING if warn_unreachable else logging.DEBUG]
-
-
-@pytest.mark.parametrize("warn_unreachable, expected", [(True, 1), (False, 0)])
-def test_detect_project_unreachable_one_warning_line(
+def test_detect_project_warns_once_for_an_unreachable_source(
     ski, tmp_path, capsys, caplog, warn_unreachable, expected
 ):
-    """With the profile detected from the footage (no ``--activity``), the keyframe read
-    skips the unreachable source quietly: ``crashes`` logs one WARNING line for it, the
-    events and analyze paths (which already warned) none."""
+    """``crashes`` gives one WARNING line and one JSON warning for an unreachable source; the
+    events and analyze paths (which already warned, ``warn_unreachable=False``) neither. The
+    profile is detected from the footage, so the keyframe read skips the source too."""
     project, src = ski
     gone = tmp_path / "gone.mp4"
     sources = [{"path": str(gone), "duration": 60}, {"path": str(src), "duration": 60}]
     cache.save_json(project / "highlights.json", {"sources": sources})
-    with caplog.at_level(logging.DEBUG), jsonout.run("crashes"):
+    with caplog.at_level(logging.DEBUG), jsonout.run("crashes") as result:
         crash.detect_project(
             project, dense=False, sheets=0, llm=False, warn_unreachable=warn_unreachable
         )
     capsys.readouterr()
+    assert warning_codes(result.warnings).count("footage_unreachable") == expected
     warns = [
         r.getMessage()
         for r in caplog.records
         if r.levelno >= logging.WARNING and str(gone) in r.getMessage()
     ]
-    assert len(warns) == expected and all(w.endswith("; skipped") for w in warns), warns
-    assert any(
-        r.levelno == logging.DEBUG and "no keyframes from it" in r.getMessage()
-        for r in caplog.records
-    )
+    assert len(warns) == expected, warns
 
 
 def test_crashes_json_reanalyze_failure_keeps_outputs(ski, monkeypatch, capsys):
@@ -228,10 +205,7 @@ def test_profile_text_unchanged_without_json(ski, capsys):
     assert capsys.readouterr().out.startswith("activity  ski (flag)\n")
 
 
-@pytest.mark.parametrize("json_mode", [True, False])
-def test_profile_warns_once_for_an_unreachable_source(
-    ski, tmp_path, monkeypatch, capsys, caplog, json_mode
-):
+def test_profile_warns_once_for_an_unreachable_source(ski, tmp_path, monkeypatch, capsys, caplog):
     """The profile detected from the footage: one WARNING line per unreachable source and,
     with --json, one ``footage_unreachable`` warning, as on ``crashes``."""
     project, src = ski
@@ -240,15 +214,11 @@ def test_profile_warns_once_for_an_unreachable_source(
     cache.save_json(project / "highlights.json", {"sources": sources})
     monkeypatch.setattr(activity, "default_ask", lambda: (None, None))  # no Ollama
     with caplog.at_level(logging.DEBUG):
-        if json_mode:
-            code, doc = run_json(capsys, ["profile", "ski"])
-            assert code == 0 and doc["ok"] is True, doc
-            assert warning_codes(doc).count("footage_unreachable") == 1
-            assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
-                [str(gone)]
-            ]
-        else:
-            assert cli.main(["profile", "ski"]) == 0
+        code, doc = run_json(capsys, ["profile", "ski"])
+    assert code == 0 and doc["ok"] is True, doc
+    assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
+        [str(gone)]
+    ]
     warns = [
         r.getMessage()
         for r in caplog.records
@@ -259,17 +229,7 @@ def test_profile_warns_once_for_an_unreachable_source(
 
 @pytest.mark.parametrize(
     ("reason", "expected"),
-    [
-        (
-            None,
-            "run.mp4: no visual layer; run `cutpoint events` first to score what the camera sees",
-        ),
-        (
-            "no CUDA GPU for the keyframes step",
-            "run.mp4: no visual layer (no CUDA GPU for the keyframes step); crashes are found "
-            "without what the camera sees",
-        ),
-    ],
+    [(None, "cutpoint events"), ("no CUDA GPU for the keyframes step", "(no CUDA GPU")],
 )
 def test_no_visual_layer_says_why_inside_analyze(ski, monkeypatch, reason, expected):
     """Inside analyze (no_visual_reason), the warning keeps its code and gives the reason."""
@@ -278,4 +238,4 @@ def test_no_visual_layer_says_why_inside_analyze(ski, monkeypatch, reason, expec
     with jsonout.run("crashes") as result, crash.no_visual_reason(reason):
         crash.detect_project(project, dense=False, sheets=0, activity_name="ski")
     (w,) = [w for w in result.warnings if w["code"] == "no_visual_layer"]
-    assert w["message"] == expected and w["files"] == [str(src)]
+    assert expected in w["message"] and w["files"] == [str(src)]

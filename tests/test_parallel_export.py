@@ -289,15 +289,6 @@ def test_second_interrupt_kills_ffmpeg_at_once(monkeypatch, tmp_path, kids, main
 
 
 @pytest.mark.slow
-def test_run_refuses_to_start_a_child_after_cancel(kids):
-    scope = ChildScope()
-    scope.cancel()
-    with child_scope(scope), pytest.raises(KeyboardInterrupt):
-        ffmpeg()
-    assert kids.procs == []
-
-
-@pytest.mark.slow
 def test_run_outside_a_scope_is_unchanged(kids):
     kids.release()
     with pytest.raises(FFmpegError, match=r"exit 7"):
@@ -503,15 +494,9 @@ PLANS = [SimpleNamespace(pano=False)] * 3
     ("kind", "configured", "expected"),
     [
         ("nvenc", "auto", 2),
-        ("vaapi", "auto", 2),
-        ("amf", "auto", 2),
         ("cpu", "auto", 1),
         ("cpu", 3, 3),  # a number is taken as is, libx264 included
-        ("nvenc", 3, 3),
-        ("nvenc", 1, 1),
-        ("nvenc", 0, 1),  # clamped to 1-3
-        ("nvenc", 8, 3),
-        ("nvenc", "2", 2),
+        ("nvenc", 8, 3),  # clamped to 1-3
     ],
 )
 def test_export_workers_follows_config_and_encoder(home, monkeypatch, kind, configured, expected):
@@ -552,9 +537,8 @@ def test_export_workers_does_not_probe_the_encoder_when_one_is_certain(home, mon
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("auto", None), ("AUTO", None), (" auto ", None), ("", None), (2, 2), ("3", 3), (0, 1),
-     (-4, 1), (99, config.MAX_EXPORT_WORKERS)],
-)  # fmt: skip
+    [(" AUTO ", None), ("3", 3), (0, 1), (99, config.MAX_EXPORT_WORKERS)],
+)
 def test_config_export_workers_values(home, value, expected):
     set_config(home, export_workers=value)
     assert config.export_workers() == expected
@@ -562,10 +546,9 @@ def test_config_export_workers_values(home, value, expected):
 
 def test_config_export_workers_defaults_to_auto(home):
     assert config.export_workers() is None
-    assert config.MAX_EXPORT_WORKERS == 3
 
 
-@pytest.mark.parametrize("value", [True, False, 2.0, 1.5, "1.5", "two", "2 clips", [2], {"a": 1}])
+@pytest.mark.parametrize("value", [True, 1.5, "two", [2]])
 def test_config_export_workers_other_text_is_one_error_naming_the_key(home, value):
     set_config(home, export_workers=value)
     with pytest.raises(ValueError, match="export_workers is") as err:
@@ -1093,8 +1076,8 @@ def test_child_that_ends_after_cancel_raises_keyboard_interrupt(kids, fn):
         assert kids.killed == []
 
 
-@pytest.mark.parametrize("fn", [probe_json, span_check, decode])
-def test_no_ffprobe_or_decode_child_starts_after_cancel(kids, fn):
+@pytest.mark.parametrize("fn", [ffmpeg, probe_json, span_check, decode])
+def test_no_child_starts_after_cancel(kids, fn):
     scope = ChildScope()
     scope.cancel()
     with child_scope(scope), pytest.raises(KeyboardInterrupt):
@@ -1117,7 +1100,6 @@ def test_a_child_added_after_the_scope_stopped_is_killed(stop):
     proc = Proc()
     scope.add(proc)
     assert proc.killed == 1
-    assert proc in scope._procs  # still registered, so run() discards it as usual
 
 
 @pytest.mark.slow

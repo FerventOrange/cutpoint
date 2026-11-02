@@ -300,7 +300,6 @@ STYLES: dict[str, Style] = {
             "people": 0.0,
             "group": 0.0,
             "voice": 0.0,
-            "taste": 0.0,
         },
         vision_weight=0.2,
         pre_roll=3.0,
@@ -392,12 +391,14 @@ def load_learned(path: Path) -> Style:
     own = {k: float(v) for k, v in data.get("weights", {}).items()}
     if base.kind == "ski":  # an older preset's "laughter" is voice_laughter (features.SKI_ALIASES)
         own = features.ski_names(own, str(path))
+    gone = [k for k in own if k in features.REMOVED]
+    if gone:  # a removed feature (the taste head) scores as if the preset never weighed it
+        logger.debug("%s: ignoring the weights of removed features %s", path, gone)
+        own = {k: w for k, w in own.items() if k not in features.REMOVED}
     weights = {**base.weights, **own}
     bad = unknown_weights(weights)
     if bad:  # kept, so the score is as before: counted in the divisor, nothing on the grid
         _warn_unknown(str(path), tuple(bad))
-    if data.get("taste"):  # personal taste head next to the preset (cutpoint refmatch --taste)
-        data["taste"] = str((path.parent / data["taste"]).resolve())
     return replace(
         base,
         name=data.get("name", path.stem),

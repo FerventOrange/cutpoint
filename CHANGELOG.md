@@ -142,7 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `360 qa <dir> --compare RENDERED PATHS` (#11): joins the rendered and the `--paths` `qa.json`
   of `<dir>` (either order) per clip and frame and writes `edge_gap.json` next to the rendered
   one: the frames each QA flags `edge_cut`, and a cause for every frame only the rendered QA
-  flags (`unpaired`, `outside_segment`, `wearer_overlap`, `yaw_offset`, `stale_view`,
+  flags (`unpaired`, `wearer_overlap`, `yaw_offset`, `stale_view`,
   `no_projected_box` or `other`), per clip and for the edit. Cut boxes follow `360 qa`'s own
   edge-cut rule, and the boxes `--paths` dropped as mostly outside the view count as projected
   boxes, the wearer's too. `--json` adds `edge_gap`, `causes`, `rendered_only` and a
@@ -162,8 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `input` (the render input's file name) and `cmd_every`, and the edit summary adds `by_mode`
   and `by_self_method` (`clips`, `frames`, `duration` and the `edge_cut` share of each).
   Clips' camera paths record the moment picked before tails and padding as `selected` (kept
-  in `qa.json`); `360 qa --compare` takes it for `outside_segment`, so a clip's tails count
-  there. `edge_gap.json` (version 3) adds per-clip `mode` and `self_method`, `by_mode` and
+  in `qa.json`); `360 qa --compare` marks each frame outside it `in_selected: false`. `edge_gap.json` (version 3) adds per-clip `mode` and `self_method`, `by_mode` and
   `by_self_method` frame counts and the `other_detail` `position_mismatch`: a dropped sliver
   about as wide as the cut box (within 25 %) but more than 5 % of the frame width to the side,
   which was `rendered_box_larger`. Older `qa.json` files still load (`unknown` in the
@@ -182,6 +181,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The 360 director frames other people whole or keeps them out instead of cutting them at the
+  frame edge (#11): where one would be cut, it widens the view or shifts its yaw, whichever
+  costs less, keeps people framed whole `include_margin` (0.06) off the sides, keeps that
+  choice over a stretch (one yaw shift held over it where that fixes as
+  much, so the view does not drift after people who barely move), also tries plain widening and keeps whichever
+  leaves fewer edge cuts, and cuts away only where none helps and the cut-away removes at
+  least `cut_min_gain_s` (1 s) per cut it adds of frames that QA counts as cut or where the
+  subject is out of view; a cut-away starts and ends `cut_min_gap_s` (4 s) or more from
+  other cuts or joins them, starts a key early when the view held before it is cut, first
+  tries a tighter side margin, and prefers views without the wearer. It
+  checks the people `360 qa --paths` counts (the subject and the largest person too) at every
+  key and between keys, over the whole planned span, so padding and tails stay clean. Keys fall
+  on the moment's 0.5 s grid. New `pano.director` keys `edge_rule` (`legacy` keeps the earlier
+  rule), `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`,
+  `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`,
+  `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. Paths are version 5 and record the span they fixed as `fixed`; `extend`
+  reuses a version 4 path only within its moment and plans a longer range anew with a WARNING.
+  `360 director` and planned camera paths change, so cached candidate paths are planned again.
+  `360 qa --paths` and the director's check count people at the left / right edge from 0.075
+  of the frame (`edge_side_min_area`, recorded in the paths `qa.json`'s `thresholds`; the
+  rendered QA keeps 0.10), as the detector sees a person cut there about 1.34 times as large,
+  and `360 qa --compare` replays the paths rule with the paths `qa.json`'s thresholds
+  (`edge_gap.json` version 5).
+- `360 qa --compare` adds `size_ratio` per clip and for the edit (#11): the median width and
+  height of rendered boxes over the projected boxes they match. The `outside_segment` cause is
+  gone: tails are planned and checked like the moment, so their frames get the full cause
+  chain, and each rendered-only frame says `in_selected` (whether it lies in the moment
+  picked), counted per clip and for the edit as `outside_selected` (`edge_gap.json` version 4).
 - The LAION aesthetic head of the visual layer is now a numpy `.npz`
   (`models/aesthetic/sac+logos+ava1-l14-linearMSE.npz`, same float32 values), downloaded from
   the cutpoint-models Hugging Face repo with a GitHub release as the second mirror. It loads
@@ -200,9 +227,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
   of the features lite can compute, as the generic styles do since phase 1a. The `events`
   features are left out: `vlm`, `social`, `voice_laughter` and `beauty` (0.20, 0.05, 0.05 and
-  0.05 in the built-in `ski` style), and `scenic`, `people`, `group`, `voice` and `taste`
-  (0 there). The divisor goes from 1.02 to 0.67, so a built-in `ski` score on lite is about 52%
-  higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
+  0.05 in the built-in `ski` style), and `scenic`, `people`, `group` and `voice` (0 there).
+  The divisor goes from 1.02 to 0.67, so a built-in `ski` score on lite is about 52% higher
+  (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
   among themselves they keep the analysis order (source by source). Lite scores above about 65.7
   before become 100. Must-include crash scores (the crash's confidence) do not change. A learned
   ski preset shifts by its own weights. Any score renormalised this way is capped at 100: on lite,
@@ -267,6 +294,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
+- `360 qa` overview sheets caption each tile with the director path's yaw and pitch, as
+  `360 check` did.
+- `cutpoint events`: `--audio-thr` and `--ocr-debug` (developer tuning) still work but are
+  hidden from `--help`.
+- The tests of the development scripts in `scripts/` moved to `tests/scripts/` and are marked
+  `script` (`-m "not script"` skips them).
 - The built-in Rainbow Six interpretation of HUD presets is gone: a `"builtin": true` key in a
   preset is ignored and the preset is read like any other. The OCR layer reads each source's HUD
   once more on its next run (the OCR and raw OCR cache keys changed), and the `audio` layer runs
@@ -284,6 +317,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** `cutpoint events --preset-scope package` is gone. It was an old alias of `user`
   (the default); commands that still pass it now stop with exit code 2. Use `--preset-scope user`
   or leave the option out.
+- **BREAKING:** `cutpoint refmatch` and `cutpoint fit` are gone: they are now the development
+  script `scripts/refmatch.py`. Commands that still call them now stop with exit code 2; from a
+  clone use `uv run python scripts/refmatch.py match|fit`. Learned styles they saved still load
+  as `--style <name>`.
+- **BREAKING:** the personal taste head (`refmatch --taste`, `fit --taste`) and its `taste`
+  feature are gone. Learned styles fitted with it now rank without it: their `taste` file and
+  `taste` weight are ignored, and the weight no longer counts in the score's divisor, so they
+  score as the same style without `taste`. `scikit-learn` is no longer a direct dependency of
+  the `events` extra (it is still installed through `panns-inference`).
+- **BREAKING:** `cutpoint 360 check` is gone; commands that still call it now stop with exit
+  code 2. Use `360 qa <clips_dir>`: its overview sheet shows the same frames with the director
+  target, yaw and pitch.
 - **BREAKING:** `assemble` (default `--format mp4`) no longer writes `final.fcpxml` and
   `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 

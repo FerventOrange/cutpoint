@@ -397,7 +397,6 @@ def test_import_cli_skips_action_cam_and_proxy_modules():
         "cutpoint.activity",
         "cutpoint.crash",
         "cutpoint.mix",
-        "cutpoint.refmatch",
         "cutpoint.assistant.cliproxy",
         "huggingface_hub",
     )

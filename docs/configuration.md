@@ -15,7 +15,7 @@ CUTPOINT_HOME/
   models/          PANNs, CLIP, detector, aesthetic head, Silero VAD, Qwen2.5-Omni
   tools/           llama.cpp build (for `cutpoint events`)
   stage/           local copies made by `cutpoint stage`; disposable
-  styles/          learned styles from `refmatch` / `fit` (JSON, editable)
+  styles/          learned styles from `scripts/refmatch.py` (JSON, editable)
   presets/         HUD presets written by region discovery
   profiles/        activity profiles built by `cutpoint profile` / `crashes` (JSON)
   projects/        project folders, unless `projects_dir` says otherwise
@@ -307,7 +307,7 @@ Settings for the optional 360 module. Every key is optional.
 | `max_follow_deg` | Largest camera lean, in degrees from the clip's average attitude, that the view follows when `level_strength` is below 1. A larger lean (a fall, the camera being handled) is followed as this much. Default 30 |
 | `imu_offset_s` | Time offset in seconds between the motion sensor and the video, if a clip's correction looks early or late. Default 0 |
 | `equirect_yaw_offset` | Degrees added to the director's yaw for Studio exports whose yaw 0 is not the camera's forward direction. Default 0 |
-| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors |
+| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. See [360 director](workflows/360-director.md#director) |
 
 ## Styles
 
@@ -324,8 +324,8 @@ A style tells `analyze` how to score and how long clips and the final cut should
 
 `ski` is the action-cam style. Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); other footage is scored from audio, speech and model features only.
 
-Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by `cutpoint
-refmatch` and `cutpoint fit`. They appear as extra `--style` choices, hold the feature weights
+Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by the
+development script `scripts/refmatch.py`. They appear as extra `--style` choices, hold the feature weights
 and the fit report, and can be edited by hand. Style definitions live in `src/cutpoint/styles.py`.
 In a ski style, the weight of laughter heard over the wind noise is `voice_laughter`; older
 learned styles call it `laughter`, which still works.

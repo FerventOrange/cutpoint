@@ -5,7 +5,7 @@ Examples::
     cutpoint events stream-01
     cutpoint events stream-01 --layers audio ocr
     cutpoint events stream-01 --max-windows 30 --window 15
-    cutpoint events stream-01 --audio-thr Laughter=0.1
+    cutpoint events stream-01 --audio-floor Laughter=0.03
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="GROUP=P",
-        help="absolute threshold per group, e.g. Laughter=0.1",
+        help=argparse.SUPPRESS,  # developer tuning: absolute threshold per group, Laughter=0.1
     )
     g.add_argument(
         "--audio-floor",
@@ -124,7 +124,8 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "--ocr-fps", type=float, default=3.0, help="frames per second read by the OCR (default 3)"
     )
     g.add_argument("--no-hwaccel", action="store_true", help="decode on the CPU")
-    g.add_argument("--ocr-debug", type=Path, help="save region crops of OCR events here")
+    # developer tuning: save region crops of OCR events here
+    g.add_argument("--ocr-debug", type=Path, help=argparse.SUPPRESS)
     d = g.add_mutually_exclusive_group()
     d.add_argument(
         "--discover-regions",

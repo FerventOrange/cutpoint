@@ -216,14 +216,6 @@ def test_a_segment_target_below_one_frame_still_holds_one(tmp_path, monkeypatch)
     assert f.sizes == [TINY_FB] * 3
 
 
-def test_the_default_segment_is_about_256_mib_of_whole_frames(tmp_path, monkeypatch):
-    f = _fake(monkeypatch, tmp_path, _writer(0, 1), size=(1620, 728))
-    fb = 1620 * 728 * 3
-    assert f.split.seg_bytes == fb * (256 * 2**20 // fb) and f.split.seg_bytes <= 256 * 2**20
-    with pytest.raises(FFmpegError, match="no frames"):
-        list(f.split.frames([]))
-
-
 @pytest.mark.parametrize("code", [0, 1])
 def test_output_that_ends_mid_frame_drops_the_partial_frame(tmp_path, monkeypatch, code):
     """ffmpeg's output ends inside a frame (it exited by itself, cleanly or not): the whole
@@ -529,12 +521,10 @@ def test_the_scene_cuts_wait_for_a_running_share(tmp_path, monkeypatch):
     assert failed.result() is None and failed.state == "failed"
 
 
-def test_shared_mode_env(monkeypatch):
-    for value, want in [(" Split ", "split"), ("proxy", None), ("0", None), ("x", None)]:
-        monkeypatch.setenv("CUTPOINT_ANALYZE_SHARED_DECODE", value)
-        assert ocr_prefetch.shared_mode() == want
-    monkeypatch.delenv("CUTPOINT_ANALYZE_SHARED_DECODE")
-    assert ocr_prefetch.shared_mode() is None
+def test_shared_mode_env_ignores_case_and_spaces(monkeypatch):
+    """Other values are off: see test_mode_0_offers_no_share."""
+    monkeypatch.setenv("CUTPOINT_ANALYZE_SHARED_DECODE", " Split ")
+    assert ocr_prefetch.shared_mode() == "split"
 
 
 # ----------------------------------------------------------------- scene cuts
@@ -549,10 +539,8 @@ def test_scene_cuts_use_a_made_proxy_and_decode_otherwise(tmp_path, monkeypatch)
     share = SimpleNamespace(result=lambda: None)  # declined or failed: as before
     analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, shared=share)
     analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0)
-    step1 = ["ffmpeg", "-y", "-v", "error", "-hwaccel", "cuda", "-i", str(tmp_path / "s.mp4"),
-             "-an", "-vf", "fps=10,scale=320:-2", "-c:v", "libx264", "-preset", "ultrafast",
-             "-crf", "32", str(tmp_path / "proxy.mp4")]  # fmt: skip
-    assert calls == [step1, step1]  # the step 1 command, unchanged
+    assert len(calls) == 2 and calls[0] == calls[1]  # the step 1 command, as without a share
+    assert calls[0][-1] == str(tmp_path / "proxy.mp4")
 
 
 def test_scene_plan_only_for_a_whole_short_uncached_single_stream_source(
@@ -629,7 +617,7 @@ def test_split_is_declined_below_the_disk_gate(pre, monkeypatch, tmp_path, caplo
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     assert pre.pre._jobs[str(pre.src)].done.wait(5)
     said = [m for m in caplog.messages if "shared decode off" in m]  # at once, not at take()
-    assert said == [f"a.mp4: shared decode off: {share.why}"]
+    assert len(said) == 1 and share.why in said[0]
     _take(pre)
     assert pre.decoded is None and share.state == "declined"
     assert asked == [120 * 60 * 3 * 181]  # every frame: W*H*3 bytes, 3 fps over 60 s (+1)

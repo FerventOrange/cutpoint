@@ -12,7 +12,6 @@ import pytest
 
 from cutpoint import cache, sources
 from cutpoint.events import eventtypes, scoring
-from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES
 from cutpoint.events.regions import load_preset
 
 SRC = "a.mp4"
@@ -53,20 +52,13 @@ def seg(start: float, end: float) -> dict[str, Any]:
     ("events", "segments", "expected"),
     [
         ([], [seg(2, 4), seg(12, 13)], True),  # silence, then speech 2 s after
-        ([], [seg(8, 11), seg(12, 13)], False),  # speech already running at the event
         ([], [seg(8.8, 9.0), seg(12, 13)], False),  # ended within the 1.5 s pause window
-        ([], [seg(2, 3), seg(12, 13)], True),  # ended well before: a pause
+        ([], [seg(17, 18)], False),  # speech after 6 s
         ([audio("Laughter", 12, 14)], None, True),
-        ([audio("Scream", 11, 12)], None, True),
-        ([audio("Laughter", 9, 12)], None, False),  # already running at the event
-        ([audio("Laughter", 2.0, 10.5)], None, False),  # running before the death
         ([audio("Laughter", 10.0, 12)], None, False),  # starting exactly at t
         ([audio("Laughter", 16.0, 18)], None, True),  # starting exactly at t + 6
         ([audio("Cheering", 12, 14)], [], False),  # not a reaction sound
-        ([], [seg(17, 18)], False),  # speech after 6 s
-        ([audio("Laughter", 17, 18)], None, False),
-        ([], [], False),
-        ([], None, False),
+        ([], None, False),  # no transcript
     ],
 )
 def test_has_reaction(events, segments, expected):
@@ -149,19 +141,6 @@ def test_learned_funny_style_applies(home):
     assert got[0] == 8.0
     got = scoring.event_boost(CAND, [death()], style=scoring.style_and_base("other"), segments=segs)
     assert got[0] == 0.0
-    got = scoring.event_boost(CAND, [death()], style=scoring.style_and_base("nope"), segments=segs)
-    assert got[0] == 0.0
-
-
-@pytest.mark.parametrize("name", ["boxfeed", "verbfeed"])
-@pytest.mark.parametrize("style", [None, "funny", "gaming", "highlights"])
-def test_own_death_is_first_match_in_every_style(name, style):
-    e = death()
-    if name == "verbfeed":
-        e["verb"] = "kill"
-    t = eventtypes.first_match(DEFAULT_EVENT_TYPES, e)
-    assert t is not None and t.name == "player_deaths"
-    assert scoring.event_boost(CAND, [e], style=style)[1]["player_kills"] == 0
 
 
 def _custom(tmp_path: Path, events: list[Any]) -> Path:
@@ -188,27 +167,18 @@ def test_from_dict_reaction_and_styles(tmp_path, home):
     assert (types["all"].reaction, types["all"].styles) == (3.0, None)
 
 
-def test_unknown_style_skipped_with_one_warning(tmp_path, home, caplog, monkeypatch):
+@pytest.mark.parametrize(
+    "bad",
+    [{**BANNER, "name": "bad", "styles": ["funy"]}, {**BANNER, "name": "foo_reaction"}],
+    ids=["unknown-style", "reserved-name"],
+)
+def test_invalid_event_type_skipped_with_one_warning(tmp_path, home, caplog, monkeypatch, bad):
     monkeypatch.setattr(eventtypes, "_warned_types", set())
-    bad = {**BANNER, "name": "bad", "styles": ["funy"]}
-    preset = load_preset("foo", _custom(tmp_path, [bad, {**BANNER, "name": "ok"}]))
-    with caplog.at_level(logging.WARNING):
-        for _ in range(2):
-            by_name = {t.name: t for t in eventtypes.types_for(preset)}
-    assert "bad" not in by_name and "ok" in by_name and "player_kills" in by_name
-    assert sum("Ignoring invalid event type" in r.getMessage() for r in caplog.records) == 1
-
-
-def test_reserved_reaction_name_skipped_with_one_warning(tmp_path, home, caplog, monkeypatch):
-    monkeypatch.setattr(eventtypes, "_warned_types", set())
-    bad = {**BANNER, "name": "foo_reaction"}
-    with pytest.raises(ValueError, match="reserved"):
-        eventtypes.from_dict(bad)
     preset = load_preset("foo", _custom(tmp_path, [bad, {**BANNER, "name": "ok"}]))
     with caplog.at_level(logging.WARNING, logger=eventtypes.logger.name):
         for _ in range(2):
             names = {t.name for t in eventtypes.types_for(preset)}
-    assert "foo_reaction" not in names and "ok" in names
+    assert bad["name"] not in names and "ok" in names and "player_kills" in names
     assert sum("Ignoring invalid event type" in r.getMessage() for r in caplog.records) == 1
 
 

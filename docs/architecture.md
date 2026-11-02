@@ -35,8 +35,10 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `capabilities.py` | `cutpoint capabilities` report |
 | `skill/` | `cutpoint skill` and the packaged `SKILL.md` |
 | `ui.py`, `web/` | Loopback browser workspace; static ES modules, project/review API, scoped media/proxies, and isolated CLI subprocess jobs |
-| `cache.py`, `state.py`, `utils.py` | JSON cache files and atomic writes; project state; shared helpers |
-| `winjob.py` | Windows job object so child processes end with Cutpoint |
+| `cache.py`, `state.py`, `utils.py` | JSON cache files and atomic writes, `retry_locked` for files another program holds; project state; shared helpers |
+| `errors.py` | Shared exceptions: `FFmpegError`, `FFmpegNotFoundError`, `EncoderUnavailableError`, `FolderBusyError` |
+| `procs.py` | Child processes: isolated start, low priority, soft stop and tree kill, Windows job object so children end with Cutpoint, liveness check |
+| `folders.py` | Output folders: temporary part files, atomic outputs, staged swap of a clips folder with recovery, source safety checks, folder locks |
 | `paths.py`, `config.py` | `CUTPOINT_HOME` and every data location; `config.json`, projects folder, source remap |
 | `analyze.py`, `sources.py` | Signals, peak picking, merging, snapping, `highlights.json`; cached audio and transcripts per source |
 | `features.py`, `scorer.py`, `dsp.py`, `audio_tracks.py` | Named scoring features and the weighted scorer; signal processing; audio track selection |
@@ -52,7 +54,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `assemble.py`, `timeline.py` | Concat or crossfade, loudness, captions; FCPXML 1.10 and OTIO writers |
 | `stage.py` | Local copies of slow sources; staged-read lookup used by ffmpeg calls |
 | `ffmpeg_utils.py` | ffmpeg discovery, probing, loudness, encoder choice, read-error detection |
-| `telemetry.py`, `ski.py`, `crash.py`, `refmatch.py`, `mix.py` | Action-cam module |
+| `telemetry.py`, `ski.py`, `crash.py`, `mix.py` | Action-cam module; `scripts/refmatch.py` is the ski scorer's development harness (fits learned styles to a reference edit) |
 | `extras.py` | Maps missing optional modules to the extra and install command |
 | `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`, `menu_spans.py`, `ocr_prefetch.py`, `ocr_raw.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, `llama_server.py`), `pipeline.py` to run them, `scoring.py` and `tails.py` to feed results back, `report.py` and `sheets.py` (`events.txt`, contact sheets), `common.py`, `eventtypes.py`, `paths.py`, `cli.py`; `setup.py` downloads models; `presets/` is the bundled HUD presets folder (no game presets ship) |
 | `pano/` | `cutpoint 360`: `x3.py` (clip discovery), `geometry.py` (IMU levelling), `views.py`, `director.py`, `render.py`, `stitch.py` (SDK wrapper), `qa.py`, `qa_compare.py`, `qa_horizon.py`, `qa_paths.py`, `check.py`, `vlcheck.py`, `candidates.py` (camera paths of the candidates), `repair.py`, `project.py` (`pano.json` and the `pano` config section), `cli.py`. Not optional code: `telemetry.py`, `analyze.py`, `mix.py` and `ski.py` import `pano.x3` or `pano.views`; only the SDK stitch is optional |
