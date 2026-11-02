@@ -4,7 +4,7 @@
 
 | What | Where | Size |
 |---|---|---|
-| Models for `events` | `<CUTPOINT_HOME>\models`, `tools` | about 8 GB |
+| Models for `events` | `<CUTPOINT_HOME>\models` | about 2 GB (the Ollama vision model is stored by Ollama) |
 | Analysis cache | `<CUTPOINT_HOME>\cache` | grows with footage; safe to delete |
 | Staged copies | `<CUTPOINT_HOME>\stage` | a full copy of each staged source; `cutpoint stage --clear` frees it |
 | Projects | `projects_dir` | clips and finals are re-encoded video |
@@ -42,13 +42,14 @@ Notes:
 - `crashes` and `events` skip sources that are offline or moved (warning `footage not reachable`)
   and fail with `No footage of <project> is reachable` if none is. Reconnect the footage and rerun.
 - If the original path is gone but `source_remap` maps it to an existing location, `analyze`,
-  `crashes` (default `--reanalyze`) and ski `events` read from the new location and re-analyze.
-  They warn `path(s) not found where analyze recorded them, even through source_remap ...;
-  highlights.json left unchanged` and exit 0 only when re-analysis would fail, drop a source or
-  re-key one: for example a file moved out of a folder input that still exists, or a 0.1.0 project
-  that recorded the copy path. Rerun `analyze` on the new location, then `crashes`/`events` (they
-  match sources by path). Projects analyzed before inputs were stored as
-  absolute paths keep relative ones until `analyze` runs again.
+  `crashes` (default `--reanalyze`) and action-cam `events` read from the new location and re-analyze.
+- They instead warn `path(s) not found where analyze recorded them, even through source_remap
+  ...; highlights.json left unchanged` and exit 0 when re-analysis would fail, drop a source or
+  re-key one: for example a file moved out of a folder input that still exists, or a 0.1.0
+  project that recorded the copy path. Rerun `analyze` on the new location, then
+  `crashes`/`events` (they match sources by path).
+- Projects analyzed before inputs were stored as absolute paths keep relative ones until
+  `analyze` runs again.
 - Action-cam telemetry reads whole files; stage first. Crash detection reads only the telemetry
   track and needs no staging.
 
@@ -78,3 +79,14 @@ output. Cutpoint checks for this.
 
 Best fix: copy the file to a healthy disk (or let `cutpoint stage` do it) and point
 `source_remap` at the copy.
+
+## Docker volume from the 0.2.0 image
+
+The 0.2.0 image ran as root, so an existing `cutpoint-data` volume is root-owned and newer images
+fail with `Permission denied` on `/data`. Fix the volume once (use the build-arg uid:gid instead
+of `1000:1000` if you changed them):
+
+```bash
+docker run --rm --user 0 --entrypoint chown \
+  --mount source=cutpoint-data,target=/data cutpoint -R 1000:1000 /data
+```

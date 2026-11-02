@@ -17,6 +17,13 @@ from cutpoint import analyze, clips, config, paths, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    # tests/scripts: the development scripts in scripts/; `-m "not script"` skips them
+    config.addinivalue_line(
+        "markers", "script: tests a development script in scripts/, not the product"
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point CUTPOINT_HOME and every platform default at ``tmp_path``; yields the home."""
@@ -65,6 +72,22 @@ def remap(home: Path, monkeypatch: pytest.MonkeyPatch, old, new, exclude=()) -> 
     monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
 
 
+def load_script(name: str):
+    """The development script ``scripts/<name>.py`` as a module (loaded once; the scripts are
+    not part of the package). Its tests are marked ``script``."""
+    import importlib.util  # noqa: PLC0415
+
+    key = f"cutpoint_script_{name}"
+    if key not in sys.modules:
+        path = Path(__file__).resolve().parents[1] / "scripts" / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(key, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module  # dataclasses look their module up by name
+        spec.loader.exec_module(module)
+    return sys.modules[key]
+
+
 def media_info(path: Path = Path("v.mp4"), duration: float = 100.0, **over) -> MediaInfo:
     """A 1920x1080, 30 fps, H.264 + AAC 48 kHz stereo probe result; ``over`` replaces fields."""
     fields = {
@@ -83,6 +106,69 @@ _skip_without_ffmpeg = pytest.mark.skipif(
 def needs_ffmpeg(test):
     """Skip without ffmpeg/ffprobe, and mark the test ``ffmpeg`` (it runs the real tools)."""
     return pytest.mark.ffmpeg(_skip_without_ffmpeg(test))
+
+
+_UTIL_JS_LOOP = """
+import * as U from %s;
+import { createInterface } from "node:readline";
+for await (const line of createInterface({ input: process.stdin })) {
+  let out;
+  try {
+    const { code, args } = JSON.parse(line);
+    out = { value: new Function("U", "args", code)(U, args) ?? null, error: null };
+  } catch (err) {
+    out = { value: null, error: String((err && err.stack) || err) };
+  }
+  process.stdout.write(JSON.stringify(out) + "\\n");
+}
+"""
+
+
+class UtilJs:
+    """One node process that runs ``web/util.js`` calls sent over stdin, one JSON line each."""
+
+    def __init__(self, node: str, module: Path) -> None:
+        self.proc = subprocess.Popen(
+            [node, "--input-type=module", "-e", _UTIL_JS_LOOP % json.dumps(module.as_uri())],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+        )  # fmt: skip
+
+    def __call__(self, code: str, *args):
+        """Run ``code``, a JS function body with ``U`` (util.js's exports) and ``args`` in scope;
+        returns its JSON-decoded ``return`` value."""
+        assert self.proc.stdin and self.proc.stdout
+        self.proc.stdin.write(json.dumps({"code": code, "args": list(args)}) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        assert line, f"node exited ({self.proc.poll()})"
+        out = json.loads(line)
+        assert out["error"] is None, out["error"]
+        return out["value"]
+
+    def close(self) -> None:
+        if self.proc.stdin:
+            self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+
+
+@pytest.fixture(scope="session")
+def util_js(tmp_path_factory: pytest.TempPathFactory):
+    """``web/util.js`` under node (skip without node), started once per session; tests using it
+    are ``slow``. util.js is copied to ``util.mjs`` so every node >= 18 loads it as an ES module:
+    there is no package.json, and node before 22.7 would read a ``.js`` file as CommonJS. util.js
+    has no imports of its own, so the copy runs on its own."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+    module = tmp_path_factory.mktemp("web") / "util.mjs"
+    shutil.copyfile(Path(analyze.__file__).parent / "web" / "util.js", module)  # ui.WEB_DIR
+    runner = UtilJs(node, module.resolve())
+    yield runner
+    runner.close()
 
 
 KEYS = {"ok", "command", "schema", "project", "outputs", "warnings", "error"}

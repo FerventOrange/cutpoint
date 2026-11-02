@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cutpoint.events import discover, game_profile, killfeed
+from cutpoint.events import discover, killfeed
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def fake_ocr(monkeypatch: pytest.MonkeyPatch) -> list[float]:
         ]
 
     class Engine:
-        def __init__(self, det_side=960, **_kwargs):
+        def __init__(self, **_kwargs):
             pass
 
         def __call__(self, img, min_score):
@@ -88,35 +88,43 @@ def test_old_cache_is_reused_except_for_a_shared_id(tmp_path, fake_ocr):
     assert fake_ocr == []
 
 
-def test_mined_records_keep_only_the_last_per_id_after_an_upgrade(tmp_path, fake_ocr, monkeypatch):
-    """ocr.jsonl keeps the old shared-id records next to the new ones; the phrase miner
-    sees exactly the run's frames, the last record of each id."""
-    src = SimpleNamespace(name="short.mp4", io_path=tmp_path / "short.mp4")
-    bursts = [(src, 0.0), (src, 0.04), (src, 60.0)]
-    first = _run(tmp_path, bursts)
-    old = [f | {"id": f["id"].split("#")[0]} for f in first]
-    (tmp_path / "ocr.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in old), encoding="utf-8"
-    )
-    again = _run(tmp_path, bursts)  # appends the re-OCR'd frames to the old records
+def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(
+    tmp_path, fake_ocr, monkeypatch
+):
+    """Ctrl+C during the OCR: frames already OCR'd are not OCR'd again; only unfinished
+    bursts are decoded again. The resumed run gives the same records as an uninterrupted one."""
+    src = SimpleNamespace(name="long.mp4", io_path=tmp_path / "long.mp4")
+    bursts = [(src, 0.0), (src, 60.0), (src, 120.0)]
+    reference = _run(tmp_path / "reference", bursts)
+    frames = discover.DiscoverParams().burst_frames
 
-    records = discover.read_ocr_samples(tmp_path / "ocr.jsonl")
-    assert len(records) > len(again)  # the stale shared-id records are still in the file
+    real_engine = killfeed.OcrEngine
+    calls = {"n": 0}
 
-    seen: list[list[dict]] = []
+    class InterruptedEngine(real_engine):
+        def __call__(self, img, min_score):
+            calls["n"] += 1
+            if calls["n"] == frames + 2:  # the second frame of the second burst
+                raise KeyboardInterrupt
+            return super().__call__(img, min_score)
 
-    def capture(frames, params):
-        seen.append(frames)
-        return []
+    monkeypatch.setattr(killfeed, "OcrEngine", InterruptedEngine)
+    with pytest.raises(KeyboardInterrupt):
+        _run(tmp_path, bursts)
 
-    monkeypatch.setattr(game_profile, "gameplay_frames", capture)
-    preset = {"discovery": {"frames": [f["id"] for f in again]}}
-    game_profile.mine_phrases(preset, records)
+    resumed_calls = {"n": 0}
 
-    used = seen[0]
-    assert len(used) == len(again)
-    assert sorted(f["id"] for f in used) == sorted(f["id"] for f in again)
-    by_id = {f["id"]: f for f in again}
-    assert all(
-        f["boxes"] == by_id[f["id"]]["boxes"] and f["t"] == by_id[f["id"]]["t"] for f in used
-    )
+    class CountingEngine(real_engine):
+        def __call__(self, img, min_score):
+            resumed_calls["n"] += 1
+            return super().__call__(img, min_score)
+
+    monkeypatch.setattr(killfeed, "OcrEngine", CountingEngine)
+
+    fake_ocr.clear()
+    resumed = _run(tmp_path, bursts)
+
+    assert fake_ocr == [60.0, 120.0]  # the finished first burst comes from the cache
+    # frame k=0 of the second burst was saved before the interrupt
+    assert resumed_calls["n"] == 2 * frames - 1
+    assert _key(resumed) == _key(reference)

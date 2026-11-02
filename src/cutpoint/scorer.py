@@ -76,7 +76,7 @@ def with_bonus(base: float, boost: float, vlm: float | None) -> float:
     :data:`VLM_WEIGHT` of the gap, capped at 100, one decimal."""
     score = base + boost
     if vlm is not None:
-        # Boost-only: Omni-7B often scores real action 0, so it may raise a
+        # Boost-only: the window model often scores real action 0, so it may raise a
         # candidate toward its window score but never pull it down.
         score += VLM_WEIGHT * max(0.0, vlm - score)
     return round(min(100.0, score), 1)

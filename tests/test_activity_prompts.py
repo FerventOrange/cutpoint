@@ -264,10 +264,10 @@ def test_view_and_occlusion_scores_use_the_given_or_active_prompts(monkeypatch):
     assert occl["occl_zs"].shape == (3, 8) and occl["selfie_ok"].shape == (3,)
 
 
-def test_default_360_style_is_derived_not_named(monkeypatch):
+def test_default_360_style_is_the_action_cam_scorer(monkeypatch):
     monkeypatch.setattr(pano_project, "pano_config", dict)
     name = pano_project.default_style()
-    assert STYLES[name].kind != "generic"
+    assert name == "action-cam" and STYLES[name].kind != "generic"
     monkeypatch.setattr(pano_project, "pano_config", lambda: {"default_style": "funny"})
     assert pano_project.default_style() == "funny"
 

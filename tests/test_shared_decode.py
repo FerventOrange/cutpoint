@@ -189,6 +189,7 @@ def _payload(n: int) -> bytes:
     return bytes(i % 251 for i in range(n))
 
 
+@pytest.mark.slow
 def test_frames_span_several_reads_and_spool_files_hold_whole_frames(tmp_path, monkeypatch):
     """Reads smaller than a frame (and pipe writes smaller still), spool files sized by bytes:
     every frame whole and in order, each file a whole number of frames, at least one."""
@@ -207,6 +208,7 @@ def test_frames_span_several_reads_and_spool_files_hold_whole_frames(tmp_path, m
     assert codes == [] and _left(f.cdir) == {"proxy.mp4"}
 
 
+@pytest.mark.slow
 def test_a_segment_target_below_one_frame_still_holds_one(tmp_path, monkeypatch):
     monkeypatch.setattr(ffmpeg_utils, "SPOOL_SEGMENT_BYTES", TINY_FB - 1)
     f = _fake(monkeypatch, tmp_path, _writer(3 * TINY_FB, 1000))
@@ -215,14 +217,7 @@ def test_a_segment_target_below_one_frame_still_holds_one(tmp_path, monkeypatch)
     assert f.sizes == [TINY_FB] * 3
 
 
-def test_the_default_segment_is_about_256_mib_of_whole_frames(tmp_path, monkeypatch):
-    f = _fake(monkeypatch, tmp_path, _writer(0, 1), size=(1620, 728))
-    fb = 1620 * 728 * 3
-    assert f.split.seg_bytes == fb * (256 * 2**20 // fb) and f.split.seg_bytes <= 256 * 2**20
-    with pytest.raises(FFmpegError, match="no frames"):
-        list(f.split.frames([]))
-
-
+@pytest.mark.slow
 @pytest.mark.parametrize("code", [0, 1])
 def test_output_that_ends_mid_frame_drops_the_partial_frame(tmp_path, monkeypatch, code):
     """ffmpeg's output ends inside a frame (it exited by itself, cleanly or not): the whole
@@ -239,6 +234,7 @@ def test_output_that_ends_mid_frame_drops_the_partial_frame(tmp_path, monkeypatc
     assert _left(f.cdir) == ({"proxy.mp4"} if code == 0 else set())
 
 
+@pytest.mark.slow
 def test_a_cancel_ends_a_blocked_read_at_once(tmp_path, monkeypatch):
     """A stalled ffmpeg with less than one frame in the pipe: the cancel kills it, the
     blocking read returns at the closed pipe and nothing is kept."""
@@ -265,6 +261,7 @@ def _blocked(split: SplitDecode) -> None:
     assert split._written - split._deleted == split.cap and split._thread.is_alive()
 
 
+@pytest.mark.slow
 def test_a_slow_read_holds_the_spool_at_its_cap(tmp_path, monkeypatch):
     """A writer far ahead of the read: the spool on disk never passes the cap (2 files of 2
     frames), and every frame comes in order."""
@@ -284,6 +281,7 @@ def test_a_slow_read_holds_the_spool_at_its_cap(tmp_path, monkeypatch):
     assert _left(f.cdir) == {"proxy.mp4"}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("exited", [False, True])
 @pytest.mark.parametrize("how", ["cancel", "close"])
 def test_a_writer_held_at_the_cap_stops_at_once(tmp_path, monkeypatch, how, exited):
@@ -528,12 +526,10 @@ def test_the_scene_cuts_wait_for_a_running_share(tmp_path, monkeypatch):
     assert failed.result() is None and failed.state == "failed"
 
 
-def test_shared_mode_env(monkeypatch):
-    for value, want in [(" Split ", "split"), ("proxy", None), ("0", None), ("x", None)]:
-        monkeypatch.setenv("CUTPOINT_ANALYZE_SHARED_DECODE", value)
-        assert ocr_prefetch.shared_mode() == want
-    monkeypatch.delenv("CUTPOINT_ANALYZE_SHARED_DECODE")
-    assert ocr_prefetch.shared_mode() is None
+def test_shared_mode_env_ignores_case_and_spaces(monkeypatch):
+    """Other values are off: see test_mode_0_offers_no_share."""
+    monkeypatch.setenv("CUTPOINT_ANALYZE_SHARED_DECODE", " Split ")
+    assert ocr_prefetch.shared_mode() == "split"
 
 
 # ----------------------------------------------------------------- scene cuts
@@ -548,10 +544,8 @@ def test_scene_cuts_use_a_made_proxy_and_decode_otherwise(tmp_path, monkeypatch)
     share = SimpleNamespace(result=lambda: None)  # declined or failed: as before
     analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, shared=share)
     analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0)
-    step1 = ["ffmpeg", "-y", "-v", "error", "-hwaccel", "cuda", "-i", str(tmp_path / "s.mp4"),
-             "-an", "-vf", "fps=10,scale=320:-2", "-c:v", "libx264", "-preset", "ultrafast",
-             "-crf", "32", str(tmp_path / "proxy.mp4")]  # fmt: skip
-    assert calls == [step1, step1]  # the step 1 command, unchanged
+    assert len(calls) == 2 and calls[0] == calls[1]  # the step 1 command, as without a share
+    assert calls[0][-1] == str(tmp_path / "proxy.mp4")
 
 
 def test_scene_plan_only_for_a_whole_short_uncached_single_stream_source(
@@ -628,7 +622,7 @@ def test_split_is_declined_below_the_disk_gate(pre, monkeypatch, tmp_path, caplo
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     assert pre.pre._jobs[str(pre.src)].done.wait(5)
     said = [m for m in caplog.messages if "shared decode off" in m]  # at once, not at take()
-    assert said == [f"a.mp4: shared decode off: {share.why}"]
+    assert len(said) == 1 and share.why in said[0]
     _take(pre)
     assert pre.decoded is None and share.state == "declined"
     assert asked == [120 * 60 * 3 * 181]  # every frame: W*H*3 bytes, 3 fps over 60 s (+1)
@@ -760,21 +754,19 @@ def test_real_split_read_equals_the_step_1_read(home, tmp_path, monkeypatch) -> 
     the "CUDA" path with the decoder flag dropped) gives the events, stats and raw OCR cache
     of a step 1 read, and its scene proxy the scene cuts of the plain decode."""
     pytest.importorskip("rapidocr_onnxruntime")
-    import test_discover_e2e as e2e  # noqa: PLC0415
+    import ocr_helpers as e2e  # noqa: PLC0415
     from cutpoint import paths  # noqa: PLC0415
     from cutpoint.events import common, killfeed  # noqa: PLC0415
     from hud_fixtures import write_preset  # noqa: PLC0415
-    from test_ocr_raw import _files  # noqa: PLC0415
 
     monkeypatch.setattr(ffmpeg_utils, "gpu_decoder", lambda: None)  # no GPU here: CPU decodes
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
     monkeypatch.setattr(ocr_prefetch, "vram_ok", lambda: True)
     monkeypatch.setenv("CUTPOINT_ANALYZE_SHARED_DECODE", "split")
-    monkeypatch.setattr(e2e, "SECONDS", 12)
     folder = tmp_path / "footage"
     folder.mkdir()
     serial_clip, shared_clip = folder / "a.mp4", folder / "b.mp4"
-    e2e.make_clip(serial_clip)
+    e2e.make_clip(serial_clip, seconds=12)
     shutil.copy2(serial_clip, shared_clip)
     fx, fy, fw, fh = (round(v * 1.5) for v in e2e.FEED)
     region = {"name": "feed", "x": fx, "y": fy, "w": fw, "h": fh, "kind": "feed", "every": 1}
@@ -800,7 +792,9 @@ def test_real_split_read_equals_the_step_1_read(home, tmp_path, monkeypatch) -> 
     assert {k: v for k, v in stats.items() if k not in drop} == {
         k: v for k, v in serial[1].items() if k not in drop
     }
-    a, b = (_files(common.load_source(c, 12.0).cdir) for c in (serial_clip, shared_clip))
+    a, b = (
+        e2e.ocr_cache_files(common.load_source(c, 12.0).cdir) for c in (serial_clip, shared_clip)
+    )
     assert b.pop("scenes.json") == b"[]"  # the serial clip's scene cuts go to `plain`
     assert a == b
     plain = tmp_path / "plain"

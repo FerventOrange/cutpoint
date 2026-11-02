@@ -25,9 +25,9 @@ This needs your name set, as above; other styles are unchanged.
 
 | Layer | Detects |
 |---|---|
-| `audio` | Laughter, screams, cheering, gunfire, explosions (PANNs) |
-| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, "N VS M", multi-kills |
-| `vlm` | A local Qwen2.5-Omni model describes candidate windows from frames, audio and transcript |
+| `audio` | Laughter, screams, cheering (PANNs) |
+| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills |
+| `vlm` | The shared vision model (Ollama `qwen3.5:9b`, or a subscription Vision model you allowed in the Models tab) describes candidate windows from frames, the transcript and the other layers' hints |
 
 Outputs (written by `analyze` and by `events`): `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
 events by time, which is the easiest file to read when picking segments:
@@ -48,9 +48,7 @@ With `events.json` present, `clips` also applies event tails: if a payoff starts
 
 OCR regions come from a per-game preset (lookup order in
 [Configuration](../configuration.md#hud-presets)). No game presets are bundled. Write one, or let region
-discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. A
-preset with `"builtin": true` in the user folder keeps the built-in interpretation; in a project `hud_presets`
-folder it is read as a generic preset (see [Configuration](../configuration.md#hud-presets)). The game is
+discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. The game is
 picked from the file or folder name, or set with `--game KEY`.
 
 For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events` run region discovery automatically; `analyze` logs `first run for <game>: discovering HUD regions`, which can take several minutes on CPU OCR. It samples bursts of
@@ -169,9 +167,9 @@ moments the vision model describes first) and the game name used in the vision p
   little.
 - Text colours are unreliable on bright backgrounds, so colour-based teamkill detection is off
   for discovered presets.
-- The Omni model gives fluent but generic descriptions; it is a soft signal.
-- Stream layouts with the game in a box: there is no CLI flag to remap HUD regions into the box
-  yet (a `--hud-box` option is a suggested feature). Crop the clips instead with
+- The vision model's window descriptions are a soft signal: they boost a candidate but never lower it.
+- Stream layouts with the game in a box: HUD regions cannot be remapped into the box. Crop the
+  clips instead with
   `--crop auto` or a per-segment `"crop": "W:H:X:Y"`.
 - `--avoid "GLOB@START-END"` marks ranges that are never decoded. Passing the complement of the
   windows you care about restricts OCR to them, which saves hours on long VODs. Each range is

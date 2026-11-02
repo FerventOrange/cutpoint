@@ -15,15 +15,14 @@
       "max_follow_deg": 30,
       "imu_offset_s": 0.0,
       "equirect_yaw_offset": 0.0,
-      "default_style": "<style>",
+      "default_style": "action-cam",
       "auto_stitch": true
     }
 
 ``stitched_dir`` and ``studio_dirs`` default to ``<CUTPOINT_HOME>/360-stitched``
 and ``<CUTPOINT_HOME>/360-studio``; ``default_style`` is the ``--style`` of
-``cutpoint 360 analyze`` when none is given (default: the built-in action-cam style,
-:func:`action_cam_style`, which scores every activity with its own profile). ``auto_stitch`` (default
-``true``): ``cutpoint ui`` exports of a 360 project first stitch the recordings they need with
+``cutpoint 360 analyze`` when none is given (default ``action-cam``).
+``auto_stitch`` (default ``true``): ``cutpoint ui`` exports of a 360 project first stitch the recordings they need with
 the SDK, when it runs (the command-line ``clips`` never stitches).
 
 ``CUTPOINT_INSTA360_SDK`` (path of ``MediaSDKTest``, ``.exe`` on Windows) overrides ``sdk_exe``.
@@ -68,6 +67,7 @@ from cutpoint.pano.x3 import X3Clip, parse_name
 logger = logging.getLogger(__name__)
 
 PANO_FILE = "pano.json"
+DEFAULT_STYLE = "action-cam"
 DEFAULT_STITCH_ARGS = (
     "-stitch_type",
     "optflow",
@@ -111,21 +111,11 @@ def default_studio_dirs() -> tuple[Path, ...]:
     return (paths.home() / "360-studio",)
 
 
-def action_cam_style() -> str:
-    """The built-in style of the action-cam scorer (telemetry, audio and the 360 views):
-    the one built-in whose ``kind`` is not ``generic``. Derived, not named, so a rename
-    of that style needs no change here. Its activity-specific parts (crash and view
-    captions) come from the project's activity profile, so it fits any activity a 360
-    camera films."""
-    from cutpoint.styles import STYLES  # noqa: PLC0415
-
-    return next(name for name, s in STYLES.items() if s.kind != "generic")
-
-
 def default_style() -> str:
     """``--style`` of ``cutpoint 360 analyze`` when none is given (``pano.default_style``,
-    else :func:`action_cam_style`)."""
-    return str(pano_config().get("default_style") or action_cam_style())
+    else ``action-cam``). Its activity-specific parts (crash and view captions) come from
+    the project's activity profile, so it fits any activity a 360 camera films."""
+    return str(pano_config().get("default_style") or DEFAULT_STYLE)
 
 
 def auto_stitch() -> bool:

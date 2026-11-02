@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import requests
 
@@ -18,11 +19,9 @@ import cutpoint
 from conftest import write
 from cutpoint import (
     backends,
-    cache,
     config,
     features,
     ffmpeg_utils,
-    refmatch,
     reset_state,
     stage,
     state,
@@ -74,8 +73,12 @@ def _fill_filters(tmp: Path, mp: pytest.MonkeyPatch) -> None:
 def _fill_aesthetic(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     from cutpoint.events import visual  # noqa: PLC0415
 
-    mp.setitem(sys.modules, "torch", SimpleNamespace(load=lambda *a, **k: {}))
-    visual._aesthetic_layers(write(tmp / "head.pth"))
+    mp.setattr(visual, "_AESTHETIC_DIMS", (2, 1))
+    head = tmp / "head.npz"
+    np.savez(
+        head, **{"l.0.weight": np.ones((1, 2), np.float32), "l.0.bias": np.ones(1, np.float32)}
+    )
+    visual._aesthetic_layers(head)
 
 
 def _fill_torch_home(tmp: Path, mp: pytest.MonkeyPatch) -> None:
@@ -250,31 +253,6 @@ def test_vision_and_unload_use_the_same_url(monkeypatch):
     assert common.unload_ollama() == []
     assert seen == ["http://gpu-box:1234/api/ps"]
     assert vision.VisionRater().url == "http://gpu-box:1234"
-
-
-# -- F11: refmatch audio failures keyed by cache folder ------------------------------
-def test_audio_failure_keyed_by_source_cache_dir(tmp_path, monkeypatch):
-    calls: list[Path] = []
-
-    def fail(path, sr):
-        calls.append(path)
-        raise FFmpegError("decode failed")
-
-    monkeypatch.setattr(refmatch, "decode_pcm", fail)
-    monkeypatch.setattr(refmatch, "probe", lambda p: SimpleNamespace(audio_streams=1))
-    src = write(tmp_path / "clip.mp4", "a")
-    assert refmatch.audio_8k(src).size == 0
-    assert refmatch.audio_8k(src).size == 0
-    assert len(calls) == 1
-    failed = refmatch._AUDIO_FAILED
-    assert failed == {str(cache.source_dir(src))}
-    write(src, "changed")  # new size -> new cache folder -> retried
-    refmatch.audio_8k(src)
-    assert len(calls) == 2
-    reset_state()
-    assert not refmatch._AUDIO_FAILED
-    refmatch.audio_8k(src)
-    assert len(calls) == 3
 
 
 # -- TORCH_HOME -----------------------------------------------------------------------

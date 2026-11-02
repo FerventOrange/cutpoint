@@ -31,7 +31,6 @@ MODULE_EXTRA: dict[str, str] = {
     "rapidocr_onnxruntime": "events",
     "onnxruntime": "events",
     "scipy": "events",
-    "sklearn": "events",
 }
 # Extras that pull in torch (the CUDA build needs the PyTorch index).
 TORCH_EXTRAS = ("events", "all")

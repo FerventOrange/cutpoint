@@ -6,8 +6,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -22,6 +20,7 @@ from cutpoint.events import killfeed, ocr_raw, pipeline
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrParams, detect_ocr_events
 from cutpoint.events.regions import preset_from_dict
+from ocr_helpers import ocr_cache_files
 
 NOTICE = (300, 200, 1320, 700)  # a centred notice region ("det" gate at half size)
 FEED = (1400, 40, 500, 400)  # a feed with coloured names ("det" gate)
@@ -424,30 +423,6 @@ def test_interrupted_read_resumes(tmp_path: Path, monkeypatch) -> None:
 
 
 # ----------------------------------------------------------------- background read (#375)
-def _files(folder: Path) -> dict[str, Any]:
-    """Every cache file under ``folder`` by relative path: the bytes, a raw chunk's decoded
-    content (its zip and gzip headers hold the write time) and the OCR result without its
-    ``elapsed_s`` and source path (each run has its own folder)."""
-    out: dict[str, Any] = {}
-    for p in sorted(folder.rglob("*")):
-        if not p.is_file():
-            continue
-        data: Any = p.read_bytes()
-        if p.name.startswith("events-ocr-"):
-            doc = json.loads(data)
-            doc["stats"].pop("elapsed_s")
-            doc.pop("source")
-            data = doc
-        elif p.suffix == ".zip":
-            chunk = ocr_raw._decode(data)
-            data = (
-                chunk.frames,
-                chunk.state,
-                {k: v.tobytes() for k, v in chunk.images.items()},
-                {k: v.tobytes() for k, v in chunk.arrays.items()},
-            )
-        out[p.relative_to(folder).as_posix()] = data
-    return out
 
 
 def test_background_read_equals_the_serial_read(tmp_path: Path, monkeypatch) -> None:
@@ -473,7 +448,7 @@ def test_background_read_equals_the_serial_read(tmp_path: Path, monkeypatch) -> 
     worker.join()
     (events, stats) = got[0]
     assert events == ref[0] and _untimed(stats) == _untimed(ref[1])
-    assert _files(background) == _files(serial)  # the raw chunks and the result
+    assert ocr_cache_files(background) == ocr_cache_files(serial)  # the raw chunks and the result
     assert isolated == [True, True]  # each segment's ffmpeg out of reach of Ctrl+C
 
 
@@ -661,21 +636,3 @@ def test_only_cutpoints_own_checkout_is_guarded(tmp_path: Path) -> None:
     module = Path("cutpoint", "events", "ocr_raw.py")
     assert ocr_raw._checkout(home / ".venv" / "lib" / "site-packages" / module) is None
     assert ocr_raw._checkout(repo / "src" / module) == repo.resolve()
-
-
-def test_checkout_is_found() -> None:
-    root = ocr_raw._checkout()
-    if root is None:
-        pytest.skip("not run from a git checkout")
-    assert ocr_raw.in_checkout(Path(ocr_raw.__file__).parent)
-    assert not ocr_raw.in_checkout(root.parent)
-
-
-@pytest.mark.slow
-def test_raw_cache_is_git_ignored() -> None:
-    root, git = ocr_raw._checkout(), shutil.which("git")
-    if root is None or git is None:
-        pytest.skip("needs git and a git checkout")
-    for path in ("cache/x/ocr-raw-y/meta.json", "projects/p/ocr-raw-y/chunk-00000.zip"):
-        done = subprocess.run([git, "-C", str(root), "check-ignore", "-q", path], check=False)
-        assert done.returncode == 0, path

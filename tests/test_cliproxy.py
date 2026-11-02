@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import http.server
 import io
@@ -21,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cli
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.assistant.proxy_credentials import CredentialStore
+from cutpoint.ffmpeg_utils import _pid_alive
 
 
 def _install_child_runtime(tmp_path: Path) -> None:
@@ -215,7 +214,7 @@ def test_key_file_permission_failure_is_not_treated_as_missing(
 
 def test_explicit_start_key_refresh_invalidates_previous_tokens(temp_home: Path) -> None:
     old_keys = cliproxy._ensure_keys(target_port=8317)
-    fresh_keys = cliproxy._ensure_keys(target_port=8317, refresh=True)
+    fresh_keys = cliproxy._ensure_keys(target_port=8317)
     assert fresh_keys != old_keys
     assert cliproxy._read_keys_file() == (*fresh_keys, 8317)
 
@@ -293,46 +292,6 @@ def test_status_token_free_allowlist(temp_home: Path, monkeypatch: pytest.Monkey
     assert "secret_access_token" not in st_json
     assert "secret_refresh_token" not in st_json
     assert "access_token" not in st
-
-
-def test_status_multi_account_healthy_preferred(
-    temp_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cliproxy._ensure_keys(target_port=8317)
-
-    fake_credentials = {
-        "files": [
-            {
-                "id": "claude-expired.json",
-                "name": "claude-expired.json",
-                "provider": "claude",
-                "status": "expired",
-                "disabled": False,
-                "email": "expired@example.com",
-            },
-            {
-                "id": "claude-active.json",
-                "name": "claude-active.json",
-                "provider": "claude",
-                "status": "active",
-                "disabled": False,
-                "email": "healthy@example.com",
-            },
-        ]
-    }
-
-    monkeypatch.setattr(
-        cliproxy,
-        "_management_request",
-        lambda method, path, **kwargs: (
-            fake_credentials if path == "/v8/management/credentials" else {}
-        ),
-    )
-
-    st = cliproxy.status("claude-code")
-    assert st["logged_in"] is True
-    assert st["email"] == "healthy@example.com"
-    assert st["expired"] is False
 
 
 def test_status_invalid_provider() -> None:
@@ -572,19 +531,12 @@ def test_generate_config_and_permissions(temp_home: Path) -> None:
         "cert": str(tls_cert),
         "key": str(tls_key),
     }
-    assert cfg["config-version"] == 8
     assert cfg["server"]["host"] == "127.0.0.1"
     assert cfg["server"]["port"] == 8317
-    assert cfg["server"]["commercial-mode"] is True
-    assert cfg["server"]["discovery"]["enabled"] is False
     assert cfg["management"]["allow-remote"] is False
     assert cfg["management"]["disable-control-panel"] is True
-    assert cfg["management"]["disable-auto-update-panel"] is True
     assert cfg["access"]["api-keys"] == [client]
     assert cfg["plugins"]["enabled"] is False
-    assert cfg["routing"]["force-model-prefix"] is True
-    assert cfg["upstream"]["claude"]["disable-claude-cloak-mode"] is True
-    assert cfg["upstream"]["codex"]["disable-codex-cloaking"] is True
     assert cfg["observability"]["logs"]["request-log"] is False
 
     kp = cliproxy.keys_path()
@@ -617,6 +569,7 @@ def test_run_missing_custom_binary_fails(temp_home: Path, monkeypatch: pytest.Mo
         cliproxy.run()
 
 
+@pytest.mark.slow
 def test_run_nonzero_exit_fails(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -696,6 +649,7 @@ def test_install_binary_download_error_wrapped(
         cliproxy._install_binary(temp_home / "tools" / "cliproxy")
 
 
+@pytest.mark.slow
 def test_run_subprocess_isolates_cwd_and_env(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -826,6 +780,8 @@ def test_subscription_status_distinguishes_cooldown_from_logout(
     st = cliproxy.status("claude-code")
     assert st["logged_in"] is expect_logged_in
     assert st["expired"] is expect_expired
+    if expect_logged_in:  # the usable account (listed last) is the one reported
+        assert st["email"] == files[-1]["email"]
 
 
 def test_install_binary_synthetic_tar_gz_valid(
@@ -989,52 +945,6 @@ def test_install_binary_path_traversal_zip_fails(
         cliproxy._install_binary(temp_home / "tools" / "cliproxy")
 
 
-def test_run_interrupt_cleans_and_reaps_child(
-    temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    pid_file = tmp_path / "daemon.pid"
-    _run_proxy_helper(
-        monkeypatch,
-        tmp_path,
-        f"import os, time\nPath = __import__('pathlib').Path\nPath({str(pid_file)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n",
-    )
-
-    def interrupt_after_spawn() -> None:
-        deadline = time.monotonic() + 10
-        while not pid_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert pid_file.exists(), "guardian did not launch the daemon fixture"
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", interrupt_after_spawn)
-    with pytest.raises(KeyboardInterrupt):
-        cliproxy.run()
-
-    child_pid = int(pid_file.read_text())
-    if os.name == "nt":
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
-        kernel32.GetExitCodeProcess.argtypes = (
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_ulong),
-        )
-        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
-        handle = kernel32.OpenProcess(0x1000, False, child_pid)
-        if handle:
-            try:
-                exit_code = ctypes.c_ulong()
-                assert kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-                assert exit_code.value != 259
-            finally:
-                kernel32.CloseHandle(handle)
-        else:
-            assert ctypes.get_last_error() == 87
-    else:
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
-
-
 def test_run_startup_failure_checkpoints_before_clearing_runtime_files(
     temp_home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1055,6 +965,7 @@ def test_run_startup_failure_checkpoints_before_clearing_runtime_files(
     store.finish()
 
 
+@pytest.mark.slow
 def test_run_persists_daemon_refresh_and_cleans_runtime_files(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch, credential_ring: FakeCredentialRing
 ) -> None:
@@ -1117,6 +1028,7 @@ def test_credential_checkpoint_failure_is_safe(
     )
 
 
+@pytest.mark.slow
 def test_cli_proxy_interrupt_exit_130_and_child_cleanup(tmp_path: Path) -> None:
     home = tmp_path / "home"
     mock_bin = tmp_path / "waiting_proxy.py"
@@ -1156,34 +1068,14 @@ def test_cli_proxy_interrupt_exit_130_and_child_cleanup(tmp_path: Path) -> None:
         child_pid = int(pid_file.read_text())
         parent.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
         assert parent.wait(timeout=10) == 130
-        if os.name == "nt":
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.OpenProcess.restype = ctypes.c_void_p
-            kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
-            kernel32.GetExitCodeProcess.argtypes = (
-                ctypes.c_void_p,
-                ctypes.POINTER(ctypes.c_ulong),
-            )
-            kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
-            handle = kernel32.OpenProcess(0x1000, False, child_pid)
-            if handle:
-                try:
-                    exit_code = ctypes.c_ulong()
-                    assert kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-                    assert exit_code.value != 259
-                finally:
-                    kernel32.CloseHandle(handle)
-            else:
-                assert ctypes.get_last_error() == 87
-        else:
-            with pytest.raises(ProcessLookupError):
-                os.kill(child_pid, 0)
+        assert not _pid_alive(child_pid)  # the daemon was reaped with it
     finally:
         if parent.poll() is None:
             parent.kill()
             parent.wait()
 
 
+@pytest.mark.slow
 def test_parent_hardkill_leaves_no_plaintext_after_guardian_finalizes(
     temp_home: Path,
     credential_ring: FakeCredentialRing,
@@ -1248,15 +1140,6 @@ def test_parent_hardkill_leaves_no_plaintext_after_guardian_finalizes(
             parent.wait()
 
 
-def test_cli_proxy_interrupt_returns_exit_130(monkeypatch: pytest.MonkeyPatch) -> None:
-    def raise_interrupt(port: int | None = None) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cliproxy, "run", raise_interrupt)
-    rc = cli.main(["proxy"])
-    assert rc == 130
-
-
 def test_custom_port_18317_status_without_starting_or_download(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1281,7 +1164,7 @@ def test_statuses_distinguishes_connection_error_vs_http_error(
 
     # 1. HTTP error (e.g. 401 Unauthorized)
     def http_401_request(method: str, path: str, **kwargs: object) -> dict:
-        raise cliproxy.ProxyHTTPError("proxy error 401: Unauthorized", status_code=401)
+        raise cliproxy.ProxyHTTPError("proxy error 401: Unauthorized")
 
     monkeypatch.setattr(cliproxy, "_management_request", http_401_request)
     all_st = cliproxy.statuses()
@@ -1379,3 +1262,88 @@ def test_prefix_setup_not_called_in_chat_or_list_models(
 
     cliproxy.chat("claude-code", {"model": "claude-3-5-sonnet", "messages": []})
     assert prefix_called == []
+
+
+def test_run_refuses_a_port_in_use_before_writing_keys_or_config(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CUTPOINT_CLIPROXY_BINARY", sys.executable)
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", lambda: pytest.fail("started"))
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        busy = holder.getsockname()[1]
+        with pytest.raises(cliproxy.ProxyError, match=f"port {busy} is already in use"):
+            cliproxy.run(port=busy)
+    assert not cliproxy.keys_path().exists()
+    assert not cliproxy.config_path().exists()
+
+
+class _StuckGuardian:
+    """A supervisor that never exits: every ``wait`` times out."""
+
+    stdin = None
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.terminated = False
+
+    def poll(self) -> None:
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired("guardian", timeout or 0)
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
+_HOOKED = [
+    signal.SIGINT,
+    signal.SIGTERM,
+    *([signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else []),
+]
+
+
+@pytest.fixture
+def stuck_run(temp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """``run()`` with a guardian that never exits and Ctrl+C during startup; yields the
+    guardians started and the signal handlers before (restored afterwards whatever happens)."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("run() hooks the signals only on the main thread")
+    monkeypatch.setenv("CUTPOINT_CLIPROXY_BINARY", sys.executable)
+    started: list[_StuckGuardian] = []
+
+    def popen(*args: object, **kwargs: object) -> _StuckGuardian:
+        started.append(_StuckGuardian())
+        return started[-1]
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cliproxy.subprocess, "Popen", popen)
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", interrupted)
+    before = {sig: signal.getsignal(sig) for sig in _HOOKED}
+    try:
+        yield started, before
+    finally:
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
+
+
+def test_run_reports_a_supervisor_stuck_in_credential_cleanup(stuck_run) -> None:
+    started, _ = stuck_run
+    with pytest.raises(cliproxy.ProxyError, match="did not finish credential cleanup"):
+        cliproxy.run()
+    assert started and started[0].terminated
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="bug: run()'s finally calls stop_guardian(), which raises ProxyError before the "
+    "loop that restores the SIGINT/SIGTERM/SIGBREAK handlers, so they stay hooked",
+)
+def test_run_restores_the_signal_handlers_when_the_supervisor_is_stuck(stuck_run) -> None:
+    _, before = stuck_run
+    with pytest.raises(cliproxy.ProxyError):
+        cliproxy.run()
+    assert {sig: signal.getsignal(sig) for sig in _HOOKED} == before

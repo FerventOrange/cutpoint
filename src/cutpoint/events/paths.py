@@ -1,4 +1,4 @@
-"""Filesystem locations used by the events subpackage (models, tools, caches).
+"""Filesystem locations used by the events subpackage (models, caches).
 
 Everything is a function evaluated on each call, so environment overrides set
 after import (``CUTPOINT_HOME``, ``CUTPOINT_MODELS_DIR``, ...) are honoured. The
@@ -8,18 +8,13 @@ roots come from :mod:`cutpoint.paths`.
 from __future__ import annotations
 
 import os
-import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
 from cutpoint import paths as _paths
 from cutpoint import state
+from cutpoint.hub import quiet_hub_handler
 
-OMNI_HF_REPO = "ggml-org/Qwen2.5-Omni-7B-GGUF"
-AESTHETIC_URL = (
-    "https://github.com/christophschuhmann/improved-aesthetic-predictor/"
-    "raw/main/sac%2Blogos%2Bava1-l14-linearMSE.pth"
-)
 SILERO_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
 # Hugging Face repo open_clip loads ViT-L-14 "openai" from, and torchvision's
 # Faster R-CNN v2 COCO checkpoint name (both downloaded by ``setup --only visual``).
@@ -40,31 +35,6 @@ def panns_ckpt() -> Path:
 def panns_labels() -> Path:
     """AudioSet class label CSV."""
     return panns_dir() / "class_labels_indices.csv"
-
-
-def llm_dir() -> Path:
-    """GGUF language models."""
-    return _paths.models_dir() / "llm"
-
-
-def omni_model() -> Path:
-    """Qwen2.5-Omni-7B Q4_K_M GGUF."""
-    return llm_dir() / "Qwen2.5-Omni-7B-Q4_K_M.gguf"
-
-
-def omni_mmproj() -> Path:
-    """Qwen2.5-Omni-7B Q8_0 multimodal projector."""
-    return llm_dir() / "mmproj-Qwen2.5-Omni-7B-Q8_0.gguf"
-
-
-def llama_cache() -> Path:
-    """``LLAMA_CACHE`` for ``-hf`` fallback loading."""
-    return _paths.models_dir() / "llama-cache"
-
-
-def llama_dir() -> Path:
-    """llama.cpp install folder."""
-    return _paths.tools_dir() / "llama.cpp"
 
 
 def clip_dir() -> Path:
@@ -96,8 +66,10 @@ def apply_torch_home() -> None:
 
     It is (re)set when unset or still equal to the value Cutpoint set last, so
     a changed ``CUTPOINT_HOME`` / ``CUTPOINT_MODELS_DIR`` is followed and a
-    user's own ``TORCH_HOME`` is left alone.
+    user's own ``TORCH_HOME`` is left alone. Called before every model load, so it also
+    drops huggingface_hub's duplicate stderr handler (open_clip downloads through the Hub).
     """
+    quiet_hub_handler()
     want = str(torch_home())
     current = os.environ.get("TORCH_HOME")
     if current is None or current == _TORCH_HOME_SET.get("value"):
@@ -126,8 +98,8 @@ def detector_weights() -> Path:
 
 
 def aesthetic_head() -> Path:
-    """LAION improved-aesthetic-predictor head."""
-    return _paths.models_dir() / "aesthetic" / "sac+logos+ava1-l14-linearMSE.pth"
+    """LAION improved-aesthetic-predictor head (numpy ``.npz``)."""
+    return _paths.models_dir() / "aesthetic" / "sac+logos+ava1-l14-linearMSE.npz"
 
 
 def silero_vad() -> Path:
@@ -135,29 +107,12 @@ def silero_vad() -> Path:
     return _paths.models_dir() / "silero" / "silero_vad.onnx"
 
 
-def llama_server_exe() -> Path:
-    """Path of ``llama-server`` (``llama-server.exe`` on Windows).
-
-    ``CUTPOINT_LLAMA_SERVER`` first, then the build ``cutpoint setup`` put in
-    ``tools/llama.cpp``, then ``llama-server`` on ``PATH`` (e.g. a self-built
-    one). If none exists, the expected path in ``tools/llama.cpp``.
-    """
-    env = _paths.env_path("LLAMA_SERVER")
-    if env:
-        return env
-    name = "llama-server.exe" if os.name == "nt" else "llama-server"
-    folder = llama_dir()
-    hits = sorted(folder.glob(f"**/{name}"), key=lambda p: len(str(p)))
-    if hits:
-        return hits[0]
-    on_path = shutil.which("llama-server")
-    return Path(on_path) if on_path else folder / name
-
-
 def layer_files(layers: Iterable[str]) -> list[tuple[str, Path]]:
-    """``(setup component, path)`` of every model file and tool ``layers`` load.
+    """``(setup component, path)`` of every model file ``layers`` load.
 
-    Without duplicates, in layer order; OCR ships its models in the events extra.
+    Without duplicates, in layer order; OCR ships its models in the events extra, and the
+    VLM layer uses the shared vision model (Ollama or a hosted Vision role), checked when
+    its client is made.
     """
     panns = [("panns", panns_ckpt()), ("panns", panns_labels())]
     clip = [("visual", clip_weights())]
@@ -166,7 +121,6 @@ def layer_files(layers: Iterable[str]) -> list[tuple[str, Path]]:
         "voice": [*panns, ("voice", silero_vad())],
         "visual": [*clip, ("visual", detector_weights()), ("visual", aesthetic_head())],
         "crash": clip,
-        "vlm": [("llama", llama_server_exe()), ("omni", omni_model()), ("omni", omni_mmproj())],
     }
     out: list[tuple[str, Path]] = []
     for layer in layers:

@@ -4,10 +4,13 @@
 ``ski_scorer_baseline.json`` was written by the code of cba4698 (ski's own feature list, its
 ``laughter`` feature, ``100 * peak / sum(weights)``) on the synthetic inputs below: the
 candidates of ``analyze.pick_candidates`` with a ski context, the saved ``ski_features`` grids,
-and ``refmatch.evaluate`` and ``fit_weights`` on them. Every value is compared with ``==``: a full
-install must score byte-identically. The only expected difference is the rename of the ski
-feature ``laughter`` to ``voice_laughter`` (:data:`RENAMED`), in grid names, ``signals`` keys,
-``kind`` values and fitted weight names. The grids are built with integer arithmetic and one
+and ``refmatch.evaluate`` and ``fit_weights`` on them (those two are in the development script
+``scripts/refmatch.py``, checked by ``tests/scripts/test_refmatch_equivalence.py``). Every value
+is compared with ``==``: a full install must score byte-identically. The only expected
+differences are the rename of the ski feature ``laughter`` to ``voice_laughter``
+(:data:`RENAMED`), in grid names, ``signals`` keys, ``kind`` values and fitted weight names, and
+the removed ``taste`` feature (:data:`cutpoint.features.REMOVED`; always 0 then), which has no
+grid or ``signals`` key any more. The grids are built with integer arithmetic and one
 division, so they are the same on every platform. Each case runs twice: with float64 grids and
 with float32 ones, as ``telemetry.extract`` loads cached telemetry (``@f32`` in the baseline;
 the voice and 360 view layers are float32 there too).
@@ -24,7 +27,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, features, refmatch, scorer, ski
+from cutpoint import analyze, features, scorer, ski
 from cutpoint.events import visual, voice
 from cutpoint.pano import views
 from cutpoint.styles import STYLES, Style, load_learned
@@ -35,14 +38,14 @@ SRC = Path("ski.mp4")
 RENAMED = {"laughter": "voice_laughter"}  # the 1b rename, applied to the baseline
 LEARNED = {
     # Old feature name: the alias must give the scores it gave before the rename.
-    "laughs": {"base": "ski", "weights": {"laughter": 0.6, "airtime": 0.1}},
+    "laughs": {"base": "action-cam", "weights": {"laughter": 0.6, "airtime": 0.1}},
     "soft": {
-        "base": "ski",
+        "base": "action-cam",
         "mask_friends": 0,
         "must_include_crash": 0.5,
         "weights": {"stopped": 0.3, "people": 0.2, "group": 0.1, "voice": 0.1, "faces": 0.1},
     },
-    "unknown": {"base": "ski", "weights": {"mystery": 0.2, "speed": 0.4}},
+    "unknown": {"base": "action-cam", "weights": {"mystery": 0.2, "speed": 0.4}},
 }
 NAMES = ["ski", *(f"learned:{n}" for n in LEARNED)]
 
@@ -173,7 +176,7 @@ def part() -> analyze.SourceResult:
 
 
 def styles(tmp: Path) -> dict[str, Style]:
-    out = {"ski": STYLES["ski"]}
+    out = {"ski": STYLES["action-cam"]}
     for name, data in LEARNED.items():
         path = tmp / f"{name}.json"
         path.write_text(json.dumps({"name": name, **data}), encoding="utf-8")
@@ -185,8 +188,10 @@ def digest(a: np.ndarray) -> str:
     return hashlib.sha256(np.ascontiguousarray(a, dtype="<f8").tobytes()).hexdigest()
 
 
-def run(tmp: Path, name: str, max_candidates: int | None, f32: bool = False) -> dict[str, Any]:
-    """Candidates, saved grids and refmatch results of the style ``name``."""
+def analyzed(
+    tmp: Path, name: str, max_candidates: int | None, f32: bool = False
+) -> tuple[Style, Path, dict[str, Any]]:
+    """The style ``name``, its project and its candidates and saved grids."""
     style = styles(tmp)[name]
     project = tmp / "proj"
     cands = analyze.pick_candidates(part(), style, max_candidates, {}, context(project, f32))
@@ -200,30 +205,14 @@ def run(tmp: Path, name: str, max_candidates: int | None, f32: bool = False) -> 
     (saved,) = ski.load_project_features(project)
     grids = {k: digest(v) for k, v in saved["features"].items()}
     grids |= {"mask": digest(saved["mask"]), "friends": digest(saved["friends"])}
-    result = {
-        "positives": [
-            {"source": str(SRC), "start": 10.0, "end": 16.0},
-            {"source": str(SRC), "start": 98.0, "end": 106.0},
-            {"source": str(SRC), "start": 140.0, "end": 147.0},
-        ],
-        "reference_duration": 30.0,
-        "reference": "ref.mp4",
-        "shots": [
-            {"shot": 0, "matched": True, "source": str(SRC), "src_start": 10.0, "src_end": 16.0}
-        ],
-    }
-    ev = refmatch.evaluate(project, result, style.weights, friends_strong=style.mask_friends)
-    out: dict[str, Any] = {"candidates": rows, "grids": grids, "evaluate": ev}
-    if name == "ski":
-        data = [refmatch.FitData(project, result, ski.load_project_features(project))]
-        out["fit"] = refmatch.fit_weights(data, base="ski", folds=2, save=False, cross=False)
-    return json.loads(json.dumps(out))
+    return style, project, json.loads(json.dumps({"candidates": rows, "grids": grids}))
 
 
 def rename(obj: Any) -> Any:
-    """``obj`` with every dict key and string equal to a key of :data:`RENAMED` renamed."""
+    """``obj`` with every dict key and string equal to a key of :data:`RENAMED` renamed, and
+    the dict keys of removed features (:data:`cutpoint.features.REMOVED`) left out."""
     if isinstance(obj, dict):
-        return {RENAMED.get(k, k): rename(v) for k, v in obj.items()}
+        return {RENAMED.get(k, k): rename(v) for k, v in obj.items() if k not in features.REMOVED}
     if isinstance(obj, list):
         return [rename(v) for v in obj]
     return RENAMED.get(obj, obj) if isinstance(obj, str) else obj
@@ -248,8 +237,9 @@ def test_ski_is_byte_identical_on_a_full_install(
 ):
     layers(monkeypatch, f32)
     full(monkeypatch)
-    got = run(tmp_path, name, max_candidates, f32)
-    assert got == rename(baseline[key(name, max_candidates, f32)])
+    _, _, got = analyzed(tmp_path, name, max_candidates, f32)
+    want = rename(baseline[key(name, max_candidates, f32)])
+    assert got == {k: want[k] for k in ("candidates", "grids")}
 
 
 def test_float32_grids_give_their_own_scores(baseline):
@@ -269,7 +259,7 @@ def test_lite_drops_the_events_features_from_the_divisor(tmp_path, monkeypatch, 
     """Lite: the same picks, scores renormalised over the core features and capped at 100."""
     layers(monkeypatch)
     monkeypatch.setattr(features, "installed_extras", lambda: frozenset())
-    style = STYLES["ski"]
+    style = STYLES["action-cam"]
     cands = analyze.pick_candidates(part(), style, None, {}, context(tmp_path / "proj"))
     old = rename(baseline["ski@None"]["candidates"])
     assert [[c.start, c.end, c.peak] for c in cands] == [[*r[:2], r[3]] for r in old]
@@ -286,8 +276,8 @@ def test_lite_drops_the_events_features_from_the_divisor(tmp_path, monkeypatch, 
 def test_the_cap_only_applies_when_a_weight_is_dropped():
     """A full install never renormalises, so the cap never changes its scores."""
     w = {"airtime": 0.5, "vlm": 0.5}
-    assert scorer.score(1.2, STYLES["ski"], None) == features.to_score(
-        1.2, STYLES["ski"].weights, None
+    assert scorer.score(1.2, STYLES["action-cam"], None) == features.to_score(
+        1.2, STYLES["action-cam"].weights, None
     )
     assert features.to_score(1.2, w, features.available(("events",))) == 120.0
     assert features.to_score(1.2, w, features.available(())) == 100.0

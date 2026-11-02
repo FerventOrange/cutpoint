@@ -444,11 +444,16 @@ def test_planning_and_encode_do_not_import_commands():
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    "module", ["cutpoint.extend", "cutpoint.clips", "cutpoint.planning", "cutpoint.encode"]
-)
-def test_clip_modules_import_in_a_fresh_interpreter(module):
-    subprocess.run([sys.executable, "-c", f"import {module}"], check=True, timeout=120)
+def test_clip_modules_import_on_their_own():
+    """Each module imports first, with no cutpoint module loaded (an import cycle fails)."""
+    script = (
+        "import importlib, sys\n"
+        "for m in ('cutpoint.extend', 'cutpoint.clips', 'cutpoint.planning', 'cutpoint.encode'):\n"
+        "    for k in [k for k in sys.modules if k == 'cutpoint' or k.startswith('cutpoint.')]:\n"
+        "        del sys.modules[k]\n"
+        "    importlib.import_module(m)\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=120)
 
 
 def test_load_segments_keeps_kind_category_and_drops_an_empty_one(tmp_path: Path) -> None:

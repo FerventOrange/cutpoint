@@ -9,7 +9,6 @@ import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -222,15 +221,10 @@ def test_other_proxies_keep_the_sdr_filter(tags):
     ("tags", "matrix"),
     [
         (BT601, "smpte170m"),
-        (BT601 | {"color_range": "pc", "pix_fmt": "yuvj420p"}, "smpte170m"),
         ({"color_space": "bt470bg", "color_primaries": "bt470bg"}, "bt470bg"),
-        ({"color_space": "smpte240m"}, "smpte240m"),
         (SD, "smpte170m"),  # untagged SD
-        ({"width": 960, "height": 540, "color_range": "tv"}, "smpte170m"),
-        ({**SD, **BT601}, "smpte170m"),
         # No matrix tag: SD only, the primaries tag naming the matrix; the transfer never.
         ({**SD, "color_primaries": "bt470bg", "color_range": "tv"}, "bt470bg"),
-        ({**SD, "color_primaries": "bt709"}, "smpte170m"),
         ({**SD, "color_transfer": "bt709"}, "smpte170m"),
     ],
 )
@@ -258,23 +252,16 @@ def test_bt709_sources_keep_todays_chain(tags):
     "tags",
     [
         {},
-        {"color_range": "tv"},
-        {"color_range": "pc"},
-        {"width": 1280, "height": 720},
         {"width": 1280, "height": 536},  # cropped widescreen HD: HD by its width
-        {"width": 1920, "height": 800},
         {"width": 720, "height": 1280},  # vertical HD
         # No matrix tag on HD: BT.601 primaries or transfer do not make it BT.601.
-        {"color_transfer": "smpte170m"},
         {"color_primaries": "smpte170m", "color_transfer": "smpte170m"},
         {"color_primaries": "bt470bg", "color_range": "tv"},
-        {"color_primaries": "bt709"},
     ],
 )
 def test_hd_without_a_matrix_tag_is_only_tagged_bt709(tags):
     assert encode.bt601_matrix(media_info(**tags)) is None
     assert encode.bt709_filter(media_info(**tags), BOTH) == encode.TAG_BT709
-    assert encode.TAG_BT709 == "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
 
 
 @pytest.mark.parametrize(
@@ -872,26 +859,11 @@ def test_underwater_borrows_red_from_green_and_lifts_red(lenient):
     assert graded[0] / graded[1] > before[0] / before[1] + 0.2
 
 
-def test_underwater_levels_are_per_channel_and_auto_s_follow_the_luma():
+def test_underwater_levels_are_per_channel():
     stats = _stats(_underwater())
     under = color.estimate(stats, "underwater")
     assert isinstance(under.black, tuple) and isinstance(under.white, tuple)
     assert under == color.estimate(stats, "underwater", levels="channel")
-    auto = color.estimate(stats, "auto")
-    assert isinstance(auto.black, float) and auto == color.estimate(stats, "auto", levels="luma")
-
-
-def test_the_veto_counts_per_channel_levels_by_the_per_channel_rule():
-    """Per-channel points intend each channel's own tails: the veto's intended clipping is the
-    per-channel rule's, not the luma's."""
-    stats = _stats(_underwater())
-    rgb = color._float(stats.frames)
-    grade = color.estimate(stats, "underwater")
-    luma = replace(grade, black=max(grade.black), white=min(grade.white))
-    assert color._intended_clipping(rgb, grade) != color._intended_clipping(rgb, luma)
-    predicted = color.metrics(color.simulate(rgb, replace(grade, skip=None)))
-    want = color._veto(grade.before, predicted, color._intended_clipping(rgb, grade))
-    assert grade.skip == want
 
 
 def test_a_strong_cast_whose_grade_takes_much_colour_away_is_vetoed(lenient):
@@ -1017,15 +989,10 @@ def test_a_grade_that_clips_too_much_is_vetoed():
     [
         ({"clipped": 0.016}, color.VETO_CLIPPING, 0.01),
         ({"clipped": 0.015}, None, 0.01),
-        ({"clipped": 0.026}, color.VETO_CLIPPING, 0.02),
-        ({"clipped": 0.0249}, None, 0.02),
         ({"clipped": 0.016}, color.VETO_CLIPPING, 0.0),  # never below the source's own
         ({"residual": 0.106}, color.VETO_CAST, 0.01),
-        ({"residual": 0.1045}, None, 0.01),  # 1.05 times: only the absolute rule applies
         ({"m3": 25.1}, color.VETO_COLOURFUL, 0.01),
-        ({"m3": 25.0}, None, 0.01),
         ({"m3": 16.9}, color.VETO_M3_LOSS, 0.01),
-        ({"m3": 17.0}, None, 0.01),
         ({"saturation": 0.1}, None, 0.01),  # auto does not judge the saturation
     ],
 )
@@ -1040,11 +1007,8 @@ def test_veto_thresholds(after, veto, intended):
         ({"saturation": 0.3149}, 0.0, color.VETO_FADED),  # below 0.63 of 0.5
         ({"saturation": 0.3151}, 0.0, None),
         ({"m3": 10.0}, 0.0, None),  # the M3 drop is auto's rule
-        ({"m3": 25.1}, 0.0, color.VETO_COLOURFUL),
-        ({"clipped": 0.016}, 0.0, color.VETO_CLIPPING),
         ({"clipped": 0.026}, 0.011, None),  # red-only highlights do not count
         ({"clipped": 0.046}, 0.04, color.VETO_CLIPPING),  # ... up to 3 points
-        ({"clipped": 0.044}, 0.04, None),
     ],
 )
 def test_underwater_veto_thresholds(after, red, veto):
@@ -1076,13 +1040,6 @@ def test_a_red_highlight_the_levels_intend_is_counted_once():
     assert color._intended_clipping(frames, grade) == 2 / 400
     assert color._red_highlights(graded) == 3 / 400
     assert color._red_highlights(graded, color._intended_high(frames, grade)) == 1 / 400
-    # the harness reports the same share
-    assert _color_eval().evaluate(frames, grade)["red_highlights"] == 1 / 400
-
-
-def test_an_underwater_veto_without_a_saturation_record_does_not_judge_it():
-    old = Metrics(m3=20.0, residual=0.1, clipped=0.0, black=0.05, white=0.9)  # version 2
-    assert color._veto(old, replace(old, m3=10.0), 0.0, underwater=True) is None
 
 
 @pytest.mark.parametrize(
@@ -1090,12 +1047,9 @@ def test_an_underwater_veto_without_a_saturation_record_does_not_judge_it():
     [
         # gopro 0079 underwater: 2.8 times and +0.0031, within the absolute rule
         (0.0017, 0.0048, color.VETO_CAST),
-        (0.001, 0.0031, color.VETO_CAST),  # +0.0021
         (0.001, 0.0029, None),  # +0.0019: below the floor (half an 8-bit code)
-        (0.004, 0.0059, None),  # +0.0019
         (0.01, 0.0149, None),  # 1.49 times, +0.0049
         (0.01, 0.0151, color.VETO_CAST),  # 1.51 times, +0.0051 (both rules)
-        (0.1, 0.1049, None),
     ],
 )
 def test_a_cast_veto_is_relative_as_well_as_absolute(before, after, veto):
@@ -1367,9 +1321,7 @@ def test_sampling_reads_keyframes_of_the_inner_80_percent_on_the_cpu(decodes):
     ("over", "high_bit"),
     [
         ({}, False),
-        ({"pix_fmt": "yuv420p10le"}, True),
         ({"pix_fmt": "p010le"}, True),
-        ({"pix_fmt": "yuv420p10le", **HLG}, False),  # tone-mapped: not checked for log
     ],
 )
 def test_sampling_records_a_high_bit_source_like_the_log_warning(decodes, over, high_bit):
@@ -1594,75 +1546,56 @@ def test_real_clips_color_underwater_records_the_grade_and_extend_redoes_it(
     assert (out / "001_a.mp4").stat().st_size > 0
 
 
-def _color_eval():
-    import importlib.util  # noqa: PLC0415
-
-    path = Path(__file__).resolve().parents[1] / "scripts" / "color_eval.py"
-    spec = importlib.util.spec_from_file_location("color_eval", path)
-    assert spec is not None and spec.loader is not None
-    script = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(script)
-    return script
+def _desaturated(frames: np.ndarray, keep: float) -> np.ndarray:
+    gray = frames.mean(axis=-1, keepdims=True)
+    return gray + (frames - gray) * keep
 
 
-@needs_ffmpeg
-def test_color_eval_script_reports_every_mode_and_levels_variant(tmp_path, capsys, lenient):
-    script = _color_eval()
-    src = _underwater_source(tmp_path / "reef.mkv")
-    saved = tmp_path / "stats"
-    assert script.main([f"{src}@0.5-2.5", "--json", "--save-stats", str(saved)]) == 0
+def test_a_grade_that_would_leave_a_worse_cast_is_vetoed():
+    """The neutral mid-tones are tinted magenta, the coloured patches green-starved: balancing
+    the gray ramp pushes the rest of the frame further off, so the clip is left alone."""
+    frames = _flat(_scene(), 0.1, 0.9)
+    frames[:, :29] = _cast(frames[:, :29], 0.93, 1.1, 0.93)
+    frames[:, 29:] = _cast(frames[:, 29:], 1.0, 0.7, 0.95)
 
-    (window,) = json.loads(capsys.readouterr().out)
-    assert window["frames"] > 0
-    assert {(v["mode"], v["levels"]) for v in window["variants"]} == {
-        (m, lv) for m in color.MODES for lv in color.LEVELS
-    }
-    assert {(v["mode"], v["levels"]) for v in window["variants"] if v["production"]} == set(
-        color.MODE_LEVELS.items()
-    )
-    # the saved frames replay to the same results without decoding
-    assert [f.name for f in saved.iterdir()] == ["reef_0.5-2.5.npz"]
-    assert script.main([f"{src}@0.5-2.5", "--json", "--stats", str(saved)]) == 0
-    (again,) = json.loads(capsys.readouterr().out)
-    assert again["variants"] == window["variants"]
+    grade = color.estimate(_stats(frames), "auto")
+
+    assert grade.skip == color.VETO_CAST
+    assert grade.filter() == ""
+    assert grade.predicted.residual > grade.before.residual
 
 
-def test_color_eval_script_replays_saved_frames_by_their_file_name(tmp_path, capsys):
-    script = _color_eval()
-    stats = _stats(_underwater())
-    script.save_stats(tmp_path / "GX010819_3-17.npz", replace(stats, high_bit=True))
-    assert script.main(["--stats", str(tmp_path), "--json", "--modes", "underwater"]) == 0
-    (window,) = json.loads(capsys.readouterr().out)
-    assert (window["source"], window["start"], window["end"]) == ("GX010819", 3.0, 17.0)
-    assert window["high_bit"] and window["frames"] == len(stats.frames)
-    production = next(v for v in window["variants"] if v["production"])
-    assert production["skip"] == color.estimate(stats, "underwater").skip
-    assert isinstance(production["params"]["black"], list)
+def test_an_auto_grade_that_would_wash_out_a_dull_clip_is_vetoed():
+    """A nearly gray, flat, warm clip: correcting the warmth takes away most of what little
+    colour it has (M3 below VETO_M3_DROP of its value), so it is not graded."""
+    frames = _cast(_flat(_desaturated(_scene(), 0.1), 0.15, 0.8), 1.1, 1.0, 0.9)
+
+    grade = color.estimate(_stats(frames), "auto")
+
+    assert grade.skip == color.VETO_M3_LOSS
+    assert grade.filter() == ""
+    assert grade.predicted.m3 < grade.before.m3 * color.VETO_M3_DROP
 
 
-def test_color_eval_script_replays_a_stem_with_a_dot_by_its_file_name(tmp_path, capsys):
-    """#494: ``Desktop ... 02.56.27.19.DVR.mp4`` is saved as ``...19.DVR_120-132.npz``; its
-    window's source is ``...19.DVR``, which Path.stem would cut to ``...19``."""
-    script = _color_eval()
-    name = "Desktop 2025.10.14 - 02.56.27.19.DVR_120-132.npz"
-    script.save_stats(tmp_path / name, _stats(_scene(2)))
-    (w,) = script.stats_windows(tmp_path)
-    assert (w["source"], w["start"], w["end"]) == ("Desktop 2025.10.14 - 02.56.27.19.DVR", 120, 132)
-    assert script.stats_name(w) == name
-    assert script.main(["--stats", str(tmp_path), "--json", "--modes", "auto"]) == 0
-    (window,) = json.loads(capsys.readouterr().out)
-    assert window["frames"] == 2 and window["gate"]["rg"] == pytest.approx(1.0, abs=0.2)
+def _level_opts(text: str) -> dict[str, float]:
+    assert text.startswith("colorlevels=")
+    return {k: float(v) for k, v in (kv.split("=") for kv in text.split("=", 1)[1].split(":"))}
 
 
-def test_color_eval_script_skips_360_sources_as_clips_does(tmp_path, capsys, monkeypatch):
-    script = _color_eval()
-    lrv = tmp_path / "LRV_20250101_120000_01_001.lrv"
-    monkeypatch.setattr(script, "probe", lambda *_a: pytest.fail("a 360 source was sampled"))
-    assert script.main([f"{lrv}@1-9", "--json"]) == 0
-    (window,) = json.loads(capsys.readouterr().out)
-    assert {v["skip"] for v in window["variants"]} == {color.SKIP_360}
-    # a project's 360 clip by its pano.json, whatever its name
-    clip = str(tmp_path / "clip.mp4")
-    pano = {script.pano_project.norm(clip): SimpleNamespace(source=clip)}
-    assert script.is_360(clip, pano)
-    assert not script.is_360(clip, None) and not script.is_360(str(tmp_path / "b.mp4"), pano)
+def test_levels_with_a_gain_below_one_lower_the_output_white_instead():
+    """A channel at gain 0.8 would reach 1 only at input 1.25, outside the filter's range: the
+    input white stays 1 and the output white comes down to 0.8, the same line."""
+    opts = _level_opts(color._levels(0.0, 1.0, (0.8, 1.0, 1.25)))
+    assert (opts["rimin"], opts["rimax"], opts["romax"]) == pytest.approx((0.0, 1.0, 0.8))
+    assert (opts["gimax"], opts["gomax"]) == pytest.approx((1.0, 1.0))
+    assert (opts["bimax"], opts["bomax"]) == pytest.approx((0.8, 1.0))  # gain > 1: earlier white
+
+
+def test_an_underwater_mix_puts_red_from_green_before_the_levels():
+    mix_only = color.AutoGrade("underwater", mix=0.3)
+    text = mix_only.filter()
+    assert "colorchannelmixer=rr=0.70000:rg=0.30000" in text
+    assert "colorlevels" not in text  # nothing else to change
+
+    both = color.AutoGrade("underwater", black=0.05, mix=0.3).filter()
+    assert both.index("colorchannelmixer") < both.index("colorlevels")

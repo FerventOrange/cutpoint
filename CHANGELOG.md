@@ -22,28 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for subscription providers).
   Without a `vision_assistant` section, frame rating uses Ollama. Activity detection in
   `profile`, `crashes` and the crash step of `analyze` always uses Ollama.
-- `cutpoint proxy` command runs the authenticated CLIProxyAPI daemon in the foreground for Claude
-  Code, Codex and Antigravity subscriptions (Use at your own risk). Available in both full and lite
-  installs. First run lazily downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to
-  `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on loopback `127.0.0.1:18317` (customizable with
-  `--port` or `CUTPOINT_CLIPROXY_PORT`, binary with `CUTPOINT_CLIPROXY_BINARY`). Startup prefers
-  `--port`, then the environment, then the saved port; clients use the owned daemon's saved
-  runtime port even when their environment differs. Subscription
-  credentials use Cutpoint's existing keyring integration with a native OS backend; file-based
-  backends and fallback after a native-store failure are rejected. An independent cross-platform
-  supervisor restores private working files under `<CUTPOINT_HOME>/cliproxy/auths/`, checkpoints
-  refreshes and deletions, and stops/reaps the daemon before cleanup, including after the
-  foreground CLI is killed. Concurrent credential removal or incomplete JSON/UTF-8 writes defer
-  the whole periodic snapshot without stopping the daemon or committing a partial account map.
-  Final keyring-write failures preserve the latest data in an
-  authenticated encrypted recovery journal with its key only in the OS keyring. Whole-host or
-  supervisor loss and failed recovery writes can still leave private files; daemon writes cannot
-  be atomic with keyring persistence. POSIX directories/files use `0700`/`0600`; Windows replaces
-  inherited grants with verified protected user-only DACLs and normalizes legitimate token-default
-  ownership to the current user; foreign owners are rejected. HTTPS authenticates the actual local
-  listener before credentials or request bodies are sent, closing the port-handoff impersonation
-  gap. TLS identity and local client/management keys rotate on each explicit start; configuration
-  and these local secrets remain private files. Prompt cloaking and prompt/error logging are disabled.
+  Vision consent is its own and versioned (`vision-v2:<provider>@<host>` in
+  `vision_assistant.consent`): agreeing for the assistant never covers Vision, or the reverse,
+  and a Vision consent saved without the prefix no longer counts, so users agree again. The
+  prompt names what Vision sends (frames, transcript excerpts, file names and times, on-screen
+  text, telemetry) and that it is more data and more risk than the assistant. The AI Chat
+  consent now also names the scores and detection signals it sends (analysis results only,
+  never video or audio), and is versioned too (`assistant-v2:<provider>@<host>` in
+  `assistant.consent`): an AI Chat consent saved without the prefix no longer counts, so AI Chat
+  asks again.
+- `cutpoint proxy` runs the authenticated CLIProxyAPI daemon in the foreground for Claude Code,
+  Codex and Antigravity subscriptions (Use at your own risk), in full and lite installs. The first
+  run downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to
+  `<CUTPOINT_HOME>/tools/cliproxy/` and listens on `127.0.0.1:18317` over a per-start TLS identity
+  (`--port`, `CUTPOINT_CLIPROXY_PORT`; `CUTPOINT_CLIPROXY_BINARY` for another binary).
+  Credentials need a native OS keyring (no file fallback); a supervisor removes the private
+  working files after the daemon stops, and keyring-write failures go to an encrypted recovery
+  journal. Details: [docs/commands.md#proxy](docs/commands.md#proxy).
 - `cutpoint login` and `cutpoint logout` for Claude Code, Codex and Antigravity subscriptions via
   `cutpoint proxy` browser-callback flows, and a Connected accounts section in the Models tab.
   `claude-code`, `codex` and `antigravity` are assistant providers that route through the proxy daemon
@@ -67,7 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their reviewed order (`assemble <clips_dir> --format`). Normalize loudness, Burn in captions,
   Captions model and Assembly audio fade are off with a timeline, and the server refuses
   loudness and captions with one; the timeline is listed as the export's final without a video.
-
 - 360 preview API (#517): `candidates.preview_path(project, source, start, end, vertical=)`
   gives the path to preview a moment with: the one `360 analyze` cached (`cached`), one planned
   now as `clips` would (`planned`, with the reason), or, when the director cannot plan, a constant
@@ -133,14 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `install.ps1`: offers to install Ollama when it is missing (full mode only; default No), with
   `winget install --id Ollama.Ollama -e` or the download link when winget is missing or fails; it
   waits for the server (starting `ollama serve` hidden only if the Ollama app has not), then offers
-  the `qwen3-vl:8b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
+  the `qwen3.5:9b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
   `-Yes` answers the prompt. The summary reports the Ollama result. Lite mode has no Ollama: it
   skips the step, and `-Lite -Ollama` prints a warning and installs nothing.
 - `install.sh`: offers to install Ollama when it is missing (full mode only; default No; Linux
   uses Ollama's official script and needs sudo, macOS uses `brew install ollama` and
   `brew services start ollama`), waits for the server (it starts `ollama serve` itself, logging to
   `~/.local/state/cutpoint/`, only on macOS if brew fails or on Linux without `ollama.service`),
-  then offers the `qwen3-vl:8b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
+  then offers the `qwen3.5:9b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
   `CUTPOINT_OLLAMA=0`; `--yes` answers the prompt. The summary reports the Ollama result. Lite
   mode has no Ollama: it skips the step with no prompt, and `--lite --ollama` prints a warning and
   installs nothing (the UI assistant can use a third-party provider instead).
@@ -153,13 +147,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path when the span, kind, settings, layers and planning code are unchanged, else plans it as
   before and logs why (`director path re-planned (span differs from 360 analyze)`, or
   `(9:16 not planned by 360 analyze)` under `--vertical`). A failed path logs a WARNING and the
-  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag).
-  `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
-  diagnostics for previews (#517).
+  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag) (#517).
 - `360 qa <dir> --compare RENDERED PATHS` (#11): joins the rendered and the `--paths` `qa.json`
   of `<dir>` (either order) per clip and frame and writes `edge_gap.json` next to the rendered
   one: the frames each QA flags `edge_cut`, and a cause for every frame only the rendered QA
-  flags (`unpaired`, `outside_segment`, `wearer_overlap`, `yaw_offset`, `stale_view`,
+  flags (`unpaired`, `wearer_overlap`, `yaw_offset`, `stale_view`,
   `no_projected_box` or `other`), per clip and for the edit. Cut boxes follow `360 qa`'s own
   edge-cut rule, and the boxes `--paths` dropped as mostly outside the view count as projected
   boxes, the wearer's too. `--json` adds `edge_gap`, `causes`, `rendered_only` and a
@@ -179,8 +171,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `input` (the render input's file name) and `cmd_every`, and the edit summary adds `by_mode`
   and `by_self_method` (`clips`, `frames`, `duration` and the `edge_cut` share of each).
   Clips' camera paths record the moment picked before tails and padding as `selected` (kept
-  in `qa.json`); `360 qa --compare` takes it for `outside_segment`, so a clip's tails count
-  there. `edge_gap.json` (version 3) adds per-clip `mode` and `self_method`, `by_mode` and
+  in `qa.json`); `360 qa --compare` marks each frame outside it `in_selected: false`. `edge_gap.json` (version 3) adds per-clip `mode` and `self_method`, `by_mode` and
   `by_self_method` frame counts and the `other_detail` `position_mismatch`: a dropped sliver
   about as wide as the cut box (within 25 %) but more than 5 % of the frame width to the side,
   which was `rendered_box_larger`. Older `qa.json` files still load (`unknown` in the
@@ -199,17 +190,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Activity profiles hold the captions of every visual layer (`highlight`, `group`, `person`,
   `selfie`, `occluder`, `low_info`, `scene`, `lift`) and the 360 vision check's wording (`vl`).
   The 360 views, QA, vision check and the visual events layer use the project's profile, so
-  360 footage of any activity is judged with its own captions. `ski` reproduces the earlier
-  captions exactly; chairlift detection is off for profiles without `lift` captions.
+  360 footage of any activity is judged with its own captions. The `ski` profile reproduces the
+  earlier captions exactly; chairlift detection is off for profiles without `lift` captions.
 
 ### Changed
 
-- `cutpoint 360 analyze` without `--style` or `pano.default_style` uses the built-in
-  action-cam style (derived, no longer named `ski` in the code).
+- **BREAKING:** the `ski` style is renamed `action-cam`, with no alias: it is the
+  telemetry-driven scorer for any action-cam footage, not only skiing. Use `--style action-cam`
+  on `analyze`, `edit` and `360 analyze`; `style` and `style_kind` in `highlights.json`,
+  `pano.default_style` (default `action-cam`) and the docs use the new name. `ski` is no
+  longer accepted: `--style ski` is refused (exit 2) and a `config.json` value, a project, a
+  UI project or a learned preset that says `ski` stops with an error naming `action-cam`;
+  analyse such projects again and change a learned preset's `"base"`. Vision ratings cached for `ski` are not reused. Activity profiles keep their names
+  (`--activity ski` is still the skiing profile).
+- **BREAKING:** the VLM layer of `cutpoint events` (also run by `edit --events` and `360 analyze`)
+  now uses the shared vision model of `analyze --vision`: Ollama with `qwen3.5:9b`
+  (`CUTPOINT_VISION_MODEL`), or the subscription Vision model of the Models tab once vision
+  requests are allowed there. When neither answers, the layer keeps its cached window
+  descriptions and the run goes on. The llama-server + Qwen2.5-Omni-7B stack is removed, and no
+  audio is sent to the model any more (an A/B showed it added nothing; the transcript and the
+  detector hints stay). Removed: the `events` options `--ctx`, `--image-max-tokens`,
+  `--frame-height` and `--no-audio` (frames are capped at 606 px high to fit the 16k context);
+  the `llama` and `omni` components and `--force` of `cutpoint setup` (which now downloads about
+  2 GB instead of 8 GB); `version` in the `setup --json` output; the `llama.cpp` key of
+  `paths --json`; the `llama_cpp` key of `capabilities --json` and its report line; the
+  `CUTPOINT_LLAMA_SERVER` and `CUTPOINT_LLAMA_BACKEND` environment variables. Windows described by the old stack are described again. Earlier downloads are not
+  removed: the `models/llm` and `models/llama-cache` folders and `tools/llama.cpp` in
+  `CUTPOINT_HOME` can be deleted.
+- The 360 director frames other people whole or keeps them out instead of cutting them at the
+  frame edge (#11): where one would be cut, it widens the view or shifts its yaw, whichever
+  costs less, keeps people framed whole `include_margin` (0.06) off the sides, keeps that
+  choice over a stretch (one yaw shift held over it where that fixes as
+  much, so the view does not drift after people who barely move), also tries plain widening and keeps whichever
+  leaves fewer edge cuts, and cuts away only where none helps and the cut-away removes at
+  least `cut_min_gain_s` (1 s) per cut it adds of frames that QA counts as cut or where the
+  subject is out of view; a cut-away starts and ends `cut_min_gap_s` (4 s) or more from
+  other cuts or joins them, starts a key early when the view held before it is cut, first
+  tries a tighter side margin, and prefers views without the wearer. It
+  checks the people `360 qa --paths` counts (the subject and the largest person too) at every
+  key and between keys, over the whole planned span, so padding and tails stay clean. Keys fall
+  on the moment's 0.5 s grid. New `pano.director` keys `edge_rule` (`legacy` keeps the earlier
+  rule), `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`,
+  `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`,
+  `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. Paths are version 5 and record the span they fixed as `fixed`; `extend`
+  reuses a version 4 path only within its moment and plans a longer range anew with a WARNING.
+  `360 director` and planned camera paths change, so cached candidate paths are planned again.
+  `360 qa --paths` and the director's check count people at the left / right edge from 0.075
+  of the frame (`edge_side_min_area`, recorded in the paths `qa.json`'s `thresholds`; the
+  rendered QA keeps 0.10), as the detector sees a person cut there about 1.34 times as large,
+  and `360 qa --compare` replays the paths rule with the paths `qa.json`'s thresholds
+  (`edge_gap.json` version 5).
+- `360 qa --compare` adds `size_ratio` per clip and for the edit (#11): the median width and
+  height of rendered boxes over the projected boxes they match. The `outside_segment` cause is
+  gone: tails are planned and checked like the moment, so their frames get the full cause
+  chain, and each rendered-only frame says `in_selected` (whether it lies in the moment
+  picked), counted per clip and for the edit as `outside_selected` (`edge_gap.json` version 4).
+- The LAION aesthetic head of the visual layer is now a numpy `.npz`
+  (`models/aesthetic/sac+logos+ava1-l14-linearMSE.npz`, same float32 values), downloaded from
+  the cutpoint-models Hugging Face repo with a GitHub release as the second mirror. It loads
+  without pickle, the same way in full and lite. Run `cutpoint setup --only visual` once to
+  get it; that also removes the old `.pth`. Until then the visual layer reports the head as
+  missing. The torch-free pickle reader for the old `.pth` is gone.
 - `CrashParams` takes its captions and words from the resolved activity profile unless given.
 - `parse_name` and `imu_source` moved to `cutpoint.insta360`; `cutpoint.pano.x3` still
   re-exports them.
-
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or
@@ -222,9 +266,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
   of the features lite can compute, as the generic styles do since phase 1a. The `events`
   features are left out: `vlm`, `social`, `voice_laughter` and `beauty` (0.20, 0.05, 0.05 and
-  0.05 in the built-in `ski` style), and `scenic`, `people`, `group`, `voice` and `taste`
-  (0 there). The divisor goes from 1.02 to 0.67, so a built-in `ski` score on lite is about 52%
-  higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
+  0.05 in the built-in `action-cam` style), and `scenic`, `people`, `group` and `voice` (0
+  there). The divisor goes from 1.02 to 0.67, so a built-in `action-cam` score on lite is about
+  52% higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
   among themselves they keep the analysis order (source by source). Lite scores above about 65.7
   before become 100. Must-include crash scores (the crash's confidence) do not change. A learned
   ski preset shifts by its own weights. Any score renormalised this way is capped at 100: on lite,
@@ -289,6 +333,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
+- `360 qa` overview sheets caption each tile with the director path's yaw and pitch, as
+  `360 check` did.
+- `cutpoint events`: `--audio-thr` and `--ocr-debug` (developer tuning) still work but are
+  hidden from `--help`.
+- The tests of the development scripts in `scripts/` moved to `tests/scripts/` and are marked
+  `script` (`-m "not script"` skips them).
+- The built-in Rainbow Six interpretation of HUD presets is gone: a `"builtin": true` key in a
+  preset is ignored and the preset is read like any other. The OCR layer reads each source's HUD
+  once more on its next run (the OCR and raw OCR cache keys changed), and the `audio` layer runs
+  PANNs once more, as it no longer reports the unused `Gunfire` and `Explosion` events. The
+  `events --json` discovery `preset` is never `built-in` any more. `--audio-thr` and
+  `--audio-floor` no longer accept `Gunfire` or `Explosion`. Events of the removed feeds no
+  longer score: a `REVERSE FRIENDLY FIRE` banner is neither a teamkill nor a payoff banner
+  (no points, no clip-tail payoff, the VLM seed of any other banner), and kill rows that
+  mark only the player are no player kills.
+
+### Removed
+
+- **BREAKING:** `cutpoint setup --torch-cuda` is gone. It did nothing since torch comes from the
+  `events` extra; commands that still pass it now stop with exit code 2. Drop the flag.
+- **BREAKING:** `cutpoint events --preset-scope package` is gone. It was an old alias of `user`
+  (the default); commands that still pass it now stop with exit code 2. Use `--preset-scope user`
+  or leave the option out.
+- **BREAKING:** `cutpoint refmatch` and `cutpoint fit` are gone: they are now the development
+  script `scripts/refmatch.py`. Commands that still call them now stop with exit code 2; from a
+  clone use `uv run python scripts/refmatch.py match|fit`. Learned styles they saved still load
+  as `--style <name>`.
+- **BREAKING:** the personal taste head (`refmatch --taste`, `fit --taste`) and its `taste`
+  feature are gone. Learned styles fitted with it now rank without it: their `taste` file and
+  `taste` weight are ignored, and the weight no longer counts in the score's divisor, so they
+  score as the same style without `taste`. `scikit-learn` is no longer a direct dependency of
+  the `events` extra (it is still installed through `panns-inference`).
+- **BREAKING:** `cutpoint 360 check` is gone; commands that still call it now stop with exit
+  code 2. Use `360 qa <clips_dir>`: its overview sheet shows the same frames with the director
+  target, yaw and pitch.
+- **BREAKING:** `assemble` (default `--format mp4`) no longer writes `final.fcpxml` and
+  `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 
 ### Fixed
 
@@ -1181,3 +1262,9 @@ First public release.
 Planned and not yet available: an agent skill, `cutpoint edit` (one-command editing),
 `cutpoint init` (first-run setup), JSON output on stdout for every command, SRT transcripts,
 and activity profiles for layers other than crash detection.
+
+[Unreleased]: https://github.com/FerventOrange/cutpoint/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/FerventOrange/cutpoint/compare/0.3.0...0.4.0
+[0.3.0]: https://github.com/FerventOrange/cutpoint/compare/0.2.0...0.3.0
+[0.2.0]: https://github.com/FerventOrange/cutpoint/compare/0.1.0...0.2.0
+[0.1.0]: https://github.com/FerventOrange/cutpoint/releases/tag/0.1.0

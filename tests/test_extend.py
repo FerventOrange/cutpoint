@@ -154,12 +154,10 @@ def test_extend_never_overwrites_an_srt_the_manifest_does_not_list(
     assert any(r.levelname == "WARNING" and "001_a.srt" in r.message for r in caplog.records)
 
 
-@pytest.mark.parametrize("where", ["in-place", "other-out"])
 def test_extend_removes_the_listed_srt_of_a_clip_deleted_during_review(
-    tmp_path, monkeypatch, reads, where
+    tmp_path, monkeypatch, reads
 ):
-    clips = _srt_clips(tmp_path)
-    out = clips if where == "in-place" else tmp_path / "proj" / "ext"
+    clips = out = _srt_clips(tmp_path)  # in place; --out is the next test
     src = _manifest(clips)["source"]
     # out holds an earlier run's 001_a and 002_b; 002_b.mp4 was deleted during review
     write(out / "002_b.srt", "old")

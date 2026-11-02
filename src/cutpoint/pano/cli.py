@@ -1,10 +1,10 @@
-"""``cutpoint 360 scan | analyze | status | director | stitch | check | qa | repair``.
+"""``cutpoint 360 scan | analyze | status | director | stitch | qa | repair``.
 
 Optional 360-camera (Insta360 X3) module. Typical flow (rendering itself
 happens in ``cutpoint clips`` / ``cutpoint extend``)::
 
     cutpoint 360 scan /media/x3/360 --out trip-360               # pano.json, IMU, calibration
-    cutpoint 360 analyze trip-360 --style ski                     # views + analyze + events
+    cutpoint 360 analyze trip-360 --style action-cam              # views + analyze + events
     cutpoint clips trip-360 --max-total 150                       # 360 clips rendered flat
     cutpoint extend projects/trip-360/clips --seconds 4
     cutpoint assemble projects/trip-360/clips_ext4s --loudnorm
@@ -875,19 +875,6 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     jsonout.output("dry_run", a.dry_run)
 
 
-def cmd_check(a: argparse.Namespace) -> None:
-    """Contact sheets of rendered clips (seam, horizon, framing, pans) for review by eye."""
-    from cutpoint.pano.check import clip_sheets  # noqa: PLC0415
-
-    clips_dir = _folder(a.clips_dir)
-    _set_folder_project(clips_dir)
-    sheets = clip_sheets(clips_dir, per_clip=a.per_clip)
-    for p in sheets:
-        logger.info("wrote %s", p)
-    jsonout.output("check_dir", clips_dir.with_name(clips_dir.name + "_check"))
-    jsonout.output("sheets", sheets)
-
-
 def cmd_qa(a: argparse.Namespace) -> None:
     """Rendered-frame direction QA (occlusion, close-ups, edge cuts, pans, horizon)."""
     from cutpoint.pano.qa import log_report, run_qa  # noqa: PLC0415
@@ -1026,7 +1013,7 @@ def cmd_repair(a: argparse.Namespace) -> None:
 def add_parser(sub: Any) -> None:
     """Register ``cutpoint 360 ...`` on the main CLI's subparsers."""
     from cutpoint.cli import _add_json_argument  # noqa: PLC0415 - cli imports this module
-    from cutpoint.styles import style_names  # noqa: PLC0415
+    from cutpoint.styles import style_arg, style_names  # noqa: PLC0415
 
     p = sub.add_parser(
         "360", help="optional 360-camera module (Insta360 X3): scan, analyze, director, stitch"
@@ -1060,11 +1047,12 @@ def add_parser(sub: Any) -> None:
     )
     an.add_argument(
         "--style",
+        type=style_arg,  # ski: an error naming action-cam
         choices=style_names(),
         default=None,
-        help="style preset (default: pano.default_style in config.json, else the action-cam style)",
+        help="style preset (default: pano.default_style in config.json, else action-cam)",
     )
-    an.add_argument("--model", help="whisper model (default: medium on CUDA)")
+    an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
     an.add_argument("--only", nargs="+", metavar="NNN", help="only these clip numbers")
     an.add_argument("--views-only", action="store_true", help="only the 360 view layer")
@@ -1089,11 +1077,13 @@ def add_parser(sub: Any) -> None:
     )
     di.add_argument("project")
     g = di.add_mutually_exclusive_group()
-    g.add_argument("--top", type=positive_int)
-    g.add_argument("--ids", nargs="+")
-    g.add_argument("--segments")
-    di.add_argument("--vertical", action="store_true")
-    di.add_argument("--preview", action="store_true")
+    g.add_argument("--top", type=positive_int, help="the top N moments by score")
+    g.add_argument("--ids", nargs="+", help="explicit candidate ids")
+    g.add_argument("--segments", help="segments JSON file")
+    di.add_argument("--vertical", action="store_true", help="plan 9:16 views")
+    di.add_argument(
+        "--preview", action="store_true", help="also render 640x360 check clips from the .lrv"
+    )
     di.add_argument(
         "--param",
         action="append",
@@ -1138,23 +1128,21 @@ def add_parser(sub: Any) -> None:
     )
     sti.add_argument("project")
     g2 = sti.add_mutually_exclusive_group()
-    g2.add_argument("--clips", nargs="+", metavar="NNN")
+    g2.add_argument("--clips", nargs="+", metavar="NNN", help="these clip numbers")
     g2.add_argument("--from-clips", metavar="DIR", help="clips folder (its manifest)")
     g2.add_argument(
         "--segments", metavar="FILE", help="segments JSON, e.g. mix_segments.json (its sources)"
     )
-    sti.add_argument("--top", type=positive_int)
-    sti.add_argument("--max-total", type=positive_float)
-    sti.add_argument("--force", action="store_true")
+    sti.add_argument("--top", type=positive_int, help="only clips holding the top N moments")
+    sti.add_argument(
+        "--max-total",
+        type=positive_float,
+        help="only clips holding the best moments that fit in S seconds",
+    )
+    sti.add_argument("--force", action="store_true", help="stitch again over existing outputs")
     sti.add_argument("--dry-run", action="store_true", help="print the SDK commands only")
     _add_json_argument(sti)
     sti.set_defaults(func=cmd_stitch)
-
-    ck = s3.add_parser("check", help="contact sheets of rendered 360 clips")
-    ck.add_argument("clips_dir")
-    ck.add_argument("--per-clip", type=int, default=6)
-    _add_json_argument(ck)
-    ck.set_defaults(func=cmd_check)
 
     qa = s3.add_parser(
         "qa",

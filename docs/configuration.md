@@ -12,17 +12,21 @@ on Windows and `~/.local/share/cutpoint` (or `$XDG_DATA_HOME/cutpoint`) elsewher
 CUTPOINT_HOME/
   config.json      settings (optional)
   cache/           per-source analysis cache; safe to delete
-  models/          PANNs, CLIP, detector, aesthetic head, Silero VAD, Qwen2.5-Omni
-  tools/           llama.cpp build (for `cutpoint events`)
+  models/          PANNs, CLIP, detector, aesthetic head, Silero VAD
+  tools/           CLIProxyAPI binary (subscription models of the Models tab)
   stage/           local copies made by `cutpoint stage`; disposable
-  styles/          learned styles from `refmatch` / `fit` (JSON, editable)
+  styles/          learned styles from `scripts/refmatch.py` (JSON, editable)
   presets/         HUD presets written by region discovery
   profiles/        activity profiles built by `cutpoint profile` / `crashes` (JSON)
   projects/        project folders, unless `projects_dir` says otherwise
   sdk/insta360/    optional: your own Insta360 Media SDK (see docs/insta360-sdk.md)
   360-stitched/    optional: SDK stitch output (large)
   360-studio/      optional: Insta360 Studio equirect exports
+  cliproxy/        `cutpoint proxy` state: auths/ (working files while it runs), run/,
+                   keys.json, credential-recovery.enc; private to your user
 ```
+
+`tools/cliproxy/` holds the CLIProxyAPI build `cutpoint proxy` downloads.
 
 Folders are created when a command needs them.
 
@@ -35,27 +39,25 @@ All optional.
 | `CUTPOINT_HOME` | Data root |
 | `CUTPOINT_CONFIG` | Alternative path to `config.json` |
 | `CUTPOINT_CACHE_DIR` | Cache location |
-| `CUTPOINT_MODELS_DIR`, `CUTPOINT_TOOLS_DIR` | Model weights, llama.cpp |
+| `CUTPOINT_MODELS_DIR`, `CUTPOINT_TOOLS_DIR` | Model weights, the CLIProxyAPI binary |
 | `CUTPOINT_PROJECTS_DIR` | Projects folder (overrides `projects_dir`) |
 | `CUTPOINT_STAGE_DIR` | Folder for `cutpoint stage` copies (overrides `stage_dir`) |
 | `CUTPOINT_STYLES_DIR` | Learned styles |
 | `CUTPOINT_FFMPEG`, `CUTPOINT_FFPROBE` | Full paths to ffmpeg and ffprobe |
-| `CUTPOINT_LLAMA_SERVER` | Full path to `llama-server` |
-| `CUTPOINT_LLAMA_BACKEND` | Backend `cutpoint setup` downloads for llama.cpp: `auto` (default), `cuda`, `vulkan` or `cpu`. Auto takes CUDA only when a usable NVIDIA driver is found, else Vulkan, else CPU; a named backend is never replaced by another one |
 | `CUTPOINT_VIDEO_ENCODER` | Video encoder for exported clips, assembled videos and rendered 360 clips: `auto` (default), `nvenc`, `amf`, `vaapi` or `cpu`. Overrides `video_encoder` |
 | `CUTPOINT_EXPORT_WORKERS` | Clips `clips` and `edit` export at once: `auto` (default) or a number from 1 to 3. Overrides `export_workers` |
 | `CUTPOINT_VIDEO_DECODER` | `cpu` decodes every video on the CPU instead of NVDEC or VAAPI (analysis, HUD OCR, 360, UI proxies); unset or any other value detects the GPU decoder as usual (see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#which-video-encoder-is-used-and-why-not-the-gpu)) |
 | `CUTPOINT_ANALYZE_OVERLAP` | `0` turns off the background HUD OCR of `analyze` (on by default where it applies; see [analysis steps](commands.md#analysis-steps)). An escape hatch: the output is the same either way |
-| `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in. `split` also makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR; `0`, unset (default) or any other value leaves it off. It spools the OCR frames to the source's cache folder: the spool grows by as much as the OCR read lags behind the decode, up to about 2 GB (the decode then waits for the OCR read), and the mode needs free disk for that (or every OCR frame of a shorter source) plus 1 GB. The output is the same either way (see [analysis steps](commands.md#analysis-steps)) |
+| `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in: `split` makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR, spooling up to about 2 GB to the cache folder. Same output either way (see [analysis steps](commands.md#analysis-steps)) |
 | `CUTPOINT_FADE_COPY` | `0` re-encodes the whole video of `assemble --transition fade` instead of stream-copying between the fades (see [assemble](commands.md#assemble)). An escape hatch: the same number of frames at the same times, the same audio and the same timelines either way |
 | `CUTPOINT_PANNS_URL` | URL for the PANNs checkpoint, tried before the built-in mirrors (see [models troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete)) |
-| `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision`, `360 director --vl-check` and building activity profiles (default `qwen3.5:9b`; `qwen3-vl:8b`, the earlier default, still works); the AI Chat falls back to it when `qwen3.5:9b` is not pulled |
+| `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision`, the VLM layer of `cutpoint events`, `360 director --vl-check` and building activity profiles (default `qwen3.5:9b`; `qwen3-vl:8b`, the earlier default, still works); the AI Chat falls back to it when `qwen3.5:9b` is not pulled |
 | `CUTPOINT_INSTA360_SDK` | Full path to the SDK's `MediaSDKTest` executable (overrides `pano.sdk_exe`) |
 | `OLLAMA_HOST` | Ollama URL; overrides `ollama_url` (a bare `host:port` gets `http://`) |
-
-When `setup` finds an existing managed llama.cpp build for a different backend than the one
-selected now, it replaces it through the normal staged installation, including in `auto` mode.
-For example, an old CUDA build on an AMD-only machine is replaced with a Vulkan build.
+| `CUTPOINT_CLIPROXY_PORT` | Loopback port of the [`cutpoint proxy`](commands.md#proxy) daemon (default 18317, or the port saved at the last start) |
+| `CUTPOINT_CLIPROXY_BINARY` | CLIProxyAPI executable for `cutpoint proxy` to run instead of the pinned build it downloads |
+| `CUTPOINT_PROGRESS` | `1` adds `PROGRESS {...}` lines per step on stderr (see [progress output](commands.md#progress-output)) |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `CUTPOINT_ASSISTANT_API_KEY` | API keys of the hosted models in `cutpoint ui`, each sent only to its own host (see [assistant](#assistant)) |
 
 ## config.json
 
@@ -107,7 +109,7 @@ copy you have not verified).
 
 Projects analyzed with a remap by cutpoint 0.1.0 recorded the copy paths. Run `analyze` again to
 record the original paths, then run `crashes` and `events` again: their existing results still
-name sources by the copy path, so event boosts and ski crash must-includes stop matching until
+name sources by the copy path, so event boosts and action-cam crash must-includes stop matching until
 they are regenerated.
 
 On Windows, a prefix on a mapped network drive matches in either form: `Z:\Footage` and
@@ -136,8 +138,9 @@ overrides it per run. Default: none.
 
 ### ollama_url
 
-Ollama base URL for `analyze --vision`, `360 director --vl-check`, the AI Chat and new activity
-profiles. `events` uses it only to unload Ollama models and to build crash profiles. `OLLAMA_HOST`
+Ollama base URL for `analyze --vision`, the VLM layer of `events`, `360 director --vl-check`,
+the AI Chat and new activity profiles. `events` also uses it to unload Ollama models before its
+other model layers and to build crash profiles. `OLLAMA_HOST`
 overrides it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines;
 see [troubleshooting](troubleshooting/models.md)).
 
@@ -153,7 +156,8 @@ moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other value
 
 ### vision_assistant
 
-The model that rates frames, chosen independently of the chat model. The same keys as
+The model that rates frames and describes the windows of the `events` VLM layer, chosen
+independently of the chat model. The same keys as
 [`assistant`](#assistant) (`provider`, `model`, `url`, `consent`), but `provider` is `ollama`
 (default), `claude-code`, `codex` or `antigravity`. With `ollama`, `model` and `url` are the
 Ollama model and URL (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win).
@@ -162,7 +166,14 @@ The Models tab fetches the catalog from this configured Ollama URL, including cu
 Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
 Catalogs and frames go to a subscription provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
-grants it. **Use at your own risk** when selecting a hosted provider.
+grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
+times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
+the `events` window descriptions), never the video file. That is more data, and more risk, than
+the assistant gets, so this consent is separate from the assistant's: agreeing to one never
+covers the other. Entries are `vision-v2:<provider>@<host>` (for example
+`vision-v2:codex@chatgpt.com`); an entry without the `vision-v2:` prefix, saved by an earlier
+version under a narrower description, no longer counts, and the Models tab asks again.
+**Use at your own risk** when selecting a hosted provider.
 `--ollama-url` and `--ollama-model` have no effect for subscription providers, whose ratings
 have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection.
@@ -196,7 +207,11 @@ Default: none. Other step names are rejected.
 
 ### export_workers
 
-How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at a time with a GPU encoder (`video_encoder`), which otherwise sits mostly idle on short clips, and 1 with libx264, which already uses every core. A number sets it; values are clamped to 1-3, as consumer NVIDIA cards allow only a few NVENC sessions at once. `CUTPOINT_EXPORT_WORKERS` overrides it. A run with a 360 clip exports one clip at a time. The clips, their names and manifest.json are the same as with 1, and the per-clip log lines come in clip order; warnings from an export are logged when they happen. The first failure or Ctrl+C stops every export in progress and removes its partial file. One difference: with `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs. When NVENC has no free encode session (consumer NVIDIA drivers limit them, and ShadowPlay or OBS may hold one), the clip is not redone on the CPU: the rest of the run exports one clip at a time (one INFO line, "NVENC has no free encode session; exporting one clip at a time") and the clip is encoded on the GPU again once it runs alone; only if that fails too is it redone on the CPU as above.
+How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at a time with a GPU encoder (`video_encoder`), which otherwise sits mostly idle on short clips, and 1 with libx264, which already uses every core. A number sets it; values are clamped to 1-3, as consumer NVIDIA cards allow only a few NVENC sessions at once. `CUTPOINT_EXPORT_WORKERS` overrides it. A run with a 360 clip exports one clip at a time.
+
+The clips, their names and manifest.json are the same as with 1, and the per-clip log lines come in clip order; warnings from an export are logged when they happen. 
+
+Failure handling: the first failure or Ctrl+C stops every export in progress and removes its partial file. With `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs. When NVENC has no free encode session (consumer NVIDIA drivers limit them, and ShadowPlay or OBS may hold one), the clip is not redone on the CPU: the rest of the run exports one clip at a time (one INFO line, "NVENC has no free encode session; exporting one clip at a time") and the clip is encoded on the GPU again once it runs alone; only if that fails too is it redone on the CPU as above.
 
 ### assistant
 
@@ -243,7 +258,12 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   model on this machine (and any Ollama), 32768 for a hosted one; more lets the model see more
   moments and turns.
 - `consent`: the hosted providers the user agreed to send project text to, as
-  `<provider>@<host>` (for example `anthropic@api.anthropic.com`); the AI Chat tab adds them.
+  `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`); the
+  AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
+  under a shorter description, no longer counts, and AI Chat asks again.
+  The assistant gets only analysis results (moment labels, scores and detection signals,
+  transcript snippets, file names without paths, times) and your messages, never video or audio.
+  This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
   loopback address; any other host, a LAN address too, is hosted.
 
@@ -270,27 +290,11 @@ dialogs never see them; they are also redacted from log lines and error messages
 OpenAI-compatible server on this machine needs no key. Ollama takes none.
 
 Subscription providers (`claude-code`, `codex`, `antigravity`): **Use at your own risk**.
-They do not use API keys. They authenticate through the local HTTPS `cutpoint proxy`
-daemon (CLIProxyAPI), bound to loopback `127.0.0.1:18317`, with a private per-start TLS identity.
-Subscription credentials use Cutpoint's existing keyring integration with a native OS backend;
-file-based backends and fallback after a native-backend failure are rejected. CLIProxyAPI needs
-private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/` while running. A separate
-supervisor checkpoints credentials and removals, survives a foreground CLI hard kill, and removes
-working files after stopping the daemon. Final keyring-write failures preserve the latest data
-in an authenticated encrypted recovery journal whose key lives only in the OS keyring.
-Whole-host/supervisor loss or failed recovery writes can still leave private working files;
-see [`proxy`](commands.md#proxy) for recovery, storage-encryption and refresh-durability limits.
-
-Configuration, the TLS private key, and separate random local client/management tokens remain
-private files in `<CUTPOINT_HOME>/cliproxy/`, including `keys.json` (`0700` directories and
-`0600` files on POSIX; verified protected user-only DACLs on Windows). Local tokens and the TLS
-identity rotate on every explicit start; the saved port is preserved. The proxy operates in
-commercial mode with prompt/error logging and prompt cloaking disabled. Model catalogs are
-populated from models advertised by the proxy daemon only after consent for the selected role.
-
-Temporary provider errors and rate-limit cooldowns do not remove an enabled, nonexpired login.
-The proxy's remote-store/Home environment overrides and the caller's `.env` cannot replace this
-private configuration; see [`proxy`](commands.md#proxy) for startup isolation and process lifetime.
+They use no API keys: they sign in through the local [`cutpoint proxy`](commands.md#proxy)
+daemon (CLIProxyAPI on `127.0.0.1:18317`, HTTPS with a private per-start TLS identity), and
+their credentials live in the native OS keyring. Model catalogs come from the proxy only after
+consent for the selected role. How credentials, working files, recovery and process lifetime
+are handled is described once, under [`proxy`](commands.md#proxy).
 
 ### pano
 
@@ -304,14 +308,14 @@ Settings for the optional 360 module. Every key is optional.
 | `auto_stitch` | `true` (default) or `false`. When true, the SDK runs and an NVIDIA GPU is present, "Export clips" in `cutpoint ui` first stitches the recordings a 360 export needs (about 54 GB per hour of footage in `stitched_dir`). `false` exports from the dual-fisheye preview. The command-line `clips` never stitches. See [360 video](workflows/360.md#auto-stitch-on-export) |
 | `stitch_args` | SDK arguments placed after the input and output. Replaces the defaults. See [insta360-sdk.md](insta360-sdk.md) |
 | `studio_dirs` | Folders searched for Insta360 Studio equirect exports. Default `<CUTPOINT_HOME>\360-studio`; `_stitched\`, `export\` and `Export\` next to the camera files are always searched |
-| `default_style` | `--style` of `cutpoint 360 analyze` when none is given. Default: the built-in action-cam style |
+| `default_style` | `--style` of `cutpoint 360 analyze` when none is given. Default `action-cam` (formerly `ski`, no longer accepted) |
 | `cmd_every` | Frames between virtual-camera updates when rendering. Default 1. 2 renders faster but leaves camera shake on every other frame. `--pano-cmd-every` overrides it |
 | `level_strength` | Horizon lock of the stabilised view, 0 to 1. 1 keeps the horizon level; 0 lets the view lean with the camera's smoothed tilt. Default 0.7 |
 | `tilt_follow_s` | Smoothing in seconds of the tilt the view follows when `level_strength` is below 1. Default 0.5 |
 | `max_follow_deg` | Largest camera lean, in degrees from the clip's average attitude, that the view follows when `level_strength` is below 1. A larger lean (a fall, the camera being handled) is followed as this much. Default 30 |
 | `imu_offset_s` | Time offset in seconds between the motion sensor and the video, if a clip's correction looks early or late. Default 0 |
 | `equirect_yaw_offset` | Degrees added to the director's yaw for Studio exports whose yaw 0 is not the camera's forward direction. Default 0 |
-| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors |
+| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. See [360 director](workflows/360-director.md#director) |
 
 ## Styles
 
@@ -324,14 +328,14 @@ A style tells `analyze` how to score and how long clips and the final cut should
 | `sport` | 5-20 s | 90 s | Crowd loudness, "goal", "what a ...", laughter |
 | `funny` | 4-20 s | 60 s | Laughter-heavy |
 | `commentary` | 20-120 s | 12.5 min | Speech continuity, sentence-snapped, chronological |
-| `ski` | 2-10 s by moment type | 150 s | Action-cam telemetry, model tags and sound events; lifts and stops masked |
+| `action-cam` | 2-10 s by moment type | 150 s | Action-cam telemetry, model tags and sound events; lifts and stops masked |
 
-`ski` is the action-cam style. Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); other footage is scored from audio, speech and model features only.
+`action-cam` is the telemetry-driven action-cam style (formerly `ski`; `ski` is no longer accepted: a `--style ski`, a `config.json` value, a project or a learned preset that says `ski` stops with an error naming `action-cam`). Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); other footage is scored from audio, speech and model features only.
 
-Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by `cutpoint
-refmatch` and `cutpoint fit`. They appear as extra `--style` choices, hold the feature weights
+Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by the
+development script `scripts/refmatch.py`. They appear as extra `--style` choices, hold the feature weights
 and the fit report, and can be edited by hand. Style definitions live in `src/cutpoint/styles.py`.
-In a ski style, the weight of laughter heard over the wind noise is `voice_laughter`; older
+In an action-cam style, the weight of laughter heard over the wind noise is `voice_laughter`; older
 learned styles call it `laughter`, which still works.
 
 ## Activity profiles
@@ -353,14 +357,8 @@ Game-HUD OCR regions come from a preset, looked up in this order:
 
 The first preset whose `game` key (or file name, without `game`) matches wins: 1 overrides 2 and 3,
 and 2 overrides 3. To make a preset for a game, write one
-in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one:
-the `"builtin"` key is honoured there and in the bundled folder, so a preset with `"builtin": true` in
-`<CUTPOINT_HOME>\presets` keeps its built-in interpretation and OCR cache keys. In a project
-`hud_presets` folder (1) `"builtin"` is ignored with a WARNING (shown once) and the preset is read
-as a generic JSON preset (generic kill-feed parsing, generic banners added, new OCR cache).
-
-A builtin preset's `banner_phrases` are not part of the OCR cache key. After editing them, run
-`cutpoint events <project> --force ocr` to read the footage again.
+in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one.
+A `"builtin"` key, which older presets may have, is ignored.
 
 The OCR layer also keeps its raw read of each source (the text it read per frame) in the source's
 cache folder, `ocr-raw-*`. When an update changes only how that text is interpreted, the next run
@@ -369,25 +367,7 @@ regions or `feed.newest`, or of the OCR frame rate, reads it again, and an inter
 near where it stopped. `--force ocr` drops the raw read too. It holds OCR text: it is git-ignored and
 never written inside a git checkout.
 
-A preset may list `candidate_phrases`: banner texts mined from the discovery OCR. They are inactive
-and not part of any cache key; to have OCR look for one, move it into `banner_phrases`. They are
-texts of 2 to 5 words read in the banner and notice regions (and in the screen centre, text at
-least 36 px tall at 1080p, as the OCR layer reads it there; smaller centre text is mined through
-the notice regions) of at least 2 sampled frames that are at least 2 s apart (two frames
-of one burst can count), in the casing the game shows ("Shield Saver" or "SHIELD SAVER"). They
-may be part of a longer line or sentence: words OCR joined are split ("blockedShieldSaver" is
-"blocked Shield Saver"), and numbers, timestamps, gamertags and your player tags are cut out.
-Matching ignores case and spaces, so a phrase also finds text OCR read without spaces
-("Hullbreached" for "Hull breached"), but only whole words: a phrase is not found inside a longer
-word. Static hint lines (tutorial and control hints) are left out: a text found in at least 25%
-of a recording's sampled gameplay frames whose sightings span at least half of the sampled time
-(tested for recordings with at least 8 sampled bursts). An event banner shows for a few seconds
-per event, far below that share; text in at least half of all gameplay frames is a static label
-and left out too. A hint shown only briefly is left out when OCR read it a little differently
-each time (words joined in one read): a phrase found only inside sentences of more than 5 words
-(a number, gamertag or separator such as `|`, `/` or `:` ends a sentence; commas and brackets do
-not), with the same text right around it each time, is a part of one sentence. A phrase in log lines with changing names or gamertags around it, one also
-shown on its own, or one OCR reads in a box with a stats line after a separator or number, stays. Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
+Discovery leaves out menu and scoreboard frames (text across most of the screen centre, or
 far more text than the recording usually shows), so a busy game HUD is not mistaken for a menu.
 With a JSON preset, the OCR layer applies the same test to the text it detects in the preset's
 regions other than feeds (a full kill feed is no menu) and drops what menu frames show. It also

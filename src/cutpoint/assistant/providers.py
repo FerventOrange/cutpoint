@@ -23,7 +23,8 @@ models a provider offers for the Model field, cached for :data:`MODELS_TTL_S`.
 
 A provider is ``local`` when its URL's host is this machine (``localhost``, a loopback address);
 any other host is hosted, and the page asks the user once per :func:`consent_key` before project
-text is sent there. Keys come from :mod:`cutpoint.assistant.keys` and never leave the provider
+text is sent there. The assistant and the Vision role each have their own consent: agreeing to
+one never covers the other. Keys come from :mod:`cutpoint.assistant.keys` and never leave the provider
 object except in its request headers.
 
 :func:`make` builds the configured provider through :data:`PROVIDERS`, which tests replace.
@@ -256,10 +257,25 @@ def is_local(url: str) -> bool:
         return False
 
 
-def consent_key(provider: Provider) -> str | None:
-    """What the user agrees to once before project text goes to ``provider``:
-    ``<name>@<host>``; None for a local one (nothing leaves the machine)."""
-    return None if provider.local else f"{provider.name}@{provider.host}"
+# Prefixes of the consent keys. Each role's consent is its own and is versioned: consent given
+# under an older, narrower wording (an unprefixed ``<name>@<host>``) no longer counts. Vision sends
+# more than the assistant (frames, transcript excerpts, file names and times, on-screen text,
+# telemetry); the assistant's wording now names the scores and detection signals it sends.
+ASSISTANT_CONSENT_PREFIX = "assistant-v2:"
+VISION_CONSENT_PREFIX = "vision-v2:"
+
+
+def consent_key(provider: Provider, role: str = "assistant") -> str | None:
+    """What the user agrees to once before project data goes to ``provider`` for ``role``
+    (``"assistant"`` or ``"vision"``): ``assistant-v2:<name>@<host>``
+    (:data:`ASSISTANT_CONSENT_PREFIX`) for the assistant, ``vision-v2:<name>@<host>``
+    (:data:`VISION_CONSENT_PREFIX`) for Vision, so neither consent unlocks the other and an
+    unprefixed entry from an older version unlocks neither; None for a local provider (nothing
+    leaves the machine)."""
+    if provider.local:
+        return None
+    prefix = VISION_CONSENT_PREFIX if role == "vision" else ASSISTANT_CONSENT_PREFIX
+    return f"{prefix}{provider.name}@{provider.host}"
 
 
 def check(provider: Provider) -> str | None:
@@ -1142,10 +1158,6 @@ def is_subscription(name: str | Provider) -> bool:
 
 def _format_openai_message(m: dict[str, Any]) -> dict[str, Any]:
     msg = dict(m)
-    role = msg.get("role")
-    if role == "model":
-        role = "assistant"
-        msg["role"] = "assistant"
     content = msg.get("content")
     if isinstance(content, list):
         converted_parts: list[dict[str, Any]] = []
@@ -1207,9 +1219,6 @@ class SubscriptionProvider(OpenAIProvider):
     def has_key(self) -> bool:
         st = cliproxy.status(self.name)
         return bool(st.get("logged_in"))
-
-    def status(self) -> dict[str, Any]:
-        return cliproxy.status(self.name)
 
     def _need_key(self) -> None:
         st = cliproxy.status(self.name)
@@ -1419,13 +1428,14 @@ def clear_model_cache(provider: str | None = None) -> None:
 
 
 def model_list(
-    provider: Provider, consent: tuple[str, ...], *, refresh: bool = False
+    provider: Provider, consent: tuple[str, ...], *, role: str = "assistant", refresh: bool = False
 ) -> dict[str, Any]:
     """The models ``provider`` offers, for Settings' Model field: ``{state, models, message}``.
 
     ``state`` is ``"ok"`` (``models``: ``{id, name}``), ``"key_needed"`` or ``"consent_needed"``
     (a hosted provider is asked only with its key and once the user agreed to it, ``consent``
-    of ``config.json``; nothing is sent otherwise), ``"unsupported"`` or ``"error"``
+    of ``config.json`` for ``role``, :func:`consent_key`; nothing is sent otherwise),
+    ``"unsupported"`` or ``"error"``
     (``message`` says why, keys redacted): the field then takes any typed name. A list is kept
     for :data:`MODELS_TTL_S` per provider and base URL; ``refresh`` asks again.
     """
@@ -1434,12 +1444,13 @@ def model_list(
         return {"state": "unsupported", "models": [], "message": None}
     if missing := missing_key(provider):
         return {"state": "key_needed", "models": [], "message": missing}
-    if (want := consent_key(provider)) is not None and want not in consent:
+    if (want := consent_key(provider, role)) is not None and want not in consent:
         return {
             "state": "consent_needed",
             "models": [],
             "message": (
-                f"The model list loads once this provider is saved and you agree in AI Chat to "
+                f"The model list loads once this provider is saved and you agree "
+                f"{'with Allow vision requests' if role == 'vision' else 'in AI Chat'} to "
                 f"use {provider.host}."
             ),
         }

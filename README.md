@@ -7,7 +7,7 @@
 Cutpoint is an AI video editor that your coding agent drives. Tell the agent to edit a video and
 it finds the best moments, cuts them into clips and assembles the result. All analysis runs on
 your own computer, so your agent does not spend API credits on video, and your original files
-are never changed.
+are never changed. Hosted models are optional and off by default.
 
 [Are you an AI agent? Start here](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md)
 
@@ -39,9 +39,9 @@ The agent runs Cutpoint, shows you the clips and writes the result into a projec
 Delete or rename clips to change the cut, then ask the agent to assemble again.
 
 Without an agent, `cutpoint edit D:\Videos\clip.mp4 --kind montage` does it in one command
-(see [commands](docs/commands.md#edit)). The agent works from
-[AGENTS.md](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md); `cutpoint skill install`
-adds a Claude Code skill so it finds Cutpoint without being pointed at it.
+(see [commands](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#edit)). The agent works from
+[AGENTS.md](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md); to let an agent find
+Cutpoint on its own, see [Using Cutpoint from an agent](https://github.com/FerventOrange/cutpoint/blob/main/docs/agents.md).
 
 ### Local browser workspace
 
@@ -55,11 +55,11 @@ Open the complete URL printed in the terminal (including its session token). Pic
 file or folder, analyze it, trim and reorder moments, export clips, then assemble and preview
 the final video. Footage stays on your
 computer; each export gets a new folder so previous exports are retained. The UI also makes
-360 projects from Insta360 X3 footage ([360 video](docs/workflows/360.md#in-the-ui)) but does not
+360 projects from Insta360 X3 footage ([360 video](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/360.md#in-the-ui)) but does not
 expose the action-cam workflows.
 
-For a tool install, use `uv tool install cutpoint --reinstall`, then `cutpoint ui`.
-See the [command reference](docs/commands.md#ui) for details.
+With a tool install, run `cutpoint ui`.
+See the [command reference](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#ui) for details.
 
 ## Requirements
 
@@ -68,11 +68,26 @@ See the [command reference](docs/commands.md#ui) for details.
 - ffmpeg 5.1 or newer
 - An NVIDIA GPU is recommended (add the `gpu` extra for GPU Whisper). Without one, everything
   still runs but slower.
-- Optional: [Ollama](docs/getting-started.md#optional-ollama-for-frame-rating-and-ai-chat) for
-  AI frame rating and the local AI Chat, extra downloads (about 8 GB) for sound, on-screen text
-  and scene-description features
+- Optional: [Ollama](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)
+  for AI frame rating, the scene descriptions of `cutpoint events` and the local AI Chat
+- Optional: `cutpoint setup` downloads (about 2 GB) for sound, on-screen text and visual
+  features
 
 ## Install
+
+The installer sets up uv, ffmpeg and Cutpoint as a global `cutpoint` command, with the torch
+build for your machine (run it again to upgrade):
+
+```powershell
+irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+```
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh
+```
+
+For the lite edition without torch, use `curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh -s -- --lite` (on Windows, set `$env:CUTPOINT_LITE = 1` before the `irm` command). To work
+from a clone instead:
 
 ```powershell
 winget install --id Gyan.FFmpeg -e
@@ -82,13 +97,6 @@ cd cutpoint
 uv sync
 uv run cutpoint paths
 ```
-
-In a clone, `uv sync` installs everything, including torch and CUDA (about 7 GB or more). For a
-lite environment use `uv sync --no-group full` and `uv run --no-group full ...` (or set
-`UV_NO_GROUP=full`).
-
-To get a global `cutpoint` command instead, run `uv tool install cutpoint` (from PyPI) after
-installing ffmpeg and uv.
 
 On Linux:
 
@@ -102,17 +110,17 @@ uv sync
 uv run cutpoint paths
 ```
 
-The same applies on Linux: a clone's `uv sync` installs everything (about 7 GB or more with torch
-and CUDA); `uv sync --no-group full` (or `UV_NO_GROUP=full`) gives the lite environment.
+In a clone, `uv sync` installs everything, including torch and CUDA (about 7 GB or more). For a
+lite environment use `uv sync --no-group full` and `uv run --no-group full ...` (or set
+`UV_NO_GROUP=full`).
 
-A clone already includes the `gpu` extra, so Whisper uses an NVIDIA GPU there. A tool install
-transcribes on the CPU unless you add it: `uv tool install "cutpoint[gpu]"`. The optional extras and model downloads are explained in
+A clone, and the installer on a machine with an NVIDIA GPU, include the `gpu` extra, so Whisper
+uses the GPU. The optional extras and model downloads are explained in
 [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
 
-AMD video encoding uses VAAPI on Linux or AMF on supported FFmpeg/driver installations.
-AMD transcription remains on CPU. Run `uv run cutpoint capabilities` to distinguish detected
-GPU vendors from working encoders and see the selected backend. Use `video_encoder` in
-`config.json` or `CUTPOINT_VIDEO_ENCODER` (`auto`, `nvenc`, `amf`, `vaapi`, `cpu`) to override it.
+AMD GPUs encode video (VAAPI on Linux, AMF where FFmpeg and the driver support it) but
+transcribe on the CPU. `uv run cutpoint capabilities` shows what works; see the
+[FAQ](https://github.com/FerventOrange/cutpoint/blob/main/docs/faq.md) to override the encoder.
 
 ## Documentation
 
