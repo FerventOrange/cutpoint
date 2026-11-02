@@ -4,7 +4,7 @@ Optional 360-camera (Insta360 X3) module. Typical flow (rendering itself
 happens in ``cutpoint clips`` / ``cutpoint extend``)::
 
     cutpoint 360 scan /media/x3/360 --out trip-360               # pano.json, IMU, calibration
-    cutpoint 360 analyze trip-360 --style ski                     # views + analyze + events
+    cutpoint 360 analyze trip-360 --style action-cam              # views + analyze + events
     cutpoint clips trip-360 --max-total 150                       # 360 clips rendered flat
     cutpoint extend projects/trip-360/clips --seconds 4
     cutpoint assemble projects/trip-360/clips_ext4s --loudnorm
@@ -1008,7 +1008,7 @@ def cmd_repair(a: argparse.Namespace) -> None:
 def add_parser(sub: Any) -> None:
     """Register ``cutpoint 360 ...`` on the main CLI's subparsers."""
     from cutpoint.cli import _add_json_argument  # noqa: PLC0415 - cli imports this module
-    from cutpoint.styles import style_names  # noqa: PLC0415
+    from cutpoint.styles import style_arg, style_names  # noqa: PLC0415
 
     p = sub.add_parser(
         "360", help="optional 360-camera module (Insta360 X3): scan, analyze, director, stitch"
@@ -1042,9 +1042,10 @@ def add_parser(sub: Any) -> None:
     )
     an.add_argument(
         "--style",
+        type=style_arg,  # ski: an error naming action-cam
         choices=style_names(),
         default=None,
-        help="style preset (default: pano.default_style in config.json, else ski)",
+        help="style preset (default: pano.default_style in config.json, else action-cam)",
     )
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")

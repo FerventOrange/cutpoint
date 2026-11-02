@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import functools
 import logging
 from dataclasses import dataclass, field, replace
@@ -86,17 +87,17 @@ class Style:
         speech_max_extend: Maximum seconds a speech-aware end moves later.
         speech_max_lead: Maximum seconds a speech-aware start moves earlier.
         kind: ``"generic"`` (loudness/speech/laughter/scene/continuity signals)
-            or ``"ski"`` (telemetry + audio + VLM features, see
-            :mod:`cutpoint.ski`; ``weights`` then name ski features).
+            or ``"action-cam"`` (telemetry + audio + VLM features, see
+            :mod:`cutpoint.ski`; ``weights`` then name its features).
         use_scenes: Run scene detection by default (pointless on single-take
             action-cam clips, and the 4K proxy decode is the slowest step).
         learned: Fit metadata for presets loaded from the styles folder.
-        mask_friends: Ski only: the lift/stop mask. Above 0 it is hard (no
+        mask_friends: Action-cam only: the lift/stop mask. Above 0 it is hard (no
             clips on lifts or stops; friends in view do not lift it, so every
             value above 0, such as the 5-11 of older presets, acts the same);
             0 = soft mask: nothing is forbidden and the ``stopped`` feature
             weight decides.
-        must_include_crash: Ski only: crashes in ``crashes.json`` (``cutpoint
+        must_include_crash: Action-cam only: crashes in ``crashes.json`` (``cutpoint
             crashes``) with at least this confidence (0-1) are always clipped,
             with their approach, aftermath and reaction, whatever the weights
             say; 0 = off. Learned presets may set ``"must_include_crash"``.
@@ -153,6 +154,43 @@ _SKI_KEYWORDS = {
     "jump": 0.6,
     "air": 0.4,
 }
+
+# The telemetry-driven action-cam style (and its ``kind``).
+ACTION_CAM = "action-cam"
+# Old style names, no longer accepted: reading one is an error naming the new name.
+RENAMED = {"ski": ACTION_CAM}
+
+
+def renamed_error(name: object) -> str | None:
+    """The error for a style ``name`` that was renamed (``ski``), else None."""
+    new = RENAMED.get(name) if isinstance(name, str) else None
+    if new is None:
+        return None
+    return (
+        f"style {name!r} was renamed to {new!r}; use --style {new} "
+        f"(a project analysed with {name!r} must be analysed again)"
+    )
+
+
+def style_arg(name: str) -> str:
+    """``--style`` value check: a renamed style is refused with its new name."""
+    if msg := renamed_error(name):
+        raise argparse.ArgumentTypeError(msg)
+    return name
+
+
+def project_kind(hl: dict) -> str | None:
+    """``style_kind`` of a highlights.json.
+
+    Raises:
+        ValueError: If the project names a renamed style (made before ``ski`` became
+            ``action-cam``).
+    """
+    for key in ("style_kind", "style"):
+        if msg := renamed_error(hl.get(key)):
+            raise ValueError(msg)
+    return hl.get("style_kind")
+
 
 STYLES: dict[str, Style] = {
     "gaming": Style(
@@ -277,9 +315,9 @@ STYLES: dict[str, Style] = {
         tail_max=3.0,
         tail_settle=0.8,
     ),
-    "ski": Style(
-        name="ski",
-        kind="ski",
+    ACTION_CAM: Style(
+        name=ACTION_CAM,
+        kind=ACTION_CAM,
         # Feature weights (cutpoint.ski): telemetry, VLM tags, audio events,
         # and the voice / visual layers (beauty replaces the VLM scenic tag,
         # wind-gated voice_laughter takes half of the PANNs-event social weight).
@@ -385,11 +423,13 @@ def load_learned(path: Path) -> Style:
     data = cache.load_json(path)
     if not isinstance(data, dict):
         raise ValueError(f"Cannot read learned style {path} (missing or invalid JSON)")
+    if msg := renamed_error(data.get("base")):
+        raise ValueError(f'{path}: base {msg}; change its "base"')
     base = STYLES.get(data.get("base", ""))
     if base is None:
         raise ValueError(f"{path}: unknown base style {data.get('base')!r}")
     own = {k: float(v) for k, v in data.get("weights", {}).items()}
-    if base.kind == "ski":  # an older preset's "laughter" is voice_laughter (features.SKI_ALIASES)
+    if base.kind == ACTION_CAM:  # an older preset's "laughter" is voice_laughter (SKI_ALIASES)
         own = features.ski_names(own, str(path))
     gone = [k for k in own if k in features.REMOVED]
     if gone:  # a removed feature (the taste head) scores as if the preset never weighed it
@@ -413,8 +453,10 @@ def get_style(name: str) -> Style:
     """Return the style preset ``name`` (built-in or ``<styles>/<name>.json``).
 
     Raises:
-        ValueError: If the style is unknown.
+        ValueError: If the style is unknown or was renamed (:data:`RENAMED`).
     """
+    if msg := renamed_error(name):
+        raise ValueError(msg)
     if name in STYLES:
         return STYLES[name]
     learned = learned_styles()

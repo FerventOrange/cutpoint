@@ -44,6 +44,6 @@ def test_refmatch_is_byte_identical_on_a_full_install(
     got: dict[str, Any] = {"evaluate": ev}
     if name == "ski":
         data = [refmatch.FitData(project, RESULT, ski.load_project_features(project))]
-        got["fit"] = refmatch.fit_weights(data, base="ski", folds=2, save=False, cross=False)
+        got["fit"] = refmatch.fit_weights(data, base="action-cam", folds=2, save=False, cross=False)
     want = rename(baseline[key(name, max_candidates, f32)])
     assert json.loads(json.dumps(got)) == {k: want[k] for k in got}

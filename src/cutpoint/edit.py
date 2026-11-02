@@ -25,7 +25,7 @@ from cutpoint.assemble import assemble, temporary_clips
 from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
 from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
-from cutpoint.styles import get_style
+from cutpoint.styles import ACTION_CAM, get_style
 from cutpoint.utils import file_stamp, find_videos, input_name
 
 logger = logging.getLogger(__name__)
@@ -222,7 +222,7 @@ def _run_edit(
     if events:
         from cutpoint.events.pipeline import DEFAULT_LAYERS, SKI_LAYERS, preflight  # noqa: PLC0415
 
-        preflight(SKI_LAYERS if style.kind == "ski" else DEFAULT_LAYERS)
+        preflight(SKI_LAYERS if style.kind == ACTION_CAM else DEFAULT_LAYERS)
 
     # A failed or interrupted analyze removes the (still empty) folders it created.
     analyze(

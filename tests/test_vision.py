@@ -57,11 +57,11 @@ def _chat_prompts(posts: list[tuple[str, dict]]) -> list[str]:
 
 
 def test_ski_retry_uses_the_ski_prompt(posts):
-    res = vision.VisionRater(url="http://x:1", model="m").rate(Path("a.mp4"), 0, 4, "ski")
+    res = vision.VisionRater(url="http://x:1", model="m").rate(Path("a.mp4"), 0, 4, "action-cam")
     assert res == vision.VisionResult(7.0, "big jump")
     first, retry = _chat_prompts(posts)
-    assert first == vision._PROMPT_SKI.format(n=3, style="ski")
-    assert retry == vision._RETRY_PROMPT_SKI.format(n=3, style="ski")
+    assert first == vision._PROMPT_SKI.format(n=3, style="action-cam")
+    assert retry == vision._RETRY_PROMPT_SKI.format(n=3, style="action-cam")
     assert "scoreboard" not in retry and "ski" in retry
 
 
@@ -90,7 +90,7 @@ def test_ask_json_and_parse_share_the_reply_json(monkeypatch, content, want):
 
 def test_unload_sends_keep_alive_zero_for_the_model_used(posts):
     rater = vision.VisionRater(url="http://x:1", model="qwen3-vl:8b")
-    rater.rate(Path("a.mp4"), 0, 4, "ski")
+    rater.rate(Path("a.mp4"), 0, 4, "action-cam")
     posts.clear()
     rater.unload()
     assert posts == [("http://x:1/api/generate", {"model": "qwen3-vl:8b", "keep_alive": 0})]
@@ -165,7 +165,7 @@ class _ByStartRater:
 def test_rate_vision_low_rating_no_longer_outranks_an_unrated_candidate():
     """#284: the rating (0-10) is a multiplier on the score, not a 0-100 term mixed into a
     ~15-27 style score: 2/10 lowers it and keeps the clip's label, unrated scores stay put."""
-    style = get_style("ski")
+    style = get_style("action-cam")
     cands = [
         {"source": "a.mp4", "start": 0.0, "end": 5.0, "score": 22.0, "label": "ski-moment",
          "signals": {}},
@@ -195,7 +195,7 @@ def test_rate_vision_mid_rating_does_not_lift_a_score_past_an_unrated_one():
          "signals": {}},
     ]  # fmt: skip
     rater = _ByStartRater({30.0: (5.0, "ok run")})
-    cutpoint.analyze._rate_vision(cands, rater, 1, get_style("ski"))  # type: ignore[arg-type]
+    cutpoint.analyze._rate_vision(cands, rater, 1, get_style("action-cam"))  # type: ignore[arg-type]
     mid, unrated = cands
     assert mid["score"] == 22.0 < unrated["score"] == 26.0
 
@@ -210,7 +210,7 @@ def test_rate_vision_keeps_the_model_label_apart_from_the_clip_label():
          "signals": {}},
     ]  # fmt: skip
     rater = _ByStartRater({0.0: (2.0, "boring run"), 10.0: (9.0, "big jump")})
-    cutpoint.analyze._rate_vision(cands, rater, 2, get_style("ski"))  # type: ignore[arg-type]
+    cutpoint.analyze._rate_vision(cands, rater, 2, get_style("action-cam"))  # type: ignore[arg-type]
     low, high = cands
     assert low["vision_label"] == "boring run" and low["label"] == "ski-moment"
     assert high["vision_label"] == "big jump" and high["label"] == "big-jump"
@@ -339,9 +339,9 @@ def test_rerun_asks_the_model_nothing_and_gives_the_same_ratings(posts, src, cap
 
 
 def test_the_ollama_url_is_not_part_of_the_key(posts, src):
-    vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "ski")
+    vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "action-cam")
     posts.clear()
-    res = vision.VisionRater(url="http://other:2", model="m").rate(src, 0, 4, "ski")
+    res = vision.VisionRater(url="http://other:2", model="m").rate(src, 0, 4, "action-cam")
     assert res == vision.VisionResult(7.0, "big jump") and posts == []
 
 
@@ -379,7 +379,7 @@ def test_a_failed_cache_write_keeps_the_rating(posts, src, monkeypatch, caplog):
         raise PermissionError("locked")
 
     monkeypatch.setattr(vision.cache, "save_json", locked)
-    res = vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "ski")
+    res = vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "action-cam")
     assert res == vision.VisionResult(7.0, "big jump")
     assert "Could not save the vision rating cache" in caplog.text
 
@@ -393,12 +393,12 @@ def test_a_failed_request_is_not_cached(posts, src, monkeypatch):
 
     monkeypatch.setattr(vision.requests, "post", down)
     rater = vision.VisionRater(url="http://x:1", model="m")
-    assert rater.rate(src, 0, 4, "ski") is None
+    assert rater.rate(src, 0, 4, "action-cam") is None
     assert (rater.hits, rater.asked) == (0, 1)
     assert not (cache.source_dir(src) / vision.RATINGS_FILE).exists()
     monkeypatch.setattr(vision.requests, "post", working)
     rater = vision.VisionRater(url="http://x:1", model="m")
-    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
     assert (rater.hits, rater.asked) == (0, 1) and _chats(posts) == 2
 
 
@@ -407,7 +407,7 @@ def test_an_unparseable_reply_is_not_cached(monkeypatch, src):
     monkeypatch.setattr(
         vision.requests, "post", lambda *_a, **_k: _Resp({"message": {"content": "no json"}})
     )
-    assert vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "ski") is None
+    assert vision.VisionRater(url="http://x:1", model="m").rate(src, 0, 4, "action-cam") is None
     assert not (cache.source_dir(src) / vision.RATINGS_FILE).exists()
 
 
@@ -423,16 +423,16 @@ def test_an_unparseable_reply_is_not_cached(monkeypatch, src):
 def test_a_corrupt_cache_file_is_a_miss(posts, src, text):
     path = cache.source_dir(src) / vision.RATINGS_FILE
     if text is None:
-        key = vision.rating_key("m", "ski", [1.0, 2.0, 3.0])
+        key = vision.rating_key("m", "action-cam", [1.0, 2.0, 3.0])
         path.write_text(json.dumps({key: {"score": "high", "label": "x"}}), "utf-8")
     else:
         path.write_bytes(text.encode("latin-1"))
     rater = vision.VisionRater(url="http://x:1", model="m")
-    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
     assert (rater.hits, rater.asked) == (0, 1)
     posts.clear()
     rater = vision.VisionRater(url="http://x:1", model="m")
-    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")  # rewritten
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")  # rewritten
     assert posts == [] and rater.hits == 1
 
 
@@ -446,7 +446,7 @@ def test_a_missing_source_still_reports_the_grab_failure(
 
     monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
     rater = vision.VisionRater(url="http://x:1", model="m")
-    assert rater.rate(tmp_path / "gone.mp4", 0, 4, "ski") is None
+    assert rater.rate(tmp_path / "gone.mp4", 0, 4, "action-cam") is None
     assert "Vision frame grab failed" in caplog.text and posts == []
     assert (rater.hits, rater.asked) == (0, 0)
 
@@ -498,38 +498,38 @@ def _entries(src: Path) -> list[dict]:
 
 
 def test_an_unchanged_digest_reuses_the_rating(posts, src, ollama):
-    assert _rater(ollama).rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert _rater(ollama).rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
     assert _entries(src) == [{"score": 7.0, "label": "big jump", "digest": "sha256:aaa"}]
     posts.clear()
     rater = _rater(ollama)
-    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
     assert posts == [] and (rater.hits, rater.asked) == (1, 0)
 
 
 def test_a_changed_digest_rates_again_and_replaces_the_entry(posts, src, ollama):
-    _rater(ollama).rate(src, 0, 4, "ski")
+    _rater(ollama).rate(src, 0, 4, "action-cam")
     posts.clear()
     ollama["digest"] = "sha256:bbb"  # the model pulled again under the same tag
     rater = _rater(ollama)
-    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
     assert _chats(posts) == 2 and (rater.hits, rater.asked) == (0, 1)
     assert [e["digest"] for e in _entries(src)] == ["sha256:bbb"]
 
 
 def test_a_cached_rating_is_used_when_ollama_is_down(posts, src, ollama):
-    _rater(ollama).rate(src, 0, 4, "ski")
+    _rater(ollama).rate(src, 0, 4, "action-cam")
     posts.clear()
     ollama["up"] = False
     rater = _rater(ollama)
-    assert rater.cached(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
-    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert rater.cached(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
     assert (rater.hits, rater.asked, rater.missed) == (1, 0, 0)
     rater.unload()  # nothing was asked: nothing to unload
     assert posts == []
 
 
 def test_a_miss_when_ollama_is_down_is_no_rating(posts, src, ollama, monkeypatch):
-    _rater(ollama).rate(src, 0, 4, "ski")
+    _rater(ollama).rate(src, 0, 4, "action-cam")
     posts.clear()
     ollama["up"] = False
 
@@ -538,23 +538,23 @@ def test_a_miss_when_ollama_is_down_is_no_rating(posts, src, ollama, monkeypatch
 
     monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
     rater = _rater(ollama)
-    assert rater.cached(src, 10, 14, "ski") is None
-    assert rater.rate(src, 10, 14, "ski") is None
-    assert rater.rate(src, 0, 4, "ski") is not None
+    assert rater.cached(src, 10, 14, "action-cam") is None
+    assert rater.rate(src, 10, 14, "action-cam") is None
+    assert rater.rate(src, 0, 4, "action-cam") is not None
     assert posts == [] and (rater.hits, rater.asked, rater.missed) == (1, 0, 1)
 
 
 def test_an_entry_without_a_digest_is_used_only_when_ollama_is_down(posts, src, ollama):
     """A rating cached before #413 has no digest, so no known model build: it is rated
     again when Ollama answers, and still used when Ollama is down (no digest to compare)."""
-    key = vision.rating_key("m", "ski", vision._frame_times(0, 4, 3))
+    key = vision.rating_key("m", "action-cam", vision._frame_times(0, 4, 3))
     path = cache.source_dir(src) / vision.RATINGS_FILE
     path.write_text(json.dumps({key: {"score": 3.0, "label": "old"}}), "utf-8")
     ollama["up"] = False
-    assert _rater(ollama).rate(src, 0, 4, "ski") == vision.VisionResult(3.0, "old")
+    assert _rater(ollama).rate(src, 0, 4, "action-cam") == vision.VisionResult(3.0, "old")
     ollama["up"] = True
     rater = _rater(ollama)
-    assert rater.rate(src, 0, 4, "ski") == vision.VisionResult(7.0, "big jump")
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
     assert (rater.hits, rater.asked) == (0, 1)
 
 
@@ -564,7 +564,7 @@ def test_no_digest_is_stored_when_ollama_lists_none(posts, src, monkeypatch):
     )
     rater = vision.VisionRater(url="http://x:1", model="m")
     assert rater.available() and rater.digest is None
-    rater.rate(src, 0, 4, "ski")
+    rater.rate(src, 0, 4, "action-cam")
     assert _entries(src) == [{"score": 7.0, "label": "big jump"}]
 
 
@@ -602,7 +602,7 @@ def test_the_keys_of_models_without_a_profile_are_unchanged():
     stay valid."""
     # Pinned: a change here drops every user's cached qwen3-vl ratings.
     times = vision._frame_times(0, 4, 3)
-    assert vision.rating_key("qwen3-vl:8b", "ski", times) == "29eed62d03@1.000,2.000,3.000"
+    assert vision.rating_key("qwen3-vl:8b", "action-cam", times) == "08b2a0e48e@1.000,2.000,3.000"
 
 
 def test_contact_sheet_tiles_the_frames_in_reading_order():
@@ -633,7 +633,9 @@ def test_a_profiled_model_gets_one_sheet_of_six_frames_and_the_expected_score(mo
 
     monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
     monkeypatch.setattr(vision.requests, "post", post)
-    res = vision.VisionRater(url="http://x:1", model="qwen3.5:9b").rate(Path("a"), 0, 7, "ski")
+    res = vision.VisionRater(url="http://x:1", model="qwen3.5:9b").rate(
+        Path("a"), 0, 7, "action-cam"
+    )
     assert res == vision.VisionResult(7.1, "jump")  # 0.5*7 + 0.3*8 + 0.2*6
     assert grabs == pytest.approx([1, 2, 3, 4, 5, 6])
     (payload,) = seen
@@ -644,7 +646,7 @@ def test_a_profiled_model_gets_one_sheet_of_six_frames_and_the_expected_score(mo
 
 
 def test_a_model_without_a_profile_asks_for_no_logprobs(posts):
-    vision.VisionRater(url="http://x:1", model="qwen3-vl:8b").rate(Path("a"), 0, 4, "ski")
+    vision.VisionRater(url="http://x:1", model="qwen3-vl:8b").rate(Path("a"), 0, 4, "action-cam")
     chats = [p for u, p in posts if u.endswith("/api/chat")]
     assert len(chats) == 2
     assert all("logprobs" not in p and len(p["messages"][0]["images"]) == 3 for p in chats)
@@ -701,7 +703,9 @@ def test_a_reply_without_logprobs_keeps_the_given_score(monkeypatch):
         vision.requests, "post",
         lambda *_a, **_k: _Resp({"message": {"content": '{"score": 6, "label": "x"}'}}),
     )  # fmt: skip
-    res = vision.VisionRater(url="http://x:1", model="qwen3.5:9b").rate(Path("a"), 0, 7, "ski")
+    res = vision.VisionRater(url="http://x:1", model="qwen3.5:9b").rate(
+        Path("a"), 0, 7, "action-cam"
+    )
     assert res == vision.VisionResult(6.0, "x")
 
 

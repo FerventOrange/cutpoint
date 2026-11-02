@@ -58,7 +58,7 @@ def test_the_rater_sends_its_frames_to_the_provider(fake, home) -> None:
     )
     rater = vision.VisionRater()
     assert rater.available() and rater.model == "gpt-x"
-    res = rater.rate(Path("a.mp4"), 0, 4, "ski")
+    res = rater.rate(Path("a.mp4"), 0, 4, "action-cam")
     assert res == vision.VisionResult(8.0, "big jump")
     (msg,) = fake.sent[0]
     assert msg["role"] == "user" and msg["content"][0]["type"] == "text"
@@ -74,7 +74,7 @@ def test_nothing_is_sent_before_the_user_agreed(fake, home) -> None:
     )
     rater = vision.VisionRater()
     assert not rater.available()
-    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None and fake.sent == []
+    assert rater.rate(Path("a.mp4"), 0, 4, "action-cam") is None and fake.sent == []
 
 
 def test_only_a_subscription_provider_is_asked(fake) -> None:
@@ -120,7 +120,7 @@ def test_the_assistant_s_versioned_consent_does_not_send_frames(fake, home) -> N
     )
     rater = vision.VisionRater()
     assert not rater.available()
-    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
+    assert rater.rate(Path("a.mp4"), 0, 4, "action-cam") is None
     assert fake.sent == []
 
 
@@ -133,7 +133,7 @@ def test_consent_under_the_old_vision_wording_no_longer_counts(fake, home) -> No
     )
     rater = vision.VisionRater()
     assert not rater.available()
-    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
+    assert rater.rate(Path("a.mp4"), 0, 4, "action-cam") is None
     assert fake.sent == []
 
 

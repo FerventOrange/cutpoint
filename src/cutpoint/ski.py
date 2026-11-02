@@ -1,6 +1,6 @@
 """Ski / snowboard scoring: telemetry + audio + VLM features, masks and clip picking.
 
-Used by ``cutpoint analyze --style ski`` (and learned presets based on it) and by
+Used by ``cutpoint analyze --style action-cam`` (and learned presets based on it) and by
 ``scripts/refmatch.py`` to evaluate and fit weights. Every feature is 0-1 on the 0.1 s
 analysis grid of one source:
 
@@ -668,7 +668,9 @@ def load_project_features(project: Path) -> list[dict[str, Any]]:
     """Every saved source of a ski project (offset-0 parts first)."""
     folder = project / FEATURES_DIR
     if not folder.is_dir():
-        raise FileNotFoundError(f"{folder} not found; run `cutpoint analyze --style ski` first")
+        raise FileNotFoundError(
+            f"{folder} not found; run `cutpoint analyze --style action-cam` first"
+        )
     return sorted(
         (load_features(p) for p in folder.glob("*.npz")), key=lambda d: (d["source"], d["offset"])
     )

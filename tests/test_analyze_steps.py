@@ -674,7 +674,7 @@ def test_ski_features_are_prepared_again_after_the_layers(run, monkeypatch, laye
 
     monkeypatch.setattr(analyze, "pick_candidates", pick)
     run.plan = plan(reactions=("audio", "voice"), crashes=("crash",))
-    run.go("ski", layers=layers)
+    run.go("action-cam", layers=layers)
     assert len(calls) == prepared
     assert len(run.events_calls) == int(layers)
     assert len(picked) == 1  # the candidates are picked once, from the last features
@@ -1134,7 +1134,7 @@ def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch
     run.plan = plan(crashes=("crash",))
     run.fail, run.cancel = ("vision" if cancel else None), cancel
     with pytest.raises(KeyboardInterrupt) if cancel else contextlib.nullcontext():
-        run.go("ski", vision=cancel)
+        run.go("action-cam", vision=cancel)
     assert seen == [(1, False)]
     got = tree(run.proj)
     if cancel:
@@ -1305,7 +1305,7 @@ def test_plan_by_style(env, style, layers, skipped):
 
 
 def test_plan_ski_is_action_footage(env):
-    got, _ = planned("ski")
+    got, _ = planned("action-cam")
     assert got["crashes"] == ("crash",) and got["keyframes"] == ("visual",)
 
 

@@ -110,7 +110,7 @@ So do these combinations:
 | `footage_unreachable` | `crashes`, `events` (so `360 analyze`) | A source is not reachable (offline drive, moved file) and was skipped |
 | `no_telemetry` | `crashes`, `events` (crash layer) | A source has no IMU telemetry; its crashes come from the transcript only |
 | `no_visual_layer` | `crashes`, `events` (crash layer) | A source has no visual layer; run `events` first so what the camera sees counts |
-| `highlights_not_updated` | `crashes`, `events` | The reanalyze step (`events`: the ski re-rank) was skipped (a source could not be found at its recorded or remapped path, or was not reachable), so `highlights.json` is unchanged |
+| `highlights_not_updated` | `crashes`, `events` | The reanalyze step (`events`: the action-cam re-rank) was skipped (a source could not be found at its recorded or remapped path, or was not reachable), so `highlights.json` is unchanged |
 | `context_not_applied` | `crashes`, `profile` | `--context` was not applied (Ollama or the LLM unavailable, or no usable profile from it) |
 
 `outputs` keys per command (`project` as in the table above):
@@ -140,7 +140,7 @@ So do these combinations:
 
 ### events outputs
 
-`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used
+`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the action-cam re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). An action-cam re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
 
@@ -383,7 +383,7 @@ applies:
 | Transcription model | `--model` |
 | Language | `--language` |
 | Max candidates | `--max-candidates` |
-| Must-include crash (ski styles only) | `--must-include-crash` |
+| Must-include crash (action-cam styles only) | `--must-include-crash` |
 | Skip scene detection | `--no-scenes` |
 | Recover after read errors | `--recover` |
 | Skip steps: Reactions, Keyframes, Crashes | `--skip reactions keyframes crashes` |
@@ -401,7 +401,7 @@ and the project view reports `preset_problem` (why the presets are off) and `pre
 earlier clips a second Make would replace). The analyze job takes `model`, `language`,
 `max_candidates`, `must_include_crash`, `no_scenes`, `recover` and `skip` (a list); a field it
 does not send keeps what the analysis used, which the project view reports as `analyze_options`
-(with `must_include_crash_default`, the style's value, `null` for styles other than ski).
+(with `must_include_crash_default`, the style's value, `null` for styles other than action-cam).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
@@ -685,7 +685,7 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `ski`, or a learned preset |
+| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), or a learned preset |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
@@ -716,11 +716,11 @@ scene cuts and never cut a word. Each signal is a named feature, and a style's w
 these features. The `score` is a candidate's weighted peak divided by the weights of the
 features this install can compute. A feature that needs a missing extra (the `events` extra
 in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,
-commentary) score the same on lite and full installs. Ski styles are renormalised the same way:
+commentary) score the same on lite and full installs. Action-cam styles are renormalised the same way:
 on lite their `events` features (`vlm`, `social`, `voice_laughter`, `beauty`, `scenic`,
 `people`, `group`, `voice`) are left out, and a renormalised score is capped at 100.
-The features it could compute are in `settings.features_available`. Ski candidates' `signals`
-name the ski features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
+The features it could compute are in `settings.features_available`. Action-cam candidates' `signals`
+name the action-cam features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
 before #514 phase 1b.
 
 Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` (0-100),
@@ -729,7 +729,7 @@ Whisper heard with confidence below 0.5 as `[index, confidence]`, the index coun
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
 only from a rating of 7). `timings` holds the seconds each step took and `total_s`, the whole
-analysis; a re-rank of an earlier analysis (`events` on ski projects, `360 analyze`,
+analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `360 analyze`,
 `crashes --reanalyze`) keeps that `total_s` and records its own time as `rerank_s`.
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
@@ -770,8 +770,8 @@ OCR in the background removes them.
 |---|---|
 | `transcribe` | Whisper transcription, scoring and scene detection |
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
-| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `ski` and `sport`, the CLIP visual layer, only with a CUDA GPU |
-| `crashes` | Action-cam footage only (telemetry found, or style `ski`, `action` or `sport`) |
+| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU |
+| `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
 | `vision` | Ollama frame rating, only when vision is on |
 
@@ -784,7 +784,7 @@ layer is not part of `analyze`; it stays in [`events`](#events) and `edit --even
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
 file, and a cancelled first run leaves none. The other result files are written with it, just
 before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
-`crash_check\` sheets, `activity.json` and, for `ski`, `telemetry.json` and `ski_features\`
+`crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `ski_features\`
 (older sheets and features of the project are removed at the same time). A failed or cancelled
 run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
 folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
@@ -835,7 +835,7 @@ layers, one GPU model at a time, and writes `events.json` and `events.txt`, then
 `highlights.json` (the original is kept as `highlights.pre-events.json`). The re-rank drops or
 trims candidates in HUD menu time, as `analyze` does ([game streams](workflows/game-streams.md)).
 
-Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the ski re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
+Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the action-cam re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
 
 | Layer | What |
 |---|---|

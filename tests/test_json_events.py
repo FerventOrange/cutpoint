@@ -99,7 +99,7 @@ def test_events_json_no_rescore(project, monkeypatch, capsys):
 
 def test_events_json_ski_rerank_skipped(project, monkeypatch, capsys):
     hl = cache.load_json(project / "highlights.json")
-    cache.save_json(project / "highlights.json", hl | {"style_kind": "ski"})
+    cache.save_json(project / "highlights.json", hl | {"style_kind": "action-cam"})
     _fake_run_events(monkeypatch, ["audio", "voice", "visual", "crash", "vlm"])
     monkeypatch.setattr(analyze, "reanalyze_if_reachable", lambda project: None)
     code, doc = run_json(capsys, ["events", "ev"])

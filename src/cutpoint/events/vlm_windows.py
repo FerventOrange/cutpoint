@@ -82,7 +82,7 @@ RESPONSE_SCHEMA: dict[str, Any] = {
     "required": ["events", "summary", "funny_score", "highlight_score", "label"],
 }
 
-# Ski (``style_kind == "ski"``): per-window tag strengths for the ski scorer.
+# Action-cam (``style_kind == "action-cam"``): per-window tag strengths for the ski scorer.
 SKI_PROMPT_VERSION = 1
 SKI_TAGS = (
     "jump_air",

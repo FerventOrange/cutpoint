@@ -1,6 +1,6 @@
 """Variety selection (``cutpoint mix``): a balanced set of moments from a ski day.
 
-The ``cutpoint analyze --style ski`` features (``<project>/ski_features``) are
+The ``cutpoint analyze --style action-cam`` features (``<project>/ski_features``) are
 peak-picked once per *category* with :func:`cutpoint.ski.pick` and
 category-specific weights, so a day of 360 footage does not collapse to the
 one signal that happens to be strong (laughs, group shots):
@@ -664,7 +664,9 @@ def run_mix(
     cands = [c for d in parts for c in part_candidates(d)]
     cands += crash_candidates((load_crashes(project) or {}).get("crashes", []))
     if not cands:
-        raise ValueError(f"No candidates in {project}; run `cutpoint analyze --style ski` first")
+        raise ValueError(
+            f"No candidates in {project}; run `cutpoint analyze --style action-cam` first"
+        )
     key = functools.cache(source_key)  # shared by every step: resolving reads the disk
     runs, starts = _runs_index(project, key)
     for c in cands:

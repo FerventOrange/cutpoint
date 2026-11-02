@@ -1,5 +1,5 @@
 """Development harness for the ski scorer: find a reference edit's shots in a project's
-sources and fit ski style weights to them. Not part of the package (formerly ``cutpoint refmatch``
+sources and fit action-cam style weights to them. Not part of the package (formerly ``cutpoint refmatch``
 and ``cutpoint fit``); presets it saves load as before (``--style <name>``).
 
 Usage::
@@ -9,12 +9,12 @@ Usage::
     uv run python scripts/refmatch.py fit trip day2 --name my_style --ablate
 
 ``match`` writes ``<project>/refmatch.json`` and side-by-side check frames in
-``<project>/refmatch_check``, then (by default on ``--style ski`` projects) fits and saves
+``<project>/refmatch_check``, then (by default on ``--style action-cam`` projects) fits and saves
 ``<CUTPOINT_HOME>/styles/<name>.json``. ``fit`` fits one preset on several projects that
 already have ``refmatch.json`` (run ``match --no-fit`` on each first), with held-out
 cross-validation, and writes ``<first project>/fit_report.json``; ``--ablate`` refits on
 feature subsets, ``--no-save`` only reports. Projects are named as on the ``cutpoint`` command
-line (bare name = projects folder). The project must have been analysed with ``--style ski``.
+line (bare name = projects folder). The project must have been analysed with ``--style action-cam``.
 
 How it works:
 
@@ -788,7 +788,7 @@ def mask_modes(thresholds: tuple[float, ...], default: float) -> tuple[float, ..
 def fit_weights(
     project: Path | list[FitData],
     result: dict[str, Any] | None = None,
-    base: str = "ski",
+    base: str = "action-cam",
     name: str | None = None,
     folds: int = 4,
     thresholds: tuple[float, ...] = (0, 7),
@@ -1002,7 +1002,7 @@ ABLATION_SETS = {
 
 def ablate(
     datasets: list[FitData],
-    base: str = "ski",
+    base: str = "action-cam",
     sets: dict[str, Any] | None = None,
     thresholds: tuple[float, ...] = (0, 7),
 ) -> list[dict[str, Any]]:
@@ -1106,7 +1106,9 @@ def run_refmatch(
     cache.save_json(project / "refmatch.json", result)
     logger.info("Wrote %s", project / "refmatch.json")
     if fit is None:
-        fit = hl.get("style_kind") == "ski"
+        from cutpoint.styles import ACTION_CAM, project_kind  # noqa: PLC0415
+
+        fit = project_kind(hl) == ACTION_CAM
     if fit:
         from cutpoint.styles import get_style  # noqa: PLC0415
 
@@ -1122,7 +1124,7 @@ def run_fit(
     projects: list[Path],
     *,
     name: str | None = None,
-    base: str = "ski",
+    base: str = "action-cam",
     do_ablate: bool = False,
     save: bool = True,
 ) -> dict[str, Any]:
@@ -1285,7 +1287,7 @@ def main(argv: list[str] | None = None) -> int:
     f = sub.add_parser("fit", help="fit one preset on several projects' refmatch.json")
     f.add_argument("projects", nargs="+", help="projects with refmatch.json")
     f.add_argument("--name", help="learned preset name (default: <base>_learned)")
-    f.add_argument("--base", default="ski", help="built-in preset whose features are fitted")
+    f.add_argument("--base", default="action-cam", help="built-in preset whose features are fitted")
     f.add_argument("--ablate", action="store_true", help="also refit on feature subsets")
     f.add_argument("--no-save", action="store_true", help="report only; write no preset")
     a = ap.parse_args(argv)

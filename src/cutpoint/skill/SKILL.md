@@ -27,7 +27,8 @@ it: it is the full reference.
 
 Style (`--style` on `cutpoint edit` and `cutpoint analyze`): go by what the user says about the
 footage, not the file name alone. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long
-talk) or `ski` (action-cam with telemetry); anything else: `action` or `gaming`.
+talk) or `action-cam` (action-cam footage, best with telemetry); anything else: `action` or
+`gaming`.
 
 One step ("edit this into a montage"):
 
