@@ -1124,6 +1124,27 @@ def test_a_cancel_during_the_final_commit_leaves_every_result_file_new(run, monk
     assert b"Here we go." in got["transcript.txt"]
 
 
+@pytest.mark.parametrize(("crashes", "want"), [(True, "generic"), (False, "ski")])
+def test_action_cam_candidates_are_picked_with_the_projects_activity_prompts(
+    run, monkeypatch, crashes, want
+):
+    """F3: the ranking step scores the beauty / people features (``ski.layer_features``,
+    ``frame_scores``) with the captions of the activity.json the crash step wrote."""
+    monkeypatch.setattr(ski, "prepare", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
+    seen = []
+
+    def pick(r, style, max_candidates, timings, ctx):
+        seen.append(activity.active_prompts().name)
+        return r.candidates
+
+    monkeypatch.setattr(analyze, "pick_candidates", pick)
+    run.plan = plan(crashes=("crash",)) if crashes else plan()
+    run.go("action-cam", layers=crashes)
+    assert seen == [want]
+    assert activity.active_prompts() == activity.default_prompts()
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch, cancel):
     """The stale features go and the new ones and telemetry.json come only when the run
