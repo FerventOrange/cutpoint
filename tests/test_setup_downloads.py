@@ -1,4 +1,4 @@
-"""events/setup: verified downloads and the PANNs checkpoint mirrors (issues #30, #35)."""
+"""events/setup: verified downloads, PANNs mirrors (issues #30, #35) and the aesthetic head."""
 
 from __future__ import annotations
 
@@ -105,3 +105,47 @@ def test_install_panns_malformed_env_url_is_a_failed_mirror(
     assert shown in warnings[0]
     assert "token" not in caplog.text.lower()  # urllib lowercases the scheme in its text
     assert "secret" not in caplog.text.lower()
+
+
+# -- the aesthetic head: .npz mirrors, the old pickled .pth removed --------------------------------
+
+
+def test_install_visual_tries_aesthetic_mirrors_in_order_and_drops_old_pth(
+    home, monkeypatch, caplog
+):
+    head = ev_paths.aesthetic_head()
+    old = write(head.with_suffix(".pth"), b"pickled")
+    old_part = write(head.with_name(head.with_suffix(".pth").name + ".part"), b"pick")
+    tried: list[str] = []
+
+    def fake_download(url, dst, size=None, sha256=None, min_rate=None):
+        tried.append(url)
+        assert (dst, size, sha256) == (head, setup.AESTHETIC_SIZE, setup.AESTHETIC_SHA256)
+        if len(tried) == 1:
+            raise OSError("mirror down")
+        return write(dst, b"npz")
+
+    monkeypatch.setattr(setup, "download", fake_download)
+    # lite: the head is still downloaded before the torch check stops the component
+    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda name: None)
+    with caplog.at_level("INFO"), pytest.raises(ModuleNotFoundError, match="torch"):
+        setup.install_visual()
+
+    assert tried == list(setup.AESTHETIC_MIRRORS)
+    assert "huggingface.co/FerventOrange/cutpoint-models/" in tried[0]
+    assert head.read_bytes() == b"npz"
+    assert not old.exists() and not old_part.exists()
+    assert len(messages(caplog)) == 1  # the failed first mirror
+
+
+def test_install_visual_keeps_old_pth_when_every_mirror_fails(home, monkeypatch):
+    head = ev_paths.aesthetic_head()
+    old = write(head.with_suffix(".pth"), b"pickled")
+
+    def fake_download(url, dst, *a, **k):
+        raise OSError("mirror down")
+
+    monkeypatch.setattr(setup, "download", fake_download)
+    with pytest.raises(RuntimeError):
+        setup.install_visual()
+    assert old.exists()

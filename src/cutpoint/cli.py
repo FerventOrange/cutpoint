@@ -1114,7 +1114,11 @@ def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
         "--ollama-url",
         help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
-    p.add_argument("--ollama-model", help="default: qwen3.5:9b")
+    p.add_argument(
+        "--ollama-model",
+        help="default: $CUTPOINT_VISION_MODEL, vision_assistant.model in config.json, or "
+        "qwen3.5:9b",
+    )
 
 
 def _add_source_filter_arguments(p: argparse.ArgumentParser) -> None:
@@ -1236,9 +1240,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run `cutpoint events` to re-rank the moments (needs the events extra and "
         "cutpoint setup)",
     )
-    _add_vision_arguments(
-        ed, "rate top candidates with a local Ollama vision model, as analyze --vision; "
-    )
+    _add_vision_arguments(ed, "rate top candidates with the vision model, as analyze --vision; ")
     _add_ollama_arguments(ed)
     _add_skip_argument(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
@@ -1256,7 +1258,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--style",
         choices=style_names(),
         default="gaming",
-        help="preset; learned presets in <CUTPOINT_HOME>/styles/*.json are listed too",
+        help="preset (default: gaming); learned presets in <CUTPOINT_HOME>/styles/*.json are "
+        "listed too",
     )
     an.add_argument(
         "--out",
@@ -1265,7 +1268,11 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: <projects>/<input name> (a file's name without extension, or the folder's "
         "name), or the common parent folder's name for several inputs",
     )
-    _add_vision_arguments(an, "rate top candidates with a local Ollama vision model; ")
+    _add_vision_arguments(
+        an,
+        "rate top candidates with the vision model (Ollama, or the vision_assistant provider in "
+        "config.json); ",
+    )
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
     an.add_argument("--no-scenes", action="store_true", help="skip scene detection")
@@ -1328,7 +1335,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ex.add_argument("--start", type=float, metavar="S", help="padding before (overrides)")
     ex.add_argument("--end", type=float, metavar="S", help="padding after (overrides)")
-    ex.add_argument("--out", help="output folder (default: sibling <clips_dir>_ext<S>s)")
+    ex.add_argument(
+        "--out",
+        help="output folder (default: sibling <clips_dir>_ext<S>s, _ext<A>-<B>s with "
+        "--start/--end, or _speech without padding)",
+    )
     ex.add_argument(
         "--force",
         action="store_true",
@@ -1349,8 +1360,9 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument(
         "--reuse",
         metavar="DIR",
-        help="earlier output folder: copy clips whose new in/out points, crop, "
-        "format and fade are identical there instead of re-encoding",
+        help="earlier output folder: copy clips whose source, new in/out points, crop, "
+        "grade, format and fade are identical there instead of re-encoding (not for "
+        "--compress-peaks or 360 clips)",
     )
     _add_pano_arguments(ex, None)
     _add_json_argument(ex)
@@ -1415,7 +1427,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="lower score accepted when it leads the next source/position by "
         "--margin (default 0.60)",
     )
-    rm.add_argument("--margin", type=float, default=0.25)
+    rm.add_argument(
+        "--margin",
+        type=float,
+        default=0.25,
+        help="lead over the next source/position needed for --margin-score (default 0.25)",
+    )
     rm.add_argument(
         "--cut-corr",
         type=float,
@@ -1591,14 +1608,24 @@ def build_parser() -> argparse.ArgumentParser:
         "or --vertical; the extension follows --format)",
     )
     _add_format_argument(asm)
-    asm.add_argument("--transition", choices=["cut", "fade"], default="cut")
+    asm.add_argument(
+        "--transition",
+        choices=["cut", "fade"],
+        default="cut",
+        help="how clips join: hard cut or crossfade (default: cut)",
+    )
     asm.add_argument(
         "--audio-transition",
         choices=AUDIO_TRANSITIONS,
         help="how the audio joins: cut or crossfade (default: cut with --transition cut, "
         "crossfade with fade); crossfade needs --transition fade",
     )
-    asm.add_argument("--fade-dur", type=positive_float, default=0.25)
+    asm.add_argument(
+        "--fade-dur",
+        type=positive_float,
+        default=0.25,
+        help="crossfade length in seconds with --transition fade (default 0.25)",
+    )
     asm.add_argument(
         "--loudnorm", action="store_true", help="normalise to -14 LUFS, true peak below -1.5 dBTP"
     )
@@ -1655,7 +1682,8 @@ def build_parser() -> argparse.ArgumentParser:
     pa = sub.add_parser(
         "paths",
         help="print the resolved data folders (CUTPOINT_HOME, "
-        "config, cache, models, tools, stage, styles, projects)",
+        "config, cache, models, tools, stage, styles, presets, profiles, projects, "
+        "bundled)",
     )
     _add_json_argument(pa)
     pa.set_defaults(func=_cmd_paths)
@@ -1720,7 +1748,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui = sub.add_parser(
         "ui",
-        help="serve the local browser workspace for standard video highlights (127.0.0.1 only)",
+        help="serve the local browser workspace (127.0.0.1 only)",
     )
     ui.add_argument("--port", type=_port, default=8765, help="port on 127.0.0.1 (default 8765)")
     ui.set_defaults(func=_cmd_ui)

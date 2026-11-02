@@ -22,7 +22,11 @@ CUTPOINT_HOME/
   sdk/insta360/    optional: your own Insta360 Media SDK (see docs/insta360-sdk.md)
   360-stitched/    optional: SDK stitch output (large)
   360-studio/      optional: Insta360 Studio equirect exports
+  cliproxy/        `cutpoint proxy` state: auths/ (working files while it runs), run/,
+                   keys.json, credential-recovery.enc; private to your user
 ```
+
+`tools/cliproxy/` holds the CLIProxyAPI build `cutpoint proxy` downloads.
 
 Folders are created when a command needs them.
 
@@ -44,12 +48,16 @@ All optional.
 | `CUTPOINT_EXPORT_WORKERS` | Clips `clips` and `edit` export at once: `auto` (default) or a number from 1 to 3. Overrides `export_workers` |
 | `CUTPOINT_VIDEO_DECODER` | `cpu` decodes every video on the CPU instead of NVDEC or VAAPI (analysis, HUD OCR, 360, UI proxies); unset or any other value detects the GPU decoder as usual (see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#which-video-encoder-is-used-and-why-not-the-gpu)) |
 | `CUTPOINT_ANALYZE_OVERLAP` | `0` turns off the background HUD OCR of `analyze` (on by default where it applies; see [analysis steps](commands.md#analysis-steps)). An escape hatch: the output is the same either way |
-| `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in. `split` also makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR; `0`, unset (default) or any other value leaves it off. It spools the OCR frames to the source's cache folder: the spool grows by as much as the OCR read lags behind the decode, up to about 2 GB (the decode then waits for the OCR read), and the mode needs free disk for that (or every OCR frame of a shorter source) plus 1 GB. The output is the same either way (see [analysis steps](commands.md#analysis-steps)) |
+| `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in: `split` makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR, spooling up to about 2 GB to the cache folder. Same output either way (see [analysis steps](commands.md#analysis-steps)) |
 | `CUTPOINT_FADE_COPY` | `0` re-encodes the whole video of `assemble --transition fade` instead of stream-copying between the fades (see [assemble](commands.md#assemble)). An escape hatch: the same number of frames at the same times, the same audio and the same timelines either way |
 | `CUTPOINT_PANNS_URL` | URL for the PANNs checkpoint, tried before the built-in mirrors (see [models troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete)) |
 | `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision`, the VLM layer of `cutpoint events`, `360 director --vl-check` and building activity profiles (default `qwen3.5:9b`; `qwen3-vl:8b`, the earlier default, still works); the AI Chat falls back to it when `qwen3.5:9b` is not pulled |
 | `CUTPOINT_INSTA360_SDK` | Full path to the SDK's `MediaSDKTest` executable (overrides `pano.sdk_exe`) |
 | `OLLAMA_HOST` | Ollama URL; overrides `ollama_url` (a bare `host:port` gets `http://`) |
+| `CUTPOINT_CLIPROXY_PORT` | Loopback port of the [`cutpoint proxy`](commands.md#proxy) daemon (default 18317, or the port saved at the last start) |
+| `CUTPOINT_CLIPROXY_BINARY` | CLIProxyAPI executable for `cutpoint proxy` to run instead of the pinned build it downloads |
+| `CUTPOINT_PROGRESS` | `1` adds `PROGRESS {...}` lines per step on stderr (see [progress output](commands.md#progress-output)) |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `CUTPOINT_ASSISTANT_API_KEY` | API keys of the hosted models in `cutpoint ui`, each sent only to its own host (see [assistant](#assistant)) |
 
 ## config.json
 
@@ -199,7 +207,11 @@ Default: none. Other step names are rejected.
 
 ### export_workers
 
-How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at a time with a GPU encoder (`video_encoder`), which otherwise sits mostly idle on short clips, and 1 with libx264, which already uses every core. A number sets it; values are clamped to 1-3, as consumer NVIDIA cards allow only a few NVENC sessions at once. `CUTPOINT_EXPORT_WORKERS` overrides it. A run with a 360 clip exports one clip at a time. The clips, their names and manifest.json are the same as with 1, and the per-clip log lines come in clip order; warnings from an export are logged when they happen. The first failure or Ctrl+C stops every export in progress and removes its partial file. One difference: with `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs. When NVENC has no free encode session (consumer NVIDIA drivers limit them, and ShadowPlay or OBS may hold one), the clip is not redone on the CPU: the rest of the run exports one clip at a time (one INFO line, "NVENC has no free encode session; exporting one clip at a time") and the clip is encoded on the GPU again once it runs alone; only if that fails too is it redone on the CPU as above.
+How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at a time with a GPU encoder (`video_encoder`), which otherwise sits mostly idle on short clips, and 1 with libx264, which already uses every core. A number sets it; values are clamped to 1-3, as consumer NVIDIA cards allow only a few NVENC sessions at once. `CUTPOINT_EXPORT_WORKERS` overrides it. A run with a 360 clip exports one clip at a time.
+
+The clips, their names and manifest.json are the same as with 1, and the per-clip log lines come in clip order; warnings from an export are logged when they happen. 
+
+Failure handling: the first failure or Ctrl+C stops every export in progress and removes its partial file. With `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs. When NVENC has no free encode session (consumer NVIDIA drivers limit them, and ShadowPlay or OBS may hold one), the clip is not redone on the CPU: the rest of the run exports one clip at a time (one INFO line, "NVENC has no free encode session; exporting one clip at a time") and the clip is encoded on the GPU again once it runs alone; only if that fails too is it redone on the CPU as above.
 
 ### assistant
 
@@ -278,27 +290,11 @@ dialogs never see them; they are also redacted from log lines and error messages
 OpenAI-compatible server on this machine needs no key. Ollama takes none.
 
 Subscription providers (`claude-code`, `codex`, `antigravity`): **Use at your own risk**.
-They do not use API keys. They authenticate through the local HTTPS `cutpoint proxy`
-daemon (CLIProxyAPI), bound to loopback `127.0.0.1:18317`, with a private per-start TLS identity.
-Subscription credentials use Cutpoint's existing keyring integration with a native OS backend;
-file-based backends and fallback after a native-backend failure are rejected. CLIProxyAPI needs
-private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/` while running. A separate
-supervisor checkpoints credentials and removals, survives a foreground CLI hard kill, and removes
-working files after stopping the daemon. Final keyring-write failures preserve the latest data
-in an authenticated encrypted recovery journal whose key lives only in the OS keyring.
-Whole-host/supervisor loss or failed recovery writes can still leave private working files;
-see [`proxy`](commands.md#proxy) for recovery, storage-encryption and refresh-durability limits.
-
-Configuration, the TLS private key, and separate random local client/management tokens remain
-private files in `<CUTPOINT_HOME>/cliproxy/`, including `keys.json` (`0700` directories and
-`0600` files on POSIX; verified protected user-only DACLs on Windows). Local tokens and the TLS
-identity rotate on every explicit start; the saved port is preserved. The proxy operates in
-commercial mode with prompt/error logging and prompt cloaking disabled. Model catalogs are
-populated from models advertised by the proxy daemon only after consent for the selected role.
-
-Temporary provider errors and rate-limit cooldowns do not remove an enabled, nonexpired login.
-The proxy's remote-store/Home environment overrides and the caller's `.env` cannot replace this
-private configuration; see [`proxy`](commands.md#proxy) for startup isolation and process lifetime.
+They use no API keys: they sign in through the local [`cutpoint proxy`](commands.md#proxy)
+daemon (CLIProxyAPI on `127.0.0.1:18317`, HTTPS with a private per-start TLS identity), and
+their credentials live in the native OS keyring. Model catalogs come from the proxy only after
+consent for the selected role. How credentials, working files, recovery and process lifetime
+are handled is described once, under [`proxy`](commands.md#proxy).
 
 ### pano
 

@@ -14,6 +14,10 @@ sources --> analyze --> highlights.json, transcript.txt
            extend (optional) --> clips_ext<S>s/
                 |
           assemble --> final.mp4, or final.fcpxml / final.otio (--format); + final.srt
+
+clips --vertical --> clips_vertical/  --assemble--> final_vertical.mp4
+assemble <project> --> .assemble-tmp-<id>/ (temporary clips, removed) --> final.mp4
+edit = analyze + clips + assemble (--no-keep-clips: the temporary path above)
 ```
 
 Each stage reads the previous stage's files in the project folder, so any stage can be re-run
@@ -25,12 +29,21 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 
 | Module | Role |
 |---|---|
-| `cli.py` | argparse entry point and error handling (exit codes 0, 1, 130) |
-| `ui.py`, `web/` | Optional loopback browser workspace; static ES modules, project/review API, scoped media/proxies, and isolated CLI subprocess jobs |
+| `cli.py`, `__main__.py` | argparse entry point and error handling (exit codes 0, 1, 2, 130); `python -m cutpoint` |
+| `edit.py` | `cutpoint edit`: analyze, clips and assemble in one run |
+| `jsonout.py`, `progress.py` | `--json` result envelope; `CUTPOINT_PROGRESS` lines |
+| `capabilities.py` | `cutpoint capabilities` report |
+| `skill/` | `cutpoint skill` and the packaged `SKILL.md` |
+| `ui.py`, `web/` | Loopback browser workspace; static ES modules, project/review API, scoped media/proxies, and isolated CLI subprocess jobs |
+| `cache.py`, `state.py`, `utils.py` | JSON cache files and atomic writes; project state; shared helpers |
+| `winjob.py` | Windows job object so child processes end with Cutpoint |
 | `paths.py`, `config.py` | `CUTPOINT_HOME` and every data location; `config.json`, projects folder, source remap |
 | `analyze.py`, `sources.py` | Signals, peak picking, merging, snapping, `highlights.json`; cached audio and transcripts per source |
+| `features.py`, `scorer.py`, `dsp.py`, `audio_tracks.py` | Named scoring features and the weighted scorer; signal processing; audio track selection |
+| `srt.py` | Subtitles of clips and finals |
+| `activity.py` | Activity profiles (`cutpoint profile`, `activity.json`) |
 | `transcribe.py`, `vision.py`, `backends.py` | faster-whisper wrapper; Ollama client; Ollama URL handling |
-| `assistant/` | Backend of the `cutpoint ui` assistant: `providers.py` (Ollama, OpenAI-compatible and Anthropic providers), `keys.py` (API keys), `session.py` (turns), `context.py`, `ops.py`, `store.py` (`ui/assistant/chat.json`, `history.json`); the page side is the AI Chat tab in `web/app.js` ([AI Chat](commands.md#ai-chat)) |
+| `assistant/` | Backend of the `cutpoint ui` assistant: `providers.py` (Ollama, OpenAI-compatible, Anthropic, xAI and the `claude-code`, `codex` and `antigravity` subscription providers), `keys.py` (API keys), `cliproxy.py`, `_proxy_guardian.py`, `proxy_credentials.py`, `proxy_tls.py`, `private_files.py` (the `cutpoint proxy` daemon, its supervisor, keyring credentials and recovery journal, loopback TLS identity, private files), `session.py` (turns), `context.py`, `ops.py`, `store.py` (`ui/assistant/chat.json`, `history.json`); the page side is the AI Chat tab in `web/app.js` ([AI Chat](commands.md#ai-chat)) |
 | `styles.py` | Built-in styles and learned styles |
 | `planning.py`, `clips.py`, `encode.py` | Moment selection and padding; ordering, export and manifest; format choice and frame-accurate encode |
 | `color.py` | `--color auto` / `underwater`: per-clip measurement, grade estimate, numpy simulation and veto, per-source cache; `scripts/color_eval.py` is its development harness |
@@ -41,8 +54,8 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `ffmpeg_utils.py` | ffmpeg discovery, probing, loudness, encoder choice, read-error detection |
 | `telemetry.py`, `ski.py`, `crash.py`, `refmatch.py`, `mix.py` | Action-cam module |
 | `extras.py` | Maps missing optional modules to the extra and install command |
-| `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, through the shared vision client in `vision.py`), `pipeline.py` to run them, `scoring.py` to feed results back; `setup.py` downloads models; `presets/` is the bundled HUD presets folder (no game presets ship) |
-| `pano/` | `cutpoint 360`: `x3.py` (clip discovery), `geometry.py` (IMU levelling), `views.py`, `director.py`, `render.py`, `stitch.py` (SDK wrapper), `qa.py`, `repair.py`, `project.py` (`pano.json` and the `pano` config section) |
+| `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`, `menu_spans.py`, `ocr_prefetch.py`, `ocr_raw.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, through the shared vision client in `vision.py`), `pipeline.py` to run them, `scoring.py` and `tails.py` to feed results back, `report.py` and `sheets.py` (`events.txt`, contact sheets), `common.py`, `eventtypes.py`, `paths.py`, `cli.py`; `setup.py` downloads models; `presets/` is the bundled HUD presets folder (no game presets ship) |
+| `pano/` | `cutpoint 360`: `x3.py` (clip discovery), `geometry.py` (IMU levelling), `views.py`, `director.py`, `render.py`, `stitch.py` (SDK wrapper), `qa.py`, `qa_compare.py`, `qa_horizon.py`, `qa_paths.py`, `check.py`, `vlcheck.py`, `candidates.py` (camera paths of the candidates), `repair.py`, `project.py` (`pano.json` and the `pano` config section), `cli.py`. Not optional code: `telemetry.py`, `analyze.py`, `mix.py` and `ski.py` import `pano.x3` or `pano.views`; only the SDK stitch is optional |
 
 See [360 director](workflows/360-director.md) for the 360 design.
 

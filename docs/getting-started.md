@@ -8,7 +8,7 @@
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
 | ffmpeg and ffprobe 5.1 or newer | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
-| Ollama (optional) | Only for `analyze --vision`, `360 director --vl-check`, new activity profiles and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
+| Ollama (optional) | Only for `analyze --vision`, `edit --vision`, `360 director --vl-check`, new activity profiles and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are large (see [Download models](#download-models-only-for-cutpoint-events)). Clips and finals are re-encoded, so budget for them in the project folder. |
 
 Windows and Linux are tested (CI runs the tests on both). The base
@@ -17,7 +17,23 @@ libraries cuBLAS and cuDNN, about 3.6 GB).
 
 ## Install
 
-Install ffmpeg and uv. On Windows:
+The installer is the quickest way. It installs uv and ffmpeg when they are missing, then
+Cutpoint as a global `cutpoint` command with the torch build for your machine (CUDA with an
+NVIDIA GPU, which includes the `gpu` extra). Run it again to upgrade or switch edition.
+
+```powershell
+irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+```
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh
+```
+
+For the lite edition (no torch), set `$env:CUTPOINT_LITE = 1` first on Windows, or use
+`sh -s -- --lite` on Linux and macOS. `sh install.sh --help` and `.\install.ps1 -Help` list the
+options.
+
+To work from a clone instead, install ffmpeg and uv. On Windows:
 
 ```powershell
 winget install --id Gyan.FFmpeg -e
@@ -60,7 +76,8 @@ line, or type or paste the paths; the
 buttons are hidden where the computer has no file dialog, such as Docker) and choose a highlight style. Run analysis, preview candidates, adjust their
 start/end times, and add them
 to the sequence. Reorder and save the sequence, export clips, then assemble a final video.
-The final preview includes download links for the MP4, FCPXML and OTIO files.
+The final preview includes download links for the final video or, with a timeline output format,
+the FCPXML or OTIO file, plus the `.srt` subtitles.
 
 The workspace is local-only and supports standard video. Source files are never modified.
 Insta360 X3 folders and files (`.insv`, `.lrv`) make 360 projects, analyzed and reframed as by
@@ -80,19 +97,13 @@ current browser tab's session storage. After restarting the server, open its new
 **Use at your own risk** when using a hosted API or subscription provider. In the Models tab,
 choose Chat and Vision independently; saving a model does not grant permission. Hosted model
 catalogs and requests load only after consent for that role. Ollama/Local shows no risk warning.
-
-For Claude Code, Codex or Antigravity subscriptions, first run `uv run cutpoint proxy` in a
-dedicated terminal, then `uv run cutpoint login claude-code` (or `codex` / `antigravity`),
-or sign in under Connected accounts. This also works in lite with `--no-group full`.
-The first proxy start downloads a checksum-verified binary of about 24 MB on demand; no
-`cutpoint setup` or full-edition models are needed. See [`proxy`](commands.md#proxy) and
-[`login`](commands.md#login). Subscription credentials require a native OS keyring; an
-unavailable keyring is an error. An independent supervisor cleans up the proxy's private
-plaintext working files even if the foreground CLI is killed. Final keyring-write failures use
-encrypted recovery, not a plaintext fallback. Whole-host/supervisor loss or failed recovery
-writes can still leave working files; see [`proxy`](commands.md#proxy) for recovery, encrypted
-storage and platform requirements. The loopback connection uses a private per-start TLS identity.
 Activity detection always uses Ollama, not the hosted Vision selection.
+
+For Claude Code, Codex or Antigravity subscriptions, run `uv run cutpoint proxy` in a dedicated
+terminal, then `uv run cutpoint login claude-code` (or `codex` / `antigravity`), or sign in under
+Connected accounts. It works in lite too, and needs a native OS keyring; the first start
+downloads a checksum-verified CLIProxyAPI binary (about 24 MB). How credentials are stored and
+cleaned up: [`proxy`](commands.md#proxy) and [`login`](commands.md#login).
 
 ### Optional extras
 
@@ -101,8 +112,10 @@ Activity detection always uses Ollama, not the hosted Vision selection.
 | `ui`, `ski`, `keyring` | Aliases that add nothing: the browser workspace (`cutpoint ui`), action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU, the 360 module) and saving an AI Chat API key in the system keyring are part of the core install. The names stay so `cutpoint[ui]` and `--extra ski` keep working. |
 | `events` | `cutpoint events`, `fit`, `refmatch --taste` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip, scikit-learn. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
-| `dev` | pytest, ruff, pre-commit. |
 | `all` | `events` and `gpu`. |
+
+The development tools (pytest, ruff, pre-commit) are the `dev` dependency group, not an extra; a
+clone's `uv sync` installs it.
 
 With `--no-group full`, `uv sync` makes the environment match exactly the extras you name, so it
 removes the packages of any extra you leave out. List every extra you use each time:
@@ -116,11 +129,10 @@ tools). It includes the large torch download of `events`.
 
 With an NVIDIA GPU, `uv sync --no-group full --extra gpu` is the minimum for GPU Whisper.
 
-The same rule applies when you add a missing extra later: use the install form that matches how
-you installed Cutpoint, and list every extra you use. In a clone a plain `uv sync` already has every
-extra; in a lite environment use `uv sync --no-group full --extra X` plus your other extras. For a tool install it is
-`uv tool install "cutpoint[X]" --reinstall` plus your other extras; for a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add
-the PyTorch index flags shown under [Install as a tool](#install-as-a-tool-optional).
+To add a missing extra later, use the form that matches how you installed Cutpoint. In a clone a
+plain `uv sync` already has every extra; in a lite environment use `uv sync --no-group full
+--extra X` plus your other extras. For a tool install, run the installer again (without
+`--lite`); a plain `uv tool install --reinstall` drops the torch build for your GPU.
 
 ### Install as a tool (optional)
 
@@ -140,19 +152,17 @@ Add extras with `uv tool install "cutpoint[events,gpu]"` (or `".[events,gpu]"` f
 clone); with pip, `pip install "cutpoint[gpu]"`. This path is not exercised by the project's tests; if it fails, use `uv sync` and
 `uv run`.
 
-A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on Windows. The CUDA
-12.6 index in `pyproject.toml` applies to a clone, to tool installs from a clone directory
-(including `--editable`) or a git URL, and to `uv pip install` from a clone directory or git URL
-(`uv pip` keeps an already-installed CPU-only torch unless you add `--reinstall-package torch
---reinstall-package torchvision`); these need no index flags. `pip` and PyPI or wheel installs do
-not apply it. For a PyPI or wheel install with an NVIDIA GPU and the `events` extra, add the PyTorch
-index (`all` is `events` and `gpu`):
+Where the torch build comes from:
 
-```powershell
-uv tool install "cutpoint[all]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
-```
-
-On an existing tool install, add `--reinstall`.
+- A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on Windows. With an
+  NVIDIA GPU and the `events` extra, pass the CUDA backend as the installer does (`all` is
+  `events` and `gpu`; on an existing tool install, add `--reinstall`):
+  `uv tool install "cutpoint[all]" --torch-backend cu126`.
+- The CUDA 12.6 index in `pyproject.toml` applies to a clone, to tool installs from a clone
+  directory (including `--editable`) or a git URL, and to `uv pip install` from a clone directory
+  or git URL; these need no flags. `uv pip` keeps an already-installed CPU-only torch unless you
+  add `--reinstall-package torch --reinstall-package torchvision`.
+- `pip` does not apply that index.
 
 Check it with `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
 (`True` means the GPU is used). On Linux:
@@ -201,14 +211,8 @@ This applies to Docker Engine on Linux. With Docker Desktop on Windows or macOS,
 already belong to your user, so skip `--user` (from a WSL shell `$(id -u)` works as written); with
 rootless Docker, files are mapped to your subordinate uid range.
 
-Upgrading from the 0.2.0 image, which ran as root: an existing `cutpoint-data` volume is
-root-owned and the new image fails with `Permission denied` on `/data`. Fix the volume once
-(use the build-arg uid:gid instead of `1000:1000` if you changed them):
-
-```bash
-docker run --rm --user 0 --entrypoint chown \
-  --mount source=cutpoint-data,target=/data cutpoint -R 1000:1000 /data
-```
+A `Permission denied` on `/data` with a volume from the 0.2.0 image: see
+[storage troubleshooting](troubleshooting/storage.md#docker-volume-from-the-020-image).
 
 Inside the UI, choose sources under `/footage`; the bind mount is read-only, so your videos are never
 modified. The `cutpoint-data` volume is `CUTPOINT_HOME=/data` and keeps projects, models and the
@@ -358,7 +362,7 @@ shell's `PATH` refreshes.
 
 ## Your first edit
 
-Use any video. Here one file becomes a highlights cut:
+Use any video. Here one file becomes a highlights cut (with the installer, drop `uv run`):
 
 ```powershell
 uv run cutpoint analyze D:\Videos\clip.mp4 --style gaming --out my-edit
@@ -366,7 +370,7 @@ uv run cutpoint clips my-edit --top 8
 uv run cutpoint assemble projects/my-edit/clips --transition fade --loudnorm
 ```
 
-On Linux: `uv run cutpoint analyze ~/Videos/ride.mp4 --style action --out my-edit`.
+On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style gaming --out my-edit`.
 
 1. `analyze` writes `highlights.json` (ranked candidates) and `transcript.txt` to the project.
 2. `clips` exports `clips\001_<label>.mp4`, `002_...` and a `manifest.json`.

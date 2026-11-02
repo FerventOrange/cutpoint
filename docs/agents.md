@@ -52,8 +52,8 @@ Cutpoint skill is installed:
 cutpoint skill install
 ```
 
-This writes `~/.claude/skills/cutpoint/SKILL.md`, the Claude Code user skills folder, so every
-project sees it. Use `--dir` for another folder: a project's `.claude/skills`
+This writes `~/.claude/skills/cutpoint/SKILL.md` (`$CLAUDE_CONFIG_DIR/skills/cutpoint/SKILL.md`
+when that variable is set), the Claude Code user skills folder, so every project sees it. Use `--dir` for another folder: a project's `.claude/skills`
 (`cutpoint skill install --dir .claude/skills`) or another agent's skills folder. If an
 installed skill differs (an older version or your own edits), the command stops with an error
 naming the file; add `--force` to replace it. Re-run it after upgrading Cutpoint. See

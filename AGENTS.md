@@ -13,7 +13,8 @@ everything into a project folder.
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
-| `cutpoint edit`: analyze, clips and assemble in one command; `analyze` includes the reaction, keyframe and crash steps | |
+| `cutpoint edit`: analyze, clips and assemble in one command | |
+| `cutpoint analyze` includes the reaction, keyframe and crash steps | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
@@ -23,14 +24,15 @@ everything into a project folder.
 | Automatic color correction per clip: `--color auto\|underwater` and `--color-strength` on `clips` and `edit` (not with `--lut`) | |
 | Output format on `assemble` and `edit`: `--format mp4` (default: the final video, no timelines) or `--format fcpxml\|otio` (only that timeline, referencing the kept clips, no encode) | |
 | Final video without keeping clips: `assemble <project>` (with `--top`, `--ids`, `--segments`, `--max-total` and the `clips` export options) and `edit --no-keep-clips` | |
+| Action-cam and 360 modules: `crashes`, `mix`, `refmatch`, `fit`, `360 ...` (see the workflow pages; `refmatch` and `fit` have no `--json`) | |
+| Commands the user runs, not you: `ui` (browser workspace), `proxy`, `login`, `logout` (subscription logins for the hosted models of `ui`). They have no `--json` | |
 
 If the user asks for "edit this video and make it a montage" in one step, use
 [One command](#one-command); to choose the moments yourself, use the loop below it.
 
-To let Claude Code find Cutpoint on its own, install the skill with `cutpoint skill install`
-(writes `~/.claude/skills/cutpoint/SKILL.md`; `--dir DIR` for a project's `.claude/skills` or
-another agent's folder). Ask the user first: it writes to their Claude Code settings folder.
-`cutpoint skill print` prints it for agents without a skills folder.
+To let Claude Code find Cutpoint on its own, the user can install the skill with
+`cutpoint skill install` (ask first: it writes to their Claude Code settings folder); see
+[docs/agents.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/agents.md#install-the-skill-claude-code).
 
 ## Calling the CLI
 
@@ -39,17 +41,13 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
   install, drop `uv run`. First-time setup is in
   [docs/getting-started.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
   Check it works with `cutpoint paths` (or `uv run cutpoint paths`).
-- Exit codes: `0` success, `1` error, `130` interrupted, `2` bad arguments.
-  On Windows, Ctrl+C or Ctrl+Break gives `130` and removes partial files; from a program, start
-  Cutpoint with `CREATE_NEW_PROCESS_GROUP` and send `CTRL_BREAK_EVENT` (`CTRL_C_EVENT` to a
-  process id is not delivered). To get `130`, run `.venv\Scripts\cutpoint.exe` (or the
-  tool-installed `cutpoint`) directly: under `uv run`, Cutpoint still cleans up but uv exits
-  `0xC000013A`. `taskkill /F`, `Stop-Process` and `Popen.terminate()`/`kill()`
-  stop it without cleanup (exit `1`; `-1` from `Stop-Process`).
+- Exit codes: `0` success, `1` error, `130` interrupted, `2` bad arguments. To stop a run from a
+  program on Windows and keep the cleanup, see
+  [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#stopping-a-run).
 - Logs and errors go to stderr as `HH:MM:SS LEVEL message`; errors are `ERROR` lines. Use
   `cutpoint -v <command>` (flag before the command) for debug output and tracebacks.
-- Paths inside a project must start with `projects/<name>/...` (forward slashes work on every OS; do not use backslashes in bash) or be absolute; a bare name means
-  the project itself.
+- Paths inside a project must start with `projects/<name>/...` or be absolute; a bare name
+  means the project itself. Forward slashes work on every OS; do not use backslashes in bash.
 - Results are files. Read the JSON files below instead of parsing logs. `--json` (on the commands in
   the Status table) also writes one JSON object to stdout, with the file paths and warnings:
   `ok`, `command`, `schema`, `project`, `outputs`, `warnings` (`code`, `message`, `files`) and
@@ -58,14 +56,16 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
   `--clip-override`), `not_found`,
   `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `folder_busy` (another run holds the folder's lock: wait or retry),
   `interrupted` (130) or `error`.
-  Read `warnings` such as `kept_clips`, `kept_sources` and `step_failed` and tell the user. With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step ([docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output)). Keys:
-  [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output).
+  Read `warnings` such as `kept_clips`, `kept_sources` and `step_failed` and tell the user.
+  With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step. Keys of both:
+  [docs/commands.md#json-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output)
+  and [#progress-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output).
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
-  `clips` refuses a non-empty output folder without `--force`, which replaces only the clips its
-  `manifest.json` lists, once every new clip is exported (other files, sources included, stay;
-  clips renamed or added by hand stay and are assembled; a WARNING names them, so tell the
-  user, and move them out only if they are clips you exported, never delete a file you did not
-  export). If such a clip has the name of a new clip, the run stops before exporting with an
+- `clips` refuses a non-empty output folder without `--force`. `--force` replaces only the clips
+  its `manifest.json` lists, once every new clip is exported; every other file stays, sources
+  included. Clips renamed or added by hand stay and are assembled: a WARNING names them. Tell
+  the user; move them out only if you exported them, and never delete a file you did not
+  export. If such a clip has the name of a new clip, the run stops before exporting with an
   `ERROR` naming it; tell the user to move or rename it.
 - One run at a time works on a clips folder (lock file `.<folder>.cutpoint-lock`). If `clips`,
   `extend` or `assemble` stops with an `ERROR` that another run holds the lock, wait for it;
@@ -86,20 +86,25 @@ another agent's folder). Ask the user first: it writes to their Claude Code sett
 uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 ```
 
-`--kind` is `highlights` (default; up to 3 min, chronological, crossfades), `montage` (up to
-60 s, best first, crossfades), `clips` (the 10 best; the clips are the deliverable) or
-`funny-moments` (funny style, 8 moments, chronological, burned-in captions). `--style`, `--top`,
-`--max-total`, `--vertical`, `--force` and `--events` override the kind; `--no-keep-clips`
-exports the clips into a temporary folder that is removed after the join (not with `--kind
-clips`); `--format fcpxml|otio` writes that timeline instead of the final video (clips kept); `--vision` adds the
-optional Ollama frame rating (off for every style unless `"vision": true` in the user's
-`config.json` turns it on by default; `--no-vision` then skips it), and `--vision-top`, `--ollama-url` and `--ollama-model` work as on `analyze`. It writes the project
-`<projects>\clip` (`--out NAME` to change it) with the clips, `final.mp4` and
-`clip-final.mp4` plus `.srt` subtitles; the last log lines name the final video, its subtitles
-and the clips folder (`none (temporary, removed)` with `--no-keep-clips`). A non-empty clips
-folder needs `--force` (ask the user first, as for `clips --force`); with `--no-keep-clips` it
-is left alone. To change the cut, review and re-assemble as in steps 5-7 below; that
-updates `final.mp4` and `final.srt`, not the `clip-final` copies.
+- `--kind` is `highlights` (default; up to 3 min, chronological, crossfades), `montage` (up to
+  60 s, best first, crossfades), `clips` (the 10 best; the clips are the deliverable) or
+  `funny-moments` (funny style, 8 moments, chronological, burned-in captions).
+- Options: `--style`, `--top`, `--max-total`, `--vertical`, `--force` and `--events` override
+  the kind. `--no-keep-clips` exports the clips into a temporary folder that is removed after
+  the join (not with `--kind clips`). `--format fcpxml|otio` writes that timeline instead of
+  the final video (clips kept). `--vision` adds the optional frame rating (Ollama by default;
+  the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
+  for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
+  then skips it. `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
+  `analyze`; `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as
+  on `clips`.
+- Outputs: the project `<projects>/clip` (`--out NAME` to change it) with the clips,
+  `final.mp4` and `clip-final.mp4` plus `.srt` subtitles. The last log lines name the final
+  video, its subtitles and the clips folder (`none (temporary, removed)` with
+  `--no-keep-clips`). To change the cut, review and re-assemble as in steps 5-7 below; that
+  updates `final.mp4` and `final.srt`, not the `clip-final` copies.
+- A non-empty clips folder needs `--force` (ask the user first, as for `clips --force`); with
+  `--no-keep-clips` it is left alone.
 
 ## The full edit
 
@@ -116,17 +121,18 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
 
    On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style funny --out clip-edit`.
 
-   Writes `highlights.json` and `transcript.txt` into the project folder (`<projects>\clip-edit`, see
-   `cutpoint paths`).
+   Writes `highlights.json` and `transcript.txt` into the project folder
+   (`<projects>/clip-edit`, see `cutpoint paths`). It also runs the reaction, keyframe and crash
+   steps it can and writes `events.json` and `events.txt`; a step is skipped with an INFO line
+   when the extra or model files are missing, and `--skip reactions keyframes crashes`, given
+   after the paths, leaves them out.
 3. **Optional, for the VLM layer or to force layers:**
    `uv run cutpoint events clip-edit` (needs the `events` extra and `cutpoint setup`; the VLM
    layer needs Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the
-   Models tab of `cutpoint ui`, and is skipped with a WARNING when neither answers).
-   `analyze` already ran the reaction, keyframe and crash steps it can (steps are skipped with
-   an INFO line when the extra or model files are missing; `--skip reactions keyframes crashes`, given after the paths,
-   leaves them out) and wrote `events.json` and `events.txt`. `events` adds the VLM layer,
-   re-ranks `highlights.json` and rewrites those files. If it reports a missing
-   module, tell the user how to add the extra (see [When something fails](#when-something-fails)).
+   Models tab of `cutpoint ui`, and is skipped with a WARNING when neither answers). It adds
+   the VLM layer, re-ranks `highlights.json` and rewrites `events.json` and `events.txt`. If it
+   reports a missing module, tell the user how to add the extra (see
+   [When something fails](#when-something-fails)).
 4. **Choose moments.** Read `highlights.json` (`candidates` with `id`, `source`, `start`, `end`,
    `score` 0-100, `label`, `transcript`; `suggested_top`) and, for banter and funny moments,
    `transcript.txt` (`[file.mp4 00:12:31.4-00:12:38.9] text`). Then either:
@@ -155,8 +161,7 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    Writes `final.mp4` and `final.srt` in the project folder, and no timelines. If the user
    wants to keep editing in DaVinci Resolve or Final Cut Pro, add `--format fcpxml` (or
    `--format otio`): it writes only `final.fcpxml` (or `final.otio`) and `final.srt`,
-   referencing the clips, without making `final.mp4`. Scripts that expect `final.fcpxml` or
-   `final.otio` must now pass `--format`; `assemble` no longer writes both.
+   referencing the clips, without making `final.mp4`.
 7. **Report** the paths of `final.mp4` (or the timeline) and the clips folder.
 
 If the user wants only the final video and does not want to review clips, skip steps 4-6:
@@ -175,7 +180,7 @@ Variants:
 | "Extra" instruction such as "only funny moments" or "keep the speech intact" | Choose `--style`, filter candidates by `transcript`/`label`, use `--segments`. The CLI does not parse these instructions |
 | The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used). Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |
 | Room to trim in an editor | `clips ... --extend 1.5` or `extend <clips_dir> --seconds 2` |
-| The user asks to fix dull, washed-out or tinted colors | `clips <project> --color auto` (or on `edit`); `--color underwater` only for underwater footage or when an INFO line suggests it. Clips that look good, log footage, 360 clips and clips a safety check vetoes stay as they are; tell the user which clips were not graded and why (`color.skip` of each clip in `clips/manifest.json`: `good`, `log`, `360`, `no_frames`, `not_underwater` (`--color underwater` on a clip that does not look underwater, open blue ocean water included), or a veto: `veto_clipped`, `veto_cast`, `veto_m3` for too much color, `veto_m3_drop` (`auto`) or `veto_faded` (`underwater`) for too little). `assemble <project>` (mp4) and `edit --no-keep-clips` keep no manifest: report the clips not graded from the per-clip INFO lines of the run instead |
+| The user asks to fix dull, washed-out or tinted colors | `clips <project> --color auto` (or on `edit`); `--color underwater` only for underwater footage or when an INFO line suggests it. Clips that look good, log footage, 360 clips and clips a safety check vetoes stay as they are: tell the user which clips were not graded and why, from `color.skip` of each clip in `clips/manifest.json` (codes: [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#clips), **Automatic color**). `assemble <project>` (mp4) and `edit --no-keep-clips` keep no manifest: use the per-clip INFO lines of the run instead |
 | The user gives a LUT for log or flat footage ("use my GoPro Flat LUT") | `clips <project> --lut <file>.cube` (or on `edit`); `--lut-strength 0.5` for half the grade. Only with a LUT the user names; never pick one for them |
 | 360 (Insta360 X3) footage | [docs/workflows/360.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/360.md) |
 | Action-cam with telemetry | [docs/workflows/action-cam.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/workflows/action-cam.md) |
@@ -205,7 +210,8 @@ The usual causes: ffmpeg not on `PATH`, a missing optional extra, Ollama not rea
 affects `--vision`), a non-empty output folder.
 
 Whisper runs on the CPU unless the `gpu` extra is installed; if the user has an NVIDIA GPU and
-`transcribe` logs an INFO line about missing CUDA libraries, add `gpu` the same way as below.
+`transcribe` logs an INFO line about missing CUDA libraries, add `gpu` with the install command
+for their install (next list).
 
 Cutpoint comes as full (every feature) or lite (no torch: no `events` and `gpu` extras).
 `cutpoint capabilities --json` names it in `outputs.edition`. A feature that needs a missing extra
@@ -233,7 +239,7 @@ action-cam telemetry are in every install.
 ## Rules
 
 - Ask the user before running `cutpoint setup` (about 2 GB of downloads), `cutpoint stage`
-  (copies footage to local disk), `clips --force` over an existing folder or
+  (copies footage to local disk), `clips --force` or `edit --force` over an existing folder or
   `cutpoint skill install` (writes to their Claude Code settings folder).
 - Do not paste Insta360 SDK files, documentation or output into any file or message, other than
   `error:` lines.

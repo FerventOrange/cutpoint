@@ -1,7 +1,8 @@
 # Troubleshooting
 
 Start with `cutpoint -v <command> ...`: `-v` turns on debug logging and prints tracebacks. Errors
-are logged as `ERROR` lines and the command exits with status 1.
+are logged as `ERROR` lines and the command exits with status 1 (2 for a bad command line, 130
+when interrupted).
 
 | Symptom | Page |
 |---|---|
@@ -9,6 +10,7 @@ are logged as `ERROR` lines and the command exits with status 1.
 | Ollama not reachable or model not pulled (`--vision`, the `events` VLM layer, AI Chat), model downloads fail, missing module, `setup` problems | [Models and Ollama](models.md) |
 | Disk full, slow or network drives, read errors, damaged files | [Storage](storage.md) |
 | 360 clips, SDK not found, stitching fails | [360 and the Insta360 SDK](360.md) |
+
 ## Quick checks
 
 ```powershell

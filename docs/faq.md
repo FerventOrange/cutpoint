@@ -5,7 +5,8 @@ No. Sources are only read. Everything is written to a project folder.
 
 **Does it need an internet connection or API keys?**
 No for editing. Whisper and the optional models download once. The analysis models run locally,
-so the agent driving Cutpoint does not spend API credits on video.
+so the agent driving Cutpoint does not spend API credits on video. Hosted models (API keys or
+subscription logins in `cutpoint ui`) are optional and off by default.
 
 **Which agents work with it?**
 Any agent that can run shell commands (Claude Code, Codex, Grok CLI, others). See
@@ -24,6 +25,7 @@ Windows and Linux; the test suite runs on both in CI. The model layers run on an
 when torch reaches CUDA, otherwise on the CPU; the VLM layer of `cutpoint events` uses Ollama
 (or a hosted Vision model you allowed), which picks its own GPU backend.
 See [Models and Ollama troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete).
+
 **What kinds of video work?**
 Gameplay, action-cam, sport, funny moments and commentary or talk. Pick the matching `--style`
 ([Configuration](configuration.md#styles)). Scoring is heuristic and works best when there is
