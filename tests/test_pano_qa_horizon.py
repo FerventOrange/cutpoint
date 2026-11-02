@@ -18,41 +18,21 @@ from cutpoint.ffmpeg_utils import VideoEncoder
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, qa, render
 from cutpoint.pano import qa_horizon as H
-from pano_helpers import LRV, orientation, x3clip
+from pano_helpers import LRV, orientation, qmul, quat, x3clip
 
 FPS = 30.0
 N = 900  # 30 s of IMU
 
 
-def _q(axis: tuple[float, float, float], deg: np.ndarray) -> np.ndarray:
-    """Quaternions ``(w, x, y, z)`` of right-handed turns by ``deg`` about ``axis``."""
-    h = np.radians(deg) / 2
-    return np.concatenate([np.cos(h)[:, None], np.sin(h)[:, None] * np.asarray(axis)], 1)
-
-
-def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    w1, x1, y1, z1 = a.T
-    w2, x2, y2, z2 = b.T
-    return np.stack(
-        [
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-        ],
-        1,
-    )
-
-
 def _riding() -> G.Orientation:
     """Sky lens up (camera -> world Rp(-90)), turning, leaning +-20 deg and shaking."""
     t = np.arange(N) / FPS
-    mount = _q((1, 0, 0), np.full(N, -90.0))
+    mount = quat((1, 0, 0), np.full(N, -90.0))
     lean = 20 * np.sin(2 * np.pi * t / 6) + 3 * np.sin(2 * np.pi * t * 7)
     heading = 15 * t + 4 * np.sin(2 * np.pi * t * 3)
     pitch = 8 * np.sin(2 * np.pi * t / 5)
-    q = _qmul(
-        _q((0, 1, 0), heading), _qmul(_q((1, 0, 0), pitch), _qmul(_q((0, 0, 1), lean), mount))
+    q = qmul(
+        quat((0, 1, 0), heading), qmul(quat((1, 0, 0), pitch), qmul(quat((0, 0, 1), lean), mount))
     )
     return orientation(N, FPS, q)
 
@@ -235,7 +215,7 @@ def test_first_frame_is_the_seek_frame_at_ntsc_rates(tmp_path) -> None:
     """A 6-decimal header start at 29.97 fps maps back to its own frame, not the next."""
     fps = 30000 / 1001
     t = np.arange(1200) / fps
-    q = _qmul(_q((0, 0, 1), t * 30.0), _q((1, 0, 0), np.full(1200, -90.0)))  # rolling fast
+    q = qmul(quat((0, 0, 1), t * 30.0), quat((1, 0, 0), np.full(1200, -90.0)))  # rolling fast
     orient = orientation(1200, fps, q)
     for j0 in range(900, 1000):
         cmd = tmp_path / "a.cmd"
@@ -275,7 +255,7 @@ def test_replay_follows_the_v360_conventions(tmp_path) -> None:
 
 def test_level_camera_through_a_still_view_shows_no_roll(tmp_path) -> None:
     """Sky lens up and level, view straight ahead: R = Rp(90), the horizon is level."""
-    orient = orientation(60, FPS, _q((1, 0, 0), np.full(60, -90.0)))
+    orient = orientation(60, FPS, quat((1, 0, 0), np.full(60, -90.0)))
     cmd = tmp_path / "a.cmd"
     y, p, r = G.decompose_ryp(G.rot_p(90.0) @ G.rot_y(30.0))
     cmd.write_text(

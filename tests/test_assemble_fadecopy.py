@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import shutil
 import subprocess
@@ -13,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from assemble_helpers import SHORT, export_clips
 from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, encode, sources
 from cutpoint.assemble import Body, Run, VideoPackets
@@ -65,35 +65,6 @@ def test_edge_keyframes_lie_inside_the_clip_and_are_idr_on_nvenc():
     assert encode.edge_keyframes(VideoEncoder("amf"), 4.0) == []
 
 
-SPANS = [(0.5, 5.5), (6.0, 10.2), (10.5, 15.5)]  # source seconds of the three clips
-SHORT = [(0.5, 4.5), (5.0, 8.5), (9.0, 12.0)]  # 4, 3.5 and 3 s
-
-
-def _export_clips(tmp_path: Path, rate: str = "30", spans=SPANS) -> Path:
-    src = tmp_path / "src.mp4"
-    subprocess.run(
-        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
-         f"testsrc2=size=320x180:rate={rate}:duration=16,"
-         "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
-         "-f", "lavfi", "-i", "sine=frequency=330:beep_factor=3:sample_rate=48000:duration=16",
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-color_primaries", "bt709", "-color_trc",
-         "bt709", "-colorspace", "bt709", "-color_range", "tv", "-c:a", "aac", str(src)],
-        check=True,
-    )  # fmt: skip
-    clips = tmp_path / "clips"
-    clips.mkdir()
-    fps = round(float(Fraction(rate)))
-    info, fmt, entries = probe(src), encode.OutputFormat(320, 180, fps), []
-    if rate != str(fps):  # export_clip writes the rate into the filter: keep 30000/1001
-        fmt = encode.OutputFormat(320, 180, rate)  # type: ignore[arg-type]
-    for n, (a, b) in enumerate(spans, 1):
-        name = f"{n:03d}_m.mp4"
-        encode.export_clip(src, info, a, b, clips / name, fmt, False, audio_fade=0.25)
-        entries.append({"file": name, "source": str(src), "start": a, "end": b, "audio_fade": 0.25})
-    (clips / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
-    return clips
-
-
 def _frames_and_audio(path: Path) -> tuple[str, str]:
     frames = subprocess.run(
         [shutil.which("ffprobe"), "-v", "error", "-select_streams", "v:0", "-count_packets",
@@ -109,7 +80,7 @@ def _frames_and_audio(path: Path) -> tuple[str, str]:
 
 @needs_ffmpeg
 def test_exported_clips_get_keyframes_near_both_ends(tmp_path):
-    clip = _export_clips(tmp_path) / "001_m.mp4"
+    clip = export_clips(tmp_path) / "001_m.mp4"
     keys = assemble._video_packets(clip, Fraction(30)).keys
     assert {15, 135} <= set(keys)  # 0.5 s in and 0.5 s before frame 150
 
@@ -119,7 +90,7 @@ def test_exported_clips_get_keyframes_near_both_ends(tmp_path):
 def test_the_copied_crossfade_has_the_old_frames_and_audio(tmp_path, monkeypatch, caplog, audio):
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    clips = _export_clips(tmp_path)
+    clips = export_clips(tmp_path)
     kw = {"transition": "fade", "fade_dur": 0.25, "audio_transition": audio}
     monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
     old = assemble.assemble(clips, **kw)
@@ -153,7 +124,7 @@ def test_a_60_fps_window_of_no_whole_milliseconds_takes_the_fast_path(
     # In a 1000 Hz movie header the concat demuxer started the next piece off the frame grid.
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    clips = _export_clips(tmp_path, "60", SHORT)
+    clips = export_clips(tmp_path, "60", SHORT)
     kw = {"transition": "fade", "fade_dur": 16 / 60}
     monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
     old = shutil.move(assemble.assemble(clips, **kw), tmp_path / "old.mp4")
@@ -258,7 +229,7 @@ def test_a_percent_sign_in_the_project_path_still_takes_the_fast_path(
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     folder = tmp_path / "100%d 50%"
     folder.mkdir()
-    clips = _export_clips(folder, spans=SHORT)
+    clips = export_clips(folder, spans=SHORT)
     caplog.set_level(logging.INFO)
     final = assemble.assemble(clips, transition="fade", fade_dur=0.25)
     assert "stream-copied the rest" in caplog.text
@@ -270,7 +241,7 @@ def test_a_percent_sign_in_the_project_path_still_takes_the_fast_path(
 def test_a_missing_copied_piece_falls_back_to_the_old_join(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    clips = _export_clips(tmp_path, spans=SHORT)
+    clips = export_clips(tmp_path, spans=SHORT)
     real = assemble.run
 
     def no_segments(args, **kw):  # the segment muxer "succeeds" but writes no pieces
@@ -452,7 +423,7 @@ def test_the_copied_join_equals_the_old_one_in_everything_but_its_encoder_bytes(
 ):
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setattr(sources, "source_words", _words)
-    clips = _export_clips(tmp_path, rate, SHORT)
+    clips = export_clips(tmp_path, rate, SHORT)
     # The default fade: the forced keyframes 0.5 s from the ends cover it.
     kw = {"transition": transition, "fade_dur": 0.25, "audio_transition": audio}
     monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
@@ -503,7 +474,7 @@ def test_clips_the_fast_path_cannot_join_get_the_old_join_and_the_reason(
 ):
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    clips = _export_clips(tmp_path, "30", SHORT)
+    clips = export_clips(tmp_path, "30", SHORT)
     _make_clip(clips / "002_m.mp4", **odd)
     caplog.set_level(logging.INFO)
     final = assemble.assemble(clips, transition="fade", fade_dur=1.0)

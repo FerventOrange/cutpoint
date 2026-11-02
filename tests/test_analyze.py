@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import media_info, remap, set_config, write
+from conftest import StubTranscriber, media_info, remap, set_config, write
 from cutpoint import analyze, config, extras, features, reset_state
 from cutpoint.styles import get_style
 
@@ -127,15 +127,6 @@ def _stub_probe_and_transcriber(monkeypatch) -> list[Path]:
             path, 60.0, width=640, height=360, audio_streams=0,
             acodec=None, sample_rate=None, channels=None,
         )  # fmt: skip
-
-    class StubTranscriber:
-        model_name, device = "stub", "cpu"
-
-        def __init__(self, **_):
-            pass
-
-        def close(self):
-            pass
 
     monkeypatch.setattr(analyze, "probe", fake_probe)
     monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)

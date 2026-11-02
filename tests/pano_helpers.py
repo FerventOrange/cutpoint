@@ -52,3 +52,40 @@ def x3clip(**over) -> X3Clip:
         "insv": list(INSV),
     }
     return X3Clip(**(fields | over))
+
+
+def quat(axis: tuple[float, float, float], deg) -> np.ndarray:
+    """Quaternion(s) ``(w, x, y, z)`` of right-handed turns by ``deg`` (a number or an array)
+    about ``axis``."""
+    h = np.radians(np.asarray(deg, float)) / 2
+    axis_ = np.asarray(axis, float)
+    return np.concatenate([np.cos(h)[..., None], np.sin(h)[..., None] * axis_], -1)
+
+
+def qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Hamilton product of quaternions (or stacks of them, broadcast) ``a * b``."""
+    w1, x1, y1, z1 = np.moveaxis(np.asarray(a), -1, 0)
+    w2, x2, y2, z2 = np.moveaxis(np.asarray(b), -1, 0)
+    return np.stack(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ],
+        -1,
+    )
+
+
+def fuse_rotations(t: np.ndarray, rm: np.ndarray, fps: float, frames: int) -> G.Orientation:
+    """``geometry.fuse`` of the synthetic IMU of a camera whose camera -> world rotation at the
+    sample times ``t`` (uniform steps) is ``rm`` ``(K, 3, 3)``: the gyro is the body-frame rate
+    between samples, the accelerometer reads gravity only."""
+    dt = float(t[1] - t[0])
+    rel = np.einsum("kji,kjl->kil", rm[:-1], rm[1:])  # small body-frame steps
+    w = np.stack(
+        [rel[:, 2, 1] - rel[:, 1, 2], rel[:, 0, 2] - rel[:, 2, 0], rel[:, 1, 0] - rel[:, 0, 1]], 1
+    ) / (2 * dt)
+    w = np.vstack([np.zeros(3), w])
+    a_v = np.einsum("kji,j->ki", rm, [0.0, -G.G, 0.0])
+    return G.fuse(t, a_v @ G.M_IMU_TO_V, np.degrees(w) @ G.M_IMU_TO_V, fps, frames)

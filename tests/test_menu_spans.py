@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from conftest import write
+from conftest import StubTranscriber, write
 from cutpoint import cache, sources
 from cutpoint.events import pipeline, scoring
 from cutpoint.events.menu_spans import drop_menu_time, merge_menu_frames
@@ -189,15 +189,6 @@ def test_analyze_drops_candidates_in_menu_time(tmp_path, home, monkeypatch) -> N
             analyze.Candidate(src, 30.0, 50.0, 35.0, 1.0, {"loudness": 1.0}, score=40.0),
         ]
         return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
-
-    class StubTranscriber:
-        model_name, device = "stub", "cpu"
-
-        def __init__(self, **_):
-            pass
-
-        def close(self):
-            pass
 
     monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
     monkeypatch.setattr(analyze, "analyze_source", fake_analyze_source)
