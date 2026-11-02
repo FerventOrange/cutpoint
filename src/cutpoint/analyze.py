@@ -59,7 +59,7 @@ from cutpoint.ffmpeg_utils import (
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors
-from cutpoint.styles import LAUGHTER, PROFANITY, Style
+from cutpoint.styles import ACTION_CAM, LAUGHTER, PROFANITY, Style
 from cutpoint.transcribe import (
     Segment,
     Transcriber,
@@ -1099,7 +1099,7 @@ def _find_inputs(
 
 # --------------------------------------------------------------------------- analysis steps
 GAME_STYLES = ("gaming", "funny")  # keyframes: HUD OCR (with region discovery)
-ACTION_STYLES = ("action", "sport", "ski")  # keyframes: CLIP; crash detection
+ACTION_STYLES = ("action", "sport", ACTION_CAM)  # keyframes: CLIP; crash detection
 # Skip reasons of plan_layers (the PROGRESS ``detail``) and, for keyframes, why
 # crashes.json has no visual layer (its ``no_visual_layer`` warning).
 SKIP_OPTION = "left out by --skip or analysis.skip"
@@ -1175,7 +1175,7 @@ def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) ->
     with one INFO line naming the fix; nothing is downloaded.
     """
     plan = LayerPlan(game=style.base in GAME_STYLES)
-    action = style.kind == "ski" or style.base in ACTION_STYLES
+    action = style.kind == ACTION_CAM or style.base in ACTION_STYLES
     for step in SKIPPABLE:
         if step in skip:
             plan.skipped[step] = SKIP_OPTION
@@ -1606,7 +1606,7 @@ def _analyze(
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
         ski_ctx = None
-        if style.kind == "ski":
+        if style.kind == ACTION_CAM:
             from cutpoint import ski  # noqa: PLC0415
 
             t0 = time.perf_counter()
@@ -1732,7 +1732,7 @@ def _analyze(
                         "mask_friends": style.mask_friends,
                         "must_include_crash": style.must_include_crash,
                     }
-                    if style.kind == "ski"
+                    if style.kind == ACTION_CAM
                     else {}
                 ),
                 "whisper_model": tr.model_name,
@@ -1819,7 +1819,7 @@ def _analyze(
                 logger.info("%s: %d candidates", r.source.name, len(r.candidates))
         hl["candidates"] = records()
         ev = None
-        if style.kind != "ski":  # ski: the events are features of the scorer itself
+        if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer
             ev = cache.load_json(out_dir / "events.json")
         if ev:
             drop_menu_time(hl, ev)

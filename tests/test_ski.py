@@ -130,7 +130,7 @@ def test_old_learned_presets_still_load(home: Path) -> None:
     ``mask_friends`` is a hard mask."""
     styles = home / "styles"
     styles.mkdir(parents=True)
-    preset = {"name": "old", "base": "ski", "weights": {"speed": 1.0}, "mask_friends": 5}
+    preset = {"name": "old", "base": "action-cam", "weights": {"speed": 1.0}, "mask_friends": 5}
     (styles / "old.json").write_text(json.dumps(preset), encoding="utf-8")
     style = get_style("old")
     assert style.mask_friends == 5.0
@@ -147,7 +147,7 @@ def test_a_removed_taste_weight_scores_as_without_it(
     preset without it."""
     styles = home / "styles"
     styles.mkdir(parents=True)
-    plain = {"name": "plain", "base": "ski", "weights": {"speed": 1.0}}
+    plain = {"name": "plain", "base": "action-cam", "weights": {"speed": 1.0}}
     tasted = {**plain, "name": "tasted", "weights": {"speed": 1.0, "taste": 2.0}}
     tasted["taste"] = "t.taste.npz"
     for p in (plain, tasted):

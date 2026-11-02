@@ -130,7 +130,14 @@ from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
 from cutpoint.sources import TRANSCRIPT_MODELS
-from cutpoint.styles import Style, get_style, learned_styles, style_names
+from cutpoint.styles import (
+    ACTION_CAM,
+    Style,
+    get_style,
+    learned_styles,
+    renamed_error,
+    style_names,
+)
 from cutpoint.utils import (
     PANO_EXTS,
     VIDEO_EXTS,
@@ -3158,7 +3165,7 @@ def ui_styles() -> list[str]:
         except (ValueError, TypeError, AttributeError) as e:
             logger.warning("skipping learned style %s: %s", learned_styles().get(n, n), e)
             continue
-        if style.kind != "ski":
+        if style.kind != ACTION_CAM:
             names.append(n)
     return names
 
@@ -3173,9 +3180,9 @@ def _gaming_style(name: object) -> bool:
 
 
 def _ski_style(name: str) -> bool:
-    """``name`` is a telemetry-driven action-cam style (``kind`` ski), accepted for 360 sources."""
+    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam), accepted for 360 sources."""
     try:
-        return get_style(name).kind == "ski"
+        return get_style(name).kind == ACTION_CAM
     except (ValueError, TypeError, AttributeError):
         return False
 
@@ -3270,15 +3277,15 @@ def _style(name: object) -> Style | None:
 
 
 def _style_crash(style: object) -> float | None:
-    """The ``must_include_crash`` of a ski ``style`` (what ``--must-include-crash`` overrides),
-    else None: the flag only changes ski analysis."""
+    """The ``must_include_crash`` of an action-cam ``style`` (what ``--must-include-crash``
+    overrides), else None: the flag only changes action-cam analysis."""
     s = _style(style)
-    return s.must_include_crash if s is not None and s.kind == "ski" else None
+    return s.must_include_crash if s is not None and s.kind == ACTION_CAM else None
 
 
 def _no_scenes(st: dict[str, Any], style: object) -> bool:
     """The analysis ran with ``--no-scenes``: it recorded no scene detection although its style
-    detects scenes (ski never does, so it records none without the flag)."""
+    detects scenes (action-cam never does, so it records none without the flag)."""
     s = _style(style)
     return st.get("scenes") is False and (s is None or s.use_scenes)
 
@@ -4067,6 +4074,8 @@ def create_app(port: int) -> FastAPI:
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
         name, style = body.get("name"), body.get("style", "gaming")
+        if msg := renamed_error(style):  # ski: an error naming action-cam
+            raise bad(msg)
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise bad("name must be 1-100 characters")
         inputs = _body_inputs(body)
@@ -4102,7 +4111,7 @@ def create_app(port: int) -> FastAPI:
             if ski:  # action-cam styles need telemetry: 360 footage only in the UI
                 raise bad(f"unknown style {style!r}")
             return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
-        # 360: the ski styles as given, any other the 360 default (pano.default_style)
+        # 360: the action-cam styles as given, any other the 360 default (pano.default_style)
         try:
             style = style if ski else pano_style()
         except ValueError as err:  # config.json's pano section is not an object
@@ -4187,7 +4196,7 @@ def create_app(port: int) -> FastAPI:
             # earlier clips a run would replace (the page asks first).
             "preset_problem": preset_problem(meta, hl),
             # Analyze options (#483): what the analysis used, which the page shows; the style's
-            # --must-include-crash default, null when the style is not ski (no such option)
+            # --must-include-crash default, null when the style is not action-cam (no such option)
             "analyze_options": analyze_options(p, meta, hl),
             "must_include_crash_default": _style_crash(
                 meta.get("style") or (hl or {}).get("style")

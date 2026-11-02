@@ -42,7 +42,7 @@ def test_fit_weights_fits_each_mask_once(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(refmatch, "_train", stop)
     with pytest.raises(RuntimeError, match="stop"):
         refmatch.fit_weights([], thresholds=(0, 5, 6, 7, 8, 11), save=False)
-    assert seen == [(0.0, get_style("ski").mask_friends)]
+    assert seen == [(0.0, get_style("action-cam").mask_friends)]
 
 
 def test_log_fit_reads_a_preset_saved_with_a_bom(tmp_path: Path, caplog) -> None:

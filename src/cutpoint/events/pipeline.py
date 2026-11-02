@@ -61,6 +61,7 @@ from cutpoint.events.vlm_windows import (
     select_windows,
     windows_to_events,
 )
+from cutpoint.styles import ACTION_CAM, project_kind
 from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ def run_events(
     audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
     stage = stage or (lambda _layer: contextlib.nullcontext())
     hl = load_highlights(project)
-    ski = hl.get("style_kind") == "ski"
+    ski = project_kind(hl) == ACTION_CAM
     if layers is None:
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
     if cached_ocr is None:
@@ -520,7 +521,7 @@ def run_events(
 def _telemetry_layer(
     project: Path, sources: list[Any], vlm: VlmParams
 ) -> dict[str, list[dict[str, Any]]]:
-    """Layer-1 entries from ``telemetry.json`` (written by ``cutpoint analyze --style ski``).
+    """Layer-1 entries from ``telemetry.json`` (written by ``cutpoint analyze --style action-cam``).
 
     Airtime and crash events become window seeds and events.txt lines.
     ``coverage`` pseudo-events (low priority, never written to events.json)

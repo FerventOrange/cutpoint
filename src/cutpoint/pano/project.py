@@ -15,14 +15,14 @@
       "max_follow_deg": 30,
       "imu_offset_s": 0.0,
       "equirect_yaw_offset": 0.0,
-      "default_style": "ski",
+      "default_style": "action-cam",
       "auto_stitch": true
     }
 
 ``stitched_dir`` and ``studio_dirs`` default to ``<CUTPOINT_HOME>/360-stitched``
 and ``<CUTPOINT_HOME>/360-studio``; ``default_style`` is the ``--style`` of
-``cutpoint 360 analyze`` when none is given (default ``ski``). ``auto_stitch`` (default
-``true``): ``cutpoint ui`` exports of a 360 project first stitch the recordings they need with
+``cutpoint 360 analyze`` when none is given (default ``action-cam``).
+``auto_stitch`` (default ``true``): ``cutpoint ui`` exports of a 360 project first stitch the recordings they need with
 the SDK, when it runs (the command-line ``clips`` never stitches).
 
 ``CUTPOINT_INSTA360_SDK`` (path of ``MediaSDKTest``, ``.exe`` on Windows) overrides ``sdk_exe``.
@@ -67,7 +67,7 @@ from cutpoint.pano.x3 import X3Clip, parse_name
 logger = logging.getLogger(__name__)
 
 PANO_FILE = "pano.json"
-DEFAULT_STYLE = "ski"
+DEFAULT_STYLE = "action-cam"
 DEFAULT_STITCH_ARGS = (
     "-stitch_type",
     "optflow",

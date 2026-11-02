@@ -190,6 +190,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** the `ski` style is renamed `action-cam`, with no alias: it is the
+  telemetry-driven scorer for any action-cam footage, not only skiing. Use `--style action-cam`
+  on `analyze`, `edit` and `360 analyze`; `style` and `style_kind` in `highlights.json`,
+  `pano.default_style` (default `action-cam`) and the docs use the new name. `ski` is no
+  longer accepted: `--style ski` is refused (exit 2) and a `config.json` value, a project, a
+  UI project or a learned preset that says `ski` stops with an error naming `action-cam`;
+  analyse such projects again and change a learned preset's `"base"`. Vision ratings cached for `ski` are not reused. Activity profiles keep their names
+  (`--activity ski` is still the skiing profile).
 - **BREAKING:** the VLM layer of `cutpoint events` (also run by `edit --events` and `360 analyze`)
   now uses the shared vision model of `analyze --vision`: Ollama with `qwen3.5:9b`
   (`CUTPOINT_VISION_MODEL`), or the subscription Vision model of the Models tab once vision
@@ -250,9 +258,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
   of the features lite can compute, as the generic styles do since phase 1a. The `events`
   features are left out: `vlm`, `social`, `voice_laughter` and `beauty` (0.20, 0.05, 0.05 and
-  0.05 in the built-in `ski` style), and `scenic`, `people`, `group` and `voice` (0 there).
-  The divisor goes from 1.02 to 0.67, so a built-in `ski` score on lite is about 52% higher
-  (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
+  0.05 in the built-in `action-cam` style), and `scenic`, `people`, `group` and `voice` (0
+  there). The divisor goes from 1.02 to 0.67, so a built-in `action-cam` score on lite is about
+  52% higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
   among themselves they keep the analysis order (source by source). Lite scores above about 65.7
   before become 100. Must-include crash scores (the crash's confidence) do not change. A learned
   ski preset shifts by its own weights. Any score renormalised this way is capped at 100: on lite,

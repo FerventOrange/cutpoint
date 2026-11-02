@@ -51,7 +51,7 @@ from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
-from cutpoint.styles import get_style, style_names
+from cutpoint.styles import get_style, style_arg, style_names
 from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
 
 logger = logging.getLogger("cutpoint")
@@ -891,7 +891,7 @@ def _add_selection_arguments(p: argparse.ArgumentParser, *, mix: bool) -> None:
         sel.add_argument(
             "--mix",
             action="store_true",
-            help="(action-cam/ski module) export <project>/mix_segments.json (runs "
+            help="(action-cam module) export <project>/mix_segments.json (runs "
             "`cutpoint mix` first if missing) in arc order",
         )
     p.add_argument(
@@ -1175,6 +1175,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ed.add_argument(
         "--style",
+        type=style_arg,  # ski: an error naming action-cam
         choices=style_names(),
         help="analysis preset (default: funny for funny-moments, else action)",
     )
@@ -1227,10 +1228,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_source_filter_arguments(an)
     an.add_argument(
         "--style",
+        type=style_arg,
         choices=style_names(),
         default="gaming",
         help="preset (default: gaming); learned presets in <CUTPOINT_HOME>/styles/*.json are "
-        "listed too",
+        "listed too (action-cam: telemetry-driven action-cam footage, formerly ski)",
     )
     an.add_argument(
         "--out",
@@ -1261,8 +1263,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--must-include-crash",
         type=unit_float,
         metavar="CONF",
-        help="ski: always clip crashes from crashes.json (cutpoint crashes) with at "
-        "least this confidence, 0-1 (default: style, 0.6 for ski; 0 = off)",
+        help="action-cam: always clip crashes from crashes.json (cutpoint crashes) with at "
+        "least this confidence, 0-1 (default: style, 0.6 for action-cam; 0 = off)",
     )
     _add_skip_argument(an)
     _add_json_argument(an)
@@ -1371,7 +1373,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cr = sub.add_parser(
         "crashes",
-        help="(action-cam/ski module) find crashes / "
+        help="(action-cam module) find crashes / "
         "wipeouts (telemetry + visual + "
         "audio + transcript, dense confirm) and write crashes.json",
     )
@@ -1444,10 +1446,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     mx = sub.add_parser(
         "mix",
-        help="(action-cam/ski module) pick a varied set of moments (runs, jumps, "
+        help="(action-cam module) pick a varied set of moments (runs, jumps, "
         "crashes, lifts, views, social) and write mix_segments.json",
     )
-    mx.add_argument("project", help="ski-analysed project (bare name = projects folder)")
+    mx.add_argument(
+        "project", help="project analysed with --style action-cam (bare name = projects folder)"
+    )
     mx.add_argument(
         "--target",
         type=positive_float,
