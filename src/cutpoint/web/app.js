@@ -3627,7 +3627,8 @@ function renderChat() {
   const noKey = c?.consent?.missing_key || '';
   const consent = !noKey && c?.consent?.needed ? c.consent : null;
   $('#chatConsent').hidden = !consent && !noKey;
-  $('#chatConsentTitle').textContent = noKey ? 'API key needed' : 'Send project data to a hosted model?';
+  $('#chatConsentTitle').textContent = !noKey ? 'Send project data to a hosted model?'
+    : c.consent.missing_kind === 'login' ? 'Login needed' : 'API key needed';
   $('#chatConsentOk').hidden = !consent;
   $('#chatConsentText').textContent = noKey ? `${noKey}.`
     : consent

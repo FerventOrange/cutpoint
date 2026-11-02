@@ -15,14 +15,17 @@ cutpoint clips trip --max-total 150
 cutpoint assemble projects/trip/clips --loudnorm
 ```
 
-`analyze --style action-cam` skips scene detection. It also runs the reaction (sound events, voice), keyframe
-(visual, only with a CUDA GPU) and crash steps when the `events` extra and models are installed,
-and writes `events.json` and `crashes.json`; `--skip` leaves steps out. As with every style, the Ollama frame rating runs
-only with `--vision`. It writes `telemetry.json` (day summary, runs, per-source events). These
-files, `crash_check\` and `ski_features\` are written only when `analyze` completes: a cancelled
-run leaves the previous ones as they were ([analyze](../commands.md#analyze)). Clips are ordered by their
-start time (GPS time, else the camera clock) and the day is split into runs at lift segments
-and gaps over 4 minutes.
+`analyze --style action-cam`:
+
+- skips scene detection;
+- runs the reaction (sound events, voice), keyframe (visual, only with a CUDA GPU) and crash
+  steps when the `events` extra and models are installed, writing `events.json` and
+  `crashes.json` (`--skip` leaves steps out); the Ollama frame rating runs only with `--vision`;
+- writes `telemetry.json` (day summary, runs, per-source events);
+- writes these files, `crash_check\` and `ski_features\` only when it completes: a cancelled
+  run leaves the previous ones as they were ([analyze](../commands.md#analyze));
+- orders clips by start time (GPS time, else the camera clock) and splits the day into runs at
+  lift segments and gaps over 4 minutes.
 
 Footage without telemetry (phones, other cameras) is analysed from audio, speech and model
 features only: no speed, airtime or masking.
@@ -97,15 +100,17 @@ a scenic opener, and 180-300 s total. `--exclude-file` lists source spans to lea
 
 ## Learning from your own edit
 
-If you already cut a video from the same footage, Cutpoint can fit scoring weights to it:
+If you already cut a video from the same footage, the development script
+`scripts/refmatch.py` (from a clone; it was `cutpoint refmatch` and `cutpoint fit`) fits
+scoring weights to it:
 
 ```powershell
-cutpoint refmatch trip D:\Videos\trip-cut.mp4 --name my_style
+uv run python scripts/refmatch.py match trip D:\Videos\trip-cut.mp4 --name my_style
 cutpoint analyze D:\Videos\trip --style my_style --out trip      # re-rank with the learned style
 ```
 
-Use `cutpoint refmatch ... --no-fit` on several projects, then `cutpoint fit proj1 proj2
---name my_style` to fit one style on all of them. Learned styles are JSON in
+Use `scripts/refmatch.py match ... --no-fit` on several projects, then
+`scripts/refmatch.py fit proj1 proj2 --name my_style` to fit one style on all of them. Learned styles are JSON in
 `<CUTPOINT_HOME>\styles\`. The fit is only as good as the edit you teach it: with one or two
 edits, treat the result as a starting point.
 

@@ -151,9 +151,8 @@ def run_events(
             without a preset, False = never.
         discover_bursts: Frame bursts sampled by discovery (x4 frames).
         preset_scope: Where a newly discovered preset is installed:
-            "user" (``<CUTPOINT_HOME>/presets``, reused by every project;
-            "package" is accepted as an old alias) or "project"
-            (``<project>/hud_presets``).
+            "user" (``<CUTPOINT_HOME>/presets``, reused by every project) or
+            "project" (``<project>/hud_presets``).
         sheets: Write visual-layer contact sheets to ``<project>/visual_check``.
         stage: Called with each layer of ``layers`` that runs ("audio", "voice",
             "visual", "ocr", "crash"; not "vlm"), then with "write" for the events
@@ -366,11 +365,7 @@ def run_events(
                     make_engine=make_engine,
                 )
                 preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
-                link_teamkills(
-                    evs,
-                    tags=ocr.player_tags,
-                    generic_teamkills=bool(preset and preset.feed.get("teamkills")),
-                )
+                link_teamkills(evs, generic_teamkills=bool(preset and preset.feed.get("teamkills")))
                 derive_streaks(evs)
                 layer1[str(s.path)] += evs
                 ocr_stats[s.name] = st
@@ -515,7 +510,7 @@ def run_events(
 def _telemetry_layer(
     project: Path, sources: list[Any], vlm: VlmParams
 ) -> dict[str, list[dict[str, Any]]]:
-    """Layer-1 entries from ``telemetry.json`` (written by ``cutpoint analyze --style ski``).
+    """Layer-1 entries from ``telemetry.json`` (written by ``cutpoint analyze --style action-cam``).
 
     Airtime and crash events become window seeds and events.txt lines.
     ``coverage`` pseudo-events (low priority, never written to events.json)
@@ -657,7 +652,7 @@ def _discover(
                 "Installed discovered HUD preset for %r: %s (edit it to calibrate)", game, target
             )
         else:
-            rec["preset"] = str(existing.path or "built-in")
+            rec["preset"] = str(existing.path)
             rec["suggested_regions"] = list(proposal.get("suggested_regions") or [])
             logger.info(
                 "Kept existing HUD preset for %r (%s); discovery proposal: %s",

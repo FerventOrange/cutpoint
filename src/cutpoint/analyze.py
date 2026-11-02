@@ -127,7 +127,6 @@ class Candidate:
     label_hint: str = ""
     transcript: str = ""
     transcript_unsure: list[tuple[int, float]] | None = None  # see _transcript_snippet
-    vision: dict[str, Any] | None = None
     score: float = 0.0
     label: str = ""
     kind: str = ""  # ski: dominant feature of the clip (airtime, crash, speed, ...)
@@ -607,8 +606,6 @@ def vision_label(rating: float, label: str) -> str | None:
 
 
 def _label(c: Candidate, style: Style) -> str:
-    if c.vision and (slug := vision_label(c.vision.get("score", 0), c.vision.get("label", ""))):
-        return slug
     if c.label_hint:
         return slugify(c.label_hint, 30)
     if c.signals.get("laughter", 0) > 0.5:
@@ -1427,7 +1424,7 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
         "signals": {
             **c.signals,
             "keywords": c.keywords,
-            "vision": c.vision["score"] if c.vision else None,
+            "vision": None,  # set by _rate_vision
         },
         "label": _label(c, style),
         **({"kind": c.kind} if c.kind else {}),
@@ -1618,9 +1615,8 @@ def _analyze(
             if stale.is_dir():
                 for f in stale.glob("*.npz"):
                     cache.remove(f)  # held: removed only when the run completes
-            taste = (style.learned or {}).get("taste")
             durations = {str(s): probe(remap_source(s)).duration for s in sources}
-            ski_ctx = ski.prepare(sources, durations, out_dir, taste=Path(taste) if taste else None)
+            ski_ctx = ski.prepare(sources, durations, out_dir)
             telemetry_s = round(time.perf_counter() - t0, 2)
         tr = Transcriber(model=model, language=language)
 
@@ -1818,9 +1814,7 @@ def _analyze(
         steps.start("ranking")
         if ski_ctx is not None:
             if events_new:  # with this run's events.json and crashes.json
-                ski_ctx = ski.prepare(
-                    sources, durations, out_dir, taste=Path(taste) if taste else None
-                )
+                ski_ctx = ski.prepare(sources, durations, out_dir)
             for r in results:
                 r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
                 logger.info("%s: %d candidates", r.source.name, len(r.candidates))

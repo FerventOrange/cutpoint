@@ -21,6 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import webbrowser
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -134,9 +135,9 @@ class ProxyConnectionError(ProxyError):
 class ProxyHTTPError(ProxyError):
     """CLIProxyAPI daemon responded with an HTTP error status."""
 
-    def __init__(self, message: str, status_code: int | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
+
+class LoginError(ProxyError):
+    """A terminal login (:func:`login_interactive`) did not start, failed or timed out."""
 
 
 def _credential_store_error(err: Exception) -> ProxyError:
@@ -268,20 +269,8 @@ def _read_keys_file() -> tuple[str, str, int] | None:
     return None
 
 
-def _ensure_keys(target_port: int | None = None, *, refresh: bool = False) -> tuple[str, str]:
-    existing = _read_keys_file()
+def _ensure_keys(target_port: int | None = None) -> tuple[str, str]:
     p = target_port or port()
-    if existing and not refresh:
-        mgmt, client, curr_p = existing
-        if target_port and curr_p != target_port:
-            _write_private_file(
-                keys_path(),
-                json.dumps(
-                    {"management_key": mgmt, "client_api_key": client, "port": target_port},
-                    indent=2,
-                ),
-            )
-        return mgmt, client
     mgmt = secrets.token_hex(32)
     client = secrets.token_hex(32)
     _write_private_file(
@@ -366,7 +355,7 @@ def _management_request(
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
         clean_msg = redact(f"proxy error {resp.status_code}: {err_msg}")
-        raise ProxyHTTPError(clean_msg, status_code=resp.status_code)
+        raise ProxyHTTPError(clean_msg)
     try:
         return resp.json()
     except (ValueError, json.JSONDecodeError) as err:
@@ -413,7 +402,7 @@ def _client_request(
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
         clean_msg = redact(f"proxy inference error {resp.status_code}: {err_msg}")
-        raise ProxyHTTPError(clean_msg, status_code=resp.status_code)
+        raise ProxyHTTPError(clean_msg)
 
     try:
         return resp.json()
@@ -625,6 +614,51 @@ def cancel_login(state: str) -> None:
     if not state:
         return
     _management_request("DELETE", "/v8/management/oauth/session", params={"state": state})
+
+
+LOGIN_TIMEOUT_S = 300.0  # how long login_interactive waits for the browser sign-in
+
+
+def login_interactive(provider: str, *, open_browser: bool = True) -> dict[str, Any]:
+    """Log in to ``provider`` from a terminal (``cutpoint login``): start the OAuth login, log
+    its URL (and open it in the browser with ``open_browser``), poll once a second until it
+    is done and return :func:`status`. A login that fails, times out or is interrupted is
+    cancelled on the daemon.
+
+    Raises:
+        LoginError: The login could not start, failed or timed out.
+        ProxyError: Polling or the status after the login failed otherwise.
+    """
+    try:
+        res = start_login(provider)
+    except ProxyError as err:
+        raise LoginError(f"could not start login for {provider}: {err}") from err
+    url = res.get("url")
+    state = res.get("state")
+    if not url or not state:
+        raise LoginError(f"invalid login response from proxy for {provider}")
+    logger.info("open this URL to log in: %s", url)
+    success = False
+    try:
+        if open_browser:
+            with contextlib.suppress(Exception):
+                webbrowser.open(url)
+        deadline = time.monotonic() + LOGIN_TIMEOUT_S
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            poll = poll_login(state)
+            p_state = poll.get("state")
+            if p_state == "done":
+                st = status(provider)
+                success = True
+                return st
+            if p_state == "error":
+                raise LoginError(f"login failed: {poll.get('error') or 'unknown error'}")
+        raise LoginError("login timed out")
+    finally:
+        if not success:
+            with contextlib.suppress(Exception):
+                cancel_login(state)
 
 
 def logout(provider: str) -> None:
@@ -922,7 +956,7 @@ def run(port: int | None = None) -> None:
                 ) from err
 
             tls_cert, tls_key = proxy_tls.ensure_identity(home_dir)
-            mgmt_key, client_key = _ensure_keys(target_port=resolved_port, refresh=True)
+            mgmt_key, client_key = _ensure_keys(target_port=resolved_port)
             cfg_path = config_path()
             cfg_dict = _generate_config(
                 port=resolved_port,

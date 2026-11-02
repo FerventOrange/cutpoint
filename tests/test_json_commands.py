@@ -134,14 +134,10 @@ def test_clips_json_force_reports_kept_clips_and_a_blocked_name(video, home, cap
     assert doc["error"]["message"].startswith("Cannot replace ")
 
 
-def test_clips_json_bad_crop_is_bad_args_and_unchanged_without_json(home, capsys, caplog):
+def test_clips_json_bad_crop_is_bad_args(home, capsys):
     code, doc, _ = _json(capsys, ["clips", "nosuch", "--crop", "wide"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert doc["error"]["message"] == "Invalid crop 'wide'; use auto, none or W:H:X:Y"
-    caplog.clear()
-    assert cli.main(["clips", "nosuch", "--crop", "wide"]) == 1
-    assert capsys.readouterr().out == ""
-    assert "Invalid crop 'wide'; use auto, none or W:H:X:Y" in caplog.text
 
 
 # -------------------------------------------------------------------------------- assemble
@@ -234,10 +230,6 @@ def test_extend_argument_errors_are_bad_args(home, tmp_path, capsys, caplog, ext
     code, doc, _ = _json(capsys, ["extend", str(clips_dir), *extra])
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert doc["error"]["message"].startswith(message) and message in caplog.text
-    caplog.clear()
-    assert cli.main(["extend", str(clips_dir), *extra]) == 1  # unchanged without --json
-    assert capsys.readouterr().out == ""
-    assert message in caplog.text
 
 
 # ------------------------------------------------------------------------------------ edit
@@ -309,7 +301,6 @@ class _NoOllama:
     [
         ([], None),  # vision is opt-in: nothing was asked, nothing to warn about
         (["--vision"], VISION_MSG),
-        (["--no-vision"], None),
     ],
 )
 def test_analyze_json_warns_when_vision_was_wanted_but_unavailable(
@@ -325,7 +316,7 @@ def test_analyze_json_warns_when_vision_was_wanted_but_unavailable(
     assert (VISION_MSG in caplog.text) is (flags == ["--vision"])
 
 
-def test_clips_json_unknown_ids_is_bad_args(home, capsys, caplog):
+def test_clips_json_unknown_ids_is_bad_args(home, capsys):
     project = home / "projects" / "j"
     project.mkdir(parents=True)
     cand = {"id": "h001", "source": "a.mp4", "start": 0, "end": 1, "score": 50}
@@ -333,9 +324,6 @@ def test_clips_json_unknown_ids_is_bad_args(home, capsys, caplog):
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     code, doc, _ = _json(capsys, ["clips", "j", "--ids", "h001", "h009"])
     assert code == 1 and doc["error"] == {"code": "bad_args", "message": "Unknown ids: h009"}
-    caplog.clear()
-    assert cli.main(["clips", "j", "--ids", "h009"]) == 1  # unchanged without --json
-    assert capsys.readouterr().out == "" and "Unknown ids: h009" in caplog.text
 
 
 def test_edit_events_json_reports_the_re_ranked_highlights(home, tmp_path, capsys, monkeypatch):

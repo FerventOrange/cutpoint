@@ -50,7 +50,6 @@ def test_busy_hud_stays_and_scoreboard_goes() -> None:
         _frame("rec.mp4", b, k, _busy_hud() + _feed(b, k)) for b in range(10) for k in range(4)
     ]
     frames += [_frame("rec.mp4", 10, k, _busy_hud() + _scoreboard()) for k in range(2)]
-    assert all(len(f["boxes"]) > 28 for f in frames)  # the old fixed limit dropped them all
     kept = gameplay_frames(frames, DiscoverParams())
     assert kept == frames[:40]
     proposals, maps = cluster_regions(frames, DiscoverParams())

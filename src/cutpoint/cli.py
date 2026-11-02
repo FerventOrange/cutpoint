@@ -1,5 +1,5 @@
-"""Command-line interface: ``cutpoint edit | analyze | events | crashes | profile | refmatch | fit |
-clips | extend | assemble | stage | 360 | setup | paths | capabilities | guide | skill | ui``.
+"""Command-line interface: ``cutpoint edit | analyze | events | crashes | profile | clips |
+extend | assemble | stage | 360 | setup | paths | capabilities | guide | skill | ui``.
 
 Installed as the ``cutpoint`` console script.
 """
@@ -16,9 +16,7 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
-import webbrowser
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from importlib.resources import files
@@ -26,8 +24,6 @@ from pathlib import Path, PurePath
 from typing import NoReturn
 
 from cutpoint import __version__, cache, jsonout, paths, stage
-from cutpoint.activity import ACTIVITY_FILE
-from cutpoint.activity import resolve as resolve_activity
 from cutpoint.assemble import (
     AUDIO_TRANSITIONS,
     OUTPUT_FORMATS,
@@ -48,20 +44,22 @@ from cutpoint.config import (
     resolve_project_path,
     vision_default,
 )
-from cutpoint.crash import CrashParams, detect_project
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.encode import LUT_SUFFIXES, Lut, check_lut
 from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.ffmpeg_utils import FFmpegError
-from cutpoint.mix import EXCLUDE_FILE, parse_quotas, read_exclusions, run_mix
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
-from cutpoint.refmatch import MatchParams, run_fit, run_refmatch
 from cutpoint.styles import get_style, style_arg, style_names
 from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
 
 logger = logging.getLogger("cutpoint")
+
+# Parser-time constants of modules imported only when their command runs, so that every
+# ``cutpoint`` start does not load the action-cam and proxy code (tests check they match).
+MIX_EXCLUDE_FILE = "mix_exclude.json"  # cutpoint.mix.EXCLUDE_FILE
+PROXY_PROVIDERS = ("claude-code", "codex", "antigravity")  # cutpoint.assistant.cliproxy.PROVIDERS
 
 
 def _vision(a: argparse.Namespace) -> bool:
@@ -294,6 +292,8 @@ def _cmd_clips(a: argparse.Namespace) -> None:
     segments = _segments_file(a, mix=a.mix)
     order = a.order
     if a.mix:  # cutpoint mix's selection, played in arc order
+        from cutpoint.mix import run_mix  # noqa: PLC0415 - action-cam module
+
         segments, order = project / "mix_segments.json", a.order or "arc"
         if not segments.is_file():
             run_mix(project, out=segments)
@@ -409,32 +409,10 @@ def _cmd_stage(a: argparse.Namespace) -> None:
         jsonout.output(key, summary[key])
 
 
-def _cmd_refmatch(a: argparse.Namespace) -> None:
-    run_refmatch(
-        resolve_project_path(a.project),
-        Path(a.reference),
-        params=MatchParams(
-            min_score=a.min_score, cut_corr=a.cut_corr, margin_score=a.margin_score, margin=a.margin
-        ),
-        fit=a.fit,
-        name=a.name,
-        check=a.check,
-        taste=a.taste,
-    )
-
-
-def _cmd_fit(a: argparse.Namespace) -> None:
-    run_fit(
-        [resolve_project_path(p) for p in a.projects],
-        name=a.name,
-        base=a.base,
-        taste=a.taste,
-        do_ablate=a.ablate,
-        save=not a.no_save,
-    )
-
-
 def _cmd_crashes(a: argparse.Namespace) -> None:
+    from cutpoint.activity import ACTIVITY_FILE  # noqa: PLC0415 - action-cam modules
+    from cutpoint.crash import CrashParams, detect_project  # noqa: PLC0415
+
     params = CrashParams(
         lead_s=a.lead, max_after_s=a.max_after, max_clip_s=a.max_clip, dense_top=a.dense_top
     )
@@ -491,6 +469,9 @@ _CRASH_SUMMARY_KEYS = (
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:
+    from cutpoint.activity import ACTIVITY_FILE  # noqa: PLC0415 - action-cam module
+    from cutpoint.activity import resolve as resolve_activity  # noqa: PLC0415
+
     project = resolve_project_path(a.project)
     jsonout.set_project(project)
     rec = resolve_activity(
@@ -534,6 +515,8 @@ def _add_activity_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def _cmd_mix(a: argparse.Namespace) -> None:
+    from cutpoint.mix import parse_quotas, read_exclusions, run_mix  # noqa: PLC0415 - action-cam
+
     project = resolve_project_path(a.project)
     jsonout.set_project(project)
     out, excl = Path(a.out), Path(a.exclude_file)
@@ -587,13 +570,8 @@ def _report_mix(out: Path, report: dict) -> None:
         jsonout.warn("content_qa_failed", f"mix content QA failed: {', '.join(failed)}", [out])
 
 
-# ``assemble`` options that only apply when it exports the moments of a project first
-PROJECT_OPTIONS = (
-    "top", "ids", "segments", "max_total", "order", "vertical", "size", "force", "crop",
-    "smart_tail", "tail_min", "tail_max", "event_tails", "event_window", "extend",
-    "extend_start", "extend_end", "speech_aware", "speech_max_extend", "speech_max_lead",
-    "pano_source", "pano_cmd_every", "lut", "lut_strength", "color", "color_strength",
-)  # fmt: skip
+# The options of assemble's "from a project" group that also apply to a clips folder
+CLIPS_FOLDER_OPTIONS = ("audio_fade", "compress_peaks")
 
 
 def _assemble_project(a: argparse.Namespace, given: Path) -> Path | None:
@@ -867,46 +845,14 @@ def _cmd_login(a: argparse.Namespace) -> None:
             sys.exit(1)
 
     try:
-        res = cliproxy.start_login(a.provider)
-    except cliproxy.ProxyError as err:
-        logger.error("could not start login for %s: %s", a.provider, err)
-        sys.exit(1)
-
-    url = res.get("url")
-    state = res.get("state")
-    if not url or not state:
-        logger.error("invalid login response from proxy for %s", a.provider)
-        sys.exit(1)
-
-    logger.info("open this URL to log in: %s", url)
-    success = False
-    try:
-        if not a.no_browser:
-            with contextlib.suppress(Exception):
-                webbrowser.open(url)
-
-        deadline = time.monotonic() + 300.0
-        while time.monotonic() < deadline:
-            time.sleep(1.0)
-            poll = cliproxy.poll_login(state)
-            p_state = poll.get("state")
-            if p_state == "done":
-                st = cliproxy.status(a.provider)
-                who = f" as {st.get('email')}" if st.get("email") else ""
-                logger.info("logged in to %s%s", cliproxy.TITLES.get(a.provider, a.provider), who)
-                success = True
-                return
-            if p_state == "error":
-                logger.error("login failed: %s", poll.get("error") or "unknown error")
-                sys.exit(1)
-        logger.error("login timed out")
+        st = cliproxy.login_interactive(a.provider, open_browser=not a.no_browser)
+    except cliproxy.LoginError as err:
+        logger.error("%s", err)
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)
-    finally:
-        if not success:
-            with contextlib.suppress(Exception):
-                cliproxy.cancel_login(state)
+    who = f" as {st.get('email')}" if st.get("email") else ""
+    logger.info("logged in to %s%s", cliproxy.TITLES.get(a.provider, a.provider), who)
 
 
 def _cmd_logout(a: argparse.Namespace) -> None:
@@ -1147,7 +1093,11 @@ def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
         "--ollama-url",
         help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
-    p.add_argument("--ollama-model", help="default: qwen3.5:9b")
+    p.add_argument(
+        "--ollama-model",
+        help="default: $CUTPOINT_VISION_MODEL, vision_assistant.model in config.json, or "
+        "qwen3.5:9b",
+    )
 
 
 def _add_source_filter_arguments(p: argparse.ArgumentParser) -> None:
@@ -1270,9 +1220,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run `cutpoint events` to re-rank the moments (needs the events extra and "
         "cutpoint setup)",
     )
-    _add_vision_arguments(
-        ed, "rate top candidates with a local Ollama vision model, as analyze --vision; "
-    )
+    _add_vision_arguments(ed, "rate top candidates with the vision model, as analyze --vision; ")
     _add_ollama_arguments(ed)
     _add_skip_argument(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
@@ -1291,8 +1239,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=style_arg,
         choices=style_names(),
         default="gaming",
-        help="preset; learned presets in <CUTPOINT_HOME>/styles/*.json are listed too "
-        "(action-cam: telemetry-driven action-cam footage, formerly ski)",
+        help="preset (default: gaming); learned presets in <CUTPOINT_HOME>/styles/*.json are "
+        "listed too (action-cam: telemetry-driven action-cam footage, formerly ski)",
     )
     an.add_argument(
         "--out",
@@ -1301,7 +1249,11 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: <projects>/<input name> (a file's name without extension, or the folder's "
         "name), or the common parent folder's name for several inputs",
     )
-    _add_vision_arguments(an, "rate top candidates with a local Ollama vision model; ")
+    _add_vision_arguments(
+        an,
+        "rate top candidates with the vision model (Ollama, or the vision_assistant provider in "
+        "config.json); ",
+    )
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
     an.add_argument("--no-scenes", action="store_true", help="skip scene detection")
@@ -1364,7 +1316,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ex.add_argument("--start", type=float, metavar="S", help="padding before (overrides)")
     ex.add_argument("--end", type=float, metavar="S", help="padding after (overrides)")
-    ex.add_argument("--out", help="output folder (default: sibling <clips_dir>_ext<S>s)")
+    ex.add_argument(
+        "--out",
+        help="output folder (default: sibling <clips_dir>_ext<S>s, _ext<A>-<B>s with "
+        "--start/--end, or _speech without padding)",
+    )
     ex.add_argument(
         "--force",
         action="store_true",
@@ -1385,8 +1341,9 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument(
         "--reuse",
         metavar="DIR",
-        help="earlier output folder: copy clips whose new in/out points, crop, "
-        "format and fade are identical there instead of re-encoding",
+        help="earlier output folder: copy clips whose source, new in/out points, crop, "
+        "grade, format and fade are identical there instead of re-encoding (not for "
+        "--compress-peaks or 360 clips)",
     )
     _add_pano_arguments(ex, None)
     _add_json_argument(ex)
@@ -1421,88 +1378,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_argument(st)
     st.set_defaults(func=_cmd_stage)
-
-    rm = sub.add_parser(
-        "refmatch",
-        help="find a reference edit's shots in the project "
-        "sources (refmatch.json) and fit style weights to them (action-cam/ski "
-        "module)",
-    )
-    rm.add_argument("project", help="analysed project (bare name = projects folder)")
-    rm.add_argument("reference", help="the finished edit to learn from")
-    rm.add_argument(
-        "--fit",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="fit weights and save <CUTPOINT_HOME>/styles/<name>.json (default: on for "
-        "ski projects)",
-    )
-    rm.add_argument("--name", help="learned preset name (default: <base>_learned)")
-    rm.add_argument(
-        "--min-score",
-        type=float,
-        default=0.80,
-        help="aligned frame correlation needed to accept a shot (default 0.80)",
-    )
-    rm.add_argument(
-        "--margin-score",
-        type=float,
-        default=0.60,
-        help="lower score accepted when it leads the next source/position by "
-        "--margin (default 0.60)",
-    )
-    rm.add_argument("--margin", type=float, default=0.25)
-    rm.add_argument(
-        "--cut-corr",
-        type=float,
-        default=0.6,
-        help="frame-to-frame correlation below which the edit has a cut",
-    )
-    rm.add_argument(
-        "--check",
-        type=int,
-        default=6,
-        help="write N side-by-side check frames to <project>/refmatch_check",
-    )
-    rm.add_argument(
-        "--taste",
-        action="store_true",
-        help="also fit the personal taste head on the frame embeddings "
-        "(needs `cutpoint events` visual layer); saved as <name>.taste.npz",
-    )
-    rm.set_defaults(func=_cmd_refmatch)
-
-    ft = sub.add_parser(
-        "fit",
-        help="(action-cam/ski module) fit one learned preset "
-        "on several projects' "
-        "refmatch.json (cross-validated and cross-project report)",
-    )
-    ft.add_argument(
-        "projects", nargs="+", help="projects with refmatch.json (bare name = projects folder)"
-    )
-    ft.add_argument("--name", help="learned preset name (default: <base>_learned)")
-    ft.add_argument(
-        "--base", default="action-cam", help="built-in preset whose features are fitted"
-    )
-    ft.add_argument(
-        "--taste",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="fit the taste head on frame embeddings (default: on)",
-    )
-    ft.add_argument(
-        "--ablate",
-        action="store_true",
-        help="also refit on feature subsets (old features, +each new "
-        "feature, all, all without VLM tags, all without taste)",
-    )
-    ft.add_argument(
-        "--no-save",
-        action="store_true",
-        help="report only; do not write <CUTPOINT_HOME>/styles/<name>.json",
-    )
-    ft.set_defaults(func=_cmd_fit)
 
     cr = sub.add_parser(
         "crashes",
@@ -1605,10 +1480,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mx.add_argument(
         "--exclude-file",
-        default=EXCLUDE_FILE,
+        default=MIX_EXCLUDE_FILE,
         metavar="FILE",
         help="source spans to leave out, [{source, start, end, category?}, ...] (relative = "
-        f"inside the project; default {EXCLUDE_FILE}, written by `cutpoint 360 repair`)",
+        f"inside the project; default {MIX_EXCLUDE_FILE}, written by `cutpoint 360 repair`)",
     )
     _add_json_argument(mx)
     mx.set_defaults(func=_cmd_mix)
@@ -1631,14 +1506,24 @@ def build_parser() -> argparse.ArgumentParser:
         "or --vertical; the extension follows --format)",
     )
     _add_format_argument(asm)
-    asm.add_argument("--transition", choices=["cut", "fade"], default="cut")
+    asm.add_argument(
+        "--transition",
+        choices=["cut", "fade"],
+        default="cut",
+        help="how clips join: hard cut or crossfade (default: cut)",
+    )
     asm.add_argument(
         "--audio-transition",
         choices=AUDIO_TRANSITIONS,
         help="how the audio joins: cut or crossfade (default: cut with --transition cut, "
         "crossfade with fade); crossfade needs --transition fade",
     )
-    asm.add_argument("--fade-dur", type=positive_float, default=0.25)
+    asm.add_argument(
+        "--fade-dur",
+        type=positive_float,
+        default=0.25,
+        help="crossfade length in seconds with --transition fade (default 0.25)",
+    )
     asm.add_argument(
         "--loudnorm", action="store_true", help="normalise to -14 LUFS, true peak below -1.5 dBTP"
     )
@@ -1665,10 +1550,15 @@ def build_parser() -> argparse.ArgumentParser:
         "exported with it; the true-peak limiter runs even without --loudnorm",
         recorded="Recorded in the clips' manifest.json, kept only with --format fcpxml|otio",
     )
+    # the options that only apply when assemble exports the moments of a project first
+    # (argparse has no public list of a group's options)
+    project_options = [
+        act.dest for act in proj._group_actions if act.dest not in CLIPS_FOLDER_OPTIONS
+    ]
     asm.set_defaults(
         func=_cmd_assemble,
         usage_check=lambda a: _check_assemble(asm, a),
-        project_defaults={d: asm.get_default(d) for d in PROJECT_OPTIONS},
+        project_defaults={d: asm.get_default(d) for d in project_options},
     )
 
     from cutpoint.pano.cli import add_parser as add_pano_parser  # noqa: PLC0415
@@ -1690,7 +1580,8 @@ def build_parser() -> argparse.ArgumentParser:
     pa = sub.add_parser(
         "paths",
         help="print the resolved data folders (CUTPOINT_HOME, "
-        "config, cache, models, tools, stage, styles, projects)",
+        "config, cache, models, tools, llama.cpp, stage, styles, presets, profiles, projects, "
+        "bundled)",
     )
     _add_json_argument(pa)
     pa.set_defaults(func=_cmd_paths)
@@ -1728,8 +1619,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sks.add_parser("print", help="print the skill (SKILL.md) to stdout")
     sp.set_defaults(func=_cmd_skill_print)
 
-    from cutpoint.assistant import cliproxy as login_cliproxy  # noqa: PLC0415
-
     pr = sub.add_parser(
         "proxy",
         help="run the authenticated CLIProxyAPI daemon in the foreground for subscription logins",
@@ -1746,18 +1635,18 @@ def build_parser() -> argparse.ArgumentParser:
         "login",
         help="log in to a subscription (Claude Code, Codex, Antigravity) in the browser via CLIProxyAPI",
     )
-    lg.add_argument("provider", choices=login_cliproxy.PROVIDERS)
+    lg.add_argument("provider", choices=PROXY_PROVIDERS)
     lg.add_argument(
         "--no-browser", action="store_true", help="only print the URL; do not open a browser"
     )
     lg.set_defaults(func=_cmd_login)
     lo = sub.add_parser("logout", help="remove a subscription login from CLIProxyAPI")
-    lo.add_argument("provider", choices=login_cliproxy.PROVIDERS)
+    lo.add_argument("provider", choices=PROXY_PROVIDERS)
     lo.set_defaults(func=_cmd_logout)
 
     ui = sub.add_parser(
         "ui",
-        help="serve the local browser workspace for standard video highlights (127.0.0.1 only)",
+        help="serve the local browser workspace (127.0.0.1 only)",
     )
     ui.add_argument("--port", type=_port, default=8765, help="port on 127.0.0.1 (default 8765)")
     ui.set_defaults(func=_cmd_ui)
@@ -1802,6 +1691,14 @@ def _json_requested(tokens: list[str]) -> bool:
     return False
 
 
+def _usage_error(err: UsageError, command: str | None) -> NoReturn:
+    """Re-raise the usage error ``err``; for ``command`` (a ``--json`` run, else None) first
+    write its ``ok: false`` envelope (code ``bad_args``)."""
+    if command:
+        jsonout.emit_error(command, jsonout.BAD_ARGS, err.message)
+    raise err
+
+
 def _parse(parser: argparse.ArgumentParser, argv: Sequence[str] | None) -> argparse.Namespace:
     """``parser.parse_args(argv)``; with ``--json`` on a command that takes it, a usage error
     also writes an ``ok: false`` envelope (code ``bad_args``) before exiting 2."""
@@ -1809,24 +1706,21 @@ def _parse(parser: argparse.ArgumentParser, argv: Sequence[str] | None) -> argpa
     try:
         args, extra = parser.parse_known_args(tokens)
     except UsageError as err:  # from the subcommand's parser, which knows its json_command
-        if _json_requested(tokens) and (command := err.parser.get_default("json_command")):
-            jsonout.emit_error(command, jsonout.BAD_ARGS, err.message)
-        raise
+        _usage_error(
+            err, err.parser.get_default("json_command") if _json_requested(tokens) else None
+        )
+    command = args.json_command if getattr(args, "json_result", False) else None
     if extra:
         try:
             parser.error(f"unrecognized arguments: {' '.join(extra)}")
         except UsageError as err:
-            if getattr(args, "json_result", False):
-                jsonout.emit_error(args.json_command, jsonout.BAD_ARGS, err.message)
-            raise
+            _usage_error(err, command)
     # A command's check of option combinations argparse cannot express (exit 2, as argparse)
     if (check := getattr(args, "usage_check", None)) is not None:
         try:
             check(args)
         except UsageError as err:
-            if getattr(args, "json_result", False):
-                jsonout.emit_error(args.json_command, jsonout.BAD_ARGS, err.message)
-            raise
+            _usage_error(err, command)
     return args
 
 
@@ -1850,17 +1744,6 @@ def main(argv: list[str] | None = None) -> int:
         "numba",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    # huggingface_hub prints through its own stderr handler and also propagates to ours
-    # (e.g. the Hub's "unauthenticated requests" warning came out twice): keep only ours.
-    # Its handler is added on import, so import it first.
-    try:
-        import huggingface_hub.utils.logging  # noqa: F401, PLC0415
-
-        hf_logger = logging.getLogger("huggingface_hub")
-        for handler in list(hf_logger.handlers):
-            hf_logger.removeHandler(handler)
-    except ImportError:
-        pass
     if not getattr(args, "json_result", False):
         return _run(args)
     with jsonout.run(args.json_command):

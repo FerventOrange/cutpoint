@@ -11,7 +11,7 @@
       tools/          llama.cpp, CLIProxyAPI binary (``tools/cliproxy/``)
       cliproxy/       CLIProxyAPI keys, config, and subscription auth records
       stage/          local copies of sources on slow/network storage (``cutpoint stage``)
-      styles/         learned style presets (``cutpoint refmatch`` / ``fit``)
+      styles/         learned style presets (``scripts/refmatch.py``)
       presets/        HUD presets written by region discovery (``cutpoint events``)
       projects/       project folders, unless ``projects_dir`` says otherwise
 

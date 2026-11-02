@@ -638,6 +638,11 @@ def free_backup_name(f: Path, base: str, ext: str) -> Path:
         bak = f.with_name(f"{base}.{n}{ext}")
 
 
+def _covers(span: dict[str, Any], start: float, end: float) -> bool:
+    """``span`` (``{"start", "end"}``) covers ``[start, end]`` within 0.5 s."""
+    return span.get("start", 1e9) <= start + 0.5 and span.get("end", -1e9) >= end - 0.5
+
+
 # --------------------------------------------------------------------- cutpoint clips / extend
 class PanoExporter:
     """Renders the X3 moments of a ``cutpoint clips`` / ``cutpoint extend`` run.
@@ -684,7 +689,9 @@ class PanoExporter:
         selected: tuple[float, float] | None = None,
     ) -> tuple[dict[str, Any], Path]:
         """Load ``reuse`` (an earlier, possibly hand-edited path) if it covers the range
-        and is not older than :data:`director.MIN_REUSE_VERSION`, else take the path
+        (within 0.5 s: its ``fixed`` span, else its ``planned`` one; a version 4 path its
+        ``segment``, as it fixed its framing there only, else a WARNING says so) and is
+        not older than :data:`director.MIN_REUSE_VERSION`, else take the path
         ``360 analyze`` planned for exactly this span and these settings
         (:func:`cutpoint.pano.candidates.cached_path`; an INFO line names why it is not
         reused), else run the director
@@ -721,15 +728,17 @@ class PanoExporter:
         if reuse is not None and reuse.is_file():
             path = cache.load_json(reuse) or {}
             sel = sel or path.get("selected")
-            pl = path.get("planned", {})
+            version = path.get("version", 1)
+            pl = path.get("fixed") or path.get("planned") or {}
+            seg = path.get("segment") or {}
             axis = G.cached_forward_axis(Path(clip.source))  # None: no track cached, no check
             from cutpoint.pano.views import DET_FRAME  # noqa: PLC0415
 
-            if path.get("version", 1) < D.MIN_REUSE_VERSION:
+            if version < D.MIN_REUSE_VERSION:
                 logger.warning(
                     "  %s: version %s director path predates the current framing; re-directing",
                     reuse,
-                    path.get("version", 1),
+                    version,
                 )
             elif axis is not None and (
                 path.get("forward_axis", G.axis_name(G.FORWARD_V)) != axis
@@ -738,7 +747,18 @@ class PanoExporter:
                 logger.warning(
                     "  %s: planned for another forward axis (upright clip); re-directing", reuse
                 )
-            elif pl.get("start", 1e9) <= start + 0.5 and pl.get("end", -1e9) >= end - 0.5:
+            elif version < 5 and not _covers(seg, start, end) and _covers(pl, start, end):
+                logger.warning(
+                    "  %s: version %s director path fixed its framing within %.1f-%.1f only, "
+                    "not %.1f-%.1f; re-directing",
+                    reuse,
+                    version,
+                    seg.get("start", math.nan),
+                    seg.get("end", math.nan),
+                    start,
+                    end,
+                )
+            elif _covers(seg if version < 5 else pl, start, end):
                 self._check_reused(path, reuse, kind)
                 changed = sel is not None and path.get("selected") != sel
                 if changed:

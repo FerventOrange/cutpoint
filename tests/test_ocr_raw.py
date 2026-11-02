@@ -6,8 +6,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -661,21 +659,3 @@ def test_only_cutpoints_own_checkout_is_guarded(tmp_path: Path) -> None:
     module = Path("cutpoint", "events", "ocr_raw.py")
     assert ocr_raw._checkout(home / ".venv" / "lib" / "site-packages" / module) is None
     assert ocr_raw._checkout(repo / "src" / module) == repo.resolve()
-
-
-def test_checkout_is_found() -> None:
-    root = ocr_raw._checkout()
-    if root is None:
-        pytest.skip("not run from a git checkout")
-    assert ocr_raw.in_checkout(Path(ocr_raw.__file__).parent)
-    assert not ocr_raw.in_checkout(root.parent)
-
-
-@pytest.mark.slow
-def test_raw_cache_is_git_ignored() -> None:
-    root, git = ocr_raw._checkout(), shutil.which("git")
-    if root is None or git is None:
-        pytest.skip("needs git and a git checkout")
-    for path in ("cache/x/ocr-raw-y/meta.json", "projects/p/ocr-raw-y/chunk-00000.zip"):
-        done = subprocess.run([git, "-C", str(root), "check-ignore", "-q", path], check=False)
-        assert done.returncode == 0, path

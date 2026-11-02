@@ -1,7 +1,7 @@
 """Ski / snowboard scoring: telemetry + audio + VLM features, masks and clip picking.
 
-Used by ``cutpoint analyze --style ski`` (and learned presets based on it) and by
-``cutpoint refmatch`` to evaluate and fit weights. Every feature is 0-1 on the 0.1 s
+Used by ``cutpoint analyze --style action-cam`` (and learned presets based on it) and by
+``scripts/refmatch.py`` to evaluate and fit weights. Every feature is 0-1 on the 0.1 s
 analysis grid of one source:
 
     airtime  telemetry airtime events (strength by duration and confidence)
@@ -39,8 +39,6 @@ Features from the ``cutpoint events`` voice and visual layers (0 until they ran)
              speed); called ``laughter`` before #514 phase 1b, which older
              learned presets and ski_features files still say (read as this)
     voice    Silero VAD and PANNs speech both above wind-raised thresholds
-    taste    personal taste head (``cutpoint refmatch --taste``): logistic regression
-             on the frame embeddings, fitted on a reference edit
 
 From ``cutpoint crashes`` (``<project>/crashes.json``, 0 until it ran):
 
@@ -80,7 +78,7 @@ from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 logger = logging.getLogger(__name__)
 
 FEATURES = features.SKI_FEATURES
-# Features computed from the voice / visual layers and the taste head.
+# Features computed from the voice / visual layers.
 NEW_FEATURES = tuple(f for f in FEATURES if features.get(f).layer in ("audio", "visual"))
 SHORT_CLIP_S = 30.0  # a clip this short was recorded on purpose for one moment
 VLM_ACTION_TAGS = ("jump_air", "landing", "powder_spray")
@@ -106,7 +104,6 @@ GEOMETRY: dict[str, tuple[float, float, float, float]] = {
     "group": (3.0, 6.0, 2.0, 2.0),
     "voice_laughter": (4.0, 8.0, 3.5, 2.5),
     "voice": (4.0, 8.0, 3.0, 2.5),
-    "taste": (3.0, 6.0, 2.0, 2.0),
     "wipeout": (6.0, 40.0, 5.0, 8.0),  # crashes.json plans its own clip
 }
 KIND_LABEL = {
@@ -126,7 +123,6 @@ KIND_LABEL = {
     "group": "crew",
     "voice_laughter": "laugh",
     "voice": "talk",
-    "taste": "pick",
     "wipeout": "crash",
 }
 
@@ -141,7 +137,6 @@ class SkiContext:
     audio_events: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     windows: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     runs: dict[str, Any] = field(default_factory=dict)
-    taste: dict[str, Any] | None = None  # {"w": (768,), "b": float} of a learned preset
     crashes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)  # crashes.json
 
 
@@ -149,16 +144,13 @@ def _key(path: str | Path) -> str:
     return path_key(str(Path(path)))
 
 
-def prepare(
-    sources: list[Path], durations: dict[str, float], project: Path, taste: Path | None = None
-) -> SkiContext:
+def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> SkiContext:
     """Extract telemetry for every source, load events.json, write telemetry.json.
 
     Args:
         sources: Source videos (original paths, as recorded in highlights.json).
         durations: ``{str(source): container duration}``.
         project: Project folder.
-        taste: Taste head (``.npz`` with ``w``, ``b``) of a learned preset.
     """
     tels: dict[str, Telemetry | None] = {}
     for src in sources:
@@ -172,8 +164,6 @@ def prepare(
     speed_ref = np.sort(np.concatenate(speeds)) if speeds else np.zeros(0)
     runs = join_runs(good) if good else {}
     ctx = SkiContext(project=project, telemetry=tels, speed_ref=speed_ref, runs=runs)
-    if taste is not None and Path(taste).exists():
-        ctx.taste = load_taste(Path(taste))
     ev = cache.load_json(project / "events.json")
     if ev:
         for e in ev.get("events", []):
@@ -315,7 +305,7 @@ def build_features(
             for c in ctx.crashes.get(_key(src), [])
         ],
     )
-    vis = layer_features(src, n, offset, sp_kmh, ctx.taste)
+    vis = layer_features(src, n, offset, sp_kmh)
     f.update(vis)
     f["friends_vlm"] = friends.copy()  # not a scored feature: kept for ablations
     friends = np.maximum(friends, vis.get("people", np.zeros(n)))
@@ -327,7 +317,6 @@ def layer_features(
     n: int,
     offset: float = 0.0,
     speed_kmh: np.ndarray | None = None,
-    taste: dict[str, Any] | None = None,
 ) -> dict[str, np.ndarray]:
     """Features from the cached voice / visual layers (missing layers are skipped).
 
@@ -340,7 +329,6 @@ def layer_features(
         n: Grid length of this (part of the) source.
         offset: Start of a recovered part.
         speed_kmh: Optional speed (km/h) on the same grid.
-        taste: Optional taste head ``{"w", "b"}``.
     """
     from cutpoint.events import visual as V  # noqa: PLC0415
     from cutpoint.events import voice as VO  # noqa: PLC0415
@@ -375,8 +363,6 @@ def layer_features(
                 "group": sc["group_zs"],
             }
         )
-        if taste is not None:
-            grid["taste"] = taste_frames(vd, taste)
         for k, v in grid.items():
             out[k] = V.to_grid(t, smooth3(v), n, DT)
     return out
@@ -388,23 +374,6 @@ def smooth3(x: np.ndarray) -> np.ndarray:
         return x
     p = np.r_[x[0], x, x[-1]]
     return np.median(np.stack([p[:-2], p[1:-1], p[2:]]), 0)
-
-
-def load_taste(path: Path) -> dict[str, Any]:
-    """Taste head saved by ``cutpoint refmatch --taste`` (``w`` (768,), ``b``)."""
-    with np.load(path) as z:
-        return {"w": z["w"].astype(np.float32), "b": float(z["b"]), "path": str(path)}
-
-
-def taste_frames(vd: Any, taste: dict[str, Any]) -> np.ndarray:
-    """Taste probability per frame (mean crop embedding through the logistic head)."""
-    return taste_prob(vd.mean_emb, taste)
-
-
-def taste_prob(emb: np.ndarray, taste: dict[str, Any]) -> np.ndarray:
-    """Taste head's probability for each row of ``emb``."""
-    z = emb @ taste["w"] + taste["b"]
-    return 1 / (1 + np.exp(-np.clip(z, -30, 30)))
 
 
 def effective_mask(
@@ -664,7 +633,7 @@ def save_features(
     friends: np.ndarray,
     events: list[dict[str, Any]],
 ) -> Path:
-    """Store the grids so ``cutpoint refmatch`` can refit and re-rank without re-analysis."""
+    """Store the grids so ``scripts/refmatch.py`` can refit and re-rank without re-analysis."""
     path = features_path(project, src, offset)
     meta = json.dumps(
         {"source": str(src), "offset": offset, "duration": duration, "events": events}
@@ -699,7 +668,9 @@ def load_project_features(project: Path) -> list[dict[str, Any]]:
     """Every saved source of a ski project (offset-0 parts first)."""
     folder = project / FEATURES_DIR
     if not folder.is_dir():
-        raise FileNotFoundError(f"{folder} not found; run `cutpoint analyze --style ski` first")
+        raise FileNotFoundError(
+            f"{folder} not found; run `cutpoint analyze --style action-cam` first"
+        )
     return sorted(
         (load_features(p) for p in folder.glob("*.npz")), key=lambda d: (d["source"], d["offset"])
     )

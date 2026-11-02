@@ -76,8 +76,16 @@ PANNS_CKPT_MIRRORS: tuple[str, ...] = (
 )
 PANNS_CKPT_SIZE = 327428481
 PANNS_CKPT_SHA256 = "dd3b4043a87d4ec13df8082c0fcfee3fb5084151808e47e060987a95eabdd142"
-AESTHETIC_SIZE = 3714759
-AESTHETIC_SHA256 = "21dd590f3ccdc646f0d53120778b296013b096a035a2718c9cb0d511bff0f1e0"
+# LAION improved-aesthetic-predictor head (Apache-2.0), converted from the upstream pickled
+# .pth to .npz by scripts/convert_aesthetic_head.py (float32 values unchanged); tried in order.
+AESTHETIC_MIRRORS: tuple[str, ...] = (
+    "https://huggingface.co/FerventOrange/cutpoint-models/resolve/main/aesthetic/"
+    "sac%2Blogos%2Bava1-l14-linearMSE.npz",
+    "https://github.com/FerventOrange/cutpoint/releases/download/models-aesthetic-v1/"
+    "aesthetic-head-v1.npz",
+)
+AESTHETIC_SIZE = 3714498
+AESTHETIC_SHA256 = "8aa479a5065da0ad9941938da7f5ef8eeb66df8bf91385a8381557ee511f3770"
 # A mirror with another one after it is dropped if it delivers less than this (bytes/s)
 # over its first SLOW_START_WINDOW seconds. The last mirror is never dropped for slowness.
 PANNS_MIN_RATE = 500_000
@@ -105,7 +113,6 @@ EVENTS_MODULES = (
     "open_clip",
     "onnxruntime",
     "scipy",
-    "sklearn",
 )
 COMPONENTS = ("pip", "panns", "llama", "omni", "visual", "voice")
 
@@ -643,8 +650,16 @@ def install_omni() -> None:
 
 
 def install_visual() -> None:
-    """Download the aesthetic head; load CLIP + Faster R-CNN once so their weights download."""
-    download(paths.AESTHETIC_URL, paths.aesthetic_head(), AESTHETIC_SIZE, AESTHETIC_SHA256)
+    """Download the aesthetic head; load CLIP + Faster R-CNN once so their weights download.
+
+    The head comes from the first of ``AESTHETIC_MIRRORS`` that works; the pickled ``.pth``
+    earlier versions downloaded is then removed.
+    """
+    head = paths.aesthetic_head()
+    _download_mirrors(list(AESTHETIC_MIRRORS), head, AESTHETIC_SIZE, AESTHETIC_SHA256)
+    old = head.with_suffix(".pth")
+    for f in (old, old.with_name(old.name + ".part")):
+        f.unlink(missing_ok=True)
     for m in ("torch", "open_clip"):
         if importlib.util.find_spec(m) is None:
             # The CLI turns this into "<m> is not installed: ... not available in Cutpoint lite"
@@ -667,12 +682,6 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         choices=COMPONENTS,
         default=list(COMPONENTS),
         help="components to install (default: all)",
-    )
-    ap.add_argument(
-        "--torch-cuda",
-        action="store_true",
-        help="no longer used: torch comes from the events extra (CUDA 12.6 "
-        "on Windows/Linux); kept so old commands still run",
     )
     ap.add_argument("--force", action="store_true", help="Reinstall llama.cpp.")
 

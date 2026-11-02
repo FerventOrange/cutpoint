@@ -1843,7 +1843,7 @@ def test_a_ski_analysis_without_no_scenes_keeps_presets_and_scene_detection_on(
     """Regression: ski never detects scenes, so its analysis records "scenes": false without
     --no-scenes; that turned the presets off with the --no-scenes reason."""
     meta = {"style": "action-cam", "source": str(tmp_path / "clip.mp4")}
-    settings = {"scenes": False, "must_include_crash": 0.6}  # the ski style's own
+    settings = {"scenes": False, "must_include_crash": 0.6}  # the action-cam style's own
     res, captured, _, _ = preset_job(
         client, monkeypatch, tmp_path, {"kind": "clips"}, settings=settings, meta=meta
     )
@@ -8485,6 +8485,26 @@ def test_a_failed_subscription_login_says_why_and_can_start_again(
     assert login_state(client, "codex") == {"state": "error", "error": logins.fail}
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
     assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
+
+
+def test_a_subscription_login_without_the_proxy_is_unavailable_not_a_server_error(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    why = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+
+    def offline(_provider: str) -> dict:
+        raise ui.cliproxy.ProxyConnectionError(why)
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", offline)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 503 and res.json()["detail"] == why
+    assert login_state(client, "codex") == {"state": "error", "error": why}
+
+    def broken(_provider: str) -> dict:
+        raise ui.cliproxy.ProxyError("failed to start login for codex: missing url")
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", broken)
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 500
 
 
 def test_login_timeout_cancellation_does_not_hold_login_lock(
