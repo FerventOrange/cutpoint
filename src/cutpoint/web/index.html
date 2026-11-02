@@ -466,6 +466,16 @@
             <input id="visionRoleUrl" inputmode="url" autocomplete="off" spellcheck="false" readonly aria-describedby="visionRoleUrlHint">
           </label>
           <p id="visionRoleUrlHint" class="hint" hidden></p>
+          <div id="visionRoleKey" class="field" hidden>
+            <p id="visionRoleKeyStatus" role="status"></p>
+            <span class="row wrap">
+              <label for="visionRoleKeyInput" class="vh">API key to save in the system keyring</label>
+              <input id="visionRoleKeyInput" type="password" autocomplete="off" spellcheck="false" aria-describedby="visionRoleKeyHint">
+              <button type="button" class="btn small" id="visionRoleKeySave">Save key</button>
+              <button type="button" class="btn small" id="visionRoleKeyClear">Clear key</button>
+            </span>
+            <p id="visionRoleKeyHint" class="hint"></p>
+          </div>
           <div id="visionConsent" class="chat-consent" role="group" aria-labelledby="visionConsentTitle" hidden>
             <h3 id="visionConsentTitle">Send video frames to hosted model?</h3>
             <p id="visionConsentText"></p>

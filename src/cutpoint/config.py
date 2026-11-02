@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
 COLOR_MODES = ("off", "auto", "underwater")  # --color; the grades are cutpoint.color.MODES
-VISION_PROVIDERS = ("ollama", "claude-code", "codex", "antigravity")
+# in the Models tab's order: local, the API keys, then the subscription logins
+VISION_PROVIDERS = ("ollama", "anthropic", "openai", "xai", "claude-code", "codex", "antigravity")
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once
 ASSISTANT_PROVIDERS = (
     "ollama",

@@ -183,7 +183,10 @@ class VLChecker:
         self.dead = False  # set when the server stops answering: no more requests
 
     def available(self) -> bool:
-        return self.rater.available()
+        if not self.rater.available():
+            return False
+        self.model = self.rater.model  # resolved by the check (the frame cache's key)
+        return True
 
     def unload(self) -> None:
         """Free the model's VRAM after the last check (:meth:`VisionRater.unload`)."""

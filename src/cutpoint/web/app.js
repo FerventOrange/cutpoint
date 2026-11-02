@@ -3830,7 +3830,8 @@ const PROVIDER_TITLES = {
   xai: 'xAI API',
   custom: 'Custom (from config.json)',
 };
-const VISION_PROVIDERS = ['ollama', 'claude-code', 'codex', 'antigravity'];
+// in the order the server offers them: local, the API keys, then the subscription logins
+const VISION_PROVIDERS = ['ollama', 'anthropic', 'openai', 'xai', 'claude-code', 'codex', 'antigravity'];
 
 const CHAT_HINTS = {
   ollama: 'Runs with Ollama (local), at OLLAMA_HOST or the Ollama URL in config.json. On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
@@ -3844,10 +3845,13 @@ const CHAT_HINTS = {
 };
 
 const VISION_HINTS = {
-  ollama: 'Runs with Ollama (local) vision models (e.g. qwen3-vl:8b, llava) to rate video frames on this machine.',
+  ollama: 'Runs with Ollama (local) vision models (e.g. qwen3.5:9b, the default) to rate video frames on this machine.',
+  anthropic: "Anthropic API (api.anthropic.com): rates video frames via your Anthropic API key. Requests go to Anthropic's hosted service; each request sends frames and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
   'claude-code': "Claude Code subscription: rates video frames via your Claude subscription login (no API key). Requests go to Anthropic's hosted service. Use at your own risk.",
+  openai: "OpenAI API (api.openai.com): rates video frames via your OpenAI API key. Requests go to OpenAI's hosted service; each request sends frames and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
   codex: "Codex subscription: rates video frames via your ChatGPT subscription login (no API key). Requests go to OpenAI's hosted service. Use at your own risk.",
   antigravity: "Antigravity subscription: rates video frames via your Google/Antigravity subscription login (no API key). Requests go to Google's hosted service. Use at your own risk.",
+  xai: "xAI API (api.x.ai): rates video frames via your xAI API key. Requests go to xAI's hosted service; each request sends frames and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
 };
 
 const AI_MODEL_HINTS = {
@@ -3916,10 +3920,10 @@ function renderVisionRoleHints() {
   if (!sel) return;
   const choice = sel.value;
   const p = S.visionAi?.providers?.find((x) => x.name === choice);
-  let hint = VISION_HINTS[choice] ?? '';
-  if (S.visionAi?.custom && choice === S.visionAi.provider && !S.visionAi.local) {
-    hint += ' Use at your own risk.';
-  }
+  // a base URL no preset has (config.json): the preset's text would name the wrong host
+  let hint = S.visionAi?.custom && choice === S.visionAi.provider
+    ? `The provider and base URL set in config.json (${S.visionAi.url}). ${S.visionAi.local ? 'It runs on this machine; no frames leave it.' : 'Frames go to that host. Use at your own risk.'}`
+    : VISION_HINTS[choice] ?? '';
   if (p?.subscription && !S.logins?.find((l) => l.provider === p.name)?.logged_in) {
     hint += ' Not logged in yet.';
   }
@@ -3968,7 +3972,20 @@ function renderVisionRoleFields(model) {
   $('#visionRoleModelHint').textContent = AI_MODEL_HINTS[choice] ?? '';
   $('#visionRoleUrlField').hidden = $('#visionRoleUrlHint').hidden = !custom;
   $('#visionRoleUrlHint').textContent = custom ? 'Set in config.json (vision_assistant.url); edit that file to change it.' : '';
+  renderVisionRoleKey(p);
   renderVisionConsent();
+}
+
+function renderVisionRoleKey(p) {
+  const keyed = p?.name in (S.visionAi?.keys ?? {});
+  $('#visionRoleKey').hidden = !keyed;
+  if (!keyed) return;
+  const where = S.visionAi.keys[p.name];
+  const host = S.visionAi.key_hosts?.[p.name] ?? '';
+  $('#visionRoleKeyStatus').textContent = `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
+  // jobs started here get no key variables (keys.child_env): only the keyring reaches them
+  const env = (p.key_env || []).join(' or ');
+  $('#visionRoleKeyHint').textContent = `Analyses started here read it from the system keyring${env ? `; ${env} counts only for cutpoint commands run in a terminal` : ''}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown. A key for the same host serves both roles.`;
 }
 
 function renderVisionConsent() {
@@ -4358,7 +4375,8 @@ async function subLogout(provider) {
 }
 
 
-async function saveAiKey(clear) {
+async function saveAiKey(clear, role = 'chat') {
+  if (role === 'vision') return saveVisionKey(clear);
   const custom = $('#chatRoleProvider').value === AI_CUSTOM;
   const name = custom ? S.ai?.provider : $('#chatRoleProvider').value;
   const p = S.ai?.providers?.find((x) => x.name === name);
@@ -4377,16 +4395,55 @@ async function saveAiKey(clear) {
       { method: 'POST', body: clear ? { provider: p.name } : { provider: p.name, key } });
     S.ai.keys = r.keys;
     S.ai.key_hosts = r.key_hosts;
+    shareKeyStatus(S.visionAi, r, p.name);
   } catch (e) {
     err.textContent = e.message;
     return;
   }
   renderChatRoleFields();
+  if (S.visionAi && $('#visionRoleProvider')?.value === p.name) renderVisionRoleFields();
   $('#chatRoleKeyStatus').textContent += clear
     ? '. Removed from the keyring.'
     : '. Saved in the system keyring; it is checked when you send the first message.';
   if (!clear) loadRoleModels('chat', false);
   if (S.id) loadAssistant();
+}
+
+/** A key is kept per provider and host: copy where `provider`'s key comes from into the other
+ * role's view when that role uses the same host. */
+function shareKeyStatus(view, r, provider) {
+  if (view?.keys && view.key_hosts?.[provider] === r.key_hosts?.[provider]) {
+    view.keys[provider] = r.keys[provider];
+  }
+}
+
+async function saveVisionKey(clear) {
+  const name = $('#visionRoleProvider').value;
+  const p = S.visionAi?.providers?.find((x) => x.name === name);
+  const input = $('#visionRoleKeyInput');
+  const err = $('#modelsError');
+  err.textContent = '';
+  const key = input.value.trim();
+  if (!p) return;
+  if (!clear && !key) {
+    err.textContent = 'Paste the API key first.';
+    return input.focus();
+  }
+  input.value = '';
+  try {
+    const r = await api(clear ? '/api/assistant/key/clear' : '/api/assistant/key',
+      { method: 'POST', body: clear ? { provider: p.name, role: 'vision' } : { provider: p.name, key, role: 'vision' } });
+    S.visionAi.keys = r.keys;
+    S.visionAi.key_hosts = r.key_hosts;
+    shareKeyStatus(S.ai, r, p.name);
+  } catch (e) {
+    err.textContent = e.message;
+    return;
+  }
+  renderVisionRoleFields();
+  $('#visionRoleKeyStatus').textContent += clear ? '. Removed from the keyring.' : '. Saved in the system keyring.';
+  if (S.ai && $('#chatRoleProvider')?.value === p.name) renderChatRoleFields();
+  if (!clear) loadRoleModels('vision', false);
 }
 
 function fillChatRoleSettings(a) {
@@ -4586,6 +4643,14 @@ function bindModelsTab() {
   });
   $('#visionRoleModelsRefresh').addEventListener('click', () => loadRoleModels('vision', true));
   $('#visionConsentOk').addEventListener('click', giveVisionConsent);
+  $('#visionRoleKeySave').addEventListener('click', () => saveAiKey(false, 'vision'));
+  $('#visionRoleKeyClear').addEventListener('click', () => saveAiKey(true, 'vision'));
+  $('#visionRoleKeyInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveAiKey(false, 'vision');
+    }
+  });
 
   $('#btnSaveModels').addEventListener('click', saveModels);
 }

@@ -1849,6 +1849,8 @@ def _analyze(
                 if vision_top is None
                 else vision_top
             )
+            # available() first: it resolves a hosted provider's unset model, the cache key.
+            # Offline, that model stays the placeholder and its cached ratings are not found.
             online, n_cached = rater.available(), 0
             if not online:  # Ollama down: the ratings already cached, no requests (#413)
                 rater.cache_only = True

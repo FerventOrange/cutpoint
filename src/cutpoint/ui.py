@@ -521,9 +521,13 @@ def _vision_provider_from_data(data: dict[str, Any]) -> ai_providers.Provider | 
         provider_name = "ollama"
     model = (section.get("model") or "").strip()
     url = (section.get("url") or "").strip()
+    chat_name, chat_url = _provider_url(data, "assistant")
     try:
-        return ai_providers.make(AssistantSettings(provider=provider_name, model=model, url=url))
-    except (ValueError, TypeError):  # an invalid value in config.json: the view shows no provider
+        return ai_providers.make_vision(
+            AssistantSettings(provider=provider_name, model=model, url=url),
+            AssistantSettings(provider=chat_name or "ollama", url=chat_url),
+        )
+    except (ValueError, TypeError, KeyError):  # an invalid value in config.json: no provider
         return None
 
 
@@ -548,7 +552,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     vis_section = data.get("vision_assistant")
     vis_consent = _tuple_of_str(vis_section.get("consent")) if isinstance(vis_section, dict) else ()
     vp = _vision_provider_from_data(data)
-    if vp is not None and (vp.name in cliproxy.PROVIDERS or ai_providers.is_subscription(vp.name)):
+    if vp is not None and vp.name != "ollama":  # Ollama is rated by VisionRater, never asked here
         v_consent_info = consent_view(vp, consent=vis_consent, role="vision")
     else:
         v_consent_info = {
@@ -647,7 +651,10 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
     def key_env(p: str) -> list[str]:
         if p not in ai_keys.KEYED:
             return []
-        return ai_keys.env_names(p, hosts[p])
+        names = ai_keys.env_names(p, hosts[p])
+        if is_vision and not _vision_key_shared(data, p):  # never read for this host
+            names = [n for n in names if n != ai_keys.ENV_KEY]
+        return names
 
     allowed = VISION_PROVIDERS if is_vision else ASSISTANT_PROVIDERS
     name = name if name in allowed else "ollama"
@@ -682,23 +689,44 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
     }
 
 
-def key_hosts(data: dict[str, Any], section_name: str = "assistant") -> dict[str, str]:
-    """The host each keyed provider's key is for, by config ``data``: the configured base URL's
-    for the configured provider, the official API host for the others."""
+def _provider_url(data: dict[str, Any], section_name: str) -> tuple[str, str]:
+    """``(provider, url)`` of config ``data``'s ``section_name`` section ("" when unset)."""
     section = data.get(section_name)
     section = section if isinstance(section, dict) else {}
     name, url = section.get("provider"), section.get("url")
     name = name.strip().lower() if isinstance(name, str) else ""
     url = url.strip() if isinstance(url, str) else ""
+    return name, url
+
+
+def key_hosts(data: dict[str, Any], section_name: str = "assistant") -> dict[str, str]:
+    """The host each keyed provider's key is for, by config ``data``: the configured base URL's
+    for the configured provider, the official API host for the others."""
+    name, url = _provider_url(data, section_name)
     return {p: ai_providers.key_host(p, url if p == name else "") for p in ai_keys.KEYED}
+
+
+def _vision_key_shared(data: dict[str, Any], p: str) -> bool:
+    """Whether the Vision role's provider ``p`` may use ``CUTPOINT_ASSISTANT_API_KEY`` by config
+    ``data`` (:func:`cutpoint.assistant.providers.vision_key_shared`)."""
+    name, url = _provider_url(data, "vision_assistant")
+    chat_name, chat_url = _provider_url(data, "assistant")
+    return ai_providers.vision_key_shared(p, url if p == name else "", chat_name, chat_url)
 
 
 def key_status(data: dict[str, Any], section_name: str = "assistant") -> dict[str, Any]:
     """``{keys, key_hosts}``: where each keyed provider's key for its host comes from
-    (``"env"``, ``"keyring"`` or None), and that host. Never a key."""
+    (``"env"``, ``"keyring"`` or None), and that host. Never a key. The Vision role's keys come
+    from ``CUTPOINT_ASSISTANT_API_KEY`` only for the assistant's key host
+    (:func:`cutpoint.assistant.providers.vision_key_shared`)."""
     hosts = key_hosts(data, section_name=section_name)
+    vision = section_name == "vision_assistant"
+
+    def shared(p: str) -> bool:
+        return not vision or _vision_key_shared(data, p)
+
     return {
-        "keys": {p: ai_keys.status(p, hosts[p]) for p in ai_keys.KEYED},
+        "keys": {p: ai_keys.status(p, hosts[p], shared=shared(p)) for p in ai_keys.KEYED},
         "key_hosts": hosts,
     }
 
@@ -3808,32 +3836,43 @@ def create_app(port: int) -> FastAPI:
             raise bad(f"provider must be one of {', '.join(ai_keys.KEYED)}")
         return name
 
+    def key_section(body: dict[str, Any]) -> str:
+        """The config section whose base URL names a key's host: ``role`` ``assistant`` (the
+        default) or ``vision``."""
+        role = body.get("role") or "assistant"
+        if role not in ("assistant", "vision"):
+            raise bad("role must be assistant or vision")
+        return "vision_assistant" if role == "vision" else "assistant"
+
     @secure.post("/assistant/key")
     def save_key(body: dict[str, Any]):
         """Save ``key`` for ``provider`` in the system keyring, for the host
-        its configured base URL names (``key_hosts``): a key saved for OpenRouter is never sent
-        to OpenAI. The answer says only where each key now comes from, never a key."""
+        its configured base URL names (``key_hosts`` of ``role``'s section): a key saved for
+        OpenRouter is never sent to OpenAI. The answer says only where each key now comes from,
+        never a key."""
         name = keyed_provider(body)
+        section = key_section(body)
         data = config_data()
         try:
-            ai_keys.save(name, body.get("key"), key_hosts(data)[name])
+            ai_keys.save(name, body.get("key"), key_hosts(data, section)[name])
         except ValueError as err:
             raise bad(str(err)) from None
         except ai_keys.KeyringError as err:
             raise bad(str(err), 500) from None
-        return key_status(data)
+        return key_status(data, section)
 
     @secure.post("/assistant/key/clear")
     def clear_key(body: dict[str, Any]):
-        """Remove ``provider``'s keyring key for its configured host; a key from the
-        environment stays."""
+        """Remove ``provider``'s keyring key for its configured host (of ``role``'s section);
+        a key from the environment stays."""
         name = keyed_provider(body)
+        section = key_section(body)
         data = config_data()
         try:
-            ai_keys.clear(name, key_hosts(data)[name])
+            ai_keys.clear(name, key_hosts(data, section)[name])
         except ai_keys.KeyringError as err:
             raise bad(str(err), 500) from None
-        return key_status(data)
+        return key_status(data, section)
 
     @secure.post("/assistant/consent")
     def give_consent(body: dict[str, Any]):
@@ -3894,7 +3933,7 @@ def create_app(port: int) -> FastAPI:
                 settings.provider, settings.url
             )
             if provider == "custom" or saved:
-                p = ai_providers.make(settings)
+                p = (ai_providers.make_vision if role == "vision" else ai_providers.make)(settings)
             elif provider in ai_providers.PRESETS:
                 p = ai_providers.preset(provider, settings.context_tokens)
             elif provider in cliproxy.PROVIDERS:
@@ -4767,7 +4806,7 @@ def create_app(port: int) -> FastAPI:
 
     def vision_provider() -> ai_providers.Provider:
         try:
-            return ai_providers.make(vision_assistant_settings())
+            return ai_providers.make_vision(vision_assistant_settings())
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
 
