@@ -17,6 +17,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -2695,6 +2697,68 @@ def test_ui_on_a_taken_port_fails_cleanly_without_printing_a_url(
     assert "Traceback" not in caplog.text
     out = capsys.readouterr()
     assert "http://" not in out.out + out.err
+
+
+def test_hangup_before_the_server_exists_exits_1() -> None:
+    """SIGHUP before uvicorn runs unwinds through run()'s finally, which stops the children."""
+    hangup = ui._Hangup()
+    with pytest.raises(SystemExit) as info:
+        hangup(1, None)
+    assert info.value.code == 1 and hangup.received
+
+
+def test_hangup_asks_a_running_server_to_stop_instead_of_raising() -> None:
+    """uvicorn catches a SystemExit raised while it handles a request and keeps serving, so a
+    running server is asked to stop; run() exits 1 once it has."""
+    hangup = ui._Hangup()
+    hangup.server = SimpleNamespace(should_exit=False)
+    hangup(1, None)
+    assert hangup.server.should_exit is True and hangup.received
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="no SIGHUP on this OS")
+def test_sighup_right_after_a_request_stops_the_ui_and_frees_its_port(tmp_path: Path) -> None:
+    """Closing the terminal (SIGHUP) just after a request ends `cutpoint ui` with exit 1 and
+    releases its port; a SystemExit from the handler used to be swallowed by uvicorn."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    with (tmp_path / "ui.err").open("w") as err:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "cutpoint.cli", "ui", "--port", str(port)],
+            stdout=subprocess.PIPE,
+            stderr=err,
+            text=True,
+            cwd=tmp_path,
+        )
+    try:
+        stdout = proc.stdout
+        assert stdout is not None
+        banner: list[str] = []  # read in a thread: a child stuck before its banner fails the test
+        reader = threading.Thread(target=lambda: banner.append(stdout.readline()), daemon=True)
+        reader.start()
+        reader.join(timeout=30)
+        assert banner and banner[0].startswith("Cutpoint UI: http://127.0.0.1:"), banner
+        # The banner comes just before the handler is installed; an answer comes after it.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).close()
+                break
+            except urllib.error.HTTPError:
+                break  # any answer will do
+            except OSError:
+                assert time.monotonic() < deadline, "the server never answered"
+                time.sleep(0.05)
+        proc.send_signal(signal.SIGHUP)  # no idle wait: uvicorn may still be in the request
+        assert proc.wait(timeout=30) == 1, (tmp_path / "ui.err").read_text()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+    ui.listen(port).close()  # the listener is closed: a new `cutpoint ui` can take the port
 
 
 def test_show_folder_opens_only_the_projects_own_source_folder(
