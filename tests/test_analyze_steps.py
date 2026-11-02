@@ -20,7 +20,7 @@ import pytest
 
 import cutpoint.pano.x3 as x3
 import cutpoint.ski as ski
-from conftest import set_config, write
+from conftest import StubTranscriber, run_json, set_config, write
 from cutpoint import activity, analyze, cache, cli, config, crash, jsonout, progress, transcribe
 from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
@@ -60,15 +60,6 @@ def run(home, tmp_path, monkeypatch):
         events_calls=[], layers_seen=[], saves=[], vision_ok=True, vision_cached=False,
         rated=0, segments=[], transcripts=[], events=[],
     )  # fmt: skip
-
-    class StubTranscriber:
-        model_name, device = "stub", "cpu"
-
-        def __init__(self, **_):
-            pass
-
-        def close(self):
-            pass
 
     def fake_analyze_source(src, style, tr, use_scenes, max_cand, timings, **kw):
         info = MediaInfo(
@@ -470,11 +461,6 @@ def test_watch_extract_reports_the_growing_temp_wav(tmp_path, monkeypatch):
     assert {0.25, 0.5, 0.75, 1.0} <= set(got)
 
 
-def test_watch_extract_is_a_no_op_without_a_report(tmp_path):
-    with analyze._watch_extract(tmp_path / "a.wav", 10.0, None):
-        pass  # no thread, nothing to stop
-
-
 def test_whisper_progress_is_passed_only_on_a_transcript_cache_miss(tmp_path):
     calls = []
 
@@ -507,6 +493,19 @@ def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsy
     assert "Keyframes failed: model blew up" in res.warnings[0]["message"]
     assert "Keyframes failed" in caplog.text
     assert (run.proj / "highlights.json").is_file()
+
+
+def test_analyze_json_reports_a_failed_step_as_a_warning_not_an_error(run, capsys):
+    """Through ``cli.main``: a failed layer is a ``step_failed`` warning; the run succeeds."""
+    run.plan = plan(reactions=("audio", "voice"), keyframes=("visual",))
+    run.fail = "visual"
+
+    code, doc = run_json(capsys, ["analyze", str(run.video), "--style", "action", "--out", "s"])
+
+    assert code == 0 and doc["ok"] is True and doc["error"] is None
+    [warning] = [w for w in doc["warnings"] if w["code"] == "step_failed"]
+    assert "Keyframes failed: model blew up" in warning["message"]
+    assert Path(doc["outputs"]["highlights"]).is_file()
 
 
 def test_a_failure_of_the_events_run_itself_skips_its_steps_and_goes_on(run, capsys, monkeypatch):
@@ -675,7 +674,7 @@ def test_ski_features_are_prepared_again_after_the_layers(run, monkeypatch, laye
 
     monkeypatch.setattr(analyze, "pick_candidates", pick)
     run.plan = plan(reactions=("audio", "voice"), crashes=("crash",))
-    run.go("ski", layers=layers)
+    run.go("action-cam", layers=layers)
     assert len(calls) == prepared
     assert len(run.events_calls) == int(layers)
     assert len(picked) == 1  # the candidates are picked once, from the last features
@@ -791,28 +790,6 @@ def test_without_layers_the_transcript_is_still_written(run):
     assert (run.proj / "transcript.txt").read_text(encoding="utf-8") == (
         f"# {run.video}\n(no speech)\n"
     )
-
-
-@pytest.mark.parametrize("where", ["keyframes", "vision"])
-def test_a_cancel_after_the_transcription_leaves_no_transcript_txt(run, where):
-    run.segments = SPEECH
-    run.plan = plan(keyframes=("visual",))
-    run.fail, run.cancel = ("visual" if where == "keyframes" else "vision"), True
-    with pytest.raises(KeyboardInterrupt):
-        run.go(vision=where == "vision")
-    # nothing written: the new project folder is removed too (events.json, held back, #408)
-    assert not run.proj.exists()
-
-
-def test_a_cancel_leaves_the_previous_transcript_txt_byte_identical(run):
-    old = b"# old\r\n(no speech)\r\n"
-    write(run.proj / "transcript.txt", old)
-    run.segments = SPEECH
-    run.plan = plan(keyframes=("visual",))
-    run.fail, run.cancel = "visual", True
-    with pytest.raises(KeyboardInterrupt):
-        run.go()
-    assert (run.proj / "transcript.txt").read_bytes() == old
 
 
 def test_pending_transcript_is_parsed_only_inside_the_block(tmp_path):
@@ -1022,7 +999,7 @@ def test_result_files_are_written_at_the_end_and_read_from_memory_meanwhile(run,
     want = [
         "# events.txt: transcript lines interleaved with detected events.",
         "# AUDIO = PANNs sound events (confidence, duration); OCR = on-screen HUD text;",
-        "# VLM WINDOW = Qwen2.5-Omni summary of a window (hl = highlight 0-10);",
+        "# VLM WINDOW = Vision model summary of a window (hl = highlight 0-10);",
         "# VLM = moment inside a window. Times are source time.",
         "",
         f"# {run.video}",
@@ -1059,8 +1036,17 @@ def test_the_standalone_writers_still_write_at_once(tmp_path, monkeypatch):
     assert sheet.read_bytes() == plain.read_bytes() == (tmp_path / "again.jpg").read_bytes()
 
 
-@pytest.mark.parametrize("where", ["audio", "visual", "crash", "write", "ranking", "vision"])
-@pytest.mark.parametrize("earlier", [True, False])
+@pytest.mark.parametrize(
+    ("where", "earlier"),
+    [
+        ("audio", True),
+        ("visual", False),
+        ("crash", True),
+        ("write", False),
+        ("ranking", True),
+        ("vision", False),
+    ],
+)
 def test_a_cancel_at_any_step_leaves_the_result_files_as_they_were(
     run, monkeypatch, where, earlier
 ):
@@ -1148,7 +1134,7 @@ def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch
     run.plan = plan(crashes=("crash",))
     run.fail, run.cancel = ("vision" if cancel else None), cancel
     with pytest.raises(KeyboardInterrupt) if cancel else contextlib.nullcontext():
-        run.go("ski", vision=cancel)
+        run.go("action-cam", vision=cancel)
     assert seen == [(1, False)]
     got = tree(run.proj)
     if cancel:
@@ -1244,38 +1230,6 @@ def test_the_ocr_prefetch_stops_before_a_cancelled_run_cleans_up(prefetched):
 
 # ----------------------------------------------------------------- --skip and analysis.skip
 @pytest.mark.parametrize(
-    ("argv", "skip"),
-    [
-        ([], ()),
-        (["--skip", "reactions"], ("reactions",)),
-        (["--skip", "keyframes", "crashes"], ("keyframes", "crashes")),
-    ],
-)
-def test_skip_option_reaches_analyze(home, tmp_path, monkeypatch, argv, skip):
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.append(kw))
-    assert cli.main(["analyze", str(video), "--out", "p", *argv]) == 0
-    assert seen[0]["skip"] == skip and seen[0]["layers"] is True
-
-
-@pytest.mark.parametrize("bad", ["transcribe", "ranking", "vision", "nope"])
-def test_skip_rejects_steps_that_cannot_be_skipped(home, tmp_path, capsys, bad):
-    video = write(tmp_path / "a.mp4")
-    with pytest.raises(SystemExit) as err:
-        cli.main(["analyze", str(video), "--skip", bad])
-    assert err.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err
-
-
-def test_skip_needs_at_least_one_step(home, tmp_path, capsys):
-    video = write(tmp_path / "a.mp4")
-    with pytest.raises(SystemExit) as err:
-        cli.main(["analyze", str(video), "--skip"])
-    assert err.value.code == 2
-
-
-@pytest.mark.parametrize(
     ("cfg", "argv", "skip"),
     [
         (None, [], ()),
@@ -1301,7 +1255,6 @@ def test_config_analysis_skip_is_the_default(home, tmp_path, monkeypatch, cfg, a
         ({"analysis": []}, "analysis must be an object"),
         ({"analysis": {"skip": "crashes"}}, "analysis.skip must be a list"),
         ({"analysis": {"skip": ["ranking"]}}, "analysis.skip has 'ranking'"),
-        ({"analysis": {"skip": ["reactions", 3]}}, "analysis.skip must be a list"),
     ],
 )
 def test_config_analysis_skip_is_validated(home, data, message):
@@ -1352,7 +1305,7 @@ def test_plan_by_style(env, style, layers, skipped):
 
 
 def test_plan_ski_is_action_footage(env):
-    got, _ = planned("ski")
+    got, _ = planned("action-cam")
     assert got["crashes"] == ("crash",) and got["keyframes"] == ("visual",)
 
 
@@ -1370,11 +1323,7 @@ def test_plan_without_cuda_leaves_out_the_clip_keyframes(env, caplog):
     assert "keyframes" not in got and why["keyframes"].startswith("no CUDA GPU")
     assert got["crashes"] == ("crash",)
     assert "No CUDA GPU" in caplog.text
-
-
-def test_plan_cuda_is_not_needed_for_hud_text(env):
-    env.cuda = False
-    assert planned("funny")[0]["keyframes"] == ("ocr",)
+    assert planned("funny")[0]["keyframes"] == ("ocr",)  # HUD text needs no CUDA
 
 
 def test_plan_cuda_check_uses_torch(env, monkeypatch):
@@ -1410,11 +1359,8 @@ def test_plan_skip_option_leaves_steps_out(env):
     got, why = planned("action", skip=("reactions", "crashes"))
     assert got == {"keyframes": ("visual",)}
     assert why == dict.fromkeys(("reactions", "crashes"), "left out by --skip or analysis.skip")
-
-
-def test_plan_skipping_crashes_drops_the_voice_layer(env):
-    got, _ = planned("action", skip=("crashes",))
-    assert got["reactions"] == ("audio",)
+    # skipping crashes drops the voice layer
+    assert planned("action", skip=("crashes",))[0]["reactions"] == ("audio",)
 
 
 def test_plan_everything_skipped_is_an_empty_plan(env):

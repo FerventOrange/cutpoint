@@ -13,7 +13,7 @@ prints tracebacks of errors.
 
 | Command | Purpose |
 |---|---|
-| [`ui`](#ui) | Open a local browser editing workspace for standard video |
+| [`ui`](#ui) | Open the local browser editing workspace |
 | [`capabilities`](#capabilities) | Report GPU vendors, working encoders, transcription, torch and SDK support |
 | [`edit`](#edit) | Analyze, export clips and assemble in one command |
 | [`analyze`](#analyze) | Find and rank highlight candidates |
@@ -22,16 +22,19 @@ prints tracebacks of errors.
 | [`extend`](#extend) | Re-export a clips folder with more padding |
 | [`assemble`](#assemble) | Join clips into one video |
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
-| [`crashes`](#crashes), [`mix`](#mix), [`refmatch`](#refmatch), [`fit`](#fit) | Action-cam module |
+| [`crashes`](#crashes), [`mix`](#mix) | Action-cam module |
+| [`profile`](#profile) | Pick or build the project's activity profile for crash detection |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
+| [`proxy`](#proxy), [`login`, `logout`](#login) | Subscription logins for the hosted models of `cutpoint ui` |
 
 ## JSON output
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
 on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
 `setup`, `events`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
-`director`, `stitch`, `check`, `qa`, `repair`). Not yet on the other commands. Logs and errors stay on stderr, and
+`director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
+`logout` have no `--json`. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
 codes are unchanged.
 
@@ -56,6 +59,13 @@ With a failure, `ok` is `false` and `outputs` holds whatever was recorded before
 argument error (`bad_args` from the parser) also writes an envelope, then exits 2. A command that
 checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--clip-override`, `--ids`, a `--lut` file that is not `.cube`/`.3dl`, unreadable or that ffmpeg cannot load, `--lut-strength` without `--lut`, `--color` or `--color-strength` with `--lut`, `--color-strength` when no `--color` correction runs, `mix --quotas`,
 `360 director --out-name`, `stage` with no inputs, an unknown `--activity`) reports `bad_args` and exits 1.
+So do these combinations:
+
+- `extend` with no padding and `--no-speech-aware`
+- `360 qa --compare` with `--paths`
+- `assemble <project> --force` with `--format mp4`
+- `assemble <clips_dir>` with an option that only works from a project
+- `edit --format fcpxml|otio` with `--no-keep-clips`
 
 | `error.code` | Exit | Cause |
 |---|---|---|
@@ -76,6 +86,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
+| `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama, or a hosted Vision role without consent) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
@@ -99,14 +110,14 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `footage_unreachable` | `crashes`, `events` (so `360 analyze`) | A source is not reachable (offline drive, moved file) and was skipped |
 | `no_telemetry` | `crashes`, `events` (crash layer) | A source has no IMU telemetry; its crashes come from the transcript only |
 | `no_visual_layer` | `crashes`, `events` (crash layer) | A source has no visual layer; run `events` first so what the camera sees counts |
-| `highlights_not_updated` | `crashes`, `events` | The reanalyze step (`events`: the ski re-rank) was skipped (a source could not be found at its recorded or remapped path, or was not reachable), so `highlights.json` is unchanged |
+| `highlights_not_updated` | `crashes`, `events` | The reanalyze step (`events`: the action-cam re-rank) was skipped (a source could not be found at its recorded or remapped path, or was not reachable), so `highlights.json` is unchanged |
 | `context_not_applied` | `crashes`, `profile` | `--context` was not applied (Ollama or the LLM unavailable, or no usable profile from it) |
 
 `outputs` keys per command (`project` as in the table above):
 
 | Command | `outputs` |
 |---|---|
-| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `llama.cpp`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
+| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `analyze` | `highlights`, `transcript`, `candidates` (count), `suggested_top` (when set), `style` |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
 | `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
@@ -115,20 +126,32 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `edition`, `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
-| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`), and `version` for `llama`; for `pip`, `installed` and `missing` |
+| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing` |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
 | `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
 | `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
-| `360 check` | `check_dir`, `sheets` |
 | `360 qa` | `qa_dir`, `report`, `mode`, `sheets`, `clips` (each `file`, `score`, `pass`, `fails`), `count`, `passed`, `score`, `by_mode` and `by_self_method` (the `qa.json` edit's `edge_cut` breakdowns: per render `mode` or `self_method`, its `clips`, `frames`, `duration` and `edge_cut` share; `{}` without a checked clip). With `--compare`: `edge_gap` (its path), `mode` (`compare`), `rendered` and `paths` (the two `qa.json`), `clips` (each `file`, `rendered_only`, `causes`, `other_detail`), `count`, `rendered_only`, `causes`, `other_detail`, `by_mode` and `by_self_method` (`edge_gap.json`'s frame counts per rendered `mode` or `self_method`: `clips`, `frames`, `rendered_edge`, `paths_edge`, `rendered_only`; `unknown` for an older `qa.json`) (see [360 video](workflows/360.md#where-the-two-qas-disagree)) |
 | `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
 | `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |
-| `events` | `events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0; `preset` is `built-in` when the kept preset is marked `"builtin": true`, in the user or bundled presets folder). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files or llama-server are `not_found` and name the `cutpoint setup` command |
+| `events` | See [events outputs](#events-outputs) below |
 | `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
 
+### events outputs
+
+`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the action-cam re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). An action-cam re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used
+
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
+
+## Stopping a run
+
+Ctrl+C (and Ctrl+Break on Windows) exits `130` and removes partial files. From a program on
+Windows, start Cutpoint with `CREATE_NEW_PROCESS_GROUP` and send `CTRL_BREAK_EVENT`
+(`CTRL_C_EVENT` to a process id is not delivered). To get `130`, run `.venv\Scripts\cutpoint.exe`
+(or the tool-installed `cutpoint`) directly: under `uv run`, Cutpoint still cleans up but uv
+exits `0xC000013A`. `taskkill /F`, `Stop-Process` and `Popen.terminate()`/`kill()` stop it
+without cleanup (exit `1`; `-1` from `Stop-Process`).
 
 ## Progress output
 
@@ -180,7 +203,7 @@ Open the complete printed loopback URL, including `#t=…`; keep it private beca
 to local footage. The workspace can create/open projects, analyze standard video,
 preview and trim candidates, save and reorder a sequence, export clips, and assemble a final
 video with optional fades (video and audio set separately), loudness normalization, [peak compression](#peak-compression) and
-captions. Nothing is uploaded. A camera
+captions. Video files are not uploaded (a hosted model you enable after consent receives only what its role needs, such as frames or text). A camera
 folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 analyze --scan`
 (see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
 path (the one the analysis cached when it is current), with badges for poor paths
@@ -360,7 +383,7 @@ applies:
 | Transcription model | `--model` |
 | Language | `--language` |
 | Max candidates | `--max-candidates` |
-| Must-include crash (ski styles only) | `--must-include-crash` |
+| Must-include crash (action-cam styles only) | `--must-include-crash` |
 | Skip scene detection | `--no-scenes` |
 | Recover after read errors | `--recover` |
 | Skip steps: Reactions, Keyframes, Crashes | `--skip reactions keyframes crashes` |
@@ -378,7 +401,7 @@ and the project view reports `preset_problem` (why the presets are off) and `pre
 earlier clips a second Make would replace). The analyze job takes `model`, `language`,
 `max_candidates`, `must_include_crash`, `no_scenes`, `recover` and `skip` (a list); a field it
 does not send keeps what the analysis used, which the project view reports as `analyze_options`
-(with `must_include_crash_default`, the style's value, `null` for styles other than ski).
+(with `must_include_crash_default`, the style's value, `null` for styles other than action-cam).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
@@ -530,8 +553,10 @@ server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, a
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host, to send the project's moment labels, transcript snippets, file names (not full paths),
-times and your messages there. The answer is kept in `config.json` (`assistant.consent`); until
+and host, to send the project's analysis results (moment labels, scores and detection signals,
+transcript snippets, file names (not full paths) and times) and your messages, never video or
+audio. The answer is kept in `config.json` (`assistant.consent`, as
+`assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
 then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
 
 Its header shows the model and provider (local, or the hosted host), with a note
@@ -560,7 +585,7 @@ Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST
 `POST .../proposals/<proposal>/applied`, `DELETE .../chat`, `GET .../history` and
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
-`GET .../assistant` also returns `consent` (`needed`, `key`, `host`, and `missing_key`: how to add a missing API key, or null); `POST .../turns` answers
+`GET .../assistant` also returns `consent` (`needed`, `key`, `host`, `missing_key`: how to add a missing API key or log in to a subscription, or null, and `missing_kind`: `"login"` for a subscription provider, `"key"` otherwise, null when nothing is missing); `POST .../turns` answers
 409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
@@ -577,7 +602,7 @@ cutpoint capabilities [--json]
 
 Reports the edition first: `full`, or `lite` when torch and the rest of the `events` extra are
 not installed. Then GPU vendors present separately from usable video encoders, the selected encoder,
-faster-whisper's transcription device, and the backend order `setup` would use for llama.cpp.
+faster-whisper's transcription device.
 It also reports torch (installed, CUDA or CPU-only build, whether it reaches the GPU; with the
 reinstall command when it is CPU-only on a machine with a usable NVIDIA driver) and the Insta360
 Media SDK (found or not, and a warning when no NVIDIA GPU is found). `360 stitch` logs that
@@ -632,7 +657,7 @@ one of them is refused.
 | `--format mp4\|fcpxml\|otio` | As on [`assemble`](#assemble): `mp4` (default) makes the final video; `fcpxml` or `otio` writes only that timeline, referencing the kept clips, and copies it to `<name>-final.fcpxml` or `.otio` |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
-| `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
+| `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
@@ -650,7 +675,7 @@ that updates `final.mp4` and `final.srt`, not the `<name>-final` copies.
 ## analyze
 
 ```text
-cutpoint analyze <file|folder> [<file|folder> ...] --style STYLE [--out DIR] [--json] [options]
+cutpoint analyze <file|folder> [<file|folder> ...] [--style STYLE] [--out DIR] [--json] [options]
 ```
 
 Transcribes the audio, scores it on a 0.1 s grid, runs the analysis steps below, and writes
@@ -660,11 +685,11 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming`, `action`, `sport`, `funny`, `commentary`, `ski`, or a learned preset |
+| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), or a learned preset |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep theirs, and the model's label names the clip only from a rating of 7. A local model is unloaded from GPU memory right after rating. Ollama ratings are cached per source (`vision-ratings.json`), so a rerun asks only about candidates not rated and repeats the same scores. The cache also records the model's digest: a model pulled again under the same tag is rated again, and with Ollama down the cached ratings for the tag are used |
+| `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. See **Vision rating** below |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a subscription [`vision_assistant`](configuration.md#vision_assistant) in `config.json`, the frames (here and for `360 director --vl-check`) go to the subscription provider (`claude-code`, `codex`, `antigravity`) instead, once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
@@ -676,6 +701,14 @@ an analysed set processes only the new file.
 | `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
+**Vision rating.** The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it
+and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep
+theirs, and the model's label names the clip only from a rating of 7. A local model is unloaded
+from GPU memory right after rating. Ollama ratings are cached per source
+(`vision-ratings.json`), so a rerun asks only about candidates not rated and repeats the same
+scores. The cache also records the model's digest: a model pulled again under the same tag is
+rated again, and with Ollama down the cached ratings for the tag are used.
+
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
 transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations
 (a short phrase repeated, very low confidence) are dropped first. Boundaries are snapped to
@@ -683,11 +716,11 @@ scene cuts and never cut a word. Each signal is a named feature, and a style's w
 these features. The `score` is a candidate's weighted peak divided by the weights of the
 features this install can compute. A feature that needs a missing extra (the `events` extra
 in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,
-commentary) score the same on lite and full installs. Ski styles are renormalised the same way:
+commentary) score the same on lite and full installs. Action-cam styles are renormalised the same way:
 on lite their `events` features (`vlm`, `social`, `voice_laughter`, `beauty`, `scenic`,
-`people`, `group`, `voice`, `taste`) are left out, and a renormalised score is capped at 100.
-The features it could compute are in `settings.features_available`. Ski candidates' `signals`
-name the ski features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
+`people`, `group`, `voice`) are left out, and a renormalised score is capped at 100.
+The features it could compute are in `settings.features_available`. Action-cam candidates' `signals`
+name the action-cam features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
 before #514 phase 1b.
 
 Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` (0-100),
@@ -696,7 +729,7 @@ Whisper heard with confidence below 0.5 as `[index, confidence]`, the index coun
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
 only from a rating of 7). `timings` holds the seconds each step took and `total_s`, the whole
-analysis; a re-rank of an earlier analysis (`events` on ski projects, `360 analyze`,
+analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `360 analyze`,
 `crashes --reanalyze`) keeps that `total_s` and records its own time as `rerank_s`.
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
@@ -737,21 +770,21 @@ OCR in the background removes them.
 |---|---|
 | `transcribe` | Whisper transcription, scoring and scene detection |
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
-| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `ski` and `sport`, the CLIP visual layer, only with a CUDA GPU |
-| `crashes` | Action-cam footage only (telemetry found, or style `ski`, `action` or `sport`) |
+| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU |
+| `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
 | `vision` | Ollama frame rating, only when vision is on |
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
 `INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
-logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The llama-server
-VLM layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
+logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The VLM
+layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
 file, and a cancelled first run leaves none. The other result files are written with it, just
 before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
-`crash_check\` sheets, `activity.json` and, for `ski`, `telemetry.json` and `ski_features\`
+`crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `ski_features\`
 (older sheets and features of the project are removed at the same time). A failed or cancelled
 run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
 folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
@@ -802,16 +835,16 @@ layers, one GPU model at a time, and writes `events.json` and `events.txt`, then
 `highlights.json` (the original is kept as `highlights.pre-events.json`). The re-rank drops or
 trims candidates in HUD menu time, as `analyze` does ([game streams](workflows/game-streams.md)).
 
-Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the ski re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
+Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the action-cam re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
 
 | Layer | What |
 |---|---|
-| `audio` | PANNs sound events: laughter, screams, cheering, gunfire, explosions |
+| `audio` | PANNs sound events: laughter, screams, cheering |
 | `ocr` | Game HUD text: kill feeds, round banners (see [game streams](workflows/game-streams.md)) |
 | `voice` | Wind-robust speech and laughter (Silero VAD + PANNs) |
 | `visual` | CLIP frame embeddings, person detection, beauty and group scores |
 | `crash` | Runs `cutpoint crashes` (action-cam projects) |
-| `vlm` | Qwen2.5-Omni-7B through a managed llama-server describes candidate windows from frames and audio |
+| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the subscription Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. Without either, the layer keeps its cached descriptions |
 
 Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash vlm`.
 
@@ -829,6 +862,18 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--no-rescore` | Do not touch `highlights.json` |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
+Tuning options, rarely needed:
+
+| Option | Meaning |
+|---|---|
+| `--audio-thr GROUP=P`, `--audio-floor GROUP=P` | PANNs absolute threshold and relative-rule floor per sound group, for example `Laughter=0.1` |
+| `--ocr-fps F` | Frames per second read by the HUD OCR (default 3.0) |
+| `--no-hwaccel` | Decode on the CPU for the OCR |
+| `--ocr-debug DIR` | Save region crops of OCR events to `DIR` |
+| `--discover-bursts N` | Frame bursts sampled by HUD region discovery, 4 frames each (default 40) |
+| `--frames N` | Frames per model window (default 14) |
+| `--no-transcript` | Do not send the transcript excerpt to the model |
+
 Every layer is cached per source, so reruns are cheap. The model devices in the `stats` of
 `events.json` (`audio_device`, `voice.device`, `visual.device`) name where a model ran in this
 run, so a layer that only read its cache leaves the key out.
@@ -843,7 +888,11 @@ Exports moments as `001_<label>.mp4`, `002_<label>.mp4`, ... in playback order, 
 `manifest.json`. Cuts are re-encoded for frame accuracy with a working NVIDIA/AMD hardware
 encoder, or libx264 when no hardware encoder passes its probe. Every clip gets the same
 resolution, frame rate, pixel format and audio, so clips join losslessly. The command refuses
-to write into a non-empty folder without `--force`. With `--force`, the new clips are exported
+to write into a non-empty folder without `--force` (see [Replacing clips](#replacing-clips---force)).
+
+### Replacing clips (--force)
+
+With `--force`, the new clips are exported
 into a hidden `.<folder>.cutpoint-tmp` next to the folder and swapped in only when every clip
 succeeded; a failed or cancelled run leaves the old clips as they were. `--force` replaces only
 what an earlier run made: the clips listed in the old `manifest.json`, leftover `.part.mp4`
@@ -864,6 +913,8 @@ root, a mount point or a bind mount; use `--out` with a folder on that drive. An
 root or mount point is exported into directly, each clip under a temporary name until it is
 complete; a failed run there may keep the finished clips. With `export_workers` above 1 these can include clips after the failed one, and some of them may have no `.srt`.
 
+### Folder lock
+
 One run at a time works on a folder: `clips`, `extend` and `assemble` hold the lock file
 `.<folder>.cutpoint-lock` next to it while they run, so a second run never removes the first
 one's staging folder. A second run stops with an `ERROR` naming the process that holds the
@@ -871,15 +922,17 @@ lock. The file is removed when the run ends, also on Ctrl+C. One left by a run t
 killed (`taskkill /F`) is taken over once its process is gone; one from a run on another
 computer (a network folder) is not, so delete it by hand if no run is active.
 
+### Clips options
+
 | Option | Meaning |
 |---|---|
 | `--top N` | Top N by score (default: the style's target length) |
 | `--ids ...` | Explicit candidate ids |
 | `--segments FILE` | Export exactly the listed segments in the listed order |
 | `--max-total S` | Keep the best-scoring moments that fit in S seconds |
-| `--order` | `chronological`, `score`, `story` (default; opens with the second-best moment, ends with the best) or `arc` |
+| `--order` | `chronological`, `score`, `story` (default, except `commentary`: `chronological`; opens with the second-best moment, ends with the best) or `arc` (the default with `--mix`) |
 | `--vertical` | Centre-crop to 9:16, 1080x1920. Default folder `clips_vertical` |
-| `--size WxH` | Output resolution (even numbers). Ignored with `--vertical` |
+| `--size WxH` | Output resolution (even numbers). Default: the largest source's, capped at 1080p. Ignored with `--vertical` |
 | `--crop auto\|none\|W:H:X:Y` | Crop borders before scaling |
 | `--smart-tail` / `--no-smart-tail`, `--tail-min`, `--tail-max` | Extend clips that end on speech until the reaction settles |
 | `--event-tails` / `--no-event-tails`, `--event-window S` | Extend to cover a payoff event (needs `events.json`) |
@@ -1018,6 +1071,12 @@ cutpoint extend projects/my-edit/clips --start 1 --end 3    # clips_ext1-3s
 cutpoint extend projects/my-edit/clips                      # speech boundaries only, clips_speech
 ```
 
+- `--speech-aware` (default on) moves in/out points that fall mid-utterance to the utterance's
+  start or end, at most `--speech-max-extend` (default 8 s) later and `--speech-max-lead`
+  (default 5 s) earlier, and keeps clips of one source from overlapping. With no padding it is
+  the only change (folder `<clips_dir>_speech`); `--no-speech-aware` with no padding is
+  refused (`bad_args`). `--audio-fade S` (default 0.25, 0 = off) is baked into every clip;
+  `--pano-source` and `--pano-cmd-every` apply to 360 clips only.
 - `--clip-override GLOB KEY=S` (repeatable) sets per-clip `speech_max_extend`, `speech_max_lead`,
   `extend`, `extend_start` or `extend_end` for matching file names, for example
   `--clip-override 005_* speech_max_extend=45`.
@@ -1265,7 +1324,7 @@ Finds crashes and wipeouts in an analysed
 project from full-rate IMU data, visual, audio and transcript evidence, and writes
 `crashes.json` plus contact sheets in `crash_check\`. Confident crashes are always exported by
 `clips`. The visual prompts and crash words come from the project's activity profile (see
-`profile`; the three profile options are the same). See
+`profile`; `--activity`, `--context` and `--refresh-profile` work as on [`profile`](#profile)). See
 [action-cam workflow](workflows/action-cam.md). `--json` writes the result as one
 [JSON envelope](#json-output) on stdout.
 
@@ -1309,40 +1368,15 @@ If nothing is selected (no candidate fits `--target`, or every candidate is excl
 fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes no files. Raise
 `--target` or loosen the exclusions.
 
-## refmatch
-
-```text
-cutpoint refmatch <project> <reference_video> [--name NAME] [--no-fit] [--taste] [--check N]
-```
-
-Action-cam module. Finds the shots of a finished edit in the project's sources and fits style
-weights to what you kept, saved as a learned style in `<CUTPOINT_HOME>\styles\<name>.json`.
-It assumes the edit keeps the source framing; mirrored, heavily zoomed or picture-in-picture
-shots will not match.
-
-## fit
-
-```text
-cutpoint fit <project> [<project> ...] [--name NAME] [--taste | --no-taste] [--ablate] [--no-save]
-```
-
-Fits one learned style on several projects that already have `refmatch.json` (run `refmatch
---no-fit` on each first), with held-out cross-validation. `--ablate` refits on feature subsets;
-`--no-save` reports only.
-
 ## setup
 
 ```text
-cutpoint setup [--only pip panns llama omni visual voice] [--force] [--json]
+cutpoint setup [--only pip panns visual voice] [--json]
 ```
 
-Downloads the models and tools for `events`. On Windows and Linux, auto selection prefers CUDA
-when a usable NVIDIA driver is detected, otherwise Vulkan, then CPU, depending on available
-release assets. Windows CUDA uses the CUDA 12.4 distribution; Linux uses the oldest CUDA
-distribution with cudart in the newest matching release. Set `CUTPOINT_LLAMA_BACKEND` to
-`auto`, `cuda`, `vulkan` or `cpu` to control selection; an explicit backend does not silently
-fall back. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled build, then
-`PATH`. `--json` writes the result as one [JSON envelope](#json-output) on stdout. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
+Downloads the models for `events` (about 2 GB): PANNs, CLIP ViT-L/14, the Faster R-CNN detector,
+the aesthetic head and Silero VAD. The VLM layer uses the shared vision model instead (Ollama with
+`qwen3.5:9b`, or a hosted Vision model), which `setup` does not download. `--json` writes the result as one [JSON envelope](#json-output) on stdout. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
 
 ## paths
 
@@ -1350,8 +1384,8 @@ fall back. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled
 cutpoint paths [--json]
 ```
 
-Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools, stage, styles,
-activity profiles and projects. `--json` writes them as one [JSON envelope](#json-output).
+Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools,
+stage, styles, HUD presets, activity profiles, projects and the bundled presets. `--json` writes them as one [JSON envelope](#json-output).
 
 ## guide
 

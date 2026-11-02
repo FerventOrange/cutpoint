@@ -4,8 +4,9 @@ Stages run one after another so only one GPU model is resident at a time:
 PANNs (torch) -> freed -> voice (PANNs on high-passed audio + Silero VAD) ->
 visual (CLIP ViT-L/14 + Faster R-CNN, one decode per source) -> freed -> OCR
 (CPU, GPU decode) -> crashes (CLIP, handed over by the visual layer when no
-OCR runs in between) -> Ollama unloaded -> llama-server started -> windows
-described -> server stopped. ``cutpoint analyze`` may have read the OCR in the background
+OCR runs in between) -> windows described by the vision model (Ollama, unloaded
+afterwards, or the hosted Vision role).
+``cutpoint analyze`` may have read the OCR in the background
 already (:mod:`cutpoint.events.ocr_prefetch`); its results are taken in the OCR turn.
 """
 
@@ -25,7 +26,6 @@ from typing import Any
 
 from cutpoint import cache, jsonout, progress
 from cutpoint import paths as cutpoint_paths
-from cutpoint.config import source_path
 from cutpoint.events import paths
 from cutpoint.events.audio_events import (
     AudioParams,
@@ -35,7 +35,6 @@ from cutpoint.events.audio_events import (
 )
 from cutpoint.events.common import (
     VramMonitor,
-    audio_slice,
     load_highlights,
     load_source,
     load_transcript_lines,
@@ -57,12 +56,13 @@ from cutpoint.events.vlm_windows import (
     VlmParams,
     add_incremental,
     cached_windows,
-    check_audio,
     describe_windows,
     game_prompt,
     select_windows,
     windows_to_events,
 )
+from cutpoint.styles import ACTION_CAM, project_kind
+from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
 LAYERS = ("audio", "voice", "visual", "crash", "ocr", "vlm")
@@ -78,7 +78,7 @@ DISCOVERY_PCT = 50.0
 def _require_events_extra(layers: tuple[str, ...]) -> None:
     """Fail before any side effect (unloading Ollama) when the events extra is missing.
 
-    Every layer but VLM (llama-server) loads a model from the extra.
+    Every layer but VLM (the shared vision model) loads a model from the extra.
     """
     if not set(layers) - {"vlm"}:
         return
@@ -106,7 +106,8 @@ def _require_model_files(layers: tuple[str, ...]) -> None:
 def preflight(layers: tuple[str, ...]) -> None:
     """Cheap checks for ``layers`` (events extra, model files) that :func:`run_events`
     makes before it unloads Ollama or imports torch; callers that run a long step
-    first (``cutpoint 360 analyze``) call it up front."""
+    first (``cutpoint 360 analyze``) call it up front. The VLM layer has no model files: its
+    vision model is checked when it runs."""
     _require_events_extra(layers)
     _require_model_files(layers)
 
@@ -131,6 +132,8 @@ def run_events(
     llm: bool = True,
     prefetch: OcrPrefetch | None = None,
     encoder: Any = None,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -150,9 +153,8 @@ def run_events(
             without a preset, False = never.
         discover_bursts: Frame bursts sampled by discovery (x4 frames).
         preset_scope: Where a newly discovered preset is installed:
-            "user" (``<CUTPOINT_HOME>/presets``, reused by every project;
-            "package" is accepted as an old alias) or "project"
-            (``<project>/hud_presets``).
+            "user" (``<CUTPOINT_HOME>/presets``, reused by every project) or
+            "project" (``<project>/hud_presets``).
         sheets: Write visual-layer contact sheets to ``<project>/visual_check``.
         stage: Called with each layer of ``layers`` that runs ("audio", "voice",
             "visual", "ocr", "crash"; not "vlm"), then with "write" for the events
@@ -170,6 +172,8 @@ def run_events(
             (``cutpoint 360 analyze``, #376); the visual layer then hands over none.
             Closed after the crash layer; the caller closes it if this raises before
             or the crash layer does not run.
+        ollama_url, ollama_model: Ollama base URL and vision model for the VLM layer
+            (None: from config.json and the environment, as for ``analyze --vision``).
 
     Returns:
         Paths of events.json and events.txt.
@@ -177,13 +181,16 @@ def run_events(
     audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
     stage = stage or (lambda _layer: contextlib.nullcontext())
     hl = load_highlights(project)
-    ski = hl.get("style_kind") == "ski"
+    ski = project_kind(hl) == ACTION_CAM
     if layers is None:
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
     if cached_ocr is None:
         cached_ocr = not ski
     vlm.ski = ski
     preflight(layers)
+    rater = VisionRater(ollama_url, ollama_model)  # the shared vision client
+    hosted = rater.provider_name != "ollama"
+    vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
@@ -365,11 +372,7 @@ def run_events(
                     make_engine=make_engine,
                 )
                 preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
-                link_teamkills(
-                    evs,
-                    tags=ocr.player_tags,
-                    generic_teamkills=bool(preset and preset.feed.get("teamkills")),
-                )
+                link_teamkills(evs, generic_teamkills=bool(preset and preset.feed.get("teamkills")))
                 derive_streaks(evs)
                 layer1[str(s.path)] += evs
                 ocr_stats[s.name] = st
@@ -447,30 +450,34 @@ def run_events(
         )
         missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
         if missing > 0:
-            from cutpoint.events.llama_server import LlamaServer  # noqa: PLC0415
-
-            with (
-                VramMonitor() as vm,
-                LlamaServer(
-                    ctx=vlm.ctx,
-                    image_max_tokens=vlm.image_max_tokens,
-                    log_path=paths.llama_dir() / "llama-server.log",
-                ) as srv,
-            ):
-                stats["llama_load_s"] = srv.load_s
-                if vlm.audio:
-                    stats["audio_check"] = _audio_check(srv, by_path, layer1)
-                    if not stats["audio_check"]["accepted"]:
-                        logger.warning(
-                            "Audio input NOT accepted by llama-server (%s); "
-                            "falling back to frames + transcript",
-                            stats["audio_check"].get("error"),
+            results = cached
+            if rater.available():
+                try:
+                    with VramMonitor() as vm:
+                        results, vstats = describe_windows(
+                            rater,
+                            by_path,
+                            windows,
+                            vlm,
+                            prompts,
+                            transcript,
+                            layer1,
+                            force="vlm" in force,
                         )
-                        vlm.audio = False
-                results, vstats = describe_windows(
-                    srv, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
+                    vram["vlm"] = vm.summary()
+                finally:
+                    rater.unload()
+            else:
+                if "vlm" in force:  # nothing to describe them with: keep the saved descriptions
+                    results, vstats = describe_windows(
+                        None, by_path, windows, vlm, prompts, transcript, layer1
+                    )
+                message = (
+                    f"VLM: vision model {vlm.model} not available (see above); {missing} "
+                    "window(s) not described, cached descriptions used"
                 )
-            vram["vlm"] = vm.summary()
+                logger.warning("%s", message)
+                jsonout.warn("vlm_unavailable", message)
         else:
             results = cached
         stats["vlm"] = {k: v for k, v in vstats.items() if k not in ("seconds", "prompt_tokens")}
@@ -514,7 +521,7 @@ def run_events(
 def _telemetry_layer(
     project: Path, sources: list[Any], vlm: VlmParams
 ) -> dict[str, list[dict[str, Any]]]:
-    """Layer-1 entries from ``telemetry.json`` (written by ``cutpoint analyze --style ski``).
+    """Layer-1 entries from ``telemetry.json`` (written by ``cutpoint analyze --style action-cam``).
 
     Airtime and crash events become window seeds and events.txt lines.
     ``coverage`` pseudo-events (low priority, never written to events.json)
@@ -656,7 +663,7 @@ def _discover(
                 "Installed discovered HUD preset for %r: %s (edit it to calibrate)", game, target
             )
         else:
-            rec["preset"] = str(existing.path or "built-in")
+            rec["preset"] = str(existing.path)
             rec["suggested_regions"] = list(proposal.get("suggested_regions") or [])
             logger.info(
                 "Kept existing HUD preset for %r (%s); discovery proposal: %s",
@@ -694,30 +701,3 @@ def bad_ranges(
             if fnmatch.fnmatch(src.name.lower(), pattern.lower()):
                 out.setdefault(str(src.path), []).append((a, b))
     return out
-
-
-def _audio_check(
-    srv: Any, sources: dict[str, Any], layer1: dict[str, list[dict[str, Any]]]
-) -> dict[str, Any]:
-    """Run :func:`check_audio` on the strongest laughter event (or any audio)."""
-    best = None
-    for src, evs in layer1.items():
-        for e in evs:
-            if (
-                e.get("kind") == "audio"
-                and e["label"] == "Laughter"
-                and (best is None or e["confidence"] > best[1]["confidence"])
-            ):
-                best = (src, e)
-    if best:
-        src, e = best
-        samples = audio_slice(sources[src], e["peak_t"] - 4, e["peak_t"] + 4)
-        where = f"{source_path(src).name} @ {e['peak_t']:.1f}s (PANNs {e['confidence']:.2f})"
-    else:
-        s = next(iter(sources.values()))
-        samples = audio_slice(s, 0, 8)
-        where = f"{s.name} @ 0s"
-    res = check_audio(srv, samples)
-    res["clip"] = where
-    logger.info("Audio check on %s: %s", where, res.get("reply") or res.get("error"))
-    return res

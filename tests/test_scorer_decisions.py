@@ -237,7 +237,7 @@ def ski_picks(
 
 def learned_ski(tmp: Path, **data: Any) -> Style:
     path = tmp / "mine.json"
-    path.write_text(json.dumps({"name": "mine", "base": "ski", **data}), encoding="utf-8")
+    path.write_text(json.dumps({"name": "mine", "base": "action-cam", **data}), encoding="utf-8")
     return load_learned(path)
 
 
@@ -255,7 +255,7 @@ def test_ski_keeps_a_confident_crash_as_must_include(tmp_path, no_layers):
     """Even when the weights leave room for one clip only, the crash, its approach, aftermath
     and reaction are kept, and they rank first."""
     tel = ski_telemetry(airtime=30.0)
-    cands = ski_picks(tmp_path, STYLES["ski"], tel, [crash_record("c1", 100.0, 0.72)], 1)
+    cands = ski_picks(tmp_path, STYLES["action-cam"], tel, [crash_record("c1", 100.0, 0.72)], 1)
     forced = [c for c in cands if c.must_include]
     assert [c.label_hint for c in forced] == ["crash", "crash reaction"]
     assert forced[0].start <= 95.0 and forced[0].end >= 108.0  # approach to aftermath
@@ -266,8 +266,10 @@ def test_ski_keeps_a_confident_crash_as_must_include(tmp_path, no_layers):
 
 
 def test_ski_does_not_force_a_crash_below_the_threshold(tmp_path, no_layers):
-    low = STYLES["ski"].must_include_crash - 0.05
-    cands = ski_picks(tmp_path, STYLES["ski"], ski_telemetry(), [crash_record("c2", 100.0, low)])
+    low = STYLES["action-cam"].must_include_crash - 0.05
+    cands = ski_picks(
+        tmp_path, STYLES["action-cam"], ski_telemetry(), [crash_record("c2", 100.0, low)]
+    )
     assert not any(c.must_include for c in cands)
 
 
@@ -284,7 +286,7 @@ SKI_RANKS = [("airtime", "crash"), ("crash", "carve")]
 def test_ski_ranks_a_moment_above_an_equal_one_of_a_lower_weighted_grid(
     tmp_path, no_layers, higher, lower
 ):
-    cands = ski_picks(tmp_path, STYLES["ski"], ski_telemetry(**{lower: 30.0, higher: 90.0}))
+    cands = ski_picks(tmp_path, STYLES["action-cam"], ski_telemetry(**{lower: 30.0, higher: 90.0}))
     hi, lo = at(cands, 90.0), at(cands, 30.0)
     assert hi is not None and lo is not None
     assert hi.kind == higher and lo.kind == lower
@@ -292,14 +294,14 @@ def test_ski_ranks_a_moment_above_an_equal_one_of_a_lower_weighted_grid(
 
 
 def test_ski_labels_jumps_and_crashes_from_their_telemetry_events(tmp_path, no_layers):
-    cands = ski_picks(tmp_path, STYLES["ski"], ski_telemetry(airtime=30.0, crash=90.0))
+    cands = ski_picks(tmp_path, STYLES["action-cam"], ski_telemetry(airtime=30.0, crash=90.0))
     assert at(cands, 30.0).label_hint == "jump 1.0s"
     assert at(cands, 90.0).label_hint == "crash 7g"
 
 
 def test_ski_never_clips_the_lift_unless_the_mask_is_soft(tmp_path, no_layers):
     tel = ski_telemetry(airtime=160.0)  # a "jump" on the chairlift: camera handling
-    assert at(ski_picks(tmp_path, STYLES["ski"], tel), 160.0) is None
+    assert at(ski_picks(tmp_path, STYLES["action-cam"], tel), 160.0) is None
     soft = learned_ski(tmp_path, mask_friends=0)
     assert at(ski_picks(tmp_path, soft, tel), 160.0) is not None
 
@@ -314,7 +316,7 @@ def test_ski_on_lite_picks_the_same_moments_and_keeps_the_crash_score(
 
     def run(installed: frozenset[str]) -> list[analyze.Candidate]:
         monkeypatch.setattr(features, "installed_extras", lambda: installed)
-        return ski_picks(tmp_path, STYLES["ski"], tel, crashes)
+        return ski_picks(tmp_path, STYLES["action-cam"], tel, crashes)
 
     full, lite = run(frozenset({"events"})), run(frozenset())
     assert [(c.start, c.end, c.peak) for c in lite] == [(c.start, c.end, c.peak) for c in full]

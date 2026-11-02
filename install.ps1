@@ -34,7 +34,7 @@ function Invoke-CutpointInstaller {
     $CUTPOINT_VERSION_DEFAULT = "0.4.0"
 
     # uv is installed from this pinned installer when missing (keep in step with install.sh and the Dockerfile pin).
-    $UV_VERSION = "0.13.5"
+    $UV_VERSION = "0.13.6"
     # Oldest uv that has `uv tool install --torch-backend`.
     $UV_MIN_MAJOR = 0
     $UV_MIN_MINOR = 13
@@ -134,7 +134,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
     (hidden) only when the Ollama app has not. A declined or failed Ollama install never fails the
     Cutpoint install.
   - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
-  - "cutpoint setup" (model weights, about 8 GB), full mode only.
+  - "cutpoint setup" (model weights, about 2 GB), full mode only.
 '@
     }
 
@@ -714,7 +714,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
             return
         }
         Invoke-OllamaOffer
-        if (Ask "Download models now with 'cutpoint setup' (about 8 GB)?") {
+        if (Ask "Download models now with 'cutpoint setup' (about 2 GB)?") {
             if (Invoke-Run @("cutpoint", "setup")) {
                 $S.SetupDone = "yes"
             } else {
@@ -772,7 +772,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
             Say "  - Ollama model pulled: $OLLAMA_MODEL (used by --vision and AI Chat)."
         }
         if ((-not $S.Lite) -and $S.SetupDone -ne "yes") {
-            Say "  - Download the models (about 8 GB): cutpoint setup"
+            Say "  - Download the models (about 2 GB): cutpoint setup"
         }
         Say "  - Start the browser workspace: cutpoint ui"
         Say "  - Edit a video: cutpoint edit PATH-TO-VIDEO"

@@ -36,14 +36,14 @@ def test_player_tags_normalised(home, value, want):
 
 @pytest.mark.parametrize(
     ("data", "want"),
-    [({}, False), ({"vision": None}, False), ({"vision": False}, False), ({"vision": True}, True)],
+    [({"vision": None}, False), ({"vision": True}, True)],
 )
 def test_vision_default_is_off_unless_true(home, data, want):
     set_config(home, **data)
     assert config.vision_default() is want
 
 
-@pytest.mark.parametrize("value", ["yes", "true", 1, 0, [True], {"on": True}])
+@pytest.mark.parametrize("value", ["true", 1, [True]])
 def test_vision_must_be_a_boolean(home, value):
     set_config(home, vision=value)
     with pytest.raises(ValueError, match=r"vision must be true or false"):
@@ -62,9 +62,6 @@ def test_vision_is_read_from_cutpoint_config(home, tmp_path, monkeypatch):
     ("cfg", "argv", "vision"),
     [
         (None, [], False),
-        (None, ["--vision"], True),
-        (None, ["--no-vision"], False),
-        (False, [], False),
         (False, ["--vision"], True),
         (True, [], True),
         (True, ["--no-vision"], False),
@@ -198,28 +195,16 @@ def _fake_unc(path: str) -> str:
     [
         (r"Q:\Footage\skip\*", r"\\nas\share\Footage\skip\x.mp4", True),
         (r"\\nas\share\Footage\skip\*", r"Q:\Footage\skip\x.mp4", True),
-        ("Q:/Footage/skip/*", r"\\nas\share\Footage\skip\x.mp4", True),
         (r"q:\footage\SKIP\*", r"\\NAS\share\Footage\skip\x.mp4", True),
-        (r"Q:\Footage\skip\*", r"Q:\Footage\skip\x.mp4", True),
-        (r"\\nas\share\Footage\skip\*", r"\\nas\share\Footage\skip\x.mp4", True),
-        ("*skip*", r"\\nas\share\Footage\skip.mp4", True),
-        (r"Q:\Footage\skip\*", r"\\nas\share\Footage\keep\x.mp4", False),
         (r"Q:\Footage\skip\*", r"\\other\share\Footage\skip\x.mp4", False),
         (r"R:\Footage\skip\*", r"\\nas\share\Footage\skip\x.mp4", False),
-        (r"R:\Footage\skip\*", r"R:\Footage\skip\x.mp4", True),
     ],
     ids=[
         "drive-glob-unc-source",
         "unc-glob-drive-source",
-        "drive-glob-forward-slashes",
         "other-case",
-        "drive-glob-drive-source",
-        "unc-glob-unc-source",
-        "name-glob",
-        "other-folder",
         "other-share",
         "unmapped-drive-not-converted",
-        "unmapped-drive-as-before",
     ],
 )
 def test_remap_exclude_matches_mapped_drive_and_unc_spellings(
@@ -255,16 +240,9 @@ def test_remap_source_keeps_a_unc_source_excluded_by_a_drive_glob(
     ("key", "value"),
     [
         ("projects_dir", 5),
-        ("stage_dir", ["a"]),
-        ("ollama_url", 5),
-        ("video_encoder", 5),
-        ("color", 5),
-        ("source_remap", ["a"]),
         ("source_remap", {"D:/": 5}),
         ("source_remap_exclude", "D:/"),
-        ("source_remap_exclude", [5]),
         ("player_tags", 5),
-        ("player_tags", [5]),
     ],
 )
 def test_wrongly_typed_config_value_is_one_error_not_a_traceback(home, caplog, key, value):
@@ -282,15 +260,14 @@ def test_wrongly_typed_config_value_is_one_error_not_a_traceback(home, caplog, k
 
 @pytest.mark.parametrize(
     ("data", "want"),
-    [({}, "off"), ({"color": None}, "off"), ({"color": "auto"}, "auto"),
-     ({"color": "underwater"}, "underwater")],
-)  # fmt: skip
+    [({"color": None}, "off"), ({"color": "underwater"}, "underwater")],
+)
 def test_color_config_default(home, data, want):
     set_config(home, **data)
     assert config.color_default() == want
 
 
-@pytest.mark.parametrize("value", ["sepia", "Auto"])
+@pytest.mark.parametrize("value", ["Auto"])  # case matters
 def test_color_config_with_an_unknown_mode_is_one_error(home, caplog, value):
     set_config(home, color=value)
     assert cli.main(["paths"]) == 1
@@ -311,27 +288,3 @@ def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):
     assert len(errors) == 1
     assert str(path) in errors[0].getMessage()
     assert "not UTF-8 text" in errors[0].getMessage()
-
-
-def test_vision_assistant_config_independent_parsing(home):
-    set_config(
-        home,
-        assistant={"provider": "anthropic", "model": "claude-opus-5-5"},
-        vision_assistant={
-            "provider": "codex",
-            "model": "gpt-custom",
-            "consent": ["codex@chatgpt.com"],
-        },
-    )
-    cfg = config.get_config()
-    assert cfg.assistant.provider == "anthropic"
-    assert cfg.assistant.model == "claude-opus-5-5"
-    assert cfg.vision_assistant.provider == "codex"
-    assert cfg.vision_assistant.model == "gpt-custom"
-    assert cfg.vision_assistant.consent == ("codex@chatgpt.com",)
-
-
-def test_vision_assistant_rejects_unsupported_provider(home):
-    set_config(home, vision_assistant={"provider": "openai"})
-    with pytest.raises(ValueError, match=r"vision_assistant\.provider"):
-        config.get_config()

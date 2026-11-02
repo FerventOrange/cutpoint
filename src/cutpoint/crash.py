@@ -34,7 +34,7 @@ the five sub-scores (telemetry, visual, dense, audio, words), ``confidence``
 (0-1), and the clip it deserves (lead-in
 from ``lead_s`` before the first impact, through the aftermath: until the rider
 is moving again, the talk about it ends or ``max_after_s``). ``cutpoint analyze
---style ski`` reads this file: candidates at or above the style's
+--style action-cam`` reads this file: candidates at or above the style's
 ``must_include_crash`` confidence become must-include clips that ``cutpoint clips``
 always exports (rare events are underweighted by learned taste weights), and
 the ``wipeout`` feature carries the confidence on the grid.

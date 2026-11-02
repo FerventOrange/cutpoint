@@ -99,7 +99,7 @@ def test_events_json_no_rescore(project, monkeypatch, capsys):
 
 def test_events_json_ski_rerank_skipped(project, monkeypatch, capsys):
     hl = cache.load_json(project / "highlights.json")
-    cache.save_json(project / "highlights.json", hl | {"style_kind": "ski"})
+    cache.save_json(project / "highlights.json", hl | {"style_kind": "action-cam"})
     _fake_run_events(monkeypatch, ["audio", "voice", "visual", "crash", "vlm"])
     monkeypatch.setattr(analyze, "reanalyze_if_reachable", lambda project: None)
     code, doc = run_json(capsys, ["events", "ev"])
@@ -119,6 +119,27 @@ def test_events_json_missing_extra(project, monkeypatch, capsys):
     assert doc["project"] == str(project) and doc["outputs"] == {}
 
 
+def test_events_json_missing_project_is_not_found(home, monkeypatch, capsys):
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    code, doc = run_json(capsys, ["events", "nosuch", "--layers", "audio"])
+    assert code == 1 and doc["ok"] is False
+    assert doc["error"]["code"] == "not_found"
+    assert "nosuch" in doc["error"]["message"]
+    assert not (home / "projects" / "nosuch").exists()
+
+
+def test_events_json_interrupted(project, monkeypatch, capsys):
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_events", interrupted)
+    code, doc = run_json(capsys, ["events", "ev", "--layers", "audio"])
+    assert code == 130 and doc["ok"] is False
+    assert doc["error"]["code"] == "interrupted"
+    assert doc["project"] == str(project)
+
+
 def test_events_json_footage_unreachable(project, tmp_path, monkeypatch, capsys):
     gone = tmp_path / "gone.mp4"
     cache.save_json(project / "highlights.json", {"sources": [{"path": str(gone)}]})
@@ -128,39 +149,6 @@ def test_events_json_footage_unreachable(project, tmp_path, monkeypatch, capsys)
     assert "No footage of ev is reachable" in doc["error"]["message"]
     assert warning_codes(doc) == ["footage_unreachable"]
     assert doc["warnings"][0]["files"] == [str(gone)]
-
-
-def test_events_json_footage_unreachable_warned_once(
-    project, tmp_path, monkeypatch, capsys, caplog
-):
-    """run_events warns and logs per unreachable source; the crash layer adds neither again."""
-    gone = tmp_path / "gone.mp4"
-    (src,) = [s["path"] for s in cache.load_json(project / "highlights.json")["sources"]]
-    cache.save_json(project / "highlights.json", {"sources": [{"path": src}, {"path": str(gone)}]})
-    seen: dict = {}
-
-    def detect(project: Path, **kwargs) -> Path:
-        seen.update(kwargs)
-        path = project / "crashes.json"
-        cache.save_json(path, {"crashes": []})
-        return path
-
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr("cutpoint.crash.detect_project", detect)
-    with caplog.at_level(logging.WARNING):
-        code, doc = run_json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
-    assert code == 0 and doc["ok"] is True
-    assert seen["warn_unreachable"] is False  # detect_project then logs it at DEBUG only
-    warns = [
-        r.getMessage()
-        for r in caplog.records
-        if r.levelno == logging.WARNING and "footage not reachable" in r.getMessage()
-    ]
-    assert len(warns) == 1 and warns[0].startswith(str(gone)), warns
-    assert warning_codes(doc).count("footage_unreachable") == 1, doc
-    assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
-        [str(gone)]
-    ]
 
 
 def test_events_crash_layer_one_warning_line_per_unreachable_source(
@@ -191,3 +179,6 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
     ]
     assert len(warns) == 1, warns
     assert warning_codes(doc).count("footage_unreachable") == 1, doc
+    assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
+        [str(gone)]
+    ]

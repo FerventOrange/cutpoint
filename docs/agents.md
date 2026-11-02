@@ -2,10 +2,17 @@
 
 Cutpoint is a command-line tool, so any agent that can run shell commands can drive it:
 Claude Code, Codex, Grok CLI, or a script. Analysis runs locally (ffmpeg, Whisper, optional
-Ollama and llama.cpp models), so the agent only issues commands and reads small JSON and text
-files. No video is sent to an API, and local models are the default for the model features. The AI
-Chat in `cutpoint ui` can optionally use a hosted provider with your own API key; it then sends
-text (moment labels, transcript snippets, file names, times), never video.
+Ollama models), so the agent only issues commands and reads small JSON and text
+files. Video files are never uploaded, and local models are the default for the model features. A
+hosted provider is used only after you give consent in the Models tab or AI Chat of `cutpoint ui`.
+AI Chat then sends only analysis results as text (moment labels, scores and detection signals,
+transcript snippets, file names, times). A hosted Vision role sends still frames, transcript
+excerpts, file names and times, and detected on-screen text (such as player names) and telemetry
+(for frame ratings and the `events` window descriptions), never the video file. Vision sends more
+data and carries more risk, so it has its own consent: agreeing for AI Chat never covers Vision,
+or the reverse. Both consents are versioned (`assistant-v2:<provider>@<host>` and
+`vision-v2:<provider>@<host>` in `config.json`): a consent saved by an earlier version, under a
+shorter description, no longer counts, so you are asked again. Ollama stays local.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install
@@ -45,8 +52,8 @@ Cutpoint skill is installed:
 cutpoint skill install
 ```
 
-This writes `~/.claude/skills/cutpoint/SKILL.md`, the Claude Code user skills folder, so every
-project sees it. Use `--dir` for another folder: a project's `.claude/skills`
+This writes `~/.claude/skills/cutpoint/SKILL.md` (`$CLAUDE_CONFIG_DIR/skills/cutpoint/SKILL.md`
+when that variable is set), the Claude Code user skills folder, so every project sees it. Use `--dir` for another folder: a project's `.claude/skills`
 (`cutpoint skill install --dir .claude/skills`) or another agent's skills folder. If an
 installed skill differs (an older version or your own edits), the command stops with an error
 naming the file; add `--force` to replace it. Re-run it after upgrading Cutpoint. See

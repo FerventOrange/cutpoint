@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import cutpoint
 import cutpoint.analyze
-from cutpoint import cli
+from cutpoint import cli, hub, mix
 from cutpoint.assistant import cliproxy
 
 
@@ -119,7 +121,10 @@ def test_analyze_must_include_crash_accepts_0_to_1(home, tmp_path, monkeypatch, 
         "analyze",
         lambda targets, style, out, **kw: styles.append(style.must_include_crash),
     )
-    assert cli.main(["analyze", str(video), "--style", "ski", "--must-include-crash", value]) == 0
+    assert (
+        cli.main(["analyze", str(video), "--style", "action-cam", "--must-include-crash", value])
+        == 0
+    )
     assert styles == [float(value)]
 
 
@@ -176,32 +181,26 @@ def test_version_flag_prints_version_without_subcommand(capsys):
     assert capsys.readouterr().out.strip() == f"cutpoint {cutpoint.__version__}"
 
 
-@pytest.mark.ffmpeg
-@pytest.mark.parametrize("preexisting", [None, "empty"])
-def test_analyze_failure_removes_only_folder_it_created(home, tmp_path, preexisting):
-    video = tmp_path / "bad.mp4"
-    video.write_bytes(b"not a video")
-    project = home / "projects" / "proj"
-    if preexisting:
-        project.mkdir(parents=True)
-    assert cli.main(["analyze", str(video), "--out", "proj"]) == 1
-    assert project.exists() == bool(preexisting)
-
-
 @pytest.mark.parametrize(
-    ("out", "error", "code"),
+    ("out", "error", "code", "preexisting"),
     [
-        ("proj", RuntimeError("bad video"), 1),
-        ("projects/new/nested", RuntimeError("bad video"), 1),
-        ("projects/new/nested", KeyboardInterrupt(), 130),
+        ("proj", RuntimeError("bad video"), 1, False),
+        ("projects/new/nested", RuntimeError("bad video"), 1, False),
+        ("projects/new/nested", KeyboardInterrupt(), 130, False),
+        ("proj", RuntimeError("bad video"), 1, True),
     ],
 )
-def test_failed_analyze_leaves_no_new_project_folder(home, tmp_path, monkeypatch, out, error, code):
+def test_failed_analyze_leaves_no_new_project_folder(
+    home, tmp_path, monkeypatch, out, error, code, preexisting
+):
     """analyze removes the folders it created (#217): the project and, for a new nested
-    --out, its new parents; on an error and on Ctrl+C."""
+    --out, its new parents; on an error and on Ctrl+C. A project folder that was already
+    there (empty) stays."""
     video = tmp_path / "videos" / "a.mp4"
     video.parent.mkdir()
     video.write_bytes(b"x")
+    if preexisting:
+        (home / "projects" / out).mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cutpoint.analyze, "Transcriber", lambda **kw: None)
     reached: list[Path] = []
@@ -214,13 +213,20 @@ def test_failed_analyze_leaves_no_new_project_folder(home, tmp_path, monkeypatch
     assert cli.main(["analyze", str(video), "--no-vision", "--out", out]) == code
     assert reached == [video]
     projects = home / "projects"
-    assert not projects.exists() or list(projects.iterdir()) == []
+    if preexisting:
+        assert list(projects.iterdir()) == [projects / out]
+        assert list((projects / out).iterdir()) == []
+    else:
+        assert not projects.exists() or list(projects.iterdir()) == []
 
 
-def test_huggingface_warning_is_printed_once():
+def test_huggingface_warning_is_printed_once(monkeypatch):
     pytest.importorskip("huggingface_hub.utils.logging")
-    assert cli.main(["paths"]) == 0
-    assert logging.getLogger("huggingface_hub").handlers == []
+    hf_logger = logging.getLogger("huggingface_hub")
+    hf_logger.addHandler(logging.StreamHandler())  # as huggingface_hub adds on import
+    monkeypatch.setattr(hub, "_hub_handler_removed", False)
+    hub.quiet_hub_handler()  # before whisper loads
+    assert hf_logger.handlers == []
 
 
 @pytest.mark.parametrize("target", ["0", "-5"])
@@ -383,3 +389,61 @@ def test_logout_cli_command_error(monkeypatch, caplog):
             cli.main(["logout", "codex"])
         assert exc.value.code == 1
     assert "logout failed: daemon offline" in caplog.text
+
+
+@pytest.mark.slow
+def test_import_cli_skips_action_cam_and_proxy_modules():
+    """``import cutpoint.cli`` (every ``cutpoint`` start) loads them only when a command runs."""
+    lazy = (
+        "cutpoint.activity",
+        "cutpoint.crash",
+        "cutpoint.mix",
+        "cutpoint.assistant.cliproxy",
+        "huggingface_hub",
+    )
+    code = f"import sys, cutpoint.cli; print([m for m in {lazy!r} if m in sys.modules])"
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert proc.stdout.strip() == "[]"
+
+
+def test_parser_constants_match_their_modules():
+    assert cli.MIX_EXCLUDE_FILE == mix.EXCLUDE_FILE
+    assert cli.PROXY_PROVIDERS == cliproxy.PROVIDERS
+
+
+def test_assemble_project_options_come_from_its_project_group():
+    args = cli.build_parser().parse_args(["assemble", "clips"])
+    assert list(args.project_defaults) == [
+        "top", "ids", "segments", "max_total", "order", "vertical", "size", "force", "crop",
+        "smart_tail", "tail_min", "tail_max", "event_tails", "event_window", "extend",
+        "extend_start", "extend_end", "speech_aware", "speech_max_extend", "speech_max_lead",
+        "pano_source", "pano_cmd_every", "lut", "lut_strength", "color", "color_strength",
+    ]  # fmt: skip
+
+
+def test_login_timeout_cancels_session(monkeypatch, caplog):
+    cancelled = []
+    clock = iter(range(0, 1000, 100))  # every monotonic call: 100 s later
+    monkeypatch.setattr(cliproxy.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(cliproxy.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
+    )
+    monkeypatch.setattr(cliproxy, "poll_login", lambda s: {"state": "pending", "error": None})
+    monkeypatch.setattr(cliproxy, "cancel_login", cancelled.append)
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        cli.main(["login", "codex", "--no-browser"])
+    assert exc.value.code == 1
+    assert "login timed out" in caplog.text
+    assert cancelled == ["s1"]
+
+
+def test_login_start_failure_exits_1(monkeypatch, caplog):
+    def fail(provider):
+        raise cliproxy.ProxyError("daemon offline")
+
+    monkeypatch.setattr(cliproxy, "start_login", fail)
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        cli.main(["login", "codex", "--no-browser"])
+    assert exc.value.code == 1
+    assert "could not start login for codex: daemon offline" in caplog.text

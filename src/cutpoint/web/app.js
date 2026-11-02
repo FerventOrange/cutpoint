@@ -2193,7 +2193,7 @@ function confirmAction(title, text, ok = 'Remove') {
 /**
  * Analyze options (#483): filled with what the project's analysis used (``analyze_options``), so
  * Analyze again repeats it unless changed; the disclosure starts open when one is set. Hidden
- * for 360 projects; Must-include crash only for ski styles (``must_include_crash_default``).
+ * for 360 projects; Must-include crash only for action-cam styles (``must_include_crash_default``).
  */
 function fillAnalyzeOptions(p) {
   const o = p.analyze_options ?? {};
@@ -3189,8 +3189,9 @@ const CHAT_POLL_MS = 1000;
 const MAX_SUGGESTIONS = 3; // suggestion buttons under a proposal
 const MAX_HISTORY_SHOWN = 20; // newest applied changes listed for Revert
 const PROVIDER_NAMES = { ollama: 'Ollama', openai: 'OpenAI-compatible', anthropic: 'Anthropic' };
-// What a hosted provider gets (context.py sends only these; file names, never paths)
-const CONSENT_SENDS = "this project's moment labels, transcript snippets, file names (not full paths) and times, and your messages";
+// What a hosted provider gets: analysis results only, never video or audio (context.py sends
+// only these; file names, never paths)
+const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, transcript snippets, file names (not full paths) and times) and your messages; never video or audio";
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
@@ -3627,7 +3628,8 @@ function renderChat() {
   const noKey = c?.consent?.missing_key || '';
   const consent = !noKey && c?.consent?.needed ? c.consent : null;
   $('#chatConsent').hidden = !consent && !noKey;
-  $('#chatConsentTitle').textContent = noKey ? 'API key needed' : 'Send project data to a hosted model?';
+  $('#chatConsentTitle').textContent = !noKey ? 'Send project data to a hosted model?'
+    : c.consent.missing_kind === 'login' ? 'Login needed' : 'API key needed';
   $('#chatConsentOk').hidden = !consent;
   $('#chatConsentText').textContent = noKey ? `${noKey}.`
     : consent
@@ -3999,7 +4001,7 @@ function renderVisionConsent() {
     box.hidden = false;
     const host = consent.host || 'the remote service';
     $('#visionConsentTitle').textContent = `Send video frames to ${host}?`;
-    $('#visionConsentText').textContent = `Rating moments with this hosted vision provider sends frame crops and descriptions to ${host}. Frame data is never sent until you explicitly grant permission. Permission is saved in config.json.`;
+    $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, detected on-screen text (such as player names) and telemetry to ${host}. That is more data, and more risk, than the AI Chat assistant, which gets only analysis results; agreeing for one never covers the other. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
     $('#visionConsentOk').disabled = false;
   } else {
     status.textContent = `Permission granted: frame ratings allowed with ${consent.host || 'this provider'}.`;

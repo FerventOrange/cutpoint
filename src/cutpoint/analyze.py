@@ -60,7 +60,7 @@ from cutpoint.ffmpeg_utils import (
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors
-from cutpoint.styles import LAUGHTER, PROFANITY, Style
+from cutpoint.styles import ACTION_CAM, LAUGHTER, PROFANITY, Style
 from cutpoint.transcribe import (
     Segment,
     Transcriber,
@@ -127,7 +127,6 @@ class Candidate:
     label_hint: str = ""
     transcript: str = ""
     transcript_unsure: list[tuple[int, float]] | None = None  # see _transcript_snippet
-    vision: dict[str, Any] | None = None
     score: float = 0.0
     label: str = ""
     kind: str = ""  # ski: dominant feature of the clip (airtime, crash, speed, ...)
@@ -607,8 +606,6 @@ def vision_label(rating: float, label: str) -> str | None:
 
 
 def _label(c: Candidate, style: Style) -> str:
-    if c.vision and (slug := vision_label(c.vision.get("score", 0), c.vision.get("label", ""))):
-        return slug
     if c.label_hint:
         return slugify(c.label_hint, 30)
     if c.signals.get("laughter", 0) > 0.5:
@@ -1103,7 +1100,7 @@ def _find_inputs(
 
 # --------------------------------------------------------------------------- analysis steps
 GAME_STYLES = ("gaming", "funny")  # keyframes: HUD OCR (with region discovery)
-ACTION_STYLES = ("action", "sport", "ski")  # keyframes: CLIP; crash detection
+ACTION_STYLES = ("action", "sport", ACTION_CAM)  # keyframes: CLIP; crash detection
 # Skip reasons of plan_layers (the PROGRESS ``detail``) and, for keyframes, why
 # crashes.json has no visual layer (its ``no_visual_layer`` warning).
 SKIP_OPTION = "left out by --skip or analysis.skip"
@@ -1179,7 +1176,7 @@ def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) ->
     with one INFO line naming the fix; nothing is downloaded.
     """
     plan = LayerPlan(game=style.base in GAME_STYLES)
-    action = style.kind == "ski" or style.base in ACTION_STYLES
+    action = style.kind == ACTION_CAM or style.base in ACTION_STYLES
     for step in SKIPPABLE:
         if step in skip:
             plan.skipped[step] = SKIP_OPTION
@@ -1427,7 +1424,7 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
         "signals": {
             **c.signals,
             "keywords": c.keywords,
-            "vision": c.vision["score"] if c.vision else None,
+            "vision": None,  # set by _rate_vision
         },
         "label": _label(c, style),
         **({"kind": c.kind} if c.kind else {}),
@@ -1610,7 +1607,7 @@ def _analyze(
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
         ski_ctx = None
-        if style.kind == "ski":
+        if style.kind == ACTION_CAM:
             from cutpoint import ski  # noqa: PLC0415
 
             t0 = time.perf_counter()
@@ -1618,9 +1615,8 @@ def _analyze(
             if stale.is_dir():
                 for f in stale.glob("*.npz"):
                     cache.remove(f)  # held: removed only when the run completes
-            taste = (style.learned or {}).get("taste")
             durations = {str(s): probe(remap_source(s)).duration for s in sources}
-            ski_ctx = ski.prepare(sources, durations, out_dir, taste=Path(taste) if taste else None)
+            ski_ctx = ski.prepare(sources, durations, out_dir)
             telemetry_s = round(time.perf_counter() - t0, 2)
         tr = Transcriber(model=model, language=language)
 
@@ -1737,7 +1733,7 @@ def _analyze(
                         "mask_friends": style.mask_friends,
                         "must_include_crash": style.must_include_crash,
                     }
-                    if style.kind == "ski"
+                    if style.kind == ACTION_CAM
                     else {}
                 ),
                 "whisper_model": tr.model_name,
@@ -1818,15 +1814,13 @@ def _analyze(
         steps.start("ranking")
         if ski_ctx is not None:
             if events_new:  # with this run's events.json and crashes.json
-                ski_ctx = ski.prepare(
-                    sources, durations, out_dir, taste=Path(taste) if taste else None
-                )
+                ski_ctx = ski.prepare(sources, durations, out_dir)
             for r in results:
                 r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
                 logger.info("%s: %d candidates", r.source.name, len(r.candidates))
         hl["candidates"] = records()
         ev = None
-        if style.kind != "ski":  # ski: the events are features of the scorer itself
+        if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer
             ev = cache.load_json(out_dir / "events.json")
         if ev:
             drop_menu_time(hl, ev)

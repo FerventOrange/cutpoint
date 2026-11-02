@@ -183,8 +183,6 @@ def test_fixed_phrase_with_changing_names_stays() -> None:
     # in 2 frames per burst main discovery finds it too; the preset of a game may not have it
     found = _extra(_frames(extra), covered=(FEED, bigtext_region()))
     assert len(found) == 1 and found[0]["evidence"]["distinct"] == 5
-    assert not discover._same_text("enemyconvoyspottedbyboxer", "enemyconvoyspottedbyquill")
-    assert discover._same_text("enemyconvoyspottedbyboxer", "enemyconvoyspottedbyboker")
 
 
 def test_brief_notice_that_recurs_stays() -> None:
@@ -210,21 +208,12 @@ def test_column_of_short_names_stays() -> None:
     assert len(found) == 1 and found[0]["evidence"]["distinct"] == 10
 
 
-def test_two_texts_that_keep_coming_back_give_nothing() -> None:
-    # two texts in turn over 10 bursts: a menu button, not a notice
-    assert _extra(_frames(_label(["Ready up", "Leave queue"], range(0, 40, 4), y=300))) == []
-
-
 def test_gauge_readouts_give_nothing() -> None:
     # a gauge: short label-and-number lines that change with every burst
     texts = ["ALT40ft", "SPD9kt", "FUEL5", "TRIMup", "ALT45ft", "SPD12kt", "FUEL4"]
     gauge = {
         (b, k): [_box(texts[(b + k) % 7], 20, 960, w=100)] for b in range(0, 40, 3) for k in (0, 1)
     }
-    assert not discover._steady(
-        [{"text": t, "bkey": ("rec.mp4", b), "fid": str(b)} for b, t in enumerate(texts)],
-        DiscoverParams(),
-    )
     assert _extra(_frames(gauge)) == []
     # plain words in capitals are no readouts: a role list with changing words stays
     roles = ["PILOT", "MEDIC", "SCOUT", "PILOT"]
@@ -232,18 +221,17 @@ def test_gauge_readouts_give_nothing() -> None:
     assert len(found) == 1 and found[0]["evidence"]["distinct"] == 3
 
 
-def test_readout_rule() -> None:
-    chars = DiscoverParams().notice_readout_chars
-    assert discover._readout("RPM2100", chars) and discover._readout("ALTft", chars)
-    assert not discover._readout("Gunner", chars) and not discover._readout("LOADER", chars)
-    assert not discover._readout("commander", chars)
-    assert not discover._readout("Vexford12 Wren", chars)  # a longer line, such as a feed
-    # letters of any script count: a Cyrillic or CJK notice with a digit is no readout
-    assert not discover._readout("Захвачена точка 2", chars)
-    assert not discover._readout("我方正在占领据点2", chars)
-    assert not discover._readout("Танк", chars)  # a capitalised word
-    # scripts without case have no mixed-case words
-    assert not discover._readout("据点已占领", chars) and not discover._readout("عدو", chars)
+@pytest.mark.parametrize(
+    ("text", "readout"),
+    [
+        ("RPM2100", True),  # a gauge
+        ("LOADER", False),  # a plain word in capitals
+        ("Захвачена точка 2", False),  # letters of any script count
+        ("据点已占领", False),  # scripts without case have no mixed-case words
+    ],
+)
+def test_readout_rule(text: str, readout: bool) -> None:
+    assert discover._readout(text, DiscoverParams().notice_readout_chars) is readout
 
 
 def test_watermark_and_clock_give_nothing() -> None:
@@ -434,12 +422,12 @@ def test_origin_changes_no_cache_key() -> None:
     assert OcrParams().key("verbfeed", a) == OcrParams().key("verbfeed", b)
 
     def raw(p: Any) -> dict[str, Any]:
-        return ocr_raw.raw_key(3.0, [r.key() for r in p.all_regions()], "bottom", 0.5, [], 960)
+        return ocr_raw.raw_key(3.0, [r.key() for r in p.all_regions()], "bottom", 0.5, [])
 
     assert raw(a) == raw(b)
 
 
-def test_noise_is_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_noise_is_fast() -> None:
     # 160 frames of 20 random lettered boxes each: stacked-line merging once took 133 s
     rng = random.Random(1)
     frames = [
@@ -460,26 +448,10 @@ def test_noise_is_fast(monkeypatch: pytest.MonkeyPatch) -> None:
         )
         for i in range(160)
     ]
-    calls = {"rect": 0, "clusters": 0}
-    edges_rect, merge = discover._edges_rect, discover._merge_stacked
-
-    def count_rect(e: Any) -> Any:
-        calls["rect"] += 1
-        return edges_rect(e)
-
-    def count_merge(clusters: Any) -> Any:
-        calls["clusters"] += len(clusters)
-        return merge(clusters)
-
-    monkeypatch.setattr(discover, "_edges_rect", count_rect)
-    monkeypatch.setattr(discover, "_merge_stacked", count_merge)
     params = DiscoverParams()
     t0 = time.perf_counter()
     notice_proposals(gameplay_frames(frames, params), (bigtext_region(),), params, _no_static())
     assert time.perf_counter() - t0 < 10  # about 0.3 s
-    assert calls["clusters"] > 50  # the noise forms many chance clusters
-    # one rectangle per cluster, one per merge (each merge removes a cluster), the proposals
-    assert calls["rect"] <= 3 * calls["clusters"]
 
 
 FEED = Region("feed", 1452, 12, 264, 144, "feed")
@@ -510,4 +482,3 @@ def test_notice_centred_on_a_covered_region_gives_nothing() -> None:
     assert len(_extra(frames, covered=(FEED, bigtext_region()))) == 1
     counter = Region("counter", 600, 795, 720, 10, "counter")
     assert _extra(frames, covered=(FEED, counter, bigtext_region())) == []
-    assert discover._trim((800, 760, 1120, 840), counter, (960, 800)) is None

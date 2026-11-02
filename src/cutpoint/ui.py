@@ -42,8 +42,11 @@ Trust boundaries:
   ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
-  the user agrees once for it (``POST /api/assistant/consent``, kept in ``config.json``); nor
-  is its model list asked for (``GET /api/assistant/models``) before that and without a key.
+  the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v2:`` key kept in
+  ``config.json``); nor is its model list asked for (``GET /api/assistant/models``) before that
+  and without a key. The Vision role's hosted provider has its own consent (``role: vision``, a
+  ``vision-v2:`` key): agreeing for one role never covers the other, and an unprefixed key from an
+  older version covers neither.
   API keys come from the environment or the system keyring (``POST /api/assistant/key``,
   ``.../key/clear``); no route returns one, only where it comes from. ``cutpoint ui`` takes the
   key variables out of its environment at startup, jobs get an environment without them, and
@@ -131,7 +134,14 @@ from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
 from cutpoint.sources import TRANSCRIPT_MODELS
-from cutpoint.styles import Style, get_style, learned_styles, style_names
+from cutpoint.styles import (
+    ACTION_CAM,
+    Style,
+    get_style,
+    learned_styles,
+    renamed_error,
+    style_names,
+)
 from cutpoint.utils import (
     PANO_EXTS,
     VIDEO_EXTS,
@@ -607,13 +617,14 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     vis_consent = _tuple_of_str(vis_section.get("consent")) if isinstance(vis_section, dict) else ()
     vp = _vision_provider_from_data(data)
     if vp is not None and (vp.name in cliproxy.PROVIDERS or ai_providers.is_subscription(vp.name)):
-        v_consent_info = consent_view(vp, consent=vis_consent)
+        v_consent_info = consent_view(vp, consent=vis_consent, role="vision")
     else:
         v_consent_info = {
             "needed": False,
             "key": None,
             "host": getattr(vp, "host", "") if vp is not None else "",
             "missing_key": None,
+            "missing_kind": None,
         }
     return {
         "projects_dir": folder,
@@ -805,21 +816,31 @@ def check_assistant(
 def consent_view(
     provider: ai_providers.Provider,
     consent: tuple[str, ...] | None = None,
+    role: str = "assistant",
 ) -> dict[str, Any]:
-    """Whether the user still has to agree before project data goes to ``provider``:
-    ``{needed, key, host, missing_key}``; ``key`` (``<name>@<host>``) is None for a local
-    provider; ``missing_key``: how to add the API key it needs, which comes before agreeing."""
-    key = ai_providers.consent_key(provider)
+    """Whether the user still has to agree before project data goes to ``provider`` for
+    ``role`` (``"assistant"`` or ``"vision"``): ``{needed, key, host, missing_key,
+    missing_kind}``; ``key`` (:func:`cutpoint.assistant.providers.consent_key`) is None for a
+    local provider; ``missing_key``: how to add the API key (or log in) it needs, which comes
+    before agreeing; ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy
+    login), ``"key"`` otherwise, None when nothing is missing. ``consent`` defaults to the
+    role's own list in ``config.json``: one role's consent never covers the other's."""
+    key = ai_providers.consent_key(provider, role)
     if consent is None:
         try:
-            consent = assistant_settings().consent
+            consent = (
+                vision_assistant_settings() if role == "vision" else assistant_settings()
+            ).consent
         except (ValueError, TypeError):  # config.json is invalid: no consent is known
             consent = ()
+    missing = ai_providers.missing_key(provider)
+    kind = "login" if ai_providers.is_subscription(provider) else "key"
     return {
         "needed": key is not None and key not in consent,
         "key": key,
         "host": provider.host,
-        "missing_key": ai_providers.missing_key(provider),
+        "missing_key": missing,
+        "missing_kind": None if missing is None else kind,
     }
 
 
@@ -3206,7 +3227,7 @@ def ui_styles() -> list[str]:
         except (ValueError, TypeError, AttributeError) as e:
             logger.warning("skipping learned style %s: %s", learned_styles().get(n, n), e)
             continue
-        if style.kind != "ski":
+        if style.kind != ACTION_CAM:
             names.append(n)
     return names
 
@@ -3221,9 +3242,9 @@ def _gaming_style(name: object) -> bool:
 
 
 def _ski_style(name: str) -> bool:
-    """``name`` is a telemetry-driven action-cam style (``kind`` ski), accepted for 360 sources."""
+    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam), accepted for 360 sources."""
     try:
-        return get_style(name).kind == "ski"
+        return get_style(name).kind == ACTION_CAM
     except (ValueError, TypeError, AttributeError):
         return False
 
@@ -3318,15 +3339,15 @@ def _style(name: object) -> Style | None:
 
 
 def _style_crash(style: object) -> float | None:
-    """The ``must_include_crash`` of a ski ``style`` (what ``--must-include-crash`` overrides),
-    else None: the flag only changes ski analysis."""
+    """The ``must_include_crash`` of an action-cam ``style`` (what ``--must-include-crash``
+    overrides), else None: the flag only changes action-cam analysis."""
     s = _style(style)
-    return s.must_include_crash if s is not None and s.kind == "ski" else None
+    return s.must_include_crash if s is not None and s.kind == ACTION_CAM else None
 
 
 def _no_scenes(st: dict[str, Any], style: object) -> bool:
     """The analysis ran with ``--no-scenes``: it recorded no scene detection although its style
-    detects scenes (ski never does, so it records none without the flag)."""
+    detects scenes (action-cam never does, so it records none without the flag)."""
     s = _style(style)
     return st.get("scenes") is False and (s is None or s.use_scenes)
 
@@ -3876,14 +3897,15 @@ def create_app(port: int) -> FastAPI:
 
     @secure.post("/assistant/consent")
     def give_consent(body: dict[str, Any]):
-        """Record that the user agreed to send project data to the provider in use, named by
-        its ``key``; 409 when the provider in use is another one by now, or is local."""
+        """Record that the user agreed to send project data to the provider in use for ``role``
+        (``assistant``, the default, or ``vision``), named by its ``key``, in that role's own
+        ``consent`` list; 409 when the provider in use is another one by now, or is local."""
         role = body.get("role") or "assistant"
         if role not in ("assistant", "vision"):
             raise bad("role must be assistant or vision")
         section_name = "vision_assistant" if role == "vision" else "assistant"
         provider = vision_provider() if role == "vision" else assistant_provider()
-        want = ai_providers.consent_key(provider)
+        want = ai_providers.consent_key(provider, role)
         if want is None or body.get("key") != want:
             raise bad(f"the {role} provider changed: check it and agree again", 409)
         data = config_data()
@@ -3901,7 +3923,7 @@ def create_app(port: int) -> FastAPI:
         fresh_section = fresh_data.get(section_name)
         fresh_dict = fresh_section if isinstance(fresh_section, dict) else {}
         consent_list = _tuple_of_str(fresh_dict.get("consent"))
-        return {"consent": consent_view(provider, consent=consent_list)}
+        return {"consent": consent_view(provider, consent=consent_list, role=role)}
 
     @secure.get("/assistant/models")
     def assistant_models(
@@ -3943,7 +3965,7 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"unknown provider {provider}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
-        return ai_providers.model_list(p, settings.consent, refresh=refresh)
+        return ai_providers.model_list(p, settings.consent, role=role, refresh=refresh)
 
     # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
     def login_provider(value: Any) -> str:
@@ -4010,7 +4032,9 @@ def create_app(port: int) -> FastAPI:
                     "state": "error",
                     "error": ai_keys.redact(str(err)) or type(err).__name__,
                 }
-            raise bad(ai_keys.redact(str(err)) or f"the {name} login did not start", 500) from None
+            # proxy not running or unreachable: expected, so 503 rather than a server error
+            code = 503 if isinstance(err, cliproxy.ProxyConnectionError) else 500
+            raise bad(ai_keys.redact(str(err)) or f"the {name} login did not start", code) from None
 
         url = res.get("url")
         proxy_state = res.get("state")
@@ -4112,6 +4136,8 @@ def create_app(port: int) -> FastAPI:
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
         name, style = body.get("name"), body.get("style", "gaming")
+        if msg := renamed_error(style):  # ski: an error naming action-cam
+            raise bad(msg)
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise bad("name must be 1-100 characters")
         inputs = _body_inputs(body)
@@ -4147,7 +4173,7 @@ def create_app(port: int) -> FastAPI:
             if ski:  # action-cam styles need telemetry: 360 footage only in the UI
                 raise bad(f"unknown style {style!r}")
             return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
-        # 360: the ski styles as given, any other the 360 default (pano.default_style)
+        # 360: the action-cam styles as given, any other the 360 default (pano.default_style)
         try:
             style = style if ski else pano_style()
         except ValueError as err:  # config.json's pano section is not an object
@@ -4232,7 +4258,7 @@ def create_app(port: int) -> FastAPI:
             # earlier clips a run would replace (the page asks first).
             "preset_problem": preset_problem(meta, hl),
             # Analyze options (#483): what the analysis used, which the page shows; the style's
-            # --must-include-crash default, null when the style is not ski (no such option)
+            # --must-include-crash default, null when the style is not action-cam (no such option)
             "analyze_options": analyze_options(p, meta, hl),
             "must_include_crash_default": _style_crash(
                 meta.get("style") or (hl or {}).get("style")
@@ -4861,8 +4887,8 @@ def create_app(port: int) -> FastAPI:
         provider = assistant_provider()
         if consent_view(provider)["needed"]:
             raise bad(
-                f"agree first to send this project's moment labels, transcript snippets, file "
-                f"names and times to {provider.host}",
+                f"agree first to send this project's analysis results (moment labels, scores "
+                f"and signals, transcript snippets, file names and times) to {provider.host}",
                 409,
             )
         text = body.get("text")
@@ -5003,8 +5029,23 @@ def quiet_resets(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> No
     loop.default_exception_handler(context)
 
 
-def _hangup(*_: object) -> None:
-    raise SystemExit(1)  # unwinds through run()'s finally, which stops the children
+class _Hangup:
+    """SIGHUP handler (the terminal closed): stop the server as Ctrl+C does, then exit 1.
+
+    Raising SystemExit in the handler while uvicorn handled a request did not stop it: uvicorn
+    caught it as an app error and kept serving, its jobs and ffmpeg children too. A running
+    server is only asked to stop; run() raises SystemExit(1) once it has.
+    """
+
+    def __init__(self) -> None:
+        self.server: Any = None  # the uvicorn.Server, once there is one
+        self.received = False
+
+    def __call__(self, *_: object) -> None:
+        self.received = True
+        if self.server is None:
+            raise SystemExit(1)  # unwinds through run()'s finally, which stops the children
+        self.server.should_exit = True
 
 
 def listen(port: int) -> socket.socket:
@@ -5046,15 +5087,19 @@ def run(port: int = 8765) -> None:
     # Printed only once the port is ours, so the URL always works.
     # The fragment never reaches the network; the page keeps the token in sessionStorage.
     print(f"Cutpoint UI: http://127.0.0.1:{port}/#t={app.state.token} (Ctrl+C to stop)", flush=True)
+    hangup = _Hangup()
     if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, _hangup)
+        signal.signal(signal.SIGHUP, hangup)
     try:
         conf = uvicorn.Config(
             app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5
         )
         ai_keys.redact_logs()  # again: the Config set up uvicorn's own log handlers
         server = uvicorn.Server(conf)
+        hangup.server = server
         server.run(sockets=[sock])
+        if hangup.received:
+            raise SystemExit(1)  # through the finally below, which stops the children
     finally:  # jobs and ffmpeg run in their own sessions: nothing else would stop them
         sock.close()
         app.state.jobs.shutdown()

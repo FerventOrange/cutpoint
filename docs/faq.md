@@ -5,7 +5,8 @@ No. Sources are only read. Everything is written to a project folder.
 
 **Does it need an internet connection or API keys?**
 No for editing. Whisper and the optional models download once. The analysis models run locally,
-so the agent driving Cutpoint does not spend API credits on video.
+so the agent driving Cutpoint does not spend API credits on video. Hosted models (API keys or
+subscription logins in `cutpoint ui`) are optional and off by default.
 
 **Which agents work with it?**
 Any agent that can run shell commands (Claude Code, Codex, Grok CLI, others). See
@@ -20,11 +21,11 @@ on Linux) and falls back to `libx264`. You can override this with the `video_enc
 [Configuration](configuration.md#video_encoder) and [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md).
 
 **Which platforms are supported?**
-Windows and Linux; the test suite runs on both in CI. `cutpoint setup` automatically prefers CUDA
-when a usable NVIDIA driver is detected, otherwise Vulkan, otherwise CPU when distribution
-assets are available. You can override the backend with `CUTPOINT_LLAMA_BACKEND` (`auto`, `cuda`,
-`vulkan`, `cpu`). A self-built `llama-server` on `PATH` or in `CUTPOINT_LLAMA_SERVER` also works.
+Windows and Linux; the test suite runs on both in CI. The model layers run on an NVIDIA GPU
+when torch reaches CUDA, otherwise on the CPU; the VLM layer of `cutpoint events` uses Ollama
+(or a hosted Vision model you allowed), which picks its own GPU backend.
 See [Models and Ollama troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete).
+
 **What kinds of video work?**
 Gameplay, action-cam, sport, funny moments and commentary or talk. Pick the matching `--style`
 ([Configuration](configuration.md#styles)). Scoring is heuristic and works best when there is

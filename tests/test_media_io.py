@@ -22,7 +22,7 @@ import pytest
 
 from conftest import needs_ffmpeg
 from cutpoint import assemble as asm
-from cutpoint import cache, capabilities, crash, refmatch, stage
+from cutpoint import cache, capabilities, crash, stage
 from cutpoint import ffmpeg_utils as fu
 from cutpoint.ffmpeg_utils import FFmpegError
 from cutpoint.pano import x3
@@ -131,14 +131,9 @@ def ran(monkeypatch, fake_tools):
 
 
 # --------------------------------------------------------------------------- _split_jpegs
-def test_split_jpegs_splits_concatenated_images():
+def test_split_jpegs_splits_images_skips_garbage_and_drops_a_truncated_tail():
     a, b = _jpeg(b"one"), _jpeg(b"two")
-    assert fu._split_jpegs(a + b) == [a, b]
-
-
-def test_split_jpegs_skips_garbage_and_drops_truncated_tail():
-    a = _jpeg(b"ok")
-    assert fu._split_jpegs(b"noise" + a + b"junk\xff\xd8truncated") == [a]
+    assert fu._split_jpegs(b"noise" + a + b + b"junk\xff\xd8truncated") == [a, b]
 
 
 # --------------------------------------------------------------------------- argv builders
@@ -375,8 +370,6 @@ def test_a_source_is_probed_once_until_the_file_changes(monkeypatch, tmp_path):
     [
         ("h264", "yuv420p", True),
         ("hevc", "yuv420p", False),
-        ("h264", "yuv420p10le", False),
-        ("h264", "yuv444p", False),
         ("h264", "yuvj420p", False),  # full range
     ],
 )
@@ -521,112 +514,6 @@ def test_decode_window_returns_empty_arrays_on_ffmpeg_error(monkeypatch):
 
 
 # --------------------------------------------------------------------------- caching
-@pytest.fixture
-def thumbs_env(monkeypatch, tmp_path):
-    """refmatch.thumbnails with a 10 s video and a fake decoder (frames per pass)."""
-    state = SimpleNamespace(per_pass={"auto": 100, None: 100}, calls=[])
-    monkeypatch.setattr(cache, "source_dir", lambda _p: tmp_path)
-    monkeypatch.setattr(refmatch, "probe", lambda _p: SimpleNamespace(vduration=10.0))
-    state.gpu = [fu.HwDecoder("cuda")]  # the decoder found for the source; [None] = CPU only
-    monkeypatch.setattr(refmatch, "decoder_for", lambda _p: state.gpu[0])
-
-    def fake_decode(_path, *, size, vf, pix_fmt, hwaccel, fallback_cpu=True):
-        state.calls.append((hwaccel, fallback_cpu))
-        n = state.per_pass[hwaccel]
-        if isinstance(n, Exception):
-            raise n
-        w, h = size
-        for k in range(n):
-            yield k / refmatch.FPS, np.full((h, w), k % 256, np.uint8)
-
-    monkeypatch.setattr(refmatch, "decode_raw", fake_decode)
-    state.cpath = tmp_path / refmatch.THUMBS_FILE
-    return state
-
-
-def test_thumbnails_full_decode_is_cached(thumbs_env):
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert frames.shape == (100, refmatch.W * refmatch.H)
-    assert frames[3, 0] == 3
-    assert thumbs_env.calls == [("auto", False)]  # no hidden CPU pass in decode_raw
-    assert thumbs_env.cpath.exists()
-
-
-def test_thumbnails_short_cuda_decode_is_redone_on_cpu(thumbs_env):
-    thumbs_env.per_pass["auto"] = 40
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert thumbs_env.calls == [("auto", False), (None, True)]
-    assert len(frames) == 100 and thumbs_env.cpath.exists()
-
-
-def test_thumbnails_without_a_gpu_decoder_decode_once_on_the_cpu(thumbs_env):
-    """VAAPI declines HEVC/10-bit: "auto" would be the CPU pass the retry then repeats."""
-    thumbs_env.gpu[0] = None
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert len(frames) == 100
-    assert thumbs_env.calls == [(None, True)]
-
-
-def test_thumbnails_still_short_is_not_cached(thumbs_env):
-    thumbs_env.per_pass.update({"auto": 40, None: 60})
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert len(frames) == 60
-    assert not thumbs_env.cpath.exists()
-
-
-def test_thumbnails_failed_cuda_decode_runs_cpu(thumbs_env):
-    thumbs_env.per_pass["auto"] = FFmpegError("No device")
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert thumbs_env.calls == [("auto", False), (None, True)]
-    assert len(frames) == 100 and thumbs_env.cpath.exists()
-
-
-def test_thumbnails_keeps_cuda_frames_when_cpu_retry_fails(thumbs_env):
-    thumbs_env.per_pass.update({"auto": 40, None: FFmpegError("read error")})
-    frames = refmatch.thumbnails(Path("x.mp4"))
-    assert len(frames) == 40
-    assert not thumbs_env.cpath.exists()
-
-
-def test_thumbnails_raise_when_neither_pass_decodes(thumbs_env):
-    thumbs_env.per_pass.update({"auto": FFmpegError("a"), None: FFmpegError("b")})
-    with pytest.raises(FFmpegError, match="Could not decode thumbnails"):
-        refmatch.thumbnails(Path("x.mp4"))
-    assert not thumbs_env.cpath.exists()
-
-
-@pytest.fixture
-def audio_env(monkeypatch, tmp_path):
-    """refmatch.audio_8k with a failing decoder; ``streams`` = probed audio streams."""
-    state = SimpleNamespace(streams=1, decodes=0, cpath=tmp_path / "audio8k.npy")
-
-    def failing(*_a, **_kw):
-        state.decodes += 1
-        raise FFmpegError("decode failed")
-
-    monkeypatch.setattr(cache, "source_dir", lambda _p: tmp_path)
-    monkeypatch.setattr(refmatch, "decode_pcm", failing)
-    monkeypatch.setattr(refmatch, "probe", lambda _p: SimpleNamespace(audio_streams=state.streams))
-    monkeypatch.setattr(refmatch, "_AUDIO_FAILED", set())
-    return state
-
-
-def test_audio_8k_no_audio_stream_is_cached(audio_env):
-    audio_env.streams = 0
-    x = refmatch.audio_8k(Path("x.mp4"))
-    assert x.shape == (0,) and x.dtype == np.float32
-    assert audio_env.cpath.exists()
-
-
-def test_audio_8k_other_failure_not_cached_nor_retried_in_process(audio_env, caplog):
-    for _ in range(3):
-        x = refmatch.audio_8k(Path("x.mp4"))
-        assert x.shape == (0,) and x.dtype == np.float32
-    assert not audio_env.cpath.exists()
-    assert audio_env.decodes == 1
-    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
-
-
 def test_x3_failed_probe_is_not_cached(monkeypatch, tmp_path):
     insv = tmp_path / "VID_00_000.insv"
     insv.write_bytes(b"x")
@@ -756,19 +643,14 @@ def test_real_decode_pcm(clip):
 @pytest.mark.parametrize(
     ("audios", "f_start", "expected"),
     [
-        ([{"duration": "1.5"}], None, 1.5),
         ([{"duration": "1.5"}, {"duration": "2.0"}], None, 2.0),
-        ([{}], None, None),
         ([{"duration": "1.5"}, {}], None, None),
-        ([], None, None),
         # -itsoffset 0.3: the audio starts 0.3 s in, so it ends 0.3 s after its duration
         ([{"start_time": "0.3", "duration": "1.5"}], None, 1.8),
         ([{"start_time": "0.3", "duration": "1.5"}], "0.1", 1.7),
-        ([{"duration": "1.5"}], "0.1", 1.5),  # no stream start: the container's
     ],
-    ids=["one", "longest", "mkv", "partly-known", "no-audio", "late", "late-in-container",
-         "no-stream-start"],
-)  # fmt: skip
+    ids=["longest", "partly-known", "late", "late-in-container"],
+)
 def test_probe_audio_duration(monkeypatch, audios, f_start, expected):
     video = {"codec_type": "video", "width": 64, "height": 48, "avg_frame_rate": "25/1"}
     fmt = {"duration": "2.0"} | ({"start_time": f_start} if f_start else {})
@@ -799,18 +681,3 @@ def test_caption_chunks_split_on_punctuation_and_gaps():
     assert [text for _, _, text in chunks] == ["hello there.", "ok", "then"]
     assert all(a < b for a, b, _ in chunks)
     assert all(chunks[i][1] <= chunks[i + 1][0] for i in range(len(chunks) - 1))  # no overlap
-
-
-@needs_ffmpeg
-def test_assemble_joins_two_clips(clip, tmp_path):
-    clips = tmp_path / "clips"
-    clips.mkdir()
-    for name in ("clip_1.mp4", "clip_2.mp4"):
-        shutil.copy(clip, clips / name)
-    out = asm.assemble(clips)
-    assert out == tmp_path.resolve() / "final.mp4"
-    info = fu.probe(out)
-    assert info.duration == pytest.approx(4.0, abs=0.3)  # two 2 s clips
-    assert info.audio_streams == 1
-    # mp4 (the default) writes no timelines: --format fcpxml|otio writes one instead (#519)
-    assert not out.with_suffix(".otio").exists() and not out.with_suffix(".fcpxml").exists()

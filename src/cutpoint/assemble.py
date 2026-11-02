@@ -268,51 +268,46 @@ def _encode_with(enc: VideoEncoder, files: list[Path], graph: str, out: Path) ->
 def concat_copy(
     files: list[Path],
     out: Path,
-    infos: list[MediaInfo] | None = None,
+    infos: list[MediaInfo],
     fades: list[float] | None = None,
     peaks: list[str] | None = None,
 ) -> None:
     """Join with the concat demuxer (inputs must share parameters): the video is
-    stream-copied, the audio (with ``infos``) rebuilt from the clips and encoded once.
+    stream-copied, the audio rebuilt from the clips and encoded once.
 
     Stream-copied AAC does not join cleanly: each later clip's priming frame (1024 samples)
     plays at its cut, and the first clip's priming delays the copied video by as much. So
     each clip's audio is decoded (its edit list applied), given an edge fade where its
     ``fades`` is > 0 and the ``peaks`` filters (:func:`peak_filters`), and padded/trimmed to
     where its video ends on the join (:func:`cut_audio_ends`). ``-copyts`` keeps the first
-    clip's video at 0, as it is in the clip. Without ``infos`` both streams are copied.
+    clip's video at 0, as it is in the clip.
     """
     listing = out.with_name(f".{out.stem}.concat.txt")
     lines = ["file '" + f.resolve().as_posix().replace("'", "'\\''") + "'" for f in files]
     listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    args = ["ffmpeg", "-y", "-v", "error"]
-    if infos:
-        args += ["-copyts"]
+    args = ["ffmpeg", "-y", "-v", "error", "-copyts"]
     args += ["-f", "concat", "-safe", "0", "-i", str(listing)]
-    if infos:
-        fades = fades or [0.0] * len(files)
-        peaks = peaks or [""] * len(files)
-        for f in files:
-            args += ["-i", str(f)]
-        ends = cut_audio_ends(infos)
-        chains = [
-            _audio_chain(i + 1, info, fades[i], label=i, peaks=peaks[i], end=ends[i])
-            for i, info in enumerate(infos)
-        ]
-        graph = ";".join(chains) + ";" + "".join(f"[a{i}]" for i in range(len(files)))
-        args += [
-            "-filter_complex",
-            f"{graph}concat=n={len(files)}:v=0:a=1[a]",
-            "-map",
-            "0:v:0",
-            "-map",
-            "[a]",
-            "-c:v",
-            "copy",
-            *AUDIO_OUT,
-        ]
-    else:
-        args += ["-c", "copy"]
+    fades = fades or [0.0] * len(files)
+    peaks = peaks or [""] * len(files)
+    for f in files:
+        args += ["-i", str(f)]
+    ends = cut_audio_ends(infos)
+    chains = [
+        _audio_chain(i + 1, info, fades[i], label=i, peaks=peaks[i], end=ends[i])
+        for i, info in enumerate(infos)
+    ]
+    graph = ";".join(chains) + ";" + "".join(f"[a{i}]" for i in range(len(files)))
+    args += [
+        "-filter_complex",
+        f"{graph}concat=n={len(files)}:v=0:a=1[a]",
+        "-map",
+        "0:v:0",
+        "-map",
+        "[a]",
+        "-c:v",
+        "copy",
+        *AUDIO_OUT,
+    ]
     try:
         run([*args, "-movflags", "+faststart", str(out)])
     finally:

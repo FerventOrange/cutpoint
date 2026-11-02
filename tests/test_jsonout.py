@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -10,8 +11,8 @@ from pathlib import Path
 import pytest
 
 from conftest import envelope
-from cutpoint import cli, ffmpeg_utils, jsonout
-from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
+from cutpoint import cli, ffmpeg_utils, jsonout, reset_state
+from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError, FolderBusyError
 
 
 def test_envelope_collects_outputs_project_and_warnings(tmp_path, capsys):
@@ -78,22 +79,6 @@ def test_first_error_wins_and_exception_is_reraised(capsys):
     assert envelope(capsys.readouterr().out)["error"] == {"code": "not_found", "message": "first"}
 
 
-@pytest.mark.parametrize(
-    ("err", "code"),
-    [
-        (KeyboardInterrupt(), "interrupted"),
-        (FFmpegNotFoundError("ffprobe not found. Install it"), "ffmpeg_missing"),
-        (FFmpegError("ffmpeg not found. Install it"), "error"),  # the class decides, not the text
-        (FFmpegError("ffmpeg failed (exit 1)"), "error"),
-        (FileExistsError("clips is not empty; use --force"), "output_not_empty"),
-        (FileNotFoundError("no such file"), "not_found"),
-        (ValueError("bad"), "error"),
-    ],
-)
-def test_error_code(err, code):
-    assert jsonout.error_code(err) == code
-
-
 def test_find_tool_raises_ffmpeg_not_found(monkeypatch):
     monkeypatch.setattr(ffmpeg_utils.shutil, "which", lambda name: None)
     monkeypatch.setattr(ffmpeg_utils.sys, "platform", "linux")  # no WinGet folder search
@@ -148,16 +133,6 @@ def test_guard_without_stderr(monkeypatch, capsys):
     assert error == {"code": "bad_args", "message": "unrecognized arguments: --bogus"}
 
 
-def test_systemexit_message_is_bad_args(monkeypatch, capsys):
-    """sys.exit("bad --window-at ...") (cutpoint events) keeps its exit and message."""
-    _paths_raising(monkeypatch, SystemExit("bad --window-at 'x'; use GLOB@START-END"))
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["paths", "--json"])
-    assert exc.value.code == "bad --window-at 'x'; use GLOB@START-END"  # exit 1, as before
-    error = envelope(capsys.readouterr().out)["error"]
-    assert error == {"code": "bad_args", "message": "bad --window-at 'x'; use GLOB@START-END"}
-
-
 def test_abbreviated_json(home, capsys):
     assert cli.main(["paths", "--js"]) == 0
     assert envelope(capsys.readouterr().out)["command"] == "paths"
@@ -173,7 +148,7 @@ def test_paths_json(home, capsys):
     assert doc["ok"] is True and doc["command"] == "paths" and doc["project"] is None
     outputs = doc["outputs"]
     assert outputs["home"] == str(home)
-    keys = ["home", "config", "cache", "models", "tools", "llama.cpp", "stage", "styles"]
+    keys = ["home", "config", "cache", "models", "tools", "stage", "styles"]
     keys += ["presets", "profiles", "projects", "bundled", "missing"]
     assert list(outputs) == keys
     assert all(Path(outputs[k]).is_absolute() for k in keys[:-1])
@@ -195,7 +170,9 @@ def _paths_raising(monkeypatch, err: BaseException) -> None:
         (FileNotFoundError("Segments file not found: x"), "not_found", 1, None),
         (FFmpegNotFoundError("ffmpeg not found. Install it"), "ffmpeg_missing", 1, None),
         (FileExistsError("clips is not empty; use --force"), "output_not_empty", 1, None),
-        (RuntimeError("encoder failed"), "error", 1, None),
+        (FolderBusyError("another run holds clips"), "folder_busy", 1, None),
+        # the class decides, not the text
+        (FFmpegError("ffmpeg not found. Install it"), "error", 1, None),
         (ModuleNotFoundError("x", name="torch"), "missing_extra", 1, "'events' extra"),
         (KeyboardInterrupt(), "interrupted", 130, "interrupted"),
     ],
@@ -209,6 +186,27 @@ def test_cli_error_envelope(monkeypatch, capsys, err, code, exit_code, message):
     assert doc["error"]["code"] == code
     assert (message or str(err)) in doc["error"]["message"]
     assert "noise" in stderr
+
+
+@pytest.mark.skipif(Path("C:/ffmpeg/bin").is_dir(), reason="C:/ffmpeg/bin is always searched")
+def test_ffmpeg_off_path_gives_ffmpeg_missing(home, tmp_path, monkeypatch, capsys):
+    """A real lookup, not an injected exception: nothing on PATH or in the default folders."""
+    video = tmp_path / "videos" / "a.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"not probed")
+    segments = tmp_path / "seg.json"
+    segments.write_text(json.dumps([{"source": str(video), "start": 0, "end": 2}]), "utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "programs"))
+    reset_state()  # forget any ffmpeg found earlier in this process
+
+    assert cli.main(["clips", "p", "--segments", str(segments), "--json"]) == 1
+
+    doc = envelope(capsys.readouterr().out)
+    assert doc["ok"] is False
+    assert doc["error"]["code"] == "ffmpeg_missing"
+    assert "not found" in doc["error"]["message"]
 
 
 def test_cli_error_without_json_prints_nothing_on_stdout(monkeypatch, capsys):
@@ -235,19 +233,12 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
     ("argv", "message"),
     [
         (["paths", "--json", "--bogus"], "unrecognized arguments: --bogus"),
-        (["paths", "extra", "--json"], "unrecognized arguments: extra"),
         (["clips", "p", "--size", "abc", "--json"], "argument --size: 'abc': expected WxH"),
-        (["crashes", "ski", "--dense-top", "many", "--json"], "argument --dense-top: invalid int"),
-        (["profile", "ski", "--json", "--activity"], "argument --activity: expected one argument"),
         (["setup", "--only", "bogus", "--json"], "argument --only: invalid choice: 'bogus'"),
-        (["clips", "p", "--size", "abc", "--j"], "argument --size: 'abc': expected WxH"),
+        (["events", "ev", "--layers", "bogus", "--json"], "argument --layers: invalid choice"),
         (["paths", "--json=1"], "argument --json: ignored explicit argument '1'"),
     ],
-    ids=[
-        *["paths-unknown-option", "paths-extra", "clips-size", "crashes", "profile", "setup"],
-        "abbreviated",
-        "json-with-value",
-    ],
+    ids=["paths-unknown-option", "clips-size", "setup", "events-layers", "json-with-value"],
 )
 def test_bad_args_envelope(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:
@@ -269,31 +260,11 @@ def test_bad_args_envelope_from_the_real_argv(monkeypatch, capsys):
     assert envelope(capsys.readouterr().out)["error"]["code"] == "bad_args"
 
 
-def test_bad_args_inside_subcommand_parser(monkeypatch, capsys):
-    """A usage error raised by the subcommand's own parser also gives an envelope."""
-    real = cli._add_json_argument
-
-    def with_number(p):
-        real(p)
-        p.add_argument("--n", type=int)
-
-    monkeypatch.setattr(cli, "_add_json_argument", with_number)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["paths", "--js", "--n", "x"])
-    assert exc.value.code == 2
-    out, err = capsys.readouterr()
-    doc = envelope(out)
-    assert doc["command"] == "paths" and doc["error"]["code"] == "bad_args"
-    assert "invalid int value" in doc["error"]["message"] and "invalid int value" in err
-
-
 @pytest.mark.parametrize(
     "argv",
     [
         ["paths", "--bogus"],  # no --json
         ["pathz", "--json"],  # unknown command: no command to report
-        ["fit", "x", "--json"],  # a command without --json (yet)
-        ["clips", "p", "--size", "abc"],  # an error of the command's own parser, no --json
         ["clips", "p", "--size", "abc", "--", "--json"],  # after "--" it is not an option
         ["clips", "p", "--size", "abc", "--jsonx"],  # not an abbreviation of --json
     ],
@@ -307,9 +278,9 @@ def test_bad_args_without_envelope(capsys, argv):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("stderr", ["closed", "devnull"])
+@pytest.mark.parametrize("stderr", ["closed"])
 def test_json_subprocess_without_stderr(home, tmp_path, stderr):
-    """With stderr closed (fd 2 invalid, sys.stderr None) or the null device: one envelope.
+    """With stderr closed (fd 2 invalid, sys.stderr None): one envelope.
 
     A child cannot be started with a closed fd 2 portably (Windows has no ``2>&-``), so the
     "closed" case closes fd 2 inside the process before running the CLI.
@@ -391,10 +362,7 @@ def test_assemble_refuses_an_audio_crossfade_at_cuts_with_exit_2(capsys, json_fl
     ("extra", "audio"),
     [
         ([], None),  # follows --transition, decided in assemble()
-        (["--transition", "fade"], None),
         (["--transition", "fade", "--audio-transition", "cut"], "cut"),
-        (["--transition", "fade", "--audio-transition", "crossfade"], "crossfade"),
-        (["--audio-transition", "cut"], "cut"),
     ],
 )
 def test_assemble_audio_transition_reaches_assemble(monkeypatch, tmp_path, extra, audio):

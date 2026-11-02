@@ -42,7 +42,7 @@ def test_existing_preset_does_not_log_missing_notice(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    write_preset(paths.presets_dir(), boxfeed(builtin=False))
+    write_preset(paths.presets_dir(), boxfeed())
     caplog.set_level(logging.INFO)
     _run(home, monkeypatch, "boxfeed", None)
     assert NOTICE not in caplog.text

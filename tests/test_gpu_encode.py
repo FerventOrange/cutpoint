@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import media_info, write
+from conftest import media_info, needs_ffmpeg, write
 from cutpoint import assemble, capabilities, cli, config, encode, ffmpeg_utils, reset_state
 from cutpoint.crop import Crop
 from cutpoint.events import setup
@@ -181,7 +181,6 @@ def test_capability_report_keeps_vendor_presence_apart_from_usable_encoders(monk
     assert data["video_encoders"]["cpu"]["usable"] is True
     assert data["active_video_encoder"]["kind"] == "cpu"
     assert data["transcription"]["device"] == "cpu"
-    assert data["llama_cpp"]["setup_would_choose"] == ["vulkan", "cpu"]
 
 
 def test_capability_report_shows_a_forced_encoder_error_instead_of_failing(monkeypatch):
@@ -249,7 +248,7 @@ def _assert_red_letterboxed(frame: np.ndarray) -> None:
     assert picture[..., 0].min() > 150 and picture[..., 1:].max() < 90
 
 
-@pytest.mark.ffmpeg
+@needs_ffmpeg
 @pytest.mark.hardware
 def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, tmp_path):
     src = _blue_source_with_red_corner(tmp_path)

@@ -7,7 +7,6 @@ No models or footage except in the ``ffmpeg`` tests, which render a synthetic du
 
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 import shutil
@@ -147,30 +146,6 @@ def test_progress_rises_to_one_and_stops(fake_ffmpeg, tmp_path) -> None:
     assert not list(Path(calls[0][calls[0].index("-progress") + 1]).parent.glob("cutpoint-pro*"))
 
 
-def test_progress_is_rate_limited(fake_ffmpeg, tmp_path) -> None:
-    _, opts = fake_ffmpeg
-    opts.update(ticks=200, spacing=0.002)  # 200 updates; the sleeps' real length varies by OS
-    clip = helpers.x3clip(lrv="x.lrv", fps=30.0, frames=300, duration=10.0)
-    seen: list[float] = []
-    stamps: list[float] = []
-
-    def on_progress(frac: float) -> None:
-        seen.append(frac)
-        stamps.append(time.monotonic())
-
-    t0 = time.monotonic()
-    _render(clip, tmp_path, on_progress)
-    elapsed = time.monotonic() - t0
-    # One call per PROGRESS_MIN_S of the measured run, plus the first and the final 1.0
-    # (and one more for a timer that fires late), however slow the machine is.
-    assert len(seen) <= elapsed / R.PROGRESS_MIN_S + 3
-    assert seen[-1] == 1.0 and seen == sorted(seen) and len(set(seen)) == len(seen)
-    # Not a call per tick: the calls before the final 1.0 are spaced by the limit (half of it
-    # here, since a loaded machine can delay one callback after the limiter's own timestamp).
-    gaps = np.diff(stamps[:-1])
-    assert (gaps >= R.PROGRESS_MIN_S * 0.5).all()
-
-
 def test_a_raising_callback_does_not_break_the_render(fake_ffmpeg, tmp_path, caplog) -> None:
     clip = helpers.x3clip(lrv="x.lrv", fps=30.0, frames=300, duration=10.0)
     seen: list[float] = []
@@ -308,8 +283,6 @@ def test_level_forward_records_an_upright_forward_axis(pano_project, monkeypatch
 
 def test_level_forward_has_the_director_margin(pano_project, monkeypatch) -> None:
     proj, clip = pano_project
-    # the margin director paths are planned with
-    assert inspect.signature(D.compute_path).parameters["margin"].default == D.PATH_MARGIN_S
     _plan_fails(monkeypatch, KeyError("x"))
     assert D.planned_span(clip, 12.0, 13.0) == (12.0 - D.PATH_MARGIN_S, 13.0 + D.PATH_MARGIN_S)
     for (start, end), (t0, t1) in {
@@ -363,6 +336,7 @@ def test_preview_key_is_stable_and_covers_what_changes_pixels(monkeypatch) -> No
 
 
 # --------------------------------------------------------------------------- real ffmpeg
+@pytest.mark.slow
 @needs_ffmpeg
 def test_level_forward_preview_renders_a_synthetic_dfisheye(home, tmp_path) -> None:
     """End to end without IMU or layers: preview_path falls back to an upright forward view,

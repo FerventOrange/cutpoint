@@ -1,0 +1,12 @@
+{
+  "name": "cutpoint-web-tests",
+  "private": true,
+  "description": "Test harness for the browser workspace in src/cutpoint/web (not published)",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test tests/js/*.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

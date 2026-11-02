@@ -153,7 +153,7 @@ def write_outputs(
     lines = [
         "# events.txt: transcript lines interleaved with detected events.",
         "# AUDIO = PANNs sound events (confidence, duration); OCR = on-screen HUD text;",
-        "# VLM WINDOW = Qwen2.5-Omni summary of a window (hl = highlight 0-10);",
+        "# VLM WINDOW = Vision model summary of a window (hl = highlight 0-10);",
         "# VLM = moment inside a window. Times are source time.",
         "",
     ]

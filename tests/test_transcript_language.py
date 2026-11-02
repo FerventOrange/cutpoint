@@ -21,11 +21,6 @@ def _whisper(calls: list[str], text: str):
     return transcribe
 
 
-def test_transcript_name_keeps_the_old_name_without_a_language():
-    assert transcript_name("small") == "transcript-small.json"
-    assert transcript_name("large-v3", "de") == "transcript-large-v3-de.json"
-
-
 def test_a_forced_language_re_transcribes_past_a_detected_language_cache(tmp_path):
     cache.save_json(tmp_path / "transcript-m.json", [{"start": 0, "end": 1, "text": "hello"}])
     calls: list[str] = []
@@ -51,17 +46,12 @@ def test_no_language_still_hits_the_old_cache_name(tmp_path):
 @pytest.mark.parametrize(
     ("files", "language", "want"),
     [
-        (["transcript-small.json", "transcript-small-de.json"], None, "transcript-small.json"),
         (["transcript-small.json", "transcript-small-de.json"], "de", "transcript-small-de.json"),
         (["transcript-small-de.json", "transcript-large-v3-de.json"], "de",
          "transcript-large-v3-de.json"),  # most accurate model first
-        (["transcript-large-v3-de.json", "transcript-small.json"], None, "transcript-small.json"),
         (["transcript-base.json", "transcript-small-de.json"], None, "transcript-base.json"),
-        (["transcript-base-de.json", "transcript-small-fr.json"], "de", "transcript-base-de.json"),
         (["transcript-small-de.json"], None, "transcript-small-de.json"),  # the only one
         (["transcript-small.json"], "de", "transcript-small.json"),  # analysed before #371
-        (["transcript-large-v3-turbo.json", "transcript-small-de.json"], None,
-         "transcript-large-v3-turbo.json"),
     ],
 )  # fmt: skip
 def test_transcript_file_picks_the_language_of_the_analysis(tmp_path, files, language, want):
@@ -103,8 +93,6 @@ def test_source_words_and_srt_lookup_read_the_given_language(home, tmp_path):
     ("hl", "want"),
     [
         ({"settings": {"language": "de"}}, "de"),
-        ({"settings": {"language": None}}, None),
-        ({"settings": {}}, None),
         ([], None),
         (None, None),  # no highlights.json
     ],

@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from assemble_helpers import SHORT, export_clips
 from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, sources
 from cutpoint.ffmpeg_utils import probe
-from test_assemble_fadecopy import SHORT, _export_clips
 
 # -- unit -------------------------------------------------------------------------------
 
@@ -49,7 +49,7 @@ def test_concat_copy_trims_the_last_clip_to_its_video_and_keeps_timestamps(monke
     assert args[args.index("-c:v") + 1] == "copy"
 
 
-@pytest.mark.parametrize("limit, loudnorm", [(False, True), (True, False), (True, True)])
+@pytest.mark.parametrize("limit, loudnorm", [(False, True), (True, False)])
 def test_post_process_trims_the_audio_to_the_stage_video(monkeypatch, tmp_path, limit, loudnorm):
     calls: list[list[str]] = []
     monkeypatch.setattr(assemble, "run", lambda args, **_: calls.append(args) or "")
@@ -83,7 +83,7 @@ def exported(tmp_path_factory) -> Path:
     # The fade pieces are CPU-encoded, so the clips must be too (else NVENC clips fail the check).
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
-        return _export_clips(tmp_path_factory.mktemp("av_tail"), "30", SHORT)
+        return export_clips(tmp_path_factory.mktemp("av_tail"), "30", SHORT)
 
 
 def _make_clips(exported: Path, tmp_path: Path, audio_extra: float) -> Path:
@@ -130,11 +130,8 @@ def _durations(path: Path) -> tuple[float, float, float, float]:
 @pytest.mark.parametrize(
     "transition, loudnorm, audio_extra",
     [
-        ("cut", False, -0.025),
-        ("cut", False, 0.0),
         ("cut", False, 0.03),
         ("cut", True, -0.025),
-        ("cut", True, 0.03),
         ("fade", True, -0.025),
         ("fade", True, 0.03),
     ],

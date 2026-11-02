@@ -114,7 +114,7 @@ def test_a_source_without_audio_loads_no_detector(tmp_path: Path, run, caplog):
     caplog.set_level(logging.WARNING, logger="cutpoint.events.pipeline")
     made, calls = run([_source(tmp_path, "a", audio=False)])
     assert made == [] and calls == []
-    assert "a.mp4: no cached 16 kHz audio; run `cutpoint analyze` first" in caplog.text
+    assert "a.mp4: no cached 16 kHz audio" in caplog.text
 
 
 @pytest.fixture

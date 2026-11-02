@@ -1,5 +1,5 @@
 # uv, pinned by digest; a FROM line so Dependabot can propose updates.
-FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
 
 # ubuntu 24.04, pinned by multi-arch index digest so a rebuild at the same commit starts from the same base.
 # Dependabot (docker ecosystem) proposes updates.
@@ -35,9 +35,9 @@ RUN mkdir -p /tmp/ffmpeg/bin \
 FROM base
 ENV DEBIAN_FRONTEND=noninteractive
 # libgl1, libglib2.0-0t64, libxcb1: needed by the opencv-python wheel (cv2 import); fontconfig and
-# fonts-dejavu-core: burned-in captions (libass); libgomp1: llama-server downloaded by `cutpoint setup`.
+# fonts-dejavu-core: burned-in captions (libass).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libgl1 libglib2.0-0t64 libxcb1 fontconfig fonts-dejavu-core libgomp1 \
+    && apt-get install -y --no-install-recommends ca-certificates libgl1 libglib2.0-0t64 libxcb1 fontconfig fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=ffmpeg /tmp/ffmpeg/bin/ /usr/local/bin/
 # Fallback when the static download failed in the ffmpeg stage.
@@ -68,7 +68,7 @@ RUN (userdel -r ubuntu 2>/dev/null || true) \
     && chown -R "$CUTPOINT_UID:$CUTPOINT_GID" /data
 
 # NUMBA_CACHE_DIR: librosa/numba needs a writable cache when run with --user <uid> (HOME is /).
-ENV CUTPOINT_HOME=/data HF_HOME=/data/huggingface CUTPOINT_LLAMA_BACKEND=cpu NUMBA_CACHE_DIR=/tmp/numba-cache
+ENV CUTPOINT_HOME=/data HF_HOME=/data/huggingface NUMBA_CACHE_DIR=/tmp/numba-cache
 VOLUME /data
 USER cutpoint
 ENTRYPOINT ["/app/.venv/bin/cutpoint"]

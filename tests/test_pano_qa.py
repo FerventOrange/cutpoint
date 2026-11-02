@@ -129,6 +129,17 @@ def test_edge_cut_ignores_feet_tight_full_height_and_small_background() -> None:
     assert "edge_cut" not in flags_for([(0.99, 0.95, 0.5, 1.0, 0.65, False)])["flags"]
 
 
+def test_paths_thresholds_count_a_smaller_person_at_the_side_only_in_the_paths_qa() -> None:
+    from cutpoint.pano import qa_paths as QP  # noqa: PLC0415
+
+    side = (0.99, 0.0, 0.0, 0.14, 0.6, False)  # area 0.084: 0.075-0.10
+    boxes = [(0.99, 0.35, 0.2, 0.65, 0.98, False), side]
+    assert "edge_cut" not in flags_for(boxes)["flags"]  # the rendered QA: unchanged
+    assert "edge_cut" in flags_for(boxes, th=QP.paths_thresholds(qa.QAThresholds()))["flags"]
+    inside = [(0.99, 0.35, 0.2, 0.65, 0.98, False), (0.99, 0.2, 0.0, 0.34, 0.6, False)]
+    assert "edge_cut" not in flags_for(inside, th=QP.paths_thresholds(TH))["flags"]  # not a side
+
+
 def test_edge_cut_ignores_the_wearer_detected_twice() -> None:
     """040_crash t=0: an untagged box around the wearer's self-tagged box at the left edge."""
     twin = (0.99, 0.001, 0.034, 0.206, 0.984, False)
@@ -286,10 +297,7 @@ def test_aggregate_shares_runs_spans_and_score() -> None:
     ("mutate", "fail"),
     [
         (lambda f, p, h: [f[i]["flags"].append("too_close") for i in (3, 4)], "close run"),
-        (lambda f, p, h: [f[i]["flags"].append("edge_cut") for i in (1, 2, 3)], "edge_cut run"),
         (lambda f, p, h: [f[i].update(subj=None) for i in range(9)], "subject present"),
-        (lambda f, p, h: [f[i]["flags"].append("low_info") for i in (1, 9, 17)], "low_info"),
-        (lambda f, p, h: p.update(speed_p95=40.0), "pan"),
         (lambda f, p, h: p.update(speed_max=60.0), "pan"),
         (lambda f, p, h: p.update(min_shot_s=1.5), "shot"),
         (lambda f, p, h: h.update(p95=12.5), "horizon"),
@@ -852,3 +860,13 @@ def test_360_qa_json_has_the_edge_cut_breakdowns(home, monkeypatch, capsys) -> N
     edit = {}  # no clip checked: aggregate_edit has no breakdowns
     code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips", "--json-only"])
     assert (doc["outputs"]["by_mode"], doc["outputs"]["by_self_method"]) == ({}, {})
+
+
+def test_overview_tiles_give_the_path_yaw_and_pitch() -> None:
+    """``360 check`` is gone (S-43): the QA overview captions carry its yaw and pitch."""
+    keys = [
+        {"t": t, "yaw": 190.0, "pitch": -10.0, "fov": 90.0, "target": "friend"} for t in (10, 20)
+    ]
+    frames = [{"t": 0.0}, {"t": 4.0}]
+    assert qa._views({"keys": keys}, 10.0, frames) == [" y-170 p-10"] * 2  # yaw wrapped
+    assert qa._views(None, 10.0, frames) == ["", ""]

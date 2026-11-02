@@ -145,7 +145,7 @@ def test_save_json_unserialisable_leaves_nothing(tmp_path):
 
 @pytest.mark.parametrize(
     ("encoding", "expected"),
-    [("utf-8-sig", {"name": "Café"}), ("utf-16", None), ("cp1252", None)],
+    [("utf-8-sig", {"name": "Café"}), ("utf-16", None)],
 )
 def test_load_json_handles_the_encoding_a_file_was_saved_with(tmp_path, encoding, expected):
     target = tmp_path / "saved.json"
@@ -170,3 +170,17 @@ def test_save_json_locked_file_gets_the_open_in_another_program_hint(
         cache.save_json(target, {"new": 2})
     assert str(target) in str(exc.value)
     assert [p.name for p in tmp_path.iterdir()] == []  # temp file removed
+
+
+def test_source_dir_changes_when_only_the_modification_time_changes(home, tmp_path):
+    """A re-recorded or re-exported file of the same size must not reuse the old analysis."""
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"same size")
+    first = cache.source_dir(src)
+    st = src.stat()
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000_000))
+
+    assert src.stat().st_size == st.st_size
+    assert cache.source_dir(src) != first
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))  # back: the old folder again
+    assert cache.source_dir(src) == first

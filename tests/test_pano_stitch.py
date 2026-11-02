@@ -957,26 +957,6 @@ class TestCliStitchFromClips:
         assert self.stitched == []
 
 
-class TestCliCheck:
-    @pytest.fixture
-    def clips(self, monkeypatch):
-        from cutpoint.config import projects_dir  # noqa: PLC0415
-        from cutpoint.pano import check  # noqa: PLC0415
-
-        clips = projects_dir() / "trip-360" / "clips_review"
-        clips.mkdir(parents=True)
-        self.seen: list[Path] = []
-        monkeypatch.setattr(check, "clip_sheets", lambda d, **_kw: self.seen.append(d) or [])
-        return clips
-
-    def _run(self, clips_dir: str) -> None:
-        pano_cli.cmd_check(argparse.Namespace(clips_dir=clips_dir, per_clip=6))
-
-    def test_projects_relative_form_resolves(self, clips):
-        self._run("projects/trip-360/clips_review")
-        assert [p.resolve() for p in self.seen] == [clips.resolve()]
-
-
 # --------------------------------------------------------------------------- sidecar
 class TestSidecar:
     def test_write_records_args_after_output_and_sdk_version(self, tmp_path):
