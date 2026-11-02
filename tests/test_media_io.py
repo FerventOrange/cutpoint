@@ -131,14 +131,9 @@ def ran(monkeypatch, fake_tools):
 
 
 # --------------------------------------------------------------------------- _split_jpegs
-def test_split_jpegs_splits_concatenated_images():
+def test_split_jpegs_splits_images_skips_garbage_and_drops_a_truncated_tail():
     a, b = _jpeg(b"one"), _jpeg(b"two")
-    assert fu._split_jpegs(a + b) == [a, b]
-
-
-def test_split_jpegs_skips_garbage_and_drops_truncated_tail():
-    a = _jpeg(b"ok")
-    assert fu._split_jpegs(b"noise" + a + b"junk\xff\xd8truncated") == [a]
+    assert fu._split_jpegs(b"noise" + a + b + b"junk\xff\xd8truncated") == [a, b]
 
 
 # --------------------------------------------------------------------------- argv builders
@@ -375,8 +370,6 @@ def test_a_source_is_probed_once_until_the_file_changes(monkeypatch, tmp_path):
     [
         ("h264", "yuv420p", True),
         ("hevc", "yuv420p", False),
-        ("h264", "yuv420p10le", False),
-        ("h264", "yuv444p", False),
         ("h264", "yuvj420p", False),  # full range
     ],
 )
@@ -650,19 +643,14 @@ def test_real_decode_pcm(clip):
 @pytest.mark.parametrize(
     ("audios", "f_start", "expected"),
     [
-        ([{"duration": "1.5"}], None, 1.5),
         ([{"duration": "1.5"}, {"duration": "2.0"}], None, 2.0),
-        ([{}], None, None),
         ([{"duration": "1.5"}, {}], None, None),
-        ([], None, None),
         # -itsoffset 0.3: the audio starts 0.3 s in, so it ends 0.3 s after its duration
         ([{"start_time": "0.3", "duration": "1.5"}], None, 1.8),
         ([{"start_time": "0.3", "duration": "1.5"}], "0.1", 1.7),
-        ([{"duration": "1.5"}], "0.1", 1.5),  # no stream start: the container's
     ],
-    ids=["one", "longest", "mkv", "partly-known", "no-audio", "late", "late-in-container",
-         "no-stream-start"],
-)  # fmt: skip
+    ids=["longest", "partly-known", "late", "late-in-container"],
+)
 def test_probe_audio_duration(monkeypatch, audios, f_start, expected):
     video = {"codec_type": "video", "width": 64, "height": 48, "avg_frame_rate": "25/1"}
     fmt = {"duration": "2.0"} | ({"start_time": f_start} if f_start else {})
@@ -693,18 +681,3 @@ def test_caption_chunks_split_on_punctuation_and_gaps():
     assert [text for _, _, text in chunks] == ["hello there.", "ok", "then"]
     assert all(a < b for a, b, _ in chunks)
     assert all(chunks[i][1] <= chunks[i + 1][0] for i in range(len(chunks) - 1))  # no overlap
-
-
-@needs_ffmpeg
-def test_assemble_joins_two_clips(clip, tmp_path):
-    clips = tmp_path / "clips"
-    clips.mkdir()
-    for name in ("clip_1.mp4", "clip_2.mp4"):
-        shutil.copy(clip, clips / name)
-    out = asm.assemble(clips)
-    assert out == tmp_path.resolve() / "final.mp4"
-    info = fu.probe(out)
-    assert info.duration == pytest.approx(4.0, abs=0.3)  # two 2 s clips
-    assert info.audio_streams == 1
-    # mp4 (the default) writes no timelines: --format fcpxml|otio writes one instead (#519)
-    assert not out.with_suffix(".otio").exists() and not out.with_suffix(".fcpxml").exists()

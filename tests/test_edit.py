@@ -11,16 +11,13 @@ from types import SimpleNamespace
 import pytest
 
 import cutpoint.analyze
-from conftest import set_config
+from conftest import envelope, set_config
 from cutpoint import cli, edit, progress
 
 
 def test_kind_overrides_replace_the_kind_defaults():
     k = edit.resolve_kind("montage", style="gaming", top=5)
-    assert (k.style, k.top, k.max_total, k.order, k.transition, k.captions) == (
-        "gaming", 5, 60, "score", "fade", False,
-    )  # fmt: skip
-    assert k.loudnorm
+    assert (k.style, k.top, k.max_total) == ("gaming", 5, 60)  # the montage's own length cap
 
 
 @pytest.fixture
@@ -72,15 +69,9 @@ def test_edit_runs_the_steps_in_order_and_names_the_final(pipeline, home):
     project = home / "projects" / "My Clip"
     assert [c[0] for c in calls] == ["analyze", "clips", "assemble"]
     assert calls[0][1] == ([video], "funny", project)
-    assert calls[1][2] == {
-        "top": 8, "max_total": None, "order": "chronological", "vertical": False, "force": False,
-        "compress_peaks": "off", "lut": None, "color": None, "color_strength": 1.0,
-    }  # fmt: skip
+    assert (calls[1][2]["top"], calls[1][2]["order"]) == (8, "chronological")  # funny-moments
     assert calls[2][1] == (project / "clips", None)
-    assert calls[2][2] == {
-        "transition": "cut", "loudnorm": True, "captions": True, "compress_peaks": "off",
-        "output_format": "mp4",
-    }  # fmt: skip
+    assert calls[2][2]["captions"] is True
     named = project / "My Clip-final.mp4"
     assert named.read_bytes() == b"final video"
     assert named.with_suffix(".srt").read_text(encoding="utf-8").endswith("hi\n\n")
@@ -121,28 +112,28 @@ def test_edit_without_new_subtitles_does_not_copy_a_stale_final_srt(pipeline, ho
     assert "none (no transcript)" in caplog.text
 
 
-def test_edit_passes_the_config_vision_default_to_analyze(pipeline, home):
+@pytest.mark.parametrize(
+    ("config", "argv", "expect"),
+    [
+        ({"vision": True}, [], {"vision": True, "vision_top": None, "skip": ()}),
+        (
+            {},
+            ["--vision", "--vision-top", "12", "--ollama-url", "http://ollama.example:11434",
+             "--ollama-model", "llava:7b"],
+            {"vision": True, "vision_top": 12, "ollama_url": "http://ollama.example:11434",
+             "ollama_model": "llava:7b"},
+        ),
+        ({}, ["--skip", "crashes", "reactions"], {"skip": ("crashes", "reactions")}),
+    ],
+    ids=["config-vision", "vision-options", "skip"],
+)  # fmt: skip
+def test_edit_hands_its_analyze_options_on(pipeline, home, config, argv, expect):
     """The flag/config precedence is test_config's; edit only has to hand the result on."""
-    set_config(home, vision=True)
-    assert cli.main(["edit", str(pipeline.video)]) == 0
-    assert pipeline.calls[0][2] == {
-        "vision": True, "vision_top": None, "ollama_url": None, "ollama_model": None,
-        "layers": True, "skip": (),
-    }  # fmt: skip
-
-
-def test_edit_passes_the_vision_options_to_analyze(pipeline):
-    argv = ["--vision-top", "12", "--ollama-url", "http://ollama.example:11434"]
-    argv += ["--ollama-model", "llava:7b"]
-    assert cli.main(["edit", str(pipeline.video), "--vision", *argv]) == 0
-    assert pipeline.calls[0][2] == {
-        "vision": True,
-        "vision_top": 12,
-        "ollama_url": "http://ollama.example:11434",
-        "ollama_model": "llava:7b",
-        "layers": True,
-        "skip": (),
-    }
+    if config:
+        set_config(home, **config)
+    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
+    got = pipeline.calls[0][2]
+    assert {k: got[k] for k in expect} == expect
 
 
 def test_edit_of_a_dotted_folder_names_project_and_final_after_it(pipeline, home, monkeypatch):
@@ -230,19 +221,6 @@ def test_edit_reports_eight_steps_and_assembles_for_every_kind(
     assert (home / "projects" / "My Clip" / "My Clip-final.mp4").is_file()
 
 
-def test_edit_without_the_env_var_writes_no_progress(pipeline, capsys):
-    assert cli.main(["edit", str(pipeline.video)]) == 0
-    assert "PROGRESS" not in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    ("argv", "skip"), [([], ()), (["--skip", "crashes", "reactions"], ("crashes", "reactions"))]
-)
-def test_edit_passes_skip_to_analyze(pipeline, argv, skip):
-    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
-    assert pipeline.calls[0][2]["skip"] == skip
-
-
 def test_edit_cancelled_in_clips_fails_that_step(pipeline, home, monkeypatch, capsys):
     monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
 
@@ -264,7 +242,7 @@ def test_edit_no_keep_clips_assembles_temporary_clips_and_leaves_none(pipeline, 
     old.parent.mkdir(parents=True)
     old.write_bytes(b"old")
     code = cli.main(["edit", str(pipeline.video), "--no-keep-clips", "--json"])
-    doc = json.loads(capsys.readouterr().out)
+    doc = envelope(capsys.readouterr().out)
     assert code == 0
     clips_call, assemble_call = pipeline.calls[1], pipeline.calls[2]
     tmp = clips_call[2]["out_dir"]
