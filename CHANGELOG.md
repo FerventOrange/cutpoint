@@ -187,6 +187,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and takes the expected value over the score digit's alternatives (the score as given when
   Ollama returns no logprobs). About 1.3 s per rating, against 10-12 s for `qwen3-vl:8b`.
   Other models are asked as before, and their cached ratings stay valid.
+- Activity profiles hold the captions of every visual layer (`highlight`, `group`, `person`,
+  `selfie`, `occluder`, `low_info`, `scene`, `lift`) and the 360 vision check's wording (`vl`).
+  The 360 views, QA, vision check and director, the lift rides of the crash step and `mix`, the
+  action-cam ranking and the visual layer's contact sheets use the captions of the project's
+  `activity.json` (the ski ones until the crash step writes it), so footage of any activity is
+  judged with its own captions. The `ski` profile reproduces the earlier captions exactly;
+  `ski` and `snowboard` have `lift` captions, and chairlift detection is off for the others.
 
 ### Changed
 
@@ -246,6 +253,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without pickle, the same way in full and lite. Run `cutpoint setup --only visual` once to
   get it; that also removes the old `.pth`. Until then the visual layer reports the head as
   missing. The torch-free pickle reader for the old `.pth` is gone.
+- `CrashParams` takes its captions and words from the resolved activity profile unless given.
+- `parse_name` and `imu_source` moved from `cutpoint.pano.x3` to `cutpoint.insta360`.
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or

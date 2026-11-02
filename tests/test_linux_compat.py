@@ -27,12 +27,13 @@ from cutpoint import (
     crash,
     errors,
     ffmpeg_utils,
+    insta360,
     procs,
     stage,
     telemetry,
     transcribe,
 )
-from cutpoint.pano import stitch, x3
+from cutpoint.pano import stitch
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file semantics")
 
@@ -358,14 +359,14 @@ def test_write_ass_uses_the_caption_font(tmp_path, monkeypatch):
     assert "Style: Default,Test Sans," in out.read_text(encoding="utf-8")
 
 
-# -- pano/x3.imu_source -------------------------------------------------------------------
+# -- insta360.imu_source ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("prefix", "ext"), [("VID", "insv"), ("vid", "INSV")])
 def test_imu_source_finds_the_00_sibling_case_insensitively(tmp_path, ext, prefix):
     real = write(tmp_path / f"{prefix}_20240101_120000_00_001.{ext}")
     lens10 = tmp_path / "VID_20240101_120000_10_001.insv"
-    got = x3.imu_source(lens10)
+    got = insta360.imu_source(lens10)
     assert got is not None
     # exact on-disk spelling (WindowsPath == ignores case), parent as passed
     assert str(got) == str(real)
@@ -373,7 +374,7 @@ def test_imu_source_finds_the_00_sibling_case_insensitively(tmp_path, ext, prefi
 
 def test_imu_source_matches_a_unique_00_by_number_only(tmp_path):
     write(tmp_path / "vid_20240101_120005_00_002.INSV")
-    got = x3.imu_source(tmp_path / "LRV_20240101_120000_11_002.lrv")
+    got = insta360.imu_source(tmp_path / "LRV_20240101_120000_11_002.lrv")
     assert got is not None
     assert got.name == "vid_20240101_120005_00_002.INSV"
 
@@ -381,9 +382,9 @@ def test_imu_source_matches_a_unique_00_by_number_only(tmp_path):
 def test_imu_source_ambiguous_or_missing_is_none(tmp_path):
     write(tmp_path / "VID_20240101_120005_00_003.insv")
     write(tmp_path / "VID_20240101_120009_00_003.insv")
-    assert x3.imu_source(tmp_path / "LRV_20240101_120000_11_003.lrv") is None
-    assert x3.imu_source(tmp_path / "LRV_20240101_120000_11_004.lrv") is None
-    assert x3.imu_source(tmp_path / "plain.mp4") is None
+    assert insta360.imu_source(tmp_path / "LRV_20240101_120000_11_003.lrv") is None
+    assert insta360.imu_source(tmp_path / "LRV_20240101_120000_11_004.lrv") is None
+    assert insta360.imu_source(tmp_path / "plain.mp4") is None
 
 
 # -- pano/stitch.sdk_env ------------------------------------------------------------------

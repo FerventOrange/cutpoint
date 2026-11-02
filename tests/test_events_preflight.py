@@ -213,6 +213,7 @@ def test_cmd_analyze_without_scan_skips_the_scan_step(monkeypatch, tmp_path: Pat
 
 
 def test_scan_only_reads_and_records_just_the_named_clips(monkeypatch, tmp_path: Path):
+    from cutpoint import insta360  # noqa: PLC0415
     from cutpoint.pano import x3  # noqa: PLC0415
     from pano_helpers import orientation, x3clip  # noqa: PLC0415
 
@@ -227,7 +228,7 @@ def test_scan_only_reads_and_records_just_the_named_clips(monkeypatch, tmp_path:
         return orientation(n=60)
 
     monkeypatch.setattr(x3, "scan", lambda folder: clips)
-    monkeypatch.setattr(x3, "imu_source", lambda source: Path("imu.insv"))
+    monkeypatch.setattr(insta360, "imu_source", lambda source: Path("imu.insv"))
     monkeypatch.setattr(G, "orientation", fake_orientation)
     project = tmp_path / "proj"
     cli._scan(project, [str(tmp_path)], only=["001"])
@@ -237,12 +238,13 @@ def test_scan_only_reads_and_records_just_the_named_clips(monkeypatch, tmp_path:
 
 
 def test_cmd_analyze_scan_only_naming_a_missing_clip_says_so(monkeypatch, tmp_path: Path):
+    from cutpoint import insta360  # noqa: PLC0415
     from cutpoint.pano import x3  # noqa: PLC0415
     from pano_helpers import x3clip  # noqa: PLC0415
 
     order = _analyze_stubs(monkeypatch, tmp_path)
     monkeypatch.setattr(x3, "scan", lambda folder: [x3clip(clip_id="001")])
-    monkeypatch.setattr(x3, "imu_source", lambda source: None)
+    monkeypatch.setattr(insta360, "imu_source", lambda source: None)
     with pytest.raises(FileNotFoundError, match=r"no Insta360 X3 clip 009 found") as e:
         cli.cmd_analyze(_args(scan=[str(tmp_path)], only=["009"]))
     assert "scan first" not in str(e.value)

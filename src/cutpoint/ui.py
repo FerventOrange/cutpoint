@@ -88,7 +88,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from cutpoint import cache, folders, paths, procs, progress
+from cutpoint import cache, folders, insta360, paths, procs, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import keys as ai_keys
@@ -2960,17 +2960,19 @@ def inspect_source(src: Path) -> tuple[list[Path], dict[str, dict[str, Any]], Co
     ``x3.group_files``; ``other`` counts the remaining suffixes, lower-cased ("no extension" when
     there is none).
     """
-    f = x3.parse_name(src) if src.is_file() else None
+    f = insta360.parse_name(src) if src.is_file() else None
     if src.is_file() and f is None:
         files = [src]
     else:
         listed = sorted(p for p in (src.parent if f else src).iterdir() if safe_is_file(p))
-        files = [p for p in listed if not f or (x3.parse_name(p) or {}).get("num") == f["num"]]
+        files = [
+            p for p in listed if not f or (insta360.parse_name(p) or {}).get("num") == f["num"]
+        ]
     videos = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
     other = Counter(
         p.suffix.lower() or "no extension"
         for p in files
-        if p.suffix.lower() not in VIDEO_EXTS and not x3.NAME_RE.match(p.name)
+        if p.suffix.lower() not in VIDEO_EXTS and not insta360.NAME_RE.match(p.name)
     )
     return videos, x3.group_files(files), other
 

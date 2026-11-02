@@ -20,8 +20,8 @@ import pytest
 
 import pano_helpers as helpers
 from conftest import set_config
+from cutpoint import activity, cache, jsonout
 from cutpoint import analyze as analyze_mod
-from cutpoint import cache, jsonout
 from cutpoint.events import pipeline
 from cutpoint.pano import candidates as C
 from cutpoint.pano import cli
@@ -123,6 +123,65 @@ def test_analyze_plans_caches_and_clips_reuses_an_equal_path(project, monkeypatc
         clip, "001_a.mp4", 4.0, 12.5, "people"
     )
     assert pfile2.parent != pfile.parent and pfile.read_bytes() == pfile2.read_bytes()
+
+
+def _mtb() -> activity.Prompts:
+    return activity.prompts(activity.full(activity.builtin("mtb")))
+
+
+def _write_mtb(proj: Path) -> None:
+    rec = {
+        "version": activity.PROFILE_VERSION,
+        "name": "mtb",
+        "source": "library",
+        "profile": activity.full(activity.builtin("mtb")),
+    }
+    (proj / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
+
+
+def test_path_key_has_prompts_only_for_a_non_default_profile(project) -> None:
+    _, clip = project
+    assert "prompts" not in C.path_key(clip, 4.0, 12.5, "people", None)  # ski: key as before
+    assert C.prompts_key() is None
+    with activity.use_prompts(_mtb()):
+        key = C.path_key(clip, 4.0, 12.5, "people", None)
+        assert key["prompts"] == _mtb().key() == C.prompts_key()
+
+
+def test_miss_reason_names_changed_activity_captions(project) -> None:
+    _, clip = project
+    ski = C.path_key(clip, 4.0, 12.5, "people", None)
+    with activity.use_prompts(_mtb()):
+        mtb = C.path_key(clip, 4.0, 12.5, "people", None)
+    assert C._miss_reason(ski, mtb) == "activity captions changed"
+    assert C._miss_reason(mtb, ski) == "activity captions changed"
+
+
+def test_candidate_paths_are_planned_and_matched_with_the_projects_prompts(
+    project, monkeypatch
+) -> None:
+    proj, clip = project
+    _write_mtb(proj)
+    seen: list[str] = []
+    real = D.compute_path
+
+    def spy(*a, **k):
+        seen.append(activity.active_prompts().name)
+        return real(*a, **k)
+
+    monkeypatch.setattr(D, "compute_path", spy)
+    st = C.cache_candidate_paths(proj)  # cache_candidate_paths: the project's prompts
+    assert st["computed"] == 2 and set(seen) == {"mtb"}
+    # outside the project's prompts (ski) the cached path is a miss, with the reason
+    path, why = C.cached_path(proj, clip, 4.0, 12.5, "people", None)
+    assert path is None and why == "activity captions changed"
+    # plan_path uses the project's prompts: a hit, nothing re-planned
+    seen.clear()
+    path, cached, why = C.plan_path(proj, clip, 4.0, 12.5, "people", None)
+    assert cached and why is None and path is not None and seen == []
+    # a span that is not cached is planned under the project's prompts
+    _, cached, _ = C.plan_path(proj, clip, 4.0, 13.1, "people", None)
+    assert not cached and seen == ["mtb"]
 
 
 def test_clips_recomputes_on_any_mismatch(project, home, monkeypatch) -> None:
@@ -562,10 +621,11 @@ def test_360_analyze_views_only_keeps_an_older_files_analysis(monkeypatch, tmp_p
 
 
 def test_standalone_360_scan_merges_scan_s(monkeypatch, tmp_path: Path) -> None:
+    from cutpoint import insta360  # noqa: PLC0415
     from cutpoint.pano import x3  # noqa: PLC0415
 
     monkeypatch.setattr(x3, "scan", lambda folder: [helpers.x3clip()])
-    monkeypatch.setattr(x3, "imu_source", lambda source: None)
+    monkeypatch.setattr(insta360, "imu_source", lambda source: None)
     cache.save_json(tmp_path / "pano_timings.json", {"views": {"computed": 1}, "total_s": 9.0})
     cli._scan(tmp_path, [str(tmp_path)])
     timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))

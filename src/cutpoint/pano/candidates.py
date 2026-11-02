@@ -220,7 +220,19 @@ def path_key(
         "params": asdict(effective_params(kind, overrides)),
         "inputs": _inputs(Path(clip.source)),
     }
+    prompts = prompts_key()  # the activity's captions the views are scored with
+    if prompts is not None:
+        key["prompts"] = prompts
     return json.loads(json.dumps(key))
+
+
+def prompts_key() -> str | None:
+    """The active activity captions' key, None when they are the default (ski) ones, so the
+    keys of :func:`path_key` and of ``cutpoint 360 render`` plans stay as before."""
+    from cutpoint.activity import active_prompts, default_prompts  # noqa: PLC0415
+
+    key = active_prompts().key()
+    return None if key == default_prompts().key() else key
 
 
 def slot_name(clip: Any, start: float, end: float, vertical: bool = False) -> str:
@@ -246,6 +258,7 @@ def _valid(entry: Any) -> dict[str, Any] | None:
 _MISS_REASONS = (
     (("kind", "params"), "settings changed"),
     (("clip", "inputs"), "layers changed"),
+    (("prompts",), "activity captions changed"),
     (("v", "path_version", "cutpoint", "code"), "planning code changed"),
     (("source", "start", "end"), "span differs from 360 analyze"),
 )
@@ -316,10 +329,13 @@ def plan_path(
     Raises:
         Exception: Whatever :func:`director.compute_path` raises (footage offline, no IMU).
     """
-    path, why = cached_path(project, clip, start, end, kind, overrides, vertical)
-    if path is not None:
-        return path, True, None
-    path = D.compute_path(clip, start, end, vertical=vertical, kind=kind, overrides=overrides)
+    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
+
+    with use_prompts(project_prompts(project)):
+        path, why = cached_path(project, clip, start, end, kind, overrides, vertical)
+        if path is not None:
+            return path, True, None
+        path = D.compute_path(clip, start, end, vertical=vertical, kind=kind, overrides=overrides)
     return path, False, why
 
 
@@ -499,6 +515,15 @@ def _candidates(project: Path) -> list[dict[str, Any]]:
 
 
 def cache_candidate_paths(project: Path) -> dict[str, Any]:
+    """:func:`_cache_candidate_paths` with the project's activity prompts
+    (:func:`cutpoint.activity.project_prompts`)."""
+    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
+
+    with use_prompts(project_prompts(project)):
+        return _cache_candidate_paths(project)
+
+
+def _cache_candidate_paths(project: Path) -> dict[str, Any]:
     """Plan and cache the 16:9 director path of every 360 candidate of ``highlights.json``.
 
     A candidate whose cached entry has the current key is kept as is. Candidates of clips
@@ -511,9 +536,9 @@ def cache_candidate_paths(project: Path) -> dict[str, Any]:
         Stats: ``candidates`` (360 ones), ``computed``, ``cached``, ``skipped``,
         ``failed``, ``seconds``, ``flags`` (code -> candidates) and ``dir`` (or None).
     """
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
     from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
     from cutpoint.pano.views import load_views  # noqa: PLC0415
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
 
     t0 = time.perf_counter()
     folder = project / CACHE_DIR
@@ -814,7 +839,7 @@ def _reachable(clip: Any) -> bool:
 def _no_imu(clip: Any) -> bool:
     """``clip`` has no ``_00_.insv`` to read the IMU from (False when that cannot be checked;
     meaningful only for a :func:`_reachable` clip: an offline folder has no files either)."""
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     try:
         return imu_source(clip.source) is None

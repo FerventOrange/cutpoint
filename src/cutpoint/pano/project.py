@@ -62,7 +62,8 @@ from typing import Any
 
 from cutpoint import cache, paths, state
 from cutpoint.config import path_key, remap_source, source_path
-from cutpoint.pano.x3 import X3Clip, parse_name
+from cutpoint.insta360 import parse_name
+from cutpoint.pano.x3 import X3Clip
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,9 @@ def default_studio_dirs() -> tuple[Path, ...]:
 
 
 def default_style() -> str:
-    """``--style`` of ``cutpoint 360 analyze`` when none is given (``pano.default_style``)."""
+    """``--style`` of ``cutpoint 360 analyze`` when none is given (``pano.default_style``,
+    else ``action-cam``). Its activity-specific parts (crash and view captions) come from
+    the project's activity profile, so it fits any activity a 360 camera films."""
     return str(pano_config().get("default_style") or DEFAULT_STYLE)
 
 

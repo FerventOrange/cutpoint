@@ -525,7 +525,7 @@ def imu_read_path(src: Path) -> tuple[Path, Path | None, Path, bool]:
     read in place.
     """
     from cutpoint.config import remap_source  # noqa: PLC0415
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
     from cutpoint.stage import is_remote, staged_path  # noqa: PLC0415
 
     io = remap_source(src)
@@ -684,7 +684,7 @@ def _x3_clock(tel: Telemetry, insv00: Path) -> None:
     (``VID_YYYYMMDD_HHMMSS_..``) is the only clock; it is interpreted in this
     computer's time zone, which only matters for ordering and run joining.
     """
-    from cutpoint.pano.x3 import parse_name  # noqa: PLC0415
+    from cutpoint.insta360 import parse_name  # noqa: PLC0415
 
     f = parse_name(insv00)
     if f is None or tel.meta.get("clock") not in (None, "none"):

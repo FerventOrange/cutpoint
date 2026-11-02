@@ -1142,7 +1142,7 @@ class LayerPlan:
 def has_telemetry(src: Path) -> bool:
     """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
     trailer); only the container's stream list is read."""
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     try:
         if imu_source(src) is not None:
@@ -1812,11 +1812,16 @@ def _analyze(
         # ---- 5. ranking: candidates rescored with the events
         steps.start("ranking")
         if ski_ctx is not None:
+            from cutpoint import activity  # noqa: PLC0415
+
             if events_new:  # with this run's events.json and crashes.json
                 ski_ctx = ski.prepare(sources, durations, out_dir)
-            for r in results:
-                r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
-                logger.info("%s: %d candidates", r.source.name, len(r.candidates))
+            # the beauty / people features on the captions of the project's activity.json
+            # (written by the crash step above; ski without one)
+            with activity.use_prompts(activity.project_prompts(out_dir)):
+                for r in results:
+                    r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
+                    logger.info("%s: %d candidates", r.source.name, len(r.candidates))
         hl["candidates"] = records()
         ev = None
         if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer

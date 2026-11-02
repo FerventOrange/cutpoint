@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from cutpoint import insta360
 from cutpoint.pano import x3
 
 
@@ -37,21 +38,21 @@ def test_group_files_pairs_files_by_clip_number_and_ignores_other_names() -> Non
 
 
 def test_parse_name_normalises_kind_and_extension() -> None:
-    assert x3.parse_name("vid_20260101_100000_10_007.INSV") == {
+    assert insta360.parse_name("vid_20260101_100000_10_007.INSV") == {
         "kind": "VID", "date": "20260101", "time": "100000", "lens": "10", "num": "007",
         "ext": "insv",
     }  # fmt: skip
-    assert x3.parse_name("VID_20260101_100000_00_001.mp4") is None
+    assert insta360.parse_name("VID_20260101_100000_00_001.mp4") is None
 
 
 def test_imu_source_finds_the_00_file_of_any_file_of_the_clip(tmp_path: Path) -> None:
     for name in ("VID_20260101_100000_00_001.insv", "LRV_20260101_100000_11_001.lrv"):
         (tmp_path / name).write_bytes(b"x")
-    assert x3.imu_source(tmp_path / "LRV_20260101_100000_11_001.lrv") == (
+    assert insta360.imu_source(tmp_path / "LRV_20260101_100000_11_001.lrv") == (
         tmp_path / "VID_20260101_100000_00_001.insv"
     )
-    assert x3.imu_source(tmp_path / "LRV_20260101_120000_11_002.lrv") is None  # no _00_
-    assert x3.imu_source(tmp_path / "clip.mp4") is None
+    assert insta360.imu_source(tmp_path / "LRV_20260101_120000_11_002.lrv") is None  # no _00_
+    assert insta360.imu_source(tmp_path / "clip.mp4") is None
 
 
 @pytest.fixture

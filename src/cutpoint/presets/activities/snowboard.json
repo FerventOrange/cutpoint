@@ -33,5 +33,23 @@
     "pos": ["a snowboarder in mid-air off a jump", "a snowboarder spraying powder on a turn"],
     "neg": ["the safety bar of a chairlift"]
   },
+  "lift": {
+    "pos": [
+      "riding a chairlift with a view over the trees",
+      "the safety bar of a chairlift",
+      "people sitting on a chairlift",
+      "chairlift cable and towers",
+      "inside a gondola cabin"
+    ],
+    "neg": [
+      "snowboarding down a snowy slope",
+      "snowboarders standing on a ski run",
+      "a snowy mountain landscape",
+      "trees covered in snow",
+      "the inside of a building",
+      "a trail map sign board",
+      "a ski resort information sign"
+    ]
+  },
   "low_info": ["a flat white foggy image", "an empty white snow surface"]
 }

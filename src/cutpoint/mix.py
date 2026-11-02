@@ -45,7 +45,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, jsonout, ski
+from cutpoint import activity, cache, jsonout, ski
 from cutpoint.clips import (
     REACTION_LABEL,
     drive_relative,
@@ -661,7 +661,8 @@ def run_mix(
     r = rules or MixRules()
     q = quotas or DEFAULT_QUOTAS
     parts = ski.load_project_features(project)
-    cands = [c for d in parts for c in part_candidates(d)]
+    with activity.use_prompts(activity.project_prompts(project)):  # the 360 lift rides
+        cands = [c for d in parts for c in part_candidates(d)]
     cands += crash_candidates((load_crashes(project) or {}).get("crashes", []))
     if not cands:
         raise ValueError(

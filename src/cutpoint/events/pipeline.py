@@ -284,6 +284,11 @@ def run_events(
         timings["voice_s"] = round(time.perf_counter() - t0, 1)
     crash_run = "crash" in layers and not only  # project-wide ranking: all sources
     kept: list[Any] = []  # the visual layer's CLIP, reused by the crash dense confirm
+    # The visual layer's caption embeddings and the contact sheets use the captions of the
+    # project's activity.json (ski until the crash layer below writes one).
+    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
+
+    prompts = project_prompts(project)
     if "visual" in layers:
         from cutpoint.crash import ClipEncoder  # noqa: PLC0415
         from cutpoint.events import visual as visual_layer  # noqa: PLC0415
@@ -291,7 +296,7 @@ def run_events(
         # Hand CLIP over only when no OCR runs in between: one model resident at a time.
         handoff = crash_run and "ocr" not in layers and encoder is None
         t0 = time.perf_counter()
-        with stage("visual"), VramMonitor() as vm:
+        with stage("visual"), VramMonitor() as vm, use_prompts(prompts):
             stats["visual"] = visual_layer.run_layer(
                 sources,
                 visual_layer.VisualParams(hwaccel=ocr.hwaccel),
@@ -304,7 +309,8 @@ def run_events(
     if sheets:
         from cutpoint.events.sheets import write_visual_sheets  # noqa: PLC0415
 
-        stats["sheets"] = [str(p) for p in write_visual_sheets(project, sources)]
+        with use_prompts(prompts):
+            stats["sheets"] = [str(p) for p in write_visual_sheets(project, sources)]
 
     # ---- layer 1b: OCR (with region discovery for games without a preset)
     t0 = time.perf_counter()

@@ -18,9 +18,10 @@ import pytest
 
 from conftest import media_info, write
 from cutpoint import encode, ffmpeg_utils, paths
+from cutpoint.insta360 import imu_source
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, qa, render
-from cutpoint.pano.x3 import X3Clip, imu_source
+from cutpoint.pano.x3 import X3Clip
 from pano_helpers import LRV, fuse_rotations, orientation, qmul, quat, x3clip
 
 FPS = 30.0

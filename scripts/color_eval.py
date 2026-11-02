@@ -70,8 +70,8 @@ from cutpoint.config import resolve_project_path
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import bt709_filter, choose_format
 from cutpoint.ffmpeg_utils import probe, run
+from cutpoint.insta360 import parse_name
 from cutpoint.pano import project as pano_project
-from cutpoint.pano.x3 import parse_name
 from cutpoint.utils import slugify
 
 SHEET_TILE = (4, 2)

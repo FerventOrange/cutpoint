@@ -5,8 +5,8 @@ One decode pass per source feeds two GPU models:
 * **CLIP ViT-L/14** (OpenAI weights via ``open_clip``): three square crops
   (left, centre, right) of every sampled frame become L2-normalised 768-d
   embeddings. They are reused by the zero-shot prompt scores (beauty shot,
-  friends/group) and the LAION "improved aesthetic predictor" head (trained on
-  exactly these embeddings).
+  friends/group; captions of the activity profile) and the LAION "improved aesthetic
+  predictor" head (trained on exactly these embeddings).
 * **Faster R-CNN ResNet50-FPN v2** (torchvision, COCO weights, BSD licence):
   person, skis and snowboard boxes. Every confident person box is also
   cropped and embedded with CLIP, so zero-shot prompts can tell another
@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -44,6 +44,9 @@ from cutpoint.errors import FFmpegError
 from cutpoint.events import paths
 from cutpoint.events.common import Source, free_torch, nearest_index, params_key
 from cutpoint.ffmpeg_utils import decode_raw, ffprobe_json, find_tool, probe
+
+if TYPE_CHECKING:
+    from cutpoint.activity import Prompts
 
 logger = logging.getLogger(__name__)
 
@@ -55,65 +58,17 @@ CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 COCO_PERSON, COCO_SKIS, COCO_SNOWBOARD = 1, 35, 36
 DET_LABELS = (COCO_PERSON, COCO_SKIS, COCO_SNOWBOARD)
 
-# Zero-shot prompts. A frame's score is the softmax mass on the positive
-# prompts among positives + negatives (CLIP logit scale 100).
-BEAUTY_POS = (
-    "a breathtaking mountain vista",
-    "sunlit snowy mountain peaks under a blue sky",
-    "snow covered trees in a winter forest",
-    "a view over a valley from a mountain ridge",
-    "alpenglow on snowy mountains at sunset",
-    "a scenic panorama of mountains and a ski resort",
-    "clouds and fog below a mountain summit",
-    "a beautiful winter landscape",
-)
-BEAUTY_NEG = (
-    "a close-up of ski boots",
-    "a close-up of skis on the snow",
-    "blurry snow",
-    "the safety bar of a chairlift",
-    "a phone screen",
-    "a dark blurry image",
-    "a close-up of a glove",
-    "the inside of a building",
-    "a flat white foggy image",
-    "a close-up of a jacket",
-    "a groomed ski run seen while skiing",
-)
-GROUP_POS = (
-    "a group of friends standing together in the snow",
-    "friends sitting next to me on a chairlift",
-    "a selfie of friends wearing ski helmets and goggles",
-    "a person in ski clothes talking to the camera",
-    "people laughing together",
-    "a friend skiing right in front of the camera",
-)
-# Person-box crops: is this somebody else, or the wearer's own body / shadow?
-SELF_POS = (
-    "a first-person view looking down at my own legs and ski boots",
-    "my own arm and glove holding a ski pole",
-    "my own skis seen from above",
-    "my own snowboard and boots seen from above",
-    "the shadow of a person on the snow",
-    "a blurry close-up of a jacket sleeve",
-)
-OTHER_POS = (
-    "a person wearing a ski helmet and goggles",
-    "a skier",
-    "a snowboarder",
-    "a person sitting on a chairlift",
-    "a person's face",
-    "a person standing in the snow",
-    "a group of people",
-)
-GROUP_NEG = (
-    "an empty ski slope",
-    "a skier far away in the distance",
-    "a close-up of ski boots",
-    "snowy trees with nobody around",
-    "an empty chairlift",
-    "a mountain landscape",
-)
+# Zero-shot prompts come from the activity profile (:class:`cutpoint.activity.Prompts`:
+# ``highlight`` for the beauty shot, ``group`` for friends, ``person`` for other people
+# vs the wearer's own body). A frame's score is the softmax mass on the positive
+# prompts among positives + negatives (CLIP logit scale 100). Functions taking
+# ``prompts`` use :func:`cutpoint.activity.active_prompts` when it is None.
+
+
+def _prompts(prompts: Prompts | None) -> Prompts:
+    from cutpoint.activity import active_prompts  # noqa: PLC0415 - activity imports this module
+
+    return prompts or active_prompts()
 
 
 @dataclass(frozen=True)
@@ -662,8 +617,9 @@ class PeopleRules:
 
     A helmet camera looking down sees the wearer's own legs, boots, arms and
     skis, and a COCO detector calls them "person"; so does a shadow on the
-    snow. Each confident box's crop is classified zero-shot (``OTHER_POS``
-    vs ``SELF_POS``) and dropped as "self" when the other-person share is
+    snow. Each confident box's crop is classified zero-shot (the activity
+    profile's ``person`` prompts: somebody else vs the wearer's own body, gear or
+    shadow) and dropped as "self" when the other-person share is
     below ``other_min``. Boxes without a crop embedding fall back to
     geometry: bottom at >= ``self_bottom`` and top at >= ``self_top``.
     """
@@ -676,8 +632,10 @@ class PeopleRules:
     min_height: float = 0.06  # smaller people are background skiers
 
 
-def people_frames(data: VisualData, rules: PeopleRules | None = None) -> dict[str, np.ndarray]:
-    """Per-frame person features.
+def people_frames(
+    data: VisualData, rules: PeopleRules | None = None, prompts: Prompts | None = None
+) -> dict[str, np.ndarray]:
+    """Per-frame person features (``prompts``: as :func:`self_boxes`).
 
     Returns:
         ``count`` (kept people), ``close`` (0-1 from the tallest kept box),
@@ -695,7 +653,7 @@ def people_frames(data: VisualData, rules: PeopleRules | None = None) -> dict[st
     y1, y2 = d[:, 4], d[:, 6]
     hgt = y2 - y1
     area = (d[:, 5] - d[:, 3]) * hgt
-    is_self = self_boxes(data, r)
+    is_self = self_boxes(data, r, prompts)
     gear = np.isin(lab, (COCO_SKIS, COCO_SNOWBOARD)) & (y2 >= r.self_bottom) & (sc >= 0.4)
     person = (lab == COCO_PERSON) & (sc >= r.min_score)
     keep = person & ~is_self & (hgt >= r.min_height)
@@ -706,13 +664,17 @@ def people_frames(data: VisualData, rules: PeopleRules | None = None) -> dict[st
     return out
 
 
-def self_boxes(data: VisualData, rules: PeopleRules | None = None) -> np.ndarray:
-    """Boolean per detection row: the wearer's own body/gear, or a shadow."""
+def self_boxes(
+    data: VisualData, rules: PeopleRules | None = None, prompts: Prompts | None = None
+) -> np.ndarray:
+    """Boolean per detection row: the wearer's own body/gear, or a shadow (the
+    ``person`` prompts of ``prompts``, default the active set)."""
     r = rules or PeopleRules()
     d = data.det
     out = (d[:, 6] >= r.self_bottom) & (d[:, 4] >= r.self_top)  # geometric fallback
     if len(data.box_idx):
-        other = prompt_score(data.box_emb, OTHER_POS, SELF_POS)
+        p = _prompts(prompts)
+        other = prompt_score(data.box_emb, p.person_pos, p.person_neg)
         out[data.box_idx] = other < r.other_min
     return out
 
@@ -732,23 +694,27 @@ def steadiness(e: np.ndarray) -> np.ndarray:
     return steady
 
 
-def frame_scores(data: VisualData, models: VisualModels | None = None) -> dict[str, np.ndarray]:
+def frame_scores(
+    data: VisualData, models: VisualModels | None = None, prompts: Prompts | None = None
+) -> dict[str, np.ndarray]:
     """Per-frame scores (all 0-1 except ``aesthetic``).
 
-    ``beauty_zs``: zero-shot beauty-shot contrast, mean over the three crops;
-    ``group_zs``: friends/group contrast, max over crops; ``aesthetic``: LAION
-    score of the centre crop; ``steady``: cosine similarity of consecutive
-    centre crops (1 = static view); plus :func:`people_frames`.
+    ``beauty_zs``: zero-shot beauty-shot contrast (the profile's ``highlight``
+    prompts), mean over the three crops; ``group_zs``: friends/group contrast,
+    max over crops; ``aesthetic``: LAION score of the centre crop; ``steady``:
+    cosine similarity of consecutive centre crops (1 = static view); plus
+    :func:`people_frames`. ``prompts``: default the active set.
     """
+    p = _prompts(prompts)
     e = data.emb.astype(np.float32)
     centre = e[:, 1]
     steady = steadiness(centre)
     return {
-        "beauty_zs": prompt_score(e, BEAUTY_POS, BEAUTY_NEG, models).mean(1),
-        "group_zs": prompt_score(e, GROUP_POS, GROUP_NEG, models).max(1),
+        "beauty_zs": prompt_score(e, p.highlight_pos, p.highlight_neg, models).mean(1),
+        "group_zs": prompt_score(e, p.group_pos, p.group_neg, models).max(1),
         "aesthetic": aesthetic(centre),
         "steady": steady,
-        **people_frames(data),
+        **people_frames(data, prompts=p),
     }
 
 
@@ -824,7 +790,12 @@ def run_layer(
     stats["device"] = models.device
     try:
         # Prompt embeddings are cached once so analysis never needs the GPU.
-        for pos, neg in ((BEAUTY_POS, BEAUTY_NEG), (GROUP_POS, GROUP_NEG), (OTHER_POS, SELF_POS)):
+        p = _prompts(None)
+        for pos, neg in (
+            (p.highlight_pos, p.highlight_neg),
+            (p.group_pos, p.group_neg),
+            (p.person_pos, p.person_neg),
+        ):
             text_embeddings(pos + neg, models)
         for s in need:
             if (
