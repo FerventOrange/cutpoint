@@ -27,7 +27,8 @@ from pathlib import Path
 import numpy as np
 
 from cutpoint import cache, state
-from cutpoint.ffmpeg_utils import FFmpegError, decode_tracks, probe
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import decode_tracks, probe
 
 logger = logging.getLogger(__name__)
 

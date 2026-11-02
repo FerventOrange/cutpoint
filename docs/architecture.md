@@ -35,8 +35,10 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `capabilities.py` | `cutpoint capabilities` report |
 | `skill/` | `cutpoint skill` and the packaged `SKILL.md` |
 | `ui.py`, `web/` | Loopback browser workspace; static ES modules, project/review API, scoped media/proxies, and isolated CLI subprocess jobs |
-| `cache.py`, `state.py`, `utils.py` | JSON cache files and atomic writes; project state; shared helpers |
-| `winjob.py` | Windows job object so child processes end with Cutpoint |
+| `cache.py`, `state.py`, `utils.py` | JSON cache files and atomic writes, `retry_locked` for files another program holds; project state; shared helpers |
+| `errors.py` | Shared exceptions: `FFmpegError`, `FFmpegNotFoundError`, `EncoderUnavailableError`, `FolderBusyError` |
+| `procs.py` | Child processes: isolated start, low priority, soft stop and tree kill, Windows job object so children end with Cutpoint, liveness check |
+| `folders.py` | Output folders: temporary part files, atomic outputs, staged swap of a clips folder with recovery, source safety checks, folder locks |
 | `paths.py`, `config.py` | `CUTPOINT_HOME` and every data location; `config.json`, projects folder, source remap |
 | `analyze.py`, `sources.py` | Signals, peak picking, merging, snapping, `highlights.json`; cached audio and transcripts per source |
 | `features.py`, `scorer.py`, `dsp.py`, `audio_tracks.py` | Named scoring features and the weighted scorer; signal processing; audio track selection |

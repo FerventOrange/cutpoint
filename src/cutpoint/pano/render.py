@@ -62,18 +62,16 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, folders
 from cutpoint.encode import A_FMT, BT709_TAGS, Grade, audio_fade_filter, bt709_filter
+from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
-    FFmpegError,
     HwDecoder,
     VideoEncoder,
-    atomic_output,
     decoder_for,
     encode_with_fallback,
     gpu_chain,
-    output_dir,
     probe,
     run,
 )
@@ -559,7 +557,7 @@ def render_segment(
 
     t0 = time.perf_counter()
     # A failed auto GPU encode is redone with libx264; out only appears once complete.
-    with atomic_output(out) as part:
+    with folders.atomic_output(out) as part:
         text = encode_with_fallback(lambda enc: encode(enc, part), out.name)
         got = probe(part).duration
     el = time.perf_counter() - t0
@@ -706,8 +704,8 @@ class PanoExporter:
         stays the rendered span); without it, a re-planned ``reuse`` keeps its ``selected``.
 
         On failure ``paths_dir`` (and ``pano_paths``) is removed again if this call
-        created it and it is still empty (see :func:`~cutpoint.ffmpeg_utils.output_dir`)."""
-        with output_dir(self.paths_dir):
+        created it and it is still empty (see :func:`~cutpoint.folders.output_dir`)."""
+        with folders.output_dir(self.paths_dir):
             return self._path_for(clip, name, start, end, kind, reuse, selected)
 
     def _path_for(

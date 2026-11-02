@@ -171,10 +171,10 @@ def test_read_trailer_meta_reads_the_two_lens_calibration(monkeypatch) -> None:
 
 
 def test_probe_video_stream_is_empty_when_ffprobe_fails(monkeypatch) -> None:
-    from cutpoint import ffmpeg_utils  # noqa: PLC0415
+    from cutpoint import errors, ffmpeg_utils  # noqa: PLC0415
 
     def fail(*a, **k):
-        raise ffmpeg_utils.FFmpegError("ffprobe failed")
+        raise errors.FFmpegError("ffprobe failed")
 
     monkeypatch.setattr(ffmpeg_utils, "ffprobe_json", fail)
     assert x3.probe_video_stream(Path("broken.insv")) == {}

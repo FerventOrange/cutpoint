@@ -32,7 +32,19 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, capabilities, cli, config, edit, encode, ffmpeg_utils, ui
+from cutpoint import (
+    cache,
+    capabilities,
+    cli,
+    config,
+    edit,
+    encode,
+    errors,
+    ffmpeg_utils,
+    folders,
+    procs,
+    ui,
+)
 from cutpoint.assistant import session as ai_session
 from cutpoint.pano import candidates as pano_candidates
 from cutpoint.pano import director as pano_director
@@ -488,7 +500,7 @@ class StitchExport:
         self.stitching = threading.Event()
         monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
         monkeypatch.setattr(ui, "spawn", self.spawn)
-        monkeypatch.setattr(ui, "kill_tree", lambda proc, *a, **k: proc.release.set())
+        monkeypatch.setattr(procs, "kill_tree", lambda proc, *a, **k: proc.release.set())
         status = {"found": True, "runs": True} if sdk is None else sdk
         monkeypatch.setattr(ui.pano_stitch, "sdk_status", lambda: status)
         monkeypatch.setattr(ui.pano_stitch, "free_gb", lambda _folder: free)
@@ -780,7 +792,7 @@ class DirectorPreviews:
             )
             self.renders[-1].update(kw)
             (kw["work_dir"] / f"{out.stem}.cmd").write_text("# cmd\n", encoding="utf-8")
-            with ffmpeg_utils.atomic_output(out) as part:
+            with folders.atomic_output(out) as part:
                 part.write_bytes(b"partial")
                 kw["progress"](0.5)
                 self.started.set()
@@ -942,7 +954,7 @@ def test_a_failed_director_preview_reports_why_and_leaves_no_file(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = DirectorPreviews(client, tmp_path, monkeypatch)
-    run.fail = ffmpeg_utils.FFmpegError("ffmpeg failed (exit 1):\nInvalid data found")
+    run.fail = errors.FFmpegError("ffmpeg failed (exit 1):\nInvalid data found")
     run.ask("h001")
     pv = run.wait("h001", "failed")
     assert pv == {"state": "failed", "reason": "Invalid data found"}
@@ -2020,17 +2032,18 @@ def test_windows_cancel_tries_ctrl_break_then_the_job_object_then_taskkill(
     )
     fake_ctypes = SimpleNamespace(WinDLL=lambda name: kernel32, c_void_p=lambda value: value)
     monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
-    monkeypatch.setattr(ui, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(ui, "signal", SimpleNamespace(CTRL_BREAK_EVENT=1))
+    monkeypatch.setattr(procs, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(procs, "signal", SimpleNamespace(CTRL_BREAK_EVENT=1))
     monkeypatch.setattr(
-        ui,
+        procs,
         "subprocess",
         SimpleNamespace(
             run=lambda args, **kw: calls.append(("taskkill", args)),
             TimeoutExpired=subprocess.TimeoutExpired,
         ),
     )
-    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait, tree_job=job), 0.01)  # type: ignore[arg-type]
+    proc = SimpleNamespace(pid=4242, wait=wait, tree_job=job)
+    procs.kill_tree(proc, 0.01)  # type: ignore[arg-type]
     # the job object reaches descendants that outlive the leader, which taskkill /T cannot
     assert [name for name, _ in calls] == expected
     got = dict(calls)
@@ -2046,16 +2059,16 @@ def test_posix_kill_tree_waits_job_stop_s_between_term_and_kill(
 ) -> None:
     signals: list[int] = []
     waits: list[float | None] = []
-    monkeypatch.setattr(ui.os, "killpg", lambda pid, sig: signals.append(sig))
+    monkeypatch.setattr(procs.os, "killpg", lambda pid, sig: signals.append(sig))
 
     def wait(timeout: float | None = None) -> int:
         waits.append(timeout)
         raise subprocess.TimeoutExpired("job", timeout or 0)
 
-    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
+    procs.kill_tree(SimpleNamespace(pid=4242, wait=wait))  # type: ignore[arg-type]
     # a job's own soft stop (two ffmpeg waits plus cleanup) fits before the hard kill (#257)
-    assert waits == [ui.JOB_STOP_S]
-    assert ui.JOB_STOP_S > 2 * ui.SOFT_STOP_S
+    assert waits == [procs.JOB_STOP_S]
+    assert procs.JOB_STOP_S > 2 * procs.SOFT_STOP_S
     assert signals == [signal.SIGTERM, signal.SIGKILL]
 
 
@@ -2064,19 +2077,19 @@ def test_posix_kill_tree_without_term_sends_only_sigkill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     signals: list[int] = []
-    monkeypatch.setattr(ui.os, "killpg", lambda pid, sig: signals.append(sig))
+    monkeypatch.setattr(procs.os, "killpg", lambda pid, sig: signals.append(sig))
 
     def wait(timeout: float | None = None) -> int:
         raise AssertionError("no soft stop to wait for")
 
-    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait), term=False)  # type: ignore[arg-type]
+    procs.kill_tree(SimpleNamespace(pid=4242, wait=wait), term=False)  # type: ignore[arg-type]
     assert signals == [signal.SIGKILL]
 
     def gone(pid: int, sig: int) -> None:
         raise ProcessLookupError
 
-    monkeypatch.setattr(ui.os, "killpg", gone)  # the group already exited: nothing to report
-    ui.kill_tree(SimpleNamespace(pid=4242, wait=wait), term=False)  # type: ignore[arg-type]
+    monkeypatch.setattr(procs.os, "killpg", gone)  # the group already exited: nothing to report
+    procs.kill_tree(SimpleNamespace(pid=4242, wait=wait), term=False)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -2091,8 +2104,8 @@ def test_jobs_shutdown_does_not_term_a_cancelling_job_twice(
     monkeypatch: pytest.MonkeyPatch, done: bool, cancelled: bool, expected: list[bool]
 ) -> None:
     calls: list[bool] = []
-    monkeypatch.setattr(ui, "kill_tree", lambda proc, wait=0, *, term=True: calls.append(term))
-    monkeypatch.setattr(ui, "JOB_STOP_S", 0.01)
+    monkeypatch.setattr(procs, "kill_tree", lambda proc, wait=0, *, term=True: calls.append(term))
+    monkeypatch.setattr(procs, "JOB_STOP_S", 0.01)
     jobs = ui.Jobs()
     job = ui.Job("p", "analyze")
     job.proc = SimpleNamespace(pid=4242)  # type: ignore[assignment]
@@ -2151,7 +2164,7 @@ def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
         cancelled = jobs.cancel(job.id)
         # the leader dies on the event at once (only the grandchild ignores it), so the job
         # object kill follows promptly; JOB_STOP_S bounds the wait, +20 s for the watcher to see EOF
-        deadline = time.time() + ui.JOB_STOP_S + 20
+        deadline = time.time() + procs.JOB_STOP_S + 20
         while cancelled.status != "cancelled" and time.time() < deadline:
             time.sleep(0.05)
         assert cancelled.status == "cancelled"
@@ -2163,7 +2176,7 @@ def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
         if child and _pid_alive(child):
             subprocess.run(["taskkill", "/PID", str(child), "/T", "/F"], capture_output=True)
         if job.proc is not None and job.proc.poll() is None:
-            ui.kill_tree(job.proc)
+            procs.kill_tree(job.proc)
 
 
 def test_assemble_ignores_a_hidden_part_file_left_by_a_killed_export(
@@ -2383,7 +2396,7 @@ def test_frame_failure_is_a_500_and_leaves_no_cache_file(
     pid, sid, _, frames = still_source
 
     def broken(*_a: object, **_k: object) -> list[bytes]:
-        raise ui.FFmpegError("no image")
+        raise errors.FFmpegError("no image")
 
     monkeypatch.setattr(ui, "grab_images", broken)
     res = client.get(
@@ -2412,7 +2425,7 @@ def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
             if len(calls) == 1:
                 first_in.set()
                 release_first.wait(5)
-                raise ui.FFmpegError("no image")
+                raise errors.FFmpegError("no image")
             if len(calls) == 2:
                 second_in.set()
                 release_second.wait(5)
@@ -2426,7 +2439,7 @@ def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
     def request() -> None:
         try:
             results.append(media.frame(ui.project_dir(pid), str(source), 0.5, 160))
-        except ui.FFmpegError as e:
+        except errors.FFmpegError as e:
             results.append(e)
 
     a = threading.Thread(target=request)
@@ -4179,7 +4192,7 @@ def test_a_cancelled_job_reads_cancelling_until_the_process_has_exited(
     proc = FakeProc()
     killed = threading.Event()
     monkeypatch.setattr(ui, "spawn", lambda args: proc)
-    monkeypatch.setattr(ui, "kill_tree", lambda _p: killed.set())  # the exit comes later
+    monkeypatch.setattr(procs, "kill_tree", lambda _p: killed.set())  # the exit comes later
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", ["x"])
     assert job.view()["status"] == "running"
@@ -4216,7 +4229,7 @@ def test_cancel_returns_before_the_kill_finishes_and_a_second_cancel_adds_no_kil
         proc.release.set()
 
     monkeypatch.setattr(ui, "spawn", lambda args: proc)
-    monkeypatch.setattr(ui, "kill_tree", slow_kill)
+    monkeypatch.setattr(procs, "kill_tree", slow_kill)
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", ["x"])
     try:
@@ -4411,7 +4424,7 @@ def test_spawn_keeps_its_own_process_group_on_windows(monkeypatch: pytest.Monkey
         return SimpleNamespace(pid=1)
 
     monkeypatch.setattr(subprocess, "Popen", popen)
-    monkeypatch.setattr(ui, "_join_tree_job", lambda _proc: None)
+    monkeypatch.setattr(procs, "join_tree_job", lambda _proc: None)
     ui.spawn(["x"])
     flags = seen["creationflags"]
     assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
@@ -4430,8 +4443,8 @@ def test_spawn_lowers_the_priority_unless_asked_not_to(
         return SimpleNamespace(pid=1)
 
     monkeypatch.setattr(subprocess, "Popen", popen)
-    monkeypatch.setattr(ui, "_join_tree_job", lambda _proc: None)
-    monkeypatch.setattr(ui.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(procs, "join_tree_job", lambda _proc: None)
+    monkeypatch.setattr(procs.shutil, "which", lambda name: f"/usr/bin/{name}")
     ui.spawn(["ffmpeg"], low_priority=low)
     if os.name == "nt":
         assert seen["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
@@ -4608,7 +4621,7 @@ def test_a_proxy_ffmpeg_is_registered_as_it_starts_so_shutdown_kills_it(
 ) -> None:
     media = ui.Media()
     killed: list[object] = []
-    monkeypatch.setattr(ui, "kill_tree", lambda proc, wait=0, *, term=True: killed.append(proc))
+    monkeypatch.setattr(procs, "kill_tree", lambda proc, wait=0, *, term=True: killed.append(proc))
 
     class Encode:
         def __init__(self, args: list[str], **_kw: object) -> None:
@@ -4807,7 +4820,7 @@ class FakeWindowFfmpeg:
         self.killed: list[FakeWindowProc] = []
         self.kill_seen = threading.Event()
         monkeypatch.setattr(ui, "spawn", self.spawn)
-        monkeypatch.setattr(ui, "kill_tree", self.kill)
+        monkeypatch.setattr(procs, "kill_tree", self.kill)
 
     def spawn(self, args: list[str], *, low_priority: bool = True) -> FakeWindowProc:
         proc = FakeWindowProc(args, self.hold and "-ss" in args, low_priority)
@@ -6460,7 +6473,7 @@ def test_a_step_still_running_when_the_job_fails_reads_interrupted(
 def test_a_cancelled_job_interrupts_its_running_step(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = FakeProc()
     monkeypatch.setattr(ui, "spawn", lambda args: proc)
-    monkeypatch.setattr(ui, "kill_tree", lambda _p: proc.release.set())
+    monkeypatch.setattr(procs, "kill_tree", lambda _p: proc.release.set())
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", ["x"])
     try:

@@ -20,7 +20,8 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, pcm_float, read_pcm_window, wav_duration
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import MediaInfo, pcm_float, read_pcm_window, wav_duration
 from cutpoint.transcribe import filter_hallucinations, flat_words, transcript_name
 
 logger = logging.getLogger(__name__)

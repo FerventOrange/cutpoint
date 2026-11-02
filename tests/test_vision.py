@@ -18,7 +18,7 @@ import requests
 
 import cutpoint.analyze
 from conftest import needs_ffmpeg
-from cutpoint import cache, cli, vision
+from cutpoint import cache, cli, errors, vision
 from cutpoint.styles import get_style
 
 
@@ -442,7 +442,7 @@ def test_a_missing_source_still_reports_the_grab_failure(
     """No cache key for a source that is not there: the frame grab reports it, as before."""
 
     def grab(_src, _t, **_k):
-        raise vision.FFmpegError("no such file")
+        raise errors.FFmpegError("no such file")
 
     monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
     rater = vision.VisionRater(url="http://x:1", model="m")

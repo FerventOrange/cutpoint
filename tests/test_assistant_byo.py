@@ -880,7 +880,7 @@ def test_messages_never_show_the_password_of_a_url(monkeypatch) -> None:
 
 
 def test_jobs_and_dialogs_start_without_the_key_variables(monkeypatch) -> None:
-    from cutpoint import ui  # noqa: PLC0415
+    from cutpoint import procs, ui  # noqa: PLC0415
 
     for name in keys.ENV_VARS:
         monkeypatch.setenv(name, OTHER)
@@ -891,7 +891,7 @@ def test_jobs_and_dialogs_start_without_the_key_variables(monkeypatch) -> None:
         return SimpleNamespace(pid=1, communicate=lambda: ("", ""), returncode=0, wait=lambda: 0)
 
     monkeypatch.setattr(subprocess, "Popen", popen)
-    monkeypatch.setattr(ui, "_join_tree_job", lambda _proc: None)
+    monkeypatch.setattr(procs, "join_tree_job", lambda _proc: None)
     ui.spawn(["x", "y"])
     job = seen[-1]
     assert job["env"]["CUTPOINT_PROGRESS"] == "1"

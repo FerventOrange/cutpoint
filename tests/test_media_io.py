@@ -24,7 +24,7 @@ from conftest import needs_ffmpeg
 from cutpoint import assemble as asm
 from cutpoint import cache, capabilities, crash, stage
 from cutpoint import ffmpeg_utils as fu
-from cutpoint.ffmpeg_utils import FFmpegError
+from cutpoint.errors import FFmpegError
 from cutpoint.pano import x3
 
 

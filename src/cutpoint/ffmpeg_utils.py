@@ -16,52 +16,43 @@ The executables are located (in order) via the ``CUTPOINT_FFMPEG`` /
 
 from __future__ import annotations
 
-import errno
 import json
 import logging
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import uuid
 import wave
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import cache, partial
+from functools import cache
 from pathlib import Path
 from typing import IO, Any, Literal
 
 import numpy as np
 
-from cutpoint import paths, state
-from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
-from cutpoint.config import get_config, path_key
+from cutpoint import paths, procs, state
+from cutpoint.config import get_config
+from cutpoint.errors import (
+    EncoderUnavailableError,
+    FFmpegError,
+    FFmpegNotFoundError,
+)
 from cutpoint.utils import file_stamp
-from cutpoint.winjob import kill_with_parent
 
 logger = logging.getLogger(__name__)
 
-SOFT_STOP_S = 5.0  # a stopped child (ffmpeg; a UI job after CTRL_BREAK) gets this long
 PROGRESS_DRAIN_S = 5.0  # run_progress reads the rest of the progress pipe this long after exit
 # a failed child in a ChildScope waits this long for the cancel of a Ctrl+C (3 polls of the
 # controlling thread, clips.POLL_S) before its exit counts as an ffmpeg failure
 STOP_GRACE_S = 0.3
-
-
-class FFmpegError(RuntimeError):
-    """Raised when ffmpeg/ffprobe is missing or a command fails."""
-
-
-class FFmpegNotFoundError(FFmpegError):
-    """Raised when the ffmpeg or ffprobe executable cannot be found."""
 
 
 def exit_code(rc: int) -> str:
@@ -133,26 +124,6 @@ def stage_inputs(cmd: list[str]) -> list[str]:
     return out
 
 
-def _stop_child(proc: subprocess.Popen, err: BaseException) -> None:
-    """Let ``proc`` exit before the caller removes its partial output (#199).
-
-    On Windows a running ffmpeg keeps its output open, so removing a ``.part`` or
-    ``.tmp.wav`` file right after Ctrl+C fails. After a KeyboardInterrupt (Ctrl+C,
-    Ctrl+Break, the UI's cancel) the child got the same event, so it is given
-    ``SOFT_STOP_S`` to exit; after any other error, or when it is still running then, it is
-    killed and waited for (again at most ``SOFT_STOP_S``). The caller re-raises ``err``.
-    """
-    try:
-        if isinstance(err, KeyboardInterrupt):
-            with suppress(subprocess.TimeoutExpired):
-                proc.wait(SOFT_STOP_S)
-    finally:  # a second Ctrl+C during the wait still kills it
-        if proc.poll() is None:
-            proc.kill()
-            with suppress(subprocess.TimeoutExpired):
-                proc.wait(SOFT_STOP_S)
-
-
 class ChildScope:
     """ffmpeg runs of worker threads that a controlling thread can stop (parallel export, #464).
 
@@ -200,10 +171,10 @@ class ChildScope:
         """Cancel and kill every running child."""
         with self._lock:
             self._stopped.set()
-            procs = list(self._procs)
+            running = list(self._procs)
         with self._gpu:
             self._gpu.notify_all()
-        for proc in procs:
+        for proc in running:
             with suppress(OSError):
                 proc.kill()
 
@@ -300,7 +271,7 @@ def run(
         proc.communicate()
         raise FFmpegError(f"{args[0]} timed out after {timeout:g}s") from err
     except BaseException as err:
-        _stop_child(proc, err)
+        procs.stop_child(proc, err)
         raise
     finally:
         if scope is not None:
@@ -389,7 +360,7 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
             proc.wait()
             reader.join(PROGRESS_DRAIN_S)
         except BaseException as exc:
-            _stop_child(proc, exc)
+            procs.stop_child(proc, exc)
             raise
         if reader.is_alive():
             logger.debug("%s: progress pipe still open after ffmpeg exited; not waiting", label)
@@ -789,10 +760,6 @@ def clip_momentary(
         ]
     )
     return [-120.0 if m.group(2) == "-inf" else float(m.group(2)) for m in _EBUR_RE.finditer(out)]
-
-
-class EncoderUnavailableError(FFmpegError):
-    """A video encoder the user asked for cannot encode on this machine."""
 
 
 VIDEO_CODECS = {"nvenc": "h264_nvenc", "amf": "h264_amf", "vaapi": "h264_vaapi", "cpu": "libx264"}
@@ -1271,701 +1238,6 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
     return result
 
 
-# Windows "Access is denied" and "being used by another process": the file is open elsewhere
-# (error 5 can also mean a read-only file or folder).
-_LOCKED_WINERRORS = (5, 32)
-_LOCK_HINT = "it is open in another program (a player, an editor or a virus scanner)"
-
-
-def retry_locked[T](
-    op: Callable[[], T], path: Path, action: str, locked: Callable[[OSError], bool] | None = None
-) -> T:
-    """Run ``op`` (replacing or deleting ``path``), retrying briefly on PermissionError.
-
-    On Windows another process (a player, an editor, a virus scanner) holding ``path``
-    open makes a rename or delete fail for a moment. ``locked`` picks the errors to retry
-    instead; the last one is then re-raised as is, for the caller to word.
-
-    Raises:
-        PermissionError: Naming ``path`` and the program holding it, if it is still locked
-            (Windows error 5 or 32) after the retries (for error 5 also a read-only file or
-            folder); any other error as raised by ``op``.
-    """
-    for attempt in range(REPLACE_ATTEMPTS):
-        try:
-            return op()
-        except OSError as err:
-            if not (locked(err) if locked else isinstance(err, PermissionError)):
-                raise
-            if attempt < REPLACE_ATTEMPTS - 1:
-                time.sleep(min(0.05 * 2**attempt, 0.5))
-                continue
-            if locked or getattr(err, "winerror", None) not in _LOCKED_WINERRORS:
-                raise
-            read_only = (
-                " If no program has it open, the file or its folder may be read-only: clear the"
-                " read-only attribute and re-run."
-                if getattr(err, "winerror", None) == 5
-                else ""
-            )
-            raise PermissionError(
-                f"Cannot {action} {path}: {_LOCK_HINT}. Close it and re-run.{read_only} "
-                f"({err.strerror})"
-            ) from err
-    raise AssertionError("unreachable")
-
-
-@contextmanager
-def output_dir(path: Path) -> Iterator[Path]:
-    """Create the folder ``path``; on failure (Ctrl+C included) remove it again if this call
-    created it and it is still empty, so a failed run leaves no empty folder behind.
-
-    Missing parents are created too and removed the same way. A folder that existed before,
-    or that holds anything, is always kept (:func:`cutpoint.cache.created_dirs`).
-    """
-    with created_dirs() as made:
-        make_dirs(path, made)
-        yield path
-
-
-def part_path(out: Path) -> Path:
-    """Temporary name :func:`atomic_output` writes ``out`` to: ``.<stem>.part<suffix>``.
-
-    The suffix is kept so ffmpeg picks the muxer; the leading dot keeps it out of the
-    clip listings (``assemble``, ``extend``).
-    """
-    return out.with_name(f".{out.stem}.part{out.suffix}")
-
-
-@contextmanager
-def atomic_output(out: Path) -> Iterator[Path]:
-    """Yield :func:`part_path` of ``out`` to write to, renamed onto ``out`` on success.
-
-    On any failure (Ctrl+C included) the partial file is removed and ``out`` is left as
-    it was, so a truncated file never appears under the final name. On Windows the rename
-    is retried briefly while another process (a virus scanner, a player) holds a file open.
-    """
-    part = part_path(out)
-    try:
-        yield part
-        retry_locked(lambda: part.replace(out), out, "replace")
-    except BaseException:
-        # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
-        with suppress(OSError):
-            part.unlink(missing_ok=True)
-        raise
-
-
-# --- all-or-nothing folder replace (``clips --force``, ``extend --out <clips_dir> --force``,
-# ``extend --out DIR --force`` into a non-empty DIR)
-#
-# A run exports into the hidden staging folder ``.<name>.cutpoint-tmp`` next to the output,
-# then :func:`swap_in` moves the originals it replaces into ``.<name>.cutpoint-bak`` and the
-# new files in. The backup holds a journal (the old and new names) until every new file is
-# in; on any failure the originals are put back. A hard kill leaves the journal, so the next
-# run's :func:`recover_swap` finishes the job: journal present, put the originals back;
-# backup without journal, the new set was complete, drop the backup.
-# Both folders sit on the parent's file system, so :func:`staged_dir` refuses a ``dst`` that
-# is a drive root (no parent to hold them), a mount point or a bind mount before any export,
-# unless an empty one is exported into directly (``direct_if_empty``).
-
-_SWAP_JOURNAL = ".cutpoint-swap.json"
-_SWAP_PROBE = ".cutpoint-swap-probe"
-_SWAP_FIX = "use --out with a folder on that drive"
-
-
-def _root_error(dst: Path) -> ValueError:
-    return ValueError(f"{dst} is a drive root; {_SWAP_FIX}")
-
-
-def staging_path(dst: Path) -> Path:
-    """Hidden staging folder of ``dst``: ``.<name>.cutpoint-tmp`` next to it.
-
-    Raises:
-        ValueError: If ``dst`` is a drive root.
-    """
-    res = dst.resolve()  # "." and ".." have no usable name; a symlink's target is the folder
-    if not res.name:
-        raise _root_error(dst)
-    return res.with_name(f".{res.name}.cutpoint-tmp")
-
-
-def backup_path(dst: Path) -> Path:
-    """Hidden folder :func:`swap_in` moves the replaced originals of ``dst`` to.
-
-    Raises:
-        ValueError: If ``dst`` is a drive root.
-    """
-    res = dst.resolve()
-    if not res.name:
-        raise _root_error(dst)
-    return res.with_name(f".{res.name}.cutpoint-bak")
-
-
-def check_swap_target(dst: Path) -> None:
-    """Fail before any export if ``dst`` cannot be replaced through :func:`staged_dir`.
-
-    Raises:
-        ValueError: If ``dst`` is a drive root or a mount point, saying what to do.
-    """
-    res = dst.resolve()
-    if not res.name:
-        # A volume mounted into a folder (C:\mnt\vol) resolves to the volume's own root on
-        # Windows, so only a folder that is a root before resolving is a drive root.
-        own = Path(os.path.abspath(dst))  # noqa: PTH100 - normalises "..", no resolving
-        if not own.name or not own.is_mount():
-            raise _root_error(dst)
-    if not res.name or res.is_mount():
-        raise ValueError(
-            f"{dst} is a mount point, so the clips cannot be swapped in safely; {_SWAP_FIX}"
-        )
-
-
-def _check_rename(tmp: Path, dst: Path) -> None:
-    """Fail if a file cannot be renamed from ``tmp`` into ``dst``.
-
-    Catches what :func:`check_swap_target` cannot see: a Linux bind mount of a folder on the
-    same device, where ``is_mount()`` is False but a rename across it fails with EXDEV.
-    Any other error is left to :func:`swap_in`, which retries and names the file.
-
-    Raises:
-        ValueError: If ``dst`` is on another file system than ``tmp``.
-    """
-    probe = tmp / _SWAP_PROBE
-    try:
-        probe.touch()
-        probe.rename(dst / _SWAP_PROBE)  # a leftover there is removed by recover_swap
-    except OSError as err:
-        with suppress(OSError):  # else swap_in would move it into dst
-            probe.unlink(missing_ok=True)
-        if err.errno == errno.EXDEV:
-            raise ValueError(
-                f"{dst} is on another file system than its parent folder (a mount point or "
-                f"bind mount), so the clips cannot be swapped in safely; {_SWAP_FIX}"
-            ) from err
-        return
-    with suppress(OSError):
-        (dst / _SWAP_PROBE).unlink()
-
-
-def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
-    """Put the originals in ``bak`` back into ``dst`` and drop the new-only files there.
-
-    Both steps are best effort: one locked file does not stop the others. The journal is
-    removed last and only if every file went back, so a restore that fails half-way is
-    redone by :func:`recover_swap`. A ``dst`` the swap created is removed when empty.
-
-    Raises:
-        OSError: The first error, after every file was tried.
-    """
-    errors: list[OSError] = []
-    old = {path_key(n, dst) for n in journal["old"]}
-    for name in journal["old"]:
-        src = bak / name
-        if src.exists() or src.is_symlink():  # else it never left dst
-            try:
-                retry_locked(partial(src.replace, dst / name), dst / name, "restore")
-            except OSError as err:
-                errors.append(err)
-    for name in journal["new"]:
-        # never a user file: swap_in records every existing name as old (once per path_key,
-        # so a case variant of a new name is the same file and is not deleted)
-        if path_key(name, dst) not in old:
-            f = dst / name
-            try:
-                retry_locked(partial(f.unlink, missing_ok=True), f, "delete")
-            except OSError as err:
-                errors.append(err)
-    if errors:
-        raise errors[0]
-    (bak / _SWAP_JOURNAL).unlink()
-    bak.rmdir()
-    if journal.get("created"):
-        with suppress(OSError):  # not empty: something else was put there meanwhile
-            dst.rmdir()
-
-
-def recover_swap(dst: Path) -> None:
-    """Clean up after a :func:`swap_in` or staged export killed hard (``taskkill /F``).
-
-    With a journal the originals are put back; a backup without one is from a completed
-    swap and is removed. A stale staging folder (only this tool's output) is removed.
-
-    Raises:
-        RuntimeError: If the journal is unreadable or malformed; the backup is left as is.
-        PermissionError: If a leftover backup or staging folder cannot be removed (a file
-            in it is still open); the next swap could not start with it in place.
-    """
-    if not dst.resolve().name:  # a drive root: nothing is ever staged next to it
-        return
-    with suppress(OSError):  # a probe of _check_rename left by a hard kill
-        (dst / _SWAP_PROBE).unlink(missing_ok=True)
-    bak = backup_path(dst)
-    if bak.exists():
-        path = bak / _SWAP_JOURNAL
-        if not (path.exists() or path.is_symlink()):
-            # Nothing in it is needed, but it must go: the next swap_in creates it anew.
-            _remove_leftover(bak, f"left over from a finished replace of {dst}")
-        else:
-            journal = load_json(path)
-            if not (
-                isinstance(journal, dict)
-                and all(
-                    isinstance(journal.get(k), list) and all(isinstance(n, str) for n in journal[k])
-                    for k in ("old", "new")
-                )
-            ):
-                raise RuntimeError(
-                    f"An earlier replace of {dst} was interrupted and its record {path} cannot "
-                    f"be read. The original files are in {bak}: move them back into {dst} by "
-                    f"hand, then delete {bak} and re-run."
-                )
-            _restore(dst, bak, journal)
-            logger.warning("Put back the original files of %s from an interrupted replace", dst)
-    tmp = staging_path(dst)
-    if tmp.exists():
-        _remove_leftover(tmp, f"left over from an interrupted export into {dst}")
-
-
-def _remove_leftover(path: Path, why: str) -> None:
-    """Remove the folder ``path`` (retried briefly while a file in it is locked).
-
-    Raises:
-        PermissionError: Saying ``why`` it is there and how to fix it, if it stays locked
-            (on Windows: a file in it is open in a player or a virus scanner, or a scanner
-            briefly keeps it non-empty, error 145).
-        OSError: Saying ``why`` it is there, for any other failure.
-    """
-
-    def locked(err: OSError) -> bool:
-        return isinstance(err, PermissionError) or getattr(err, "winerror", None) == 145
-
-    try:
-        retry_locked(partial(shutil.rmtree, path), path, "remove", locked)
-    except OSError as err:
-        if locked(err):
-            raise PermissionError(
-                f"Cannot remove {path}, {why}: {_LOCK_HINT}. Close it, or delete the folder, "
-                f"and re-run. ({err.strerror or err})"
-            ) from err
-        raise OSError(
-            f"Cannot remove {path}, {why}: {err.strerror or err}. Delete the folder and re-run."
-        ) from err
-
-
-@contextmanager
-def staged_dir(dst: Path, *, direct_if_empty: bool = False) -> Iterator[Path]:
-    """Yield a fresh :func:`staging_path` of ``dst`` to export into, removed on failure.
-
-    The caller moves the result in with :func:`swap_in`, unless ``dst`` itself was yielded:
-    with ``direct_if_empty``, an existing empty ``dst`` that cannot be staged (a drive root,
-    a mount point or a bind mount) is exported into directly and kept on failure. Call
-    :func:`recover_swap` first when ``dst`` is checked for existing files before this.
-
-    Raises:
-        ValueError: If ``dst`` is a drive root, a mount point or a bind mount that is not
-            exported into directly, before the caller exports anything (see
-            :func:`check_swap_target`).
-    """
-    direct = direct_if_empty and dst.exists() and not any(dst.iterdir())
-    try:
-        check_swap_target(dst)
-        stageable = True
-    except ValueError:
-        if not direct:
-            raise
-        stageable = False  # a root or mount point: no staging folder next to it
-    if not stageable:
-        yield dst
-        return
-    recover_swap(dst)
-    tmp = staging_path(dst)
-    tmp.mkdir()
-    work = tmp
-    try:
-        if dst.exists():
-            try:
-                _check_rename(tmp, dst)
-            except ValueError:
-                if not direct:
-                    raise
-                work = dst
-                with suppress(OSError):  # still open (a virus scanner): recover_swap removes it
-                    shutil.rmtree(tmp)
-        yield work
-    except BaseException:
-        # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
-        try:
-            if work is tmp:  # a direct export keeps its finished clips
-                shutil.rmtree(tmp)
-        except OSError as err:
-            logger.warning("Could not remove %s (%s); the next run removes it", tmp, err)
-        raise
-
-
-def file_keys(path: Path) -> set[Any]:
-    """Identities of the file ``path`` for :func:`same_file`: its resolved path (case-folded
-    where names are case-insensitive) and, where the file system has them, its device and
-    inode numbers, so a symlink, a hard link or another spelling of the same file matches.
-    Empty if missing."""
-    keys: set[Any] = set()
-    try:
-        st = path.stat()
-    except OSError:
-        return keys
-    keys.add(path_key(str(path.resolve())))
-    if st.st_ino:  # 0: no usable inode numbers (some network shares)
-        keys.add((st.st_dev, st.st_ino))
-    return keys
-
-
-def same_file(path: Path, keys: set[Any]) -> bool:
-    """True if ``path`` is one of the files whose :func:`file_keys` are in ``keys``."""
-    return bool(file_keys(path) & keys)
-
-
-def source_keys(reads: Iterable[tuple[str, Path, Iterable[Path]]]) -> set[Any]:
-    """:func:`file_keys` of every file a run reads, given per source ``(source as recorded,
-    path read (source_remap), files of a 360 source (PanoExporter.inputs))``."""
-    keys: set[Any] = set()
-    for s, p, pano_files in reads:
-        for f in (Path(s), p, *pano_files):
-            keys |= file_keys(f)
-    return keys
-
-
-def check_not_sources(dst: Path, names: Iterable[str], sources: set[Any]) -> None:
-    """Fail before any export if writing ``names`` into ``dst`` would replace a source.
-
-    ``sources`` holds the :func:`file_keys` of every file the run reads.
-
-    Raises:
-        ValueError: Naming the first such file.
-    """
-    for n in names:
-        if same_file(dst / n, sources):
-            raise ValueError(
-                f"Cannot write {dst / n}: this run reads it as a source. Move the source out "
-                f"of {dst}, or export into another folder (--out)."
-            )
-
-
-def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
-    """Move every file of ``new`` into ``dst``, all or nothing, and remove ``new``.
-
-    The files ``old`` (names in ``dst``) and those the new files replace are moved to
-    :func:`backup_path` first and deleted only after every new file is in. On any failure
-    (a locked file, Ctrl+C) the originals are put back and the error is re-raised. If even
-    that fails, the backup is kept and the next run puts them back (:func:`recover_swap`).
-    A missing ``dst`` is created, and removed again on failure.
-
-    Raises:
-        PermissionError: Naming the file, if one stays locked (see :func:`retry_locked`).
-    """
-    created = not dst.exists()
-    # manifest.json last in, first out: it never lists a clip that is not there
-    names = sorted((p.name for p in new.iterdir()), key=lambda n: (n == "manifest.json", n))
-    # one file per path_key (the first spelling): a case variant would move it twice
-    present = {
-        path_key(n, dst): n
-        for n in reversed([*old, *names])
-        if (dst / n).exists() or (dst / n).is_symlink()
-    }
-    olds = [] if created else sorted(present.values(), key=lambda n: (n != "manifest.json", n))
-    journal = {"old": olds, "new": names, "created": created}
-    bak = backup_path(dst)
-    bak.mkdir()
-    try:
-        save_json(bak / _SWAP_JOURNAL, journal)
-        if created:
-            dst.mkdir()
-        for n in olds:
-            retry_locked(partial((dst / n).replace, bak / n), dst / n, "replace")
-        for n in names:
-            retry_locked(partial((new / n).replace, dst / n), dst / n, "replace")
-    except BaseException:
-        try:
-            if (bak / _SWAP_JOURNAL).exists():
-                _restore(dst, bak, journal)
-            else:
-                bak.rmdir()
-        except BaseException as err:  # a second Ctrl+C too: say where the originals are
-            logger.error(
-                "Could not put back every original file of %s (%s): the rest are in %s. "
-                "The next cutpoint run on this folder puts them back.",
-                dst,
-                err or type(err).__name__,
-                bak,
-            )
-            if not isinstance(err, Exception):
-                raise
-        raise
-    # The new set is complete: the backup is no longer needed.
-    journal_path = bak / _SWAP_JOURNAL
-    retry_locked(journal_path.unlink, journal_path, "delete")
-    try:
-        shutil.rmtree(bak)
-    except OSError as err:  # still open (a virus scanner): recover_swap removes it later
-        logger.warning("Could not remove %s (%s); the next run removes it", bak, err)
-    with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
-        new.rmdir()
-
-
-# --- one run at a time per folder (``clips``, ``extend``, ``assemble``)
-#
-# Each run holds the lock file ``.<name>.cutpoint-lock`` next to the folder (beside its
-# staging and backup folders) while it recovers, exports and swaps, so a second run never
-# removes the first one's staging folder. The file is created atomically (O_EXCL) and holds
-# the run's process id, host and a token; it is removed on exit, Ctrl+C included. One left by
-# a hard kill is stale once its process is gone, and the next run on the same host takes it.
-
-_LOCK_UNWRITTEN_S = 30.0  # an empty lock older than this was never written (a hard kill)
-_HELD_LOCKS: set[str] = set()  # path_key of the locks this process holds
-
-
-class FolderBusyError(RuntimeError):
-    """Another cutpoint run holds the lock of the folder (see :func:`swap_lock`)."""
-
-
-def lock_path(dst: Path) -> Path | None:
-    """Lock file of ``dst``: ``.<name>.cutpoint-lock`` next to it (None for a drive root,
-    which nothing is ever staged next to)."""
-    res = dst.resolve()
-    return res.with_name(f".{res.name}.cutpoint-lock") if res.name else None
-
-
-def _win_created(k32: Any, handle: Any) -> float | None:
-    """Creation time (epoch seconds) of the Windows process ``handle``, or None."""
-    import ctypes  # noqa: PLC0415
-    from ctypes import wintypes  # noqa: PLC0415
-
-    times = [wintypes.FILETIME() for _ in range(4)]  # creation, exit, kernel, user
-    k32.GetProcessTimes.argtypes = (wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4)
-    if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
-        return None
-    ft = times[0].dwHighDateTime << 32 | times[0].dwLowDateTime  # 100 ns since 1601
-    return (ft - 116444736000000000) / 1e7
-
-
-def _pid_alive(pid: int, not_after: float | None = None) -> bool:
-    """Whether the process ``pid`` is running (True when that cannot be told).
-
-    ``not_after``: on Windows, which reuses process ids quickly, a process created after
-    this time (epoch seconds, the lock file's mtime) is another one that got the id: False.
-    """
-    if pid <= 0 or pid > 0xFFFFFFFF:
-        return False
-    if sys.platform == "win32":
-        import ctypes  # noqa: PLC0415
-        from ctypes import wintypes  # noqa: PLC0415
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.OpenProcess.restype = wintypes.HANDLE
-        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-        k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
-        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            # 87 (ERROR_INVALID_PARAMETER): no such process; anything else (5, access
-            # denied, for a protected or another user's process): it exists
-            return ctypes.get_last_error() != 87
-        try:
-            code = wintypes.DWORD()
-            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return True
-            if code.value != 259:  # STILL_ACTIVE
-                return False
-            created = _win_created(k32, handle) if not_after is not None else None
-            return created is None or not_after is None or created <= not_after
-        finally:
-            k32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)  # signal 0 only checks (on Windows os.kill would terminate it)
-    except ProcessLookupError:
-        return False
-    except OSError:  # PermissionError: it exists, owned by another user
-        return True
-    return True
-
-
-def _read_lock(lock: Path) -> tuple[bytes, dict[str, Any] | None] | None:
-    """``(raw bytes, parsed record or None)`` of ``lock``, or None if it is gone."""
-    try:
-        raw = lock.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError:  # being written or removed right now (Windows): treat as unreadable
-        return b"", None
-    try:
-        rec = json.loads(raw.decode("utf-8"))
-    except ValueError:
-        return raw, None
-    return raw, rec if isinstance(rec, dict) and isinstance(rec.get("pid"), int) else None
-
-
-def _lock_stale(lock: Path, rec: dict[str, Any] | None) -> bool:
-    """Whether the lock ``lock`` with the record ``rec`` belongs to no running process."""
-    if rec is None:  # empty or garbled: a run is writing it, or one was killed before it did
-        try:
-            return time.time() - lock.stat().st_mtime > _LOCK_UNWRITTEN_S
-        except OSError:
-            return False
-    if rec.get("host") != socket.gethostname():  # a run on another computer: cannot tell
-        return False
-    if rec["pid"] == os.getpid():  # this process: held by a run still going, else left over
-        return path_key(str(lock)) not in _HELD_LOCKS
-    try:
-        written = lock.stat().st_mtime
-    except OSError:
-        written = None
-    return not _pid_alive(rec["pid"], written)
-
-
-def _busy_error(dst: Path, lock: Path, rec: dict[str, Any] | None) -> FolderBusyError:
-    if rec is None:
-        who = "Another cutpoint run is starting on"
-    else:
-        host = rec.get("host")
-        on = f" on {host}" if host and host != socket.gethostname() else ""
-        since = f", started {rec['started']}" if rec.get("started") else ""
-        who = f"Another cutpoint run (process {rec['pid']}{on}{since}) is using"
-    return FolderBusyError(
-        f"{who} {dst}. Wait until it has finished, or stop it, and run again. If no other run "
-        f"is active, delete {lock} and run again."
-    )
-
-
-def _take_stale(lock: Path, raw: bytes) -> None:
-    """Remove the stale lock ``lock`` whose content was ``raw``.
-
-    It is first renamed to a name of this process, so of two runs that both found it stale,
-    only one removes it; a lock that another run created meanwhile is put back.
-    """
-    moved = lock.with_name(f"{lock.name}.{os.getpid()}.stale")
-    try:
-        lock.replace(moved)
-    except OSError:  # another run took it first, or has it open (Windows): try again
-        return
-    try:
-        if moved.read_bytes() == raw:
-            moved.unlink()
-            logger.info("Removed %s, left by a cutpoint run that is no longer running", lock)
-            return
-    except OSError:
-        pass
-    with suppress(OSError):  # a fresh lock of another run: give it back
-        moved.rename(lock)
-
-
-def _dir_writable(folder: Path) -> bool:
-    """Whether a file can be created in ``folder`` (a probe file, removed again)."""
-    try:
-        fd, name = tempfile.mkstemp(dir=folder, prefix=".cutpoint-probe.")
-    except OSError:
-        return False
-    os.close(fd)
-    with suppress(OSError):
-        Path(name).unlink()
-    return True
-
-
-def _open_lock(lock: Path) -> int | None:
-    """Create ``lock`` exclusively and return its descriptor, or None if its folder is
-    read-only (nothing can be staged there either, so there is nothing to protect).
-
-    A PermissionError is retried briefly: on Windows a lock another run is removing is
-    "delete pending" for a moment.
-
-    Raises:
-        FileExistsError: If another run's lock is there.
-        PermissionError: If the folder is writable but the lock still cannot be created.
-        OSError: Any other error.
-    """
-    for attempt in range(REPLACE_ATTEMPTS):
-        try:
-            return os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
-            raise
-        except OSError as err:
-            if err.errno == errno.EROFS:
-                return None
-            if err.errno not in (errno.EACCES, errno.EPERM):
-                raise
-            if attempt < REPLACE_ATTEMPTS - 1:
-                time.sleep(min(0.05 * 2**attempt, 0.5))
-                continue
-            if not _dir_writable(lock.parent):
-                return None
-            raise PermissionError(
-                f"Cannot create the lock file {lock}: {err.strerror or err}. If no other "
-                "cutpoint run is active, delete it and run again."
-            ) from err
-    raise AssertionError("unreachable")
-
-
-@contextmanager
-def swap_lock(dst: Path) -> Iterator[None]:
-    """Hold the lock of the folder ``dst`` (:func:`lock_path`) for one run.
-
-    Missing parent folders are created (removed again on failure while empty, as
-    :func:`output_dir`). The lock is removed on exit, Ctrl+C included; one left by a run that
-    was killed hard is taken over once its process is gone (same host only).
-
-    Raises:
-        FolderBusyError: If another run holds it, naming its process and the lock file.
-    """
-    lock = lock_path(dst)
-    if lock is None:
-        yield
-        return
-    with output_dir(lock.parent):
-        token = uuid.uuid4().hex
-        data = json.dumps(
-            {
-                "pid": os.getpid(),
-                "host": socket.gethostname(),
-                "started": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "token": token,
-            }
-        ).encode("utf-8")
-        for _ in range(3):
-            try:
-                fd = _open_lock(lock)
-            except FileExistsError:
-                found = _read_lock(lock)
-                if found is None:  # removed meanwhile: try again
-                    continue
-                raw, rec = found
-                if not _lock_stale(lock, rec):
-                    raise _busy_error(dst, lock, rec) from None
-                _take_stale(lock, raw)
-                continue
-            if fd is None:
-                logger.info("Not locking %s: %s is read-only", dst, lock.parent)
-                yield
-                return
-            try:
-                os.write(fd, data)
-            finally:
-                os.close(fd)
-            break
-        else:
-            found = _read_lock(lock)
-            raise _busy_error(dst, lock, found[1] if found else None)
-        key = path_key(str(lock))
-        _HELD_LOCKS.add(key)
-        try:
-            yield
-        finally:
-            _HELD_LOCKS.discard(key)
-            found = _read_lock(lock)
-            if found is not None and found[0] == data:  # never another run's lock
-                try:
-                    retry_locked(lock.unlink, lock, "delete")
-                except OSError as err:  # a stale lock: the next run takes it over
-                    logger.warning("Could not remove %s (%s)", lock, err)
-
-
 def grab_frame_jpeg(src: Path, t: float, width: int = 640) -> bytes:
     """Decode a single frame at time ``t`` and return it as JPEG bytes."""
     try:
@@ -2040,7 +1312,7 @@ def _exec_scoped(
         proc.communicate()
         raise FFmpegError(f"{tool} timed out after {timeout:g}s on {path}") from err
     except BaseException as err:
-        _stop_child(proc, err)
+        procs.stop_child(proc, err)
         raise
     finally:
         scope.discard(proc)
@@ -2280,22 +1552,6 @@ class _Deadline:
         self._timer.cancel()
 
 
-def _isolated() -> dict[str, Any]:
-    """``Popen`` options that start a child in its own process group (Windows) or session
-    (POSIX), so the console's Ctrl+C (and the terminal's SIGINT) does not reach it: the
-    caller stops it. No stdin, so it never reads the console."""
-    if os.name == "nt":
-        return {"stdin": subprocess.DEVNULL, "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"stdin": subprocess.DEVNULL, "start_new_session": True}
-
-
-# Isolated children also go in a Windows job object (:func:`cutpoint.winjob.kill_with_parent`):
-# out of the console's group, a ``taskkill /F`` of Python would leave ffmpeg running until its
-# next write to the closed pipe; the job (KILL_ON_JOB_CLOSE) ends it at once. POSIX does nothing:
-# the pipe closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first);
-# either way the next run's sweep removes the spool and the tmp proxy.
-
-
 def decode_raw(
     path: Path | str,
     *,
@@ -2402,10 +1658,10 @@ def decode_raw(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=frame_bytes * 4,
-            **(_isolated() if isolate else {}),
+            **(procs.isolated_kwargs() if isolate else {}),
         )
         if isolate:
-            kill_with_parent(proc)
+            procs.kill_with_parent(proc)
         if scope is not None:
             scope.add(proc)
         reader = threading.Thread(target=log.read, args=(proc.stderr,), daemon=True)
@@ -2431,7 +1687,7 @@ def decode_raw(
                 watch.finish()
             if ended and exit_codes is not None:  # let it exit by itself: its code counts
                 with suppress(subprocess.TimeoutExpired):
-                    proc.wait(SOFT_STOP_S)
+                    proc.wait(procs.SOFT_STOP_S)
             proc.stdout.close()
             if proc.poll() is None:
                 stopped = True
@@ -2592,9 +1848,9 @@ class SplitDecode:
         self._log = _StderrLog(False, stderr_lines)
         spool.mkdir(parents=True, exist_ok=True)
         self._proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_isolated()
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **procs.isolated_kwargs()
         )
-        kill_with_parent(self._proc)
+        procs.kill_with_parent(self._proc)
         self._reader = threading.Thread(
             target=self._log.read, args=(self._proc.stderr,), daemon=True
         )
@@ -2668,7 +1924,7 @@ class SplitDecode:
             stdout.close()
             if self._error is None and self._proc.poll() is None:
                 with suppress(subprocess.TimeoutExpired):
-                    self._proc.wait(SOFT_STOP_S)
+                    self._proc.wait(procs.SOFT_STOP_S)
                 self._kill()  # stdout closed and still running: never happens
             self._proc.wait()
             self._watch.finish()

@@ -63,7 +63,7 @@ MIN_FREE_MIB = 2048  # free VRAM when the first source is offered (Whisper may l
 MIN_TOTAL_MIB = 8192
 POLL_S = 0.5  # waits on the worker in steps this long: Ctrl+C gets through on Windows
 # close(): one frame's OCR calls (ffmpeg is killed at once on cancel); a worker still busy then
-# is left (daemon) and marked stuck. Below the UI's JOB_STOP_S, so a cancelled job exits by itself.
+# is left (daemon) and marked stuck. Below procs.JOB_STOP_S, so a cancelled job exits by itself.
 JOIN_S = 8.0
 Result = tuple[list[dict[str, Any]], dict[str, Any]]
 

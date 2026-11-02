@@ -21,7 +21,7 @@ from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, jsonout, sources, srt
+from cutpoint import boundaries, cache, folders, jsonout, procs, sources, srt
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.color import SKIP_360, SKIP_LOG, SKIP_NOT_UNDERWATER, AutoGrade, auto_grade
 from cutpoint.config import (
@@ -47,24 +47,15 @@ from cutpoint.encode import (
     plan_peaks,
     warn_if_log,
 )
+from cutpoint.errors import FFmpegError
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
-    SOFT_STOP_S,
     STOP_GRACE_S,
     ChildScope,
-    FFmpegError,
     MediaInfo,
-    check_not_sources,
     child_scope,
     clip_momentary,
-    output_dir,
     probe,
-    recover_swap,
-    same_file,
-    source_keys,
-    staged_dir,
-    swap_in,
-    swap_lock,
     video_encoder,
 )
 from cutpoint.planning import (
@@ -732,7 +723,7 @@ class _ExportPool:
         deadline = None
         if isinstance(err, KeyboardInterrupt):
             self.scope.cancel()  # ffmpeg got the same Ctrl+C: let it exit first
-            deadline = time.monotonic() + SOFT_STOP_S
+            deadline = time.monotonic() + procs.SOFT_STOP_S
         elif err is not None:
             self.scope.kill()
         for f in self.futures:
@@ -1075,7 +1066,7 @@ def _replaced_files(
             does not list, or that manifest.json is not one cutpoint wrote (before any
             export).
     """
-    check_not_sources(out_dir, new, sources)
+    folders.check_not_sources(out_dir, new, sources)
     if not out_dir.is_dir():
         return [], [], [], True, set(), {}
     check_own_manifest(out_dir)
@@ -1101,7 +1092,7 @@ def _replaced_files(
     def add(n: str) -> None:
         f = out_dir / n
         if f.is_file() or f.is_symlink():
-            (kept_sources if same_file(f, sources) else replace).append(n)
+            (kept_sources if folders.same_file(f, sources) else replace).append(n)
 
     for n in names:
         if n in present:
@@ -1118,7 +1109,7 @@ def _replaced_files(
     kept: list[str] = []
     for p in sorted(clip_files(out_dir)):
         if path_key(p.name, out_dir) not in done:
-            (kept_sources if same_file(p, sources) else kept).append(p.name)
+            (kept_sources if folders.same_file(p, sources) else kept).append(p.name)
     entries = manifest_entries(out_dir, [out_dir / n for n in kept])
     renamed = {n: e["file"] for n, e in entries.items() if e["file"] != n}
     return (
@@ -1334,8 +1325,8 @@ def _claimed(out_dir: Path, force: bool) -> Iterator[None]:
         FolderBusyError: If another run is using ``out_dir``.
         FileExistsError: If ``out_dir`` is not empty and ``force`` is False.
     """
-    with swap_lock(out_dir):
-        recover_swap(out_dir)  # before the folder is looked at
+    with folders.swap_lock(out_dir):
+        folders.recover_swap(out_dir)  # before the folder is looked at
         if not force and out_dir.exists() and any(out_dir.iterdir()):
             raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
         yield
@@ -1501,8 +1492,8 @@ def export_clips(
     # finished clips).
     with (
         _claimed(out_dir, force),
-        output_dir(out_dir.parent),
-        staged_dir(out_dir, direct_if_empty=True) as work,
+        folders.output_dir(out_dir.parent),
+        folders.staged_dir(out_dir, direct_if_empty=True) as work,
     ):
         from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
@@ -1567,7 +1558,9 @@ def export_clips(
         replace, kept_sources, kept, had_manifest, protected_srts, renamed = _replaced_files(
             out_dir,
             [p.name for p in plans],
-            source_keys((s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()),
+            folders.source_keys(
+                (s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()
+            ),
         )
         peaks, makeup = peak_filters(plans, compress_peaks)
         grades: list[Grade | None] = [lut] * len(plans)
@@ -1614,7 +1607,7 @@ def export_clips(
             grades=grades,
         )
         if work != out_dir:  # staged, not exported into directly
-            swap_in(work, out_dir, [*replace, "manifest.json"])
+            folders.swap_in(work, out_dir, [*replace, "manifest.json"])
     hint = "assemble includes them, so move them out if they are not part of the edit"
     if kept_sources:
         message = (

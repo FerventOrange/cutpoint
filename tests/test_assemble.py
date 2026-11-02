@@ -14,7 +14,8 @@ import pytest
 
 from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, encode, ffmpeg_utils, jsonout, sources
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, VideoEncoder
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import MediaInfo, VideoEncoder
 
 
 def _info(duration: float, vduration: float) -> MediaInfo:
