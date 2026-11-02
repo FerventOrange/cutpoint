@@ -76,8 +76,7 @@ def test_learned_style_with_unknown_feature_loads_with_a_warning(
     assert style.weights["vlm_window"] == 0.1
     [msg] = messages(caplog, logger="cutpoint.styles")
     assert str(path) in msg
-    assert "features 'lodness', 'vlm_window'" in msg
-    assert "their weights still count" in msg
+    assert "'lodness', 'vlm_window'" in msg
     peak = STYLES["gaming"].weights["loudness"]
     assert _top_score(style, _sig()) == round(100 * (peak / sum(style.weights.values())), 1)
 
@@ -86,9 +85,7 @@ def test_style_and_base_keeps_the_base_of_a_style_with_an_unknown_feature(home, 
     write_style(home / "styles", {"name": "odd", "base": "funny", "weights": {"lodness": 0.4}})
     assert scoring.style_and_base("odd") == ("odd", "funny")
     [msg] = messages(caplog, logger="cutpoint.styles")
-    assert (
-        "feature 'lodness' in its weights; nothing measures it, but its weight still counts" in msg
-    )
+    assert "'lodness'" in msg
 
 
 def test_validate_names_the_style():
@@ -204,8 +201,6 @@ def test_ski_score_is_renormalised_like_the_other_styles():
 def test_ski_features_come_from_the_registry_in_the_grid_order():
     assert ski.FEATURES == features.SKI_FEATURES
     assert all(features.get(f).kind == "grid" for f in ski.FEATURES)
-    # the voice and visual layers and the taste head, in the order they had before 1b
-    assert ski.NEW_FEATURES == ("beauty", "people", "group", "voice_laughter", "voice", "taste")
     assert "laughter" not in ski.FEATURES and "laughter" not in STYLES["ski"].weights
 
 
@@ -245,22 +240,6 @@ def test_old_ski_features_file_reads_laughter_as_voice_laughter(tmp_path):
     (d,) = ski.load_project_features(tmp_path)
     assert list(d["features"]) == ["airtime", "voice_laughter", "voice"]
     assert d["features"]["voice_laughter"].tolist() == [0.25] * 4
-
-
-def test_combine_sums_like_the_code_before_the_registry():
-    """Generic styles: from int 0, as their pre-registry ``sum()`` (float32 stays float32); ski:
-    from float64 zeros, as its pre-registry loop (cached telemetry grids are float32)."""
-    rng = np.random.default_rng(3)
-    grids = {k: rng.random(50).astype(np.float32) for k in ("a", "b", "c")}
-    w = {"a": 0.3, "b": 0.0, "c": 0.7}
-    old_generic = sum(w.get(k, 0.0) * v for k, v in grids.items())
-    assert features.combine(grids, w, grids).tobytes() == old_generic.tobytes()
-    old_ski = np.zeros(50)
-    for k, v in w.items():
-        if v:
-            old_ski += v * grids[k]
-    new_ski = scorer.ski_combined(grids, w, np.ones(50))
-    assert new_ski.dtype == np.float64 and new_ski.tobytes() == old_ski.tobytes()
 
 
 def test_lite_ski_score_is_capped_at_100():

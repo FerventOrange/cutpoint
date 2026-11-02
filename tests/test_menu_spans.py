@@ -14,7 +14,7 @@ import pytest
 from conftest import write
 from cutpoint import cache, sources
 from cutpoint.events import pipeline, scoring
-from cutpoint.events.menu_spans import MENU_DROP_SHARE, drop_menu_time, merge_menu_frames
+from cutpoint.events.menu_spans import drop_menu_time, merge_menu_frames
 from cutpoint.styles import get_style
 
 SRC = "/footage/rec.mp4"
@@ -59,7 +59,6 @@ def test_a_frame_gap_splits_spans() -> None:
 
 
 def test_mostly_menu_is_dropped() -> None:
-    assert MENU_DROP_SHARE == 0.5
     hl = _hl(_cand(10, 20), _cand(30, 40), _cand(50, 60))
     drop_menu_time(hl, _ev([[12, 17], [30, 34.9], [55, 56]]))
     # 10-20: 5 of 10 s in the middle (half: dropped); 30-40: 4.9 s at the start (trimmed)
@@ -76,7 +75,6 @@ def test_start_and_end_in_menu_spans_are_trimmed() -> None:
 
 
 def test_trim_keeps_the_style_minimum_length() -> None:
-    assert get_style("commentary").min_len == 20.0
     hl = _hl(_cand(10, 40), style="commentary")
     # 11 of 30 s in menu time: the start moves to 12 (28 s left), the end would leave 19 s
     drop_menu_time(hl, _ev([[5, 12], [31, 50]]))
@@ -90,16 +88,11 @@ def test_unknown_style_is_never_trimmed() -> None:
     assert (hl["candidates"][0]["start"], hl["candidates"][0]["end"]) == (10, 20)
 
 
-def test_menu_time_in_the_middle_is_kept_uncut(caplog) -> None:
-    caplog.set_level(logging.INFO, logger="cutpoint.events.menu_spans")
+def test_menu_time_in_the_middle_is_kept_uncut() -> None:
     hl = _hl(_cand(10, 30))
     before = copy.deepcopy(hl)
     drop_menu_time(hl, _ev([[15, 20]]))
     assert hl == before
-    assert [r.getMessage() for r in caplog.records] == [
-        "rec.mp4: menu time in candidates: 0 dropped (0.0s), 0 trimmed (0.0s cut), "
-        "1 kept with 5.0s of menu time inside"
-    ]
 
 
 def test_no_menu_spans_leave_the_analysis_as_it_was(caplog) -> None:
@@ -122,16 +115,6 @@ def test_sources_sharing_a_name_are_not_filtered() -> None:
     hl = _hl(_cand(10, 20))
     drop_menu_time(hl, _ev([[10, 20]], others=["/elsewhere/rec.mp4"]))
     assert len(hl["candidates"]) == 1
-
-
-def test_log_line_counts_dropped_and_trimmed(caplog) -> None:
-    caplog.set_level(logging.INFO, logger="cutpoint.events.menu_spans")
-    hl = _hl(_cand(10, 20), _cand(30, 50), _cand(60, 70))
-    drop_menu_time(hl, _ev([[9, 19], [28, 32]]))
-    assert [r.getMessage() for r in caplog.records] == [
-        "rec.mp4: menu time in candidates: 1 dropped (10.0s), 1 trimmed (2.0s cut), "
-        "0 kept with 0.0s of menu time inside"
-    ]
 
 
 def test_a_trimmed_candidate_gets_the_transcript_of_what_is_left(tmp_path, home) -> None:

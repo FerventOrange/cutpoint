@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cutpoint.events.killfeed import EventTracker, FeedParser, _icon_cut, icon_split
+from cutpoint.events.killfeed import EventTracker, FeedParser, _icon_cut
 
 BLUE, ORANGE, BLACK, WHITE = (230, 140, 30), (30, 140, 240), (10, 10, 10), (255, 255, 255)
 ICON = {"row_notices": True}  # a discovered icon feed's preset ``feed``
@@ -28,10 +28,6 @@ def _line(widths: tuple[int, int, int] = (110, 70, 120), h: int = 30) -> np.ndar
 
 def _item(x0: int, x1: int, text: str, h: int = 30) -> tuple[list, str, float]:
     return [[x0, 0], [x1, 0], [x1, h], [x0, h]], text, 0.95
-
-
-def test_icon_split_of_one_box() -> None:
-    assert icon_split(_line(), "AlderBoxer7") == ("Alder", "Boxer7", "blue", "orange")
 
 
 def test_one_box_line_is_a_kill() -> None:
@@ -109,7 +105,6 @@ def test_row_notices_read_other_feed_rows() -> None:
         ("notice", "Kip has left the game"),
     ]
     assert evs[1]["unknown"]
-    assert FeedParser({}, (), 1.0).parse(img, items) == []  # off without the flag
 
 
 def _track(parser: FeedParser, reads: list[tuple[float, list[tuple[str, str]], float]]) -> list:

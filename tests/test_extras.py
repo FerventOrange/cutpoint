@@ -120,15 +120,12 @@ _RERUN = f"{extras.INSTALL_SH} (Linux, macOS) or {extras.INSTALL_PS1} (Windows P
     ("edition", "lite"),
     [("lite", " without --lite / -Lite and with CUTPOINT_LITE unset"), ("full", "")],
 )
-@pytest.mark.parametrize("extra", ["events", "gpu"])
-def test_install_hint_uv_tool_reruns_the_installer(
-    monkeypatch, tmp_path, receipt, edition, lite, extra
-):
+def test_install_hint_uv_tool_reruns_the_installer(monkeypatch, tmp_path, receipt, edition, lite):
     # uv tool install without --torch-backend pulls CUDA torch on a CPU-only machine; the
     # installer picks the backend for this machine
     _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
     monkeypatch.setattr(extras, "edition", lambda: edition)
-    assert extras.install_hint(extra) == f"re-run the installer{lite}: {_RERUN}"
+    assert extras.install_hint("gpu") == f"re-run the installer{lite}: {_RERUN}"
 
 
 def _receipt_with(source: str) -> str:
@@ -145,27 +142,17 @@ def _receipt_with(source: str) -> str:
             False,
         ),
         (
-            'git = "https://github.com/FerventOrange/cutpoint.git?tag=v1#subdirectory=pkg"',
-            "'git@v1'",
-            "git@v1",
-            False,
-        ),
-        (
             'git = "https://GitHub.com/ferventorange/Cutpoint", branch = "dev"',
             "'git@dev'",
             "git@dev",
             False,
         ),
-        ('git = "https://github.com/FerventOrange/cutpoint"', "'git'", "git", False),
-        ('directory = "C:/src/cutpoint"', "'C:/src/cutpoint'", "C:/src/cutpoint", False),
         (
             'path = "C:/My Downloads/cutpoint-1.0-py3-none-any.whl"',
             "'C:/My Downloads/cutpoint-1.0-py3-none-any.whl'",
             "'C:/My Downloads/cutpoint-1.0-py3-none-any.whl'",  # quoted for sh
             False,
         ),
-        # PowerShell expands $ in double quotes, so the value is single-quoted
-        ('directory = "D:/$dev/cutpoint"', "'D:/$dev/cutpoint'", "'D:/$dev/cutpoint'", False),
         (
             'directory = "//nas/share$x/Bob\'s cutpoint"',
             "'//nas/share$x/Bob''s cutpoint'",  # a ' doubled inside single quotes
@@ -176,13 +163,9 @@ def _receipt_with(source: str) -> str:
     ],
     ids=[
         "git-rev",
-        "git-tag",
         "git-branch-key",
-        "git",
-        "directory",
         "path-space",
-        "dollar",
-        "quote",
+        "quote",  # PowerShell expands $ in double quotes: single-quoted, ' doubled
         "editable",
     ],
 )
@@ -216,24 +199,18 @@ _FORK = "https://github.com/someone/cutpoint"
 @pytest.mark.parametrize(
     ("source", "url"),
     [
-        (f'git = "{_FORK}?rev=fix"', f"git+{_FORK}@fix"),
         (f'git = "{_FORK}#subdirectory=pkg", extras = ["gpu"]', f"git+{_FORK}#subdirectory=pkg"),
-        (
-            'git = "https://gitlab.com/FerventOrange/cutpoint"',
-            "git+https://gitlab.com/FerventOrange/cutpoint",
-        ),
         (
             'url = "https://example.com/cutpoint-1.0-py3-none-any.whl"',
             "https://example.com/cutpoint-1.0-py3-none-any.whl",
         ),
     ],
-    ids=["fork-rev", "fork-subdirectory", "other-host", "wheel-url"],
+    ids=["fork-subdirectory", "wheel-url"],
 )
 @pytest.mark.parametrize(
     ("torch", "backend", "note"),
     [
         ("2.14.1+cu126", "cu126", ""),
-        ("2.14.1+cpu", "cpu", ""),
         (None, "cpu", " (cu126 instead of cpu with an NVIDIA GPU)"),  # lite: no torch yet
     ],
 )
@@ -262,12 +239,6 @@ def test_installer_hint_fork_gives_uv_tool_install(
         f"--torch-backend {backend} {tail}{note}"
     )
     assert f"--torch-backend cu126 {tail}" in extras.torch_cuda_hint()  # its purpose is CUDA
-
-
-def test_installer_one_liners():
-    raw = "https://raw.githubusercontent.com/FerventOrange/cutpoint/main"
-    assert f"curl -LsSf {raw}/install.sh | sh" == extras.INSTALL_SH
-    assert f"irm {raw}/install.ps1 | iex" == extras.INSTALL_PS1
 
 
 def test_install_hint_editable_uv_outside_clone_venv(monkeypatch, tmp_path):

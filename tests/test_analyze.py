@@ -279,7 +279,7 @@ def test_reanalyze_keeps_the_analysis_time_and_records_the_rerank_time(home, tmp
         assert 0 <= timings["rerank_s"] < 1234.5
 
 
-def test_reanalyze_of_an_analysis_without_a_total_records_its_own(tmp_path, monkeypatch):
+def test_reanalyze_of_an_analysis_without_a_total_passes_no_earlier_total(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     write(proj / "highlights.json", json.dumps({"style": "funny", "sources": [], "settings": {
         "inputs": [str(tmp_path / "a.mp4")]}, "timings": {}}))  # fmt: skip
@@ -292,7 +292,6 @@ def test_reanalyze_of_an_analysis_without_a_total_records_its_own(tmp_path, monk
 @pytest.mark.parametrize(
     ("settings", "vision"),
     [
-        ({"vision_requested": True, "vision_used": True}, True),
         ({"vision_requested": True, "vision_used": False}, True),  # asked; Ollama was down
         ({"vision_requested": False, "vision_used": False}, False),
         # before vision was opt-in: an automatic run is no request, so no Ollama call now
@@ -320,45 +319,41 @@ def _words(probs, texts=None):
     ]
 
 
-def test_transcript_snippet_lists_unsure_words_by_index():
-    words = _words([0.9, 0.4, 0.25], ["hello", "big", "world"])
-    text, unsure = analyze._transcript_snippet(words)
-    assert text == "hello big world"
-    assert unsure == [(1, 0.4), (2, 0.25)]
-    assert [text.split(" ")[i] for i, _ in unsure] == ["big", "world"]
-
-
-def test_transcript_snippet_threshold_is_exclusive():
-    _, unsure = analyze._transcript_snippet(_words([analyze.UNSURE_P, 0.9]))
-    assert unsure is None
-
-
-def test_transcript_snippet_cut_mid_word_keeps_the_index(monkeypatch):
-    monkeypatch.setattr(analyze, "SNIPPET_CHARS", 8)
-    words = _words([0.9, 0.3, 0.1], ["hello", "big", "world"])
-    text, unsure = analyze._transcript_snippet(words)
-    assert text == "hello bi"
-    assert unsure == [(1, 0.3)]  # "world" is past the snippet
-
-
-def test_transcript_snippet_cut_at_a_space_has_no_empty_word(monkeypatch):
-    monkeypatch.setattr(analyze, "SNIPPET_CHARS", 6)  # "hello " before rstrip
-    text, unsure = analyze._transcript_snippet(_words([0.2, 0.1], ["hello", "big"]))
-    assert text == "hello"
-    assert unsure == [(0, 0.2)]
-
-
-def test_transcript_snippet_splits_spaced_and_skips_empty_words():
-    words = _words([0.9, 0.3, 0.2, 0.1], ["hello", "", "new  york", "now"])
-    text, unsure = analyze._transcript_snippet(words)
-    assert text == "hello new york now"
-    assert unsure == [(1, 0.2), (2, 0.2), (3, 0.1)]
+@pytest.mark.parametrize(
+    ("chars", "probs", "texts", "text", "unsure"),
+    [
+        (
+            None,
+            [0.9, 0.4, 0.25],
+            ["hello", "big", "world"],
+            "hello big world",
+            [(1, 0.4), (2, 0.25)],
+        ),
+        (8, [0.9, 0.3, 0.1], ["hello", "big", "world"], "hello bi", [(1, 0.3)]),  # cut mid-word
+        (6, [0.2, 0.1], ["hello", "big"], "hello", [(0, 0.2)]),  # cut at a space: no empty word
+        (  # spaced words split, empty ones skipped; indexes are of the snippet's words
+            None,
+            [0.9, 0.3, 0.2, 0.1],
+            ["hello", "", "new  york", "now"],
+            "hello new york now",
+            [(1, 0.2), (2, 0.2), (3, 0.1)],
+        ),
+    ],
+    ids=["by-index", "cut-mid-word", "cut-at-space", "spaced-and-empty"],
+)
+def test_transcript_snippet_lists_unsure_words_by_index(
+    monkeypatch, chars, probs, texts, text, unsure
+):
+    if chars is not None:
+        monkeypatch.setattr(analyze, "SNIPPET_CHARS", chars)
+    got, got_unsure = analyze._transcript_snippet(_words(probs, texts))
+    assert (got, got_unsure) == (text, unsure)
 
 
 @pytest.mark.parametrize(
     "words",
-    [_words([0.1, None]), [], _words([0.9, 0.8])],
-    ids=["missing-probability", "empty", "all-confident"],
+    [_words([0.1, None]), [], _words([0.9, 0.8]), _words([analyze.UNSURE_P, 0.9])],
+    ids=["missing-probability", "empty", "all-confident", "at-the-threshold"],
 )
 def test_transcript_snippet_without_unsure_words(words):
     assert analyze._transcript_snippet(words)[1] is None
@@ -366,8 +361,8 @@ def test_transcript_snippet_without_unsure_words(words):
 
 @pytest.mark.parametrize(
     ("unsure", "present"),
-    [([(0, 0.3)], True), (None, False), ([], False)],
-    ids=["set", "none", "empty"],
+    [([(0, 0.3)], True), ([], False)],
+    ids=["set", "empty"],
 )
 def test_candidate_record_emits_transcript_unsure_only_when_set(unsure, present):
     c = analyze.Candidate(

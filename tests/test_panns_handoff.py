@@ -85,44 +85,36 @@ def run(tmp_path: Path, monkeypatch):
     return go
 
 
-def test_voice_gets_the_audio_detector_and_it_is_closed_once(tmp_path: Path, run):
-    made, log = run([_source(tmp_path, "a"), _source(tmp_path, "b")], ("audio", "voice"))
-    assert len(made) == 1
-    det = made[0]
-    assert log == [
-        ("made", det),
-        ("detect", det),
-        ("detect", det),
-        ("voice", det),
-        ("close", det),
-        ("after", None),
-    ]
-
-
-def test_without_voice_the_detector_is_closed_after_audio(tmp_path: Path, run):
-    made, log = run([_source(tmp_path, "a")], ("audio",))
-    det = made[0]
-    assert log == [("made", det), ("detect", det), ("close", det), ("after", None)]
-
-
-def test_cached_voice_grids_close_the_detector_after_audio(tmp_path: Path, run):
-    src = _source(tmp_path, "a")
-    _cache_voice(src)
-    made, log = run([src], ("audio", "voice"))
-    det = made[0]
-    assert log == [
-        ("made", det),
-        ("detect", det),
-        ("close", det),
-        ("voice", None),
-        ("after", None),
-    ]
-
-
-def test_a_failed_audio_layer_closes_the_detector(tmp_path: Path, run):
-    made, log = run([_source(tmp_path, "a")], ("audio", "voice"), fail=True)
-    det = made[0]
-    assert log == [("made", det), ("detect", det), ("close", det)]
+@pytest.mark.parametrize(
+    ("layers", "cached", "fail", "voice_gets"),
+    [
+        (("audio", "voice"), False, False, "det"),  # voice reuses the audio detector
+        (("audio",), False, False, "absent"),
+        (("audio", "voice"), True, False, "none"),  # cached grids: freed before voice
+        (("audio", "voice"), False, True, "absent"),  # a failed audio layer still closes it
+    ],
+    ids=["voice", "no-voice", "cached-voice", "audio-fails"],
+)
+def test_one_audio_detector_is_shared_and_closed_once_before_it_is_not_needed(
+    tmp_path: Path, run, layers, cached, fail, voice_gets
+):
+    srcs = [_source(tmp_path, "a"), _source(tmp_path, "b")]
+    if cached:
+        for src in srcs:
+            _cache_voice(src)
+    made, log = run(srcs[:1] if fail else srcs, layers, fail=fail)
+    (det,) = made
+    assert [d for k, d in log if k == "detect"] == [det] * (1 if fail else 2)
+    assert log.count(("close", det)) == 1
+    voiced = [d for k, d in log if k == "voice"]
+    assert voiced == {"det": [det], "none": [None], "absent": []}[voice_gets]
+    if voiced:
+        before = log.index(("close", det)) < log.index(("voice", voiced[0]))
+        assert before is (voice_gets == "none")
+    if fail:
+        assert ("after", None) not in log
+    else:
+        assert log.index(("close", det)) < log.index(("after", None))
 
 
 def test_needs_run_checks_the_cache_files(tmp_path: Path):

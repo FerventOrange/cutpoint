@@ -40,8 +40,9 @@ from cutpoint import cache
 
 logger = logging.getLogger(__name__)
 
-# bump when the reader's records change (what is recorded, or how a gate decides)
-RAW_VERSION = 1
+# bump when the reader's records change (what is recorded, or how a gate decides);
+# 2: no det_side, regions keyed with all their fields
+RAW_VERSION = 2
 CHUNK_FRAMES = 600  # frames per chunk: what an interrupted read loses at most
 KEEP_RAW = 2  # complete raw reads kept per source (the most recently used)
 STALE_S = 7 * 24 * 3600  # an incomplete raw read untouched this long is removed
@@ -61,7 +62,6 @@ def raw_key(
     newest: str,
     min_text_score: float,
     avoid: list[tuple[float, float]],
-    det_side: int,
 ) -> dict[str, Any]:
     """Key of a raw read: everything the reader's records depend on.
 
@@ -71,7 +71,6 @@ def raw_key(
         newest: The feed end new entries appear at (the preset's ``feed.newest``).
         min_text_score: Recognition score below which text is dropped.
         avoid: Time ranges never decoded.
-        det_side: Detection size limit of the OCR engine.
     """
     return {
         "v": RAW_VERSION,
@@ -81,7 +80,6 @@ def raw_key(
         "min_text_score": min_text_score,
         "avoid": [list(a) for a in avoid],
         "engine": engine_version(),
-        "det_side": det_side,
     }
 
 

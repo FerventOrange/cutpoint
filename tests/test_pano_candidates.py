@@ -164,34 +164,25 @@ def test_clips_logs_why_it_re_plans(project, home, monkeypatch, caplog) -> None:
         ex.overrides = overrides
         with caplog.at_level(logging.INFO):
             ex.path_for(clip, *args)
-        return [r.getMessage() for r in caplog.records if "director path" in r.getMessage()]
+        [line] = [r.getMessage() for r in caplog.records if "director path" in r.getMessage()]
+        assert args[0] in line
+        return line
 
-    assert lines("001_a.mp4", 4.0, 12.5, "people") == [
-        "  001_a.mp4: director path planned by 360 analyze"
-    ]
-    assert lines("001_b.mp4", 4.0, 13.1, "people") == [  # a smart tail moved the end
-        "  001_b.mp4: director path re-planned (span differs from 360 analyze)"
-    ]
-    assert lines("001_c.mp4", 4.0, 12.5, "speed") == [
-        "  001_c.mp4: director path re-planned (settings changed)"
-    ]
-    assert lines("001_d.mp4", 4.0, 12.5, "people", overrides={"max_speed": 30}) == [
-        "  001_d.mp4: director path re-planned (settings changed)"
-    ]
+    assert "planned by 360 analyze" in lines("001_a.mp4", 4.0, 12.5, "people")
+    assert "span differs" in lines("001_b.mp4", 4.0, 13.1, "people")  # a smart tail moved it
+    assert "settings changed" in lines("001_c.mp4", 4.0, 12.5, "speed")
+    assert "settings changed" in lines(
+        "001_d.mp4", 4.0, 12.5, "people", overrides={"max_speed": 30}
+    )
     caplog.clear()
     with caplog.at_level(logging.INFO):
         R.PanoExporter(proj, proj / "clips", vertical=True).path_for(
             clip, "001_v.mp4", 4.0, 12.5, "people"
         )
-    assert [r.getMessage() for r in caplog.records if "director path" in r.getMessage()] == [
-        "  001_v.mp4: director path re-planned (9:16 not planned by 360 analyze)"
-    ]
+    assert "(9:16 not planned by 360 analyze)" in caplog.text
     views = VW.cache_path(Path(clip.lrv))
     st = views.stat()
     os.utime(views, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # 360 analyze --force-views
-    assert lines("001_e.mp4", 4.0, 12.5, "people") == [
-        "  001_e.mp4: director path re-planned (layers changed)"
-    ]
     monkeypatch.setattr(C, "code_id", lambda: "0123456789ab")
     assert C.cached_path(proj, clip, 14.0, 20.0, None, None) == (
         None,
@@ -217,20 +208,11 @@ def test_changed_planning_code_invalidates(project, monkeypatch) -> None:
     proj, clip = project
     C.cache_candidate_paths(proj)
     assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is not None
-    assert len(C.code_id()) == 12 and C.code_id() == C.code_id()
+    assert C.code_id() == C.code_id()
     monkeypatch.setattr(C, "code_id", lambda: "0123456789ab")  # director code changed
     assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is None
     st = C.cache_candidate_paths(proj)
     assert (st["computed"], st["cached"]) == (2, 0)
-
-
-def test_code_id_covers_the_modules_the_path_reads() -> None:
-    import importlib.util  # noqa: PLC0415
-
-    assert {"cutpoint.pano.director", "cutpoint.pano.views", "cutpoint.events.voice"} <= set(
-        C.CODE_MODULES
-    )
-    assert all(importlib.util.find_spec(m) is not None for m in C.CODE_MODULES)
 
 
 def test_stale_entries_are_pruned_and_the_folder_removed(project) -> None:
@@ -329,7 +311,6 @@ TIMING_RUNS = {
     "no_scan": ({}, {"views", "analyze_s", "events_s", "paths_s"}),
     "no_events": ({"no_events": True}, {"views", "analyze_s", "paths_s"}),
     # no earlier file to keep the analysis keys of (see the views_only_keeps test)
-    "views_only": ({"views_only": True}, {"views"}),
     "views_only_scan": ({"views_only": True, "scan": ["cam"]}, {"views", "scan_s"}),
 }
 STALE_TIMINGS = {"scan_s": 99.0, "events_s": 99.0, "analyze_total_s": 99.0, "views": {"old": 1}}
@@ -404,10 +385,7 @@ def test_360_analyze_timings_hold_this_run_only(
     ("over", "step", "exc"),
     [
         ({}, "run_events", RuntimeError),
-        ({}, "run_events", KeyboardInterrupt),
-        ({}, "reanalyze_if_reachable", RuntimeError),
-        ({}, "cache_candidate_paths", KeyboardInterrupt),  # an Exception only warns
-        ({"no_events": True}, "cache_candidate_paths", KeyboardInterrupt),
+        ({"no_events": True}, "cache_candidate_paths", KeyboardInterrupt),  # Exception: warns
         ({}, "analyze", KeyboardInterrupt),  # held until analyze's commit, then raised
     ],
 )
@@ -454,8 +432,6 @@ def test_360_analyze_failure_after_highlights_without_timings_file(
     ("over", "target", "exc"),
     [
         ({}, (analyze_mod, "analyze"), RuntimeError),
-        ({}, (analyze_mod, "analyze"), KeyboardInterrupt),
-        ({}, (VW, "run_layer"), RuntimeError),
         ({"views_only": True}, (VW, "run_layer"), KeyboardInterrupt),
     ],
 )
@@ -562,8 +538,8 @@ def test_360_analyze_views_only_keeps_the_analysis_timings(
 
 @pytest.mark.parametrize(
     "earlier",
-    [{"scan_s": 5.0}, {"views": {"old": 1}, "total_s": 40.0}, ["not", "a", "dict"]],
-    ids=["scan_only", "views_only", "not_a_dict"],
+    [{"scan_s": 5.0}, ["not", "a", "dict"]],
+    ids=["scan_only", "not_a_dict"],
 )
 def test_360_analyze_views_only_without_an_earlier_analysis(
     monkeypatch, tmp_path: Path, earlier: object

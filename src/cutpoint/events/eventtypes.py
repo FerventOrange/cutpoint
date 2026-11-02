@@ -24,8 +24,7 @@ must be false). Preset types are checked before
 first matching type wins, whatever the project style (``styles`` gates only
 the points). Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
 built-in rules, so the defaults reproduce the original behaviour exactly,
-except that the player's own deaths (generic verb-style feeds and built-in R6
-feeds alike) no longer count as player kills, a self-kill counts as
+except that the player's own deaths no longer count as player kills, a self-kill counts as
 ``self_kills`` (half a kill) instead, and in the ``funny`` style a death
 followed by a reaction adds ``player_deaths``' reaction points.
 """
@@ -52,7 +51,6 @@ BANNER_PAYOFFS = (
     "DEFEAT",
     "ACE",
     "CLUTCH",
-    "REVERSE FRIENDLY FIRE",
     "TARGET DESTROYED",
     "SHOT DOWN",
     "MISSION ACCOMPLISHED",
@@ -144,23 +142,20 @@ class EventType:
         return self.styles is None or any(n in self.styles for n in names)
 
 
-# Order reproduces the original scoring chain: a teamkill (or an RFF banner)
-# before the player's kills, then payoff banners and multikills. Banners are
-# matched with startswith: their label is the matched phrase ("WON ROUND 5"),
-# as in killfeed.link_teamkills. The player's own deaths (victim, not also
-# killer) match "player_deaths" first, in every style: no per-event boost and
-# no count key; in the funny style a reaction after the death (a friend's
-# "look out" after it already happened) adds 8 points. The
-# unset payoff / seed keep the built-in rules (a tail payoff, seed 1.2 in R6
-# feeds, where ``player`` is set for either side). Self-kills (the player is
-# killer and victim) come after teamkills and before both: their own type,
-# worth half a kill, a tail payoff and a seed like a death. Player kills: kills
-# by the player; ``player !verb`` still counts built-in rows that carry neither
-# ``player_kill`` nor ``player_death``.
+# Order reproduces the original scoring chain: a teamkill before the player's
+# kills, then payoff banners and multikills. Banners are matched with
+# startswith on their label. The player's own deaths (victim, not also killer)
+# match "player_deaths" first, in every style: no per-event boost and no count
+# key; in the funny style a reaction after the death (a friend's "look out"
+# after it already happened) adds 8 points. The unset payoff / seed keep the
+# built-in rules (a tail payoff, seed 1.2 for player rows). Self-kills (the player is killer
+# and victim) come after teamkills and before both: their own type, worth half
+# a kill, a tail payoff and a seed like a death. Player kills: kills by the
+# player (``player_kill``).
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     EventType(
         "teamkills",
-        (Matcher("kill", flag="teamkill"), Matcher("banner", prefix=("REVERSE FRIENDLY FIRE",))),
+        (Matcher("kill", flag="teamkill"),),
         score=12.0,
         max=1,
     ),
@@ -178,7 +173,7 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     ),
     EventType(
         "player_kills",
-        (Matcher("kill", flag="player_kill"), Matcher("kill", flag="player !verb")),
+        (Matcher("kill", flag="player_kill"),),
         score=6.0,
         max=3,
     ),

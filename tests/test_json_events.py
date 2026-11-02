@@ -151,39 +151,6 @@ def test_events_json_footage_unreachable(project, tmp_path, monkeypatch, capsys)
     assert doc["warnings"][0]["files"] == [str(gone)]
 
 
-def test_events_json_footage_unreachable_warned_once(
-    project, tmp_path, monkeypatch, capsys, caplog
-):
-    """run_events warns and logs per unreachable source; the crash layer adds neither again."""
-    gone = tmp_path / "gone.mp4"
-    (src,) = [s["path"] for s in cache.load_json(project / "highlights.json")["sources"]]
-    cache.save_json(project / "highlights.json", {"sources": [{"path": src}, {"path": str(gone)}]})
-    seen: dict = {}
-
-    def detect(project: Path, **kwargs) -> Path:
-        seen.update(kwargs)
-        path = project / "crashes.json"
-        cache.save_json(path, {"crashes": []})
-        return path
-
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr("cutpoint.crash.detect_project", detect)
-    with caplog.at_level(logging.WARNING):
-        code, doc = run_json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
-    assert code == 0 and doc["ok"] is True
-    assert seen["warn_unreachable"] is False  # detect_project then logs it at DEBUG only
-    warns = [
-        r.getMessage()
-        for r in caplog.records
-        if r.levelno == logging.WARNING and "footage not reachable" in r.getMessage()
-    ]
-    assert len(warns) == 1 and warns[0].startswith(str(gone)), warns
-    assert warning_codes(doc).count("footage_unreachable") == 1, doc
-    assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
-        [str(gone)]
-    ]
-
-
 def test_events_crash_layer_one_warning_line_per_unreachable_source(
     project, tmp_path, monkeypatch, capsys, caplog
 ):
@@ -212,3 +179,6 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
     ]
     assert len(warns) == 1, warns
     assert warning_codes(doc).count("footage_unreachable") == 1, doc
+    assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
+        [str(gone)]
+    ]
