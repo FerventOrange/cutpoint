@@ -11,8 +11,8 @@ manage; this is a small open-source project without a service-level commitment.
 
 ## Scope
 
-Cutpoint runs locally and invokes ffmpeg, ffprobe and, for the optional `events` layers, a local
-`llama-server` process. Relevant reports include unsafe handling of file names or paths from
+Cutpoint runs locally and invokes ffmpeg and ffprobe; the optional vision rating and `events`
+VLM layer ask a local Ollama server or, after consent, a hosted model. Relevant reports include unsafe handling of file names or paths from
 media and JSON inputs (segments files, presets, `config.json`), unsafe downloads in
 `cutpoint setup`, and anything that could make Cutpoint modify source videos or write outside
 its project and data folders.

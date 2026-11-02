@@ -10,7 +10,7 @@ carries telemetry.
 ```powershell
 cutpoint stage D:\Videos\trip                        # telemetry reading uses whole files: stage slow storage first
 cutpoint analyze D:\Videos\trip --style action-cam --out trip
-cutpoint events trip                                 # optional: model tags (VLM layer) or forced layers
+cutpoint events trip                                 # optional: model tags (VLM layer, needs the Ollama vision model) or forced layers
 cutpoint clips trip --max-total 150
 cutpoint assemble projects/trip/clips --loudnorm
 ```

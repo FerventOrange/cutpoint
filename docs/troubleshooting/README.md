@@ -7,7 +7,7 @@ when interrupted).
 | Symptom | Page |
 |---|---|
 | ffmpeg not found, GPU encoder issues (NVENC, AMF, VAAPI), slow encoding, CUDA or cuDNN errors, out of GPU memory, CPU-only torch on an NVIDIA machine (`capabilities` warning) | [ffmpeg and GPU](ffmpeg-gpu.md) |
-| Ollama not reachable or model not pulled (`--vision`, AI Chat), model downloads fail, missing module, `setup` problems | [Models and Ollama](models.md) |
+| Ollama not reachable or model not pulled (`--vision`, the `events` VLM layer, AI Chat), model downloads fail, missing module, `setup` problems | [Models and Ollama](models.md) |
 | Disk full, slow or network drives, read errors, damaged files | [Storage](storage.md) |
 | 360 clips, SDK not found, stitching fails | [360 and the Insta360 SDK](360.md) |
 

@@ -34,35 +34,19 @@ Chat, `360 director --vl-check` and building a new activity profile use it too. 
 Replies in the AI Chat or `--vision` ratings that take very long usually mean the model runs on
 the CPU (it did not fit in GPU memory); a smaller model or a GPU helps.
 
-The `events` model layer does not use Ollama for its main model. It starts its own
-`llama-server` (llama.cpp) from `<CUTPOINT_HOME>\tools\llama.cpp`; its log is
-`tools\llama.cpp\llama-server.log`.
+The VLM layer of `cutpoint events` uses the same vision model as `--vision`: Ollama with
+`qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the subscription Vision model of the
+Models tab once you allowed vision requests there. When neither answers, `events` logs
+`VLM: vision model ... not available`, keeps the window descriptions it has cached and goes on
+with the other layers. Check the points above, or pull the model with `ollama pull qwen3.5:9b`.
 
 ## `cutpoint setup` fails or is incomplete
 
 - Downloads resume. Run `cutpoint setup` again, or only the failing part:
-  `cutpoint setup --only omni`.
-- Components: `pip` (only checks Python packages), `panns`, `llama`, `omni`, `visual`, `voice`.
+  `cutpoint setup --only visual`.
+- Components: `pip` (only checks Python packages), `panns`, `visual`, `voice`.
 - Behind a proxy or offline, download manually and place files under `CUTPOINT_HOME` using the
   folder layout in [Configuration](../configuration.md#data-folder-cutpoint_home).
-- `llama` downloads llama.cpp assets: on both Windows and Linux, `auto` prefers CUDA when a
-  usable NVIDIA driver is detected, otherwise Vulkan, then CPU when distribution assets are
-  available (see [Configuration](../configuration.md#environment-variables)). You can override this
-  with `CUTPOINT_LLAMA_BACKEND` (`auto`, `cuda`, `vulkan`, `cpu`). With an unsupported driver, or to
-  use your own build, put `llama-server` on `PATH` or set `CUTPOINT_LLAMA_SERVER` to its full path.
-- `<dir> was not installed by cutpoint setup (no VERSION.txt)`: a self-built or unpacked llama.cpp
-  is in `tools/llama.cpp` (or `tools/llama.cpp.old`), and setup will not replace it. Move it
-  elsewhere (or point `CUTPOINT_LLAMA_SERVER` at it) and run `cutpoint setup --only llama` again.
-- `Could not remove tools/llama.cpp.old (a running llama-server holds files in it)`: a warning,
-  not an error. On Windows a running `llama-server` does not stop the update; the new build is
-  installed, but the previous one stays in `tools/llama.cpp.old`. Stop cutpoint and any running
-  `llama-server`, then run `cutpoint setup --only llama` again to remove it.
-- `Could not replace <dir>` or `Could not remove <dir>` (an error): another program, for example
-  antivirus or a running `llama-server`, holds files in `tools/llama.cpp` or
-  `tools/llama.cpp.old`. Stop cutpoint and any running `llama-server`, then run
-  `cutpoint setup --only llama` again. The previous install is kept.
-- `sha256 mismatch`: the llama.cpp download was corrupt and was deleted. Run
-  `cutpoint setup --only llama` again; the existing install is kept.
 - `panns` downloads the checkpoint from a Hugging Face copy of the Zenodo record (CC BY 4.0)
   first, then from Zenodo, and checks size and sha256. A source that fails or starts too slowly is
   skipped. To use your own copy, set `CUTPOINT_PANNS_URL`; it is tried first.

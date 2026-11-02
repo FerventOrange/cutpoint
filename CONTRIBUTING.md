@@ -53,6 +53,9 @@ CI runs the same lint and format checks, and the tests on Windows and Linux. Opt
 the hooks with `uv run pre-commit install`; they run ruff on commit. Ruff settings
 (line length 100, rule set) are in `pyproject.toml`.
 
+When you change `src/cutpoint/web/*.js`, also run `npm ci && npm test` (Node 22 or newer; the
+harness is in `tests/js`).
+
 ## Writing tests
 
 Add tests only for cases that deserve them: logic that is valuable and easy to get wrong. Tests

@@ -130,35 +130,6 @@ def iter_audio_blocks(
                 pos += step
 
 
-def audio_slice(src: Source, t0: float, t1: float) -> np.ndarray:
-    """16 kHz mono float32 samples for ``[t0, t1]`` from the cached WAV (may be short)."""
-    for part in reversed(src.audio_parts):
-        if t0 >= part.offset:
-            with wave.open(str(part.wav), "rb") as w:
-                a = max(0, int((t0 - part.offset) * WAV_SR))
-                b = min(w.getnframes(), int((t1 - part.offset) * WAV_SR))
-                if b <= a:
-                    break
-                w.setpos(a)
-                raw = w.readframes(b - a)
-            return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    return np.zeros(0, dtype=np.float32)
-
-
-def wav_bytes(samples: np.ndarray, sr: int = WAV_SR) -> bytes:
-    """Encode float32 mono samples as a 16-bit PCM WAV file in memory."""
-    import io  # noqa: PLC0415
-
-    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(sr)
-        w.writeframes(pcm)
-    return buf.getvalue()
-
-
 # --------------------------------------------------------------------------- project
 
 _TRANSCRIPT_RE = re.compile(

@@ -159,7 +159,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "<CUTPOINT_HOME>/presets (default) or "
         "project = <project>/hud_presets",
     )
-    g = ap.add_argument_group("VLM (Qwen2.5-Omni via llama-server)")
+    g = ap.add_argument_group("VLM (vision model)")
     g.add_argument(
         "--max-windows",
         type=int,
@@ -178,24 +178,16 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
     g.add_argument("--frames", type=int, default=14, help="frames per window (12-16, default 14)")
     g.add_argument(
-        "--frame-height", type=int, default=720, help="height of frames sent (default 720)"
-    )
-    g.add_argument(
-        "--image-max-tokens", type=int, default=640, help="token budget per frame (default 640)"
-    )
-    g.add_argument(
-        "--ctx", type=int, default=16384, help="llama-server context size (default 16384)"
-    )
-    g.add_argument(
-        "--no-audio", action="store_true", help="do not send audio (frames + transcript only)"
-    )
-    g.add_argument(
         "--no-transcript", action="store_true", help="do not send the transcript excerpt"
     )
 
 
-def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
-    """Run ``cutpoint events`` from parsed arguments; returns events.json / events.txt."""
+def run_args(
+    args: argparse.Namespace, *, ollama_url: str | None = None, ollama_model: str | None = None
+) -> tuple[Path, Path]:
+    """Run ``cutpoint events`` from parsed arguments; returns events.json / events.txt.
+    ``ollama_url``, ``ollama_model``: the VLM layer's Ollama (``edit --events``; None: from
+    config.json and the environment)."""
     from cutpoint.config import player_tags, resolve_project_path  # noqa: PLC0415
 
     args.project = resolve_project_path(args.project)
@@ -213,10 +205,6 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
         post_s=args.post,
         max_windows=args.max_windows,
         frames=args.frames,
-        frame_height=args.frame_height,
-        image_max_tokens=args.image_max_tokens,
-        ctx=args.ctx,
-        audio=not args.no_audio,
         transcript=not args.no_transcript,
         forced=tuple(_forced(s) for s in args.window_at),
     )
@@ -241,6 +229,8 @@ def run_args(args: argparse.Namespace) -> tuple[Path, Path]:
         discover_bursts=args.discover_bursts,
         preset_scope=args.preset_scope,
         sheets=args.sheets,
+        ollama_url=ollama_url,
+        ollama_model=ollama_model,
     )
     log = logging.getLogger(__name__)
     log.info("Wrote %s and %s", jpath, tpath)

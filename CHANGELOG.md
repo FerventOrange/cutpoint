@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for subscription providers).
   Without a `vision_assistant` section, frame rating uses Ollama. Activity detection in
   `profile`, `crashes` and the crash step of `analyze` always uses Ollama.
+  Vision consent is its own and versioned (`vision-v2:<provider>@<host>` in
+  `vision_assistant.consent`): agreeing for the assistant never covers Vision, or the reverse,
+  and a Vision consent saved without the prefix no longer counts, so users agree again. The
+  prompt names what Vision sends (frames, transcript excerpts, file names and times, on-screen
+  text, telemetry) and that it is more data and more risk than the assistant. The AI Chat
+  consent now also names the scores and detection signals it sends (analysis results only,
+  never video or audio), and is versioned too (`assistant-v2:<provider>@<host>` in
+  `assistant.consent`): an AI Chat consent saved without the prefix no longer counts, so AI Chat
+  asks again.
 - `cutpoint proxy` runs the authenticated CLIProxyAPI daemon in the foreground for Claude Code,
   Codex and Antigravity subscriptions (Use at your own risk), in full and lite installs. The first
   run downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to
@@ -181,7 +190,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** the `ski` style is renamed `action-cam`, with no alias: it is the
+- **BREAKING:** the `ski` style is renamed `action-cam`, with no alias: it is the
   telemetry-driven scorer for any action-cam footage, not only skiing. Use `--style action-cam`
   on `analyze`, `edit` and `360 analyze`; `style` and `style_kind` in `highlights.json`,
   `pano.default_style` (default `action-cam`) and the docs use the new name. `ski` is no
@@ -189,6 +198,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   UI project or a learned preset that says `ski` stops with an error naming `action-cam`;
   analyse such projects again and change a learned preset's `"base"`. Vision ratings cached for `ski` are not reused. Activity profiles keep their names
   (`--activity ski` is still the skiing profile).
+- **BREAKING:** the VLM layer of `cutpoint events` (also run by `edit --events` and `360 analyze`)
+  now uses the shared vision model of `analyze --vision`: Ollama with `qwen3.5:9b`
+  (`CUTPOINT_VISION_MODEL`), or the subscription Vision model of the Models tab once vision
+  requests are allowed there. When neither answers, the layer keeps its cached window
+  descriptions and the run goes on. The llama-server + Qwen2.5-Omni-7B stack is removed, and no
+  audio is sent to the model any more (an A/B showed it added nothing; the transcript and the
+  detector hints stay). Removed: the `events` options `--ctx`, `--image-max-tokens`,
+  `--frame-height` and `--no-audio` (frames are capped at 606 px high to fit the 16k context);
+  the `llama` and `omni` components and `--force` of `cutpoint setup` (which now downloads about
+  2 GB instead of 8 GB); `version` in the `setup --json` output; the `llama.cpp` key of
+  `paths --json`; the `llama_cpp` key of `capabilities --json` and its report line; the
+  `CUTPOINT_LLAMA_SERVER` and `CUTPOINT_LLAMA_BACKEND` environment variables. Windows described by the old stack are described again. Earlier downloads are not
+  removed: the `models/llm` and `models/llama-cache` folders and `tools/llama.cpp` in
+  `CUTPOINT_HOME` can be deleted.
 - The 360 director frames other people whole or keeps them out instead of cutting them at the
   frame edge (#11): where one would be cut, it widens the view or shifts its yaw, whichever
   costs less, keeps people framed whole `include_margin` (0.06) off the sides, keeps that

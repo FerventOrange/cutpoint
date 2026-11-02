@@ -37,9 +37,8 @@ def test_clip_weights_found_in_hf_snapshot(home: Path):
 # --------------------------------------------------------------------------- pipeline
 @pytest.fixture
 def extra_ok(monkeypatch):
-    """The events extra counts as installed; no llama-server on PATH."""
+    """The events extra counts as installed."""
     monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(paths.shutil, "which", lambda *a, **k: None)
 
 
 def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok):
@@ -49,8 +48,8 @@ def test_preflight_lists_everything_missing_in_setup_order(home: Path, extra_ok)
     msg = str(exc.value)
     for name in ("Cnn14_", "silero_vad.onnx", "vit_large_patch14"):  # one per layer
         assert name in msg
-    # setup order is pip, panns, llama, omni, visual, voice
-    assert msg.endswith("cutpoint setup --only panns llama omni visual voice")
+    # setup order is pip, panns, visual, voice; the VLM layer has no model files
+    assert msg.endswith("cutpoint setup --only panns visual voice")
 
 
 def test_preflight_passes_when_files_present_or_ocr(home: Path, extra_ok):
@@ -83,7 +82,6 @@ def test_run_events_fails_before_side_effects(home, monkeypatch, tmp_path, no_un
     hl, layers = {"sources": []}, ("audio",)
     if why == "model-files":
         monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: object())
-        monkeypatch.setattr(paths.shutil, "which", lambda *a, **k: None)
         layers, error, match = ("audio", "visual"), FileNotFoundError, "cutpoint setup --only"
     elif why == "events-extra":
         _no_modules(monkeypatch)

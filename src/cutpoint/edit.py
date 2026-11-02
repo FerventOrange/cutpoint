@@ -125,7 +125,8 @@ def run_edit(
     semantics. ``events`` runs ``cutpoint events`` (default options) before the clips; its
     VLM layer reports as the ``keyframes`` step again. ``vision`` is ``analyze --vision``
     (opt-in: None or False rates nothing with Ollama); ``vision_top``, ``ollama_url``,
-    ``ollama_model`` and ``skip`` are analyze's options of those names. ``compress_peaks``
+    ``ollama_model`` and ``skip`` are analyze's options of those names (the Ollama ones also
+    for the events VLM layer). ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
     as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
@@ -239,7 +240,7 @@ def _run_edit(
         from cutpoint.events.cli import run_args  # noqa: PLC0415
 
         with steps.step("keyframes", detail="describing moments with the VLM"):
-            run_args(_events_namespace(project))
+            run_args(_events_namespace(project), ollama_url=ollama_url, ollama_model=ollama_model)
         report_highlights(project, project / "highlights.json")  # events re-ranked it
     srt = (project / final_name).with_suffix(".srt")
     before = file_stamp(srt)  # an earlier run's final.srt is not this run's subtitles

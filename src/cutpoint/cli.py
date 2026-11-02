@@ -680,8 +680,6 @@ def _setup_files(component: str) -> list[Path]:
     """The files ``cutpoint setup --only <component>`` installs (none for ``pip``)."""
     files = {
         "panns": lambda: [event_paths.panns_labels(), event_paths.panns_ckpt()],
-        "llama": lambda: [event_paths.llama_dir() / "VERSION.txt", event_paths.llama_server_exe()],
-        "omni": lambda: [event_paths.omni_mmproj(), event_paths.omni_model()],
         "visual": lambda: [
             event_paths.aesthetic_head(),
             event_paths.clip_weights(),
@@ -728,11 +726,6 @@ def _report_setup(components: list[str], before: dict[str, dict]) -> None:
             status = "missing" if now is None else "found" if now == old else "downloaded"
             files.append({"path": path, "bytes": now[0] if now else None, "status": status})
         report[name] = {"files": files}
-        if name == "llama":
-            stamp = event_paths.llama_dir() / "VERSION.txt"
-            report[name]["version"] = (
-                stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else None
-            )
     jsonout.output("components", report)
 
 
@@ -744,7 +737,6 @@ def _cmd_paths(a: argparse.Namespace) -> None:
         ("cache", paths.cache_dir()),
         ("models", paths.models_dir()),
         ("tools", paths.tools_dir()),
-        ("llama.cpp", event_paths.llama_dir()),
         ("stage", cfg.stage_dir),
         ("styles", paths.styles_dir()),
         ("presets", paths.presets_dir()),
@@ -1567,8 +1559,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     su = sub.add_parser(
         "setup",
-        help="install the cutpoint events models and tools "
-        "(PANNs, llama.cpp, Qwen2.5-Omni, CLIP, detector, Silero VAD) "
+        help="install the cutpoint events models "
+        "(PANNs, CLIP, detector, Silero VAD) "
         "into CUTPOINT_HOME",
     )
     from cutpoint.events.setup import add_arguments as add_setup_arguments  # noqa: PLC0415
@@ -1580,7 +1572,7 @@ def build_parser() -> argparse.ArgumentParser:
     pa = sub.add_parser(
         "paths",
         help="print the resolved data folders (CUTPOINT_HOME, "
-        "config, cache, models, tools, llama.cpp, stage, styles, presets, profiles, projects, "
+        "config, cache, models, tools, stage, styles, presets, profiles, projects, "
         "bundled)",
     )
     _add_json_argument(pa)
@@ -1589,7 +1581,7 @@ def build_parser() -> argparse.ArgumentParser:
     cp = sub.add_parser(
         "capabilities",
         help="report GPU vendors present, video encoders that really work, what "
-        "transcription and llama.cpp setup would use, whether torch reaches CUDA "
+        "transcription would use, whether torch reaches CUDA "
         "(with the reinstall fix if it is CPU-only on an NVIDIA machine) and the "
         "Insta360 Media SDK (needs NVIDIA)",
     )

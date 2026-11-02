@@ -13,7 +13,6 @@ htmlcov/
 # Runtime data (lives in CUTPOINT_HOME, default %LOCALAPPDATA%\cutpoint)
 cache/
 models/
-tools/llama.cpp/
 # CLIProxyAPI runtime: subscription credentials, local keys, and downloaded binaries
 cliproxy/
 stage/

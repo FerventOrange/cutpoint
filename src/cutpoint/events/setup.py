@@ -12,30 +12,16 @@ one place (``pyproject.toml``). Cutpoint lite leaves them out. A clone's
 from the installer when it is not lite; torch then comes from the PyTorch CUDA
 12.6 index on Windows and Linux when there is an NVIDIA GPU.
 
-Components (models and tools go to CUTPOINT_HOME, see ``cutpoint paths``):
+Components (models go to CUTPOINT_HOME, see ``cutpoint paths``):
     pip      check that the ``events`` extra is installed; print the install
              command when it is not (installs nothing)
     panns    Cnn14_DecisionLevelMax checkpoint + AudioSet label CSV -> models/panns.
              The checkpoint comes from the first mirror that works (see
              PANNS_CKPT_MIRRORS); set CUTPOINT_PANNS_URL to try your own URL first.
-    llama    latest llama.cpp build -> tools/llama.cpp. Backend: CUDA when a usable
-             NVIDIA driver is found, else Vulkan (NVIDIA, AMD, Intel), else CPU;
-             CUTPOINT_LLAMA_BACKEND=auto|cuda|vulkan|cpu forces one (no fallback).
-             Windows: CUDA 12.4 build + matching cudart DLLs, or the Vulkan / CPU
-             build. Linux: CUDA build + cudart libraries, or the Vulkan / CPU build.
-             Other platforms: put your own llama-server on PATH or set
-             CUTPOINT_LLAMA_SERVER.
-    omni     Qwen2.5-Omni-7B Q4_K_M + mmproj Q8_0 -> models/llm   (~6.2 GB)
     visual   CLIP ViT-L/14 (OpenAI weights, ~1.7 GB) -> models/clip, Faster R-CNN
              ResNet50-FPN v2 COCO (167 MB) -> models/torch, LAION aesthetic
              head (3.7 MB) -> models/aesthetic
     voice    Silero VAD v5 ONNX (2.3 MB) -> models/silero
-
-Every archive is downloaded into its own fresh folder under
-``tools/_downloads`` before being extracted. Downloads resume if interrupted.
-llama.cpp archives are checked against the sha256 digest GitHub publishes
-(when the release has one), extracted into ``tools/llama.cpp.new`` and then
-swapped in for ``tools/llama.cpp``, so files of an older build never linger.
 """
 
 from __future__ import annotations
@@ -44,20 +30,15 @@ import argparse
 import hashlib
 import http.client
 import importlib.util
-import json
 import logging
 import os
-import platform
 import re
 import shutil
 import subprocess
-import sys
-import tarfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from pathlib import Path
 
 from cutpoint import paths as cutpoint_paths
@@ -93,15 +74,6 @@ SLOW_START_WINDOW = 20.0
 PANNS_LABELS_URL = (
     "http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv"
 )
-HF_URL = "https://huggingface.co/{repo}/resolve/main/{name}"
-GH_RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"
-CUDA_FLAVOR = "cuda-12.4"  # matches the cudart-llama-bin-win-cuda-12.4 runtime zip
-LLAMA_BACKENDS = ("auto", "cuda", "vulkan", "cpu")
-LINUX_ARCH = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
-_OLD_KEPT = (
-    "Could not remove %s (a running llama-server holds files in it); it is removed on the "
-    "next cutpoint setup --only llama"
-)
 
 # Import names of the ``events`` extra (see pyproject.toml).
 EVENTS_MODULES = (
@@ -114,10 +86,7 @@ EVENTS_MODULES = (
     "onnxruntime",
     "scipy",
 )
-COMPONENTS = ("pip", "panns", "llama", "omni", "visual", "voice")
-
-# Release asset: (download URL, size in bytes, sha256 hex digest or None).
-Asset = tuple[str, int, str | None]
+COMPONENTS = ("pip", "panns", "visual", "voice")
 
 
 class SlowDownloadError(Exception):
@@ -314,18 +283,6 @@ def _download_mirrors(urls: list[str], dst: Path, size: int, sha256: str) -> Pat
     raise RuntimeError(f"Could not download {dst.name} from any mirror: " + "; ".join(failures))
 
 
-def _llama_platform() -> str:
-    """``"win"`` or ``"linux"``; other platforms have no prebuilt install here."""
-    if os.name == "nt":
-        return "win"
-    if sys.platform.startswith("linux"):
-        return "linux"
-    raise RuntimeError(
-        f"cutpoint setup installs llama.cpp on Windows and Linux only ({sys.platform}); "
-        "put your own llama-server on PATH or set CUTPOINT_LLAMA_SERVER"
-    )
-
-
 def nvidia_usable() -> bool:
     """True if an NVIDIA driver answers: Linux kernel driver loaded, or ``nvidia-smi -L`` works."""
     if Path("/proc/driver/nvidia/version").exists():
@@ -338,315 +295,6 @@ def nvidia_usable() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0 and "GPU" in proc.stdout
-
-
-def llama_backend_choice() -> str:
-    """``CUTPOINT_LLAMA_BACKEND`` (auto, cuda, vulkan or cpu; default auto)."""
-    choice = (os.environ.get("CUTPOINT_LLAMA_BACKEND") or "auto").strip().lower()
-    if choice not in LLAMA_BACKENDS:
-        raise ValueError(
-            f"CUTPOINT_LLAMA_BACKEND is {choice!r}; expected one of {', '.join(LLAMA_BACKENDS)}"
-        )
-    return choice
-
-
-def llama_backends() -> tuple[str, ...]:
-    """Backends to try, best first: the one named by CUTPOINT_LLAMA_BACKEND alone, else
-    CUDA (usable NVIDIA only) > Vulkan > CPU."""
-    choice = llama_backend_choice()
-    if choice != "auto":
-        return (choice,)
-    return ("cuda", "vulkan", "cpu") if nvidia_usable() else ("vulkan", "cpu")
-
-
-def _asset(assets: dict[str, Asset], stem: str) -> Asset | None:
-    """``stem`` + ``.tar.gz`` (current Linux releases) or ``.zip`` (older ones)."""
-    return assets.get(f"{stem}.tar.gz") or assets.get(f"{stem}.zip")
-
-
-def _pick_linux_assets(
-    tag: str, assets: dict[str, Asset], arch: str, backends: tuple[str, ...]
-) -> tuple[str, dict[str, Asset]] | None:
-    """First build of ``backends`` in one release as ``(flavor, {"bin": ..., ["rt": ...]})``.
-
-    CUDA takes the oldest CUDA version that has a cudart archive (it needs the oldest
-    driver). None if the release has none of them.
-    """
-    pre = f"llama-{tag}-bin-ubuntu-"
-    for backend in backends:
-        if backend == "cuda":
-            pattern = re.compile(rf"{re.escape(pre)}cuda-(\d+(?:\.\d+)*)-{arch}\.(?:tar\.gz|zip)")
-            versions = {m[1] for name in assets if (m := pattern.fullmatch(name))}
-            for ver in sorted(versions, key=lambda v: tuple(int(x) for x in v.split("."))):
-                bin_ = _asset(assets, f"{pre}cuda-{ver}-{arch}")
-                rt = _asset(assets, f"cudart-llama-{tag}-bin-ubuntu-cuda-{ver}-{arch}")
-                if bin_ and rt:
-                    return f"linux-cuda-{ver}", {"bin": bin_, "rt": rt}
-        else:
-            stem = f"{pre}vulkan-{arch}" if backend == "vulkan" else f"{pre}{arch}"
-            if bin_ := _asset(assets, stem):
-                return f"linux-{backend}", {"bin": bin_}
-    return None
-
-
-def _pick_windows_assets(
-    tag: str, assets: dict[str, Asset], backends: tuple[str, ...]
-) -> tuple[str, dict[str, Asset]] | None:
-    """First x64 Windows build of ``backends`` in one release (see :func:`_pick_linux_assets`)."""
-    for backend in backends:
-        if backend == "cuda":
-            bin_ = assets.get(f"llama-{tag}-bin-win-{CUDA_FLAVOR}-x64.zip")
-            rt = assets.get(f"cudart-llama-bin-win-{CUDA_FLAVOR}-x64.zip")
-            if bin_ and rt:
-                return CUDA_FLAVOR, {"bin": bin_, "rt": rt}
-        elif bin_ := assets.get(f"llama-{tag}-bin-win-{backend}-x64.zip"):
-            return f"win-{backend}", {"bin": bin_}
-    return None
-
-
-def _sha256_of(asset: dict) -> str | None:
-    """Hex digest from a release asset's ``"digest": "sha256:<hex>"`` (None if absent)."""
-    digest = asset.get("digest") or ""
-    return digest.removeprefix("sha256:") if digest.startswith("sha256:") else None
-
-
-def _latest_llama_assets(plat: str) -> tuple[str, str, dict[str, Asset]]:
-    """``(tag, flavor, assets)`` of the newest release with a build for ``plat``."""
-    with urllib.request.urlopen(GH_RELEASES, timeout=60) as resp:
-        releases = json.load(resp)
-    backends = llama_backends()
-    if plat == "linux":
-        arch = LINUX_ARCH.get(platform.machine().lower())
-        if arch is None:
-            raise RuntimeError(f"No llama.cpp Linux build for {platform.machine()}")
-    for rel in releases:
-        tag = rel["tag_name"]
-        assets = {
-            a["name"]: (a["browser_download_url"], a["size"], _sha256_of(a)) for a in rel["assets"]
-        }
-        if plat == "linux":
-            picked = _pick_linux_assets(tag, assets, arch, backends)
-        else:
-            picked = _pick_windows_assets(tag, assets, backends)
-        if picked:
-            return tag, picked[0], picked[1]
-    raise RuntimeError(
-        f"No recent llama.cpp release with a {plat} build for backend {'/'.join(backends)}"
-    )
-
-
-def _stamp_fits(stamp_text: str, plat: str) -> bool:
-    """True if VERSION.txt (``"<tag> <flavor>"``) is an install for ``plat``.
-
-    Linux flavors start with ``linux-``; Windows stamps are ``<tag> cuda-12.4``,
-    ``<tag> win-vulkan`` or ``<tag> win-cpu``.
-    """
-    parts = stamp_text.split()
-    linux = len(parts) > 1 and parts[1].startswith("linux-")
-    return linux == (plat == "linux")
-
-
-def _backend_of(flavor: str) -> str | None:
-    """``cuda``, ``vulkan`` or ``cpu`` from a build flavor such as ``linux-cuda-12.8``."""
-    return next((b for b in LLAMA_BACKENDS[1:] if b in flavor), None)
-
-
-def _backend_fits(stamp_text: str, flavor: str) -> bool:
-    """True if the installed build (VERSION.txt) has the backend of ``flavor``, the one this run
-    would install. A missing or malformed stamp never fits."""
-    parts = stamp_text.split()
-    installed = _backend_of(parts[1]) if len(parts) > 1 else None
-    return installed is not None and installed == _backend_of(flavor)
-
-
-def _extract(archive: Path, dest: Path) -> None:
-    """Extract a release archive into ``dest``.
-
-    Tarballs (Linux) wrap everything in one top-level folder, which is dropped
-    so the binaries and the cudart libraries end up side by side. Zip files
-    lose their mode bits in ``zipfile``, so on POSIX they are restored from
-    ``external_attr``.
-    """
-    if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive) as tf:
-            members = tf.getmembers()
-            tops = {m.name.split("/", 1)[0] for m in members}
-            if len(tops) == 1 and all("/" in m.name or m.isdir() for m in members):
-                members = [m for m in members if "/" in m.name]
-                for m in members:
-                    m.name = m.name.split("/", 1)[1]
-            tf.extractall(dest, members=members, filter="data")  # refuses path traversal
-        return
-    with zipfile.ZipFile(archive) as zf:
-        root = dest.resolve()
-        for member in zf.namelist():  # refuse path traversal
-            if not (dest / member).resolve().is_relative_to(root):
-                raise RuntimeError(f"unsafe path in {archive.name}: {member}")
-        if os.name == "nt":
-            zf.extractall(dest)
-            return
-        for info in zf.infolist():
-            out = Path(zf.extract(info, dest))
-            if not info.is_dir() and (mode := (info.external_attr >> 16) & 0o777):
-                out.chmod(mode & 0o755)
-
-
-def install_llama(force: bool = False) -> None:
-    """Install the newest llama.cpp build for this platform (see the module docstring)."""
-    plat = _llama_platform()
-    llama = paths.llama_dir()
-    stamp = llama / "VERSION.txt"
-    # Siblings of llama_dir, so llama_server_exe() never finds a binary in them.
-    staging = llama.with_name(llama.name + ".new")
-    old = llama.with_name(llama.name + ".old")
-    tag, flavor, assets = _latest_llama_assets(plat)
-    if old.exists() and not llama.exists() and _ours(old):  # interrupted between the renames
-        old.rename(llama)
-    have = stamp.read_text().strip() if stamp.exists() and not force else None
-    if have is not None and _stamp_fits(have, plat) and _backend_fits(have, flavor):
-        _clean_leftovers(llama, staging, old, strict=False)
-        logger.info(
-            "llama.cpp already installed (%s); latest is %s. Use --force to replace.",
-            have,
-            tag,
-        )
-        return
-    if have is not None:
-        logger.info("llama.cpp in %s is for another platform/backend (%s); replacing", llama, have)
-    _clean_leftovers(llama, staging, old, strict=True)
-    staging.mkdir(parents=True)
-    dl_root = cutpoint_paths.tools_dir() / "_downloads"
-    try:
-        for key, (url, size, sha256) in assets.items():
-            name = url.rsplit("/", 1)[-1]
-            if sha256 is None:
-                logger.debug("no sha256 published for %s; not verified", name)
-            folder = dl_root / f"llama-{tag}-{key}"  # one fresh folder per archive
-            archive = download(url, folder / name, size, sha256)
-            _extract(archive, staging)
-        if plat == "linux":  # only our own build, never a CUTPOINT_LLAMA_SERVER or PATH binary
-            for exe in staging.glob("**/llama-server"):
-                if exe.is_file():
-                    exe.chmod(exe.stat().st_mode | 0o111)
-        (staging / stamp.name).write_text(f"{tag} {flavor}\n")
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    _swap_in(staging, llama, old)
-    shutil.rmtree(dl_root, ignore_errors=True)
-    logger.info("llama.cpp %s (%s) installed in %s", tag, flavor, llama)
-
-
-def _clean_leftovers(llama: Path, staging: Path, old: Path, strict: bool) -> None:
-    """Remove ``staging`` and ``old`` left by an earlier run.
-
-    Folders without our VERSION.txt are never deleted. With ``strict`` (before an install)
-    such a folder, or an ``old`` that cannot be removed, raises; otherwise both are left
-    as they are, with a warning for ``old``.
-
-    Raises:
-        RuntimeError: ``strict`` and a folder is not ours or ``old`` stays.
-    """
-    for d in (old, llama):  # never delete a llama.cpp folder someone else put there
-        if d.exists() and not _ours(d):
-            if not strict:
-                return
-            raise RuntimeError(
-                f"{d} was not installed by cutpoint setup (no VERSION.txt); move it "
-                "elsewhere and run cutpoint setup --only llama again"
-            )
-    if staging.exists():
-        logger.info("removing %s left by an earlier run", staging)
-        shutil.rmtree(staging, ignore_errors=not strict)
-    if old.exists():
-        logger.info("removing %s left by an earlier run", old)
-        _rmtree_ours(old)
-        if old.exists():
-            if strict:
-                raise RuntimeError(
-                    f"Could not remove {old}. Close whatever holds files in it (e.g. "
-                    "llama-server) and run cutpoint setup --only llama again."
-                )
-            logger.warning(_OLD_KEPT, old)
-
-
-def _ours(d: Path) -> bool:
-    """True if ``d`` is missing, has our VERSION.txt or holds only llama-server.log."""
-    if not d.exists():
-        return True
-    return (d / "VERSION.txt").exists() or all(p.name == "llama-server.log" for p in d.iterdir())
-
-
-def _rmtree_ours(d: Path) -> None:
-    """Best-effort delete of ``d``, removing its VERSION.txt last.
-
-    If a file stays locked (e.g. Windows AV), the stamp stays too, so ``_ours(d)``
-    still holds on the next run.
-    """
-    if not d.exists():
-        return
-    stamp = d / "VERSION.txt"
-    for p in d.iterdir():
-        if p == stamp:
-            continue
-        try:
-            if p.is_dir() and not p.is_symlink():
-                shutil.rmtree(p, ignore_errors=True)
-            else:
-                p.unlink()
-        except OSError:
-            pass
-    try:
-        if all(p == stamp for p in d.iterdir()):
-            stamp.unlink(missing_ok=True)
-            d.rmdir()
-    except OSError:
-        pass
-
-
-def _rename_retry(src: Path, dst: Path, tries: int = 5) -> None:
-    """``src.rename(dst)``, retried while Windows AV/indexers briefly lock new files."""
-    for i in range(tries):
-        try:
-            src.rename(dst)
-            return
-        except PermissionError:
-            if i == tries - 1:
-                raise
-            time.sleep(0.5 * (i + 1))
-
-
-def _swap_in(staging: Path, llama: Path, old: Path) -> None:
-    """Replace ``llama`` by ``staging``; the previous install goes via ``old`` and is deleted.
-
-    Raises:
-        RuntimeError: A rename failed (e.g. a file locked by antivirus); the previous
-            install is restored and ``staging`` removed.
-    """
-    moved = False
-    try:
-        if llama.exists():
-            _rename_retry(llama, old)
-            moved = True
-        _rename_retry(staging, llama)
-    except OSError as e:
-        if moved and not llama.exists():
-            old.rename(llama)
-        shutil.rmtree(staging, ignore_errors=True)
-        raise RuntimeError(
-            f"Could not replace {llama} ({e}). Stop cutpoint and any llama-server "
-            "that is running, then run cutpoint setup --only llama again."
-        ) from e
-    _rmtree_ours(old)
-    if old.exists():  # Windows lets a running llama-server's folder be renamed, not deleted
-        logger.warning(_OLD_KEPT, old)
-
-
-def install_omni() -> None:
-    """Download the Qwen2.5-Omni-7B Q4_K_M model and its Q8_0 mmproj."""
-    for dst in (paths.omni_mmproj(), paths.omni_model()):
-        url = HF_URL.format(repo=paths.OMNI_HF_REPO, name=dst.name)
-        download(url, dst)
 
 
 def install_visual() -> None:
@@ -683,18 +331,14 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         default=list(COMPONENTS),
         help="components to install (default: all)",
     )
-    ap.add_argument("--force", action="store_true", help="Reinstall llama.cpp.")
 
 
 def run_args(args: argparse.Namespace) -> int:
     """Run the setup steps selected in ``args``; returns a process exit code."""
     logger.info("models -> %s", cutpoint_paths.models_dir())
-    logger.info("tools  -> %s", cutpoint_paths.tools_dir())
     steps = {
         "pip": check_python_packages,
         "panns": install_panns,
-        "llama": lambda: install_llama(args.force),
-        "omni": install_omni,
         "visual": install_visual,
         "voice": install_voice,
     }

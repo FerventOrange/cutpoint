@@ -42,8 +42,11 @@ Trust boundaries:
   ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
-  the user agrees once for it (``POST /api/assistant/consent``, kept in ``config.json``); nor
-  is its model list asked for (``GET /api/assistant/models``) before that and without a key.
+  the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v2:`` key kept in
+  ``config.json``); nor is its model list asked for (``GET /api/assistant/models``) before that
+  and without a key. The Vision role's hosted provider has its own consent (``role: vision``, a
+  ``vision-v2:`` key): agreeing for one role never covers the other, and an unprefixed key from an
+  older version covers neither.
   API keys come from the environment or the system keyring (``POST /api/assistant/key``,
   ``.../key/clear``); no route returns one, only where it comes from. ``cutpoint ui`` takes the
   key variables out of its environment at startup, jobs get an environment without them, and
@@ -614,7 +617,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     vis_consent = _tuple_of_str(vis_section.get("consent")) if isinstance(vis_section, dict) else ()
     vp = _vision_provider_from_data(data)
     if vp is not None and (vp.name in cliproxy.PROVIDERS or ai_providers.is_subscription(vp.name)):
-        v_consent_info = consent_view(vp, consent=vis_consent)
+        v_consent_info = consent_view(vp, consent=vis_consent, role="vision")
     else:
         v_consent_info = {
             "needed": False,
@@ -813,16 +816,21 @@ def check_assistant(
 def consent_view(
     provider: ai_providers.Provider,
     consent: tuple[str, ...] | None = None,
+    role: str = "assistant",
 ) -> dict[str, Any]:
-    """Whether the user still has to agree before project data goes to ``provider``:
-    ``{needed, key, host, missing_key, missing_kind}``; ``key`` (``<name>@<host>``) is None for
-    a local provider; ``missing_key``: how to add the API key it needs, which comes before
-    agreeing; ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy login),
-    ``"key"`` otherwise, None when nothing is missing."""
-    key = ai_providers.consent_key(provider)
+    """Whether the user still has to agree before project data goes to ``provider`` for
+    ``role`` (``"assistant"`` or ``"vision"``): ``{needed, key, host, missing_key,
+    missing_kind}``; ``key`` (:func:`cutpoint.assistant.providers.consent_key`) is None for a
+    local provider; ``missing_key``: how to add the API key (or log in) it needs, which comes
+    before agreeing; ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy
+    login), ``"key"`` otherwise, None when nothing is missing. ``consent`` defaults to the
+    role's own list in ``config.json``: one role's consent never covers the other's."""
+    key = ai_providers.consent_key(provider, role)
     if consent is None:
         try:
-            consent = assistant_settings().consent
+            consent = (
+                vision_assistant_settings() if role == "vision" else assistant_settings()
+            ).consent
         except (ValueError, TypeError):  # config.json is invalid: no consent is known
             consent = ()
     missing = ai_providers.missing_key(provider)
@@ -3889,14 +3897,15 @@ def create_app(port: int) -> FastAPI:
 
     @secure.post("/assistant/consent")
     def give_consent(body: dict[str, Any]):
-        """Record that the user agreed to send project data to the provider in use, named by
-        its ``key``; 409 when the provider in use is another one by now, or is local."""
+        """Record that the user agreed to send project data to the provider in use for ``role``
+        (``assistant``, the default, or ``vision``), named by its ``key``, in that role's own
+        ``consent`` list; 409 when the provider in use is another one by now, or is local."""
         role = body.get("role") or "assistant"
         if role not in ("assistant", "vision"):
             raise bad("role must be assistant or vision")
         section_name = "vision_assistant" if role == "vision" else "assistant"
         provider = vision_provider() if role == "vision" else assistant_provider()
-        want = ai_providers.consent_key(provider)
+        want = ai_providers.consent_key(provider, role)
         if want is None or body.get("key") != want:
             raise bad(f"the {role} provider changed: check it and agree again", 409)
         data = config_data()
@@ -3914,7 +3923,7 @@ def create_app(port: int) -> FastAPI:
         fresh_section = fresh_data.get(section_name)
         fresh_dict = fresh_section if isinstance(fresh_section, dict) else {}
         consent_list = _tuple_of_str(fresh_dict.get("consent"))
-        return {"consent": consent_view(provider, consent=consent_list)}
+        return {"consent": consent_view(provider, consent=consent_list, role=role)}
 
     @secure.get("/assistant/models")
     def assistant_models(
@@ -3956,7 +3965,7 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"unknown provider {provider}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
-        return ai_providers.model_list(p, settings.consent, refresh=refresh)
+        return ai_providers.model_list(p, settings.consent, role=role, refresh=refresh)
 
     # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
     def login_provider(value: Any) -> str:
@@ -4878,8 +4887,8 @@ def create_app(port: int) -> FastAPI:
         provider = assistant_provider()
         if consent_view(provider)["needed"]:
             raise bad(
-                f"agree first to send this project's moment labels, transcript snippets, file "
-                f"names and times to {provider.host}",
+                f"agree first to send this project's analysis results (moment labels, scores "
+                f"and signals, transcript snippets, file names and times) to {provider.host}",
                 409,
             )
         text = body.get("text")
