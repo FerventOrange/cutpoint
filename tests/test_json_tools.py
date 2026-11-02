@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from conftest import run_json, warning_codes, write
-from cutpoint import cache, capabilities, cli, mix, stage
+from cutpoint import cache, capabilities, cli, insta360, mix, stage
 from cutpoint.events import paths as event_paths
 from cutpoint.events import setup
 from cutpoint.mix import Cand
@@ -267,7 +267,7 @@ def test_360_scan_json(home, tmp_path, monkeypatch, capsys):
     insv = write(cam / "VID_20260101_100000_00_001.insv", "x" * 7)
     clip = x3clip(insv=[str(insv)], duration=12.5, frames=375, bytes_insv=7, mode="4k")
     monkeypatch.setattr(x3, "scan", lambda folder: [clip])
-    monkeypatch.setattr(x3, "imu_source", lambda src: None)
+    monkeypatch.setattr(insta360, "imu_source", lambda src: None)
     code, doc = run_json(capsys, ["360", "scan", str(cam), "--out", "trip"])
     project = home / "projects" / "trip"
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 scan"

@@ -1943,8 +1943,8 @@ def compute_path(
         grid: If given, filled with the :func:`score_grid` of the planned range and the
             Viterbi ``states`` (before shot merging), for diagnostics; the path is the same.
     """
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
     from cutpoint.pano.views import load_views  # noqa: PLC0415
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
 
     p = params_for(kind, params)
     if overrides:

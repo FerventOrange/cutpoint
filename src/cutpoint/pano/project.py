@@ -62,7 +62,8 @@ from typing import Any
 
 from cutpoint import cache, paths, state
 from cutpoint.config import path_key, remap_source, source_path
-from cutpoint.pano.x3 import X3Clip, parse_name
+from cutpoint.insta360 import parse_name
+from cutpoint.pano.x3 import X3Clip
 
 logger = logging.getLogger(__name__)
 

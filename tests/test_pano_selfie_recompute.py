@@ -11,9 +11,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from cutpoint import insta360
 from cutpoint.events import visual as V
 from cutpoint.pano import geometry as G
-from cutpoint.pano import views, x3
+from cutpoint.pano import views
 from cutpoint.pano.x3 import X3Clip
 from pano_fakes import FAKE_TORCH, Models, Sampler, frames
 from pano_helpers import orientation
@@ -33,7 +34,7 @@ def pano(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(V, "iter_frames", frames)
     monkeypatch.setattr(V, "VisualModels", lambda **kw: Models(rec, **kw))
     monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
-    monkeypatch.setattr(x3, "imu_source", lambda src: src)
+    monkeypatch.setattr(insta360, "imu_source", lambda src: src)
     rec.p = views.ViewParams(view_px=4, eq_width=32)
     return rec
 

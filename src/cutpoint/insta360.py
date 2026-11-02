@@ -1,7 +1,7 @@
 """Insta360 X3 file names and the ``_00_.insv`` that carries a clip's IMU trailer.
 
-The core (telemetry, analyze) reads X3 telemetry through these two helpers, so it does not
-import the optional 360 stack (:mod:`cutpoint.pano`); :mod:`cutpoint.pano.x3` re-exports them.
+They sit below the 360 package (:mod:`cutpoint.pano`) so the core (telemetry, analyze) reads
+X3 telemetry without importing it; :mod:`cutpoint.pano` imports them from here too.
 File naming: see :mod:`cutpoint.pano.x3`.
 """
 

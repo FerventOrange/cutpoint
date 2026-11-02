@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache
-from cutpoint.insta360 import NAME_RE, imu_source, parse_name  # noqa: F401 - re-exported
+from cutpoint.insta360 import parse_name
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +151,8 @@ def read_trailer_meta(insv00: Path) -> dict[str, Any]:
 def group_files(paths: Iterable[Path]) -> dict[str, dict[str, Any]]:
     """X3 files by clip number: ``date``, ``time`` and, if found, ``lens00``, ``lens10``, ``lrv``.
 
-    Pure (names only); paths whose name does not match ``NAME_RE`` are ignored. A clip is usable
-    for 360 analysis when it has both ``lens00`` and ``lrv``.
+    Pure (names only); paths whose name does not match ``cutpoint.insta360.NAME_RE`` are
+    ignored. A clip is usable for 360 analysis when it has both ``lens00`` and ``lrv``.
     """
     groups: dict[str, dict[str, Any]] = {}
     for p in paths:

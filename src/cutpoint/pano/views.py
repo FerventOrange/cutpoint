@@ -971,7 +971,7 @@ def run_layer(
     """
     from cutpoint.activity import active_prompts  # noqa: PLC0415
     from cutpoint.events import visual as V  # noqa: PLC0415
-    from cutpoint.pano.x3 import imu_source  # noqa: PLC0415
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     p = params or ViewParams()
     todo = [c for c in clips if c.lrv and (force or load_views(Path(c.lrv), p) is None)]
