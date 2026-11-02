@@ -617,6 +617,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
             "key": None,
             "host": getattr(vp, "host", "") if vp is not None else "",
             "missing_key": None,
+            "missing_kind": None,
         }
     return {
         "projects_dir": folder,
@@ -811,11 +812,12 @@ def consent_view(
     role: str = "assistant",
 ) -> dict[str, Any]:
     """Whether the user still has to agree before project data goes to ``provider`` for
-    ``role`` (``"assistant"`` or ``"vision"``): ``{needed, key, host, missing_key}``; ``key``
-    (:func:`cutpoint.assistant.providers.consent_key`) is None for a local provider;
-    ``missing_key``: how to add the API key it needs, which comes before agreeing. ``consent``
-    defaults to the role's own list in ``config.json``: one role's consent never covers the
-    other's."""
+    ``role`` (``"assistant"`` or ``"vision"``): ``{needed, key, host, missing_key,
+    missing_kind}``; ``key`` (:func:`cutpoint.assistant.providers.consent_key`) is None for a
+    local provider; ``missing_key``: how to add the API key (or log in) it needs, which comes
+    before agreeing; ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy
+    login), ``"key"`` otherwise, None when nothing is missing. ``consent`` defaults to the
+    role's own list in ``config.json``: one role's consent never covers the other's."""
     key = ai_providers.consent_key(provider, role)
     if consent is None:
         try:
@@ -824,11 +826,14 @@ def consent_view(
             ).consent
         except (ValueError, TypeError):  # config.json is invalid: no consent is known
             consent = ()
+    missing = ai_providers.missing_key(provider)
+    kind = "login" if ai_providers.is_subscription(provider) else "key"
     return {
         "needed": key is not None and key not in consent,
         "key": key,
         "host": provider.host,
-        "missing_key": ai_providers.missing_key(provider),
+        "missing_key": missing,
+        "missing_kind": None if missing is None else kind,
     }
 
 
@@ -4020,7 +4025,9 @@ def create_app(port: int) -> FastAPI:
                     "state": "error",
                     "error": ai_keys.redact(str(err)) or type(err).__name__,
                 }
-            raise bad(ai_keys.redact(str(err)) or f"the {name} login did not start", 500) from None
+            # proxy not running or unreachable: expected, so 503 rather than a server error
+            code = 503 if isinstance(err, cliproxy.ProxyConnectionError) else 500
+            raise bad(ai_keys.redact(str(err)) or f"the {name} login did not start", code) from None
 
         url = res.get("url")
         proxy_state = res.get("state")

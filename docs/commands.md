@@ -586,7 +586,7 @@ Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST
 `POST .../proposals/<proposal>/applied`, `DELETE .../chat`, `GET .../history` and
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
-`GET .../assistant` also returns `consent` (`needed`, `key`, `host`, and `missing_key`: how to add a missing API key, or null); `POST .../turns` answers
+`GET .../assistant` also returns `consent` (`needed`, `key`, `host`, `missing_key`: how to add a missing API key or log in to a subscription, or null, and `missing_kind`: `"login"` for a subscription provider, `"key"` otherwise, null when nothing is missing); `POST .../turns` answers
 409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
