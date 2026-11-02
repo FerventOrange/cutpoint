@@ -17,10 +17,11 @@ import pytest
 
 from conftest import needs_ffmpeg
 from cutpoint import analyze, ffmpeg_utils
+from cutpoint.errors import FFmpegError
 from cutpoint.events import ocr_prefetch
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrParams, ocr_vf
-from cutpoint.ffmpeg_utils import FFmpegError, SplitDecode
+from cutpoint.ffmpeg_utils import SplitDecode
 
 RECT = (40, 20, 120, 60)  # x, y, w, h of the OCR crop
 SIZE = RECT[2:]

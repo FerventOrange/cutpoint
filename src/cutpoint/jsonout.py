@@ -23,6 +23,8 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePath
 from typing import Any, TextIO
 
+from cutpoint.errors import FFmpegNotFoundError, FolderBusyError
+
 SCHEMA = 1
 
 # Error codes (``error.code``).
@@ -121,8 +123,6 @@ def fail(code: str, message: str) -> None:
 
 def error_code(err: BaseException) -> str:
     """The ``error.code`` for an exception the CLI turns into an exit code."""
-    from cutpoint.ffmpeg_utils import FFmpegNotFoundError, FolderBusyError  # noqa: PLC0415
-
     if isinstance(err, KeyboardInterrupt):
         return INTERRUPTED
     if isinstance(err, FolderBusyError):

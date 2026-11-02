@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import audio_tracks, cache, encode, ffmpeg_utils
+from cutpoint import audio_tracks, cache, encode, errors, ffmpeg_utils
 from cutpoint.ffmpeg_utils import VideoEncoder, measure_loudness
 
 RNG = np.random.default_rng(365)
@@ -86,7 +86,7 @@ def test_no_decodable_window_mixes_every_track_and_is_not_cached(monkeypatch, tm
     src.write_bytes(b"x")
 
     def fail(*_a, **_k):
-        raise ffmpeg_utils.FFmpegError("read error")
+        raise errors.FFmpegError("read error")
 
     monkeypatch.setattr(audio_tracks, "decode_tracks", fail)
     assert audio_tracks.export_tracks(src, 2, 30.0) == (0, 1)
@@ -160,7 +160,7 @@ def test_a_failed_comparison_is_memoised(monkeypatch, tmp_path):
 
     def fail(_src, _n, *, sr, start, duration, timeout=None):
         calls.append(start)
-        raise ffmpeg_utils.FFmpegError("read error")
+        raise errors.FFmpegError("read error")
 
     monkeypatch.setattr(audio_tracks, "decode_tracks", fail)
     assert audio_tracks.export_tracks(src, 2, 30.0) == (0, 1)

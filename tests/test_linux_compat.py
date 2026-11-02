@@ -25,11 +25,12 @@ from cutpoint import (
     cache,
     config,
     crash,
+    errors,
     ffmpeg_utils,
+    procs,
     stage,
     telemetry,
     transcribe,
-    winjob,
 )
 from cutpoint.pano import stitch, x3
 
@@ -313,7 +314,7 @@ def test_no_readable_telemetry_is_logged_once_at_info(tmp_path, monkeypatch, cap
 def test_ffmpeg_not_found_on_linux_points_to_apt_and_env(plat, monkeypatch):
     plat("linux")
     monkeypatch.setattr(ffmpeg_utils.shutil, "which", lambda _n: None)
-    with pytest.raises(ffmpeg_utils.FFmpegError) as exc:
+    with pytest.raises(errors.FFmpegError) as exc:
         ffmpeg_utils.find_tool("ffmpeg")
     msg = str(exc.value)
     assert "apt" in msg
@@ -458,19 +459,19 @@ def test_umask_falls_back_to_the_real_umask(monkeypatch, text, umask_022):
     assert os.umask(0o022) == 0o022  # the probe restored it
 
 
-# -- winjob.pdeathsig_hook ------------------------------------------------------------------------
+# -- procs.pdeathsig_hook --------------------------------------------------------------------------
 
 
 def test_pdeathsig_hook_is_none_off_linux(plat):
     plat("win32")
-    assert winjob.pdeathsig_hook() is None
+    assert procs.pdeathsig_hook() is None
     plat("darwin")
-    assert winjob.pdeathsig_hook() is None
+    assert procs.pdeathsig_hook() is None
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux only")
 def test_pdeathsig_hook_is_callable_on_linux():
-    assert callable(winjob.pdeathsig_hook())  # not invoked: it would arm the test runner
+    assert callable(procs.pdeathsig_hook())  # not invoked: it would arm the test runner
 
 
 # -- transcribe: Linux CUDA preload ----------------------------------------------------------------

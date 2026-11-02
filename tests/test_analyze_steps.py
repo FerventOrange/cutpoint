@@ -32,9 +32,10 @@ from cutpoint import (
     progress,
     transcribe,
 )
+from cutpoint.errors import FFmpegError
 from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
+from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import get_style
 
 ORDER = ("audio", "voice", "visual", "ocr", "crash")

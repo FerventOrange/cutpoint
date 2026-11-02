@@ -28,18 +28,12 @@ from typing import Any
 
 import requests
 
-from cutpoint import paths
+from cutpoint import folders, paths
 from cutpoint.assistant import proxy_tls
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.private_files import private_directory, private_file
 from cutpoint.assistant.proxy_credentials import checkpoint
-from cutpoint.ffmpeg_utils import (
-    FolderBusyError,
-    _lock_stale,
-    _read_lock,
-    lock_path,
-    swap_lock,
-)
+from cutpoint.errors import FolderBusyError
 
 logger = logging.getLogger(__name__)
 
@@ -306,13 +300,13 @@ def _session() -> requests.Session:
 
 def _is_daemon_owned() -> bool:
     """Whether the CLIProxyAPI daemon on the current port is owned by this Cutpoint installation."""
-    lock = lock_path(cliproxy_dir() / "daemon.run")
+    lock = folders.lock_path(cliproxy_dir() / "daemon.run")
     if lock is None:
         return False
-    found = _read_lock(lock)
+    found = folders._read_lock(lock)
     if not found or found[1] is None:
         return False
-    return not _lock_stale(lock, found[1])
+    return not folders._lock_stale(lock, found[1])
 
 
 def _management_request(
@@ -938,7 +932,7 @@ def run(port: int | None = None) -> None:
     home_dir = cliproxy_dir()
     private_directory(home_dir)
     try:
-        with swap_lock(home_dir / "launch"):
+        with folders.swap_lock(home_dir / "launch"):
             if _is_daemon_owned():
                 raise ProxyError("another cutpoint proxy is already running")
             auths = auth_dir()

@@ -8,7 +8,8 @@ import json
 import os
 import signal
 import tempfile
-from collections.abc import Collection, Iterator
+import time
+from collections.abc import Callable, Collection, Iterator
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -77,8 +78,6 @@ class HeldOutputs:
         removed and the project is left untouched. Only then are the deletions made and the
         temp files renamed onto their files (retried while locked, as :func:`save_bytes`), with
         Ctrl+C, Ctrl+Break and SIGTERM deferred (:func:`_deferred_interrupts`)."""
-        from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415 - it imports this module
-
         with contextlib.suppress(ValueError):
             _HOLDS.remove(self)
         files, self.files = self.files, {}
@@ -264,6 +263,49 @@ def read_json(path: Path, hint: str = "") -> Any:
 
 REPLACE_ATTEMPTS = 5
 
+# Windows "Access is denied" and "being used by another process": the file is open elsewhere
+# (error 5 can also mean a read-only file or folder).
+_LOCKED_WINERRORS = (5, 32)
+_LOCK_HINT = "it is open in another program (a player, an editor or a virus scanner)"
+
+
+def retry_locked[T](
+    op: Callable[[], T], path: Path, action: str, locked: Callable[[OSError], bool] | None = None
+) -> T:
+    """Run ``op`` (replacing or deleting ``path``), retrying briefly on PermissionError.
+
+    On Windows another process (a player, an editor, a virus scanner) holding ``path``
+    open makes a rename or delete fail for a moment. ``locked`` picks the errors to retry
+    instead; the last one is then re-raised as is, for the caller to word.
+
+    Raises:
+        PermissionError: Naming ``path`` and the program holding it, if it is still locked
+            (Windows error 5 or 32) after the retries (for error 5 also a read-only file or
+            folder); any other error as raised by ``op``.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            return op()
+        except OSError as err:
+            if not (locked(err) if locked else isinstance(err, PermissionError)):
+                raise
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(min(0.05 * 2**attempt, 0.5))
+                continue
+            if locked or getattr(err, "winerror", None) not in _LOCKED_WINERRORS:
+                raise
+            read_only = (
+                " If no program has it open, the file or its folder may be read-only: clear the"
+                " read-only attribute and re-run."
+                if getattr(err, "winerror", None) == 5
+                else ""
+            )
+            raise PermissionError(
+                f"Cannot {action} {path}: {_LOCK_HINT}. Close it and re-run.{read_only} "
+                f"({err.strerror})"
+            ) from err
+    raise AssertionError("unreachable")
+
 
 def _umask() -> int:
     """The process umask.
@@ -314,15 +356,13 @@ def save_bytes(path: Path, data: bytes, *, parents: bool = False) -> None:
 
     On Windows the rename fails with PermissionError while another process has
     ``path`` open; it is retried a few times with a short backoff
-    (:func:`cutpoint.ffmpeg_utils.retry_locked`). The temp file is removed if the
+    (:func:`retry_locked`). The temp file is removed if the
     rename never succeeds.
 
     Raises:
         PermissionError: If ``path`` stays locked through all attempts (naming it and
-            the program that may hold it, see :func:`~cutpoint.ffmpeg_utils.retry_locked`).
+            the program that may hold it, see :func:`retry_locked`).
     """
-    from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415 - it imports this module
-
     if _HOLDS and (got := _held(path)) is not None:
         hold, key = got
         hold.files[key] = bytes(data)

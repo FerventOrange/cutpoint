@@ -1205,9 +1205,10 @@ def run_qa(
 ) -> dict[str, Any]:
     """Rendered-frame QA of every clip in ``qa_dir``; writes ``<qa_dir>_qa/``. The
     zero-shot captions are the project's (:func:`cutpoint.activity.project_prompts`)."""
+    from cutpoint import folders  # noqa: PLC0415
     from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
-    from cutpoint.ffmpeg_utils import FFmpegError, output_dir  # noqa: PLC0415
 
     # normalise "." / ".." (no name for <dir>_qa) without turning mapped drives into UNC
     qa_dir = Path(os.path.abspath(qa_dir))  # noqa: PTH100
@@ -1219,7 +1220,7 @@ def run_qa(
     prompts = project_prompts(_project_of(qa_dir))
     logger.debug("360 qa: the %s prompts", prompts.name)
     # a failed run leaves no empty folder behind
-    with output_dir(out_dir), use_prompts(prompts):
+    with folders.output_dir(out_dir), use_prompts(prompts):
         _clear_sheets(out_dir)
         t0 = time.perf_counter()
         models = VisualModels()

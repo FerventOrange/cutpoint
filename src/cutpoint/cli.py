@@ -46,9 +46,9 @@ from cutpoint.config import (
 )
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.encode import LUT_SUFFIXES, Lut, check_lut
+from cutpoint.errors import FFmpegError
 from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
-from cutpoint.ffmpeg_utils import FFmpegError
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
 from cutpoint.styles import get_style, style_arg, style_names

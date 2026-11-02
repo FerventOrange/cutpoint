@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, ffmpeg_utils, state
+from cutpoint import cache, errors, ffmpeg_utils, state
 from cutpoint.pano.qa import nearest_keys
 
 if TYPE_CHECKING:
@@ -320,7 +320,7 @@ def check_preview(
             try:
                 grabs = ffmpeg_utils.grab_images(preview, float(tp), count=1, width=640, quality=4)
                 jpeg = grabs[0]
-            except ffmpeg_utils.FFmpegError as err:
+            except errors.FFmpegError as err:
                 logger.warning("VL check frame %s @%.2f: %s", preview.name, tp, err)
                 continue
             t_ask = time.perf_counter()

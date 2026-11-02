@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import cutpoint.errors as E
 import cutpoint.events.visual as V
 import cutpoint.ffmpeg_utils as F
 from cutpoint.events.visual import VisualData
@@ -545,7 +546,7 @@ def test_run_qa_skips_failing_clip_resolves_dot_and_clears_sheets(
     (out / "flagged_01.jpg").write_bytes(b"old")
 
     def boom(video, fps, size):
-        raise F.FFmpegError("decode failed")
+        raise E.FFmpegError("decode failed")
 
     monkeypatch.setattr(V, "VisualModels", Models)
     monkeypatch.setattr(qa, "decode", boom)

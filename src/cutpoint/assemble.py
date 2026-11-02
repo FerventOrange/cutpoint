@@ -46,7 +46,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-from cutpoint import jsonout, paths
+from cutpoint import cache, folders, jsonout, paths
 from cutpoint.encode import (
     A_FMT,
     AUDIO_OUT,
@@ -63,26 +63,18 @@ from cutpoint.encode import (
     plan_makeup,
     plan_peaks,
 )
+from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.ffmpeg_utils import (
-    FFmpegError,
-    FolderBusyError,
     MediaInfo,
     VideoEncoder,
-    atomic_output,
     clip_momentary,
     encode_with_fallback,
     extract_audio,
     ffprobe_json,
     has_soxr,
-    lock_path,
     measure_loudness,
-    output_dir,
     probe,
-    recover_swap,
-    retry_locked,
     run,
-    staging_path,
-    swap_lock,
 )
 from cutpoint.timeline import TIMELINE_FORMATS, write_timeline
 from cutpoint.transcribe import Segment, Transcriber, flat_words
@@ -1297,7 +1289,7 @@ def assemble(
     then always ends with the true-peak limiter (with or without ``loudnorm``).
 
     Like ``clips``, a replace of ``clips_dir`` killed hard is first finished or undone
-    (:func:`~cutpoint.ffmpeg_utils.recover_swap`), and the folder is locked for the run.
+    (:func:`~cutpoint.folders.recover_swap`), and the folder is locked for the run.
 
     Returns:
         The file written: ``out`` (mp4), or the timeline.
@@ -1312,8 +1304,9 @@ def assemble(
         raise ValueError(why)
     if output_format not in OUTPUT_FORMATS:
         raise ValueError(f"unknown output format {output_format!r}")
-    with swap_lock(clips_dir):  # one run at a time: another would remove a run's staging folder
-        recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
+    # one run at a time: another would remove a run's staging folder
+    with folders.swap_lock(clips_dir):
+        folders.recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
         return _assemble(
             clips_dir,
             out,
@@ -1356,7 +1349,7 @@ def _assemble(
             clips_dir, files, out, output_format, transition, fade_dur, audio_transition
         )
     # A run that fails before writing anything leaves no empty output folder behind.
-    with output_dir(out.parent):
+    with folders.output_dir(out.parent):
         infos = [probe(f) for f in files]
         mode = transition
         if audio_transition != default_audio_transition(transition):
@@ -1371,7 +1364,7 @@ def _assemble(
 
         language = clips_language(clips_dir) if captions else None
         # Written to a temporary name: final.mp4 only appears once complete.
-        with atomic_output(out) as part:
+        with folders.atomic_output(out) as part:
             stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or captions) else part
             try:
                 used_fade = _join(
@@ -1432,7 +1425,7 @@ def _write_timeline(
         "fade" if fade else "cut",
         ", ".join(f.name for f in files),
     )
-    with output_dir(out.parent):
+    with folders.output_dir(out.parent):
         path = write_timeline(infos, out, kind, fade, audio_cut=audio_transition == "cut")
     duration = clip_offsets(infos, fade)[-1] + infos[-1].vduration  # as the timeline's length
     logger.info("Wrote %s (%.2fs, %d clips in %s)", path, duration, len(files), clips_dir)
@@ -1462,7 +1455,7 @@ TEMP_PREFIX = ".assemble-tmp-"  # temporary clips folder in the project: .assemb
 
 
 def _run_lock(project: Path, name: str) -> Path:
-    """What :func:`temporary_clips` locks (:func:`~cutpoint.ffmpeg_utils.swap_lock`) for the
+    """What :func:`temporary_clips` locks (:func:`~cutpoint.folders.swap_lock`) for the
     whole run of the temporary folder ``name``: ``<project>/<name>.run``."""
     return project / f"{name}.run"
 
@@ -1475,16 +1468,16 @@ def _remove_temporary(project: Path, name: str) -> list[Path]:
 
     tmp, pano = project / name, project / PATHS_DIR
     left = []
-    for folder in (tmp, staging_path(tmp), pano / name):
+    for folder in (tmp, folders.staging_path(tmp), pano / name):
         if folder.exists():
             try:
-                retry_locked(partial(shutil.rmtree, folder), folder, "remove")
+                cache.retry_locked(partial(shutil.rmtree, folder), folder, "remove")
             except OSError as err:
                 logger.warning("Cannot remove the temporary clips %s: %s", folder, err)
                 left.append(folder)
     with contextlib.suppress(OSError):  # not empty: other paths stay
         pano.rmdir()
-    if (lock := lock_path(tmp)) is not None:  # left by a hard-killed export
+    if (lock := folders.lock_path(tmp)) is not None:  # left by a hard-killed export
         with contextlib.suppress(OSError):
             lock.unlink(missing_ok=True)
     return left
@@ -1508,7 +1501,7 @@ def _sweep_temporary(project: Path) -> None:
         names.add("." + name)
     for name in sorted(names):
         try:
-            with swap_lock(_run_lock(project, name)):
+            with folders.swap_lock(_run_lock(project, name)):
                 logger.info("Removing %s, left by an interrupted run", project / name)
                 _remove_temporary(project, name)
         except FolderBusyError:
@@ -1527,13 +1520,13 @@ def temporary_clips(project: Path) -> Iterator[Path]:
     The run holds a lock of its own (:func:`_run_lock`) until then, so a later run can tell a
     folder left by a hard kill from one in use, and first removes the ones left
     (:func:`_sweep_temporary`). ``project`` is created if missing and removed again on a failure
-    while it is empty (:func:`~cutpoint.ffmpeg_utils.output_dir`).
+    while it is empty (:func:`~cutpoint.folders.output_dir`).
 
     ``--json`` warnings: ``temporary_clips`` after success; ``temporary_clips_left`` naming a
     folder that could not be removed (still open in another program), also after a failure.
     """
     tmp = project / f"{TEMP_PREFIX}{uuid.uuid4().hex[:12]}"
-    with output_dir(project), swap_lock(_run_lock(project, tmp.name)):
+    with folders.output_dir(project), folders.swap_lock(_run_lock(project, tmp.name)):
         _sweep_temporary(project)
         try:
             yield tmp

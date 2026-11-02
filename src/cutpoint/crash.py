@@ -187,7 +187,8 @@ def _gpmf_copy(src: Path, tmp: Path) -> Path | None:
     telemetry-parser reads most of the file it is given; remuxing the "GoPro
     MET" track alone reads a few MB instead of GBs from slow or network storage.
     """
-    from cutpoint.ffmpeg_utils import FFmpegError, ffprobe_json, run  # noqa: PLC0415
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import ffprobe_json, run  # noqa: PLC0415
 
     try:
         info = ffprobe_json(src, entries="stream=index,codec_tag_string", timeout=60)
@@ -383,7 +384,8 @@ def decode_window(
     Returns:
         ``(times (N,), frames (N, H, W, 3) uint8 RGB)``; empty arrays on failure.
     """
-    from cutpoint.ffmpeg_utils import FFmpegError, decode_raw, probe  # noqa: PLC0415
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import decode_raw, probe  # noqa: PLC0415
 
     info = probe(path)
     height = round(width * info.height / max(1, info.width) / 2) * 2

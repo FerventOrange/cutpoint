@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg, run_json, set_config, write
-from cutpoint import cli, color, encode, extend, ffmpeg_utils, jsonout, planning
+from cutpoint import cli, color, encode, errors, extend, ffmpeg_utils, jsonout, planning
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import ClipPlan, RenderResult, _entry
 from cutpoint.color import AutoGrade
@@ -176,7 +176,7 @@ def test_check_lut_refuses_before_any_work(tmp_path, loads, name, strength, erro
 
 def test_check_lut_reports_a_lut_ffmpeg_cannot_load(tmp_path, monkeypatch):
     def fail(args, **_kw):
-        raise ffmpeg_utils.FFmpegError("Invalid data found")
+        raise errors.FFmpegError("Invalid data found")
 
     monkeypatch.setattr(encode, "run", fail)
     with pytest.raises(jsonout.ArgumentError, match="ffmpeg cannot load it"):

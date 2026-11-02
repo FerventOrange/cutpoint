@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from conftest import link_file
+from cutpoint import errors, reset_state, stage
 from cutpoint import ffmpeg_utils as fu
-from cutpoint import reset_state, stage
 
 
 @pytest.fixture
@@ -80,11 +80,11 @@ def test_failed_probe_is_not_cached(media, monkeypatch):
 
     def boom(path, **_kw):
         n["calls"] += 1
-        raise fu.FFmpegError("broken")
+        raise errors.FFmpegError("broken")
 
     monkeypatch.setattr(fu, "ffprobe_json", boom)
     for _ in range(2):
-        with pytest.raises(fu.FFmpegError):
+        with pytest.raises(errors.FFmpegError):
             fu.probe(media)
     assert n["calls"] == 2
     assert not fu._PROBED

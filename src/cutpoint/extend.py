@@ -37,7 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import boundaries, cache, jsonout, srt
+from cutpoint import boundaries, cache, folders, jsonout, srt
 from cutpoint.color import COLOR_VERSION, AutoGrade
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
@@ -49,19 +49,7 @@ from cutpoint.encode import (
     export_clip_checked,
     grade_from_entry,
 )
-from cutpoint.ffmpeg_utils import (
-    MediaInfo,
-    atomic_output,
-    check_not_sources,
-    output_dir,
-    probe,
-    recover_swap,
-    same_file,
-    source_keys,
-    staged_dir,
-    swap_in,
-    swap_lock,
-)
+from cutpoint.ffmpeg_utils import MediaInfo, probe
 from cutpoint.planning import (
     MANIFEST_GENERATOR,
     Padding,
@@ -353,8 +341,8 @@ def _extend_locked(
 ) -> Path:
     """:func:`extend_clips`, taking the folders' locks (:func:`swap_lock`) into ``held``."""
     # One run at a time on each folder: another would remove this one's staging folder.
-    held.enter_context(swap_lock(clips_dir))
-    recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
+    held.enter_context(folders.swap_lock(clips_dir))
+    folders.recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
     manifest = cache.load_json(clips_dir / "manifest.json")
     if manifest is None:
         raise FileNotFoundError(
@@ -372,8 +360,9 @@ def _extend_locked(
     )
     in_place = out_dir.resolve() == clips_dir.resolve()
     if not in_place:
-        held.enter_context(swap_lock(out_dir))
-        recover_swap(out_dir)  # a hard-killed earlier replace, before the folder is looked at
+        held.enter_context(folders.swap_lock(out_dir))
+        # a hard-killed earlier replace, before the folder is looked at
+        folders.recover_swap(out_dir)
     non_empty = out_dir.exists() and any(out_dir.iterdir())
     if (in_place or non_empty) and not force:
         raise FileExistsError(
@@ -386,7 +375,7 @@ def _extend_locked(
     # bind mount before any export. A run that fails before writing anything leaves no
     # empty folder behind.
     staged = in_place or non_empty
-    with staged_dir(out_dir) if staged else output_dir(out_dir) as work:
+    with folders.staged_dir(out_dir) if staged else folders.output_dir(out_dir) as work:
         by_file = {e["file"]: e for e in manifest.get("clips", [])}
         fmt_d = manifest.get("format") or {}
         fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
@@ -396,14 +385,14 @@ def _extend_locked(
         plans: list[ExtendPlan] = []
         skipped: dict[str, str] = {}  # file name: why it has no plan
         # every file the manifest's clips were cut from, so one in the folder is named so
-        all_sources = source_keys(
+        all_sources = folders.source_keys(
             (e["source"], _read_path(e), []) for e in by_file.values() if e.get("source")
         )
         known = manifest_entries(clips_dir, files)  # clips renamed during review too
         for f in files:
             e = by_file.get(f.name)
             if e is None:
-                if same_file(f, all_sources):
+                if folders.same_file(f, all_sources):
                     why = "a source of these clips, not a clip"
                 elif f.name in known:
                     why = (
@@ -489,8 +478,8 @@ def _extend_locked(
             pano_files = pano.inputs(e["source"], mode) if pano and e.get("pano") else []
             reads.append((e["source"], plan.src, pano_files))
         names = [p.name for p in plans]
-        sources = source_keys(reads)
-        check_not_sources(out_dir, names, sources)
+        sources = folders.source_keys(reads)
+        folders.check_not_sources(out_dir, names, sources)
         # Like clips --force: replace only the clips and .srt files out_dir's manifest.json
         # lists, never a file this run reads. Listed ones this run does not write (a clip not
         # re-exported, the .srt of a clip deleted during review) are removed, as the new
@@ -516,7 +505,7 @@ def _extend_locked(
 
         def replaceable(n: str) -> bool:
             f = out_dir / n
-            return (f.is_file() or f.is_symlink()) and not same_file(f, sources)
+            return (f.is_file() or f.is_symlink()) and not folders.same_file(f, sources)
 
         old_files = [n for n in listed_names if n in present and replaceable(n)]
         gone = {path_key(n, out_dir) for n in (*names, *old_files)}
@@ -542,7 +531,7 @@ def _extend_locked(
                     prior, e | {"start": start, "end": end}, reuse_same_format, audio_fade
                 )
             ):
-                with atomic_output(work / name) as part:
+                with folders.atomic_output(work / name) as part:
                     shutil.copy2(reuse_dir / name, part)
                 reused += 1
                 read_err = None
@@ -641,12 +630,12 @@ def _extend_locked(
             },
         )
         if staged:  # all or nothing; only the clips and .srt files named above are replaced
-            swap_in(work, out_dir, old_files)
+            folders.swap_in(work, out_dir, old_files)
     if staged:
         written = {path_key(e["file"], out_dir) for e in entries}
         kept = [p for p in clip_files(out_dir) if path_key(p.name, out_dir) not in written]
         hint = "assemble includes them, so move them out if they are not part of the edit"
-        kept_sources = [p for p in kept if same_file(p, all_sources | sources)]
+        kept_sources = [p for p in kept if folders.same_file(p, all_sources | sources)]
         if kept_sources:
             message = (
                 f"Kept {', '.join(p.name for p in kept_sources)} in {out_dir.absolute()}: a "

@@ -71,9 +71,10 @@ import numpy as np
 
 from cutpoint import cache, jsonout, paths, state
 from cutpoint.config import remap_source
+from cutpoint.errors import FFmpegError
 from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
-from cutpoint.ffmpeg_utils import FFmpegError, grab_frame_jpeg
+from cutpoint.ffmpeg_utils import grab_frame_jpeg
 from cutpoint.utils import slugify
 from cutpoint.vision import VisionRater
 
