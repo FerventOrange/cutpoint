@@ -195,7 +195,6 @@ for _f in (
     Feature("beauty", "visual", "A steady, good-looking view", "events"),
     Feature("people", "visual", "Friends close to the camera", "events"),
     Feature("group", "visual", "A group of people in view", "events"),
-    Feature("taste", "visual", "Looks like the moments you picked in your own edit", "events"),
 ):
     register(_f)
 # The ski grids in cutpoint.ski's order: the order of the saved ski_features arrays and of a
@@ -217,13 +216,17 @@ SKI_FEATURES = (
     "group",
     "voice_laughter",
     "voice",
-    "taste",
     "wipeout",
 )
 # Before #514 phase 1b the ski feature voice_laughter was called "laughter", which is the
 # transcript feature for the generic styles. Learned ski presets and ski_features files of
 # that time say "laughter"; ski_names() reads it as voice_laughter.
 SKI_ALIASES = {"laughter": "voice_laughter"}
+# Features that no longer exist. A learned preset saved while they did may still weigh them;
+# styles.load_learned() drops those weights, so they are not counted in the divisor and the
+# preset scores as one without them. ``taste`` was the personal taste head
+# (``refmatch --taste``), removed when refmatch became scripts/refmatch.py.
+REMOVED = frozenset({"taste"})
 
 
 def ski_names[T](named: Mapping[str, T], where: str = "") -> dict[str, T]:

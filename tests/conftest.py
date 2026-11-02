@@ -17,6 +17,13 @@ from cutpoint import analyze, clips, config, paths, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    # tests/scripts: the development scripts in scripts/; `-m "not script"` skips them
+    config.addinivalue_line(
+        "markers", "script: tests a development script in scripts/, not the product"
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point CUTPOINT_HOME and every platform default at ``tmp_path``; yields the home."""
@@ -63,6 +70,22 @@ def remap(home: Path, monkeypatch: pytest.MonkeyPatch, old, new, exclude=()) -> 
         data["source_remap_exclude"] = list(exclude)
     set_config(home, **data)
     monkeypatch.setattr(config, "_prefix_forms", lambda p: (config.norm_path(p),))
+
+
+def load_script(name: str):
+    """The development script ``scripts/<name>.py`` as a module (loaded once; the scripts are
+    not part of the package). Its tests are marked ``script``."""
+    import importlib.util  # noqa: PLC0415
+
+    key = f"cutpoint_script_{name}"
+    if key not in sys.modules:
+        path = Path(__file__).resolve().parents[1] / "scripts" / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(key, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module  # dataclasses look their module up by name
+        spec.loader.exec_module(module)
+    return sys.modules[key]
 
 
 def media_info(path: Path = Path("v.mp4"), duration: float = 100.0, **over) -> MediaInfo:
