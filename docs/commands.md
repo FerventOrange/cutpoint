@@ -140,7 +140,7 @@ So do these combinations:
 
 ### events outputs
 
-`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0; `preset` is `built-in` when the kept preset is marked `"builtin": true`, in the user or bundled presets folder). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files or llama-server are `not_found` and name the `cutpoint setup` command
+`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files or llama-server are `not_found` and name the `cutpoint setup` command
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
 
@@ -837,7 +837,7 @@ Footage that is not reachable (offline drive, moved file) is skipped with a `foo
 
 | Layer | What |
 |---|---|
-| `audio` | PANNs sound events: laughter, screams, cheering, gunfire, explosions |
+| `audio` | PANNs sound events: laughter, screams, cheering |
 | `ocr` | Game HUD text: kill feeds, round banners (see [game streams](workflows/game-streams.md)) |
 | `voice` | Wind-robust speech and laughter (Silero VAD + PANNs) |
 | `visual` | CLIP frame embeddings, person detection, beauty and group scores |

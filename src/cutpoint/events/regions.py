@@ -8,14 +8,10 @@ written by region discovery (:mod:`cutpoint.events.discover`) and calibrated
 by hand. No game presets ship with the package; the bundled folder is kept
 for generic ones.
 
-An installed preset marked ``"builtin": true`` keeps the original R6
-interpretation (coloured name boxes, its own banner list), so its OCR cache
-keys and results stay those of the former built-in R6 preset.
-
 The user and bundled folders are the installed, trusted tiers: a preset copied
 into ``<CUTPOINT_HOME>/presets`` behaves exactly like the same file bundled with
-the package (same ``"builtin"`` handling, same OCR and VLM cache keys). Project
-presets are per-project overrides and are never trusted.
+the package (same OCR and VLM cache keys). Project presets are per-project
+overrides and are never trusted.
 
 Preset JSON::
 
@@ -37,19 +33,14 @@ Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
 ...); missing ones use the defaults. Other keys are ignored: region discovery
 marks the extra notice regions it adds where text shows outside every other
 region with ``"origin": "outside"``, which changes neither the region nor its
-cache key. ``"builtin": true`` selects the original R6
-interpretation: ``banner_phrases`` are used as listed, without
-:data:`GENERIC_BANNERS`, :meth:`HudPreset.key` adds no fields and the preset
-records no ``path``. It is honoured only in installed presets (user or
-bundled); a project preset that sets it is loaded as a normal JSON preset
-(with a warning).
+cache key.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -65,15 +56,14 @@ class Region:
     Attributes:
         name: Region id ("killfeed", "banner", ...).
         x, y, w, h: Rectangle in 1920x1080 reference pixels.
-        kind: How OCR text is interpreted: "killfeed" (R6 coloured name
-            boxes), "feed" (generic stacked text lines: "A destroyed B" or
-            coloured names), "banner", "bigtext" (generic large centred
-            text), "counter", "notice" or "log".
+        kind: How OCR text is interpreted: "feed" (stacked text lines: "A
+            destroyed B" or coloured names), "banner", "bigtext" (large
+            centred text) or "notice".
         min_change: Fraction of the downscaled HUD-pixel mask that must change
             before the region is OCR'd again ("mask" gate).
         min_fill: Minimum fraction of HUD pixels for the region to be OCR'd at
             all (big banner text fills ~3-8% of the banner region).
-        gate: When to run recognition: "mask" (the R6 HUD-colour pixel mask
+        gate: When to run recognition: "mask" (the HUD-colour pixel mask
             changed) or "det" (game-agnostic: RapidOCR text *detection* on the
             crop; recognition only when the text-box layout changed).
         every: Process the region on every n-th sampled frame only (banners
@@ -98,18 +88,8 @@ class Region:
     det_scale: float = 1.0
 
     def key(self) -> dict[str, Any]:
-        """Cache-key dict. ``gate``/``every``/``min_text_h`` are left out at their
-        defaults, so keys of the built-in R6 regions stay identical."""
-        out: dict[str, Any] = {}
-        for f in fields(self):
-            v = getattr(self, f.name)
-            if f.name in _OPTIONAL_KEY_FIELDS and v == f.default:
-                continue
-            out[f.name] = v
-        return out
-
-
-_OPTIONAL_KEY_FIELDS = ("gate", "every", "min_text_h", "det_scale")
+        """Cache-key dict: every field."""
+        return asdict(self)
 
 
 def _regions(data: dict[str, Any]) -> tuple[Region, ...]:
@@ -168,14 +148,11 @@ class HudPreset:
     Attributes:
         game: Preset key (the preset's ``game``, or a slug of the game's name).
         regions: HUD rectangles to OCR.
-        phrases: Banner phrases (built-in R6: its own list only; JSON presets:
-            their list plus :data:`GENERIC_BANNERS`).
-        builtin: True for ``"builtin": true`` presets (R6; original
-            interpretation).
+        phrases: Banner phrases: the preset's list plus :data:`GENERIC_BANNERS`.
         player_tags: Extra in-game names listed in the preset.
         feed: Feed parsing options (``kill_words``, ``colors``, ...).
         bigtext: Add the generic big-centred-text check.
-        path: JSON file the preset came from (None for built-in ones).
+        path: JSON file the preset came from.
         title: Human-readable game name (VLM prompt).
         view: Camera view for the VLM prompt ("first-person"; empty: none).
         hype: The VLM prompt's hype rubric line (empty: the generic one).
@@ -186,7 +163,6 @@ class HudPreset:
     game: str
     regions: tuple[Region, ...]
     phrases: tuple[str, ...]
-    builtin: bool = False
     player_tags: tuple[str, ...] = ()
     feed: dict[str, Any] = field(default_factory=dict)
     bigtext: bool = True
@@ -203,9 +179,7 @@ class HudPreset:
         return self.regions
 
     def key(self) -> dict[str, Any]:
-        """Extra cache-key fields of JSON presets (empty for built-in R6)."""
-        if self.builtin:
-            return {}
+        """Extra cache-key fields of the preset."""
         return {
             "phrases": list(self.phrases),
             "feed": self.feed,
@@ -250,9 +224,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return data
 
 
-_warned_builtin: set[Path] = set()
-
-
 def is_installed_path(path: Path | None) -> bool:
     """Whether a preset at ``path`` is installed: bundled (``path`` None, or in
     :data:`~cutpoint.paths.PRESETS_DIR`) or a user preset (in
@@ -260,38 +231,19 @@ def is_installed_path(path: Path | None) -> bool:
     return path is None or path.parent in (paths.PRESETS_DIR, paths.presets_dir())
 
 
-def _is_builtin(data: dict[str, Any], path: Path | None) -> bool:
-    """``"builtin": true`` counts only for installed presets: bundled (``path`` None
-    or in :data:`~cutpoint.paths.PRESETS_DIR`) or user presets (in
-    :func:`~cutpoint.paths.presets_dir`)."""
-    if not data.get("builtin"):
-        return False
-    if is_installed_path(path):
-        return True
-    if path not in _warned_builtin:
-        _warned_builtin.add(path)
-        logger.warning(
-            'Ignoring "builtin" in HUD preset %s: only user or bundled presets can set it', path
-        )
-    return False
-
-
 def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPreset:
     """Build a :class:`HudPreset` from preset JSON (unknown keys are ignored)."""
-    builtin = _is_builtin(data, path)
     phrases = tuple(map(str, data.get("banner_phrases", [])))
     events = tuple(e for e in data.get("events") or [] if isinstance(e, dict))
-    if not builtin:
-        phrases = tuple(dict.fromkeys([*phrases, *GENERIC_BANNERS, *_event_phrases(events)]))
+    phrases = tuple(dict.fromkeys([*phrases, *GENERIC_BANNERS, *_event_phrases(events)]))
     return HudPreset(
         game=str(data.get("game") or (path.stem if path else "game")),
         regions=_regions(data),
         phrases=phrases,
-        builtin=builtin,
         player_tags=tuple(data.get("player_tags", [])),
         feed=dict(data.get("feed") or {}),
         bigtext=bool(data.get("bigtext", True)),
-        path=None if builtin else path,
+        path=path,
         title=str(data.get("title", "")),
         view=str(data.get("view", "")),
         hype=str(data.get("hype", "")),
