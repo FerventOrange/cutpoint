@@ -217,3 +217,69 @@ def test_audio_failure_keyed_by_source_cache_dir(tmp_path, monkeypatch):
     assert not refmatch._AUDIO_FAILED
     refmatch.audio_8k(src)
     assert len(calls) == 3
+
+
+# --------------------------------------------------------------------------- evaluate / fit
+SYN_SRC = "syn.mp4"
+SYN_N = 3000  # 300 s on the 0.1 s grid
+
+
+def bumps(centers: list[float]) -> np.ndarray:
+    """A 0-1 grid with a triangular bump (10 s wide) at each centre, in seconds."""
+    i = np.arange(SYN_N) / 10
+    out = np.zeros(SYN_N)
+    for c in centers:
+        out = np.maximum(out, np.clip(1 - np.abs(i - c) / 5, 0, 1))
+    return out
+
+
+def syn_feats() -> list[dict[str, object]]:
+    """One source: airtime bumps at 50/150/250 s (the reference's moments), carve bumps at
+    100/200 s (not in the reference)."""
+    return [
+        {
+            "source": SYN_SRC,
+            "offset": 0.0,
+            "duration": SYN_N / 10,
+            "events": [],
+            "mask": np.zeros(SYN_N),
+            "friends": np.zeros(SYN_N),
+            "features": {"airtime": bumps([50, 150, 250]), "carve": bumps([100, 200])},
+        }
+    ]
+
+
+SYN_RESULT = {
+    "positives": [{"source": SYN_SRC, "start": c - 5.0, "end": c + 5.0} for c in (50, 150, 250)],
+    "reference_duration": 30.0,
+    "reference": "ref.mp4",
+    "shots": [
+        {"shot": i, "matched": True, "source": SYN_SRC, "src_start": c - 4.0, "src_end": c + 4.0}
+        for i, c in enumerate((50, 150, 250))
+    ],
+}
+
+
+def test_evaluate_scores_picks_against_the_reference_moments() -> None:
+    def run(weights: dict[str, float]) -> dict[str, object]:
+        return refmatch.evaluate(
+            Path("p"), SYN_RESULT, weights, friends_strong=0.0, feats=syn_feats()
+        )
+
+    right = run({"airtime": 1.0})
+    wrong = run({"carve": 1.0})
+    assert right["moments_hit"] == right["moments"] == 3
+    assert right["precision"] > 0.2
+    assert wrong["moments_hit"] == 0
+    assert wrong["precision"] == 0.0
+
+
+def test_fit_weights_moves_weight_toward_the_features_of_the_labelled_moments() -> None:
+    data = [refmatch.FitData(Path("p"), SYN_RESULT, syn_feats())]
+    report = refmatch.fit_weights(
+        data, features=["airtime", "carve"], thresholds=(0,), folds=2, save=False, cross=False
+    )
+    stats = report["features"]
+    assert stats["airtime"]["auc"] > 0.9 > 0.5 > stats["carve"]["auc"]
+    assert report["auc"]["learned_in_sample"] > 0.9
+    assert report["at_edit_duration"]["learned_in_sample"]["moments_hit"] == 3
