@@ -1,4 +1,4 @@
-"""Platform behaviour: path keys, Linux mounts, tool lookup, llama.cpp setup, the sh wrapper.
+"""Platform behaviour: path keys, Linux mounts, tool lookup, the sh wrapper.
 
 ``sys.platform`` is monkeypatched wherever the code branches on it, so every test is
 valid on both Linux and Windows CI. Tests that need real POSIX features are skipped on Windows.
@@ -7,7 +7,6 @@ valid on both Linux and Windows CI. Tests that need real POSIX features are skip
 from __future__ import annotations
 
 import errno
-import io
 import json
 import logging
 import os
@@ -15,17 +14,23 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
-import zipfile
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
 
 from conftest import messages, remap, set_config, write
-from cutpoint import assemble, cache, config, crash, ffmpeg_utils, stage, telemetry, transcribe
-from cutpoint.events import llama_server, setup
-from cutpoint.events import paths as ev_paths
+from cutpoint import (
+    assemble,
+    cache,
+    config,
+    crash,
+    ffmpeg_utils,
+    stage,
+    telemetry,
+    transcribe,
+    winjob,
+)
 from cutpoint.pano import stitch, x3
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file semantics")
@@ -412,81 +417,6 @@ def test_sdk_env_is_none_without_shared_libs_or_off_linux(tmp_path, plat):
     assert stitch.sdk_env(tmp_path / "MediaSDKTest.exe") is None
 
 
-# -- events/setup: llama.cpp assets ---------------------------------------------------------
-
-TAG = "b9000"
-PRE = f"llama-{TAG}-bin-ubuntu-"
-
-
-def _release(*names: str) -> dict[str, tuple[str, int, str | None]]:
-    return {n: (f"https://example.invalid/{n}", 1, None) for n in names}
-
-
-FULL = _release(
-    f"{PRE}x64.tar.gz",
-    f"{PRE}vulkan-x64.tar.gz",
-    f"{PRE}cuda-12.8-x64.tar.gz",
-    f"cudart-llama-{TAG}-bin-ubuntu-cuda-12.8-x64.tar.gz",
-    f"{PRE}cuda-13.0-x64.tar.gz",
-    f"cudart-llama-{TAG}-bin-ubuntu-cuda-13.0-x64.tar.gz",
-    f"{PRE}arm64.tar.gz",
-)
-
-
-AUTO_NVIDIA = ("cuda", "vulkan", "cpu")
-AUTO_OTHER = ("vulkan", "cpu")
-
-
-def test_pick_linux_assets_nvidia_takes_the_oldest_cuda_with_cudart():
-    flavor, picked = setup._pick_linux_assets(TAG, FULL, "x64", AUTO_NVIDIA)
-    assert flavor == "linux-cuda-12.8"
-    assert picked["bin"][0].endswith(f"{PRE}cuda-12.8-x64.tar.gz")
-    assert picked["rt"][0].endswith(f"cudart-llama-{TAG}-bin-ubuntu-cuda-12.8-x64.tar.gz")
-
-
-def test_pick_linux_assets_skips_a_cuda_build_without_cudart():
-    assets = {k: v for k, v in FULL.items() if "cudart" not in k or "13.0" in k}
-    flavor, picked = setup._pick_linux_assets(TAG, assets, "x64", AUTO_NVIDIA)
-    assert flavor == "linux-cuda-13.0"
-    assert set(picked) == {"bin", "rt"}
-
-
-def test_pick_linux_assets_without_nvidia_prefers_vulkan_then_cpu():
-    flavor, picked = setup._pick_linux_assets(TAG, FULL, "x64", AUTO_OTHER)
-    assert (flavor, set(picked)) == ("linux-vulkan", {"bin"})
-    no_vulkan = {k: v for k, v in FULL.items() if "vulkan" not in k}
-    flavor, picked = setup._pick_linux_assets(TAG, no_vulkan, "x64", AUTO_OTHER)
-    assert (flavor, set(picked)) == ("linux-cpu", {"bin"})
-
-
-def test_pick_linux_assets_arch_and_zip_fallback_and_none():
-    flavor, _ = setup._pick_linux_assets(TAG, FULL, "arm64", AUTO_NVIDIA)
-    assert flavor == "linux-cpu"  # no CUDA / Vulkan build for arm64 in this release
-    zips = _release(f"{PRE}vulkan-x64.zip")
-    assert setup._pick_linux_assets(TAG, zips, "x64", AUTO_OTHER)[0] == "linux-vulkan"
-    win_cpu = _release("llama-b9000-bin-win-cpu-x64.zip")
-    assert setup._pick_linux_assets(TAG, win_cpu, "x64", AUTO_NVIDIA) is None
-
-
-def test_forced_llama_backend_never_falls_back():
-    no_cuda = {k: v for k, v in FULL.items() if "cuda" not in k}
-    assert setup._pick_linux_assets(TAG, no_cuda, "x64", ("cuda",)) is None
-    assert setup._pick_linux_assets(TAG, FULL, "x64", ("cpu",))[0] == "linux-cpu"
-
-
-@pytest.mark.parametrize(
-    ("stamp", "plat_name", "fits"),
-    [
-        ("b1 cuda-12.4\n", "win", True),
-        ("b1 cuda-12.4", "linux", False),
-        ("b1 linux-vulkan", "linux", True),
-        ("b1 linux-cuda-12.8", "win", False),
-    ],
-)
-def test_stamp_fits_only_the_platform_it_was_installed_for(stamp, plat_name, fits):
-    assert setup._stamp_fits(stamp, plat_name) is fits
-
-
 @posix_only
 def test_save_json_survives_a_file_system_that_rejects_chmod(tmp_path, monkeypatch):
     def nope(self, *args, **kwargs):
@@ -528,160 +458,19 @@ def test_umask_falls_back_to_the_real_umask(monkeypatch, text, umask_022):
     assert os.umask(0o022) == 0o022  # the probe restored it
 
 
-# -- events/setup._extract --------------------------------------------------------------------
-
-
-def _tar(path: Path, entries: dict[str, tuple[bytes | None, int]]) -> Path:
-    """``entries``: name -> (content, mode); content None makes a directory."""
-    with tarfile.open(path, "w:gz") as tf:
-        for name, (data, mode) in entries.items():
-            info = tarfile.TarInfo(name)
-            info.mode = mode
-            if data is None:
-                info.type = tarfile.DIRTYPE
-                tf.addfile(info)
-            else:
-                info.size = len(data)
-                tf.addfile(info, io.BytesIO(data))
-    return path
-
-
-def test_extract_tarball_strips_the_top_level_folder(tmp_path):
-    arc = _tar(
-        tmp_path / "llama.tar.gz",
-        {
-            f"llama-{TAG}": (None, 0o755),
-            f"llama-{TAG}/llama-server": (b"#!/bin/sh\n", 0o755),
-            f"llama-{TAG}/libggml.so": (b"lib", 0o644),
-        },
-    )
-    dest = tmp_path / "out"
-    setup._extract(arc, dest)
-    assert sorted(p.name for p in dest.iterdir()) == ["libggml.so", "llama-server"]
-    if sys.platform != "win32":
-        assert (dest / "llama-server").stat().st_mode & stat.S_IXUSR
-
-
-def test_extract_tarball_with_several_top_level_entries_is_kept_as_is(tmp_path):
-    arc = _tar(tmp_path / "a.tar.gz", {"one/a.txt": (b"a", 0o644), "two.txt": (b"b", 0o644)})
-    dest = tmp_path / "out"
-    setup._extract(arc, dest)
-    assert (dest / "one" / "a.txt").is_file()
-    assert (dest / "two.txt").is_file()
-
-
-@posix_only
-def test_extract_zip_restores_the_exec_bit(tmp_path):
-    arc = tmp_path / "llama.zip"
-    with zipfile.ZipFile(arc, "w") as zf:
-        exe = zipfile.ZipInfo("llama-server")
-        exe.external_attr = (stat.S_IFREG | 0o755) << 16
-        zf.writestr(exe, "#!/bin/sh\n")
-        plain = zipfile.ZipInfo("notes.txt")
-        plain.external_attr = (stat.S_IFREG | 0o644) << 16
-        zf.writestr(plain, "x")
-    dest = tmp_path / "out"
-    setup._extract(arc, dest)
-    assert (dest / "llama-server").stat().st_mode & 0o777 == 0o755
-    assert (dest / "notes.txt").stat().st_mode & stat.S_IXUSR == 0
-
-
-def test_extract_zip_refuses_path_traversal(tmp_path):
-    arc = tmp_path / "evil.zip"
-    with zipfile.ZipFile(arc, "w") as zf:
-        zf.writestr("../escape.txt", "x")
-    with pytest.raises(RuntimeError, match="unsafe path"):
-        setup._extract(arc, tmp_path / "out")
-    assert not (tmp_path / "escape.txt").exists()
-
-
-def test_extract_zip_refuses_a_sibling_directory_sharing_the_prefix(tmp_path):
-    arc = tmp_path / "evil.zip"
-    with zipfile.ZipFile(arc, "w") as zf:
-        zf.writestr("../llama.cpp-x/f", "x")
-    with pytest.raises(RuntimeError, match="unsafe path"):
-        setup._extract(arc, tmp_path / "llama.cpp")
-    assert not (tmp_path / "llama.cpp-x").exists()
-
-
-@posix_only
-def test_extract_zip_caps_modes_at_755(tmp_path):
-    arc = tmp_path / "m.zip"
-    with zipfile.ZipFile(arc, "w") as zf:
-        wide = zipfile.ZipInfo("wide.bin")
-        wide.external_attr = (stat.S_IFREG | 0o777) << 16
-        zf.writestr(wide, "x")
-        folder = zipfile.ZipInfo("sub/")
-        folder.external_attr = (stat.S_IFDIR | 0o777) << 16
-        zf.writestr(folder, "")
-        zf.writestr("sub/f.txt", "y")
-    dest = tmp_path / "out"
-    setup._extract(arc, dest)
-    assert stat.S_IMODE((dest / "wide.bin").stat().st_mode) == 0o755
-    assert (dest / "sub").is_dir()
-    assert (dest / "sub" / "f.txt").read_text() == "y"
-
-
-@posix_only
-def test_install_llama_only_chmods_its_own_binary(tmp_path, monkeypatch):
-    other = write(tmp_path / "other" / "llama-server")
-    other.chmod(0o644)
-    monkeypatch.setenv("CUTPOINT_LLAMA_SERVER", str(other))
-    monkeypatch.setattr(setup, "_llama_platform", lambda: "linux")
-    assets = {"bin": ("https://example.invalid/b.tar.gz", 1, None)}
-    monkeypatch.setattr(setup, "_latest_llama_assets", lambda _p: ("b1", "cpu", assets))
-    monkeypatch.setattr(setup, "download", lambda _u, dst, *_a: dst)
-    monkeypatch.setattr(
-        setup, "_extract", lambda _a, dest: write(dest / "build" / "llama-server").chmod(0o644)
-    )
-    setup.install_llama(force=True)
-    own = ev_paths.llama_dir() / "build" / "llama-server"
-    assert stat.S_IMODE(other.stat().st_mode) == 0o644
-    assert stat.S_IMODE(own.stat().st_mode) & 0o111 == 0o111
-    assert (ev_paths.llama_dir() / "VERSION.txt").read_text().strip() == "b1 cpu"
-
-
-# -- events/paths.llama_server_exe ---------------------------------------------------------------
-
-EXE_NAME = "llama-server.exe" if os.name == "nt" else "llama-server"
-
-
-def test_llama_server_exe_env_override_wins(tmp_path, monkeypatch):
-    bundled = write(ev_paths.llama_dir() / EXE_NAME)
-    custom = write(tmp_path / "mine" / "llama-server")
-    monkeypatch.setenv("CUTPOINT_LLAMA_SERVER", str(custom))
-    monkeypatch.setattr(ev_paths.shutil, "which", lambda _n: str(tmp_path / "onpath"))
-    assert ev_paths.llama_server_exe() == custom
-    assert bundled.exists()
-
-
-def test_llama_server_exe_bundled_beats_path(tmp_path, monkeypatch):
-    bundled = write(ev_paths.llama_dir() / "build" / EXE_NAME)
-    monkeypatch.setattr(ev_paths.shutil, "which", lambda _n: str(tmp_path / "onpath"))
-    assert ev_paths.llama_server_exe() == bundled
-
-
-def test_llama_server_exe_falls_back_to_path_then_the_expected_location(tmp_path, monkeypatch):
-    onpath = write(tmp_path / "bin" / "llama-server")
-    monkeypatch.setattr(ev_paths.shutil, "which", lambda _n: str(onpath))
-    assert ev_paths.llama_server_exe() == onpath
-    monkeypatch.setattr(ev_paths.shutil, "which", lambda _n: None)
-    assert ev_paths.llama_server_exe() == ev_paths.llama_dir() / EXE_NAME
-
-
-# -- events/llama_server._pdeathsig_hook -----------------------------------------------------------
+# -- winjob.pdeathsig_hook ------------------------------------------------------------------------
 
 
 def test_pdeathsig_hook_is_none_off_linux(plat):
     plat("win32")
-    assert llama_server._pdeathsig_hook() is None
+    assert winjob.pdeathsig_hook() is None
     plat("darwin")
-    assert llama_server._pdeathsig_hook() is None
+    assert winjob.pdeathsig_hook() is None
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux only")
 def test_pdeathsig_hook_is_callable_on_linux():
-    assert callable(llama_server._pdeathsig_hook())  # not invoked: it would arm the test runner
+    assert callable(winjob.pdeathsig_hook())  # not invoked: it would arm the test runner
 
 
 # -- transcribe: Linux CUDA preload ----------------------------------------------------------------

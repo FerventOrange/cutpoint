@@ -86,6 +86,7 @@ So do these combinations:
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
+| `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama, or a hosted Vision role without consent) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
@@ -116,7 +117,7 @@ So do these combinations:
 
 | Command | `outputs` |
 |---|---|
-| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `llama.cpp`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
+| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `analyze` | `highlights`, `transcript`, `candidates` (count), `suggested_top` (when set), `style` |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
 | `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
@@ -125,7 +126,7 @@ So do these combinations:
 | `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `edition`, `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
-| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`), and `version` for `llama`; for `pip`, `installed` and `missing` |
+| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing` |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
 | `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
@@ -139,7 +140,7 @@ So do these combinations:
 
 ### events outputs
 
-`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files or llama-server are `not_found` and name the `cutpoint setup` command
+`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
 
@@ -202,7 +203,7 @@ Open the complete printed loopback URL, including `#t=…`; keep it private beca
 to local footage. The workspace can create/open projects, analyze standard video,
 preview and trim candidates, save and reorder a sequence, export clips, and assemble a final
 video with optional fades (video and audio set separately), loudness normalization, [peak compression](#peak-compression) and
-captions. Nothing is uploaded. A camera
+captions. Video files are not uploaded (a hosted model you enable after consent receives only what its role needs, such as frames or text). A camera
 folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 analyze --scan`
 (see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
 path (the one the analysis cached when it is current), with badges for poor paths
@@ -552,8 +553,10 @@ server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, a
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host, to send the project's moment labels, transcript snippets, file names (not full paths),
-times and your messages there. The answer is kept in `config.json` (`assistant.consent`); until
+and host, to send the project's analysis results (moment labels, scores and detection signals,
+transcript snippets, file names (not full paths) and times) and your messages, never video or
+audio. The answer is kept in `config.json` (`assistant.consent`, as
+`assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
 then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
 
 Its header shows the model and provider (local, or the hosted host), with a note
@@ -582,7 +585,7 @@ Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST
 `POST .../proposals/<proposal>/applied`, `DELETE .../chat`, `GET .../history` and
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
-`GET .../assistant` also returns `consent` (`needed`, `key`, `host`, and `missing_key`: how to add a missing API key, or null); `POST .../turns` answers
+`GET .../assistant` also returns `consent` (`needed`, `key`, `host`, `missing_key`: how to add a missing API key or log in to a subscription, or null, and `missing_kind`: `"login"` for a subscription provider, `"key"` otherwise, null when nothing is missing); `POST .../turns` answers
 409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
@@ -599,7 +602,7 @@ cutpoint capabilities [--json]
 
 Reports the edition first: `full`, or `lite` when torch and the rest of the `events` extra are
 not installed. Then GPU vendors present separately from usable video encoders, the selected encoder,
-faster-whisper's transcription device, and the backend order `setup` would use for llama.cpp.
+faster-whisper's transcription device.
 It also reports torch (installed, CUDA or CPU-only build, whether it reaches the GPU; with the
 reinstall command when it is CPU-only on a machine with a usable NVIDIA driver) and the Insta360
 Media SDK (found or not, and a warning when no NVIDIA GPU is found). `360 stitch` logs that
@@ -654,7 +657,7 @@ one of them is refused.
 | `--format mp4\|fcpxml\|otio` | As on [`assemble`](#assemble): `mp4` (default) makes the final video; `fcpxml` or `otio` writes only that timeline, referencing the kept clips, and copies it to `<name>-final.fcpxml` or `.otio` |
 | `--events` | Also run [`events`](#events) with its defaults to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
-| `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model |
+| `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
@@ -774,8 +777,8 @@ OCR in the background removes them.
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
 `INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
-logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The llama-server
-VLM layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
+logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The VLM
+layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
@@ -841,7 +844,7 @@ Footage that is not reachable (offline drive, moved file) is skipped with a `foo
 | `voice` | Wind-robust speech and laughter (Silero VAD + PANNs) |
 | `visual` | CLIP frame embeddings, person detection, beauty and group scores |
 | `crash` | Runs `cutpoint crashes` (action-cam projects) |
-| `vlm` | Qwen2.5-Omni-7B through a managed llama-server describes candidate windows from frames and audio |
+| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the subscription Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. Without either, the layer keeps its cached descriptions |
 
 Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash vlm`.
 
@@ -869,10 +872,7 @@ Tuning options, rarely needed:
 | `--ocr-debug DIR` | Save region crops of OCR events to `DIR` |
 | `--discover-bursts N` | Frame bursts sampled by HUD region discovery, 4 frames each (default 40) |
 | `--frames N` | Frames per model window (default 14) |
-| `--frame-height N` | Height of the frames sent to the model (default 720) |
-| `--image-max-tokens N` | Token budget per frame (default 640) |
-| `--ctx N` | llama-server context size (default 16384) |
-| `--no-audio`, `--no-transcript` | Do not send the audio or the transcript excerpt to the model |
+| `--no-transcript` | Do not send the transcript excerpt to the model |
 
 Every layer is cached per source, so reruns are cheap. The model devices in the `stats` of
 `events.json` (`audio_device`, `voice.device`, `visual.device`) name where a model ran in this
@@ -1371,16 +1371,12 @@ fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes n
 ## setup
 
 ```text
-cutpoint setup [--only pip panns llama omni visual voice] [--force] [--json]
+cutpoint setup [--only pip panns visual voice] [--json]
 ```
 
-Downloads the models and tools for `events`. On Windows and Linux, auto selection prefers CUDA
-when a usable NVIDIA driver is detected, otherwise Vulkan, then CPU, depending on available
-release assets. Windows CUDA uses the CUDA 12.4 distribution; Linux uses the oldest CUDA
-distribution with cudart in the newest matching release. Set `CUTPOINT_LLAMA_BACKEND` to
-`auto`, `cuda`, `vulkan` or `cpu` to control selection; an explicit backend does not silently
-fall back. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled build, then
-`PATH`. `--json` writes the result as one [JSON envelope](#json-output) on stdout. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
+Downloads the models for `events` (about 2 GB): PANNs, CLIP ViT-L/14, the Faster R-CNN detector,
+the aesthetic head and Silero VAD. The VLM layer uses the shared vision model instead (Ollama with
+`qwen3.5:9b`, or a hosted Vision model), which `setup` does not download. `--json` writes the result as one [JSON envelope](#json-output) on stdout. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
 
 ## paths
 
@@ -1388,7 +1384,7 @@ fall back. `llama-server` is found via `CUTPOINT_LLAMA_SERVER`, then the bundled
 cutpoint paths [--json]
 ```
 
-Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools, llama.cpp,
+Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools,
 stage, styles, HUD presets, activity profiles, projects and the bundled presets. `--json` writes them as one [JSON envelope](#json-output).
 
 ## guide

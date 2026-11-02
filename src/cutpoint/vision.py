@@ -140,7 +140,7 @@ class AssistantVision:
                 " or ".join(providers.SUBSCRIPTION_PROVIDERS),
             )
             return False
-        if providers.consent_key(p) not in self.settings.consent:
+        if providers.consent_key(p, "vision") not in self.settings.consent:
             logger.info("Agree to send to %s for Vision first; skipping vision", p.name)
             return False
         if missing := providers.missing_key(p):
@@ -156,9 +156,10 @@ class AssistantVision:
             return False
         return True
 
-    def ask(self, prompt: str, jpegs: list[bytes]) -> str | None:
-        """The provider's reply to ``prompt`` with the JPEG frames; None (logged) when it is not
-        :meth:`available` or fails."""
+    def ask(self, prompt: str, jpegs: list[bytes], schema: dict | None = None) -> str | None:
+        """The provider's reply to ``prompt`` with the JPEG frames (constrained to ``schema``
+        where the provider supports it); None (logged) when it is not :meth:`available` or
+        fails."""
         from cutpoint.assistant import keys, providers  # noqa: PLC0415
 
         if not self.available():
@@ -169,7 +170,7 @@ class AssistantVision:
             for j in jpegs
         ]
         try:
-            return self.provider.chat([{"role": "user", "content": parts}]).text
+            return self.provider.chat([{"role": "user", "content": parts}], schema=schema).text
         except (
             providers.ProviderError,
             keys.KeyringError,
@@ -212,6 +213,7 @@ class VisionRater:
         self.digest: str | None = None
         # True: rate() gives only cached ratings and asks the model nothing (Ollama down)
         self.cache_only = False
+        self.last_prompt_tokens: int | None = None  # of the last describe() (Ollama only)
         # per source: (cache file, its ratings), or None when the source cannot be keyed
         self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
 
@@ -294,6 +296,79 @@ class VisionRater:
             logger.warning("Ollama request failed: %s", err)
             return None
         return data if isinstance(data, dict) else None
+
+    def describe(
+        self,
+        prompt: str,
+        images: list[bytes],
+        schema: dict[str, Any],
+        *,
+        num_ctx: int = 16384,
+        num_predict: int = 700,
+        temperature: float = 0.2,
+    ) -> dict[str, Any] | None:
+        """Describe a moment: ``prompt`` with the JPEG ``images`` in order, the reply
+        constrained to the JSON ``schema``; the reply's JSON object, or None (logged) when the
+        request fails or the reply is not a JSON object.
+
+        Ollama gets one ``/api/chat`` turn with ``format: schema`` and no thinking; a hosted
+        Vision role goes through :meth:`AssistantVision.ask` and its consent check. The prompt
+        tokens Ollama counted are left in ``last_prompt_tokens`` (None when not known).
+        """
+        self.last_prompt_tokens = None
+        if self.via:
+            reply = self.via.ask(prompt, images, schema=schema)
+            if reply is None:
+                return None
+            try:
+                data = _json_object(reply)
+            except ValueError as err:
+                logger.warning("Vision reply is not JSON: %s", err)
+                return None
+            if not isinstance(data, dict):
+                logger.warning("Vision reply has no JSON object: %.120s", reply)
+                return None
+            return data
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [base64.b64encode(b).decode("ascii") for b in images],
+                }
+            ],
+            "stream": False,
+            "think": False,
+            "format": schema,
+            "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict},
+        }
+        self.used = True
+        try:
+            resp = requests.post(
+                f"{self.url}/api/chat", json=payload, timeout=600, allow_redirects=False
+            )
+            if resp.is_redirect:  # never followed: the frames would go to another host
+                raise requests.HTTPError(
+                    f"Ollama answered with a redirect (HTTP {resp.status_code}); not followed"
+                )
+            resp.raise_for_status()
+            body = resp.json()
+            content = body["message"]["content"]
+            data = _json_object(content)
+        except (requests.RequestException, KeyError, TypeError, ValueError) as err:
+            logger.warning("Vision request failed: %s", err)
+            return None
+        tokens = body.get("prompt_eval_count")
+        self.last_prompt_tokens = tokens if isinstance(tokens, int) else None
+        if not isinstance(data, dict):
+            logger.warning(
+                "Vision reply has no JSON object (done_reason=%s): %.120s",
+                body.get("done_reason"),
+                content,
+            )
+            return None
+        return data
 
     def rate(
         self, src: Path, start: float, end: float, style: str, n_frames: int = 3

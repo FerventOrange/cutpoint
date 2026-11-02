@@ -21,10 +21,9 @@ on Linux) and falls back to `libx264`. You can override this with the `video_enc
 [Configuration](configuration.md#video_encoder) and [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md).
 
 **Which platforms are supported?**
-Windows and Linux; the test suite runs on both in CI. `cutpoint setup` automatically prefers CUDA
-when a usable NVIDIA driver is detected, otherwise Vulkan, otherwise CPU when distribution
-assets are available. You can override the backend with `CUTPOINT_LLAMA_BACKEND` (`auto`, `cuda`,
-`vulkan`, `cpu`). A self-built `llama-server` on `PATH` or in `CUTPOINT_LLAMA_SERVER` also works.
+Windows and Linux; the test suite runs on both in CI. The model layers run on an NVIDIA GPU
+when torch reaches CUDA, otherwise on the CPU; the VLM layer of `cutpoint events` uses Ollama
+(or a hosted Vision model you allowed), which picks its own GPU backend.
 See [Models and Ollama troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete).
 
 **What kinds of video work?**

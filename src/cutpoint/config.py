@@ -50,7 +50,7 @@ class AssistantSettings:
     model: str = ""  # "": the provider's default (Ollama: qwen3.5:9b if pulled, else vision)
     url: str = ""  # base URL; "": the provider's (Ollama: cutpoint.backends.ollama_url)
     context_tokens: int = 0  # 0: the provider's default (8192 on this machine, 32768 hosted)
-    consent: tuple[str, ...] = ()  # "<provider>@<host>" the user agreed to send project text to
+    consent: tuple[str, ...] = ()  # "<role>-v2:<provider>@<host>" the user agreed to
 
 
 @dataclass(frozen=True)
@@ -252,7 +252,7 @@ def _assistant(path: Path, data: dict) -> AssistantSettings:
         ("provider", _is_str, "a string"),
         ("model", _is_str, "a string"),
         ("url", _is_str, "a string"),
-        ("consent", _is_str_list, "a list of <provider>@<host> entries"),
+        ("consent", _is_str_list, "a list of assistant-v2:<provider>@<host> entries"),
     )
     for key, ok, what in checks:
         _check_type(path, {f"assistant.{key}": section.get(key)}, f"assistant.{key}", ok, what)
@@ -292,7 +292,7 @@ def _vision_assistant(path: Path, data: dict) -> AssistantSettings:
         ("provider", _is_str, "a string"),
         ("model", _is_str, "a string"),
         ("url", _is_str, "a string"),
-        ("consent", _is_str_list, "a list of <provider>@<host> entries"),
+        ("consent", _is_str_list, "a list of vision-v2:<provider>@<host> entries"),
     )
     for key, ok, what in checks:
         _check_type(

@@ -12,8 +12,8 @@ on Windows and `~/.local/share/cutpoint` (or `$XDG_DATA_HOME/cutpoint`) elsewher
 CUTPOINT_HOME/
   config.json      settings (optional)
   cache/           per-source analysis cache; safe to delete
-  models/          PANNs, CLIP, detector, aesthetic head, Silero VAD, Qwen2.5-Omni
-  tools/           llama.cpp build (for `cutpoint events`)
+  models/          PANNs, CLIP, detector, aesthetic head, Silero VAD
+  tools/           CLIProxyAPI binary (subscription models of the Models tab)
   stage/           local copies made by `cutpoint stage`; disposable
   styles/          learned styles from `scripts/refmatch.py` (JSON, editable)
   presets/         HUD presets written by region discovery
@@ -39,13 +39,11 @@ All optional.
 | `CUTPOINT_HOME` | Data root |
 | `CUTPOINT_CONFIG` | Alternative path to `config.json` |
 | `CUTPOINT_CACHE_DIR` | Cache location |
-| `CUTPOINT_MODELS_DIR`, `CUTPOINT_TOOLS_DIR` | Model weights, llama.cpp |
+| `CUTPOINT_MODELS_DIR`, `CUTPOINT_TOOLS_DIR` | Model weights, the CLIProxyAPI binary |
 | `CUTPOINT_PROJECTS_DIR` | Projects folder (overrides `projects_dir`) |
 | `CUTPOINT_STAGE_DIR` | Folder for `cutpoint stage` copies (overrides `stage_dir`) |
 | `CUTPOINT_STYLES_DIR` | Learned styles |
 | `CUTPOINT_FFMPEG`, `CUTPOINT_FFPROBE` | Full paths to ffmpeg and ffprobe |
-| `CUTPOINT_LLAMA_SERVER` | Full path to `llama-server` |
-| `CUTPOINT_LLAMA_BACKEND` | Backend `cutpoint setup` downloads for llama.cpp: `auto` (default), `cuda`, `vulkan` or `cpu`. Auto takes CUDA only when a usable NVIDIA driver is found, else Vulkan, else CPU; a named backend is never replaced by another one |
 | `CUTPOINT_VIDEO_ENCODER` | Video encoder for exported clips, assembled videos and rendered 360 clips: `auto` (default), `nvenc`, `amf`, `vaapi` or `cpu`. Overrides `video_encoder` |
 | `CUTPOINT_EXPORT_WORKERS` | Clips `clips` and `edit` export at once: `auto` (default) or a number from 1 to 3. Overrides `export_workers` |
 | `CUTPOINT_VIDEO_DECODER` | `cpu` decodes every video on the CPU instead of NVDEC or VAAPI (analysis, HUD OCR, 360, UI proxies); unset or any other value detects the GPU decoder as usual (see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#which-video-encoder-is-used-and-why-not-the-gpu)) |
@@ -53,17 +51,13 @@ All optional.
 | `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in: `split` makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR, spooling up to about 2 GB to the cache folder. Same output either way (see [analysis steps](commands.md#analysis-steps)) |
 | `CUTPOINT_FADE_COPY` | `0` re-encodes the whole video of `assemble --transition fade` instead of stream-copying between the fades (see [assemble](commands.md#assemble)). An escape hatch: the same number of frames at the same times, the same audio and the same timelines either way |
 | `CUTPOINT_PANNS_URL` | URL for the PANNs checkpoint, tried before the built-in mirrors (see [models troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete)) |
-| `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision`, `360 director --vl-check` and building activity profiles (default `qwen3.5:9b`; `qwen3-vl:8b`, the earlier default, still works); the AI Chat falls back to it when `qwen3.5:9b` is not pulled |
+| `CUTPOINT_VISION_MODEL` | Ollama model for `analyze --vision`, the VLM layer of `cutpoint events`, `360 director --vl-check` and building activity profiles (default `qwen3.5:9b`; `qwen3-vl:8b`, the earlier default, still works); the AI Chat falls back to it when `qwen3.5:9b` is not pulled |
 | `CUTPOINT_INSTA360_SDK` | Full path to the SDK's `MediaSDKTest` executable (overrides `pano.sdk_exe`) |
 | `OLLAMA_HOST` | Ollama URL; overrides `ollama_url` (a bare `host:port` gets `http://`) |
 | `CUTPOINT_CLIPROXY_PORT` | Loopback port of the [`cutpoint proxy`](commands.md#proxy) daemon (default 18317, or the port saved at the last start) |
 | `CUTPOINT_CLIPROXY_BINARY` | CLIProxyAPI executable for `cutpoint proxy` to run instead of the pinned build it downloads |
 | `CUTPOINT_PROGRESS` | `1` adds `PROGRESS {...}` lines per step on stderr (see [progress output](commands.md#progress-output)) |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `CUTPOINT_ASSISTANT_API_KEY` | API keys of the hosted models in `cutpoint ui`, each sent only to its own host (see [assistant](#assistant)) |
-
-When `setup` finds an existing managed llama.cpp build for a different backend than the one
-selected now, it replaces it through the normal staged installation, including in `auto` mode.
-For example, an old CUDA build on an AMD-only machine is replaced with a Vulkan build.
 
 ## config.json
 
@@ -144,8 +138,9 @@ overrides it per run. Default: none.
 
 ### ollama_url
 
-Ollama base URL for `analyze --vision`, `360 director --vl-check`, the AI Chat and new activity
-profiles. `events` uses it only to unload Ollama models and to build crash profiles. `OLLAMA_HOST`
+Ollama base URL for `analyze --vision`, the VLM layer of `events`, `360 director --vl-check`,
+the AI Chat and new activity profiles. `events` also uses it to unload Ollama models before its
+other model layers and to build crash profiles. `OLLAMA_HOST`
 overrides it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines;
 see [troubleshooting](troubleshooting/models.md)).
 
@@ -161,7 +156,8 @@ moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other value
 
 ### vision_assistant
 
-The model that rates frames, chosen independently of the chat model. The same keys as
+The model that rates frames and describes the windows of the `events` VLM layer, chosen
+independently of the chat model. The same keys as
 [`assistant`](#assistant) (`provider`, `model`, `url`, `consent`), but `provider` is `ollama`
 (default), `claude-code`, `codex` or `antigravity`. With `ollama`, `model` and `url` are the
 Ollama model and URL (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win).
@@ -170,7 +166,14 @@ The Models tab fetches the catalog from this configured Ollama URL, including cu
 Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
 Catalogs and frames go to a subscription provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
-grants it. **Use at your own risk** when selecting a hosted provider.
+grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
+times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
+the `events` window descriptions), never the video file. That is more data, and more risk, than
+the assistant gets, so this consent is separate from the assistant's: agreeing to one never
+covers the other. Entries are `vision-v2:<provider>@<host>` (for example
+`vision-v2:codex@chatgpt.com`); an entry without the `vision-v2:` prefix, saved by an earlier
+version under a narrower description, no longer counts, and the Models tab asks again.
+**Use at your own risk** when selecting a hosted provider.
 `--ollama-url` and `--ollama-model` have no effect for subscription providers, whose ratings
 have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection.
@@ -255,7 +258,12 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   model on this machine (and any Ollama), 32768 for a hosted one; more lets the model see more
   moments and turns.
 - `consent`: the hosted providers the user agreed to send project text to, as
-  `<provider>@<host>` (for example `anthropic@api.anthropic.com`); the AI Chat tab adds them.
+  `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`); the
+  AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
+  under a shorter description, no longer counts, and AI Chat asks again.
+  The assistant gets only analysis results (moment labels, scores and detection signals,
+  transcript snippets, file names without paths, times) and your messages, never video or audio.
+  This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
   loopback address; any other host, a LAN address too, is hosted.
 

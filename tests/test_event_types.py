@@ -344,11 +344,7 @@ HYPE_BOXFEED = boxfeed()["hype"]
 HYPE_GENERIC = "  hype: 0-1 driving/waiting, menus, hangar, loading, vehicle or respawn select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a multi-kill, a big explosion, a close call, a match win; 8-10 several kills in quick succession, a spectacular kill or a spectacular death.\n"
 
 
-QWEN = (
-    "You are Qwen, a virtual human developed by the Qwen Team, Alibaba Group, "
-    "capable of perceiving auditory and visual inputs, as well as generating text and speech."
-)
-PROMPT_PIN = (5, "fc82230bf6ad")
+PROMPT_PIN = (5, "6fce463aac38")
 
 
 @pytest.mark.parametrize(
@@ -372,9 +368,7 @@ def test_prompt(tmp_path, home, game, intro, hype, bare):
     msgs = vw.build_messages(
         _src(tmp_path), win, [], vw.VlmParams(), vw.game_prompt(game, load_preset(game)), [], []
     )
-    system, user = msgs
-    assert system == {"role": "system", "content": vw.QWEN_SYSTEM}
-    assert vw.QWEN_SYSTEM == QWEN
+    (user,) = msgs
     intro_part, transcript_part, rubric_part = (c["text"] for c in user["content"])
     assert user["role"] == "user" and all(c["type"] == "text" for c in user["content"])
     # the parts that vary with the preset: the window intro and the hype rubric
@@ -395,7 +389,6 @@ def test_prompt(tmp_path, home, game, intro, hype, bare):
     # the fixed text is cached under PROMPT_VERSION only: a change must bump it
     fixed = "\n".join(
         [
-            system["content"],
             intro_part.removeprefix(intro),
             transcript_part,
             rubric_part.replace(hype, "<hype>"),

@@ -17,6 +17,7 @@ everything into a project folder.
 | `cutpoint analyze` includes the reaction, keyframe and crash steps | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
+| VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `360 ...` | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 | Color grade with a 3D LUT the user supplies: `--lut FILE` and `--lut-strength` on `clips` and `edit` | Color matching between clips |
@@ -126,7 +127,9 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    when the extra or model files are missing, and `--skip reactions keyframes crashes`, given
    after the paths, leaves them out.
 3. **Optional, for the VLM layer or to force layers:**
-   `uv run cutpoint events clip-edit` (needs the `events` extra and `cutpoint setup`). It adds
+   `uv run cutpoint events clip-edit` (needs the `events` extra and `cutpoint setup`; the VLM
+   layer needs Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the
+   Models tab of `cutpoint ui`, and is skipped with a WARNING when neither answers). It adds
    the VLM layer, re-ranks `highlights.json` and rewrites `events.json` and `events.txt`. If it
    reports a missing module, tell the user how to add the extra (see
    [When something fails](#when-something-fails)).
@@ -235,7 +238,7 @@ action-cam telemetry are in every install.
 
 ## Rules
 
-- Ask the user before running `cutpoint setup` (about 8 GB of downloads), `cutpoint stage`
+- Ask the user before running `cutpoint setup` (about 2 GB of downloads), `cutpoint stage`
   (copies footage to local disk), `clips --force` or `edit --force` over an existing folder or
   `cutpoint skill install` (writes to their Claude Code settings folder).
 - Do not paste Insta360 SDK files, documentation or output into any file or message, other than
