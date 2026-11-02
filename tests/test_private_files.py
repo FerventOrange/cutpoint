@@ -260,6 +260,7 @@ def test_windows_replaces_broad_dacl_and_children_inherit_user_only(tmp_path: Pa
     assert protected_file_aces == [(current_sid, 0, 0x1F01FF)]
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows junctions")
 def test_windows_rejects_junction_paths(tmp_path: Path) -> None:
     target = tmp_path / "target"

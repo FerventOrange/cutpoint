@@ -437,6 +437,7 @@ def test_no_prefetch_without_the_model_files(eligible, tmp_path, monkeypatch) ->
 
 
 # ----------------------------------------------------------------- decode_raw(isolate=True)
+@pytest.mark.slow
 @needs_ffmpeg
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions")
 def test_isolated_decode_runs_in_its_own_session_and_dies_on_close(tmp_path, monkeypatch) -> None:
@@ -475,17 +476,15 @@ def test_real_background_read_equals_the_serial_read(home, tmp_path, monkeypatch
     pytest.importorskip("rapidocr_onnxruntime")
     import shutil  # noqa: PLC0415
 
-    import test_discover_e2e as e2e  # noqa: PLC0415
+    import ocr_helpers as e2e  # noqa: PLC0415
     from cutpoint import paths  # noqa: PLC0415
     from cutpoint.events import common, killfeed  # noqa: PLC0415
     from hud_fixtures import write_preset  # noqa: PLC0415
-    from test_ocr_raw import _files  # noqa: PLC0415
 
-    monkeypatch.setattr(e2e, "SECONDS", 12)
     folder = tmp_path / "footage"
     folder.mkdir()
     serial_clip, background_clip = folder / "a.mp4", folder / "b.mp4"
-    e2e.make_clip(serial_clip)
+    e2e.make_clip(serial_clip, seconds=12)
     shutil.copy2(serial_clip, background_clip)
     fx, fy, fw, fh = (round(v * 1.5) for v in e2e.FEED)
     region = {"name": "feed", "x": fx, "y": fy, "w": fw, "h": fh, "kind": "feed", "every": 1}
@@ -507,10 +506,14 @@ def test_real_background_read_equals_the_serial_read(home, tmp_path, monkeypatch
     assert {k: v for k, v in stats.items() if k not in drop} == {
         k: v for k, v in serial[1].items() if k not in drop
     }
-    a, b = (_files(common.load_source(c, 12.0).cdir) for c in (serial_clip, background_clip))
+    a, b = (
+        e2e.ocr_cache_files(common.load_source(c, 12.0).cdir)
+        for c in (serial_clip, background_clip)
+    )
     assert a == b
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 def test_cancel_kills_the_decode_at_once_and_outside_exits_are_reported(tmp_path) -> None:
     clip = tmp_path / "bars.mp4"
@@ -537,6 +540,7 @@ def test_cancel_kills_the_decode_at_once_and_outside_exits_are_reported(tmp_path
     assert codes == []
 
 
+@pytest.mark.slow
 @needs_ffmpeg
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 def test_an_outside_stop_of_ffmpeg_is_reported(tmp_path, monkeypatch) -> None:

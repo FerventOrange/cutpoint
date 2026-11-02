@@ -6,11 +6,8 @@ that could send one.
 
 from __future__ import annotations
 
-import io
 import json
 import logging
-import shutil
-import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,16 +15,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from conftest import set_config
-from cutpoint import config
 from cutpoint.assistant import keys, providers
 from cutpoint.config import AssistantSettings
 from test_assistant import _Resp
-from test_assistant_byo import KEY, OTHER, NoRing, Wire, oa_reply
+from test_assistant_byo import KEY, OTHER, XKEY, NoRing, Wire, oa_reply
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
-
-XKEY = "xai-0123456789abcdefghijSECRET"  # shaped like an xAI key
 
 
 @pytest.fixture(autouse=True)
@@ -112,80 +106,7 @@ def test_a_url_other_than_the_presets_is_custom(name, url, preset) -> None:
     assert providers.is_preset(name, url) is preset
 
 
-def test_xai_is_a_provider_in_config(home) -> None:
-    set_config(home, assistant={"provider": "xai", "model": "grok-x"})
-    assert config.assistant_settings() == AssistantSettings("xai", "grok-x")
-    assert "xai" in config.ASSISTANT_PROVIDERS and list(providers.PRESETS) == [
-        "ollama",
-        "anthropic",
-        "openai",
-        "xai",
-    ]
-
-
 # -- the xAI key -------------------------------------------------------------------------------
-
-
-def test_the_xai_variable_is_only_for_api_x_ai(monkeypatch) -> None:
-    monkeypatch.setenv("XAI_API_KEY", XKEY)
-    assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")
-    assert keys.lookup("xai", "API.X.AI") == (XKEY, "env")
-    assert keys.lookup("xai", "proxy.example.com") == (None, None)
-    assert keys.lookup("openai", "api.x.ai") == (None, None)  # another provider's entry
-    assert keys.lookup("openai", "api.openai.com") == (None, None)
-    assert keys.lookup("anthropic", "api.anthropic.com") == (None, None)
-    monkeypatch.setenv("OPENAI_API_KEY", OTHER)
-    assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")  # never the OpenAI key
-    monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
-    assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")  # its own one wins (#504)
-
-
-def test_an_xai_key_is_saved_in_the_keyring_under_xai(monkeypatch) -> None:
-    from test_assistant_byo import FakeRing  # noqa: PLC0415
-
-    ring = FakeRing()
-    monkeypatch.setattr(keys, "_keyring", lambda: ring)
-    keys.save("xai", OTHER, "api.x.ai")
-    keys.save("xai", KEY, "proxy.example.com")
-    assert ring.saved == {("cutpoint", "xai"): OTHER, ("cutpoint", "xai@proxy.example.com"): KEY}
-    assert keys.lookup("xai", "api.x.ai") == (OTHER, "keyring")
-
-
-def test_saving_an_xai_key_without_the_extra_names_its_variable() -> None:
-    with pytest.raises(keys.KeyringError, match=r"XAI_API_KEY"):
-        keys.save("xai", OTHER, "api.x.ai")
-
-
-def test_the_xai_variable_never_reaches_a_child_process(monkeypatch) -> None:
-    assert "XAI_API_KEY" in keys.ENV_VARS
-    env = {"PATH": "/bin", "XAI_API_KEY": "a", "xai_api_key": "b", "XAI_OTHER": "c"}
-    assert keys.child_env(env) == {"PATH": "/bin", "XAI_OTHER": "c"}
-    monkeypatch.setenv("XAI_API_KEY", XKEY)
-    keys.capture()
-    try:
-        import os  # noqa: PLC0415
-
-        assert "XAI_API_KEY" not in os.environ and "XAI_API_KEY" not in keys.child_env()
-        assert keys.lookup("xai", "api.x.ai") == (XKEY, "env")  # still found after capture
-    finally:
-        keys._CAPTURED.clear()
-
-
-def test_an_xai_key_is_redacted_from_messages_and_logs(monkeypatch) -> None:
-    monkeypatch.setenv("XAI_API_KEY", OTHER)
-    assert keys.redact(f"bad key {OTHER}") == "bad key [redacted]"  # read from the variable
-    assert keys.redact(f"echo {XKEY} back") == "echo [redacted] back"  # shaped like one
-    assert keys.redact("xai-short stays") == "xai-short stays"
-    out = io.StringIO()
-    handler = logging.StreamHandler(out)
-    handler.addFilter(keys._FILTER)
-    log = logging.getLogger("cutpoint.test.xai")
-    log.addHandler(handler)
-    try:
-        log.error("sent %s and %s", OTHER, XKEY)
-    finally:
-        log.removeHandler(handler)
-    assert out.getvalue().strip() == "sent [redacted] and [redacted]"
 
 
 def test_grok_sends_the_xai_key_to_api_x_ai_only(home, monkeypatch) -> None:
@@ -605,34 +526,23 @@ def _web(name: str) -> str:
     return (_ui().WEB_DIR / name).read_text(encoding="utf-8")
 
 
-def _model_choices(tmp: Path, current: str, listed: list[dict] | None, **opts) -> dict:
-    """Run util.js's aiModelChoices under node (util.js copied to util.mjs, as test_ui does)."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node not installed")
-    mod = tmp / "util.mjs"
-    shutil.copyfile(_ui().WEB_DIR / "util.js", mod)
-    script = (
-        f"import {{ aiModelChoices, AI_OTHER }} from {json.dumps(mod.resolve().as_uri())};"
-        "const [c, l, o] = JSON.parse(process.argv[1]);"
-        "const r = aiModelChoices(c, l, o);"
-        "const other = (v) => (v === AI_OTHER ? 'OTHER' : v);"
-        "console.log(JSON.stringify({ value: other(r.value),"
-        " options: r.options.map((x) => [other(x.value), x.text]) }));"
-    )
-    out = subprocess.run(
-        [node, "--input-type=module", "-e", script, json.dumps([current, listed, opts])],
-        capture_output=True, text=True, encoding="utf-8", check=True, timeout=30,
+def _model_choices(util_js, current: str, listed: list[dict] | None, **opts) -> dict:
+    """Run util.js's aiModelChoices under node (the ``util_js`` fixture)."""
+    return util_js(
+        "const [c, l, o] = args; const r = U.aiModelChoices(c, l, o);"
+        "const other = (v) => (v === U.AI_OTHER ? 'OTHER' : v);"
+        "return { value: other(r.value), options: r.options.map((x) => [other(x.value), x.text]) };",
+        current, listed, opts,
     )  # fmt: skip
-    return json.loads(out.stdout)
 
 
 LISTED = [{"id": "claude-a", "name": "Claude A"}, {"id": "claude-b", "name": "claude-b"}]
 
 
-def test_the_model_select_chooses_a_listed_model(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_the_model_select_chooses_a_listed_model(util_js) -> None:
     """#521: the provider's models, the saved one chosen, the default first, Other last."""
-    got = _model_choices(tmp_path, "claude-b", LISTED, placeholder="claude-sonnet-5-5")
+    got = _model_choices(util_js, "claude-b", LISTED, placeholder="claude-sonnet-5-5")
     assert got == {
         "value": "claude-b",
         "options": [
@@ -643,23 +553,24 @@ def test_the_model_select_chooses_a_listed_model(tmp_path: Path) -> None:
         ],
     }
     # an empty saved model is the default; a provider that needs a model asks for one
-    assert _model_choices(tmp_path, "", LISTED)["value"] == ""
-    assert _model_choices(tmp_path, "", [], required=True)["options"] == [
+    assert _model_choices(util_js, "", LISTED)["value"] == ""
+    assert _model_choices(util_js, "", [], required=True)["options"] == [
         ["", "Choose a model"],
         ["OTHER", "Other model…"],
     ]
 
 
-def test_the_model_select_keeps_a_saved_model_the_list_lacks(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_the_model_select_keeps_a_saved_model_the_list_lacks(util_js) -> None:
     """#521: opening Settings never changes the model: one the list lacks stays chosen, marked;
     with no list (no key, offline, Ollama down) the preset's own models are offered and the saved
     one shows unmarked next to them and Other."""
-    got = _model_choices(tmp_path, "claude-old", LISTED, fallback=["claude-x"])
+    got = _model_choices(util_js, "claude-old", LISTED, fallback=["claude-x"])
     assert got["value"] == "claude-old"
     assert got["options"][1] == ["claude-old", "claude-old (not in the provider's list)"]
     assert [v for v, _ in got["options"]] == ["", "claude-old", "claude-a", "claude-b", "OTHER"]
     presets = ["claude-sonnet-5-5", "claude-opus-5-5"]
-    got = _model_choices(tmp_path, "my-model:7b", None, fallback=presets)
+    got = _model_choices(util_js, "my-model:7b", None, fallback=presets)
     assert got["value"] == "my-model:7b"
     assert got["options"] == [
         ["", "Default"],
@@ -668,16 +579,17 @@ def test_the_model_select_keeps_a_saved_model_the_list_lacks(tmp_path: Path) -> 
         ["claude-opus-5-5", "claude-opus-5-5"],
         ["OTHER", "Other model…"],
     ]
-    got = _model_choices(tmp_path, "claude-opus-5-5", None, fallback=presets)
+    got = _model_choices(util_js, "claude-opus-5-5", None, fallback=presets)
     assert got["value"] == "claude-opus-5-5"  # a preset model: no extra option, no mark
     assert [v for v, _ in got["options"]] == ["", *presets, "OTHER"]
 
 
-def test_the_model_select_keeps_other_while_an_id_is_typed(tmp_path: Path) -> None:
+@pytest.mark.slow
+def test_the_model_select_keeps_other_while_an_id_is_typed(util_js) -> None:
     """#521: under "Other model…" a typed id (or none yet) keeps Other chosen when the list
     reloads, with no extra option; an id the list has is chosen in the list instead."""
     for typed in ("new-model", ""):
-        got = _model_choices(tmp_path, typed, LISTED, typing=True)
+        got = _model_choices(util_js, typed, LISTED, typing=True)
         assert got["value"] == "OTHER"
         assert [v for v, _ in got["options"]] == ["", "claude-a", "claude-b", "OTHER"]
-    assert _model_choices(tmp_path, "claude-a", LISTED, typing=True)["value"] == "claude-a"
+    assert _model_choices(util_js, "claude-a", LISTED, typing=True)["value"] == "claude-a"

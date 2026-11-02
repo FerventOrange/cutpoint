@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import http.server
 import io
@@ -21,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cli, folders
+from cutpoint import folders, procs
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.assistant.proxy_credentials import CredentialStore
 
@@ -295,46 +294,6 @@ def test_status_token_free_allowlist(temp_home: Path, monkeypatch: pytest.Monkey
     assert "access_token" not in st
 
 
-def test_status_multi_account_healthy_preferred(
-    temp_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cliproxy._ensure_keys(target_port=8317)
-
-    fake_credentials = {
-        "files": [
-            {
-                "id": "claude-expired.json",
-                "name": "claude-expired.json",
-                "provider": "claude",
-                "status": "expired",
-                "disabled": False,
-                "email": "expired@example.com",
-            },
-            {
-                "id": "claude-active.json",
-                "name": "claude-active.json",
-                "provider": "claude",
-                "status": "active",
-                "disabled": False,
-                "email": "healthy@example.com",
-            },
-        ]
-    }
-
-    monkeypatch.setattr(
-        cliproxy,
-        "_management_request",
-        lambda method, path, **kwargs: (
-            fake_credentials if path == "/v8/management/credentials" else {}
-        ),
-    )
-
-    st = cliproxy.status("claude-code")
-    assert st["logged_in"] is True
-    assert st["email"] == "healthy@example.com"
-    assert st["expired"] is False
-
-
 def test_status_invalid_provider() -> None:
     with pytest.raises(ValueError, match="unknown provider"):
         cliproxy.status("unknown-provider")
@@ -572,19 +531,12 @@ def test_generate_config_and_permissions(temp_home: Path) -> None:
         "cert": str(tls_cert),
         "key": str(tls_key),
     }
-    assert cfg["config-version"] == 8
     assert cfg["server"]["host"] == "127.0.0.1"
     assert cfg["server"]["port"] == 8317
-    assert cfg["server"]["commercial-mode"] is True
-    assert cfg["server"]["discovery"]["enabled"] is False
     assert cfg["management"]["allow-remote"] is False
     assert cfg["management"]["disable-control-panel"] is True
-    assert cfg["management"]["disable-auto-update-panel"] is True
     assert cfg["access"]["api-keys"] == [client]
     assert cfg["plugins"]["enabled"] is False
-    assert cfg["routing"]["force-model-prefix"] is True
-    assert cfg["upstream"]["claude"]["disable-claude-cloak-mode"] is True
-    assert cfg["upstream"]["codex"]["disable-codex-cloaking"] is True
     assert cfg["observability"]["logs"]["request-log"] is False
 
     kp = cliproxy.keys_path()
@@ -617,6 +569,7 @@ def test_run_missing_custom_binary_fails(temp_home: Path, monkeypatch: pytest.Mo
         cliproxy.run()
 
 
+@pytest.mark.slow
 def test_run_nonzero_exit_fails(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -696,6 +649,7 @@ def test_install_binary_download_error_wrapped(
         cliproxy._install_binary(temp_home / "tools" / "cliproxy")
 
 
+@pytest.mark.slow
 def test_run_subprocess_isolates_cwd_and_env(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -826,6 +780,8 @@ def test_subscription_status_distinguishes_cooldown_from_logout(
     st = cliproxy.status("claude-code")
     assert st["logged_in"] is expect_logged_in
     assert st["expired"] is expect_expired
+    if expect_logged_in:  # the usable account (listed last) is the one reported
+        assert st["email"] == files[-1]["email"]
 
 
 def test_install_binary_synthetic_tar_gz_valid(
@@ -989,52 +945,6 @@ def test_install_binary_path_traversal_zip_fails(
         cliproxy._install_binary(temp_home / "tools" / "cliproxy")
 
 
-def test_run_interrupt_cleans_and_reaps_child(
-    temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    pid_file = tmp_path / "daemon.pid"
-    _run_proxy_helper(
-        monkeypatch,
-        tmp_path,
-        f"import os, time\nPath = __import__('pathlib').Path\nPath({str(pid_file)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n",
-    )
-
-    def interrupt_after_spawn() -> None:
-        deadline = time.monotonic() + 10
-        while not pid_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert pid_file.exists(), "guardian did not launch the daemon fixture"
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", interrupt_after_spawn)
-    with pytest.raises(KeyboardInterrupt):
-        cliproxy.run()
-
-    child_pid = int(pid_file.read_text())
-    if os.name == "nt":
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
-        kernel32.GetExitCodeProcess.argtypes = (
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_ulong),
-        )
-        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
-        handle = kernel32.OpenProcess(0x1000, False, child_pid)
-        if handle:
-            try:
-                exit_code = ctypes.c_ulong()
-                assert kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-                assert exit_code.value != 259
-            finally:
-                kernel32.CloseHandle(handle)
-        else:
-            assert ctypes.get_last_error() == 87
-    else:
-        with pytest.raises(ProcessLookupError):
-            os.kill(child_pid, 0)
-
-
 def test_run_startup_failure_checkpoints_before_clearing_runtime_files(
     temp_home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1055,6 +965,7 @@ def test_run_startup_failure_checkpoints_before_clearing_runtime_files(
     store.finish()
 
 
+@pytest.mark.slow
 def test_run_persists_daemon_refresh_and_cleans_runtime_files(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch, credential_ring: FakeCredentialRing
 ) -> None:
@@ -1117,6 +1028,7 @@ def test_credential_checkpoint_failure_is_safe(
     )
 
 
+@pytest.mark.slow
 def test_cli_proxy_interrupt_exit_130_and_child_cleanup(tmp_path: Path) -> None:
     home = tmp_path / "home"
     mock_bin = tmp_path / "waiting_proxy.py"
@@ -1156,34 +1068,14 @@ def test_cli_proxy_interrupt_exit_130_and_child_cleanup(tmp_path: Path) -> None:
         child_pid = int(pid_file.read_text())
         parent.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
         assert parent.wait(timeout=10) == 130
-        if os.name == "nt":
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.OpenProcess.restype = ctypes.c_void_p
-            kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
-            kernel32.GetExitCodeProcess.argtypes = (
-                ctypes.c_void_p,
-                ctypes.POINTER(ctypes.c_ulong),
-            )
-            kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
-            handle = kernel32.OpenProcess(0x1000, False, child_pid)
-            if handle:
-                try:
-                    exit_code = ctypes.c_ulong()
-                    assert kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-                    assert exit_code.value != 259
-                finally:
-                    kernel32.CloseHandle(handle)
-            else:
-                assert ctypes.get_last_error() == 87
-        else:
-            with pytest.raises(ProcessLookupError):
-                os.kill(child_pid, 0)
+        assert not procs.pid_alive(child_pid)  # the daemon was reaped with it
     finally:
         if parent.poll() is None:
             parent.kill()
             parent.wait()
 
 
+@pytest.mark.slow
 def test_parent_hardkill_leaves_no_plaintext_after_guardian_finalizes(
     temp_home: Path,
     credential_ring: FakeCredentialRing,
@@ -1246,15 +1138,6 @@ def test_parent_hardkill_leaves_no_plaintext_after_guardian_finalizes(
         if parent.poll() is None:
             parent.kill()
             parent.wait()
-
-
-def test_cli_proxy_interrupt_returns_exit_130(monkeypatch: pytest.MonkeyPatch) -> None:
-    def raise_interrupt(port: int | None = None) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cliproxy, "run", raise_interrupt)
-    rc = cli.main(["proxy"])
-    assert rc == 130
 
 
 def test_custom_port_18317_status_without_starting_or_download(

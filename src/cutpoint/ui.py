@@ -4949,8 +4949,23 @@ def quiet_resets(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> No
     loop.default_exception_handler(context)
 
 
-def _hangup(*_: object) -> None:
-    raise SystemExit(1)  # unwinds through run()'s finally, which stops the children
+class _Hangup:
+    """SIGHUP handler (the terminal closed): stop the server as Ctrl+C does, then exit 1.
+
+    Raising SystemExit in the handler while uvicorn handled a request did not stop it: uvicorn
+    caught it as an app error and kept serving, its jobs and ffmpeg children too. A running
+    server is only asked to stop; run() raises SystemExit(1) once it has.
+    """
+
+    def __init__(self) -> None:
+        self.server: Any = None  # the uvicorn.Server, once there is one
+        self.received = False
+
+    def __call__(self, *_: object) -> None:
+        self.received = True
+        if self.server is None:
+            raise SystemExit(1)  # unwinds through run()'s finally, which stops the children
+        self.server.should_exit = True
 
 
 def listen(port: int) -> socket.socket:
@@ -4992,15 +5007,19 @@ def run(port: int = 8765) -> None:
     # Printed only once the port is ours, so the URL always works.
     # The fragment never reaches the network; the page keeps the token in sessionStorage.
     print(f"Cutpoint UI: http://127.0.0.1:{port}/#t={app.state.token} (Ctrl+C to stop)", flush=True)
+    hangup = _Hangup()
     if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, _hangup)
+        signal.signal(signal.SIGHUP, hangup)
     try:
         conf = uvicorn.Config(
             app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5
         )
         ai_keys.redact_logs()  # again: the Config set up uvicorn's own log handlers
         server = uvicorn.Server(conf)
+        hangup.server = server
         server.run(sockets=[sock])
+        if hangup.received:
+            raise SystemExit(1)  # through the finally below, which stops the children
     finally:  # jobs and ffmpeg run in their own sessions: nothing else would stop them
         sock.close()
         app.state.jobs.shutdown()

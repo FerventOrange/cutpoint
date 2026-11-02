@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import media_info, write
+from conftest import media_info, needs_ffmpeg, write
 from cutpoint import assemble, capabilities, cli, config, encode, ffmpeg_utils, reset_state
 from cutpoint.crop import Crop
 from cutpoint.errors import EncoderUnavailableError, FFmpegError
@@ -250,7 +250,7 @@ def _assert_red_letterboxed(frame: np.ndarray) -> None:
     assert picture[..., 0].min() > 150 and picture[..., 1:].max() < 90
 
 
-@pytest.mark.ffmpeg
+@needs_ffmpeg
 @pytest.mark.hardware
 def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, tmp_path):
     src = _blue_source_with_red_corner(tmp_path)

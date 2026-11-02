@@ -14,7 +14,7 @@ import pytest
 from conftest import load_script, write
 from cutpoint import cache, reset_state, ski
 from cutpoint import ffmpeg_utils as fu
-from cutpoint.ffmpeg_utils import FFmpegError
+from cutpoint.errors import FFmpegError
 from cutpoint.styles import get_style
 
 pytestmark = pytest.mark.script
