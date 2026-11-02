@@ -246,7 +246,9 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   model on this machine (and any Ollama), 32768 for a hosted one; more lets the model see more
   moments and turns.
 - `consent`: the hosted providers the user agreed to send project text to, as
-  `<provider>@<host>` (for example `anthropic@api.anthropic.com`); the AI Chat tab adds them.
+  `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`); the
+  AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
+  under a shorter description, no longer counts, and AI Chat asks again.
   The assistant gets only analysis results (moment labels, scores and detection signals,
   transcript snippets, file names without paths, times) and your messages, never video or audio.
   This consent never covers the [Vision role](#vision_assistant), which has its own.

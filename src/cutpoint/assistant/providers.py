@@ -257,21 +257,25 @@ def is_local(url: str) -> bool:
         return False
 
 
-# Prefix of a Vision consent key. Vision sends more than the assistant (frames, transcript
-# excerpts, file names and times, on-screen text, telemetry), so its consent is its own and is
-# versioned: consent given under an older, narrower wording (``<name>@<host>``) no longer counts.
+# Prefixes of the consent keys. Each role's consent is its own and is versioned: consent given
+# under an older, narrower wording (an unprefixed ``<name>@<host>``) no longer counts. Vision sends
+# more than the assistant (frames, transcript excerpts, file names and times, on-screen text,
+# telemetry); the assistant's wording now names the scores and detection signals it sends.
+ASSISTANT_CONSENT_PREFIX = "assistant-v2:"
 VISION_CONSENT_PREFIX = "vision-v2:"
 
 
 def consent_key(provider: Provider, role: str = "assistant") -> str | None:
     """What the user agrees to once before project data goes to ``provider`` for ``role``
-    (``"assistant"`` or ``"vision"``): ``<name>@<host>`` for the assistant,
-    ``vision-v2:<name>@<host>`` (:data:`VISION_CONSENT_PREFIX`) for Vision, so neither consent
-    unlocks the other; None for a local provider (nothing leaves the machine)."""
+    (``"assistant"`` or ``"vision"``): ``assistant-v2:<name>@<host>``
+    (:data:`ASSISTANT_CONSENT_PREFIX`) for the assistant, ``vision-v2:<name>@<host>``
+    (:data:`VISION_CONSENT_PREFIX`) for Vision, so neither consent unlocks the other and an
+    unprefixed entry from an older version unlocks neither; None for a local provider (nothing
+    leaves the machine)."""
     if provider.local:
         return None
-    key = f"{provider.name}@{provider.host}"
-    return VISION_CONSENT_PREFIX + key if role == "vision" else key
+    prefix = VISION_CONSENT_PREFIX if role == "vision" else ASSISTANT_CONSENT_PREFIX
+    return f"{prefix}{provider.name}@{provider.host}"
 
 
 def check(provider: Provider) -> str | None:

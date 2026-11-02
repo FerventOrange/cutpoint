@@ -10,7 +10,9 @@ transcript snippets, file names, times). A hosted Vision role sends still frames
 excerpts, file names and times, and detected on-screen text (such as player names) and telemetry
 (for frame ratings and the `events` window descriptions), never the video file. Vision sends more
 data and carries more risk, so it has its own consent: agreeing for AI Chat never covers Vision,
-or the reverse. Ollama stays local.
+or the reverse. Both consents are versioned (`assistant-v2:<provider>@<host>` and
+`vision-v2:<provider>@<host>` in `config.json`): a consent saved by an earlier version, under a
+shorter description, no longer counts, so you are asked again. Ollama stays local.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install

@@ -42,10 +42,11 @@ Trust boundaries:
   ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
-  the user agrees once for it (``POST /api/assistant/consent``, kept in ``config.json``); nor
-  is its model list asked for (``GET /api/assistant/models``) before that and without a key.
-  The Vision role's hosted provider has its own consent (``role: vision``, a ``vision-v2:``
-  key): agreeing for one role never covers the other.
+  the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v2:`` key kept in
+  ``config.json``); nor is its model list asked for (``GET /api/assistant/models``) before that
+  and without a key. The Vision role's hosted provider has its own consent (``role: vision``, a
+  ``vision-v2:`` key): agreeing for one role never covers the other, and an unprefixed key from an
+  older version covers neither.
   API keys come from the environment or the system keyring (``POST /api/assistant/key``,
   ``.../key/clear``); no route returns one, only where it comes from. ``cutpoint ui`` takes the
   key variables out of its environment at startup, jobs get an environment without them, and

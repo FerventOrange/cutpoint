@@ -25,7 +25,7 @@ def test_codex_registration_and_hosted_consent() -> None:
     assert "codex" in providers.PROVIDERS and "codex" in providers.TITLES
     p = providers.SubscriptionProvider("codex", "", "", 0)
     assert (p.name, p.local, p.host) == ("codex", False, "chatgpt.com")
-    assert providers.consent_key(p) == "codex@chatgpt.com"
+    assert providers.consent_key(p) == "assistant-v2:codex@chatgpt.com"
 
 
 def test_codex_capabilities() -> None:

@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompt names what Vision sends (frames, transcript excerpts, file names and times, on-screen
   text, telemetry) and that it is more data and more risk than the assistant. The AI Chat
   consent now also names the scores and detection signals it sends (analysis results only,
-  never video or audio).
+  never video or audio), and is versioned too (`assistant-v2:<provider>@<host>` in
+  `assistant.consent`): an AI Chat consent saved without the prefix no longer counts, so AI Chat
+  asks again.
 - `cutpoint proxy` command runs the authenticated CLIProxyAPI daemon in the foreground for Claude
   Code, Codex and Antigravity subscriptions (Use at your own risk). Available in both full and lite
   installs. First run lazily downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to

@@ -25,7 +25,7 @@ def test_it_is_registered_hosted_and_needs_consent() -> None:
     assert "antigravity" in providers.PROVIDERS and "antigravity" in providers.TITLES
     p = providers.SubscriptionProvider("antigravity", "", "", 0)
     assert (p.name, p.local, p.host) == ("antigravity", False, "daily-cloudcode-pa.googleapis.com")
-    assert providers.consent_key(p) == "antigravity@daily-cloudcode-pa.googleapis.com"
+    assert providers.consent_key(p) == "assistant-v2:antigravity@daily-cloudcode-pa.googleapis.com"
 
 
 def test_custom_url_rejected_for_subscription() -> None:

@@ -61,7 +61,7 @@ def test_each_hosted_preset_is_its_provider_at_its_official_url(home, name, cls,
     p = providers.make(AssistantSettings(name, "m"))
     assert type(p) is cls and p.name == name
     assert (p.url, p.host, p.local) == (url, host, False)
-    assert providers.consent_key(p) == f"{name}@{host}"
+    assert providers.consent_key(p) == f"assistant-v2:{name}@{host}"
     assert providers.key_host(name, "") == host and keys.official(name, host)
     assert providers.is_preset(name, "") and providers.is_preset(name, url)
 
@@ -82,7 +82,7 @@ def test_constructing_subscription_providers_from_settings(
     assert p.name == provider_id
     assert p.host == expected_host
     assert p.local is False
-    assert providers.consent_key(p) == f"{provider_id}@{expected_host}"
+    assert providers.consent_key(p) == f"assistant-v2:{provider_id}@{expected_host}"
 
 
 def test_the_none_preset_is_the_configured_ollama(home, monkeypatch) -> None:
@@ -259,7 +259,8 @@ def saved(home: Path) -> dict:
 def test_each_preset_round_trips_through_settings(
     client: TestClient, home: Path, checked, name, model, cls, url
 ) -> None:
-    agreed = [f"{n}@{h}" for n, h in keys.OFFICIAL_HOST.items()]  # Save checks only then (#504)
+    # Save checks only then (#504)
+    agreed = [f"assistant-v2:{n}@{h}" for n, h in keys.OFFICIAL_HOST.items()]
     set_config(
         home,
         assistant={"provider": "openai", "url": "https://openrouter.ai/api/v1", "consent": agreed},
@@ -398,7 +399,8 @@ def test_no_hosted_model_list_is_asked_without_a_key_or_consent(
     monkeypatch.setenv(keys.PROVIDER_ENV[name], KEY)
     got = models(client, name)
     assert got["state"] == "consent_needed" and got["models"] == []
-    set_config(home, assistant={"consent": [f"{name}@other.example"]})  # another host's consent
+    # another host's consent
+    set_config(home, assistant={"consent": [f"assistant-v2:{name}@other.example"]})
     assert models(client, name)["state"] == "consent_needed"
     assert wire.sent == []
 
@@ -414,7 +416,11 @@ def test_a_preset_not_saved_never_gets_the_shared_key(
         assistant={
             "provider": "openai",
             "url": "https://openrouter.ai/api/v1",
-            "consent": ["anthropic@api.anthropic.com", "openai@api.openai.com", "xai@api.x.ai"],
+            "consent": [
+                "assistant-v2:anthropic@api.anthropic.com",
+                "assistant-v2:openai@api.openai.com",
+                "assistant-v2:xai@api.x.ai",
+            ],
         },
     )
     wire = Wire(monkeypatch)  # any request fails the test
@@ -423,7 +429,10 @@ def test_a_preset_not_saved_never_gets_the_shared_key(
         got = models(client, name)
         assert got["state"] == "key_needed" and got["models"] == [], name
         assert keys.PROVIDER_ENV[name] in got["message"] and shared_only in got["message"]
-    set_config(home, assistant={"provider": "ollama", "consent": ["anthropic@api.anthropic.com"]})
+    set_config(
+        home,
+        assistant={"provider": "ollama", "consent": ["assistant-v2:anthropic@api.anthropic.com"]},
+    )
     assert shared_only in models(client, "anthropic")["message"]  # Ollama saved, Claude picked
     monkeypatch.delenv("CUTPOINT_ASSISTANT_API_KEY")
     got = models(client, "anthropic")  # no key at all: how to add one
@@ -440,7 +449,11 @@ def test_the_saved_preset_never_gets_the_shared_key_but_its_own(
     as a fallback; its own key wins."""
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
     set_config(
-        home, assistant={"provider": "anthropic", "consent": ["anthropic@api.anthropic.com"]}
+        home,
+        assistant={
+            "provider": "anthropic",
+            "consent": ["assistant-v2:anthropic@api.anthropic.com"],
+        },
     )
     wire = Wire(monkeypatch, _Resp({"data": [{"id": "claude-z"}], "has_more": False}))
     assert models(client, "anthropic")["state"] == "key_needed" and wire.sent == []
@@ -452,7 +465,7 @@ def test_the_saved_preset_never_gets_the_shared_key_but_its_own(
 
 def test_the_anthropic_list_reads_every_page(client: TestClient, home: Path, monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
-    set_config(home, assistant={"consent": ["anthropic@api.anthropic.com"]})
+    set_config(home, assistant={"consent": ["assistant-v2:anthropic@api.anthropic.com"]})
     page1 = {
         "data": [{"id": "claude-a", "display_name": "Claude A"}, {"id": "claude-b"}],
         "has_more": True,
@@ -481,7 +494,7 @@ def test_the_openai_list_leaves_out_models_that_do_not_chat(
     client: TestClient, home: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
-    set_config(home, assistant={"consent": ["openai@api.openai.com"]})
+    set_config(home, assistant={"consent": ["assistant-v2:openai@api.openai.com"]})
     ids = [
         "text-embedding-3-small",
         "tts-1-hd",
@@ -518,7 +531,7 @@ def test_the_xai_list_is_asked_at_api_x_ai_with_the_xai_key(
     client: TestClient, home: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XAI_API_KEY", XKEY)
-    set_config(home, assistant={"consent": ["xai@api.x.ai"]})
+    set_config(home, assistant={"consent": ["assistant-v2:xai@api.x.ai"]})
     rows = [{"id": i} for i in ("grok-one", "grok-x-image", "grok-imagine-video", "grok-codex")]
     wire = Wire(monkeypatch, _Resp({"data": rows}))  # xAI's image and codex models are left out too
     res = client.get("/api/assistant/models", params={"provider": "xai"})
@@ -565,7 +578,7 @@ def test_a_failed_list_says_why_never_the_key(
     client: TestClient, home: Path, monkeypatch, caplog
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", OTHER)
-    set_config(home, assistant={"consent": ["anthropic@api.anthropic.com"]})
+    set_config(home, assistant={"consent": ["assistant-v2:anthropic@api.anthropic.com"]})
     answer = _Resp({"error": {"message": f"invalid x-api-key {OTHER}"}}, status=401)
     Wire(monkeypatch, answer, _Resp({"data": [{"id": "claude-z"}]}))
     caplog.set_level(logging.DEBUG)

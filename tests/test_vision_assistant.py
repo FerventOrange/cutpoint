@@ -127,8 +127,20 @@ def test_independent_vision_consent_privacy_gate(fake, home) -> None:
     # Assistant has consent, but vision_assistant does not have consent: frames MUST NOT be sent
     set_config(
         home,
-        assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
+        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
         vision_assistant={"provider": "codex", "consent": []},
+    )
+    rater = vision.VisionRater()
+    assert not rater.available()
+    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
+    assert fake.sent == []
+
+
+def test_the_assistant_s_versioned_consent_does_not_send_frames(fake, home) -> None:
+    set_config(
+        home,
+        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
+        vision_assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
     )
     rater = vision.VisionRater()
     assert not rater.available()

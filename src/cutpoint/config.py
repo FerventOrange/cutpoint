@@ -101,7 +101,9 @@ documents every key.
     ``https://api.openai.com/v1`` or ``https://api.x.ai/v1``; custom URLs are rejected for
     subscription providers; another one is shown as custom), ``context_tokens`` (the model's
     context size; default 8192 on this machine, 32768 hosted) and ``consent``
-    (``<provider>@<host>`` of the hosted providers the user agreed to send project text to).
+    (``assistant-v2:<provider>@<host>`` of the hosted providers the user agreed to send project
+    text to; an entry without the ``assistant-v2:`` prefix, from an older version, no longer
+    counts).
     Direct API keys are kept in the OS keyring and never read from or written to this file
     (see :mod:`cutpoint.assistant.keys`); subscription credentials are persisted in the same
     OS keyring, with private working files while ``cutpoint proxy`` runs.
@@ -154,7 +156,7 @@ class AssistantSettings:
     model: str = ""  # "": the provider's default (Ollama: qwen3.5:9b if pulled, else vision)
     url: str = ""  # base URL; "": the provider's (Ollama: cutpoint.backends.ollama_url)
     context_tokens: int = 0  # 0: the provider's default (8192 on this machine, 32768 hosted)
-    consent: tuple[str, ...] = ()  # "<provider>@<host>" the user agreed to send project text to
+    consent: tuple[str, ...] = ()  # "<role>-v2:<provider>@<host>" the user agreed to
 
 
 @dataclass(frozen=True)
@@ -356,7 +358,7 @@ def _assistant(path: Path, data: dict) -> AssistantSettings:
         ("provider", _is_str, "a string"),
         ("model", _is_str, "a string"),
         ("url", _is_str, "a string"),
-        ("consent", _is_str_list, "a list of <provider>@<host> entries"),
+        ("consent", _is_str_list, "a list of assistant-v2:<provider>@<host> entries"),
     )
     for key, ok, what in checks:
         _check_type(path, {f"assistant.{key}": section.get(key)}, f"assistant.{key}", ok, what)
