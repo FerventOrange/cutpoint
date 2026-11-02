@@ -8,6 +8,7 @@ No models or footage: the view layer is synthetic and its CLIP scores are stubbe
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict
 from itertools import pairwise
 from pathlib import Path
@@ -987,7 +988,7 @@ def test_a_stretch_keeps_one_side() -> None:
     a = np.array([[40.0, -10.0, 12.0, 30.0], [-100.0, -10.0, 12.0, 30.0]])  # A split
     b = np.array([[100.0, -10.0, 12.0, 30.0], [-40.0, -10.0, 12.0, 30.0]])  # then B
     ctx["near"] = [a] * 10 + [b] * 10
-    p = D.DirectorParams(include_margin=0.03)  # the hold, not the margin
+    p = D.DirectorParams(include_margin=0.03, include_pad_deg=0.0)  # the hold, not the margin
     chk = D._framing_checks(ctx, (0, n), p)
     free = [D._solve_step(ctx, chk, i, p)[1] for i in (0, 19)]
     assert free[0] > 0 > free[1]  # each alone: shifted towards the person, framed whole
@@ -1065,7 +1066,6 @@ def test_a_bad_midpoint_is_fixed() -> None:
 def test_the_shift_cap_counts_from_the_yaw_before_the_pass() -> None:
     n = 10
     p = D.DirectorParams()
-    cap = p.include_max_shift * 86.0 / 2
     ctx = safe_ctx(n, 0.0, 86.0)
     ctx["near"] = [np.array([[50.0, -10.0, 30.0, 30.0]])] * n  # out only below yaw -11
     ctx["yaw"][:] = -5.0  # an earlier round already shifted it by the cap
@@ -1074,7 +1074,9 @@ def test_the_shift_cap_counts_from_the_yaw_before_the_pass() -> None:
     assert free is not None and free[1] <= -6.0 + 1e-6  # shifted out by 6 deg or more
     ctx["yaw0"] = np.full(n, 10.0)
     capped = D._solve_step(ctx, chk, 4, p)
-    assert capped is None or abs(ctx["yaw"][4] + capped[1] - 10.0) <= cap + 1e-6
+    if capped is not None:
+        cap = p.include_max_shift * (86.0 + capped[2]) / 2  # of half the chosen view
+        assert abs(ctx["yaw"][4] + capped[1] - 10.0) <= cap + 1e-6
 
 
 def test_a_shot_end_is_a_cut_for_the_midpoint() -> None:
@@ -1195,7 +1197,7 @@ def test_violations_close_together_get_one_cut_away() -> None:
 
 def test_the_tighter_margin_retry_avoids_a_cut(monkeypatch: pytest.MonkeyPatch) -> None:
     n = 30
-    p = D.DirectorParams()
+    p = D.DirectorParams(include_pad_deg=0.0)  # the retry halves the margin only
 
     def run() -> dict:
         ctx = safe_ctx(n, 0.0, 86.0)
@@ -1420,7 +1422,7 @@ def test_a_held_shift_that_fixes_fewer_steps_falls_back_to_the_interpolated_shif
             rows.append([-rng.uniform(36, 50), -10.0, 12.0, 30.0])
         near.append(np.array(rows))
     ctx["near"] = near
-    p = D.DirectorParams(include_margin=0.03)
+    p = D.DirectorParams(include_margin=0.03, include_pad_deg=0.0)
     chk = D._framing_checks(ctx, (0, n), p)
     assert chk.n_bad(0, n) == (11, 19)
     assert D._include_exclude(ctx, chk, 0, n, p)
@@ -1461,3 +1463,81 @@ def test_the_framing_check_counts_a_side_cut_from_the_paths_floor() -> None:
     ctx["near"] = ctx["persons"] = [np.array([friend, [-46.4, -33.0, 16.0, 23.0, 0.0, 0.9]])] * n
     p = D.DirectorParams(include_margin=0.0)
     assert D._framing_checks(ctx, (0, n), p).bad(0)
+    # mostly outside: its box (the part in view) ends at the side: never framed whole
+    sliver = [55.0, -10.0, 40.0, 30.0]
+    ctx = safe_ctx(n, 0.0, 86.0)
+    ctx["near"] = ctx["persons"] = [np.array([[*sliver, 0.0, 0.55]])] * n  # under the QA's score
+    p = D.DirectorParams(include_margin=0.0, include_pad_deg=0.0, near_min_score=0.5)
+    chk = D._framing_checks(ctx, (0, n), p)
+    assert chk.bad(0) and not chk.qa_bad(0)
+    ctx = safe_ctx(n, 55.0, 86.0)
+    ctx["subj"][:] = sliver
+    for rule in ("include_exclude", "legacy"):
+        q = D.with_params(p, {"safe_margin": 0.0, "edge_rule": rule})
+        assert D._framing_checks(ctx, (0, n), q).bad(0)
+
+
+def test_the_legacy_rule_keeps_the_version_4_sliver_boxes() -> None:
+    """A wearer sliver (share under 0.25): the legacy rule judges the cross's box as in
+    version 4 (allowed), the include / exclude rule the part in view from the grid."""
+    n = 2
+    ctx = safe_ctx(n, 0.0, 89.32)
+    ctx["yaw"][:], ctx["pitch"][:] = 119.05, -23.08
+    ctx["target"] = ["view"] * n  # no subject: the wearer alone
+    ctx["near"] = ctx["persons"] = [np.array([[174.0, -47.33, 131.17, 64.42, 1.0, 0.9]])] * n
+    assert (
+        G.project_box_visible(119.05, -23.08, 89.32, 1920, 1080, 174.0, -47.33, 131.17, 64.42)[1]
+        < G.SLIVER_SHARE
+    )
+    assert not D._framing_checks(ctx, (0, n), LEGACY_EDGES).bad(0)
+    assert D._framing_checks(ctx, (0, n), D.DirectorParams()).bad(0)
+
+
+def test_a_subject_mostly_out_of_view_is_badly_framed() -> None:
+    """A subject sliver is bad on any side, not only where its part in view ends at the
+    frame's side."""
+    n = 2
+    ctx = safe_ctx(n, 0.0, 90.33)
+    ctx["yaw"][:], ctx["pitch"][:] = -28.47, 0.44
+    ctx["subj"][:] = [-65.70, -34.43, 21.95, 21.84]
+    res = G.project_box_visible(-28.47, 0.44, 90.33, 1920, 1080, *ctx["subj"][0])
+    assert res is not None and res[1] == pytest.approx(0.010, abs=0.005)
+    assert D._framing_checks(ctx, (0, n), D.DirectorParams()).bad(0)
+
+
+@pytest.mark.parametrize("near_yaw", [-44.0, 38.0])
+def test_an_included_person_keeps_the_pad_inside_the_margin(near_yaw: float) -> None:
+    """The detector's box on the render grows past the projected one by up to 4-7 deg per
+    side: a person framed whole keeps include_pad_deg inside the include_margin line (it
+    sat right at it, 1.7-1.8 deg in, without the pad)."""
+    n = 20
+    near = np.array([[near_yaw, -12.0, 14.0, 30.0, 0.0, 0.9]])
+    ctx = safe_ctx(n, 0.0, 86.0)
+    ctx["near"] = ctx["persons"] = [near] * n
+    p = D.DirectorParams()
+    assert p.include_pad_deg == 5.0 and D.DirectorParams.legacy().include_pad_deg == 0.0
+    D._safe_area_pass(ctx, [(0, n)], (0, n), p)
+    assert set(ctx["target"]) == {"friend"}
+    y, f = float(ctx["yaw"][10]), float(ctx["fov"][10])
+    x1, _, x2, _ = G.project_box_visible(y, -10.0, f, 1920, 1080, *near[0, :4])[0]
+    t = math.tan(math.radians(f) / 2)
+    a_in = math.degrees(math.atan((1 - 2 * p.include_margin) * t))  # the margin line
+    left, right = (math.degrees(math.atan((2 * x - 1) * t)) for x in (x1, x2))
+    assert min(left + a_in, a_in - right) >= 0.95 * p.include_pad_deg
+
+
+def test_a_near_person_close_to_the_side_is_hard_only_with_near_soft_as_hard() -> None:
+    """Split by the include margin 0.027 off the left side with 0.10 of the frame (not
+    touching it: the QA counts no cut): soft by default, hard with the flag; 0.046 off
+    the side stays soft."""
+    n = 10
+    ctx = safe_ctx(n, 0.0, 86.0)
+    on = D.DirectorParams(near_soft_as_hard=True)
+    assert not D.DirectorParams().near_soft_as_hard
+    assert not D.DirectorParams.legacy().near_soft_as_hard
+    for near_yaw, hard in ((-36.5, True), (-35.3, False)):
+        ctx["near"] = ctx["persons"] = [np.array([[near_yaw, -10.0, 13.0, 28.0, 0.0, 0.9]])] * n
+        off = D._framing_checks(ctx, (0, n), D.DirectorParams())
+        assert off.bad(0) and not off.qa_bad(0)
+        chk = D._framing_checks(ctx, (0, n), on)
+        assert chk.bad(0) and chk.qa_bad(0) == hard

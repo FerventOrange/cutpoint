@@ -129,6 +129,12 @@ class DirectorParams:
     # a person framed whole keeps this share off the sides: the detector sees a close person
     # near the edge 0.03-0.07 of the frame wider than its projected box (#11)
     include_margin: float = 0.06
+    # ... and this many deg of yaw more on each side: the detector's box on the render
+    # grows past the projected one by a median 1-2, p90 4-7 deg per side (#11)
+    include_pad_deg: float = 5.0
+    # a near person split by the edge with a gap under NEAR_HARD_GAP x include_margin and
+    # an area of NEAR_HARD_AREA or more counts as a hard bad step (a cut-away may follow)
+    near_soft_as_hard: bool = False
     exclude_clear_deg: float = 3.0  # a person kept out stays this far beyond the edge
     include_max_shift: float = 0.35  # yaw shift of at most this share of half the view
     include_min_subject_h: float = 0.19  # widening keeps the subject this tall (or as is)
@@ -201,6 +207,8 @@ class DirectorParams:
             w_shift=1.0,
             w_widen=0.8,
             include_margin=0.03,
+            include_pad_deg=0.0,
+            near_soft_as_hard=False,
             exclude_clear_deg=3.0,
             include_max_shift=0.35,
             include_min_subject_h=0.19,
@@ -231,6 +239,7 @@ NONNEG_PARAMS = (
     "w_shift",
     "w_widen",
     "include_margin",
+    "include_pad_deg",
     "exclude_clear_deg",
     "include_max_shift",
     "include_min_subject_h",
@@ -667,6 +676,8 @@ GRID_TRIES = 12  # ... and the cheapest grid points checked after them
 STICKY_MISS = 10.0  # ... cost of a step a forced side leaves unsolved
 INCLUDE_MARGIN_RETRY = 0.5  # ... the last try before a cut-away: this share of include_margin
 INCLUDE_ROUNDS = 3  # ... rounds per shot while they reduce the bad steps
+NEAR_HARD_GAP = 0.5  # near_soft_as_hard: a split person this share of include_margin from
+NEAR_HARD_AREA = 0.06  # ... the side (or closer) and this large is hard bad
 
 
 def _track_subject(
@@ -900,9 +911,14 @@ def project_boxes(
     vis_area = np.maximum(0.0, vis[:, 2] - vis[:, 0]) * np.maximum(0.0, vis[:, 3] - vis[:, 1])
     share = np.divide(vis_area, full_area, out=np.zeros(k), where=full_area > 0)
     box = (np.stack([x_min, ys_min, x_max, ys_max], 1) + 1) / 2
-    return [
+    out = [
         (tuple(float(v) for v in box[i]), float(share[i])) if front_c[i] else None for i in range(k)
     ]
+    sl = np.flatnonzero(front_c & (share < G.SLIVER_SHARE))  # the part in view, as there
+    for i, bi in zip(sl, G.sliver_boxes(r, tx, ty, b[sl]) if len(sl) else [], strict=True):
+        if bi is not None:
+            out[i] = (bi, float(share[i]))
+    return out
 
 
 def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams) -> Any:
@@ -950,15 +966,21 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
     def is_subject(box: np.ndarray, sj: np.ndarray | None) -> bool:
         return sj is not None and abs(G.wrap_deg(box[0] - sj[0])) < max(5.0, sj[2] / 2)
 
+    def side_cut(res: tuple[tuple[float, float, float, float], float]) -> bool:
+        """A sliver cut by a side: its box, the part in view, ends at the frame's side
+        (never framed whole, at any margin)."""
+        return res[1] < G.SLIVER_SHARE and (res[0][0] <= 0.0 or res[0][2] >= 1.0)
+
+    # the legacy rule's checks: the version 4 boxes (no sliver grid)
     def subject_bad(vy: float, vp: float, vf: float, sj: np.ndarray) -> bool:
-        res = G.project_box_visible(vy, vp, vf, size[0], size[1], *sj)
+        res = G.project_box_visible(vy, vp, vf, size[0], size[1], *sj, grid=False)
         if res is None:
             return True
         x1, y1, x2, y2 = res[0]
         return x1 < m or x2 > 1 - m or (y1 < th.safe_top and y2 < th.edge_top_max_y2)
 
     def wearer_bad(vy: float, vp: float, vf: float, box: np.ndarray) -> bool:
-        r = G.project_box_visible(vy, vp, vf, size[0], size[1], *box)
+        r = G.project_box_visible(vy, vp, vf, size[0], size[1], *box, grid=False)
         return r is not None and not wearer_allowed(np.clip(r[0], 0.0, 1.0), th)
 
     def legacy_offenders(i: int, f: float | None = None, y: float | None = None) -> list[float]:
@@ -1032,20 +1054,22 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
     ) -> tuple[list[float], bool]:
         """``(yaws, hard)``: what is badly framed in one view by the include / exclude
         rule (the subject's safe area, the wearer, near people split by the edge and the
-        geometric QA's edge cuts), and whether the geometric QA counts an edge cut or the
-        subject is out of view."""
+        geometric QA's edge cuts), and whether the geometric QA counts an edge cut, the
+        subject is out of view or, with ``near_soft_as_hard``, a large near person is split
+        close to a side."""
         if tg == "selfie":
             return [], False
         rows = rows[in_view(rows, vy, vp, vf)]
         near = near_rows(rows, sj)
         c = 2 * p.exclude_clear_deg
         wide = near + np.array([0.0, 0.0, c, c])  # OUT: clear of the view
+        pad = near + np.array([0.0, 0.0, 2 * p.include_pad_deg, 0.0])  # IN: padded sides
         own = [] if sj is None else [sj[:4]]
         res = project_boxes(
-            vy, vp, vf, size, np.concatenate([np.reshape(own, (-1, 4)), rows[:, :4], near, wide])
+            vy, vp, vf, size, np.concatenate([np.reshape(own, (-1, 4)), rows[:, :4], pad, wide])
         )
         out = []
-        lost = False
+        lost = near_hard = False
         if sj is not None:
             r = res.pop(0)
             lost = r is None or not (r[0][0] < 1 and r[0][2] > 0 and r[0][1] < 1 and r[0][3] > 0)
@@ -1053,7 +1077,12 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
                 out.append(float(sj[0]))
             else:
                 x1, y1, x2, y2 = r[0]
-                if x1 < m or x2 > 1 - m or (y1 < th.safe_top and y2 < th.edge_top_max_y2):
+                if (
+                    r[1] < G.SLIVER_SHARE  # mostly out of view: badly framed on any side
+                    or x1 < m
+                    or x2 > 1 - m
+                    or (y1 < th.safe_top and y2 < th.edge_top_max_y2)
+                ):
                     out.append(float(sj[0]))
         res_rows, res_near, res_wide = (
             res[: len(rows)],
@@ -1065,13 +1094,24 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
             r = res_rows[k]
             if r is not None and not wearer_allowed(np.clip(r[0], 0.0, 1.0), th):
                 out.append(float(rows[k, 0]))
-        for bx, r, rw in zip(near, res_near, res_wide, strict=True):
-            if r is not None and p.include_margin <= r[0][0] <= r[0][2] <= 1 - p.include_margin:
+        res_hard = project_boxes(vy, vp, vf, size, near) if p.near_soft_as_hard else res_near
+        for bx, r, rw, rh in zip(near, res_near, res_wide, res_hard, strict=True):
+            if (
+                r is not None
+                and not side_cut(r)
+                and p.include_margin <= r[0][0] <= r[0][2] <= 1 - p.include_margin
+            ):
                 continue  # IN: framed whole
             if rw is not None and not (
                 rw[0][2] <= 0 or rw[0][0] >= 1 or rw[0][3] <= 0 or rw[0][1] >= 1
             ):
                 out.append(float(bx[0]))  # SPLIT
+                if p.near_soft_as_hard and rh is not None:  # close to a side and large: hard
+                    x1, y1, x2, y2 = np.clip(rh[0], 0.0, 1.0)
+                    near_hard |= bool(
+                        min(x1, 1 - x2) < NEAR_HARD_GAP * p.include_margin
+                        and (x2 - x1) * (y2 - y1) >= NEAR_HARD_AREA
+                    )
         # the geometric QA's edge cuts: only boxes touching the sides or the top count
         touch = [
             r is not None
@@ -1084,7 +1124,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         ]
         keep_k = np.flatnonzero(ok)
         if not np.asarray(touch, bool)[keep_k].any():
-            return out, lost
+            return out, lost or near_hard
         qa_rows = rows[keep_k]
         det, sel, sl, src, sl_src = QP.project_frame(
             qa_rows[:, :4],
@@ -1109,7 +1149,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         ):
             out += [float(qa_rows[k, 0]) for k in sl_src]
             qa = True
-        return out, qa or lost
+        return out, qa or lost or near_hard
 
     def at(
         vy: float, vp: float, vf: float, tg: str, sj: np.ndarray | None, rows: np.ndarray
@@ -1428,16 +1468,17 @@ def _solve_step(
     Never narrows; widens in 2 deg steps up to ``fov_hi`` while the subject keeps
     ``min(its height now, include_min_subject_h)`` of the frame height. For each FOV the
     yaw shifts (at most ``include_max_shift`` of half the view) that keep the subject in
-    the safe area and frame each near person whole (``include_margin`` off the sides)
-    or keep it ``exclude_clear_deg`` beyond the edge come from the tangent map
-    ``x = 0.5 + tan(a) / (2 tan(f / 2))`` (people above or below the view are out at
-    any shift); the smallest one is costed ``w_shift * |shift| / (f / 2) + w_widen *
-    (f - f0) / (fov_hi - f0)``. The shift cap counts from ``ctx["yaw0"]`` (the yaw
-    before the pass) when given, so rounds do not add up. The :data:`INCLUDE_TRIES`
-    cheapest are checked with ``chk.bad``; when all fail, the :data:`GRID_TRIES`
-    cheapest points of a grid (FOV every 4 deg, shift every 2.5 deg), at the step only.
-    When none frames everyone well and the geometric QA counts an edge cut at the step,
-    the cheapest of those it does not count one in (costing :data:`STICKY_MISS` more).
+    the safe area and frame each near person whole (``include_margin`` off the sides,
+    its box ``include_pad_deg`` wider on each side) or keep it ``exclude_clear_deg``
+    beyond the edge come from the tangent map ``x = 0.5 + tan(a) / (2 tan(f / 2))``
+    (people above or below the view are out at any shift); the smallest one is costed
+    ``w_shift * |shift| / (f / 2) + w_widen * (f - f0) / (fov_hi - f0)``. The shift cap
+    counts from ``ctx["yaw0"]`` (the yaw before the pass) when given, so rounds do not add
+    up. The :data:`INCLUDE_TRIES` cheapest are checked with ``chk.bad``; when all fail,
+    the :data:`GRID_TRIES` cheapest points of a grid (FOV every 4 deg, shift every 2.5
+    deg), at the step only. When none frames everyone well and the geometric QA counts an
+    edge cut at the step, the cheapest of those it does not count one in (costing
+    :data:`STICKY_MISS` more).
     """
     y0, f0, vp = float(ctx["yaw"][i]), float(ctx["fov"][i]), float(ctx["pitch"][i])
     size = ctx["size"]
@@ -1476,8 +1517,9 @@ def _solve_step(
                 continue  # above or below the view: out at any shift
             d, w2 = float(G.wrap_deg(bx[0] - y0)), bx[2] / 2
             ok = [(-math.inf, d - w2 - clear - half)]
-            if w2 <= a_in:
-                ok.append((d + w2 - a_in, d - w2 + a_in))
+            w_in = w2 + p.include_pad_deg
+            if w_in <= a_in:
+                ok.append((d + w_in - a_in, d - w_in + a_in))
             ok.append((d + w2 + clear + half, math.inf))
             feas = _intersect(feas, ok)
             if not feas:
@@ -1806,11 +1848,13 @@ def _safe_area_pass(
 
     ``include_exclude`` (default): the subject and wearer rules as above; a near
     person (``near_min_h_deg`` tall, ``near_min_score``, not the wearer or the subject;
-    its unclipped projected box) is fine framed whole (``include_margin`` off the left
-    and right edges) or out of view (its box widened by ``exclude_clear_deg`` per side
-    entirely outside, or behind the camera), and at any size a bad step when split by
-    the edge; and a step is bad where the geometric QA would count an edge cut (any
-    confident person, its sliver rules included), or the view halfway to a
+    its unclipped projected box) is fine framed whole (its box widened by
+    ``include_pad_deg`` per side, ``include_margin`` off the left and right edges) or out
+    of view (its box widened by ``exclude_clear_deg`` per side entirely outside, or
+    behind the camera), and at any size a bad step when split by the edge (a hard one
+    with ``near_soft_as_hard``, :data:`NEAR_HARD_GAP`); and a step is bad where the
+    geometric QA would count an edge cut (any confident person, its sliver rules
+    included), or the view halfway to a
     neighbouring step is (:func:`_framing_checks`). Bad runs of any length get
     :func:`_include_exclude` (up to :data:`INCLUDE_ROUNDS` rounds while it helps), then
     :func:`_relimit`. Where a stretch longer than :data:`SAFE_MIN_S` with steps the

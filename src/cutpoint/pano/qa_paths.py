@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 OUT_SIZE = (1920, 1080)  # only the aspect matters
 HOLD_S = 1.0  # resampled times farther than this from a view frame have no detections
-MIN_VISIBLE = 0.25  # boxes mostly outside the frame (a sliver of the wearer) are not seen
+MIN_VISIBLE = G.SLIVER_SHARE  # boxes mostly outside the frame (a sliver of the wearer) are not seen
 # (clipped box area over its projected extent, in frame units: geometry.project_box_visible)
 NMS_IOU = 0.5  # torchvision Faster R-CNN's box_nms_thresh
 # a person at the left / right edge with a projected box of 0.06-0.10 of the frame is

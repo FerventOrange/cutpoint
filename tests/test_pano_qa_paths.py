@@ -70,7 +70,7 @@ def test_project_box_cut_by_the_frame_edge_keeps_its_visible_height() -> None:
     b = project_box(0.0, 0.0, 86.0, W, H, 60.0, 0.0, 80.0, 20.0)
     assert b is not None
     assert 0.25 <= b[1] <= 0.30 and 0.70 <= b[3] <= 0.75
-    assert 0.65 < b[0] < 0.75 and b[2] > 1.0  # left edge: yaw 20
+    assert 0.65 < b[0] < 0.75 and b[2] == 1.0  # left edge: yaw 20; a sliver ends at the frame
     vis = G.project_box_visible(0.0, 0.0, 86.0, W, H, 60.0, 0.0, 80.0, 20.0)
     # ~70 % of its yaw span is outside and the far part is stretched: visible share ~0.13,
     # which the QA drops
@@ -78,6 +78,29 @@ def test_project_box_cut_by_the_frame_edge_keeps_its_visible_height() -> None:
     assert vis is not None and 0.0 < vis[1] < QP.MIN_VISIBLE
     inside = G.project_box_visible(0.0, 0.0, 86.0, W, H, 30.0, 0.0, 40.0, 20.0)
     assert inside is not None and inside[1] >= QP.MIN_VISIBLE
+
+
+@pytest.mark.parametrize(
+    ("view", "box"),
+    [
+        ((180.0, -20.0, 86.0), (100.0, -38.0, 100.0, 20.0)),
+        ((0.0, -20.0, 86.0), (-80.0, -30.0, 100.0, 40.0)),
+    ],
+)
+def test_a_sliver_in_a_pitched_view_gets_its_whole_visible_part(view: tuple, box: tuple) -> None:
+    """A person inches from the lens enters a pitched-down view at its bottom-left corner:
+    its box is the part the rendered frame shows (a 0.003-0.02 box from the one yaw line
+    before, where the detector saw ~0.11, #11), and its share still drops it."""
+    vis = G.project_box_visible(*view, W, H, *box)
+    assert vis is not None and vis[1] < QP.MIN_VISIBLE
+    w, h = 384, 216  # the rendered frame: pixels whose ray lies in the equirect box
+    d = G.flat_rays(w, h, view[2], G.flat_fov(view[2], w, h)) @ G.view_matrix(*view[:2]).T
+    yaw, pitch = G.ray_yaw_pitch(d)
+    rows, cols = np.nonzero(
+        (np.abs(G.wrap_deg(yaw - box[0])) <= box[2] / 2) & (np.abs(pitch - box[1]) <= box[3] / 2)
+    )
+    want = (cols.min() / w, rows.min() / h, (cols.max() + 1) / w, (rows.max() + 1) / h)
+    assert vis[0] == pytest.approx(want, abs=0.01)
 
 
 def test_project_box_near_the_pole_keeps_a_width() -> None:
