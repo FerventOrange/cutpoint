@@ -1812,11 +1812,16 @@ def _analyze(
         # ---- 5. ranking: candidates rescored with the events
         steps.start("ranking")
         if ski_ctx is not None:
+            from cutpoint import activity  # noqa: PLC0415
+
             if events_new:  # with this run's events.json and crashes.json
                 ski_ctx = ski.prepare(sources, durations, out_dir)
-            for r in results:
-                r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
-                logger.info("%s: %d candidates", r.source.name, len(r.candidates))
+            # the beauty / people features on the captions of the project's activity.json
+            # (written by the crash step above; ski without one)
+            with activity.use_prompts(activity.project_prompts(out_dir)):
+                for r in results:
+                    r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
+                    logger.info("%s: %d candidates", r.source.name, len(r.candidates))
         hl["candidates"] = records()
         ev = None
         if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer

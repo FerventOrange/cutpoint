@@ -375,16 +375,23 @@ def use_prompts(p: Prompts) -> Iterator[Prompts]:
 def record_profile(rec: dict[str, Any]) -> dict[str, Any]:
     """The full profile of an ``activity.json`` record. A record written before profiles had
     every caption section gets them: a library profile chosen as is (``flag``, ``library``,
-    ``fallback``) is rebuilt from the library, any other keeps its own sections and takes
-    the missing ones from its library profile or the floor."""
+    ``fallback``) is rebuilt from the library; one the LLM wrote or refined (``context``,
+    ``synthesized``) keeps its identity and ``incident`` and takes every other caption
+    section from its library profile or the floor (its old ``highlight`` and ``low_info``
+    lists predate the per-activity floor); any other keeps its own sections and takes the
+    missing ones from there."""
     prof = rec.get("profile") if isinstance(rec.get("profile"), dict) else {}
     if all(k in prof for k in (*PAIR_SECTIONS, *LIST_SECTIONS, "vl")):
         return prof
     lib = library()
     name = rec.get("name")
     ref = full(lib[name]) if name in lib else base()
-    if rec.get("source") in ("flag", "library", "fallback") and name in lib:
+    source = rec.get("source")
+    if source in ("flag", "library", "fallback") and name in lib:
         return ref
+    if source in ("context", "synthesized"):
+        keep = ("name", "description", "detect", "incident")
+        return {**ref, **{k: prof[k] for k in keep if k in prof}}
     return {**ref, **prof}
 
 

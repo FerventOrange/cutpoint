@@ -179,9 +179,10 @@ def _scan(
     Raises:
         FileNotFoundError: If no clip matches and not ``allow_empty`` (nothing is written).
     """
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano import project as P  # noqa: PLC0415
-    from cutpoint.pano.x3 import imu_source, scan  # noqa: PLC0415
+    from cutpoint.pano.x3 import scan  # noqa: PLC0415
 
     t0 = time.perf_counter()
     clips, dirs = [], []
@@ -493,12 +494,22 @@ def director_params(items: list[str] | None) -> dict[str, Any] | None:
 
 
 def _plan_key(
-    clip_id: str, start: float, end: float, kind: Any, vertical: bool, p: Any, fwd: Any = None
+    clip_id: str,
+    start: float,
+    end: float,
+    kind: Any,
+    vertical: bool,
+    p: Any,
+    fwd: Any = None,
+    prompts: str | None = None,
 ) -> str:
     """What a director path depends on (besides the clip's cached layers); ``fwd``: the
-    clip's forward axis when not the default (an upright clip)."""
+    clip's forward axis when not the default (an upright clip); ``prompts``: the activity
+    captions' key when not the default ones
+    (:func:`cutpoint.pano.candidates.prompts_key`)."""
     seg = [clip_id, round(start, 3), round(end, 3), kind, vertical]
-    return json.dumps([seg, p] + ([fwd] if fwd is not None else []), sort_keys=True)
+    extra = ([fwd] if fwd is not None else []) + ([{"prompts": prompts}] if prompts else [])
+    return json.dumps([seg, p, *extra], sort_keys=True)
 
 
 def _axis_key(fwd: Any, det_frame: Any) -> Any:
@@ -525,6 +536,7 @@ def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
             path.get("vertical"),
             path.get("params"),
             _axis_key(path.get("forward_axis"), path.get("det_frame")),
+            path.get("prompts"),
         )
         found[key] = (f.stem, path)
     return found
@@ -667,6 +679,7 @@ def _direct(
     from cutpoint.pano import director as D  # noqa: PLC0415
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano import views as VW  # noqa: PLC0415
+    from cutpoint.pano.candidates import prompts_key  # noqa: PLC0415
     from cutpoint.pano.project import (  # noqa: PLC0415
         RenderSource,
         clip_for,
@@ -677,6 +690,7 @@ def _direct(
 
     vl_report: list[dict[str, Any]] = []
     reuse = {} if checker is not None or getattr(a, "force", True) else _reusable(out_dir)
+    prompts = prompts_key()
     segs = []
     for i, m in enumerate(_selected_segments(project, a), 1):
         clip = clip_for(clips, m["source"])
@@ -688,7 +702,9 @@ def _direct(
         p = asdict(D.with_params(p, overrides) if overrides else p)
         fwd = G.cached_forward_axis(Path(clip.source))
         fwd = _axis_key(fwd, VW.DET_FRAME) if fwd != G.axis_name(G.FORWARD_V) else None
-        key = _plan_key(clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p, fwd)
+        key = _plan_key(
+            clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p, fwd, prompts
+        )
         segs.append((f"{i:03d}_{slugify(m.get('label', ''), 40)}", m, clip, key))
     stems = {stem for stem, *_ in segs}
     # old stems whose path is reused under a new stem (known up front: an earlier segment may
@@ -720,6 +736,8 @@ def _direct(
                 overrides=overrides,
                 suspects=checker is not None,
             )
+            if prompts:  # read back by _reusable
+                path["prompts"] = prompts
 
         def render(
             path: Any = path, clip: Any = clip, m: dict[str, Any] = m, preview: Path = preview

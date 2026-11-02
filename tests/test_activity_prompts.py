@@ -13,7 +13,7 @@ import pytest
 from cutpoint import activity, crash, insta360
 from cutpoint.events import visual as V
 from cutpoint.pano import project as pano_project
-from cutpoint.pano import qa, views, vlcheck, x3
+from cutpoint.pano import qa, views, vlcheck
 from cutpoint.styles import STYLES
 
 # The lists as they were hard-coded before profiles held them (events/visual.py,
@@ -273,5 +273,4 @@ def test_default_360_style_is_the_action_cam_scorer(monkeypatch):
 
 
 def test_core_reads_x3_names_without_the_pano_package():
-    assert x3.parse_name is insta360.parse_name and x3.imu_source is insta360.imu_source
     assert insta360.parse_name("LRV_20240101_120000_11_002.lrv")["num"] == "002"

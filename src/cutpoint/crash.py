@@ -1211,27 +1211,30 @@ def detect_project(
     inputs: dict[str, SourceInputs] = {}
     language = _project_language(project)
     t0 = time.perf_counter()
-    for src, dur in sources:
-        if force:
-            imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
-        inp = inputs[str(src)] = load_inputs(src, dur, p, tmp_dir, language)
-        if inp.imu is None:
-            jsonout.warn(
-                "no_telemetry",
-                f"{src.name}: no IMU telemetry; crashes are found from the transcript only",
-                [src],
-            )
-        if inp.visual is None:
-            reason = _NO_VISUAL_REASON.get()
-            jsonout.warn(
-                "no_visual_layer",
-                f"{src.name}: no visual layer ({reason}); crashes are found without what the "
-                "camera sees"
-                if reason
-                else f"{src.name}: no visual layer; run `cutpoint events` first to score what "
-                "the camera sees",
-                [src],
-            )
+    # The 360 lift rides of load_inputs are found with this profile's lift captions.
+    prompts = activity.prompts(activity.record_profile(prof)) if prof else None
+    with activity.use_prompts(prompts or activity.project_prompts(project)):
+        for src, dur in sources:
+            if force:
+                imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
+            inp = inputs[str(src)] = load_inputs(src, dur, p, tmp_dir, language)
+            if inp.imu is None:
+                jsonout.warn(
+                    "no_telemetry",
+                    f"{src.name}: no IMU telemetry; crashes are found from the transcript only",
+                    [src],
+                )
+            if inp.visual is None:
+                reason = _NO_VISUAL_REASON.get()
+                jsonout.warn(
+                    "no_visual_layer",
+                    f"{src.name}: no visual layer ({reason}); crashes are found without what "
+                    "the camera sees"
+                    if reason
+                    else f"{src.name}: no visual layer; run `cutpoint events` first to score "
+                    "what the camera sees",
+                    [src],
+                )
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)
     cands = []
     for inp in inputs.values():
