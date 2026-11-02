@@ -355,6 +355,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer score: a `REVERSE FRIENDLY FIRE` banner is neither a teamkill nor a payoff banner
   (no points, no clip-tail payoff, the VLM seed of any other banner), and kill rows that
   mark only the player are no player kills.
+- **BREAKING:** action-cam projects keep their features in `action_cam_features/` (was
+  `ski_features/`, which is no longer read; old folders can be deleted). The VLM cache key was
+  renamed too, so existing action-cam projects run the VLM step of `events` once more and
+  `analyze` rebuilds the features (#610).
 
 ### Removed
 
@@ -462,12 +466,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused with "source must be an absolute path"; blank `sources` lines are left out, and with
   several sources the refusal names the path. Settings' projects folder takes a quoted path too.
   Relative paths are still refused.
+- `events`: on a project's first run the contact sheets now use the activity profile the
+  crash layer chose instead of the ski captions (#609).
 
 ## [0.4.0] - 2026-10-29
 
 ### Added
-- `events`: on a project's first run the contact sheets now use the activity profile the
-  crash layer chose instead of the ski captions (#609).
 
 - `install.sh`: one-step Linux installer (`curl -LsSf .../install.sh | sh`). It installs uv and
   ffmpeg when missing, picks CUDA torch (`cutpoint[all]`, `--torch-backend cu126`) with an NVIDIA

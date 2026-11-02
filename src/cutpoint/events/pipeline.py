@@ -418,6 +418,8 @@ def run_events(
                 enc.close()
         vram["crash"] = vm.summary()
         timings["crash_s"] = round(time.perf_counter() - t0, 1)
+        if sheets:  # under the activity.json the crash layer just wrote
+            write_sheets(project_prompts(project))
 
     # ---- telemetry (ski): airtime / crash seeds + coverage of the riding
     if ski:
@@ -433,7 +435,7 @@ def run_events(
     # ---- layer 2: VLM windows
     t0 = time.perf_counter()
     games = {
-        str(s.path): "ski" if ski else game_key_for_path(str(s.path), ocr.game, project)
+        str(s.path): ACTION_CAM if ski else game_key_for_path(str(s.path), ocr.game, project)
         for s in sources
     }
     # Game prompt and event types (custom seeds) from each source's HUD preset; ski has none.
@@ -450,7 +452,7 @@ def run_events(
             windows = add_incremental(prev, windows)
             logger.log(
                 logging.INFO if "vlm" in layers else logging.DEBUG,
-                "VLM (ski, incremental): %d cached windows reused, %d of %d new "
+                "VLM (action-cam, incremental): %d cached windows reused, %d of %d new "
                 "windows cover footage not described yet",
                 len(prev),
                 len(windows) - len(prev),

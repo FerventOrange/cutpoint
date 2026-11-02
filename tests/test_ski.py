@@ -158,3 +158,10 @@ def test_a_removed_taste_weight_scores_as_without_it(
     assert "taste" not in got.weights and got.weights == want.weights
     for avail in (features.available(("events",)), features.available(())):
         assert scorer.score(0.8, got, avail) == scorer.score(0.8, want, avail)
+
+
+def test_features_live_under_the_action_cam_folder(tmp_path: Path) -> None:
+    assert ski.FEATURES_DIR == "action_cam_features"
+    src = tmp_path / "ride.mp4"
+    got = ski.features_path(tmp_path, src)
+    assert got.parent == tmp_path / "action_cam_features" and got.name.startswith("ride-")

@@ -197,7 +197,7 @@ for _f in (
     Feature("group", "visual", "A group of people in view", "events"),
 ):
     register(_f)
-# The ski grids in cutpoint.ski's order: the order of the saved ski_features arrays and of a
+# The ski grids in cutpoint.ski's order: the order of the saved action_cam_features arrays and of a
 # candidate's signals, and the first of equal contributions is a pick's kind.
 SKI_FEATURES = (
     "airtime",
@@ -219,7 +219,7 @@ SKI_FEATURES = (
     "wipeout",
 )
 # Before #514 phase 1b the ski feature voice_laughter was called "laughter", which is the
-# transcript feature for the generic styles. Learned ski presets and ski_features files of
+# transcript feature for the generic styles. Learned ski presets and saved feature files of
 # that time say "laughter"; ski_names() reads it as voice_laughter.
 SKI_ALIASES = {"laughter": "voice_laughter"}
 # Features that no longer exist. A learned preset saved while they did may still weigh them;
