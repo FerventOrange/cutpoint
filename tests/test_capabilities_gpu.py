@@ -89,7 +89,7 @@ def test_torch_no_warning(torch_stub, nvidia, build, available):
 def test_report_probes_torch_before_transcription(monkeypatch):
     # On Windows the gpu extra's cuDNN, once loaded by the transcription probe, breaks `import torch`.
     calls = []
-    for name in ("_torch", "_transcription", "_llama", "_insta360_sdk"):
+    for name in ("_torch", "_transcription", "_insta360_sdk"):
         monkeypatch.setattr(capabilities, name, lambda *a, n=name: calls.append(n) or {})
     monkeypatch.setattr(capabilities, "_compiled_encoders", lambda: set())
     monkeypatch.setattr(capabilities, "find_encoder", lambda kind: (None, []))
@@ -152,7 +152,6 @@ def _data(torch_info, sdk_info, edition="full"):
         "video_encoders": {},
         "active_video_encoder": ok,
         "transcription": {"engine": "faster-whisper", "device": "cpu", "note": "n"},
-        "llama_cpp": {"requested": "auto", "setup_would_choose": [], "nvidia_driver_usable": False},
         "torch": torch_info,
         "insta360_sdk": sdk_info,
     }

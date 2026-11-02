@@ -15,7 +15,7 @@ from cutpoint.pano import vlcheck
 
 JPEG = b"\xff\xd8jpeg"
 B64 = base64.b64encode(JPEG).decode()
-CONSENT = "codex@chatgpt.com"
+CONSENT = "vision-v2:codex@chatgpt.com"
 
 
 class FakeSubscription:
@@ -69,7 +69,7 @@ def test_nothing_is_sent_before_the_user_agreed(fake, home) -> None:
     """Consent given to the chat assistant does not cover vision: no frame is sent."""
     set_config(
         home,
-        assistant={"provider": "codex", "consent": [CONSENT]},
+        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
         vision_assistant={"provider": "codex", "model": "gpt-x", "consent": []},
     )
     rater = vision.VisionRater()
@@ -112,6 +112,31 @@ def test_image_parts_reach_each_wire_format() -> None:
     }
 
 
+def test_the_assistant_s_versioned_consent_does_not_send_frames(fake, home) -> None:
+    set_config(
+        home,
+        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
+        vision_assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
+    )
+    rater = vision.VisionRater()
+    assert not rater.available()
+    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
+    assert fake.sent == []
+
+
+def test_consent_under_the_old_vision_wording_no_longer_counts(fake, home) -> None:
+    # "codex@chatgpt.com" was the Vision key before frames, on-screen text and telemetry were
+    # named in the prompt: the user must agree again (vision-v2:)
+    set_config(
+        home,
+        vision_assistant={"provider": "codex", "model": "gpt-x", "consent": ["codex@chatgpt.com"]},
+    )
+    rater = vision.VisionRater()
+    assert not rater.available()
+    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
+    assert fake.sent == []
+
+
 def test_rating_cache_key_distinguishes_provider() -> None:
     k_codex = vision.rating_key("model-a", "gaming", [1.0, 2.0], provider="codex")
     k_antigravity = vision.rating_key("model-a", "gaming", [1.0, 2.0], provider="antigravity")
@@ -126,7 +151,7 @@ def test_offline_refresh_skips_vision_instead_of_raising(home, monkeypatch) -> N
         vision_assistant={
             "provider": "codex",
             "model": "gpt-x",
-            "consent": ["codex@chatgpt.com"],
+            "consent": [CONSENT],
         },
     )
 

@@ -181,7 +181,7 @@ def test_a_remote_ollama_is_hosted_and_needs_consent() -> None:
     assert providers.describe(here)["label"] == "Ollama · m · this machine"
     assert not there.local and there.host == "10.10.10.235"
     assert providers.describe(there)["label"] == "Ollama · m · 10.10.10.235"
-    assert providers.consent_key(there) == "ollama@10.10.10.235"
+    assert providers.consent_key(there) == "assistant-v2:ollama@10.10.10.235"
 
 
 # -- OpenAI-compatible -----------------------------------------------------------------------

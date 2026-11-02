@@ -173,9 +173,10 @@ sudo apt install fontconfig fonts-dejavu-core
 ## Out of GPU memory
 
 `cutpoint events` runs its layers one after another so only one model is loaded at a time.
-Close other GPU programs (games, other models). The Qwen2.5-Omni layer is the heaviest;
-lower its request size with `events --frames 12 --frame-height 540`, or skip it with
-`--no-vlm`. Ollama models are unloaded before the llama.cpp server starts.
+Close other GPU programs (games, other models). The VLM layer, run by the Ollama vision model, is
+the heaviest; lower its request size with `events --frames 12`, or skip it with `--no-vlm`.
+Ollama models are unloaded before the other layers start, and the vision model is unloaded
+when the VLM layer is done.
 
 ## `events` is very slow
 

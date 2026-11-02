@@ -1,13 +1,15 @@
-"""Layer 2: describe candidate windows with Qwen2.5-Omni (frames + audio) via llama-server.
+"""Layer 2: describe candidate windows with the vision model of ``analyze --vision``.
 
-For each window (default 15 s) one OpenAI-compatible chat request carries:
-    * 12-16 frames sampled evenly at 720p, each labelled with its timestamp,
-    * the window's audio as 16 kHz mono WAV (``input_audio``),
-    * the Whisper transcript excerpt and layer-1 detector hints (as text),
-and asks for strict JSON (enforced with a JSON-schema grammar).
+For each window (default 15 s) one request carries:
+    * 12-16 frames sampled evenly, :data:`FRAME_HEIGHT` px high, each labelled with its
+      timestamp,
+    * the Whisper transcript excerpt and layer-1 detector hints (detected sounds
+      such as laughter, HUD text, telemetry) as text, in place of the audio,
+and asks for strict JSON (enforced with the response JSON schema).
 
-Audio needs Qwen's official system prompt: without it, Qwen2.5-Omni often
-claims it cannot hear audio or hallucinates (verified with llama.cpp b11748).
+The request goes through :class:`cutpoint.vision.VisionRater`: the local Ollama
+model (default qwen3.5:9b) or, after consent, the hosted provider of the Models
+tab's Vision role.
 
 Window selection merges three seed sources: highlights.json candidates,
 layer-1 audio events (laughter/scream/cheer) and OCR events (kills, banners).
@@ -22,6 +24,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -31,29 +34,29 @@ from typing import Any
 from cutpoint import cache
 from cutpoint.config import source_path
 from cutpoint.errors import FFmpegError
-from cutpoint.events.common import (
-    Source,
-    audio_slice,
-    layer_cache_path,
-    transcript_excerpt,
-    wav_bytes,
-)
+from cutpoint.events.common import Source, layer_cache_path, transcript_excerpt
 from cutpoint.events.eventtypes import EventType, first_match
-from cutpoint.events.llama_server import LlamaServer, LlamaServerError
 from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
 from cutpoint.ffmpeg_utils import grab_images
 from cutpoint.utils import clock
+from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
 
-QWEN_SYSTEM = (
-    "You are Qwen, a virtual human developed by the Qwen Team, Alibaba Group, "
-    "capable of perceiving auditory and visual inputs, as well as generating "
-    "text and speech."
-)
+# Frame height sent to the vision model: a 16:9 frame of about IMAGE_MAX_TOKENS tokens
+# (Qwen3.5 / Qwen3-VL: one token per 32x32 pixels), so 16 frames fit the 16k context
+# (16 frames at 720p, about 920 tokens each, do not).
+IMAGE_MAX_TOKENS = 640
+FRAME_HEIGHT = int(32 * math.sqrt(IMAGE_MAX_TOKENS * 9 / 16)) // 2 * 2  # 606
+
+
+class VlmRequestError(RuntimeError):
+    """The shared vision client gave no usable reply (the reason is logged)."""
+
+
 PROMPT_VERSION = 5
 
-# Property order matters: llama.cpp's grammar emits keys in this order, so the
+# Property order matters: structured output emits keys in this order, so the
 # model describes the events before it commits to the scores.
 RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -206,15 +209,15 @@ class VlmParams:
     max_windows: int = 60
     frames: int = 14  # for windows up to 18 s; longer ones get up to 16
     forced: tuple[tuple[str, float, float], ...] = ()  # (name glob, start, end)
-    frame_height: int = 720
-    image_max_tokens: int = 640
     ctx: int = 16384
-    audio: bool = True
     transcript: bool = True
     hints: bool = True
     max_tokens: int = 700
     ski: bool = False  # ski prompt + tags (set by the pipeline for ski projects)
     max_fill_windows: int = 0  # ski: extra windows over stopped / lift footage
+    # vision model that describes the windows, set by the pipeline ("<provider>:<model>"
+    # for a hosted provider)
+    model: str = ""
 
     def key(self, prompt: GamePrompt | None = None) -> dict[str, Any]:
         """Parameters that change a window's result (selection params excluded).
@@ -223,13 +226,11 @@ class VlmParams:
         """
         return {
             "frames": self.frames,
-            "h": self.frame_height,
-            "imt": self.image_max_tokens,
-            "audio": self.audio,
+            "h": FRAME_HEIGHT,
             "transcript": self.transcript,
             "hints": self.hints,
             "prompt": PROMPT_VERSION,
-            "model": "qwen2.5-omni-7b-q4km",
+            "model": self.model,
             **({"ski": SKI_PROMPT_VERSION} if self.ski else {}),
             **({"gp": prompt.key()} if prompt and prompt.custom else {}),
         }
@@ -571,7 +572,7 @@ def build_messages(
             ),
         }
     )
-    return [{"role": "system", "content": QWEN_SYSTEM}, {"role": "user", "content": content}]
+    return [{"role": "user", "content": content}]
 
 
 def _media_content(
@@ -582,7 +583,7 @@ def _media_content(
     transcript_lines: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Frames, audio, transcript and hints of a window (shared by the prompts)."""
+    """Frames, transcript and hints of a window (shared by the prompts)."""
     dur = win.end - win.start
     content: list[dict[str, Any]] = []
     step = dur / max(1, len(frames))
@@ -594,19 +595,6 @@ def _media_content(
                 "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()},
             }
         )
-    if params.audio:
-        samples = audio_slice(src, win.start, win.end)
-        if len(samples):
-            content.append({"type": "text", "text": "Audio of the whole window:"})
-            content.append(
-                {
-                    "type": "input_audio",
-                    "input_audio": {
-                        "data": base64.b64encode(wav_bytes(samples)).decode(),
-                        "format": "wav",
-                    },
-                }
-            )
     if params.transcript:
         ex = transcript_excerpt(transcript_lines, src.name, win.start, win.end)
         content.append(
@@ -672,7 +660,7 @@ def build_messages_ski(
             ),
         }
     )
-    return [{"role": "system", "content": QWEN_SYSTEM}, {"role": "user", "content": content}]
+    return [{"role": "user", "content": content}]
 
 
 def parse_reply(text: str) -> dict[str, Any] | None:
@@ -722,8 +710,51 @@ def parse_reply(text: str) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------- driver
 
 
+def vision_request(messages: list[dict[str, Any]]) -> tuple[str, list[bytes]]:
+    """The prompt text and JPEG frames of :func:`build_messages`' messages, for
+    :meth:`cutpoint.vision.VisionRater.describe`.
+
+    The text parts are joined by newlines; each frame becomes an ``[image N]`` marker after
+    its "Frame N @ ...s:" label, the frames following in that order.
+    """
+    lines: list[str] = []
+    images: list[bytes] = []
+    for msg in messages:
+        if msg["role"] != "user":
+            continue
+        for part in msg["content"]:
+            if part["type"] == "text":
+                lines.append(part["text"])
+            elif part["type"] == "image_url":
+                images.append(base64.b64decode(part["image_url"]["url"].split(",", 1)[1]))
+                marker = f"[image {len(images)}]"
+                lines[-1:] = [f"{lines[-1]} {marker}"] if lines else [marker]
+    return "\n".join(lines), images
+
+
+def _ask(
+    rater: VisionRater, msgs: list[dict[str, Any]], params: VlmParams, attempt: int
+) -> tuple[str, dict[str, Any]]:
+    """One request for a window: (reply text, usage). Raises :class:`VlmRequestError` when
+    it fails."""
+    schema = RESPONSE_SCHEMA_SKI if params.ski else RESPONSE_SCHEMA
+    prompt, images = vision_request(msgs)
+    data = rater.describe(
+        prompt,
+        images,
+        schema,
+        num_ctx=params.ctx,
+        # Ollama's structured output indents the JSON: 700 tokens cut off a full reply
+        num_predict=2 * params.max_tokens,
+        temperature=0.2 if attempt == 0 else 0.0,
+    )
+    if data is None:
+        raise VlmRequestError("no usable reply from the vision model")
+    return json.dumps(data), {"prompt_tokens": rater.last_prompt_tokens}
+
+
 def describe_windows(
-    server: LlamaServer | None,
+    server: VisionRater | None,
     sources: dict[str, Source],
     windows: list[Window],
     params: VlmParams,
@@ -735,7 +766,8 @@ def describe_windows(
     """Describe every window (cached per source + window + parameters).
 
     Args:
-        server: Running llama-server, or None to use cached results only.
+        server: The shared vision client (its :meth:`~cutpoint.vision.VisionRater.available`
+            already checked), or None to use cached results only.
         sources: ``{source_path: Source}``.
         windows: Windows from :func:`select_windows`.
         params: VLM parameters.
@@ -777,7 +809,7 @@ def describe_windows(
             win.start,
             win.end - win.start,
             frames_for(win.end - win.start, params.frames),
-            params.frame_height,
+            FRAME_HEIGHT,
         )
         if not frames:
             logger.warning("%s %s: no frames decoded; skipping", src.name, win.key)
@@ -795,21 +827,13 @@ def describe_windows(
         parsed, usage, err = None, {}, None
         for attempt in range(2):
             try:
-                resp = server.chat(
-                    msgs,
-                    max_tokens=params.max_tokens,
-                    temperature=0.2 if attempt == 0 else 0.0,
-                    json_schema=(RESPONSE_SCHEMA_SKI if params.ski else RESPONSE_SCHEMA),
-                )
-                usage = resp.get("usage", {})
-                parsed = parse_reply(resp["choices"][0]["message"].get("content", ""))
+                text, usage = _ask(server, msgs, params, attempt)
+                parsed = parse_reply(text)
                 if parsed:
                     break
-            except (LlamaServerError, KeyError, ValueError) as e:  # retry once
+            except (VlmRequestError, KeyError, ValueError) as e:  # retry once
                 err = str(e)
                 logger.warning("%s %s: VLM request failed: %s", src.name, win.key, e)
-                if "audio" in err.lower() and params.audio:
-                    raise
         elapsed = round(time.perf_counter() - t0, 1)
         if not parsed:
             stats["failed"] += 1
@@ -866,41 +890,3 @@ def windows_to_events(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
     return out
-
-
-def check_audio(server: LlamaServer, samples: Any) -> dict[str, Any]:
-    """Send one short audio clip; report whether the server accepts audio input.
-
-    Args:
-        server: Running llama-server.
-        samples: 16 kHz mono float32 samples (ideally a clip with laughter).
-
-    Returns:
-        ``{"accepted": bool, "reply" | "error": str}``.
-    """
-    msgs = [
-        {"role": "system", "content": QWEN_SYSTEM},
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_audio",
-                    "input_audio": {
-                        "data": base64.b64encode(wav_bytes(samples)).decode(),
-                        "format": "wav",
-                    },
-                },
-                {
-                    "type": "text",
-                    "text": "Is anyone laughing in this audio? Answer yes or "
-                    "no, then describe the vocal sounds in one "
-                    "sentence.",
-                },
-            ],
-        },
-    ]
-    try:
-        resp = server.chat(msgs, max_tokens=80, temperature=0.0)
-        return {"accepted": True, "reply": resp["choices"][0]["message"]["content"]}
-    except (LlamaServerError, KeyError) as err:
-        return {"accepted": False, "error": str(err)[:300]}

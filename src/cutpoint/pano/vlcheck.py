@@ -138,7 +138,7 @@ def parse_reply(content: str, thinking: str = "") -> dict[str, Any] | None:
 
 
 class VLChecker:
-    """One-frame requests to the local Ollama vision model (:class:`cutpoint.vision.VisionRater`)."""
+    """One-frame requests to the configured Vision role (:class:`cutpoint.vision.VisionRater`)."""
 
     def __init__(self, url: str | None = None, model: str | None = None) -> None:
         from cutpoint.vision import VisionRater  # noqa: PLC0415

@@ -64,7 +64,7 @@ Choosing the moments yourself:
 ## Rules
 
 - Never modify or delete the user's source videos.
-- Ask the user before `cutpoint setup` (about 8 GB of downloads), `cutpoint stage` (copies
+- Ask the user before `cutpoint setup` (about 2 GB of downloads), `cutpoint stage` (copies
   footage to local disk), and before `cutpoint clips --force` or `cutpoint edit --force` over a
   non-empty folder.
 - Transcription, `cutpoint analyze`, `cutpoint events` and export can take minutes to hours:

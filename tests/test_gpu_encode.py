@@ -182,7 +182,6 @@ def test_capability_report_keeps_vendor_presence_apart_from_usable_encoders(monk
     assert data["video_encoders"]["cpu"]["usable"] is True
     assert data["active_video_encoder"]["kind"] == "cpu"
     assert data["transcription"]["device"] == "cpu"
-    assert data["llama_cpp"]["setup_would_choose"] == ["vulkan", "cpu"]
 
 
 def test_capability_report_shows_a_forced_encoder_error_instead_of_failing(monkeypatch):

@@ -2,11 +2,17 @@
 
 Cutpoint is a command-line tool, so any agent that can run shell commands can drive it:
 Claude Code, Codex, Grok CLI, or a script. Analysis runs locally (ffmpeg, Whisper, optional
-Ollama and llama.cpp models), so the agent only issues commands and reads small JSON and text
-files. Local models are the default for every model feature, and nothing leaves the machine
-unless you opt in in the Models tab of `cutpoint ui`: the AI Chat with a hosted provider sends
-text (moment labels, transcript snippets, file names, times), and the Vision role with a
-subscription provider sends single frames after you allow it. Video files are never uploaded.
+Ollama models), so the agent only issues commands and reads small JSON and text
+files. Video files are never uploaded, and local models are the default for the model features. A
+hosted provider is used only after you give consent in the Models tab or AI Chat of `cutpoint ui`.
+AI Chat then sends only analysis results as text (moment labels, scores and detection signals,
+transcript snippets, file names, times). A hosted Vision role sends still frames, transcript
+excerpts, file names and times, and detected on-screen text (such as player names) and telemetry
+(for frame ratings and the `events` window descriptions), never the video file. Vision sends more
+data and carries more risk, so it has its own consent: agreeing for AI Chat never covers Vision,
+or the reverse. Both consents are versioned (`assistant-v2:<provider>@<host>` and
+`vision-v2:<provider>@<host>` in `config.json`): a consent saved by an earlier version, under a
+shorter description, no longer counts, so you are asked again. Ollama stays local.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install

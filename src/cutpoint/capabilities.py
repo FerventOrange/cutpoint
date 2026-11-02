@@ -96,16 +96,6 @@ def nvidia_present() -> bool:
     return gpu_vendors()["nvidia"] or _nvidia_driver_usable()
 
 
-def _llama(nvidia_driver: bool) -> dict[str, Any]:
-    from cutpoint.events import setup  # noqa: PLC0415
-
-    return {
-        "requested": setup.llama_backend_choice(),
-        "setup_would_choose": list(setup.llama_backends()),
-        "nvidia_driver_usable": nvidia_driver,
-    }
-
-
 def _torch(nvidia_driver: bool) -> dict[str, Any]:
     """Whether torch (``events`` extra) is installed, its CUDA build and whether it reaches the
     GPU; ``warning`` and ``fix`` when a usable NVIDIA driver is here but torch cannot use it."""
@@ -222,7 +212,6 @@ def report() -> dict[str, Any]:
         "video_encoders": encoders,
         "active_video_encoder": active,
         "transcription": _transcription(),
-        "llama_cpp": _llama(nvidia_driver),
         "torch": torch_info,
         "insta360_sdk": _insta360_sdk(vendors["nvidia"] or nvidia_driver),
     }
@@ -249,12 +238,6 @@ def format_report(data: dict[str, Any]) -> str:
     lines.append(f"Active video encoder: {chosen} (requested: {a['requested']})")
     t = data["transcription"]
     lines.append(f"Transcription: {t['engine']} on {t['device']}. {t['note']}")
-    ll = data["llama_cpp"]
-    lines.append(
-        f"llama.cpp setup backend: {' > '.join(ll['setup_would_choose'])} "
-        f"(requested: {ll['requested']}; usable NVIDIA driver: "
-        f"{'yes' if ll['nvidia_driver_usable'] else 'no'})"
-    )
     tc = data["torch"]
     if not tc["installed"]:
         lines.append(f"torch: not installed ({tc['fix']})")

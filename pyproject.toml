@@ -47,7 +47,7 @@ gpu = [
 # `cutpoint events` layers (PANNs audio, HUD OCR, CLIP visual, Silero voice).
 # Also needed by ski crash detection (`cutpoint crashes`, torch + open_clip for the visual check).
 # torch/torchvision come from the PyTorch cu126 index on Windows/Linux (see [tool.uv]).
-# Model weights and llama.cpp are downloaded separately: `cutpoint setup`.
+# Model weights are downloaded separately: `cutpoint setup`.
 events = [
     "torch==2.14.1",
     "torchvision==0.29.1",

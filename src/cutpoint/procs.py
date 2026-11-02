@@ -211,9 +211,9 @@ def kill_with_parent(proc: subprocess.Popen[Any]) -> None:
 def pdeathsig_hook() -> Callable[[], None] | None:
     """Linux ``preexec_fn`` that makes the child get SIGTERM when Python exits.
 
-    The Linux counterpart of :func:`kill_with_parent`: without either, a
-    crashed or killed driver leaves llama-server holding ~8 GB of VRAM. libc is loaded here,
-    in the parent, so the child only calls ``prctl`` between fork and exec.
+    The Linux counterpart of :func:`kill_with_parent`: without either, a crashed or killed
+    driver leaves the child running. libc is loaded here, in the parent, so the child only
+    calls ``prctl`` between fork and exec.
     None on other platforms or if libc is unavailable.
     """
     if not sys.platform.startswith("linux"):
