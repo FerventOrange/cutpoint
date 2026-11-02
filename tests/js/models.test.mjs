@@ -16,7 +16,10 @@ function settings(over = {}) {
       provider: 'ollama', model: '', url: '', custom: false, local: true, providers: PROVIDERS,
       keys: { openai: 'none' }, key_hosts: { openai: 'api.openai.com' },
     },
-    vision_assistant: { provider: 'ollama', model: '', url: '', custom: false, providers: PROVIDERS.filter((p) => p.name !== 'openai') },
+    vision_assistant: {
+      provider: 'ollama', model: '', url: '', custom: false, providers: PROVIDERS,
+      keys: { openai: 'none' }, key_hosts: { openai: 'api.openai.com' },
+    },
     vision: false, vision_model: 'qwen3.5:9b', vision_consent: null,
     ...over,
   };
@@ -65,7 +68,7 @@ test('opening the tab shows the saved providers; a subscription not logged in lo
   const m = await modelsTab(t, { logins: [{ provider: 'codex', title: 'Codex', logged_in: false }] });
   assert.equal(m.$('#chatRoleProvider').value, 'ollama');
   assert.deepEqual(m.optionValues('#chatRoleProvider'), ['ollama', 'codex', 'openai']);
-  assert.deepEqual(m.optionValues('#visionRoleProvider'), ['ollama', 'codex'], 'API-key providers cannot rate frames');
+  assert.deepEqual(m.optionValues('#visionRoleProvider'), ['ollama', 'codex', 'openai'], 'Vision offers the API-key providers too');
 
   await m.choose('#chatRoleProvider', 'codex');
   assert.match(m.$('#chatRoleModelsStatus').textContent, /Account not connected/);
@@ -279,4 +282,131 @@ test('logout drops that provider\'s cached models and refreshes the accounts', a
   assert.deepEqual(m.page.requests.find((r) => r.path === '/api/assistant/logout').body, { provider: 'codex' });
   assert.ok(!m.optionValues('#chatRoleModel').includes('gpt-5-mini'));
   assert.match(m.$('#chatRoleModelsStatus').textContent, /Account not connected/);
+});
+
+// ---- Vision through an API key (anthropic, openai, xai) ----
+
+const API_PROVIDERS = [
+  provider('ollama', { placeholder: 'qwen3.5:9b', models: ['qwen3.5:9b'] }),
+  provider('anthropic', { model_required: true, key_env: ['ANTHROPIC_API_KEY'] }),
+  provider('openai', { model_required: true, key_env: ['OPENAI_API_KEY'] }),
+  provider('xai', { model_required: true, key_env: ['XAI_API_KEY'] }),
+  provider('codex', { subscription: true, model_required: true }),
+];
+const OFFICIAL = { anthropic: 'api.anthropic.com', openai: 'api.openai.com', xai: 'api.x.ai' };
+const NO_KEYS = { anthropic: 'none', openai: 'none', xai: 'none' };
+
+function apiSettings({ visionProvider = 'ollama', consent = null, chatHosts = OFFICIAL } = {}) {
+  const role = (over) => ({ provider: 'ollama', model: '', url: '', custom: false, providers: API_PROVIDERS, keys: { ...NO_KEYS }, key_hosts: { ...OFFICIAL }, ...over });
+  return settings({
+    assistant: role({ local: true, key_hosts: { ...chatHosts } }),
+    vision_assistant: role({ provider: visionProvider }),
+    vision_consent: consent,
+  });
+}
+
+const apiTab = (t, opts = {}, tab = {}) => modelsTab(t, { st: apiSettings(opts), logins: [{ provider: 'codex', title: 'Codex', logged_in: true }], ...tab });
+
+test('Vision lists the three API providers and describes each one as billed to the user\'s key', async (t) => {
+  const m = await apiTab(t);
+  assert.deepEqual(m.optionValues('#visionRoleProvider'), ['ollama', 'anthropic', 'openai', 'xai', 'codex']);
+  for (const [name, title] of [['anthropic', /Anthropic API/], ['openai', /OpenAI API/], ['xai', /xAI API/]]) {
+    await m.choose('#visionRoleProvider', name);
+    const hint = m.$('#visionRoleProviderHint').textContent;
+    assert.match(hint, title);
+    assert.match(hint, /billed to your API key/);
+    assert.match(hint, /rates video frames/);
+  }
+});
+
+for (const [url, local] of [['http://127.0.0.1:1234/v1', true], ['https://openrouter.ai/api/v1', false]]) {
+  test(`a Vision role with a custom ${local ? 'local' : 'hosted'} URL names it, not the preset's host`, async (t) => {
+    const st = apiSettings();
+    st.vision_assistant = { ...st.vision_assistant, provider: 'openai', url, custom: true, local };
+    const m = await modelsTab(t, { st });
+    const hint = m.$('#visionRoleProviderHint').textContent;
+    assert.ok(hint.startsWith(`The provider and base URL set in config.json (${url}).`), hint);
+    assert.doesNotMatch(hint, /api\.openai\.com|billed/);
+    assert.equal(/It runs on this machine; no frames leave it\./.test(hint), local);
+    assert.equal(hint.split('Use at your own risk.').length - 1, local ? 0 : 1, 'the risk sentence at most once');
+    await m.choose('#visionRoleProvider', 'anthropic');
+    assert.match(m.$('#visionRoleProviderHint').textContent, /Anthropic API \(api\.anthropic\.com\)/, 'another provider: its preset text');
+  });
+}
+
+test('the Vision key field shows for an API provider and hides for Ollama and a subscription', async (t) => {
+  const m = await apiTab(t);
+  assert.equal(m.$('#visionRoleKey').hidden, true, 'Ollama');
+  for (const name of ['anthropic', 'openai', 'xai']) {
+    await m.choose('#visionRoleProvider', name);
+    assert.equal(m.$('#visionRoleKey').hidden, false, name);
+    assert.equal(m.$('#visionRoleKeyStatus').textContent, `API key for ${OFFICIAL[name]}: not set`);
+  }
+  await m.choose('#visionRoleProvider', 'codex');
+  assert.equal(m.$('#visionRoleKey').hidden, true, 'a subscription has no key');
+  await m.choose('#visionRoleProvider', 'ollama');
+  assert.equal(m.$('#visionRoleKey').hidden, true);
+});
+
+test('Vision key: empty is refused locally; Save and Clear post role vision and show the answer', async (t) => {
+  const answer = (where) => ({ keys: { ...NO_KEYS, openai: where }, key_hosts: { ...OFFICIAL } });
+  const m = await apiTab(t, {}, {
+    routes: {
+      'POST /api/assistant/key': () => answer('keyring'),
+      'POST /api/assistant/key/clear': () => answer(null),
+    },
+  });
+  const posts = () => m.page.requests.filter((r) => r.method === 'POST' && r.path.startsWith('/api/assistant/key'));
+  await m.choose('#visionRoleProvider', 'openai');
+  await m.click('#visionRoleKeySave');
+  assert.equal(m.$('#modelsError').textContent, 'Paste the API key first.');
+  assert.equal(posts().length, 0);
+
+  m.$('#visionRoleKeyInput').value = ' sk-test ';
+  await m.click('#visionRoleKeySave');
+  assert.deepEqual(posts()[0].body, { provider: 'openai', key: 'sk-test', role: 'vision' });
+  assert.equal(posts()[0].path, '/api/assistant/key');
+  assert.equal(m.$('#visionRoleKeyInput').value, '');
+  assert.match(m.$('#visionRoleKeyStatus').textContent, /api\.openai\.com: set \(keyring\)\. Saved in the system keyring/);
+
+  await m.click('#visionRoleKeyClear');
+  assert.deepEqual(posts()[1].body, { provider: 'openai', role: 'vision' });
+  assert.equal(posts()[1].path, '/api/assistant/key/clear');
+  assert.match(m.$('#visionRoleKeyStatus').textContent, /not set\. Removed from the keyring/);
+  m.page.assertNoUnhandled();
+});
+
+for (const [chatHost, shared] of [['api.openai.com', true], ['openrouter.ai', false]]) {
+  test(`a key saved for Vision ${shared ? 'updates' : 'leaves'} the Chat key status when the Chat host is ${chatHost}`, async (t) => {
+    const answer = { keys: { ...NO_KEYS, openai: 'keyring' }, key_hosts: { ...OFFICIAL } };
+    const m = await apiTab(t, { chatHosts: { ...OFFICIAL, openai: chatHost } }, { routes: { 'POST /api/assistant/key': () => answer } });
+    await m.choose('#chatRoleProvider', 'openai');
+    assert.match(m.$('#chatRoleKeyStatus').textContent, /not set/);
+    await m.choose('#visionRoleProvider', 'openai');
+    m.$('#visionRoleKeyInput').value = 'sk-test';
+    await m.click('#visionRoleKeySave');
+    assert.equal(/set \(keyring\)/.test(m.$('#chatRoleKeyStatus').textContent), shared);
+  });
+}
+
+test('the Chat key saved for a shared host shows in the Vision key status too', async (t) => {
+  const answer = { keys: { ...NO_KEYS, openai: 'keyring' }, key_hosts: { ...OFFICIAL } };
+  const m = await apiTab(t, {}, { routes: { 'POST /api/assistant/key': () => answer } });
+  await m.choose('#visionRoleProvider', 'openai');
+  await m.choose('#chatRoleProvider', 'openai');
+  m.$('#chatRoleKeyInput').value = 'sk-test';
+  await m.click('#chatRoleKeySave');
+  assert.match(m.$('#visionRoleKeyStatus').textContent, /set \(keyring\)/);
+});
+
+test('vision consent: the box shows for a saved API provider and granting posts its vision-v2 key', async (t) => {
+  const key = 'vision-v2:openai@api.openai.com';
+  const m = await apiTab(t, {
+    visionProvider: 'openai', consent: { key, needed: true, host: 'api.openai.com', missing_key: null },
+  }, { routes: { 'POST /api/assistant/consent': () => ({ consent: { key, needed: false, host: 'api.openai.com' } }) } });
+  assert.equal(m.$('#visionConsent').hidden, false);
+  assert.match(m.$('#visionConsentTitle').textContent, /Send video frames to api\.openai\.com\?/);
+  await m.click('#visionConsentOk');
+  assert.deepEqual(m.page.requests.find((r) => r.path === '/api/assistant/consent').body, { role: 'vision', key });
+  assert.equal(m.$('#visionConsent').hidden, true);
 });

@@ -643,7 +643,15 @@ def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) 
     v_view = data["vision_assistant"]
     assert v_view["provider"] == "ollama"
     provider_names = [p["name"] for p in v_view["providers"]]
-    assert provider_names == ["ollama", "claude-code", "codex", "antigravity"]
+    assert provider_names == [
+        "ollama",
+        "anthropic",
+        "openai",
+        "xai",
+        "claude-code",
+        "codex",
+        "antigravity",
+    ]
 
     # PUT vision_assistant
     put_body = {
@@ -662,7 +670,7 @@ def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) 
     assert out["assistant"]["provider"] == "ollama"
 
     # Rejects unsupported provider for vision
-    bad_res = client.put("/api/settings", json={"vision_assistant": {"provider": "openai"}})
+    bad_res = client.put("/api/settings", json={"vision_assistant": {"provider": "bogus"}})
     assert bad_res.status_code == 400
     assert "vision_assistant.provider must be one of" in bad_res.json()["detail"]
 
@@ -673,7 +681,7 @@ def test_models_route_role_parameter(client: TestClient, monkeypatch) -> None:
     assert bad_role.status_code == 400
 
     # Vision role rejects non-vision provider
-    bad_p = client.get("/api/assistant/models?role=vision&provider=openai")
+    bad_p = client.get("/api/assistant/models?role=vision&provider=bogus")
     assert bad_p.status_code == 400
     assert "provider must be custom or one of" in bad_p.json()["detail"]
 
@@ -896,3 +904,140 @@ def test_malformed_consent_does_not_500(client: TestClient, home: Path) -> None:
     assert res.status_code == 200
     data = res.json()
     assert data["vision_consent"]["needed"] is False
+
+
+# -- Vision through an API key (anthropic, openai, xai) ----------------------------------------
+
+API_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com", "xai": "api.x.ai"}
+
+
+@pytest.mark.parametrize("name", list(API_HOSTS))
+def test_the_vision_consent_of_an_api_provider_has_its_own_key(
+    client: TestClient, home: Path, name: str
+) -> None:
+    host = API_HOSTS[name]
+    set_config(
+        home, vision_assistant={"provider": name, "consent": [f"assistant-v2:{name}@{host}"]}
+    )
+    got = client.get("/api/settings").json()["vision_consent"]
+    assert got["needed"] is True and got["key"] == f"vision-v2:{name}@{host}"
+    assert got["host"] == host and got["missing_kind"] == "key"
+    set_config(home, vision_assistant={"provider": name, "consent": [got["key"]]})
+    assert client.get("/api/settings").json()["vision_consent"]["needed"] is False
+
+
+def test_ollama_needs_no_vision_consent(client: TestClient, home: Path) -> None:
+    set_config(home, vision_assistant={"provider": "ollama"})
+    got = client.get("/api/settings").json()["vision_consent"]
+    assert got["needed"] is False and got["key"] is None and got["missing_key"] is None
+
+
+@pytest.mark.parametrize("name", ["anthropic", "openai", "xai"])
+def test_settings_accept_an_api_provider_for_vision(
+    client: TestClient, home: Path, name: str
+) -> None:
+    res = client.put("/api/settings", json={"vision_assistant": {"provider": name, "model": "m"}})
+    assert res.status_code == 200, res.text
+    assert res.json()["vision_assistant"]["provider"] == name
+    assert config.load_config_data()["vision_assistant"]["provider"] == name
+    assert res.json()["assistant"]["provider"] == "ollama"  # the chat assistant is untouched
+
+
+def test_the_vision_model_list_needs_a_key_then_the_vision_consent(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    providers.clear_model_cache()
+    asked: list[str] = []
+
+    def get(url, **kw):
+        asked.append(url)
+        return _Resp({"data": [{"id": "gpt-x"}]})
+
+    monkeypatch.setattr(providers.requests, "get", get)
+    url = "/api/assistant/models?role=vision&provider=openai"
+    host = API_HOSTS["openai"]
+    set_config(home, vision_assistant={"provider": "openai", "consent": []})
+    got = client.get(url).json()
+    assert got["state"] == "key_needed" and "OPENAI_API_KEY" in got["message"]
+
+    monkeypatch.setenv("OPENAI_API_KEY", SECRET)
+    assert client.get(url).json()["state"] == "consent_needed"
+    # the chat consent does not count, for either role's list
+    set_config(
+        home,
+        assistant={"provider": "openai", "consent": [f"assistant-v2:openai@{host}"]},
+        vision_assistant={"provider": "openai", "consent": []},
+    )
+    assert client.get(url).json()["state"] == "consent_needed"
+    assert asked == []  # nothing went to the host so far
+
+    set_config(
+        home, vision_assistant={"provider": "openai", "consent": [f"vision-v2:openai@{host}"]}
+    )
+    got = client.get(url)
+    assert got.json() == {
+        "state": "ok",
+        "models": [{"id": "gpt-x", "name": "gpt-x"}],
+        "message": None,
+    }
+    assert len(asked) == 1 and host in asked[0] and SECRET not in got.text
+
+
+def test_a_vision_key_is_saved_for_the_vision_section_s_host(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    ring = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: ring)
+    # chat: OpenAI itself; Vision: a custom OpenAI-compatible host
+    set_config(
+        home,
+        assistant={"provider": "openai"},
+        vision_assistant={"provider": "openai", "url": "https://llm.example.com/v1"},
+    )
+    res = client.post(
+        "/api/assistant/key", json={"provider": "openai", "key": SECRET, "role": "vision"}
+    )
+    assert res.status_code == 200, res.text
+    assert ring.saved == {("cutpoint", "openai@llm.example.com"): SECRET}
+    assert res.json()["key_hosts"]["openai"] == "llm.example.com"
+    assert res.json()["keys"]["openai"] == "keyring" and SECRET not in res.text
+    view = client.get("/api/settings").json()
+    assert view["vision_assistant"]["keys"]["openai"] == "keyring"
+    assert view["assistant"]["keys"]["openai"] is None  # another host: not the chat's key
+
+    res = client.post("/api/assistant/key/clear", json={"provider": "openai", "role": "vision"})
+    assert res.status_code == 200 and res.json()["keys"]["openai"] is None
+    assert ring.saved == {}
+
+
+def test_a_vision_key_for_an_official_host_serves_the_chat_too(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    ring = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: ring)
+    set_config(home, vision_assistant={"provider": "anthropic"})
+    res = client.post(
+        "/api/assistant/key", json={"provider": "anthropic", "key": SECRET, "role": "vision"}
+    )
+    assert res.status_code == 200 and ring.saved == {("cutpoint", "anthropic"): SECRET}
+    assert client.get("/api/settings").json()["assistant"]["keys"]["anthropic"] == "keyring"
+
+
+def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    ring = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: ring)
+    set_config(
+        home,
+        assistant={"provider": "openai", "url": "https://chat.example.com/v1"},
+        vision_assistant={"provider": "openai", "url": "https://vision.example.com/v1"},
+    )
+    for route in ("/api/assistant/key", "/api/assistant/key/clear"):
+        bad = client.post(route, json={"provider": "openai", "key": SECRET, "role": "admin"})
+        assert bad.status_code == 400 and "role" in bad.json()["detail"]
+    assert ring.saved == {}
+    client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    assert ring.saved == {("cutpoint", "openai@chat.example.com"): SECRET}  # no role: the chat
+    client.post("/api/assistant/key/clear", json={"provider": "openai", "role": "assistant"})
+    assert ring.saved == {}
