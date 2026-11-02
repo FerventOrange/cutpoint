@@ -11,8 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import envelope, needs_ffmpeg
-from cutpoint import assemble, cli, clips, ffmpeg_utils, sources, srt
-from cutpoint.ffmpeg_utils import staging_path
+from cutpoint import assemble, cli, clips, folders, sources, srt
 from cutpoint.pano import stitch
 
 
@@ -235,7 +234,7 @@ def test_temporary_clips_remove_the_360_paths_and_staging_folders(tmp_path):
     with assemble.temporary_clips(project) as tmp:
         (tmp / "001_a.mp4").parent.mkdir()
         (tmp / "001_a.mp4").write_bytes(b"clip")
-        staging_path(tmp).mkdir()
+        folders.staging_path(tmp).mkdir()
         paths = project / "pano_paths" / tmp.name  # PanoExporter.paths_dir of the export
         paths.mkdir(parents=True)
         (paths / "001_a.json").write_text("{}", encoding="utf-8")
@@ -251,7 +250,7 @@ def test_temporary_clips_sweep_what_a_hard_killed_run_left(tmp_path):
     old = project / ".assemble-tmp-old"
     old.mkdir(parents=True)
     (old / "001_a.mp4").write_bytes(b"clip")
-    staging_path(old).mkdir()
+    folders.staging_path(old).mkdir()
     (project / "pano_paths" / old.name).mkdir(parents=True)
     (project / "..assemble-tmp-old.cutpoint-lock").write_text("{}", encoding="utf-8")
     (project / "final.mp4").write_bytes(b"kept")
@@ -270,7 +269,7 @@ def test_temporary_clips_keep_the_folder_of_a_run_still_going(tmp_path):
     project = tmp_path / "p"
     busy = project / ".assemble-tmp-busy"
     busy.mkdir(parents=True)
-    with ffmpeg_utils.swap_lock(project / ".assemble-tmp-busy.run"):  # the other run's lock
+    with folders.swap_lock(project / ".assemble-tmp-busy.run"):  # the other run's lock
         with assemble.temporary_clips(project):
             pass
         assert busy.is_dir()
@@ -283,14 +282,14 @@ def test_a_sweep_that_cannot_take_a_lock_does_not_fail_the_run(tmp_path, monkeyp
     project = tmp_path / "p"
     old = project / ".assemble-tmp-old"
     old.mkdir(parents=True)
-    real = assemble.swap_lock
+    real = folders.swap_lock
 
     def swap_lock(dst):
         if dst.name == ".assemble-tmp-old.run":
             raise PermissionError(13, "denied", str(dst))
         return real(dst)
 
-    monkeypatch.setattr(assemble, "swap_lock", swap_lock)
+    monkeypatch.setattr(folders, "swap_lock", swap_lock)
     with assemble.temporary_clips(project) as tmp:
         tmp.mkdir()
     assert not tmp.exists() and old.is_dir()  # kept, with a WARNING

@@ -20,10 +20,10 @@ from typing import Any
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from cutpoint import folders
 from cutpoint.assistant import keys
 from cutpoint.assistant.private_files import private_directory, private_file
 from cutpoint.errors import FolderBusyError
-from cutpoint.ffmpeg_utils import lock_path, swap_lock
 
 _PREFIX = "proxy-credentials-v1"
 _CHUNK = 1000
@@ -116,8 +116,8 @@ class CredentialStore:
         deadline = time.monotonic() + 5 if wait else 0
         while True:
             try:
-                lock = lock_path(self.root / "credentials")
-                with swap_lock(self.root / "credentials"):
+                lock = folders.lock_path(self.root / "credentials")
+                with folders.swap_lock(self.root / "credentials"):
                     if lock is not None and lock.exists():
                         private_file(lock)
                     yield

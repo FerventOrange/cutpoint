@@ -85,7 +85,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from cutpoint import cache, paths, procs, progress
+from cutpoint import cache, folders, paths, procs, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import keys as ai_keys
@@ -119,7 +119,6 @@ from cutpoint.ffmpeg_utils import (
     audio_mix_filter,
     child_scope,
     grab_images,
-    part_path,
     probe,
     video_encoder,
 )
@@ -1983,7 +1982,7 @@ class Media:
 # spans what the path was planned for: the moment and up to 10 s on either side.
 PANO_PREVIEW_W, PANO_PREVIEW_H = 640, 360
 PANO_PREVIEW_NAME = re.compile(r"[A-Za-z0-9_]{1,40}-[0-9a-f]{16}")
-# a preview, its temporary (ffmpeg_utils.part_path) or the sendcmd file render_segment leaves
+# a preview, its temporary (folders.part_path) or the sendcmd file render_segment leaves
 PANO_PREVIEW_FILE = re.compile(r"\.?([A-Za-z0-9_]{1,40}-[0-9a-f]{16})(?:\.part)?\.(?:mp4|cmd)")
 
 
@@ -2373,7 +2372,7 @@ class PanoPreviews:
                 out = p / UI_DIR / "pano" / f"{name}.mp4"
                 if self.file(p, name) is None:
                     _own(p, f"{UI_DIR}/pano/{out.name}")  # never rendered through a link
-                    _own(p, f"{UI_DIR}/pano/{part_path(out).name}")
+                    _own(p, f"{UI_DIR}/pano/{folders.part_path(out).name}")
                     _own(p, f"{UI_DIR}/pano/{name}.cmd")  # render_segment writes it beside it
                     src = pano_project.RenderSource(
                         "proxy", (job.clip.lrv,), "dfisheye", False, True, "lrv proxy"
@@ -2409,7 +2408,8 @@ class PanoPreviews:
                 logger.exception("director preview of %s failed", what)
         finally:
             if out is not None:
-                for f in (part_path(out), out.with_suffix(".cmd")):  # .cmd: only `360 qa` reads it
+                # .cmd: only `360 qa` reads it
+                for f in (folders.part_path(out), out.with_suffix(".cmd")):
                     with contextlib.suppress(OSError):
                         f.unlink(missing_ok=True)
         if failed is not None:

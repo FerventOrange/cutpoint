@@ -12,11 +12,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from cutpoint import procs
+from cutpoint import folders, procs
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.proxy_credentials import CredentialStore
 from cutpoint.errors import FolderBusyError
-from cutpoint.ffmpeg_utils import swap_lock
 
 _TERMINATE_TIMEOUT = 3.0
 _KILL_TIMEOUT = 2.0
@@ -116,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     failure = False
     prepare_attempted = False
     try:
-        with swap_lock(args.root / "daemon.run"):
+        with folders.swap_lock(args.root / "daemon.run"):
             if parent_gone() or stopping.is_set():
                 return 0
             prepare_attempted = True

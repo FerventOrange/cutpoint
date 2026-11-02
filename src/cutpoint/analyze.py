@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, features, jsonout, progress, scorer
+from cutpoint import cache, features, folders, jsonout, progress, scorer
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError
@@ -51,7 +51,6 @@ from cutpoint.ffmpeg_utils import (
     ffprobe_json,
     gpu_chain,
     momentary_loudness,
-    output_dir,
     probe,
     read_window_ok,
     run_progress,
@@ -1599,7 +1598,7 @@ def _analyze(
         )
     logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
     with (
-        output_dir(out_dir),  # a failed run leaves no empty project folder behind
+        folders.output_dir(out_dir),  # a failed run leaves no empty project folder behind
         cache.hold_outputs(out_dir, HELD_OUTPUTS) as held,
         # HUD OCR in the background while the GPU steps run; stopped before the folder goes
         _ocr_prefetch(style, sources, skip, out_dir, layers) as prefetch,

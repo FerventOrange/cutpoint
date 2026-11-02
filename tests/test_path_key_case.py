@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info, write
-from cutpoint import clips, config, ffmpeg_utils, reset_state, sources, srt
+from cutpoint import clips, config, folders, reset_state, sources, srt
 
 WORDS = [{"start": 101.0, "end": 101.4, "word": "hello"}]
 
@@ -146,7 +146,7 @@ def test_swap_in_moves_a_case_variant_name_once(tmp_path, case_insensitive):
     new = tmp_path / "staged"
     write(new / "001_a.mp4", "new")
 
-    ffmpeg_utils.swap_in(new, dst, ["001_A.mp4"])
+    folders.swap_in(new, dst, ["001_A.mp4"])
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging
     assert [p.name for p in dst.iterdir()] == ["001_a.mp4"]
@@ -165,7 +165,7 @@ def test_swap_in_without_folding_moves_it_twice_and_fails(tmp_path, case_insensi
     write(new / "001_a.mp4", "new")
 
     with pytest.raises(FileNotFoundError):
-        ffmpeg_utils.swap_in(new, dst, ["001_A.mp4"])
+        folders.swap_in(new, dst, ["001_A.mp4"])
     # put back (under the listed spelling), so no data is lost, but the run failed
     assert [p.read_text(encoding="utf-8") for p in dst.iterdir()] == ["old"]
 

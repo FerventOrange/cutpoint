@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cli
+from cutpoint import cli, folders
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.assistant.proxy_credentials import CredentialStore
 
@@ -599,7 +599,7 @@ def test_live_daemon_lock_refuses_before_secret_materialization(temp_home: Path)
     root = cliproxy.cliproxy_dir()
     root.mkdir(parents=True)
     with (
-        cliproxy.swap_lock(root / "daemon.run"),
+        folders.swap_lock(root / "daemon.run"),
         pytest.raises(cliproxy.ProxyError, match="another cutpoint proxy is already running"),
     ):
         cliproxy.run()

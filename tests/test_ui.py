@@ -30,7 +30,19 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
-from cutpoint import cache, capabilities, cli, config, edit, encode, errors, ffmpeg_utils, procs, ui
+from cutpoint import (
+    cache,
+    capabilities,
+    cli,
+    config,
+    edit,
+    encode,
+    errors,
+    ffmpeg_utils,
+    folders,
+    procs,
+    ui,
+)
 from cutpoint.assistant import session as ai_session
 from cutpoint.pano import candidates as pano_candidates
 from cutpoint.pano import director as pano_director
@@ -762,7 +774,7 @@ class DirectorPreviews:
             )
             self.renders[-1].update(kw)
             (kw["work_dir"] / f"{out.stem}.cmd").write_text("# cmd\n", encoding="utf-8")
-            with ffmpeg_utils.atomic_output(out) as part:
+            with folders.atomic_output(out) as part:
                 part.write_bytes(b"partial")
                 kw["progress"](0.5)
                 self.started.set()

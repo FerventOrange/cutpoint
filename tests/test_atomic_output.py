@@ -18,7 +18,18 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import hard_link, link_file, media_info, messages, remap, run_json, write
-from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning, procs
+from cutpoint import (
+    assemble,
+    cache,
+    cli,
+    clips,
+    encode,
+    extend,
+    ffmpeg_utils,
+    folders,
+    planning,
+    procs,
+)
 from cutpoint.errors import FFmpegError, FolderBusyError
 
 
@@ -246,11 +257,11 @@ def test_locked_final_video_names_the_file(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "replace", replace)
     with (
         pytest.raises(PermissionError, match="open in another program") as exc,
-        ffmpeg_utils.atomic_output(out) as part,
+        folders.atomic_output(out) as part,
     ):
         part.write_bytes(b"x")
     assert str(out) in str(exc.value)
-    assert not ffmpeg_utils.part_path(out).exists()
+    assert not folders.part_path(out).exists()
 
 
 @pytest.mark.parametrize("winerror", [None, 2])
@@ -267,13 +278,13 @@ def test_non_lock_permission_error_is_reraised_unchanged(monkeypatch, tmp_path, 
     monkeypatch.setattr(Path, "replace", replace)
     with (
         pytest.raises(PermissionError) as exc,
-        ffmpeg_utils.atomic_output(out) as part,
+        folders.atomic_output(out) as part,
     ):
         part.write_bytes(b"x")
     assert "another program" not in str(exc.value)
     assert exc.value.errno == 13
     assert exc.value.strerror == "denied"
-    assert not ffmpeg_utils.part_path(out).exists()
+    assert not folders.part_path(out).exists()
 
 
 # --- all-or-nothing replace of a clips folder (clips --force, in-place extend --force)
@@ -503,7 +514,7 @@ def test_force_refuses_a_root_or_mount_before_exporting(
     else:
 
         def rename(self, target):
-            if self.name == ffmpeg_utils._SWAP_PROBE:
+            if self.name == folders._SWAP_PROBE:
                 raise OSError(errno.EXDEV, "Invalid cross-device link")
             return real_rename(self, target)
 
@@ -550,7 +561,7 @@ def test_swap_target_that_resolves_to_a_nameless_root(
     monkeypatch.setattr(Path, "resolve", lambda self, *a, **kw: root if self == dst else self)
     monkeypatch.setattr(Path, "is_mount", lambda self: is_mount and self == dst)
     with pytest.raises(ValueError, match=message) as err:
-        ffmpeg_utils.check_swap_target(dst)
+        folders.check_swap_target(dst)
     assert str(dst) in str(err.value)
 
 
@@ -573,7 +584,7 @@ def test_clips_into_an_empty_root_or_mount_point_exports_directly(monkeypatch, h
         real_rename = Path.rename
 
         def rename(self, target):
-            if self.name == ffmpeg_utils._SWAP_PROBE:
+            if self.name == folders._SWAP_PROBE:
                 raise OSError(errno.EXDEV, "Invalid cross-device link")
             return real_rename(self, target)
 
@@ -742,12 +753,12 @@ def test_swap_in_moves_a_file_named_in_two_cases_once(tmp_path, monkeypatch):
     write(dst / "001_a.srt", "old")
     if not (dst / "001_A.SRT").exists():
         pytest.skip("case-sensitive file system")
-    monkeypatch.setattr(ffmpeg_utils, "path_key", lambda p, _folder=None: p.lower())
+    monkeypatch.setattr(folders, "path_key", lambda p, _folder=None: p.lower())
     write(dst / "001_a.mp4", "old")
     new = tmp_path / "staged"
     write(new / "001_a.mp4", "new")
 
-    ffmpeg_utils.swap_in(new, dst, ["001_A.SRT", "001_a.srt"])
+    folders.swap_in(new, dst, ["001_A.SRT", "001_a.srt"])
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["clips"]  # no backup or staging left
     assert sorted(p.name for p in dst.iterdir()) == ["001_a.mp4"]
@@ -764,12 +775,12 @@ def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacemen
     write(dst / "001_a.mp4", "old")
     if not (dst / "001_A.MP4").exists():
         pytest.skip("case-sensitive file system")
-    monkeypatch.setattr(ffmpeg_utils, "path_key", lambda p, _folder=None: p.lower())
+    monkeypatch.setattr(folders, "path_key", lambda p, _folder=None: p.lower())
     write(dst / "manifest.json", "old manifest")
     new = tmp_path / "staged"
     write(new / "001_a.mp4", "new")
     write(new / "manifest.json", "new manifest")
-    real = ffmpeg_utils.retry_locked
+    real = cache.retry_locked
 
     def locked_manifest(op, path, action, locked=None):
         moving_in = getattr(getattr(op, "func", None), "__self__", None) == new / path.name
@@ -777,10 +788,10 @@ def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacemen
             raise PermissionError("locked")
         return real(op, path, action, locked)
 
-    monkeypatch.setattr(ffmpeg_utils, "retry_locked", locked_manifest)
+    monkeypatch.setattr(cache, "retry_locked", locked_manifest)
 
     with pytest.raises(PermissionError):
-        ffmpeg_utils.swap_in(new, dst, ["001_A.mp4", "manifest.json"])
+        folders.swap_in(new, dst, ["001_A.mp4", "manifest.json"])
 
     assert (dst / "001_a.mp4").read_text(encoding="utf-8") == "old"
     assert (dst / "manifest.json").read_text(encoding="utf-8") == "old manifest"
@@ -1100,7 +1111,7 @@ def test_lock_hint_mentions_read_only_only_for_access_denied(
         raise _locked(winerror)
 
     with pytest.raises(PermissionError, match="open in another program") as exc:
-        ffmpeg_utils.retry_locked(op, tmp_path / "x.json", "write")
+        cache.retry_locked(op, tmp_path / "x.json", "write")
     assert ("read-only" in str(exc.value)) is read_only_hint
 
 
@@ -1279,7 +1290,7 @@ def test_assemble_of_a_folder_whose_parent_is_read_only_runs_without_a_lock(
         _failing_lock_open(monkeypatch, OSError(errno.EROFS, "Read-only file system"))
     else:  # the lock cannot be created and neither can any other file there
         _failing_lock_open(monkeypatch, PermissionError(errno.EACCES, "Permission denied"))
-        monkeypatch.setattr(ffmpeg_utils, "_dir_writable", lambda _folder: False)
+        monkeypatch.setattr(folders, "_dir_writable", lambda _folder: False)
     monkeypatch.setattr(assemble, "_assemble", lambda *_a: project / "final.mp4")
     caplog.set_level("INFO")
     assert cli.main(["assemble", str(project / "clips")]) == 0
@@ -1331,7 +1342,7 @@ def test_stale_lock_check_passes_the_locks_mtime(monkeypatch, tmp_path):
     lock.write_bytes(_lock_record(4321))
     seen = []
     monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: seen.append(not_after))
-    ffmpeg_utils._lock_stale(lock, json.loads(lock.read_bytes()))
+    folders._lock_stale(lock, json.loads(lock.read_bytes()))
     assert seen == [lock.stat().st_mtime]
 
 
@@ -1351,9 +1362,9 @@ def test_stale_lock_replaced_meanwhile_by_a_live_one_is_put_back(monkeypatch, ho
     live = _lock_record(1111)
     lock.write_bytes(live)
     old = _lock_record(4321)
-    monkeypatch.setattr(ffmpeg_utils, "_read_lock", lambda _p: (old, json.loads(old)))
+    monkeypatch.setattr(folders, "_read_lock", lambda _p: (old, json.loads(old)))
     monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: False)
-    with pytest.raises(FolderBusyError), ffmpeg_utils.swap_lock(project / "clips"):
+    with pytest.raises(FolderBusyError), folders.swap_lock(project / "clips"):
         pytest.fail("locked")
     assert lock.read_bytes() == live
     assert list(project.glob("*.stale")) == []
@@ -1558,7 +1569,7 @@ def test_failed_direct_export_into_an_empty_mount_keeps_the_clips_already_writte
     real_rename = Path.rename
 
     def rename(self, target):
-        if self.name == ffmpeg_utils._SWAP_PROBE:
+        if self.name == folders._SWAP_PROBE:
             raise OSError(errno.EXDEV, "Invalid cross-device link")
         return real_rename(self, target)
 
@@ -1583,7 +1594,7 @@ def test_failed_direct_export_into_an_empty_mount_keeps_the_clips_already_writte
 def test_retry_locked_predicate_picks_what_is_retried_and_reraises_the_last_unchanged(
     monkeypatch, tmp_path
 ):
-    errs = [_locked(32) for _ in range(ffmpeg_utils.REPLACE_ATTEMPTS)]
+    errs = [_locked(32) for _ in range(cache.REPLACE_ATTEMPTS)]
     calls = []
 
     def op():
@@ -1591,9 +1602,9 @@ def test_retry_locked_predicate_picks_what_is_retried_and_reraises_the_last_unch
         raise errs[len(calls) - 1]
 
     with pytest.raises(OSError) as exc:
-        ffmpeg_utils.retry_locked(op, tmp_path / "x", "remove", lambda e: True)
+        cache.retry_locked(op, tmp_path / "x", "remove", lambda e: True)
     assert exc.value is errs[-1]  # not reworded, though winerror 32 would be
-    assert len(calls) == ffmpeg_utils.REPLACE_ATTEMPTS
+    assert len(calls) == cache.REPLACE_ATTEMPTS
 
 
 @pytest.mark.usefixtures("no_sleep")
@@ -1605,7 +1616,7 @@ def test_retry_locked_predicate_rejecting_an_error_does_not_retry_it(monkeypatch
         raise PermissionError(13, "denied")  # retried by default, rejected by this predicate
 
     with pytest.raises(PermissionError, match="denied"):
-        ffmpeg_utils.retry_locked(op, tmp_path / "x", "remove", lambda e: False)
+        cache.retry_locked(op, tmp_path / "x", "remove", lambda e: False)
     assert len(calls) == 1
 
 
@@ -1638,7 +1649,7 @@ def test_remove_leftover_messages(monkeypatch, tmp_path, error, parts):
     monkeypatch.setattr(shutil, "rmtree", rmtree)
     expected_type = PermissionError if isinstance(error, PermissionError) else OSError
     with pytest.raises(expected_type) as exc:
-        ffmpeg_utils._remove_leftover(tmp_path, "why")
+        folders._remove_leftover(tmp_path, "why")
     assert type(exc.value) is expected_type
     for part in parts:
         assert part.format(p=tmp_path) in str(exc.value)

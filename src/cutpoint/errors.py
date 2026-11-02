@@ -16,4 +16,5 @@ class EncoderUnavailableError(FFmpegError):
 
 
 class FolderBusyError(RuntimeError):
-    """Another cutpoint run holds the lock of the folder (see :func:`swap_lock`)."""
+    """Another cutpoint run holds the lock of the folder (see
+    :func:`cutpoint.folders.swap_lock`)."""

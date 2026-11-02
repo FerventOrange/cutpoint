@@ -43,8 +43,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
-from cutpoint.ffmpeg_utils import output_dir
+from cutpoint import cache, folders
 from cutpoint.pano import geometry as G
 from cutpoint.pano import qa as Q
 from cutpoint.utils import natural_key
@@ -401,7 +400,7 @@ def run_paths_qa(
     if not items:
         raise FileNotFoundError(f"{qa_dir}: no director paths (manifest.json or *.json paths)")
     out_dir = qa_dir.with_name(qa_dir.name + "_paths_qa")
-    with output_dir(out_dir):  # a failed run leaves no empty folder behind
+    with folders.output_dir(out_dir):  # a failed run leaves no empty folder behind
         t0 = time.perf_counter()
         clips, skipped = [], []
         views: dict[str, Any] = {}

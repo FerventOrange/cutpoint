@@ -1179,9 +1179,9 @@ def run_qa(
     th: QAThresholds | None = None,
 ) -> dict[str, Any]:
     """Rendered-frame QA of every clip in ``qa_dir``; writes ``<qa_dir>_qa/``."""
+    from cutpoint import folders  # noqa: PLC0415
     from cutpoint.errors import FFmpegError  # noqa: PLC0415
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
-    from cutpoint.ffmpeg_utils import output_dir  # noqa: PLC0415
 
     # normalise "." / ".." (no name for <dir>_qa) without turning mapped drives into UNC
     qa_dir = Path(os.path.abspath(qa_dir))  # noqa: PTH100
@@ -1190,7 +1190,7 @@ def run_qa(
     if not items:
         raise FileNotFoundError(f"{qa_dir}: no rendered clips (manifest.json or NNN_x.mp4+.json)")
     out_dir = qa_dir.with_name(qa_dir.name + "_qa")
-    with output_dir(out_dir):  # a failed run leaves no empty folder behind
+    with folders.output_dir(out_dir):  # a failed run leaves no empty folder behind
         _clear_sheets(out_dir)
         t0 = time.perf_counter()
         models = VisualModels()

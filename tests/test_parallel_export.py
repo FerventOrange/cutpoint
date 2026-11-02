@@ -18,9 +18,9 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import media_info, set_config, write
-from cutpoint import audio_tracks, clips, config, ffmpeg_utils, paths, procs, sources, srt
+from cutpoint import audio_tracks, clips, config, ffmpeg_utils, folders, paths, procs, sources, srt
 from cutpoint.clips import ClipPlan
-from cutpoint.encode import OutputFormat, atomic_output
+from cutpoint.encode import OutputFormat
 from cutpoint.errors import EncoderUnavailableError, FFmpegError
 from cutpoint.ffmpeg_utils import ChildScope, VideoEncoder, child_scope
 from cutpoint.tail import TailResult
@@ -147,7 +147,7 @@ def test_first_failure_is_raised_starts_no_more_and_kills_the_encodes_in_flight(
     seen: dict[str, BaseException] = {}
 
     def in_flight(out):
-        with atomic_output(out) as part:
+        with folders.atomic_output(out) as part:
             part.write_bytes(b"half")
             try:
                 ffmpeg()
@@ -196,7 +196,7 @@ def interruptible_encodes(monkeypatch, kids):
     seen: dict[str, BaseException] = {}
 
     def encode(out):
-        with atomic_output(out) as part:
+        with folders.atomic_output(out) as part:
             part.write_bytes(b"half")
             try:
                 ffmpeg()
