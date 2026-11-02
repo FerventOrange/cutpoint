@@ -17,10 +17,6 @@ from cutpoint import state
 from cutpoint.hub import quiet_hub_handler
 
 OMNI_HF_REPO = "ggml-org/Qwen2.5-Omni-7B-GGUF"
-AESTHETIC_URL = (
-    "https://github.com/christophschuhmann/improved-aesthetic-predictor/"
-    "raw/main/sac%2Blogos%2Bava1-l14-linearMSE.pth"
-)
 SILERO_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
 # Hugging Face repo open_clip loads ViT-L-14 "openai" from, and torchvision's
 # Faster R-CNN v2 COCO checkpoint name (both downloaded by ``setup --only visual``).
@@ -124,8 +120,8 @@ def detector_weights() -> Path:
 
 
 def aesthetic_head() -> Path:
-    """LAION improved-aesthetic-predictor head."""
-    return _paths.models_dir() / "aesthetic" / "sac+logos+ava1-l14-linearMSE.pth"
+    """LAION improved-aesthetic-predictor head (numpy ``.npz``)."""
+    return _paths.models_dir() / "aesthetic" / "sac+logos+ava1-l14-linearMSE.npz"
 
 
 def silero_vad() -> Path:

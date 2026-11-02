@@ -28,7 +28,9 @@ uvx ruff@0.17.1 format --check src tests
 ```
 
 `uv run pytest` is the full suite as CI runs it, but it also syncs the `full` group; for a
-CI-like run without torch use `uv run --no-group full pytest` (or set `UV_NO_GROUP=full`). It deselects only tests marked `hardware`. For a
+CI-like run without torch use `uv run --no-group full pytest` (or set `UV_NO_GROUP=full`).
+Both runs deselect only tests marked `hardware`. CI also syncs `--group ocr-test` (CPU OCR for
+the slow discovery end-to-end test). For a
 quicker local run, skip the slow and ffmpeg tests (about a third of the time):
 
 ```powershell
@@ -90,11 +92,19 @@ ffmpeg skip themselves when it is not on `PATH`.
 - Never commit the Insta360 SDK or paste its output or documentation into issues, pull requests
   or docs. See [docs/insta360-sdk.md](docs/insta360-sdk.md).
 
+## Agent docs
+
+`AGENTS.md` ships in the wheel and is what `cutpoint guide` prints. The Claude Code skill,
+`src/cutpoint/skill/SKILL.md`, is its short form: when a command, option or rule in `AGENTS.md`
+changes, update the skill too. `tests/test_skill.py` checks that every command and option the
+skill names exists.
+
 ## Releasing
 
 1. Bump `version` in `pyproject.toml` and add a `CHANGELOG.md` entry for it.
-2. Merge the pull request.
-3. Create a GitHub release with tag `X.Y.Z` (no `v` prefix) and the CHANGELOG notes.
+2. Set `CUTPOINT_VERSION_DEFAULT` to the new version in `install.sh` and `install.ps1`.
+3. Merge the pull request.
+4. Create a GitHub release with tag `X.Y.Z` (no `v` prefix) and the CHANGELOG notes.
 
 Publishing the release runs `.github/workflows/release.yml`, which builds the package, checks
 that its version equals the tag, and publishes it to PyPI with Trusted Publishing.

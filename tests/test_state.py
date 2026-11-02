@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import requests
 
@@ -72,8 +73,12 @@ def _fill_filters(tmp: Path, mp: pytest.MonkeyPatch) -> None:
 def _fill_aesthetic(tmp: Path, mp: pytest.MonkeyPatch) -> None:
     from cutpoint.events import visual  # noqa: PLC0415
 
-    mp.setitem(sys.modules, "torch", SimpleNamespace(load=lambda *a, **k: {}))
-    visual._aesthetic_layers(write(tmp / "head.pth"))
+    mp.setattr(visual, "_AESTHETIC_DIMS", (2, 1))
+    head = tmp / "head.npz"
+    np.savez(
+        head, **{"l.0.weight": np.ones((1, 2), np.float32), "l.0.bias": np.ones(1, np.float32)}
+    )
+    visual._aesthetic_layers(head)
 
 
 def _fill_torch_home(tmp: Path, mp: pytest.MonkeyPatch) -> None:

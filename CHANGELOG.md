@@ -22,28 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for subscription providers).
   Without a `vision_assistant` section, frame rating uses Ollama. Activity detection in
   `profile`, `crashes` and the crash step of `analyze` always uses Ollama.
-- `cutpoint proxy` command runs the authenticated CLIProxyAPI daemon in the foreground for Claude
-  Code, Codex and Antigravity subscriptions (Use at your own risk). Available in both full and lite
-  installs. First run lazily downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to
-  `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on loopback `127.0.0.1:18317` (customizable with
-  `--port` or `CUTPOINT_CLIPROXY_PORT`, binary with `CUTPOINT_CLIPROXY_BINARY`). Startup prefers
-  `--port`, then the environment, then the saved port; clients use the owned daemon's saved
-  runtime port even when their environment differs. Subscription
-  credentials use Cutpoint's existing keyring integration with a native OS backend; file-based
-  backends and fallback after a native-store failure are rejected. An independent cross-platform
-  supervisor restores private working files under `<CUTPOINT_HOME>/cliproxy/auths/`, checkpoints
-  refreshes and deletions, and stops/reaps the daemon before cleanup, including after the
-  foreground CLI is killed. Concurrent credential removal or incomplete JSON/UTF-8 writes defer
-  the whole periodic snapshot without stopping the daemon or committing a partial account map.
-  Final keyring-write failures preserve the latest data in an
-  authenticated encrypted recovery journal with its key only in the OS keyring. Whole-host or
-  supervisor loss and failed recovery writes can still leave private files; daemon writes cannot
-  be atomic with keyring persistence. POSIX directories/files use `0700`/`0600`; Windows replaces
-  inherited grants with verified protected user-only DACLs and normalizes legitimate token-default
-  ownership to the current user; foreign owners are rejected. HTTPS authenticates the actual local
-  listener before credentials or request bodies are sent, closing the port-handoff impersonation
-  gap. TLS identity and local client/management keys rotate on each explicit start; configuration
-  and these local secrets remain private files. Prompt cloaking and prompt/error logging are disabled.
+- `cutpoint proxy` runs the authenticated CLIProxyAPI daemon in the foreground for Claude Code,
+  Codex and Antigravity subscriptions (Use at your own risk), in full and lite installs. The first
+  run downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to
+  `<CUTPOINT_HOME>/tools/cliproxy/` and listens on `127.0.0.1:18317` over a per-start TLS identity
+  (`--port`, `CUTPOINT_CLIPROXY_PORT`; `CUTPOINT_CLIPROXY_BINARY` for another binary).
+  Credentials need a native OS keyring (no file fallback); a supervisor removes the private
+  working files after the daemon stops, and keyring-write failures go to an encrypted recovery
+  journal. Details: [docs/commands.md#proxy](docs/commands.md#proxy).
 - `cutpoint login` and `cutpoint logout` for Claude Code, Codex and Antigravity subscriptions via
   `cutpoint proxy` browser-callback flows, and a Connected accounts section in the Models tab.
   `claude-code`, `codex` and `antigravity` are assistant providers that route through the proxy daemon
@@ -67,7 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their reviewed order (`assemble <clips_dir> --format`). Normalize loudness, Burn in captions,
   Captions model and Assembly audio fade are off with a timeline, and the server refuses
   loudness and captions with one; the timeline is listed as the export's final without a video.
-
 - 360 preview API (#517): `candidates.preview_path(project, source, start, end, vertical=)`
   gives the path to preview a moment with: the one `360 analyze` cached (`cached`), one planned
   now as `clips` would (`planned`, with the reason), or, when the director cannot plan, a constant
@@ -133,14 +118,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `install.ps1`: offers to install Ollama when it is missing (full mode only; default No), with
   `winget install --id Ollama.Ollama -e` or the download link when winget is missing or fails; it
   waits for the server (starting `ollama serve` hidden only if the Ollama app has not), then offers
-  the `qwen3-vl:8b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
+  the `qwen3.5:9b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
   `-Yes` answers the prompt. The summary reports the Ollama result. Lite mode has no Ollama: it
   skips the step, and `-Lite -Ollama` prints a warning and installs nothing.
 - `install.sh`: offers to install Ollama when it is missing (full mode only; default No; Linux
   uses Ollama's official script and needs sudo, macOS uses `brew install ollama` and
   `brew services start ollama`), waits for the server (it starts `ollama serve` itself, logging to
   `~/.local/state/cutpoint/`, only on macOS if brew fails or on Linux without `ollama.service`),
-  then offers the `qwen3-vl:8b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
+  then offers the `qwen3.5:9b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
   `CUTPOINT_OLLAMA=0`; `--yes` answers the prompt. The summary reports the Ollama result. Lite
   mode has no Ollama: it skips the step with no prompt, and `--lite --ollama` prints a warning and
   installs nothing (the UI assistant can use a third-party provider instead).
@@ -197,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The LAION aesthetic head of the visual layer is now a numpy `.npz`
+  (`models/aesthetic/sac+logos+ava1-l14-linearMSE.npz`, same float32 values), downloaded from
+  the cutpoint-models Hugging Face repo with a GitHub release as the second mirror. It loads
+  without pickle, the same way in full and lite. Run `cutpoint setup --only visual` once to
+  get it; that also removes the old `.pth`. Until then the visual layer reports the head as
+  missing. The torch-free pickle reader for the old `.pth` is gone.
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or
@@ -311,6 +302,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** `cutpoint 360 check` is gone; commands that still call it now stop with exit
   code 2. Use `360 qa <clips_dir>`: its overview sheet shows the same frames with the director
   target, yaw and pitch.
+- **BREAKING:** `assemble` (default `--format mp4`) no longer writes `final.fcpxml` and
+  `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 
 ### Fixed
 
@@ -1203,3 +1196,9 @@ First public release.
 Planned and not yet available: an agent skill, `cutpoint edit` (one-command editing),
 `cutpoint init` (first-run setup), JSON output on stdout for every command, SRT transcripts,
 and activity profiles for layers other than crash detection.
+
+[Unreleased]: https://github.com/FerventOrange/cutpoint/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/FerventOrange/cutpoint/compare/0.3.0...0.4.0
+[0.3.0]: https://github.com/FerventOrange/cutpoint/compare/0.2.0...0.3.0
+[0.2.0]: https://github.com/FerventOrange/cutpoint/compare/0.1.0...0.2.0
+[0.1.0]: https://github.com/FerventOrange/cutpoint/releases/tag/0.1.0
