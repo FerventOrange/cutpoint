@@ -3,7 +3,7 @@
 ## Ollama is not reachable
 
 `analyze` uses Ollama only for the optional `--vision` rating, which is off unless you pass
-`--vision` (or turn it on in Settings in `cutpoint ui`, which sets `"vision": true` in
+`--vision` (or turn it on in the Models tab in `cutpoint ui`, which sets `"vision": true` in
 `config.json`; see [configuration](../configuration.md#vision)). If the server or model is not available
 then, it logs a WARNING (a `vision_unavailable` warning with `--json`) and continues without the
 rating; if some of the top candidates have cached ratings, it uses those instead. The local AI

@@ -1016,3 +1016,116 @@ def test_a_missing_key_is_named_with_where_to_set_it() -> None:
     assert providers.missing_key(OpenAIProvider("http://127.0.0.1:8080", "m", 0, None)) is None
     assert providers.missing_key(AnthropicProvider("", "m", 0, KEY)) is None
     assert providers.missing_key(OllamaProvider("http://10.0.0.2:11434", "m", 0)) is None
+
+
+def test_codex_list_models_queries_cliproxy(monkeypatch) -> None:
+    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
+    monkeypatch.setattr(
+        providers.cliproxy,
+        "list_models",
+        lambda p: [
+            {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"},
+            {"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"},
+        ],
+    )
+    p = providers.SubscriptionProvider("codex", "", "", 0)
+    models = p.list_models()
+    assert models == [
+        {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"},
+        {"id": "gpt-5.6-sol", "name": "gpt-5.6-sol"},
+    ]
+
+
+def test_codex_list_models_honest_errors_no_fake_fallback(monkeypatch) -> None:
+    def fake_err(p):
+        raise providers.cliproxy.ProxyError("proxy refused login (401)")
+
+    monkeypatch.setattr(providers.cliproxy, "list_models", fake_err)
+    p = providers.SubscriptionProvider("codex", "", "", 0)
+    with pytest.raises(ProviderError, match="proxy refused login"):
+        p.list_models()
+
+    def not_logged_in(p):
+        raise providers.cliproxy.ProxyError("not logged in; run cutpoint login codex")
+
+    monkeypatch.setattr(providers.cliproxy, "list_models", not_logged_in)
+    with pytest.raises(ProviderError, match="not logged in"):
+        p.list_models()
+
+
+def test_claude_code_list_models_queries_cliproxy(monkeypatch) -> None:
+    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
+    monkeypatch.setattr(
+        providers.cliproxy,
+        "list_models",
+        lambda p: [{"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"}],
+    )
+    p = providers.SubscriptionProvider("claude-code", "", "", 0)
+    models = p.list_models()
+    assert models == [{"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"}]
+
+
+def test_model_list_subscription_login_requires_project_consent(
+    monkeypatch,
+) -> None:
+    providers.clear_model_cache()
+    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
+    monkeypatch.setattr(
+        providers.cliproxy,
+        "list_models",
+        lambda p: [{"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"}],
+    )
+    codex = providers.SubscriptionProvider("codex", "", "", 0)
+    # Subscription provider without consent requires consent
+    assert providers.model_list(codex, consent=())["state"] == "consent_needed"
+
+    # With consent, model list loads
+    res = providers.model_list(codex, consent=(providers.consent_key(codex),))
+    assert res["state"] == "ok"
+    assert res["models"] == [{"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"}]
+
+    # Keyed/custom hosted provider still enforces project data consent boundary
+    openai = providers.OpenAIProvider("", "m", 0, KEY)
+    assert providers.model_list(openai, consent=())["state"] == "consent_needed"
+
+    # Missing login returns key_needed, not bypassed
+    monkeypatch.setattr(
+        providers.cliproxy,
+        "status",
+        lambda p: {"logged_in": False, "error": "not logged in to Codex subscription"},
+    )
+    assert (
+        providers.model_list(codex, consent=(providers.consent_key(codex),), refresh=True)["state"]
+        == "key_needed"
+    )
+
+
+def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:
+    providers.clear_model_cache()
+    call_count = 0
+
+    def fake_list(p):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [{"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol"}]
+        return [{"id": "gpt-6.1-terra", "name": "GPT-6.1 Terra"}]
+
+    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
+    monkeypatch.setattr(providers.cliproxy, "list_models", fake_list)
+    codex = providers.SubscriptionProvider("codex", "", "", 0)
+    res1 = providers.model_list(codex, consent=(providers.consent_key(codex),))
+    assert res1["models"][0]["id"] == "gpt-6.1-sol"
+    assert call_count == 1
+
+    # Cached: no second request
+    res2 = providers.model_list(codex, consent=(providers.consent_key(codex),))
+    assert res2["models"][0]["id"] == "gpt-6.1-sol"
+    assert call_count == 1
+
+    # Invalidate cache for codex
+    providers.clear_model_cache("codex")
+    res3 = providers.model_list(codex, consent=(providers.consent_key(codex),))
+    assert res3["models"][0]["id"] == "gpt-6.1-terra"
+    assert call_count == 2
+    providers.clear_model_cache()

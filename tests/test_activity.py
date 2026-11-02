@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cutpoint import activity, paths
+from conftest import set_config
+from cutpoint import activity, paths, vision
 
 
 @pytest.fixture
@@ -160,3 +161,16 @@ def test_synthesis_validates_and_caps():
     assert not {"huh", "foot down", "down the trail", "rider", "b*"} & set(w)
     assert "game" not in prof and "junk" not in prof  # LLM output: schema keys only
     assert activity.synthesize("x", None, _stub({"incident": {"pos": []}}), []) is None
+
+
+def test_default_ask_stays_local_with_hosted_vision_role(home, monkeypatch):
+    set_config(home, vision_assistant={"provider": "codex", "consent": []})
+    monkeypatch.setattr(
+        vision,
+        "AssistantVision",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("hosted vision used")),
+    )
+    monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
+    ask, _ = activity.default_ask()
+    rater = getattr(ask, "__self__", None)
+    assert rater is not None and rater.via is None and rater.provider_name == "ollama"

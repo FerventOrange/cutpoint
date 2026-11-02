@@ -24,6 +24,7 @@ dependencies = [
     "fastapi>=0.116",  # `cutpoint ui`: local browser workspace
     "uvicorn>=0.30",
     "keyring>=25",  # `cutpoint ui`: save an AI Chat API key in the system keyring (small; Linux adds SecretStorage)
+    "cryptography>=46",  # local proxy TLS identity and encrypted credential recovery
     "telemetry-parser>=0.3.0",  # action-cam telemetry (GoPro GPS/IMU) and the 360 (Insta360) module
 ]
 

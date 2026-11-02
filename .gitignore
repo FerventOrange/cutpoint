@@ -14,16 +14,16 @@ htmlcov/
 cache/
 models/
 tools/llama.cpp/
+# CLIProxyAPI runtime: subscription credentials, local keys, and downloaded binaries
+cliproxy/
 stage/
 projects/
 # raw OCR cache (OCR text of the footage): normally under cache/, ignored anywhere
 ocr-raw-*/
 
-# Local, personal config and learned styles (old repo-root layout; now in CUTPOINT_HOME,
-# keys documented in config.example.json)
-config.json
-styles_learned/
-EDIT_NOTES.md
+# Local, personal config (old repo-root layout; now in CUTPOINT_HOME, keys documented in
+# config.example.json)
+/config.json
 
 # Media
 *.mp4

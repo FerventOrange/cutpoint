@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import cutpoint
 import cutpoint.analyze
-from cutpoint import cli
+from cutpoint import cli, hub, mix
+from cutpoint.assistant import cliproxy
 
 
 @pytest.mark.parametrize(
@@ -216,10 +219,13 @@ def test_failed_analyze_leaves_no_new_project_folder(home, tmp_path, monkeypatch
     assert not projects.exists() or list(projects.iterdir()) == []
 
 
-def test_huggingface_warning_is_printed_once():
+def test_huggingface_warning_is_printed_once(monkeypatch):
     pytest.importorskip("huggingface_hub.utils.logging")
-    assert cli.main(["paths"]) == 0
-    assert logging.getLogger("huggingface_hub").handlers == []
+    hf_logger = logging.getLogger("huggingface_hub")
+    hf_logger.addHandler(logging.StreamHandler())  # as huggingface_hub adds on import
+    monkeypatch.setattr(hub, "_hub_handler_removed", False)
+    hub.quiet_hub_handler()  # before whisper loads
+    assert hf_logger.handlers == []
 
 
 @pytest.mark.parametrize("target", ["0", "-5"])
@@ -233,3 +239,211 @@ def test_director_on_unscanned_project_creates_no_folder(home, caplog):
     assert cli.main(["360", "director", "nosuchproj"]) == 1
     assert not (home / "projects" / "nosuchproj").exists()
     assert "cutpoint 360 scan" in caplog.text
+
+
+def test_proxy_command_invokes_cliproxy_run(monkeypatch, caplog):
+    ran = []
+    monkeypatch.setattr(cliproxy, "run", lambda port=None: ran.append(port))
+    with caplog.at_level(logging.WARNING):
+        assert cli.main(["proxy", "--port", "9999"]) == 0
+    assert ran == [9999]
+    assert "Use at your own risk" in caplog.text
+
+
+def test_proxy_command_exits_1_on_proxy_error(monkeypatch, caplog):
+    def fail(port=None):
+        raise cliproxy.ProxyError("port in use")
+
+    monkeypatch.setattr(cliproxy, "run", fail)
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["proxy"])
+        assert exc.value.code == 1
+    assert "proxy failed: port in use" in caplog.text
+
+
+def test_login_cli_command(monkeypatch, caplog):
+    cancelled = []
+    monkeypatch.setattr(
+        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
+    )
+    monkeypatch.setattr(cliproxy, "poll_login", lambda s: {"state": "done", "error": None})
+    monkeypatch.setattr(
+        cliproxy, "status", lambda p: {"logged_in": True, "email": "user@example.com"}
+    )
+    monkeypatch.setattr(cliproxy, "cancel_login", lambda s: cancelled.append(s))
+    with caplog.at_level(logging.INFO):
+        assert cli.main(["login", "codex", "--no-browser"]) == 0
+    assert "Use at your own risk" in caplog.text
+    assert "open this URL to log in: https://auth.example/test" in caplog.text
+    assert "logged in to" in caplog.text
+    assert cancelled == []
+
+
+def test_login_cli_poll_error_cancels_session(monkeypatch, caplog):
+    class OAuthFixture:
+        def __init__(self) -> None:
+            self.sessions: dict[str, str] = {}
+
+        def start_login(self, provider: str) -> dict[str, str]:
+            state = f"state-{provider}"
+            self.sessions[state] = "pending"
+            return {"url": f"https://auth.example/{state}", "state": state}
+
+        def cancel_login(self, state: str) -> None:
+            if state in self.sessions:
+                self.sessions[state] = "cancelled"
+
+        def complete_browser_callback(self, state: str) -> bool:
+            if self.sessions.get(state) != "pending":
+                return False
+            self.sessions[state] = "done"
+            return True
+
+    fixture = OAuthFixture()
+    monkeypatch.setattr(cliproxy, "start_login", fixture.start_login)
+    monkeypatch.setattr(
+        cliproxy,
+        "poll_login",
+        lambda s: {"state": "error", "error": "transport error"},
+    )
+    monkeypatch.setattr(cliproxy, "cancel_login", fixture.cancel_login)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["login", "codex", "--no-browser"])
+        assert exc.value.code == 1
+    assert "login failed: transport error" in caplog.text
+    assert fixture.sessions["state-codex"] == "cancelled"
+    assert fixture.complete_browser_callback("state-codex") is False
+
+
+def test_login_cli_cancellation_failure_preserves_primary_exit(monkeypatch, caplog):
+    def failing_cancel(state: str) -> None:
+        raise cliproxy.ProxyError("daemon socket closed")
+
+    monkeypatch.setattr(
+        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
+    )
+    monkeypatch.setattr(
+        cliproxy, "poll_login", lambda s: {"state": "error", "error": "transport failed"}
+    )
+    monkeypatch.setattr(cliproxy, "cancel_login", failing_cancel)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["login", "codex", "--no-browser"])
+        assert exc.value.code == 1
+    assert "login failed: transport failed" in caplog.text
+
+
+def test_login_antigravity_confirmation(monkeypatch, caplog):
+    monkeypatch.setattr(
+        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
+    )
+    monkeypatch.setattr(cliproxy, "poll_login", lambda s: {"state": "done", "error": None})
+    monkeypatch.setattr(
+        cliproxy, "status", lambda p: {"logged_in": True, "email": "user@example.com"}
+    )
+
+    # Aborted when user inputs 'n'
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["login", "antigravity", "--no-browser"])
+        assert exc.value.code == 1
+    assert "login aborted" in caplog.text
+
+    # Succeeds when user inputs 'y'
+    caplog.clear()
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    with caplog.at_level(logging.INFO):
+        assert cli.main(["login", "antigravity", "--no-browser"]) == 0
+    assert "logged in to" in caplog.text
+
+    # Ctrl+C at the confirmation uses the CLI's interrupt exit, not rejection.
+    def interrupt(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupt)
+    assert cli.main(["login", "antigravity", "--no-browser"]) == 130
+
+
+def test_logout_cli_command(monkeypatch, caplog):
+    logged_out = []
+    monkeypatch.setattr(cliproxy, "logout", lambda p: logged_out.append(p))
+    with caplog.at_level(logging.INFO):
+        assert cli.main(["logout", "codex"]) == 0
+    assert logged_out == ["codex"]
+    assert "logged out of" in caplog.text
+
+
+def test_logout_cli_command_error(monkeypatch, caplog):
+    def fail(provider):
+        raise cliproxy.ProxyError("daemon offline")
+
+    monkeypatch.setattr(cliproxy, "logout", fail)
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["logout", "codex"])
+        assert exc.value.code == 1
+    assert "logout failed: daemon offline" in caplog.text
+
+
+@pytest.mark.slow
+def test_import_cli_skips_action_cam_and_proxy_modules():
+    """``import cutpoint.cli`` (every ``cutpoint`` start) loads them only when a command runs."""
+    lazy = (
+        "cutpoint.activity",
+        "cutpoint.crash",
+        "cutpoint.mix",
+        "cutpoint.refmatch",
+        "cutpoint.assistant.cliproxy",
+        "huggingface_hub",
+    )
+    code = f"import sys, cutpoint.cli; print([m for m in {lazy!r} if m in sys.modules])"
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert proc.stdout.strip() == "[]"
+
+
+def test_parser_constants_match_their_modules():
+    assert cli.MIX_EXCLUDE_FILE == mix.EXCLUDE_FILE
+    assert cli.PROXY_PROVIDERS == cliproxy.PROVIDERS
+
+
+def test_assemble_project_options_come_from_its_project_group():
+    args = cli.build_parser().parse_args(["assemble", "clips"])
+    assert list(args.project_defaults) == [
+        "top", "ids", "segments", "max_total", "order", "vertical", "size", "force", "crop",
+        "smart_tail", "tail_min", "tail_max", "event_tails", "event_window", "extend",
+        "extend_start", "extend_end", "speech_aware", "speech_max_extend", "speech_max_lead",
+        "pano_source", "pano_cmd_every", "lut", "lut_strength", "color", "color_strength",
+    ]  # fmt: skip
+
+
+def test_login_timeout_cancels_session(monkeypatch, caplog):
+    cancelled = []
+    clock = iter(range(0, 1000, 100))  # every monotonic call: 100 s later
+    monkeypatch.setattr(cliproxy.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(cliproxy.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
+    )
+    monkeypatch.setattr(cliproxy, "poll_login", lambda s: {"state": "pending", "error": None})
+    monkeypatch.setattr(cliproxy, "cancel_login", cancelled.append)
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        cli.main(["login", "codex", "--no-browser"])
+    assert exc.value.code == 1
+    assert "login timed out" in caplog.text
+    assert cancelled == ["s1"]
+
+
+def test_login_start_failure_exits_1(monkeypatch, caplog):
+    def fail(provider):
+        raise cliproxy.ProxyError("daemon offline")
+
+    monkeypatch.setattr(cliproxy, "start_login", fail)
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        cli.main(["login", "codex", "--no-browser"])
+    assert exc.value.code == 1
+    assert "could not start login for codex: daemon offline" in caplog.text

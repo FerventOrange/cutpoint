@@ -449,19 +449,6 @@ def explain(
     return done("stale_view" if stale else "no_projected_box")
 
 
-def cause_of(
-    r: dict[str, Any],
-    p: dict[str, Any] | None,
-    th: Q.QAThresholds,
-    src_t: float | None,
-    segment: list[float] | None,
-    dx: float | None,
-) -> str:
-    """The cause (one of :data:`CAUSES`) of a frame only the rendered QA flags ``edge_cut``
-    (:func:`explain`)."""
-    return explain(r, p, th, src_t, segment, dx)["cause"]
-
-
 def compare_clip(
     rc: dict[str, Any],
     pc: dict[str, Any],

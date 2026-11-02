@@ -8,7 +8,8 @@
       config.json     settings (see config.example.json in the repository)
       cache/          per-source analysis cache (audio, transcripts, scenes, ...)
       models/         PANNs, CLIP, detector, aesthetic head, Silero VAD, LLMs
-      tools/          llama.cpp
+      tools/          llama.cpp, CLIProxyAPI binary (``tools/cliproxy/``)
+      cliproxy/       CLIProxyAPI keys, config, and subscription auth records
       stage/          local copies of sources on slow/network storage (``cutpoint stage``)
       styles/         learned style presets (``cutpoint refmatch`` / ``fit``)
       presets/        HUD presets written by region discovery (``cutpoint events``)

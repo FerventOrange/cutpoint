@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
+  `vision_assistant` section, same keys, any of Ollama, `claude-code`, `codex`, `antigravity`), each
+  with its own provider, model and, for hosted ones, permission. It replaces the AI assistant
+  settings. With `cutpoint proxy` running, it lists models advertised by the proxy for each
+  account after consent for the role. Anthropic API and OpenAI API (API key) are separate
+  from Claude Code subscription and Codex subscription (login). Hosted API and subscription
+  providers display "Use at your own risk"; Ollama/Local does not.
+  Save models sits at the bottom of model selection under the Vision role, directly above Connected
+  accounts (which lists login status without model counts). Vision frames go to a subscription provider
+  only after "Allow vision requests" in the tab (`vision_assistant.consent`; custom URLs are rejected
+  for subscription providers).
+  Without a `vision_assistant` section, frame rating uses Ollama. Activity detection in
+  `profile`, `crashes` and the crash step of `analyze` always uses Ollama.
+- `cutpoint proxy` runs the authenticated CLIProxyAPI daemon in the foreground for Claude Code,
+  Codex and Antigravity subscriptions (Use at your own risk), in full and lite installs. The first
+  run downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to
+  `<CUTPOINT_HOME>/tools/cliproxy/` and listens on `127.0.0.1:18317` over a per-start TLS identity
+  (`--port`, `CUTPOINT_CLIPROXY_PORT`; `CUTPOINT_CLIPROXY_BINARY` for another binary).
+  Credentials need a native OS keyring (no file fallback); a supervisor removes the private
+  working files after the daemon stops, and keyring-write failures go to an encrypted recovery
+  journal. Details: [docs/commands.md#proxy](docs/commands.md#proxy).
+- `cutpoint login` and `cutpoint logout` for Claude Code, Codex and Antigravity subscriptions via
+  `cutpoint proxy` browser-callback flows, and a Connected accounts section in the Models tab.
+  `claude-code`, `codex` and `antigravity` are assistant providers that route through the proxy daemon
+  instead of direct API keys. Interrupts exit `130`, including at the login confirmation prompt.
 - `assemble <project>` makes the final video without keeping clips (#519): given a project
   (with `highlights.json`, or `--segments`) instead of a clips folder, it picks the moments as
   `clips` does (`--top`, `--ids`, `--segments`, `--max-total`, `--order`) and exports them with
@@ -28,7 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their reviewed order (`assemble <clips_dir> --format`). Normalize loudness, Burn in captions,
   Captions model and Assembly audio fade are off with a timeline, and the server refuses
   loudness and captions with one; the timeline is listed as the export's final without a video.
-
 - 360 preview API (#517): `candidates.preview_path(project, source, start, end, vertical=)`
   gives the path to preview a moment with: the one `360 analyze` cached (`cached`), one planned
   now as `clips` would (`planned`, with the reason), or, when the director cannot plan, a constant
@@ -94,14 +118,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `install.ps1`: offers to install Ollama when it is missing (full mode only; default No), with
   `winget install --id Ollama.Ollama -e` or the download link when winget is missing or fails; it
   waits for the server (starting `ollama serve` hidden only if the Ollama app has not), then offers
-  the `qwen3-vl:8b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
+  the `qwen3.5:9b` pull. New `-Ollama` / `CUTPOINT_OLLAMA=1` and `-NoOllama` / `CUTPOINT_OLLAMA=0`;
   `-Yes` answers the prompt. The summary reports the Ollama result. Lite mode has no Ollama: it
   skips the step, and `-Lite -Ollama` prints a warning and installs nothing.
 - `install.sh`: offers to install Ollama when it is missing (full mode only; default No; Linux
   uses Ollama's official script and needs sudo, macOS uses `brew install ollama` and
   `brew services start ollama`), waits for the server (it starts `ollama serve` itself, logging to
   `~/.local/state/cutpoint/`, only on macOS if brew fails or on Linux without `ollama.service`),
-  then offers the `qwen3-vl:8b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
+  then offers the `qwen3.5:9b` pull. New `--ollama` / `CUTPOINT_OLLAMA=1` and `--no-ollama` /
   `CUTPOINT_OLLAMA=0`; `--yes` answers the prompt. The summary reports the Ollama result. Lite
   mode has no Ollama: it skips the step with no prompt, and `--lite --ollama` prints a warning and
   installs nothing (the UI assistant can use a third-party provider instead).
@@ -114,9 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path when the span, kind, settings, layers and planning code are unchanged, else plans it as
   before and logs why (`director path re-planned (span differs from 360 analyze)`, or
   `(9:16 not planned by 360 analyze)` under `--vertical`). A failed path logs a WARNING and the
-  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag).
-  `cutpoint.pano.candidates.candidate_path(project, id)` reads a candidate's path and
-  diagnostics for previews (#517).
+  analysis goes on; `--json` adds `candidate_paths` (counts and candidates per flag) (#517).
 - `360 qa <dir> --compare RENDERED PATHS` (#11): joins the rendered and the `--paths` `qa.json`
   of `<dir>` (either order) per clip and frame and writes `edge_gap.json` next to the rendered
   one: the frames each QA flags `edge_cut`, and a cause for every frame only the rendered QA
@@ -187,6 +209,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gone: tails are planned and checked like the moment, so their frames get the full cause
   chain, and each rendered-only frame says `in_selected` (whether it lies in the moment
   picked), counted per clip and for the edit as `outside_selected` (`edge_gap.json` version 4).
+- The LAION aesthetic head of the visual layer is now a numpy `.npz`
+  (`models/aesthetic/sac+logos+ava1-l14-linearMSE.npz`, same float32 values), downloaded from
+  the cutpoint-models Hugging Face repo with a GitHub release as the second mirror. It loads
+  without pickle, the same way in full and lite. Run `cutpoint setup --only visual` once to
+  get it; that also removes the old `.pth`. Until then the visual layer reports the head as
+  missing. The torch-free pickle reader for the old `.pth` is gone.
 - The default vision model is `qwen3.5:9b` (about 6.6 GB) instead of `qwen3-vl:8b`, for
   `analyze --vision`, `360 director --vl-check` and building activity profiles; the installers
   pull it. `qwen3-vl:8b` still works with `--ollama-model qwen3-vl:8b` or
@@ -266,6 +294,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cutpoint ui` now reads it. `360 scan` on its own still adds `scan_s` to the file.
 - `cutpoint ui`: New project sources and the Settings projects folder take paths from `~`
   (`~/Videos/a.mp4`, `"~\Videos"`): they are stored expanded to the home folder.
+- The built-in Rainbow Six interpretation of HUD presets is gone: a `"builtin": true` key in a
+  preset is ignored and the preset is read like any other. The OCR layer reads each source's HUD
+  once more on its next run (the OCR and raw OCR cache keys changed), and the `audio` layer runs
+  PANNs once more, as it no longer reports the unused `Gunfire` and `Explosion` events. The
+  `events --json` discovery `preset` is never `built-in` any more. `--audio-thr` and
+  `--audio-floor` no longer accept `Gunfire` or `Explosion`. Events of the removed feeds no
+  longer score: a `REVERSE FRIENDLY FIRE` banner is neither a teamkill nor a payoff banner
+  (no points, no clip-tail payoff, the VLM seed of any other banner), and kill rows that
+  mark only the player are no player kills.
+
+### Removed
+
+- **BREAKING:** `cutpoint setup --torch-cuda` is gone. It did nothing since torch comes from the
+  `events` extra; commands that still pass it now stop with exit code 2. Drop the flag.
+- **BREAKING:** `cutpoint events --preset-scope package` is gone. It was an old alias of `user`
+  (the default); commands that still pass it now stop with exit code 2. Use `--preset-scope user`
+  or leave the option out.
+- **BREAKING:** `assemble` (default `--format mp4`) no longer writes `final.fcpxml` and
+  `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 
 ### Fixed
 
@@ -1158,3 +1205,9 @@ First public release.
 Planned and not yet available: an agent skill, `cutpoint edit` (one-command editing),
 `cutpoint init` (first-run setup), JSON output on stdout for every command, SRT transcripts,
 and activity profiles for layers other than crash detection.
+
+[Unreleased]: https://github.com/FerventOrange/cutpoint/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/FerventOrange/cutpoint/compare/0.3.0...0.4.0
+[0.3.0]: https://github.com/FerventOrange/cutpoint/compare/0.2.0...0.3.0
+[0.2.0]: https://github.com/FerventOrange/cutpoint/compare/0.1.0...0.2.0
+[0.1.0]: https://github.com/FerventOrange/cutpoint/releases/tag/0.1.0

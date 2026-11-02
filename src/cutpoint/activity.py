@@ -407,7 +407,7 @@ def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
 
 def default_ask() -> tuple[Ask | None, str | None]:
     """The local Ollama vision model as an :data:`Ask` (``(None, None)`` if unavailable)."""
-    rater = VisionRater()
+    rater = VisionRater(local_only=True)
     return (rater.ask_json, rater.model) if rater.available() else (None, None)
 
 

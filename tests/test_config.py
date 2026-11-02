@@ -311,3 +311,27 @@ def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):
     assert len(errors) == 1
     assert str(path) in errors[0].getMessage()
     assert "not UTF-8 text" in errors[0].getMessage()
+
+
+def test_vision_assistant_config_independent_parsing(home):
+    set_config(
+        home,
+        assistant={"provider": "anthropic", "model": "claude-opus-5-5"},
+        vision_assistant={
+            "provider": "codex",
+            "model": "gpt-custom",
+            "consent": ["codex@chatgpt.com"],
+        },
+    )
+    cfg = config.get_config()
+    assert cfg.assistant.provider == "anthropic"
+    assert cfg.assistant.model == "claude-opus-5-5"
+    assert cfg.vision_assistant.provider == "codex"
+    assert cfg.vision_assistant.model == "gpt-custom"
+    assert cfg.vision_assistant.consent == ("codex@chatgpt.com",)
+
+
+def test_vision_assistant_rejects_unsupported_provider(home):
+    set_config(home, vision_assistant={"provider": "openai"})
+    with pytest.raises(ValueError, match=r"vision_assistant\.provider"):
+        config.get_config()
