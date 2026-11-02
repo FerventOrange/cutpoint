@@ -80,10 +80,11 @@ words such as "you okay" and "fell". `ski` replaces the base captions with snowy
 Profiles also hold the captions of the other visual layers: `highlight` (scenic or striking
 views), `group` and `person` (other people versus the filmer), `selfie`, `occluder` (a hand or
 debris on the lens), `low_info` (frames with nothing to see), `scene` and `lift`, plus the
-wording of the 360 vision check (`vl`). The 360 views, the 360 QA, the vision check and the
-visual events layer read them from the project's `activity.json`. `lift` is empty except in
-`ski`, so chairlift detection is off for other activities. `ski` reproduces the earlier
-built-in ski captions exactly.
+wording of the 360 vision check (`vl`). The action-cam ranking, the lift rides of `crashes`
+and `mix`, the visual layer's contact sheets and the 360 views, QA, vision check and director
+read them from the project's `activity.json` (the crash step writes it; until then they use
+the ski captions). Only `ski` and `snowboard` have `lift` captions, so chairlift detection is
+off for other activities. `ski` reproduces the earlier built-in ski captions exactly.
 
 New profiles need Ollama with a Qwen model (`CUTPOINT_VISION_MODEL`, default `qwen3.5:9b`).
 Text-only requests to a model whose name starts with `qwen` skip its reasoning step; other

@@ -340,7 +340,9 @@ learned styles call it `laughter`, which still works.
 
 ## Activity profiles
 
-Crash detection, the 360 views, QA and vision check, and the visual events layer use an activity profile per project (`<project>\activity.json`): built-in
+Crash detection, the action-cam ranking, `mix`, the visual layer's contact sheets and the 360
+views, QA, vision check and director use an activity profile per project
+(`<project>\activity.json`, written by the crash step; the ski captions until then): built-in
 profiles in `src/cutpoint/presets/activities/`, plus the ones Cutpoint builds with the local LLM,
 saved as `<CUTPOINT_HOME>\profiles\<name>.json`. A file there with a built-in's name replaces
 that built-in for profile selection. The files are readable JSON, but nothing has to be edited:
