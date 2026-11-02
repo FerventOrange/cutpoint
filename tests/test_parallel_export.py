@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import media_info, set_config, write
-from cutpoint import audio_tracks, clips, config, ffmpeg_utils, paths, sources, srt
+from cutpoint import audio_tracks, clips, config, ffmpeg_utils, paths, procs, sources, srt
 from cutpoint.clips import ClipPlan
 from cutpoint.encode import OutputFormat, atomic_output
 from cutpoint.errors import EncoderUnavailableError, FFmpegError
@@ -172,7 +172,7 @@ def test_first_failure_is_raised_starts_no_more_and_kills_the_encodes_in_flight(
 
 @pytest.fixture
 def soft_stop(monkeypatch):
-    monkeypatch.setattr(clips, "SOFT_STOP_S", 0.3)
+    monkeypatch.setattr(procs, "SOFT_STOP_S", 0.3)
     return 0.3
 
 
@@ -236,7 +236,7 @@ def test_soft_interrupt_lets_ffmpeg_that_got_the_ctrl_c_exit_without_a_kill(
 ):
     """Within SOFT_STOP_S the children exit by themselves (the same Ctrl+C reached them): the
     non-zero exit is the stop, not an ffmpeg failure, and nothing is killed."""
-    monkeypatch.setattr(clips, "SOFT_STOP_S", float(WAIT_S))
+    monkeypatch.setattr(procs, "SOFT_STOP_S", float(WAIT_S))
     seen = interruptible_encodes(monkeypatch, kids)
 
     def interrupt_when_running(self, clip, source, start, end):
@@ -256,7 +256,7 @@ def test_soft_interrupt_lets_ffmpeg_that_got_the_ctrl_c_exit_without_a_kill(
 
 @pytest.mark.slow
 def test_second_interrupt_kills_ffmpeg_at_once(monkeypatch, tmp_path, kids, main_thread_interrupt):
-    monkeypatch.setattr(clips, "SOFT_STOP_S", float(WAIT_S))
+    monkeypatch.setattr(procs, "SOFT_STOP_S", float(WAIT_S))
     seen = interruptible_encodes(monkeypatch, kids)
 
     def interrupt_when_running(self, clip, source, start, end):

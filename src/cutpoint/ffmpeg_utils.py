@@ -41,7 +41,7 @@ from typing import IO, Any, Literal
 
 import numpy as np
 
-from cutpoint import paths, state
+from cutpoint import paths, procs, state
 from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import get_config, path_key
 from cutpoint.errors import (
@@ -51,11 +51,9 @@ from cutpoint.errors import (
     FolderBusyError,
 )
 from cutpoint.utils import file_stamp
-from cutpoint.winjob import kill_with_parent
 
 logger = logging.getLogger(__name__)
 
-SOFT_STOP_S = 5.0  # a stopped child (ffmpeg; a UI job after CTRL_BREAK) gets this long
 PROGRESS_DRAIN_S = 5.0  # run_progress reads the rest of the progress pipe this long after exit
 # a failed child in a ChildScope waits this long for the cancel of a Ctrl+C (3 polls of the
 # controlling thread, clips.POLL_S) before its exit counts as an ffmpeg failure
@@ -129,26 +127,6 @@ def stage_inputs(cmd: list[str]) -> list[str]:
         if out[i] == "-i":
             out[i + 1] = staged_path(str(out[i + 1]))
     return out
-
-
-def _stop_child(proc: subprocess.Popen, err: BaseException) -> None:
-    """Let ``proc`` exit before the caller removes its partial output (#199).
-
-    On Windows a running ffmpeg keeps its output open, so removing a ``.part`` or
-    ``.tmp.wav`` file right after Ctrl+C fails. After a KeyboardInterrupt (Ctrl+C,
-    Ctrl+Break, the UI's cancel) the child got the same event, so it is given
-    ``SOFT_STOP_S`` to exit; after any other error, or when it is still running then, it is
-    killed and waited for (again at most ``SOFT_STOP_S``). The caller re-raises ``err``.
-    """
-    try:
-        if isinstance(err, KeyboardInterrupt):
-            with suppress(subprocess.TimeoutExpired):
-                proc.wait(SOFT_STOP_S)
-    finally:  # a second Ctrl+C during the wait still kills it
-        if proc.poll() is None:
-            proc.kill()
-            with suppress(subprocess.TimeoutExpired):
-                proc.wait(SOFT_STOP_S)
 
 
 class ChildScope:
@@ -298,7 +276,7 @@ def run(
         proc.communicate()
         raise FFmpegError(f"{args[0]} timed out after {timeout:g}s") from err
     except BaseException as err:
-        _stop_child(proc, err)
+        procs.stop_child(proc, err)
         raise
     finally:
         if scope is not None:
@@ -387,7 +365,7 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
             proc.wait()
             reader.join(PROGRESS_DRAIN_S)
         except BaseException as exc:
-            _stop_child(proc, exc)
+            procs.stop_child(proc, exc)
             raise
         if reader.is_alive():
             logger.debug("%s: progress pipe still open after ffmpeg exited; not waiting", label)
@@ -1724,60 +1702,6 @@ def lock_path(dst: Path) -> Path | None:
     return res.with_name(f".{res.name}.cutpoint-lock") if res.name else None
 
 
-def _win_created(k32: Any, handle: Any) -> float | None:
-    """Creation time (epoch seconds) of the Windows process ``handle``, or None."""
-    import ctypes  # noqa: PLC0415
-    from ctypes import wintypes  # noqa: PLC0415
-
-    times = [wintypes.FILETIME() for _ in range(4)]  # creation, exit, kernel, user
-    k32.GetProcessTimes.argtypes = (wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4)
-    if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
-        return None
-    ft = times[0].dwHighDateTime << 32 | times[0].dwLowDateTime  # 100 ns since 1601
-    return (ft - 116444736000000000) / 1e7
-
-
-def _pid_alive(pid: int, not_after: float | None = None) -> bool:
-    """Whether the process ``pid`` is running (True when that cannot be told).
-
-    ``not_after``: on Windows, which reuses process ids quickly, a process created after
-    this time (epoch seconds, the lock file's mtime) is another one that got the id: False.
-    """
-    if pid <= 0 or pid > 0xFFFFFFFF:
-        return False
-    if sys.platform == "win32":
-        import ctypes  # noqa: PLC0415
-        from ctypes import wintypes  # noqa: PLC0415
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.OpenProcess.restype = wintypes.HANDLE
-        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-        k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
-        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            # 87 (ERROR_INVALID_PARAMETER): no such process; anything else (5, access
-            # denied, for a protected or another user's process): it exists
-            return ctypes.get_last_error() != 87
-        try:
-            code = wintypes.DWORD()
-            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return True
-            if code.value != 259:  # STILL_ACTIVE
-                return False
-            created = _win_created(k32, handle) if not_after is not None else None
-            return created is None or not_after is None or created <= not_after
-        finally:
-            k32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)  # signal 0 only checks (on Windows os.kill would terminate it)
-    except ProcessLookupError:
-        return False
-    except OSError:  # PermissionError: it exists, owned by another user
-        return True
-    return True
-
-
 def _read_lock(lock: Path) -> tuple[bytes, dict[str, Any] | None] | None:
     """``(raw bytes, parsed record or None)`` of ``lock``, or None if it is gone."""
     try:
@@ -1808,7 +1732,7 @@ def _lock_stale(lock: Path, rec: dict[str, Any] | None) -> bool:
         written = lock.stat().st_mtime
     except OSError:
         written = None
-    return not _pid_alive(rec["pid"], written)
+    return not procs.pid_alive(rec["pid"], written)
 
 
 def _busy_error(dst: Path, lock: Path, rec: dict[str, Any] | None) -> FolderBusyError:
@@ -2030,7 +1954,7 @@ def _exec_scoped(
         proc.communicate()
         raise FFmpegError(f"{tool} timed out after {timeout:g}s on {path}") from err
     except BaseException as err:
-        _stop_child(proc, err)
+        procs.stop_child(proc, err)
         raise
     finally:
         scope.discard(proc)
@@ -2270,22 +2194,6 @@ class _Deadline:
         self._timer.cancel()
 
 
-def _isolated() -> dict[str, Any]:
-    """``Popen`` options that start a child in its own process group (Windows) or session
-    (POSIX), so the console's Ctrl+C (and the terminal's SIGINT) does not reach it: the
-    caller stops it. No stdin, so it never reads the console."""
-    if os.name == "nt":
-        return {"stdin": subprocess.DEVNULL, "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"stdin": subprocess.DEVNULL, "start_new_session": True}
-
-
-# Isolated children also go in a Windows job object (:func:`cutpoint.winjob.kill_with_parent`):
-# out of the console's group, a ``taskkill /F`` of Python would leave ffmpeg running until its
-# next write to the closed pipe; the job (KILL_ON_JOB_CLOSE) ends it at once. POSIX does nothing:
-# the pipe closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first);
-# either way the next run's sweep removes the spool and the tmp proxy.
-
-
 def decode_raw(
     path: Path | str,
     *,
@@ -2392,10 +2300,10 @@ def decode_raw(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=frame_bytes * 4,
-            **(_isolated() if isolate else {}),
+            **(procs.isolated_kwargs() if isolate else {}),
         )
         if isolate:
-            kill_with_parent(proc)
+            procs.kill_with_parent(proc)
         if scope is not None:
             scope.add(proc)
         reader = threading.Thread(target=log.read, args=(proc.stderr,), daemon=True)
@@ -2421,7 +2329,7 @@ def decode_raw(
                 watch.finish()
             if ended and exit_codes is not None:  # let it exit by itself: its code counts
                 with suppress(subprocess.TimeoutExpired):
-                    proc.wait(SOFT_STOP_S)
+                    proc.wait(procs.SOFT_STOP_S)
             proc.stdout.close()
             if proc.poll() is None:
                 stopped = True
@@ -2582,9 +2490,9 @@ class SplitDecode:
         self._log = _StderrLog(False, stderr_lines)
         spool.mkdir(parents=True, exist_ok=True)
         self._proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_isolated()
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **procs.isolated_kwargs()
         )
-        kill_with_parent(self._proc)
+        procs.kill_with_parent(self._proc)
         self._reader = threading.Thread(
             target=self._log.read, args=(self._proc.stderr,), daemon=True
         )
@@ -2658,7 +2566,7 @@ class SplitDecode:
             stdout.close()
             if self._error is None and self._proc.poll() is None:
                 with suppress(subprocess.TimeoutExpired):
-                    self._proc.wait(SOFT_STOP_S)
+                    self._proc.wait(procs.SOFT_STOP_S)
                 self._kill()  # stdout closed and still running: never happens
             self._proc.wait()
             self._watch.finish()

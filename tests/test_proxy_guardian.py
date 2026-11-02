@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint.ffmpeg_utils import _pid_alive
+from cutpoint import procs
 
 _BACKEND = """
 import json, os
@@ -258,10 +258,10 @@ def test_foreground_hardkill_closes_guardian_pipe_and_finishes_store(
             parent.wait()
     pid = int((tmp_path / "daemon-pid").read_text(encoding="utf-8"))
     deadline = time.monotonic() + 12
-    while (auth.exists() or _pid_alive(pid)) and time.monotonic() < deadline:
+    while (auth.exists() or procs.pid_alive(pid)) and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not auth.exists()
-    assert not _pid_alive(pid)
+    assert not procs.pid_alive(pid)
     assert _stored_snapshot(state)["claude.json"] == '{"token":"hardkill-refresh"}'
     if sys.platform != "win32":
         assert stopped.exists()

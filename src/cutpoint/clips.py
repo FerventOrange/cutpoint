@@ -21,7 +21,7 @@ from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, jsonout, sources, srt
+from cutpoint import boundaries, cache, jsonout, procs, sources, srt
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.color import SKIP_360, SKIP_LOG, SKIP_NOT_UNDERWATER, AutoGrade, auto_grade
 from cutpoint.config import (
@@ -50,7 +50,6 @@ from cutpoint.encode import (
 from cutpoint.errors import FFmpegError
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
-    SOFT_STOP_S,
     STOP_GRACE_S,
     ChildScope,
     MediaInfo,
@@ -732,7 +731,7 @@ class _ExportPool:
         deadline = None
         if isinstance(err, KeyboardInterrupt):
             self.scope.cancel()  # ffmpeg got the same Ctrl+C: let it exit first
-            deadline = time.monotonic() + SOFT_STOP_S
+            deadline = time.monotonic() + procs.SOFT_STOP_S
         elif err is not None:
             self.scope.kill()
         for f in self.futures:

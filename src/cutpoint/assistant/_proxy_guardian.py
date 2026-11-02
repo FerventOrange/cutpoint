@@ -12,12 +12,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from cutpoint import procs
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.proxy_credentials import CredentialStore
 from cutpoint.errors import FolderBusyError
-from cutpoint.events.llama_server import _pdeathsig_hook
-from cutpoint.ffmpeg_utils import _pid_alive, swap_lock
-from cutpoint.winjob import kill_with_parent
+from cutpoint.ffmpeg_utils import swap_lock
 
 _TERMINATE_TIMEOUT = 3.0
 _KILL_TIMEOUT = 2.0
@@ -36,7 +35,7 @@ def _parent_alive(pid: int) -> bool:
     """Check process liveness without signaling it (including on Windows)."""
     if pid <= 0 or (sys.platform != "win32" and os.getppid() != pid):
         return False
-    return _pid_alive(pid)
+    return procs.pid_alive(pid)
 
 
 def _cleanup_child(child: subprocess.Popen[Any]) -> int | None:
@@ -130,10 +129,10 @@ def main(argv: list[str] | None = None) -> int:
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         close_fds=True,
-                        preexec_fn=_pdeathsig_hook(),
+                        preexec_fn=procs.pdeathsig_hook(),
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
-                    kill_with_parent(child)
+                    procs.kill_with_parent(child)
                     while child.poll() is None and not (parent_gone() or stopping.is_set()):
                         try:
                             child.wait(timeout=_POLL_INTERVAL)

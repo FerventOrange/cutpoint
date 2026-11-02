@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import remap, set_config, write
-from cutpoint import paths
+from cutpoint import paths, procs
 from cutpoint.pano import cli as pano_cli
 from cutpoint.pano import project, stitch
 from cutpoint.pano.x3 import X3Clip
@@ -350,10 +350,10 @@ def stop_child(monkeypatch):
 
 
 class TestStopPolicy:
-    SOFT = ("wait", stitch.SOFT_STOP_S)
+    SOFT = ("wait", procs.SOFT_STOP_S)
 
     def test_interrupt_waits_for_the_child_to_exit_without_killing(self, stop_child):
-        proc = stop_child(interrupts=[KeyboardInterrupt()], exits_after=stitch.SOFT_STOP_S / 2)
+        proc = stop_child(interrupts=[KeyboardInterrupt()], exits_after=procs.SOFT_STOP_S / 2)
         with pytest.raises(stitch.SdkInterrupted) as ei:
             stitch.run_sdk(["sdk"])
         assert ei.value.run.returncode is None  # an interrupted run has no exit code
@@ -526,7 +526,7 @@ class TestStitchOne:
     def test_interrupt_removes_partial_logs_output_and_reraises(
         self, fake, clip, paths_, gated, monkeypatch
     ):
-        monkeypatch.setattr(stitch, "SOFT_STOP_S", 0.2)
+        monkeypatch.setattr(procs, "SOFT_STOP_S", 0.2)
         out_dir, out, part = paths_
         gated.interrupt = True
         with pytest.raises(stitch.SdkInterrupted):

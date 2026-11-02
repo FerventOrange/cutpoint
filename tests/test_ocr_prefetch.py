@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import needs_ffmpeg
-from cutpoint import analyze, ffmpeg_utils, progress
+from cutpoint import analyze, ffmpeg_utils, procs, progress
 from cutpoint.events import ocr_prefetch, pipeline
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
@@ -448,14 +448,14 @@ def test_no_prefetch_without_the_model_files(eligible, tmp_path, monkeypatch) ->
 
 # ----------------------------------------------------------------- decode_raw(isolate=True)
 def test_isolated_popen_options(monkeypatch) -> None:
-    assert ffmpeg_utils._isolated() == (
+    assert procs.isolated_kwargs() == (
         {"stdin": subprocess.DEVNULL, "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         if os.name == "nt"
         else {"stdin": subprocess.DEVNULL, "start_new_session": True}
     )
-    monkeypatch.setattr(ffmpeg_utils.os, "name", "nt")
+    monkeypatch.setattr(procs.os, "name", "nt")
     monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
-    assert ffmpeg_utils._isolated() == {"stdin": subprocess.DEVNULL, "creationflags": 0x200}
+    assert procs.isolated_kwargs() == {"stdin": subprocess.DEVNULL, "creationflags": 0x200}
 
 
 @needs_ffmpeg

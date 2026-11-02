@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from conftest import messages, write
-from cutpoint import paths
+from cutpoint import paths, procs
 from cutpoint.events import paths as ev_paths
 from cutpoint.events import setup
 
@@ -392,7 +392,7 @@ def test_llama_server_early_exit_shows_signed_and_hex_code(
 
     write(ev_paths.llama_server_exe())
     monkeypatch.setattr(llama_server, "unload_ollama", lambda: None)
-    monkeypatch.setattr(llama_server, "kill_with_parent", lambda proc: None)
+    monkeypatch.setattr(procs, "kill_with_parent", lambda proc: None)
     monkeypatch.setattr(llama_server.subprocess, "Popen", lambda *a, **k: _Dead(returncode))
     server = llama_server.LlamaServer(
         tmp_path / "m.gguf", tmp_path / "p.gguf", log_path=tmp_path / "log.txt"

@@ -11,21 +11,19 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import requests
 
+from cutpoint import procs
 from cutpoint.events import paths
 from cutpoint.events.common import unload_ollama
 from cutpoint.ffmpeg_utils import exit_code
-from cutpoint.winjob import kill_with_parent
 
 logger = logging.getLogger(__name__)
 
@@ -39,36 +37,6 @@ def free_port(preferred: int = 8089) -> int:
         except OSError:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
-
-
-def _pdeathsig_hook() -> Callable[[], None] | None:
-    """Linux ``preexec_fn`` that makes the child get SIGTERM when Python exits.
-
-    The Linux counterpart of :func:`cutpoint.winjob.kill_with_parent`: without either, a
-    crashed or killed driver leaves llama-server holding ~8 GB of VRAM. libc is loaded here,
-    in the parent, so the child only calls ``prctl`` between fork and exec.
-    None on other platforms or if libc is unavailable.
-    """
-    if not sys.platform.startswith("linux"):
-        return None
-    try:
-        import ctypes  # noqa: PLC0415
-
-        prctl = ctypes.CDLL(None, use_errno=True).prctl
-    except (OSError, AttributeError) as err:
-        logger.debug("prctl not available: %s", err)
-        return None
-    parent = os.getpid()
-
-    def hook() -> None:
-        try:
-            prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-            if os.getppid() != parent:  # parent already gone
-                os.kill(os.getpid(), signal.SIGTERM)
-        except Exception:  # noqa: BLE001 - best effort, must not break the launch
-            pass
-
-    return hook
 
 
 class LlamaServerError(RuntimeError):
@@ -163,9 +131,9 @@ class LlamaServer:
                 env=env,
                 cwd=exe_dir,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                preexec_fn=_pdeathsig_hook(),
+                preexec_fn=procs.pdeathsig_hook(),
             )
-        kill_with_parent(self.proc)
+        procs.kill_with_parent(self.proc)
         deadline = time.time() + self.startup_timeout_s
         while time.time() < deadline:
             if self.proc.poll() is not None:

@@ -30,12 +30,13 @@ from cutpoint import (
     crash,
     errors,
     ffmpeg_utils,
+    procs,
     stage,
     telemetry,
     transcribe,
 )
-from cutpoint.events import llama_server, setup
 from cutpoint.events import paths as ev_paths
+from cutpoint.events import setup
 from cutpoint.pano import stitch, x3
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX file semantics")
@@ -695,19 +696,19 @@ def test_llama_server_exe_falls_back_to_path_then_the_expected_location(tmp_path
     assert ev_paths.llama_server_exe() == ev_paths.llama_dir() / EXE_NAME
 
 
-# -- events/llama_server._pdeathsig_hook -----------------------------------------------------------
+# -- procs.pdeathsig_hook --------------------------------------------------------------------------
 
 
 def test_pdeathsig_hook_is_none_off_linux(plat):
     plat("win32")
-    assert llama_server._pdeathsig_hook() is None
+    assert procs.pdeathsig_hook() is None
     plat("darwin")
-    assert llama_server._pdeathsig_hook() is None
+    assert procs.pdeathsig_hook() is None
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux only")
 def test_pdeathsig_hook_is_callable_on_linux():
-    assert callable(llama_server._pdeathsig_hook())  # not invoked: it would arm the test runner
+    assert callable(procs.pdeathsig_hook())  # not invoked: it would arm the test runner
 
 
 # -- transcribe: Linux CUDA preload ----------------------------------------------------------------

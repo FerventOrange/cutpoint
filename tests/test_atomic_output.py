@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import hard_link, link_file, media_info, messages, remap, run_json, write
-from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning
+from cutpoint import assemble, cli, clips, encode, extend, ffmpeg_utils, planning, procs
 from cutpoint.errors import FFmpegError, FolderBusyError
 
 
@@ -1196,7 +1196,7 @@ def test_lock_of_another_run_stops_the_run_before_anything_is_touched(
     }[holder]
     lock.write_bytes(data)
     monkeypatch.setattr(
-        ffmpeg_utils, "_pid_alive", lambda pid, _t=None: pid == 4321 and holder == "running"
+        procs, "pid_alive", lambda pid, _t=None: pid == 4321 and holder == "running"
     )
     before = _snapshot(clips_dir)
     for argv in (_argv("clips", project, "--force"), _argv("extend", project, "--force")):
@@ -1229,7 +1229,7 @@ def test_stale_lock_of_a_killed_run_is_taken_over(monkeypatch, home, caplog, lef
         os.utime(lock, (old, old))
     else:  # a run killed hard (taskkill /F); "this-process": by an earlier call in this one
         lock.write_bytes(_lock_record(os.getpid() if left == "this-process" else 4321))
-    monkeypatch.setattr(ffmpeg_utils, "_pid_alive", lambda pid, _t=None: pid != 4321)
+    monkeypatch.setattr(procs, "pid_alive", lambda pid, _t=None: pid != 4321)
     caplog.set_level("INFO")
     assert cli.main(_argv("clips", project, "--force")) == 0
     assert f"Removed {lock}" in caplog.text
@@ -1321,18 +1321,16 @@ def test_pid_alive_takes_a_process_created_after_the_lock_for_another_one(
     """A running process with the lock's id, created after the lock was written, got the id
     after the lock's own process ended."""
     written = time.time()
-    monkeypatch.setattr(ffmpeg_utils, "_win_created", lambda _k32, _h: written + offset)
-    assert ffmpeg_utils._pid_alive(os.getpid(), written) is alive
-    assert ffmpeg_utils._pid_alive(os.getpid())  # no time to compare: running
+    monkeypatch.setattr(procs, "_win_created", lambda _k32, _h: written + offset)
+    assert procs.pid_alive(os.getpid(), written) is alive
+    assert procs.pid_alive(os.getpid())  # no time to compare: running
 
 
 def test_stale_lock_check_passes_the_locks_mtime(monkeypatch, tmp_path):
     lock = tmp_path / ".x.cutpoint-lock"
     lock.write_bytes(_lock_record(4321))
     seen = []
-    monkeypatch.setattr(
-        ffmpeg_utils, "_pid_alive", lambda pid, not_after=None: seen.append(not_after)
-    )
+    monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: seen.append(not_after))
     ffmpeg_utils._lock_stale(lock, json.loads(lock.read_bytes()))
     assert seen == [lock.stat().st_mtime]
 
@@ -1342,7 +1340,7 @@ def test_pid_alive_counts_a_process_it_cannot_open_as_alive():
     belongs to root, so signal 0 is refused (EPERM)."""
     if sys.platform != "win32" and os.geteuid() == 0:
         pytest.skip("root may signal init")
-    assert ffmpeg_utils._pid_alive(4 if sys.platform == "win32" else 1)
+    assert procs.pid_alive(4 if sys.platform == "win32" else 1)
 
 
 def test_stale_lock_replaced_meanwhile_by_a_live_one_is_put_back(monkeypatch, home):
@@ -1354,7 +1352,7 @@ def test_stale_lock_replaced_meanwhile_by_a_live_one_is_put_back(monkeypatch, ho
     lock.write_bytes(live)
     old = _lock_record(4321)
     monkeypatch.setattr(ffmpeg_utils, "_read_lock", lambda _p: (old, json.loads(old)))
-    monkeypatch.setattr(ffmpeg_utils, "_pid_alive", lambda pid, not_after=None: False)
+    monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: False)
     with pytest.raises(FolderBusyError), ffmpeg_utils.swap_lock(project / "clips"):
         pytest.fail("locked")
     assert lock.read_bytes() == live
@@ -1362,9 +1360,9 @@ def test_stale_lock_replaced_meanwhile_by_a_live_one_is_put_back(monkeypatch, ho
 
 
 def test_pid_alive_tells_this_process_from_a_missing_one():
-    assert ffmpeg_utils._pid_alive(os.getpid())
-    assert not ffmpeg_utils._pid_alive(2**31 - 4)  # above pid_max (Linux), not in use (Windows)
-    assert not ffmpeg_utils._pid_alive(0)
+    assert procs.pid_alive(os.getpid())
+    assert not procs.pid_alive(2**31 - 4)  # above pid_max (Linux), not in use (Windows)
+    assert not procs.pid_alive(0)
 
 
 @pytest.mark.slow
@@ -1372,11 +1370,11 @@ def test_pid_alive_sees_a_child_exit():
     """The Windows path (OpenProcess + GetExitCodeProcess) or os.kill(pid, 0) elsewhere."""
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
-        assert ffmpeg_utils._pid_alive(child.pid)
+        assert procs.pid_alive(child.pid)
     finally:
         child.kill()
         child.wait()
-    assert not ffmpeg_utils._pid_alive(child.pid)
+    assert not procs.pid_alive(child.pid)
 
 
 def test_manifest_records_each_clips_size_and_that_cutpoint_wrote_it(monkeypatch, home):
@@ -1741,7 +1739,7 @@ _RUNNERS = {
     "run": lambda: ffmpeg_utils.run(["ffmpeg", "-i", "x.mp4", "out.mp4"]),
     "run_progress": lambda: ffmpeg_utils.run_progress(["ffmpeg", "-i", "x.mp4", "o.mp4"], 9, "t"),
 }
-_SOFT = ("wait", ffmpeg_utils.SOFT_STOP_S)
+_SOFT = ("wait", procs.SOFT_STOP_S)
 
 
 def _waits_and_kills(proc: _Child) -> list[tuple]:
@@ -1752,7 +1750,7 @@ def _waits_and_kills(proc: _Child) -> list[tuple]:
 def test_interrupted_ffmpeg_is_waited_for_and_the_interrupt_reraised(child, runner):
     """It got the Ctrl+C too and exits within SOFT_STOP_S: no kill."""
     exc = KeyboardInterrupt()
-    child.proc = _Child(raises=exc, exits_after=ffmpeg_utils.SOFT_STOP_S / 2)
+    child.proc = _Child(raises=exc, exits_after=procs.SOFT_STOP_S / 2)
     with pytest.raises(KeyboardInterrupt) as err:
         _RUNNERS[runner]()
     assert err.value is exc
