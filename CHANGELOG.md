@@ -462,6 +462,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused with "source must be an absolute path"; blank `sources` lines are left out, and with
   several sources the refusal names the path. Settings' projects folder takes a quoted path too.
   Relative paths are still refused.
+- The VLM log line of `cutpoint events` no longer shows `None tok` when the Vision server reports
+  no token count (OpenAI-compatible servers); it leaves out the token part (#624).
 
 ## [0.4.0] - 2026-10-29
 
