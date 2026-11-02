@@ -336,6 +336,7 @@ def test_preview_key_is_stable_and_covers_what_changes_pixels(monkeypatch) -> No
 
 
 # --------------------------------------------------------------------------- real ffmpeg
+@pytest.mark.slow
 @needs_ffmpeg
 def test_level_forward_preview_renders_a_synthetic_dfisheye(home, tmp_path) -> None:
     """End to end without IMU or layers: preview_path falls back to an upright forward view,
