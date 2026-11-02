@@ -466,6 +466,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-10-29
 
 ### Added
+- `events`: on a project's first run the contact sheets now use the activity profile the
+  crash layer chose instead of the ski captions (#609).
 
 - `install.sh`: one-step Linux installer (`curl -LsSf .../install.sh | sh`). It installs uv and
   ffmpeg when missing, picks CUDA torch (`cutpoint[all]`, `--torch-backend cu126`) with an NVIDIA

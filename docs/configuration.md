@@ -348,11 +348,14 @@ learned styles call it `laughter`, which still works.
 
 Crash detection, the action-cam ranking, `mix`, the visual layer's contact sheets and the 360
 views, QA, vision check and director use an activity profile per project
-(`<project>\activity.json`, written by the crash step; the ski captions until then): built-in
+(`<project>\activity.json`, written by the crash step): built-in
 profiles in `src/cutpoint/presets/activities/`, plus the ones Cutpoint builds with the local LLM,
 saved as `<CUTPOINT_HOME>\profiles\<name>.json`. A file there with a built-in's name replaces
 that built-in for profile selection. The files are readable JSON, but nothing has to be edited:
-see [action-cam workflow](workflows/action-cam.md#activity-profiles). Scorer weights from
+see [action-cam workflow](workflows/action-cam.md#activity-profiles). When the crash layer runs
+in an `events` run, the contact sheets are written after it and use the profile it chose; a run
+without the crash layer (for example `--layers visual`) on a project with no `activity.json` uses
+the default (ski) captions. Scorer weights from
 profiles and profiles for games are planned.
 
 ## HUD presets

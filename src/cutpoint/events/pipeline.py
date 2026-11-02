@@ -291,8 +291,9 @@ def run_events(
         timings["voice_s"] = round(time.perf_counter() - t0, 1)
     crash_run = "crash" in layers and not only  # project-wide ranking: all sources
     kept: list[Any] = []  # the visual layer's CLIP, reused by the crash dense confirm
-    # The visual layer's caption embeddings and the contact sheets use the captions of the
-    # project's activity.json (ski until the crash layer below writes one).
+    # The visual layer's caption embeddings use the captions of the project's activity.json
+    # (ski until the crash layer below writes one); the contact sheets are written after the
+    # crash layer when it runs, so a first run's sheets use the profile it resolves.
     from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
 
     prompts = project_prompts(project)
@@ -313,11 +314,15 @@ def run_events(
             )
         vram["visual"] = vm.summary()
         timings["visual_s"] = round(time.perf_counter() - t0, 1)
-    if sheets:
+
+    def write_sheets(prompt_set: Any) -> None:
         from cutpoint.events.sheets import write_visual_sheets  # noqa: PLC0415
 
-        with use_prompts(prompts):
+        with use_prompts(prompt_set):
             stats["sheets"] = [str(p) for p in write_visual_sheets(project, sources)]
+
+    if sheets and not crash_run:
+        write_sheets(prompts)
 
     # ---- layer 1b: OCR (with region discovery for games without a preset)
     t0 = time.perf_counter()
